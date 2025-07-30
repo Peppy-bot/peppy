@@ -15,7 +15,9 @@ enum Commands {
         #[arg(short, long)]
         name: String,
     },
+    /// Run pixi commands (e.g. peppy pixi install, peppy pixi list)
     Pixi {
+        /// Arguments to pass to the pixi CLI
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
     },
@@ -29,19 +31,16 @@ fn main() {
             println!("Running with name: {}", name);
         }
         Commands::Pixi { args } => {
-            let mut cmd = Command::new("pixi");
-            cmd.args(&args);
-            
-            match cmd.status() {
-                Ok(status) => {
-                    if !status.success() {
-                        std::process::exit(status.code().unwrap_or(1));
-                    }
-                }
-                Err(e) => {
+            let status = Command::new("pixi")
+                .args(&args)
+                .status()
+                .unwrap_or_else(|e| {
                     eprintln!("Failed to execute pixi: {}", e);
                     std::process::exit(1);
-                }
+                });
+            
+            if !status.success() {
+                std::process::exit(status.code().unwrap_or(1));
             }
         }
     }
