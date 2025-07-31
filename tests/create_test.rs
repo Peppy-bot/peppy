@@ -7,8 +7,8 @@ fn test_create_command_default_directory() {
     let node_path = temp_dir.path().join("test-node");
     
     let output = std::process::Command::new("cargo")
-        .args(&["run", "--", "create", "test-node", "--to-dir", &node_path.to_string_lossy()])
-        .current_dir("/Users/ekami/workspace/peppy")
+        .args(&["run", "--", "node", "create", "test-node", "--to-dir", &node_path.to_string_lossy()])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("Failed to execute command");
     
@@ -26,8 +26,8 @@ fn test_create_command_with_to_dir() {
     let target_path = temp_dir.path().join("my-node");
     
     let output = std::process::Command::new("cargo")
-        .args(&["run", "--", "create", "my-node", "--to-dir", &target_path.to_string_lossy()])
-        .current_dir("/Users/ekami/workspace/peppy")
+        .args(&["run", "--", "node", "create", "my-node", "--to-dir", &target_path.to_string_lossy()])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("Failed to execute command");
     
@@ -45,8 +45,8 @@ fn test_pixi_toml_content() {
     let node_path = temp_dir.path().join("test-node");
     
     let output = std::process::Command::new("cargo")
-        .args(&["run", "--", "create", "test-node", "--to-dir", &node_path.to_string_lossy()])
-        .current_dir("/Users/ekami/workspace/peppy")
+        .args(&["run", "--", "node", "create", "test-node", "--to-dir", &node_path.to_string_lossy()])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("Failed to execute command");
     
@@ -66,8 +66,8 @@ fn test_peppy_star_content() {
     let node_path = temp_dir.path().join("test-node");
     
     let output = std::process::Command::new("cargo")
-        .args(&["run", "--", "create", "test-node", "--to-dir", &node_path.to_string_lossy()])
-        .current_dir("/Users/ekami/workspace/peppy")
+        .args(&["run", "--", "node", "create", "test-node", "--to-dir", &node_path.to_string_lossy()])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("Failed to execute command");
     
@@ -85,8 +85,8 @@ fn test_create_nested_directories() {
     let nested_path = temp_dir.path().join("a").join("b").join("c").join("my-node");
     
     let output = std::process::Command::new("cargo")
-        .args(&["run", "--", "create", "my-node", "--to-dir", &nested_path.to_string_lossy()])
-        .current_dir("/Users/ekami/workspace/peppy")
+        .args(&["run", "--", "node", "create", "my-node", "--to-dir", &nested_path.to_string_lossy()])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("Failed to execute command");
     
