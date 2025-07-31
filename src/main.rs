@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::process::Command;
 use std::path::PathBuf;
 
-mod create;
+mod node;
 
 #[derive(Parser)]
 #[command(name = "peppy")]
@@ -14,16 +14,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Create a new peppy node
-    Create {
-        /// Name of the node directory to create
-        node_name: String,
-        /// Optional target directory (defaults to current directory)
-        #[arg(long)]
-        to_dir: Option<PathBuf>,
+    /// Node-related commands
+    Node {
+        #[command(subcommand)]
+        command: node::NodeCommands,
     },
-    /// Run the peppy service, also used as a Zenoh router
-    Launch {
+    /// Run the peppy service that listen to nodes, also used as a Zenoh router
+    Serve {
         #[arg(short, long)]
         name: String,
     },
@@ -45,7 +42,7 @@ fn main() {
     let cli = Cli::parse();
     
     match cli.command {
-        Commands::Launch { name } => {
+        Commands::Serve { name } => {
             println!("Launching nodes with: {}", name);
         }
         Commands::Pixi { args } => {
@@ -74,11 +71,8 @@ fn main() {
             println!("Syncing file: {}", full_path.display());
             // TODO: Implement the actual sync logic here
         }
-        Commands::Create { node_name, to_dir } => {
-            if let Err(e) = create::create(&node_name, to_dir) {
-                eprintln!("Failed to create node: {}", e);
-                std::process::exit(1);
-            }
+        Commands::Node { command } => {
+            node::handle_node_command(command);
         }
     }
 }
