@@ -1,6 +1,6 @@
 # Peppy Operating system
 
-[![Tests](https://github.com/ekami/peppy/actions/workflows/tests.yml/badge.svg)](https://github.com/ekami/peppy/actions/workflows/tests.yml)
+[![Tests](https://github.com/Peppy-bot/peppy/actions/workflows/tests.yml/badge.svg)](https://github.com/Peppy-bot/peppy/actions/workflows/tests.yml)
 
 PeppyOS is a modern robotics middleware framework designed for robots. Similar to ROS 2, it provides a distributed communication layer for robotic systems with a big focus on ease of use and explicit configuration.
 
