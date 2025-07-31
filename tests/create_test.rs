@@ -1,18 +1,15 @@
 use std::fs;
 use tempfile::TempDir;
+use peppy::node::create;
 
 #[test]
 fn test_create_command_default_directory() {
     let temp_dir = TempDir::new().unwrap();
     let node_path = temp_dir.path().join("test-node");
     
-    let output = std::process::Command::new("cargo")
-        .args(&["run", "--", "node", "create", "test-node", "--to-dir", &node_path.to_string_lossy()])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .expect("Failed to execute command");
+    let result = create::create("test-node", Some(node_path.clone()));
     
-    assert!(output.status.success());
+    assert!(result.is_ok(), "Create should succeed: {:?}", result.err());
     assert!(node_path.exists(), "Node directory should exist");
     assert!(node_path.is_dir(), "Node should be a directory");
     
@@ -25,13 +22,9 @@ fn test_create_command_with_to_dir() {
     let temp_dir = TempDir::new().unwrap();
     let target_path = temp_dir.path().join("my-node");
     
-    let output = std::process::Command::new("cargo")
-        .args(&["run", "--", "node", "create", "my-node", "--to-dir", &target_path.to_string_lossy()])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .expect("Failed to execute command");
+    let result = create::create("my-node", Some(target_path.clone()));
     
-    assert!(output.status.success());
+    assert!(result.is_ok(), "Create should succeed: {:?}", result.err());
     assert!(target_path.exists(), "Target directory should exist");
     assert!(target_path.is_dir(), "Target should be a directory");
     
@@ -44,13 +37,9 @@ fn test_pixi_toml_content() {
     let temp_dir = TempDir::new().unwrap();
     let node_path = temp_dir.path().join("test-node");
     
-    let output = std::process::Command::new("cargo")
-        .args(&["run", "--", "node", "create", "test-node", "--to-dir", &node_path.to_string_lossy()])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .expect("Failed to execute command");
+    let result = create::create("test-node", Some(node_path.clone()));
     
-    assert!(output.status.success());
+    assert!(result.is_ok(), "Create should succeed: {:?}", result.err());
     
     let pixi_content = fs::read_to_string(node_path.join("pixi.toml")).unwrap();
     assert!(pixi_content.contains("[project]"));
@@ -65,13 +54,9 @@ fn test_peppy_star_content() {
     let temp_dir = TempDir::new().unwrap();
     let node_path = temp_dir.path().join("test-node");
     
-    let output = std::process::Command::new("cargo")
-        .args(&["run", "--", "node", "create", "test-node", "--to-dir", &node_path.to_string_lossy()])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .expect("Failed to execute command");
+    let result = create::create("test-node", Some(node_path.clone()));
     
-    assert!(output.status.success());
+    assert!(result.is_ok(), "Create should succeed: {:?}", result.err());
     
     let peppy_content = fs::read_to_string(node_path.join("peppy.star")).unwrap();
     assert!(peppy_content.contains("# Peppy configuration file"));
@@ -84,13 +69,9 @@ fn test_create_nested_directories() {
     let temp_dir = TempDir::new().unwrap();
     let nested_path = temp_dir.path().join("a").join("b").join("c").join("my-node");
     
-    let output = std::process::Command::new("cargo")
-        .args(&["run", "--", "node", "create", "my-node", "--to-dir", &nested_path.to_string_lossy()])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .expect("Failed to execute command");
+    let result = create::create("my-node", Some(nested_path.clone()));
     
-    assert!(output.status.success());
+    assert!(result.is_ok(), "Create should succeed: {:?}", result.err());
     assert!(nested_path.exists(), "Nested directory should be created");
     assert!(nested_path.join("pixi.toml").exists());
     assert!(nested_path.join("peppy.star").exists());

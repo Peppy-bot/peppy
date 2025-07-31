@@ -1,7 +1,7 @@
 use clap::Subcommand;
 use std::path::PathBuf;
 
-mod create;
+pub mod create;
 
 #[derive(Subcommand)]
 pub enum NodeCommands {
