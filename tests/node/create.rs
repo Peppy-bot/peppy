@@ -4,6 +4,8 @@ use peppy::node::create;
 
 #[test]
 fn test_create_command_default_directory() {
+    super::helpers::setup();
+
     let temp_dir = TempDir::new().unwrap();
     let node_path = temp_dir.path().join("test-node");
     
@@ -19,6 +21,8 @@ fn test_create_command_default_directory() {
 
 #[test]
 fn test_create_command_with_to_dir() {
+    super::helpers::setup();
+
     let temp_dir = TempDir::new().unwrap();
     let target_path = temp_dir.path().join("my-node");
     
@@ -34,6 +38,8 @@ fn test_create_command_with_to_dir() {
 
 #[test]
 fn test_pixi_toml_content() {
+    super::helpers::setup();
+
     let temp_dir = TempDir::new().unwrap();
     let node_path = temp_dir.path().join("test-node");
     
@@ -51,6 +57,8 @@ fn test_pixi_toml_content() {
 
 #[test]
 fn test_peppy_star_content() {
+    super::helpers::setup();
+
     let temp_dir = TempDir::new().unwrap();
     let node_path = temp_dir.path().join("test-node");
     
@@ -66,6 +74,8 @@ fn test_peppy_star_content() {
 
 #[test]
 fn test_create_nested_directories() {
+    super::helpers::setup();
+    
     let temp_dir = TempDir::new().unwrap();
     let nested_path = temp_dir.path().join("a").join("b").join("c").join("my-node");
     
