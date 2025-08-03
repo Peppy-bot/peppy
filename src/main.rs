@@ -1,8 +1,9 @@
 use clap::{Parser, Subcommand};
-use std::process::Command;
 use std::path::PathBuf;
+use std::process::Command;
 
 mod node;
+mod serve;
 
 #[derive(Parser)]
 #[command(name = "peppy")]
@@ -21,8 +22,13 @@ enum Commands {
     },
     /// Run the peppy service that listen to nodes, also used as a Zenoh router
     Serve {
+        /// Host address to bind to
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+
+        /// Run as a daemon in the background
         #[arg(short, long)]
-        name: String,
+        daemon: bool,
     },
     /// Run pixi commands directly (e.g. peppy pixi install, peppy pixi list)
     Pixi {
@@ -35,15 +41,16 @@ enum Commands {
         /// Path to the peppy.star file (defaults to ./peppy.star)
         #[arg(default_value = "peppy.star")]
         file: PathBuf,
-    }
+    },
 }
 
 fn main() {
     let cli = Cli::parse();
-    
+
     match cli.command {
-        Commands::Serve { name } => {
-            println!("Launching nodes with: {}", name);
+        Commands::Serve { host, daemon } => {
+            println!("Launching nodes on: {}", &host);
+            serve::handle_serve(&host, daemon);
         }
         Commands::Pixi { args } => {
             let status = Command::new("pixi")
@@ -53,21 +60,20 @@ fn main() {
                     eprintln!("Failed to execute pixi: {}", e);
                     std::process::exit(1);
                 });
-            
+
             if !status.success() {
                 std::process::exit(status.code().unwrap_or(1));
             }
         }
         Commands::Sync { file } => {
-            let current_dir = std::env::current_dir()
-                .expect("Failed to get current directory");
-            
+            let current_dir = std::env::current_dir().expect("Failed to get current directory");
+
             let full_path = if file.is_relative() {
                 current_dir.join(file.strip_prefix("./").unwrap_or(&file))
             } else {
                 file
             };
-            
+
             println!("Syncing file: {}", full_path.display());
             // TODO: Implement the actual sync logic here
         }
