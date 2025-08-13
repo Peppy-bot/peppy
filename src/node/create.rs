@@ -2,6 +2,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// Creates a new node and updates the peppy.star configuration file where the command is run
 pub fn create(
     node_name: &str,
     lang: &str,
@@ -25,9 +26,11 @@ pub fn create(
 }
 
 fn create_pixi_toml(node_path: &Path, lang: &str) -> Result<(), Box<dyn std::error::Error>> {
+    todo!("Create .gitignore with .peppy and .pixi in it");
     let pixi_toml_path = node_path.join("pixi.toml");
     let mut file = fs::File::create(pixi_toml_path)?;
 
+    // TODO Use askama
     let pixi_content = r#"[project]
 name = "peppy-node"
 version = "0.1.0"
@@ -60,4 +63,14 @@ def main():
     file.write_all(peppy_content.as_bytes())?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_pixi_toml() {
+        todo!()
+    }
 }
