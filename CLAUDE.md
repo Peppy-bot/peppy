@@ -104,8 +104,8 @@ PeppyOS is a robotics middleware framework similar to ROS 2, built in Rust with 
 - **Clean Architecture**: Separate concerns with concurrent validation
 - **Parallel Documentation**: Maintain clear, up-to-date documentation with concurrent updates
 - Minimize the use of `.clone()` as much as possible
-- Avoid unit testings outside the `tests/` folder
 - Strictly follow the instructions that are given, do not attempt to modify code outside the scope of what is asked
+- Make use of `RefCell` only when strictly necessary (in unit and integration tests during mocking for instance)
 
 ### Testing Strategy
 

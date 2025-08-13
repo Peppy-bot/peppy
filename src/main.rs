@@ -20,7 +20,7 @@ enum Commands {
         #[command(subcommand)]
         command: node::NodeCommands,
     },
-    /// Run the peppy service that listen to nodes, also used as a Zenoh router
+    /// Run the peppy service that listen to node communication, node configuration file changes and also act as a Zenoh router
     Serve {
         /// Host address to bind to
         #[arg(long, default_value = "127.0.0.1")]
@@ -30,7 +30,7 @@ enum Commands {
         #[arg(short, long)]
         daemon: bool,
     },
-    /// Run pixi commands directly (e.g. peppy pixi install, peppy pixi list)
+    /// Give raw access to pixi commands (e.g. peppy pixi install, peppy pixi list) while using the environment in .peppy rather than .pixi
     Pixi {
         /// Arguments to pass to the pixi CLI
         #[arg(trailing_var_arg = true)]
