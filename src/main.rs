@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use std::process::Command;
 
 mod init;
 mod node;
+mod pixi;
 mod serve;
 
 #[derive(Parser)]
@@ -16,7 +16,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    // Create the initial peppy.star node in the current directory
+    // Create the initial peppy.star node in the current directory and install the peppy daemon if not already present
     Init {},
     /// Node-related commands
     Node {
@@ -59,23 +59,7 @@ fn main() {
             serve::handle_serve(&host, daemon);
         }
         Commands::Pixi { args } => {
-            // Use the pixi binary built from our dependency
-            let pixi_path = option_env!("PIXI_BINARY_PATH").expect(
-                "PIXI_BINARY_PATH not set. The build_pixi feature should be enabled by default.",
-            );
-
-            let status = Command::new(pixi_path)
-                .args(&args)
-                .status()
-                .unwrap_or_else(|e| {
-                    eprintln!("Failed to execute pixi from dependency: {}", e);
-                    eprintln!("Pixi binary path: {}", pixi_path);
-                    std::process::exit(1);
-                });
-
-            if !status.success() {
-                std::process::exit(status.code().unwrap_or(1));
-            }
+            pixi::execute_pixi(&args);
         }
         Commands::Sync { file } => {
             let current_dir = std::env::current_dir().expect("Failed to get current directory");
