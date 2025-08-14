@@ -27,6 +27,9 @@ pub enum NodeCreationError {
 
     #[error("Root configuration not found")]
     RootConfigurationNotFound,
+
+    #[error("Unsupported configuration language. Supported options are 'python'/'rust'")]
+    UnsupportedLanguage,
 }
 
 /// Creates a new node and updates the peppy.star configuration file where the command is run
@@ -42,6 +45,10 @@ pub fn create(
             .join(node_name),
     };
 
+    if !matches!(lang, "python" | "rust") {
+        return Err(NodeCreationError::UnsupportedLanguage);
+    }
+
     let current_dir = std::env::current_dir().map_err(|e| NodeCreationError::CurrentDir(e))?;
     if !current_dir.join("peppy.star").exists() {
         return Err(NodeCreationError::RootConfigurationNotFound);
@@ -49,7 +56,7 @@ pub fn create(
 
     fs::create_dir_all(&node_path)?;
 
-    create_gitignore(&node_path)?;
+    create_gitignore(&node_path, &lang)?;
     create_pixi_toml(&node_path, &node_name, &lang)?;
     create_peppy_config(&node_path, &node_name)?;
 
@@ -60,16 +67,37 @@ pub fn create(
     Ok(())
 }
 
-fn create_gitignore(node_path: &Path) -> Result<(), NodeCreationError> {
+fn create_gitignore(node_path: &Path, lang: &str) -> Result<(), NodeCreationError> {
+    let project_root = std::env::current_dir()?;
+    let template_path = match lang {
+        "python" => project_root
+            .join("templates")
+            .join("gitignore")
+            .join("py.gitignore.j2"),
+        "rust" => project_root
+            .join("templates")
+            .join("gitignore")
+            .join("rust.gitignore.j2"),
+        _ => {
+            return Err(NodeCreationError::DirectoryCreation(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Unsupported language: {}", lang),
+            )));
+        }
+    };
+
+    let template_content = fs::read_to_string(&template_path)?;
+
     let gitignore_path = node_path.join(".gitignore");
-    fs::File::create(gitignore_path)?;
+    let mut file = fs::File::create(&gitignore_path)?;
+    file.write_all(template_content.as_bytes())?;
     Ok(())
 }
 
 fn create_pixi_toml(
     node_path: &Path,
     node_name: &str,
-    _lang: &str,
+    lang: &str,
 ) -> Result<(), NodeCreationError> {
     let pixi_toml_path = node_path.join("pixi.toml");
     let mut file = fs::File::create(pixi_toml_path)?;
@@ -153,15 +181,50 @@ mod tests {
     }
 
     #[test]
-    fn test_create_gitignore() {
+    fn test_create_gitignore_python() {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
 
-        let result = create_gitignore(temp_dir.path());
+        let result = create_gitignore(temp_dir.path(), "python");
         assert!(result.is_ok());
 
         let gitignore_path = temp_dir.path().join(".gitignore");
         assert!(gitignore_path.exists());
+
+        let content = fs::read_to_string(gitignore_path).unwrap();
+        assert!(content.contains("__pycache__"));
+        assert!(content.contains(".pixi"));
+    }
+
+    #[test]
+    fn test_create_gitignore_rust() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        let result = create_gitignore(temp_dir.path(), "rust");
+        assert!(result.is_ok());
+
+        let gitignore_path = temp_dir.path().join(".gitignore");
+        assert!(gitignore_path.exists());
+
+        let content = fs::read_to_string(gitignore_path).unwrap();
+        assert!(content.contains("/target/"));
+        assert!(content.contains(".pixi"));
+    }
+
+    #[test]
+    fn test_create_gitignore_invalid_language() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        let result = create_gitignore(temp_dir.path(), "javascript");
+        assert!(result.is_err());
+
+        // Verify no gitignore file was created
+        let gitignore_path = temp_dir.path().join(".gitignore");
+        assert!(!gitignore_path.exists());
     }
 }
