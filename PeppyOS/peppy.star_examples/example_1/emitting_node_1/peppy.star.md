@@ -6,6 +6,7 @@ def create_uvc_camera_node():
     """Creates and returns the UVC camera node configuration."""
     return struct(
         namespace = "/",
+        tags = ["uvc", "camera", "usb"], # Tags used to look the node up on the public repo
 
 		# Allows pulling the node from a central repo (https://repo.peppy.bot by default)
 		#pull_from = "uvc_camera:0.1"
