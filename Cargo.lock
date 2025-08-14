@@ -2072,6 +2072,7 @@ dependencies = [
  "pyo3",
  "starlark",
  "tempfile",
+ "thiserror 2.0.14",
  "tokio",
  "zenoh",
 ]
