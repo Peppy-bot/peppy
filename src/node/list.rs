@@ -1,28 +1,10 @@
-use core::num;
 use std::path::{Path, PathBuf};
-use std::{env, fs, io};
+use std::{env, fs};
 
-// TODO move those errors to a dedicated package
-enum CliError {
-    IoError(io::Error),
-    ParseError(num::ParseIntError),
-}
+use starlark::Error;
 
-impl From<io::Error> for CliError {
-    fn from(error: io::Error) -> Self {
-        CliError::IoError(error)
-    }
-}
-
-impl From<num::ParseIntError> for CliError {
-    fn from(error: num::ParseIntError) -> Self {
-        CliError::ParseError(error)
-    }
-}
-
-fn open_and_parse_file<P: AsRef<Path>>(file_path: P) -> Result<i32, CliError> {
-    todo!();
-    let mut content = fs::read_to_string(file_path)?;
+fn open_and_parse_file<P: AsRef<Path>>(file_path: P) -> Result<i32, Box<dyn std::error::Error>> {
+    let content = fs::read_to_string(file_path)?;
     Ok(1)
 }
 

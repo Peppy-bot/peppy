@@ -52,11 +52,7 @@ fn main() {
 
     match cli.command {
         Commands::Init {} => {
-            init::init();
-        }
-        Commands::Serve { host, daemon } => {
-            println!("Launching nodes on: {}", &host);
-            serve::handle_serve(&host, daemon);
+            init::init().expect("Failed to initialize peppy.star");
         }
         Commands::Serve { host, daemon } => {
             println!("Launching nodes on: {}", &host);
