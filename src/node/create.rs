@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use askama::Template;
 use thiserror::Error;
@@ -15,6 +16,24 @@ struct PixiTomlTemplate<'a> {
 #[template(path = "peppy_new_node.star.j2")]
 struct PeppyNodeTemplate<'a> {
     name: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Language {
+    Python,
+    Rust,
+}
+
+impl FromStr for Language {
+    type Err = NodeCreationError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "python" => Ok(Language::Python),
+            "rust" => Ok(Language::Rust),
+            _ => Err(NodeCreationError::UnsupportedLanguage),
+        }
+    }
 }
 
 #[derive(Error, Debug)]
@@ -38,16 +57,14 @@ pub fn create(
     lang: &str,
     to_dir: Option<PathBuf>,
 ) -> Result<(), NodeCreationError> {
+    let language = Language::from_str(lang)?;
+
     let node_path = match to_dir {
         Some(dir) => dir,
         None => std::env::current_dir()
             .map_err(|e| NodeCreationError::CurrentDir(e))?
             .join(node_name),
     };
-
-    if !matches!(lang, "python" | "rust") {
-        return Err(NodeCreationError::UnsupportedLanguage);
-    }
 
     let current_dir = std::env::current_dir().map_err(|e| NodeCreationError::CurrentDir(e))?;
     if !current_dir.join("peppy.star").exists() {
@@ -56,14 +73,13 @@ pub fn create(
 
     fs::create_dir_all(&node_path)?;
 
-    create_gitignore(&node_path, &lang)?;
-    create_pixi_toml(&node_path, &node_name, &lang)?;
+    create_gitignore(&node_path, language)?;
+    create_pixi_toml(&node_path, &node_name, language)?;
     create_peppy_config(&node_path, &node_name)?;
 
-    if lang == "python" {
-        create_peppycl_py_dep(&node_path);
-    } else if lang == "rust" {
-        create_peppycl_rust_crate(&node_path);
+    match language {
+        Language::Python => create_peppycl_py_dep(&node_path)?,
+        Language::Rust => create_peppycl_rust_crate(&node_path)?,
     }
 
     // TODO add the dep to pixi/Cargo.toml
@@ -99,38 +115,32 @@ fn create_peppycl_rust_crate(to_path: &Path) -> Result<(), std::io::Error> {
     // Create src directory
     let src_dir = to_path.join("src");
     fs::create_dir_all(&src_dir)?;
-    
+
     // Create lib.rs from template
     let project_root = std::env::current_dir()?;
     let lib_template_path = project_root.join("templates/dependencies/lib.rs.j2");
     let lib_template_content = fs::read_to_string(&lib_template_path)?;
-    
+
     let lib_rs_path = src_dir.join("lib.rs");
     let mut lib_rs = fs::File::create(lib_rs_path)?;
     lib_rs.write_all(lib_template_content.as_bytes())?;
-    
+
     // Create Cargo.toml from template
     let cargo_template_path = project_root.join("templates/dependencies/Cargo.toml.j2");
     let cargo_template_content = fs::read_to_string(&cargo_template_path)?;
-    
+
     let cargo_toml_path = to_path.join("Cargo.toml");
     let mut cargo_toml = fs::File::create(cargo_toml_path)?;
     cargo_toml.write_all(cargo_template_content.as_bytes())?;
-    
+
     Ok(())
 }
 
-fn create_gitignore(node_path: &Path, lang: &str) -> Result<(), NodeCreationError> {
+fn create_gitignore(node_path: &Path, lang: Language) -> Result<(), NodeCreationError> {
     let project_root = std::env::current_dir()?;
     let template_path = match lang {
-        "python" => project_root.join("templates/gitignore/py.gitignore.j2"),
-        "rust" => project_root.join("templates/gitignore/rust.gitignore.j2"),
-        _ => {
-            return Err(NodeCreationError::DirectoryCreation(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("Unsupported language: {}", lang),
-            )));
-        }
+        Language::Python => project_root.join("templates/gitignore/py.gitignore.j2"),
+        Language::Rust => project_root.join("templates/gitignore/rust.gitignore.j2"),
     };
 
     let template_content = fs::read_to_string(&template_path)?;
@@ -144,7 +154,7 @@ fn create_gitignore(node_path: &Path, lang: &str) -> Result<(), NodeCreationErro
 fn create_pixi_toml(
     node_path: &Path,
     node_name: &str,
-    lang: &str,
+    lang: Language,
 ) -> Result<(), NodeCreationError> {
     let pixi_toml_path = node_path.join("pixi.toml");
     let mut file = fs::File::create(pixi_toml_path)?;
@@ -182,6 +192,14 @@ fn create_peppy_config(node_path: &Path, node_name: &str) -> Result<(), NodeCrea
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_language_from_str() {
+        assert_eq!(Language::from_str("python").unwrap(), Language::Python);
+        assert_eq!(Language::from_str("rust").unwrap(), Language::Rust);
+        assert!(Language::from_str("javascript").is_err());
+        assert!(Language::from_str("").is_err());
+    }
 
     #[test]
     fn test_create_peppycl_py_dep() {
@@ -232,23 +250,14 @@ mod tests {
         let lib_rs = src_dir.join("lib.rs");
 
         // Check that Cargo.toml exists
-        assert!(
-            cargo_toml.exists(),
-            "Expected Cargo.toml to be created"
-        );
+        assert!(cargo_toml.exists(), "Expected Cargo.toml to be created");
 
         // Check that the src directory was created
-        assert!(
-            src_dir.exists(),
-            "Expected src directory to be created"
-        );
+        assert!(src_dir.exists(), "Expected src directory to be created");
         assert!(src_dir.is_dir(), "src should be a directory");
 
         // Check that lib.rs exists in the src directory
-        assert!(
-            lib_rs.exists(),
-            "Expected lib.rs in src directory"
-        );
+        assert!(lib_rs.exists(), "Expected lib.rs in src directory");
     }
 
     #[test]
@@ -283,7 +292,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let node_name = "test_node";
-        let lang = "python";
+        let lang = Language::Python;
 
         let result = create_pixi_toml(temp_dir.path(), node_name, lang);
         assert!(result.is_ok());
@@ -301,7 +310,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
 
-        let result = create_gitignore(temp_dir.path(), "python");
+        let result = create_gitignore(temp_dir.path(), Language::Python);
         assert!(result.is_ok());
 
         let gitignore_path = temp_dir.path().join(".gitignore");
@@ -318,7 +327,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
 
-        let result = create_gitignore(temp_dir.path(), "rust");
+        let result = create_gitignore(temp_dir.path(), Language::Rust);
         assert!(result.is_ok());
 
         let gitignore_path = temp_dir.path().join(".gitignore");
@@ -327,19 +336,5 @@ mod tests {
         let content = fs::read_to_string(gitignore_path).unwrap();
         assert!(content.contains("/target/"));
         assert!(content.contains(".pixi"));
-    }
-
-    #[test]
-    fn test_create_gitignore_invalid_language() {
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new().unwrap();
-
-        let result = create_gitignore(temp_dir.path(), "javascript");
-        assert!(result.is_err());
-
-        // Verify no gitignore file was created
-        let gitignore_path = temp_dir.path().join(".gitignore");
-        assert!(!gitignore_path.exists());
     }
 }
