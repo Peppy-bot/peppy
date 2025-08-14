@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::Command;
 
+mod init;
 mod node;
 mod serve;
 
@@ -15,6 +16,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    // Create the initial peppy.star node in the current directory
+    Init {},
     /// Node-related commands
     Node {
         #[command(subcommand)]
@@ -48,6 +51,13 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Init {} => {
+            init::init();
+        }
+        Commands::Serve { host, daemon } => {
+            println!("Launching nodes on: {}", &host);
+            serve::handle_serve(&host, daemon);
+        }
         Commands::Serve { host, daemon } => {
             println!("Launching nodes on: {}", &host);
             serve::handle_serve(&host, daemon);

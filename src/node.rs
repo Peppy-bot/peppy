@@ -19,6 +19,8 @@ pub enum NodeCommands {
     },
     /// List nodes in the current system
     List {},
+    /// Check that the root peppy.star node and its children are properly formed
+    Check {},
 }
 
 pub fn handle_node_command(command: NodeCommands) {
@@ -36,6 +38,10 @@ pub fn handle_node_command(command: NodeCommands) {
         NodeCommands::List {} => {
             eprintln!("Listing nodes...");
             list::list_nodes();
+        }
+        NodeCommands::Check {} => {
+            eprintln!("Checking nodes...");
+            list::check();
         }
     }
 }
