@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+mod deps;
 mod init;
 mod node;
 mod pixi;
