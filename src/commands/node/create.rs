@@ -6,7 +6,7 @@ use std::str::FromStr;
 use askama::Template;
 use thiserror::Error;
 
-use crate::deps;
+use crate::commands::deps;
 
 #[derive(Template)]
 #[template(path = "pixi.toml.j2")]
