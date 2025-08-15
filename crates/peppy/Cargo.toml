@@ -1,0 +1,23 @@
+[package]
+name = "peppy"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+askama = "0.14.0" # To help out on code generation (py and Rust) to create interface libs in .pixi envs or use (quote! macro + syn + prettyplease)
+# https://docs.rs/quote/latest/quote/
+capnp = "0.21.4" # ROS 2 uses CDR (Common Data Representation) for message serialization/deserialization
+clap = { version = "4.5.42", features = ["derive"] }
+pyo3 = { version = "0.25.1", features = ["auto-initialize"] }
+starlark = "0.13.0" # To parse peppy.star
+thiserror = "2.0.14"
+tokio = "1.47.0"
+zenoh = "1.5.0"
+
+[dev-dependencies]
+tempfile = "3.8"
+
+[features]
+default = ["build_pixi"]
+# Feature to enable building pixi from source
+build_pixi = []
