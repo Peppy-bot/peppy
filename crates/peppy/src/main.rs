@@ -49,7 +49,8 @@ fn main() {
 
     match cli.command {
         Commands::Init {} => {
-            init::init().expect("Failed to initialize peppy.star");
+            let current_dir = std::env::current_dir().expect("Failed to get current directory");
+            init::init(&current_dir).expect("Failed to initialize peppy.star");
         }
         Commands::Serve { host, daemon } => {
             println!("Launching nodes on: {}", &host);
