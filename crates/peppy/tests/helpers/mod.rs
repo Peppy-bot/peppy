@@ -1,8 +1,9 @@
+use std::path::Path;
+
 use peppy::commands::init;
 
-pub fn setup() {
+pub fn setup(current_dir: &Path) {
     println!("Setup function called!");
-    let current_dir = std::env::current_dir().expect("Failed to get current directory");
 
     match init::init(&current_dir) {
         Ok(path) => println!("Initialized peppy.star at: {:?}", path),

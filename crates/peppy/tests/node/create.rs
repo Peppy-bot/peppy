@@ -4,12 +4,12 @@ use tempfile::TempDir;
 
 #[test]
 fn test_create_command_default_directory() {
-    super::helpers::setup();
-
     let temp_dir = TempDir::new().unwrap();
-    let node_path = temp_dir.path().join("test-node");
+    super::helpers::setup(temp_dir.path());
 
-    let result = create::create("test-node", "rust", Some(node_path.clone()));
+    let node_name = "test_node";
+    let result = create::create(temp_dir.path(), Some(temp_dir.path()), node_name, "rust");
+    let node_path = temp_dir.path().join(node_name);
 
     assert!(result.is_ok(), "Create should succeed: {:?}", result.err());
     assert!(node_path.exists(), "Node directory should exist");
@@ -27,12 +27,12 @@ fn test_create_command_default_directory() {
 
 #[test]
 fn test_create_command_with_to_dir() {
-    super::helpers::setup();
-
     let temp_dir = TempDir::new().unwrap();
-    let target_path = temp_dir.path().join("my-node");
+    super::helpers::setup(temp_dir.path());
 
-    let result = create::create("my-node", "rust", Some(target_path.clone()));
+    let node_name = "test_node";
+    let target_path = temp_dir.path().join(node_name);
+    let result = create::create(temp_dir.path(), Some(temp_dir.path()), node_name, "rust");
 
     assert!(result.is_ok(), "Create should succeed: {:?}", result.err());
     assert!(target_path.exists(), "Target directory should exist");
@@ -50,12 +50,12 @@ fn test_create_command_with_to_dir() {
 
 #[test]
 fn test_pixi_toml_content() {
-    super::helpers::setup();
-
     let temp_dir = TempDir::new().unwrap();
-    let node_path = temp_dir.path().join("test-node");
+    super::helpers::setup(temp_dir.path());
 
-    let result = create::create("peppy-node", "rust", Some(node_path.clone()));
+    let node_name = "peppy-node";
+    let node_path = temp_dir.path().join(node_name);
+    let result = create::create(temp_dir.path(), Some(temp_dir.path()), node_name, "rust");
 
     assert!(result.is_ok(), "Create should succeed: {:?}", result.err());
 
@@ -69,12 +69,12 @@ fn test_pixi_toml_content() {
 
 #[test]
 fn test_peppy_star_content() {
-    super::helpers::setup();
-
     let temp_dir = TempDir::new().unwrap();
-    let node_path = temp_dir.path().join("test-node");
+    super::helpers::setup(temp_dir.path());
 
-    let result = create::create("test-node", "rust", Some(node_path.clone()));
+    let node_name = "peppy-node";
+    let node_path = temp_dir.path().join(node_name);
+    let result = create::create(temp_dir.path(), Some(temp_dir.path()), node_name, "rust");
 
     assert!(result.is_ok(), "Create should succeed: {:?}", result.err());
 

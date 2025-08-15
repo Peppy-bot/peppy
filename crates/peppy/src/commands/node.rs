@@ -30,7 +30,8 @@ pub fn handle_node_command(command: NodeCommands) {
             lang,
             to_dir,
         } => {
-            if let Err(e) = create::create(&node_name, &lang, to_dir) {
+            let current_dir = std::env::current_dir().unwrap();
+            if let Err(e) = create::create(&current_dir, to_dir.as_deref(), &node_name, &lang) {
                 eprintln!("Failed to create node: {}", e);
                 std::process::exit(1);
             }

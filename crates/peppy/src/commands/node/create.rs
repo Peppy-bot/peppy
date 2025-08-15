@@ -63,21 +63,21 @@ pub enum NodeCreationError {
 
 /// Creates a new node and updates the peppy.star configuration file where the command is run
 pub fn create(
+    from_dir: &Path,
+    to_dir: Option<&Path>,
     node_name: &str,
     lang: &str,
-    to_dir: Option<PathBuf>,
 ) -> Result<(), NodeCreationError> {
     let language = Language::from_str(lang)?;
 
     let node_path = match to_dir {
-        Some(dir) => dir,
+        Some(dir) => dir.join(node_name),
         None => std::env::current_dir()
             .map_err(|e| NodeCreationError::CurrentDir(e))?
             .join(node_name),
     };
 
-    let current_dir = std::env::current_dir().map_err(|e| NodeCreationError::CurrentDir(e))?;
-    if !current_dir.join("peppy.star").exists() {
+    if !from_dir.join("peppy.star").exists() {
         return Err(NodeCreationError::RootConfigurationNotFound);
     }
 
@@ -87,6 +87,7 @@ pub fn create(
     create_pixi_toml(&node_path, &node_name, language)?;
     create_peppy_config(&node_path, &node_name)?;
 
+    dbg!(&node_path);
     match language {
         Language::Python => deps::create_peppycl_py_dep(&node_path)?,
         Language::Rust => deps::create_peppycl_rust_crate(&node_path)?,
@@ -130,7 +131,7 @@ fn create_gitignore(node_path: &Path, lang: Language) -> Result<(), NodeCreation
 fn create_pixi_toml(
     node_path: &Path,
     node_name: &str,
-    lang: Language,
+    _lang: Language,
 ) -> Result<(), NodeCreationError> {
     let pixi_toml_path = node_path.join("pixi.toml");
     let mut file = fs::File::create(pixi_toml_path)?;
@@ -179,7 +180,11 @@ mod tests {
 
     #[test]
     fn test_check_root_node_config_missing() {
-        let result = create("video_node", "python", None);
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        // Create from a directory without peppy.star
+        let result = create(temp_dir.path(), None, "video_node", "python");
         assert!(matches!(
             result,
             Err(NodeCreationError::RootConfigurationNotFound)
