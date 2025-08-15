@@ -22,7 +22,7 @@ fn build_pixi(release_tag: &str) {
 
             // Clone pixi repository
             let output = Command::new("git")
-                .args(&[
+                .args([
                     "clone",
                     "--depth",
                     "1",
@@ -44,8 +44,8 @@ fn build_pixi(release_tag: &str) {
 
             // Build pixi
             let status = Command::new("cargo")
-                .current_dir(&format!("{}/pixi-src", out_dir))
-                .args(&["build", "--release", "--bin", "pixi"])
+                .current_dir(format!("{}/pixi-src", out_dir))
+                .args(["build", "--release", "--bin", "pixi"])
                 .status();
 
             if status.is_err() || !status.unwrap().success() {
