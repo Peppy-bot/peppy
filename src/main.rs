@@ -1,11 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-mod deps;
-mod init;
-mod node;
-mod pixi;
-mod serve;
+use peppy::commands::{init, node, pixi, serve};
 
 #[derive(Parser)]
 #[command(name = "peppy")]

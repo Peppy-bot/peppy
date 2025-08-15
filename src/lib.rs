@@ -1,4 +1,3 @@
-pub mod deps;
-pub mod node;
+pub mod commands;
 
-pub use node::create::create;
+pub use commands::node::create::create;
