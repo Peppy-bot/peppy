@@ -1,4 +1,5 @@
-pub fn handle_serve(host: &str, daemon: bool) {
+#[allow(unreachable_code)]
+pub fn handle_serve(_host: &str, _daemon: bool) {
     todo!(
         "Run a separate thread that watches changes on peppy.star and updates the pixi envs accordingly"
     );

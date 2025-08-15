@@ -1,8 +1,14 @@
 use std::process::Command;
 
 pub fn execute_pixi(args: &[String]) {
-    let pixi_path = option_env!("PIXI_BINARY_PATH")
-        .expect("PIXI_BINARY_PATH not set. The build_pixi feature should be enabled by default.");
+    let pixi_path = if let Some(path) = option_env!("PIXI_BINARY_PATH") {
+        path
+    } else {
+        eprintln!("Error: Pixi binary not found. Please rebuild with the 'build_pixi' feature enabled:");
+        eprintln!("  cargo build --features build_pixi");
+        eprintln!("\nAlternatively, ensure pixi is installed and available in your PATH.");
+        std::process::exit(1);
+    };
 
     let status = Command::new(pixi_path)
         .args(args)

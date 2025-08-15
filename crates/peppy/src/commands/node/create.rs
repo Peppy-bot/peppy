@@ -73,7 +73,7 @@ pub fn create(
     let node_path = match to_dir {
         Some(dir) => dir.join(node_name),
         None => std::env::current_dir()
-            .map_err(|e| NodeCreationError::CurrentDir(e))?
+            .map_err(NodeCreationError::CurrentDir)?
             .join(node_name),
     };
 
@@ -84,8 +84,8 @@ pub fn create(
     fs::create_dir_all(&node_path)?;
 
     create_gitignore(&node_path, language)?;
-    create_pixi_toml(&node_path, &node_name, language)?;
-    create_peppy_config(&node_path, &node_name)?;
+    create_pixi_toml(&node_path, node_name, language)?;
+    create_peppy_config(&node_path, node_name)?;
 
     dbg!(&node_path);
     match language {
@@ -105,8 +105,7 @@ fn create_gitignore(node_path: &Path, lang: Language) -> Result<(), NodeCreation
         Language::Python => {
             let template = PythonGitignoreTemplate;
             template.render().map_err(|e| {
-                NodeCreationError::DirectoryCreation(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                NodeCreationError::DirectoryCreation(std::io::Error::other(
                     format!("Failed to render Python gitignore template: {}", e),
                 ))
             })?
@@ -114,8 +113,7 @@ fn create_gitignore(node_path: &Path, lang: Language) -> Result<(), NodeCreation
         Language::Rust => {
             let template = RustGitignoreTemplate;
             template.render().map_err(|e| {
-                NodeCreationError::DirectoryCreation(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                NodeCreationError::DirectoryCreation(std::io::Error::other(
                     format!("Failed to render Rust gitignore template: {}", e),
                 ))
             })?
@@ -138,8 +136,7 @@ fn create_pixi_toml(
 
     let template = PixiTomlTemplate { node_name };
     let pixi_content = template.render().map_err(|e| {
-        NodeCreationError::DirectoryCreation(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        NodeCreationError::DirectoryCreation(std::io::Error::other(
             format!("Failed to render pixi template: {}", e),
         ))
     })?;
@@ -155,8 +152,7 @@ fn create_peppy_config(node_path: &Path, node_name: &str) -> Result<(), NodeCrea
 
     let template = PeppyNodeTemplate { name: node_name };
     let peppy_content = template.render().map_err(|e| {
-        NodeCreationError::DirectoryCreation(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        NodeCreationError::DirectoryCreation(std::io::Error::other(
             format!("Failed to render peppy template: {}", e),
         ))
     })?;
