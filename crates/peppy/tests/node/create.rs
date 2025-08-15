@@ -55,7 +55,7 @@ fn test_pixi_toml_content() {
     let temp_dir = TempDir::new().unwrap();
     let node_path = temp_dir.path().join("test-node");
 
-    let result = create::create("test-node", "rust", Some(node_path.clone()));
+    let result = create::create("peppy-node", "rust", Some(node_path.clone()));
 
     assert!(result.is_ok(), "Create should succeed: {:?}", result.err());
 
@@ -79,7 +79,6 @@ fn test_peppy_star_content() {
     assert!(result.is_ok(), "Create should succeed: {:?}", result.err());
 
     let peppy_content = fs::read_to_string(node_path.join("peppy.star")).unwrap();
-    assert!(peppy_content.contains("# Peppy configuration file"));
-    assert!(peppy_content.contains("def main():"));
-    assert!(peppy_content.contains("print(\"Hello from peppy!\")"));
+    assert!(peppy_content.contains("def create_node():"));
+    assert!(peppy_content.contains("exported = struct"));
 }
