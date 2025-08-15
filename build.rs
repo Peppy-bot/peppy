@@ -1,7 +1,7 @@
 use std::env;
 use std::process::Command;
 
-fn main() {
+fn build_pixi(release_tag: &str) {
     // Build pixi binary when the build_pixi feature is enabled
     if env::var("CARGO_FEATURE_BUILD_PIXI").is_ok() {
         println!("cargo:rerun-if-changed=build.rs");
@@ -27,7 +27,7 @@ fn main() {
                     "--depth",
                     "1",
                     "--branch",
-                    "v0.51.0",
+                    release_tag,
                     "https://github.com/prefix-dev/pixi",
                     &pixi_src_dir,
                 ])
@@ -63,4 +63,8 @@ fn main() {
         // Set environment variable for runtime to find the pixi binary
         println!("cargo:rustc-env=PIXI_BINARY_PATH={}", pixi_binary_path);
     }
+}
+
+fn main() {
+    build_pixi("v0.51.0");
 }

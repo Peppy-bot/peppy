@@ -6,6 +6,8 @@ use std::str::FromStr;
 use askama::Template;
 use thiserror::Error;
 
+use crate::deps;
+
 #[derive(Template)]
 #[template(path = "pixi.toml.j2")]
 struct PixiTomlTemplate<'a> {
@@ -78,60 +80,13 @@ pub fn create(
     create_peppy_config(&node_path, &node_name)?;
 
     match language {
-        Language::Python => create_peppycl_py_dep(&node_path)?,
-        Language::Rust => create_peppycl_rust_crate(&node_path)?,
+        Language::Python => deps::create_peppycl_py_dep(&node_path)?,
+        Language::Rust => deps::create_peppycl_rust_crate(&node_path)?,
     }
 
     // TODO add the dep to pixi/Cargo.toml
 
     println!("Created node '{}' at: {}", node_name, node_path.display());
-
-    Ok(())
-}
-
-fn create_peppycl_py_dep(to_path: &Path) -> Result<(), std::io::Error> {
-    // Create the peppycl package directory
-    let peppycl_dir = to_path.join("peppycl");
-    fs::create_dir_all(&peppycl_dir)?;
-
-    // Create __init__.py in the peppycl directory
-    let init_py_path = peppycl_dir.join("__init__.py");
-    let mut init_file = fs::File::create(init_py_path)?;
-    init_file.write_all(b"# Peppycl Python package\n")?;
-
-    // Create pyproject.toml from template
-    let project_root = std::env::current_dir()?;
-    let template_path = project_root.join("templates/dependencies/pyproject.toml.j2");
-    let template_content = fs::read_to_string(&template_path)?;
-
-    let pyproject_toml_path = to_path.join("pyproject.toml");
-    let mut pyproject_file = fs::File::create(pyproject_toml_path)?;
-    pyproject_file.write_all(template_content.as_bytes())?;
-
-    Ok(())
-}
-
-fn create_peppycl_rust_crate(to_path: &Path) -> Result<(), std::io::Error> {
-    // Create src directory
-    let src_dir = to_path.join("src");
-    fs::create_dir_all(&src_dir)?;
-
-    // Create lib.rs from template
-    let project_root = std::env::current_dir()?;
-    let lib_template_path = project_root.join("templates/dependencies/lib.rs.j2");
-    let lib_template_content = fs::read_to_string(&lib_template_path)?;
-
-    let lib_rs_path = src_dir.join("lib.rs");
-    let mut lib_rs = fs::File::create(lib_rs_path)?;
-    lib_rs.write_all(lib_template_content.as_bytes())?;
-
-    // Create Cargo.toml from template
-    let cargo_template_path = project_root.join("templates/dependencies/Cargo.toml.j2");
-    let cargo_template_content = fs::read_to_string(&cargo_template_path)?;
-
-    let cargo_toml_path = to_path.join("Cargo.toml");
-    let mut cargo_toml = fs::File::create(cargo_toml_path)?;
-    cargo_toml.write_all(cargo_template_content.as_bytes())?;
 
     Ok(())
 }
@@ -199,65 +154,6 @@ mod tests {
         assert_eq!(Language::from_str("rust").unwrap(), Language::Rust);
         assert!(Language::from_str("javascript").is_err());
         assert!(Language::from_str("").is_err());
-    }
-
-    #[test]
-    fn test_create_peppycl_py_dep() {
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new().unwrap();
-
-        let result = create_peppycl_py_dep(temp_dir.path());
-        assert!(result.is_ok());
-
-        // Verify the expected Python dependency files were created
-        let pyproject_toml = temp_dir.path().join("pyproject.toml");
-        let peppycl_dir = temp_dir.path().join("peppycl");
-        let init_py = peppycl_dir.join("__init__.py");
-
-        // Check that at least one of the standard Python package files exists
-        assert!(
-            pyproject_toml.exists(),
-            "Expected either pyproject.toml to be created"
-        );
-
-        // Check that the peppycl package directory was created
-        assert!(
-            peppycl_dir.exists(),
-            "Expected peppycl directory to be created"
-        );
-        assert!(peppycl_dir.is_dir(), "peppycl should be a directory");
-
-        // Check that __init__.py exists in the package directory
-        assert!(
-            init_py.exists(),
-            "Expected __init__.py in peppycl directory"
-        );
-    }
-
-    #[test]
-    fn test_create_peppycl_rust_crate() {
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new().unwrap();
-
-        let result = create_peppycl_rust_crate(temp_dir.path());
-        assert!(result.is_ok());
-
-        // Verify the expected Rust crate files were created
-        let cargo_toml = temp_dir.path().join("Cargo.toml");
-        let src_dir = temp_dir.path().join("src");
-        let lib_rs = src_dir.join("lib.rs");
-
-        // Check that Cargo.toml exists
-        assert!(cargo_toml.exists(), "Expected Cargo.toml to be created");
-
-        // Check that the src directory was created
-        assert!(src_dir.exists(), "Expected src directory to be created");
-        assert!(src_dir.is_dir(), "src should be a directory");
-
-        // Check that lib.rs exists in the src directory
-        assert!(lib_rs.exists(), "Expected lib.rs in src directory");
     }
 
     #[test]
