@@ -1,4 +1,4 @@
-use peppy::node::create;
+use peppy::commands::node::create;
 use std::fs;
 use tempfile::TempDir;
 

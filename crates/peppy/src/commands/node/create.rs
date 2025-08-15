@@ -20,6 +20,14 @@ struct PeppyNodeTemplate<'a> {
     name: &'a str,
 }
 
+#[derive(Template)]
+#[template(path = "gitignore/py.gitignore.j2")]
+struct PythonGitignoreTemplate;
+
+#[derive(Template)]
+#[template(path = "gitignore/rust.gitignore.j2")]
+struct RustGitignoreTemplate;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
     Python,
@@ -92,17 +100,30 @@ pub fn create(
 }
 
 fn create_gitignore(node_path: &Path, lang: Language) -> Result<(), NodeCreationError> {
-    let project_root = std::env::current_dir()?;
-    let template_path = match lang {
-        Language::Python => project_root.join("templates/gitignore/py.gitignore.j2"),
-        Language::Rust => project_root.join("templates/gitignore/rust.gitignore.j2"),
+    let gitignore_content = match lang {
+        Language::Python => {
+            let template = PythonGitignoreTemplate;
+            template.render().map_err(|e| {
+                NodeCreationError::DirectoryCreation(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to render Python gitignore template: {}", e),
+                ))
+            })?
+        }
+        Language::Rust => {
+            let template = RustGitignoreTemplate;
+            template.render().map_err(|e| {
+                NodeCreationError::DirectoryCreation(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to render Rust gitignore template: {}", e),
+                ))
+            })?
+        }
     };
-
-    let template_content = fs::read_to_string(&template_path)?;
 
     let gitignore_path = node_path.join(".gitignore");
     let mut file = fs::File::create(&gitignore_path)?;
-    file.write_all(template_content.as_bytes())?;
+    file.write_all(gitignore_content.as_bytes())?;
     Ok(())
 }
 

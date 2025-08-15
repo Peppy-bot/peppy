@@ -1,23 +1,33 @@
-[package]
-name = "peppy"
-version = "0.1.0"
-edition = "2024"
+# Cargo.toml at repository root (virtual workspace)
 
-[dependencies]
-askama = "0.14.0" # To help out on code generation (py and Rust) to create interface libs in .pixi envs or use (quote! macro + syn + prettyplease)
-# https://docs.rs/quote/latest/quote/
-capnp = "0.21.4" # ROS 2 uses CDR (Common Data Representation) for message serialization/deserialization
-clap = { version = "4.5.42", features = ["derive"] }
-pyo3 = { version = "0.25.1", features = ["auto-initialize"] }
-starlark = "0.13.0" # To parse peppy.star
-thiserror = "2.0.14"
-tokio = "1.47.0"
-zenoh = "1.5.0"
+[workspace]
+members = ["crates/*"]
+resolver = "3"
 
-[dev-dependencies]
-tempfile = "3.8"
+# Optionally pin which members run by default for cargo build/test/run in the workspace root.
+# Uncomment if desired.
+# default-members = [
+#   "crates/cli",
+#   "crates/core",
+#   "crates/pyext",
+# ]
 
-[features]
-default = ["build_pixi"]
-# Feature to enable building pixi from source
-build_pixi = []
+# Optionally share common dependency versions across members (requires newer Cargo).
+# This helps keep versions in sync without repeating them in each member's Cargo.toml.
+# Uncomment and adapt as needed.
+# [workspace.dependencies]
+# anyhow = "1.0"
+# thiserror = "1.0"
+# serde = { version = "1.0", features = ["derive"] }
+# pyo3 = { version = "0.21", features = ["extension-module"] }
+
+# Optionally define workspace-wide lints or profiles.
+# [workspace.lints.rust]
+# unused_extern_crates = "deny"
+
+# [workspace.profile.dev]
+# opt-level = 1
+
+# [workspace.profile.release]
+# lto = "thin"
+# codegen-units = 1
