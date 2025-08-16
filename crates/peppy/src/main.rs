@@ -14,7 +14,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     // Create the initial peppy.star node in the current directory and install the peppy daemon if not already present
-    Init {},
+    Init {
+        /// Optional target directory (defaults to current directory)
+        #[arg(long)]
+        in_dir: Option<PathBuf>,
+    },
     /// Node-related commands
     Node {
         #[command(subcommand)]
@@ -26,9 +30,9 @@ enum Commands {
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
 
-        /// Run as a daemon in the background
-        #[arg(short, long)]
-        daemon: bool,
+        /// Port used for the Zenoh router
+        #[arg(long, default_value = "7447")]
+        zenoh_port: u16,
     },
     /// Give raw access to pixi commands (e.g. peppy pixi install, peppy pixi list) while using the environment in .peppy rather than .pixi
     Pixi {
@@ -48,13 +52,17 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init {} => {
-            let current_dir = std::env::current_dir().expect("Failed to get current directory");
+        Commands::Init { in_dir } => {
+            let current_dir = if let Some(in_dir) = in_dir {
+                in_dir
+            } else {
+                std::env::current_dir().expect("Failed to get current directory")
+            };
             init::init(&current_dir).expect("Failed to initialize peppy.star");
         }
-        Commands::Serve { host, daemon } => {
-            println!("Launching nodes on: {}", &host);
-            serve::handle_serve(&host, daemon);
+        Commands::Serve { host, zenoh_port } => {
+            println!("Launching nodes on: {}:{}", &host, zenoh_port);
+            serve::handle_serve(&host, zenoh_port);
         }
         Commands::Pixi { args } => {
             pixi::execute_pixi(&args);

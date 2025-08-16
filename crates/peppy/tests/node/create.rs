@@ -8,7 +8,7 @@ fn test_create_command_default_directory() {
     super::helpers::setup(temp_dir.path());
 
     let node_name = "test_node";
-    let result = create::create(temp_dir.path(), Some(temp_dir.path()), node_name, "rust");
+    let result = create::create(temp_dir.path(), Some(temp_dir.path()), node_name, "rust", None);
     let node_path = temp_dir.path().join(node_name);
 
     assert!(result.is_ok(), "Create should succeed: {:?}", result.err());
@@ -32,7 +32,7 @@ fn test_create_command_with_to_dir() {
 
     let node_name = "test_node";
     let target_path = temp_dir.path().join(node_name);
-    let result = create::create(temp_dir.path(), Some(temp_dir.path()), node_name, "rust");
+    let result = create::create(temp_dir.path(), Some(temp_dir.path()), node_name, "rust", None);
 
     assert!(result.is_ok(), "Create should succeed: {:?}", result.err());
     assert!(target_path.exists(), "Target directory should exist");
@@ -55,7 +55,7 @@ fn test_pixi_toml_content() {
 
     let node_name = "peppy-node";
     let node_path = temp_dir.path().join(node_name);
-    let result = create::create(temp_dir.path(), Some(temp_dir.path()), node_name, "rust");
+    let result = create::create(temp_dir.path(), Some(temp_dir.path()), node_name, "rust", None);
 
     assert!(result.is_ok(), "Create should succeed: {:?}", result.err());
 
@@ -74,7 +74,7 @@ fn test_peppy_star_content() {
 
     let node_name = "peppy-node";
     let node_path = temp_dir.path().join(node_name);
-    let result = create::create(temp_dir.path(), Some(temp_dir.path()), node_name, "rust");
+    let result = create::create(temp_dir.path(), Some(temp_dir.path()), node_name, "rust", None);
 
     assert!(result.is_ok(), "Create should succeed: {:?}", result.err());
 

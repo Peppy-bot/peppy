@@ -1,11 +1,12 @@
 [project]
 name = "{{ node_name }}"
 version = "0.1.0"
-description = "A peppy node"
-authors = ["peppy-user"]
-channels = ["conda-forge"]
+description = "{{ description }}"
+authors = ["peppy-cli"]
+channels = {{ channels }}
 platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
 
+{{ dependencies_extra_msg }}
 [dependencies]
 
 [tasks]

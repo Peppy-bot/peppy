@@ -1,5 +1,5 @@
 #[allow(unreachable_code)]
-pub fn handle_serve(_host: &str, _daemon: bool) {
+pub fn handle_serve(_host: &str, _zenoh_port: u16) {
     todo!(
         "Run a separate thread that watches changes on peppy.star and updates the pixi envs accordingly"
     );
