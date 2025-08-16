@@ -11,11 +11,13 @@ pub fn init(path: &Path) -> Result<PathBuf, std::io::Error> {
 
     // Render the template
     let template = InitStarTemplate {};
-    let default_content = template.render().map_err(|e| {
-        std::io::Error::other(format!("Template error: {}", e))
-    })?;
+    let default_content = template
+        .render()
+        .map_err(|e| std::io::Error::other(format!("Template error: {}", e)))?;
 
     fs::write(&peppy_star_path, default_content)?;
+
+    // TODO: Must also install the systemd service in the OS if it's not already the case"
     Ok(peppy_star_path)
 }
 
