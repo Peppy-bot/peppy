@@ -2,7 +2,6 @@ use clap::Subcommand;
 use std::path::PathBuf;
 
 pub mod create;
-pub mod deps;
 pub mod list;
 
 #[derive(Subcommand)]
