@@ -105,7 +105,45 @@ mod tests {
         let pixi_path = temp_dir.path().join("pixi.toml");
         assert!(pixi_path.exists());
 
-        let content = fs::read_to_string(pixi_path).unwrap();
+        let content = fs::read_to_string(&pixi_path).unwrap();
         assert!(content.contains(node_name));
+        assert!(content.contains(description));
+        assert!(content.contains("# Python/Conda dependencies"));
+
+        let lock_path = temp_dir.path().join("pixi.lock");
+        if lock_path.exists() {
+            let lock_content = fs::read_to_string(lock_path).unwrap();
+            assert!(lock_content.contains("python"));
+            assert!(lock_content.contains("peppycl"));
+        }
+
+        assert!(!content.contains("[tasks]\nstart"));
+    }
+
+    #[test]
+    fn test_create_rust_pixi_toml() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let node_name = "rust_test_node";
+        let lang = Language::Rust;
+        let description = "Rust test node description";
+
+        let result = create_pixi_toml(temp_dir.path(), node_name, lang, Some(description));
+        assert!(result.is_ok());
+
+        let pixi_path = temp_dir.path().join("pixi.toml");
+        assert!(pixi_path.exists());
+
+        let content = fs::read_to_string(&pixi_path).unwrap();
+        assert!(content.contains(node_name));
+        assert!(content.contains(description));
+        assert!(content.contains("# Add system dependencies here, not Rust dependencies"));
+
+        let lock_path = temp_dir.path().join("pixi.lock");
+        if lock_path.exists() {
+            let lock_content = fs::read_to_string(lock_path).unwrap();
+            assert!(lock_content.contains("rust"));
+        }
     }
 }
