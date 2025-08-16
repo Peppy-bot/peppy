@@ -1,6 +1,11 @@
+use askama::Template;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+
+#[derive(Template)]
+#[template(path = "dependencies/pyproject.toml.j2")]
+struct PyProjectTomlTemplate;
 
 pub fn create_peppycl_py_dep(to_path: &Path) -> Result<(), std::io::Error> {
     // Create the peppycl package directory
@@ -13,13 +18,13 @@ pub fn create_peppycl_py_dep(to_path: &Path) -> Result<(), std::io::Error> {
     init_file.write_all(b"# Peppycl Python package\n")?;
 
     // Create pyproject.toml from template
-    let project_root = std::env::current_dir()?;
-    let template_path = project_root.join("templates/dependencies/pyproject.toml.j2");
-    let template_content = fs::read_to_string(&template_path)?;
+    let pyproject_template = PyProjectTomlTemplate;
+    let pyproject_content = pyproject_template
+        .render()
+        .map_err(std::io::Error::other)?;
 
     let pyproject_toml_path = to_path.join("pyproject.toml");
-    let mut pyproject_file = fs::File::create(pyproject_toml_path)?;
-    pyproject_file.write_all(template_content.as_bytes())?;
+    fs::write(pyproject_toml_path, pyproject_content)?;
 
     Ok(())
 }
