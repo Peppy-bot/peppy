@@ -31,9 +31,9 @@ pub fn create_pixi_toml(
     };
 
     let dependencies_extra_msg = match lang {
-        Language::Python => "# Python/Conda dependencies\n",
+        Language::Python => "# Python/Conda dependencies",
         Language::Rust => {
-            "# Add system dependencies here, not Rust dependencies. Rust dependencies are added to Cargo.toml\n"
+            "# Add system dependencies here, not Rust dependencies. Rust dependencies are added to Cargo.toml"
         }
     };
 
@@ -59,13 +59,14 @@ pub fn create_pixi_toml(
 
     file.write_all(pixi_content.as_bytes())?;
 
-    // execute_pixi(
-    //     &["add".to_string()]
-    //         .into_iter()
-    //         .chain(dependencies.iter().map(|s| s.to_string()))
-    //         .collect::<Vec<_>>(),
-    // );
-    //execute_pixi(["task", "add", tasks]);
+    execute_pixi(
+        &["add".to_string()]
+            .into_iter()
+            .chain(dependencies.iter().map(|s| s.to_string()))
+            .collect::<Vec<_>>(),
+        Some(node_path),
+    );
+    // execute_pixi(["task", "add", tasks]);
 
     Ok(())
 }
@@ -75,7 +76,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_create_pixi_toml() {
+    fn test_create_python_pixi_toml() {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();

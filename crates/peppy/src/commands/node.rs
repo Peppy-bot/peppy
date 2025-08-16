@@ -8,7 +8,10 @@ pub mod list;
 pub enum NodeCommands {
     /// Create a new peppy node
     Create {
+        /// Name of the node directory to create
+        node_name: String,
         /// Optional: Description for the node
+        #[arg(long)]
         description: Option<String>,
         /// Optional: target directory (defaults to current directory)
         #[arg(long)]
@@ -16,8 +19,6 @@ pub enum NodeCommands {
         /// Programming language for the node, either `rust` or `python`. Defaults to `python`
         #[arg(long, default_value = "rust")]
         lang: String,
-        /// Name of the node directory to create
-        node_name: String,
     },
     /// List nodes in the current system
     List {},
