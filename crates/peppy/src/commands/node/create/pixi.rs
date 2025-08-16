@@ -26,8 +26,8 @@ pub fn create_pixi_toml(
     let mut file = fs::File::create(pixi_toml_path)?;
 
     let dependencies = match lang {
-        Language::Python => ["python"],
-        Language::Rust => ["rust"],
+        Language::Python => vec!["python", "peppycl"],
+        Language::Rust => vec!["rust"],
     };
 
     let dependencies_extra_msg = match lang {
@@ -40,6 +40,11 @@ pub fn create_pixi_toml(
     let channels = match lang {
         Language::Python => "[\"conda-forge\"]",
         Language::Rust => "[\"conda-forge\"]",
+    };
+
+    let tasks = match lang {
+        Language::Python => vec![],
+        Language::Rust => vec![("start", "cargo run")],
     };
 
     let description = node_description.unwrap_or("A peppy node");
@@ -66,7 +71,17 @@ pub fn create_pixi_toml(
             .collect::<Vec<_>>(),
         Some(node_path),
     );
-    // execute_pixi(["task", "add", tasks]);
+    tasks.iter().for_each(|(name, command)| {
+        execute_pixi(
+            &[
+                "task".to_string(),
+                "add".to_string(),
+                name.to_string(),
+                command.to_string(),
+            ],
+            Some(node_path),
+        );
+    });
 
     Ok(())
 }
