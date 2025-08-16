@@ -3,7 +3,7 @@ name = "{{ node_name }}"
 version = "0.1.0"
 description = "{{ description }}"
 authors = ["peppy-cli"]
-channels = {{ channels }}
+channels = {{ channels|safe }}
 platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
 
 {{ dependencies_extra_msg }}

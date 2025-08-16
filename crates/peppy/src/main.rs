@@ -65,7 +65,7 @@ fn main() {
             serve::handle_serve(&host, zenoh_port);
         }
         Commands::Pixi { args } => {
-            pixi::execute_pixi(&args);
+            pixi::execute_pixi(&args, None);
         }
         Commands::Sync { file } => {
             let current_dir = std::env::current_dir().expect("Failed to get current directory");
