@@ -6,7 +6,9 @@ use std::str::FromStr;
 use askama::Template;
 use thiserror::Error;
 
-use super::deps::{create_pixi_toml, create_peppycl_py_dep, create_peppycl_rust_crate};
+mod pixi;
+mod python;
+mod rust;
 
 #[derive(Template)]
 #[template(path = "peppy_new_node.star.j2")]
@@ -88,12 +90,12 @@ pub fn create(
     fs::create_dir_all(&node_path)?;
 
     create_gitignore(&node_path, language)?;
-    create_pixi_toml(&node_path, node_name, language, description)?;
+    pixi::create_pixi_toml(&node_path, node_name, language, description)?;
     create_peppy_config(&node_path, node_name)?;
 
     match language {
-        Language::Python => create_peppycl_py_dep(&node_path)?,
-        Language::Rust => create_peppycl_rust_crate(&node_path)?,
+        Language::Python => python::create_peppycl_py_dep(&node_path)?,
+        Language::Rust => rust::create_peppycl_rust_crate(&node_path)?,
     }
 
     println!("Created node '{}' at: {}", node_name, node_path.display());
