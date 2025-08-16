@@ -7,9 +7,10 @@ use std::path::{Path, PathBuf};
 struct InitStarTemplate;
 
 pub fn init(path: &Path) -> Result<PathBuf, std::io::Error> {
-    let peppy_star_path = path.join("peppy.star");
+    // Create the directory if it doesn't exist
+    fs::create_dir_all(path)?;
 
-    // Render the template
+    let peppy_star_path = path.join("peppy.star");
     let template = InitStarTemplate {};
     let default_content = template
         .render()
@@ -27,22 +28,19 @@ mod tests {
 
     #[test]
     fn test_create_peppy_config() {
-        use std::fs;
         use tempfile::TempDir;
 
-        // Create a temporary directory for testing
         let temp_dir = TempDir::new().unwrap();
+        let non_existent_path = temp_dir.path().join("new_folder");
 
-        let peppy_star_path = init(temp_dir.path()).unwrap();
+        assert!(!non_existent_path.exists());
 
-        // Check if peppy.star file was created at the returned path
-        assert!(
-            peppy_star_path.exists(),
-            "peppy.star file should be created"
-        );
+        let peppy_star_path = init(&non_existent_path).unwrap();
+
+        assert!(non_existent_path.exists());
+        assert!(peppy_star_path.exists());
         assert_eq!(peppy_star_path.file_name().unwrap(), "peppy.star");
 
-        // Verify the file content
         let content = fs::read_to_string(&peppy_star_path).unwrap();
         assert!(content.contains("def create_root_node()"));
         assert!(content.contains("namespace = \"/\""));

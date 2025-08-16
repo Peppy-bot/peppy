@@ -1,6 +1,14 @@
+use askama::Template;
 use std::fs;
-use std::io::Write;
 use std::path::Path;
+
+#[derive(Template)]
+#[template(path = "dependencies/lib.rs.j2")]
+struct LibRsTemplate;
+
+#[derive(Template)]
+#[template(path = "dependencies/Cargo.toml.j2")]
+struct CargoTomlTemplate;
 
 pub fn create_peppycl_rust_crate(to_path: &Path) -> Result<(), std::io::Error> {
     // Create src directory
@@ -8,21 +16,22 @@ pub fn create_peppycl_rust_crate(to_path: &Path) -> Result<(), std::io::Error> {
     fs::create_dir_all(&src_dir)?;
 
     // Create lib.rs from template
-    let project_root = std::env::current_dir()?;
-    let lib_template_path = project_root.join("templates/dependencies/lib.rs.j2");
-    let lib_template_content = fs::read_to_string(&lib_template_path)?;
+    let lib_template = LibRsTemplate;
+    let lib_content = lib_template
+        .render()
+        .map_err(std::io::Error::other)?;
 
     let lib_rs_path = src_dir.join("lib.rs");
-    let mut lib_rs = fs::File::create(lib_rs_path)?;
-    lib_rs.write_all(lib_template_content.as_bytes())?;
+    fs::write(lib_rs_path, lib_content)?;
 
     // Create Cargo.toml from template
-    let cargo_template_path = project_root.join("templates/dependencies/Cargo.toml.j2");
-    let cargo_template_content = fs::read_to_string(&cargo_template_path)?;
+    let cargo_template = CargoTomlTemplate;
+    let cargo_content = cargo_template
+        .render()
+        .map_err(std::io::Error::other)?;
 
     let cargo_toml_path = to_path.join("Cargo.toml");
-    let mut cargo_toml = fs::File::create(cargo_toml_path)?;
-    cargo_toml.write_all(cargo_template_content.as_bytes())?;
+    fs::write(cargo_toml_path, cargo_content)?;
 
     Ok(())
 }

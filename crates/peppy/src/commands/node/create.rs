@@ -6,13 +6,7 @@ use std::str::FromStr;
 use askama::Template;
 use thiserror::Error;
 
-use crate::commands::deps;
-
-#[derive(Template)]
-#[template(path = "pixi.toml.j2")]
-struct PixiTomlTemplate<'a> {
-    node_name: &'a str,
-}
+use super::deps::{create_pixi_toml, create_peppycl_py_dep, create_peppycl_rust_crate};
 
 #[derive(Template)]
 #[template(path = "peppy_new_node.star.j2")]
@@ -59,6 +53,9 @@ pub enum NodeCreationError {
 
     #[error("Unsupported configuration language. Supported options are 'python'/'rust'")]
     UnsupportedLanguage,
+
+    #[error("Folder already exists at path: {0}")]
+    FolderAlreadyExist(String),
 }
 
 /// Creates a new node and updates the peppy.star configuration file where the command is run
@@ -67,6 +64,7 @@ pub fn create(
     to_dir: Option<&Path>,
     node_name: &str,
     lang: &str,
+    description: Option<&str>,
 ) -> Result<(), NodeCreationError> {
     let language = Language::from_str(lang)?;
 
@@ -77,6 +75,12 @@ pub fn create(
             .join(node_name),
     };
 
+    if node_path.exists() {
+        return Err(NodeCreationError::FolderAlreadyExist(
+            node_path.display().to_string(),
+        ));
+    }
+
     if !from_dir.join("peppy.star").exists() {
         return Err(NodeCreationError::RootConfigurationNotFound);
     }
@@ -84,16 +88,13 @@ pub fn create(
     fs::create_dir_all(&node_path)?;
 
     create_gitignore(&node_path, language)?;
-    create_pixi_toml(&node_path, node_name, language)?;
+    create_pixi_toml(&node_path, node_name, language, description)?;
     create_peppy_config(&node_path, node_name)?;
 
-    dbg!(&node_path);
     match language {
-        Language::Python => deps::create_peppycl_py_dep(&node_path)?,
-        Language::Rust => deps::create_peppycl_rust_crate(&node_path)?,
+        Language::Python => create_peppycl_py_dep(&node_path)?,
+        Language::Rust => create_peppycl_rust_crate(&node_path)?,
     }
-
-    // TODO add the dep to pixi/Cargo.toml
 
     println!("Created node '{}' at: {}", node_name, node_path.display());
 
@@ -105,17 +106,19 @@ fn create_gitignore(node_path: &Path, lang: Language) -> Result<(), NodeCreation
         Language::Python => {
             let template = PythonGitignoreTemplate;
             template.render().map_err(|e| {
-                NodeCreationError::DirectoryCreation(std::io::Error::other(
-                    format!("Failed to render Python gitignore template: {}", e),
-                ))
+                NodeCreationError::DirectoryCreation(std::io::Error::other(format!(
+                    "Failed to render Python gitignore template: {}",
+                    e
+                )))
             })?
         }
         Language::Rust => {
             let template = RustGitignoreTemplate;
             template.render().map_err(|e| {
-                NodeCreationError::DirectoryCreation(std::io::Error::other(
-                    format!("Failed to render Rust gitignore template: {}", e),
-                ))
+                NodeCreationError::DirectoryCreation(std::io::Error::other(format!(
+                    "Failed to render Rust gitignore template: {}",
+                    e
+                )))
             })?
         }
     };
@@ -126,35 +129,16 @@ fn create_gitignore(node_path: &Path, lang: Language) -> Result<(), NodeCreation
     Ok(())
 }
 
-fn create_pixi_toml(
-    node_path: &Path,
-    node_name: &str,
-    _lang: Language,
-) -> Result<(), NodeCreationError> {
-    let pixi_toml_path = node_path.join("pixi.toml");
-    let mut file = fs::File::create(pixi_toml_path)?;
-
-    let template = PixiTomlTemplate { node_name };
-    let pixi_content = template.render().map_err(|e| {
-        NodeCreationError::DirectoryCreation(std::io::Error::other(
-            format!("Failed to render pixi template: {}", e),
-        ))
-    })?;
-
-    file.write_all(pixi_content.as_bytes())?;
-
-    Ok(())
-}
-
 fn create_peppy_config(node_path: &Path, node_name: &str) -> Result<(), NodeCreationError> {
     let peppy_star_path = node_path.join("peppy.star");
     let mut file = fs::File::create(peppy_star_path)?;
 
     let template = PeppyNodeTemplate { name: node_name };
     let peppy_content = template.render().map_err(|e| {
-        NodeCreationError::DirectoryCreation(std::io::Error::other(
-            format!("Failed to render peppy template: {}", e),
-        ))
+        NodeCreationError::DirectoryCreation(std::io::Error::other(format!(
+            "Failed to render peppy template: {}",
+            e
+        )))
     })?;
 
     file.write_all(peppy_content.as_bytes())?;
@@ -174,19 +158,8 @@ mod tests {
         assert!(Language::from_str("").is_err());
     }
 
-    #[test]
-    fn test_check_root_node_config_missing() {
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new().unwrap();
-        // Create from a directory without peppy.star
-        let result = create(temp_dir.path(), None, "video_node", "python");
-        assert!(matches!(
-            result,
-            Err(NodeCreationError::RootConfigurationNotFound)
-        ))
-    }
-
+    // Can be run from the command line with:
+    // cargo run --manifest-path <path_to_root_Cargo.toml> -- node create my_project
     #[test]
     fn test_create_peppy_config() {
         use tempfile::TempDir;
@@ -205,21 +178,55 @@ mod tests {
     }
 
     #[test]
-    fn test_create_pixi_toml() {
+    fn test_check_root_node_config_missing() {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let node_name = "test_node";
-        let lang = Language::Python;
+        // Create from a directory without peppy.star
+        let result = create(
+            temp_dir.path(),
+            None,
+            "video_node",
+            "python",
+            Some("Test video node"),
+        );
+        assert!(matches!(
+            result,
+            Err(NodeCreationError::RootConfigurationNotFound)
+        ))
+    }
 
-        let result = create_pixi_toml(temp_dir.path(), node_name, lang);
-        assert!(result.is_ok());
+    #[test]
+    fn test_folder_already_exists_error() {
+        use tempfile::TempDir;
 
-        let pixi_path = temp_dir.path().join("pixi.toml");
-        assert!(pixi_path.exists());
+        let temp_dir = TempDir::new().unwrap();
+        let node_name = "existing_node";
 
-        let content = fs::read_to_string(pixi_path).unwrap();
-        assert!(content.contains(node_name));
+        // Create peppy.star in the temp directory to avoid RootConfigurationNotFound error
+        fs::write(temp_dir.path().join("peppy.star"), "# Root config").unwrap();
+
+        // Create a directory with the same name as the node
+        let existing_dir = temp_dir.path().join(node_name);
+        fs::create_dir(&existing_dir).unwrap();
+
+        // Try to create a node with the same name
+        let result = create(
+            temp_dir.path(),
+            Some(temp_dir.path()),
+            node_name,
+            "python",
+            Some("Test node"),
+        );
+
+        assert!(matches!(
+            result,
+            Err(NodeCreationError::FolderAlreadyExist(_))
+        ));
+
+        if let Err(NodeCreationError::FolderAlreadyExist(path)) = result {
+            assert!(path.contains(node_name));
+        }
     }
 
     #[test]

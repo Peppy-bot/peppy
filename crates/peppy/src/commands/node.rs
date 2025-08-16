@@ -2,20 +2,23 @@ use clap::Subcommand;
 use std::path::PathBuf;
 
 pub mod create;
+pub mod deps;
 pub mod list;
 
 #[derive(Subcommand)]
 pub enum NodeCommands {
     /// Create a new peppy node
     Create {
-        /// Name of the node directory to create
-        node_name: String,
+        /// Optional: Description for the node
+        description: Option<String>,
+        /// Optional: target directory (defaults to current directory)
+        #[arg(long)]
+        to_dir: Option<PathBuf>,
         /// Programming language for the node, either `rust` or `python`. Defaults to `python`
         #[arg(long, default_value = "rust")]
         lang: String,
-        /// Optional target directory (defaults to current directory)
-        #[arg(long)]
-        to_dir: Option<PathBuf>,
+        /// Name of the node directory to create
+        node_name: String,
     },
     /// List nodes in the current system
     List {},
@@ -26,12 +29,19 @@ pub enum NodeCommands {
 pub fn handle_node_command(command: NodeCommands) {
     match command {
         NodeCommands::Create {
-            node_name,
-            lang,
             to_dir,
+            lang,
+            node_name,
+            description,
         } => {
             let current_dir = std::env::current_dir().unwrap();
-            if let Err(e) = create::create(&current_dir, to_dir.as_deref(), &node_name, &lang) {
+            if let Err(e) = create::create(
+                &current_dir,
+                to_dir.as_deref(),
+                &node_name,
+                &lang,
+                description.as_deref(),
+            ) {
                 eprintln!("Failed to create node: {}", e);
                 std::process::exit(1);
             }

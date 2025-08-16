@@ -1,4 +1,3 @@
-pub mod deps;
 pub mod init;
 pub mod node;
 pub mod pixi;
