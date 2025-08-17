@@ -40,7 +40,7 @@ enum Commands {
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
     },
-    /// Syncs a peppy.star file as the root file for nodes definition
+    /// Checks that the peppy service is running correctly, that the node configuration are valid and synchronizes the node interfaces libraries
     Sync {
         /// Path to the peppy.star file (defaults to ./peppy.star)
         #[arg(default_value = "peppy.star")]

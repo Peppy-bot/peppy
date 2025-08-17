@@ -5,23 +5,23 @@ use std::path::Path;
 
 #[derive(Template)]
 #[template(path = "dependencies/pyproject.toml.j2")]
-struct PyProjectTomlTemplate;
+struct PyProjectTomlTemplate<'a> {
+    node_name: &'a str,
+}
 
-pub fn create_peppycl_py_dep(to_path: &Path) -> Result<(), std::io::Error> {
-    // Create the peppycl package directory
-    let peppycl_dir = to_path.join("peppycl");
-    fs::create_dir_all(&peppycl_dir)?;
+pub fn add_python_node_config(node_name: &str, to_path: &Path) -> Result<(), std::io::Error> {
+    // Create the package directory
+    let package_dir = to_path.join(node_name);
+    fs::create_dir_all(&package_dir)?;
 
-    // Create __init__.py in the peppycl directory
-    let init_py_path = peppycl_dir.join("__init__.py");
+    // Create __init__.py in the package directory
+    let init_py_path = package_dir.join("__init__.py");
     let mut init_file = fs::File::create(init_py_path)?;
-    init_file.write_all(b"# Peppycl Python package\n")?;
+    init_file.write_all(b"# Node Python package\n")?;
 
     // Create pyproject.toml from template
-    let pyproject_template = PyProjectTomlTemplate;
-    let pyproject_content = pyproject_template
-        .render()
-        .map_err(std::io::Error::other)?;
+    let pyproject_template = PyProjectTomlTemplate { node_name };
+    let pyproject_content = pyproject_template.render().map_err(std::io::Error::other)?;
 
     let pyproject_toml_path = to_path.join("pyproject.toml");
     fs::write(pyproject_toml_path, pyproject_content)?;
@@ -34,18 +34,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_create_peppycl_py_dep() {
+    fn test_add_python_node_config() {
         use tempfile::TempDir;
-
+        let node_name = "test_node";
         let temp_dir = TempDir::new().unwrap();
 
-        let result = create_peppycl_py_dep(temp_dir.path());
+        let result = add_python_node_config(node_name, temp_dir.path());
         assert!(result.is_ok());
 
         // Verify the expected Python dependency files were created
         let pyproject_toml = temp_dir.path().join("pyproject.toml");
-        let peppycl_dir = temp_dir.path().join("peppycl");
-        let init_py = peppycl_dir.join("__init__.py");
+        let node_dir = temp_dir.path().join(node_name);
+        let init_py = node_dir.join("__init__.py");
 
         // Check that at least one of the standard Python package files exists
         assert!(
@@ -53,12 +53,9 @@ mod tests {
             "Expected either pyproject.toml to be created"
         );
 
-        // Check that the peppycl package directory was created
-        assert!(
-            peppycl_dir.exists(),
-            "Expected peppycl directory to be created"
-        );
-        assert!(peppycl_dir.is_dir(), "peppycl should be a directory");
+        // Check that the node package directory was created
+        assert!(node_dir.exists(), "Expected node directory to be created");
+        assert!(node_dir.is_dir(), "node should be a directory");
 
         // Check that __init__.py exists in the package directory
         assert!(
