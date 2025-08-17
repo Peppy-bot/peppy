@@ -1,6 +1,10 @@
 [package]
 name = "peppycl"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
+homepage = "https://dev.peppy.bot"
+description = "The peppyOS control library"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
 
 [dependencies]

@@ -2083,7 +2083,7 @@ version = "0.1.0"
 
 [[package]]
 name = "peppycl"
-version = "0.1.0"
+version = "0.0.1"
 
 [[package]]
 name = "percent-encoding"
