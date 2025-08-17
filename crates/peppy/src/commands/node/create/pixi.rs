@@ -38,16 +38,17 @@ pub fn create_pixi_toml(
     };
 
     let channels = match lang {
-        Language::Python => "[\"conda-forge\"]",
+        Language::Python => "[\"https://repo.prefix.dev/peppy\", \"conda-forge\"]",
         Language::Rust => "[\"conda-forge\"]",
     };
 
     let tasks = match lang {
         Language::Python => vec![],
-        Language::Rust => vec![("start", "cargo run")],
+        Language::Rust => vec![("build", "cargo build"), ("start", "cargo run")],
     };
 
-    let description = node_description.unwrap_or("A peppy node");
+    let default_description = format!("{} Peppy Python node", node_name);
+    let description = node_description.unwrap_or(default_description.as_str());
 
     let template = PixiTomlTemplate {
         node_name,
@@ -117,7 +118,7 @@ mod tests {
             assert!(lock_content.contains("peppycl"));
         }
 
-        assert!(!content.contains("[tasks]\nstart"));
+        assert!(content.contains("https://repo.prefix.dev/peppy"));
     }
 
     #[test]

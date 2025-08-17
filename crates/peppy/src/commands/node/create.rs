@@ -93,10 +93,9 @@ pub fn create(
     pixi::create_pixi_toml(&node_path, node_name, language, description)?;
     create_peppy_config(&node_path, node_name)?;
 
-    // TODO the crates are not supposed to be created here, they are supposed to be pulled from conda/Cargo
     match language {
-        Language::Python => python::create_peppycl_py_dep(&node_path)?,
-        Language::Rust => rust::create_peppycl_rust_crate(&node_path)?,
+        Language::Python => python::add_python_node_config(node_name, &node_path)?,
+        Language::Rust => rust::add_rust_node_config(node_name, &node_path)?,
     }
 
     println!("Created node '{}' at: {}", node_name, node_path.display());

@@ -8,27 +8,25 @@ struct LibRsTemplate;
 
 #[derive(Template)]
 #[template(path = "dependencies/Cargo.toml.j2")]
-struct CargoTomlTemplate;
+struct CargoTomlTemplate<'a> {
+    node_name: &'a str,
+}
 
-pub fn create_peppycl_rust_crate(to_path: &Path) -> Result<(), std::io::Error> {
+pub fn add_rust_node_config(node_name: &str, to_path: &Path) -> Result<(), std::io::Error> {
     // Create src directory
     let src_dir = to_path.join("src");
     fs::create_dir_all(&src_dir)?;
 
     // Create lib.rs from template
     let lib_template = LibRsTemplate;
-    let lib_content = lib_template
-        .render()
-        .map_err(std::io::Error::other)?;
+    let lib_content = lib_template.render().map_err(std::io::Error::other)?;
 
     let lib_rs_path = src_dir.join("lib.rs");
     fs::write(lib_rs_path, lib_content)?;
 
     // Create Cargo.toml from template
-    let cargo_template = CargoTomlTemplate;
-    let cargo_content = cargo_template
-        .render()
-        .map_err(std::io::Error::other)?;
+    let cargo_template = CargoTomlTemplate { node_name };
+    let cargo_content = cargo_template.render().map_err(std::io::Error::other)?;
 
     let cargo_toml_path = to_path.join("Cargo.toml");
     fs::write(cargo_toml_path, cargo_content)?;
@@ -41,12 +39,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_create_peppycl_rust_crate() {
+    fn test_add_rust_node_config() {
         use tempfile::TempDir;
-
+        let node_name = "test_node";
         let temp_dir = TempDir::new().unwrap();
 
-        let result = create_peppycl_rust_crate(temp_dir.path());
+        let result = add_rust_node_config(node_name, temp_dir.path());
         assert!(result.is_ok());
 
         // Verify the expected Rust crate files were created
@@ -63,5 +61,29 @@ mod tests {
 
         // Check that lib.rs exists in the src directory
         assert!(lib_rs.exists(), "Expected lib.rs in src directory");
+
+        // Check that Cargo.toml contains peppycl dependency
+        let cargo_content = fs::read_to_string(&cargo_toml).unwrap();
+        assert!(
+            cargo_content.contains("peppycl"),
+            "Expected peppycl dependency in Cargo.toml"
+        );
+        assert!(
+            cargo_content.contains("[dependencies]"),
+            "Expected dependencies section in Cargo.toml"
+        );
+
+        // Run cargo build to verify the crate compiles
+        let output = std::process::Command::new("cargo")
+            .arg("build")
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("Failed to execute cargo build");
+
+        assert!(
+            output.status.success(),
+            "cargo build failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
