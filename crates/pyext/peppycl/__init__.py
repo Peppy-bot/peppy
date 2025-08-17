@@ -2,7 +2,9 @@
 peppycl - The peppyOS control library
 """
 
-# Re-export the Rust-implemented functions/types from the native module
-from .peppycl import sum_as_string
+from ._version import __version__
 
-__all__ = ["sum_as_string"]
+# Re-export the Rust-implemented functions/types from the native module
+from ._peppycl import sum_as_string
+
+__all__ = ["sum_as_string", "__version__"]

@@ -1,10 +1,10 @@
 [package]
 name = "peppycl-pyext"
-version = "0.0.1"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 
 [lib]
-name = "peppycl"
+name = "_peppycl"
 crate-type = ["cdylib"]
 
 [dependencies]
