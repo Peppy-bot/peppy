@@ -9,7 +9,7 @@ fn sum_as_string(a: usize, b: usize) -> PyResult<String> {
 /// Python module implemented in Rust.
 /// The function name must match `lib.name` in Cargo.toml.
 #[pymodule]
-fn peppycl(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _peppycl(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sum_as_string, m)?)?;
     Ok(())
 }

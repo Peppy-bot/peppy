@@ -1,7 +1,7 @@
 [package]
 name = "peppy"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
 askama = "0.14.0" # To help out on code generation (py and Rust) to create interface libs in .pixi envs or use (quote! macro + syn + prettyplease)

@@ -1,6 +1,6 @@
 [project]
 name = "peppycl"
-version = "0.0.1"
+dynamic = ["version"]
 license = { text = "Apache-2.0" }
 authors = [{ name = "GODARD Tuatini", email = "tuatini@peppy.bot" }]
 requires-python = ">= 3.10"
@@ -23,3 +23,7 @@ build-backend = "maturin"
 
 [tool.maturin]
 module-name = "peppycl._peppycl"
+
+[tool.maturin.version]
+provider = "file"
+path = "peppycl/_version.py"
