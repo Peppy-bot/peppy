@@ -1,0 +1,26 @@
+
+[workspace]
+channels = ["https://prefix.dev/conda-forge"]
+platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
+preview = ["pixi-build"]
+
+[dependencies]
+peppycl = { path = "." }
+
+[tasks]
+build = "pixi build"
+# Sanity check
+dev-check = "python -c \"import peppycl, sys; print('OK', peppycl.sum_as_string(2, 3))\""
+
+[package]
+name = "peppycl"
+version = "0.0.1"
+
+[package.build]
+# Use the Pixi Python backend that builds from your PEP517 project (maturin backend)
+backend = { name = "pixi-build-python", version = "==0.3.2" }
+
+[package.host-dependencies]
+python = "3.12.*"
+rust = "*"           # provides cargo/rustc for building the extension
+maturin = ">=1,<2"   # maturin is the PEP517 backend runner

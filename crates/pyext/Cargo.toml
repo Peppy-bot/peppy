@@ -1,6 +1,12 @@
 [package]
-name = "peppy_pyext"
-version = "0.1.0"
+name = "peppycl-pyext"
+version = "0.0.1"
 edition = "2024"
 
+[lib]
+name = "peppycl"
+crate-type = ["cdylib"]
+
 [dependencies]
+peppycl = { path = "../peppycl" }
+pyo3 = { version = "0.25.1", features = ["extension-module"] }
