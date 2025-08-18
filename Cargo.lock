@@ -2092,6 +2092,7 @@ version = "0.0.1"
 dependencies = [
  "peppycl",
  "pyo3",
+ "pyo3-build-config",
 ]
 
 [[package]]
