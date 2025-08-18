@@ -1,7 +1,7 @@
 mod node_watcher;
 mod pubsub;
 
-use pubsub::{DynMessenger, ZenohBackend, error::MessengerError};
+use pubsub::{DynMessenger, MessengerError, ZenohBackend};
 
 #[tokio::main]
 async fn start_messenger(backend: Box<dyn pubsub::MessengerBackend>) -> Result<(), MessengerError> {

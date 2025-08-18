@@ -1,5 +1,5 @@
-use async_trait::async_trait;
 use super::error::MessengerError;
+use async_trait::async_trait;
 
 // TODO: async_trait might not be needed anymore
 #[async_trait]

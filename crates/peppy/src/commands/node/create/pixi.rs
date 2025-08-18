@@ -4,7 +4,8 @@ use std::path::Path;
 
 use askama::Template;
 
-use crate::commands::node::create::{Language, NodeCreationError};
+use crate::commands::node::error::NodeCreationError;
+use crate::commands::node::types::{Language, NodeName};
 use crate::commands::pixi::execute_pixi;
 
 #[derive(Template)]
@@ -18,7 +19,7 @@ struct PixiTomlTemplate<'a> {
 
 pub fn create_pixi_toml(
     node_path: &Path,
-    node_name: &str,
+    node_name: &NodeName,
     lang: Language,
     node_description: Option<&str>,
 ) -> Result<(), NodeCreationError> {
@@ -47,11 +48,11 @@ pub fn create_pixi_toml(
         Language::Rust => vec![("build", "cargo build"), ("start", "cargo run")],
     };
 
-    let default_description = format!("{} Peppy Python node", node_name);
+    let default_description = format!("{} Peppy Python node", node_name.as_str());
     let description = node_description.unwrap_or(default_description.as_str());
 
     let template = PixiTomlTemplate {
-        node_name,
+        node_name: node_name.as_str(),
         description,
         dependencies_extra_msg,
         channels,
@@ -96,18 +97,18 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let node_name = "test_node";
+        let node_name = NodeName::new("test_node").unwrap();
         let lang = Language::Python;
         let description = "Test node description";
 
-        let result = create_pixi_toml(temp_dir.path(), node_name, lang, Some(description));
+        let result = create_pixi_toml(temp_dir.path(), &node_name, lang, Some(description));
         assert!(result.is_ok());
 
         let pixi_path = temp_dir.path().join("pixi.toml");
         assert!(pixi_path.exists());
 
         let content = fs::read_to_string(&pixi_path).unwrap();
-        assert!(content.contains(node_name));
+        assert!(content.contains(node_name.as_str()));
         assert!(content.contains(description));
         assert!(content.contains("# Python/Conda dependencies"));
 
@@ -126,18 +127,18 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let node_name = "rust_test_node";
+        let node_name = NodeName::new("rust_test_node").unwrap();
         let lang = Language::Rust;
         let description = "Rust test node description";
 
-        let result = create_pixi_toml(temp_dir.path(), node_name, lang, Some(description));
+        let result = create_pixi_toml(temp_dir.path(), &node_name, lang, Some(description));
         assert!(result.is_ok());
 
         let pixi_path = temp_dir.path().join("pixi.toml");
         assert!(pixi_path.exists());
 
         let content = fs::read_to_string(&pixi_path).unwrap();
-        assert!(content.contains(node_name));
+        assert!(content.contains(node_name.as_str()));
         assert!(content.contains(description));
         assert!(content.contains("# Add system dependencies here, not Rust dependencies"));
 

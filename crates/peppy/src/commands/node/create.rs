@@ -1,14 +1,14 @@
+mod pixi;
+mod python;
+mod rust;
+
+use super::error::NodeCreationError;
+use super::types::{Language, NodeName};
+use askama::Template;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::str::FromStr;
-
-use askama::Template;
-use thiserror::Error;
-
-mod pixi;
-mod python;
-mod rust;
 
 #[derive(Template)]
 #[template(path = "peppy_new_node.star.j2")]
@@ -24,42 +24,6 @@ struct PythonGitignoreTemplate;
 #[template(path = "gitignore/rust.gitignore.j2")]
 struct RustGitignoreTemplate;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Language {
-    Python,
-    Rust,
-}
-
-impl FromStr for Language {
-    type Err = NodeCreationError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "python" => Ok(Language::Python),
-            "rust" => Ok(Language::Rust),
-            _ => Err(NodeCreationError::UnsupportedLanguage),
-        }
-    }
-}
-
-#[derive(Error, Debug)]
-pub enum NodeCreationError {
-    #[error("Failed to create directory: {0}")]
-    DirectoryCreation(#[from] std::io::Error),
-
-    #[error("Failed to get current directory")]
-    CurrentDir(std::io::Error),
-
-    #[error("Root configuration not found")]
-    RootConfigurationNotFound,
-
-    #[error("Unsupported configuration language. Supported options are 'python'/'rust'")]
-    UnsupportedLanguage,
-
-    #[error("Folder already exists at path: {0}")]
-    FolderAlreadyExist(String),
-}
-
 /// Creates a new node and updates the peppy.star configuration file where the command is run
 pub fn create(
     from_dir: &Path,
@@ -69,12 +33,13 @@ pub fn create(
     description: Option<&str>,
 ) -> Result<(), NodeCreationError> {
     let language = Language::from_str(lang)?;
+    let node_name = NodeName::new(node_name)?;
 
     let node_path = match to_dir {
-        Some(dir) => dir.join(node_name),
+        Some(dir) => dir.join(node_name.as_str()),
         None => std::env::current_dir()
             .map_err(NodeCreationError::CurrentDir)?
-            .join(node_name),
+            .join(node_name.as_str()),
     };
 
     if node_path.exists() {
@@ -90,12 +55,12 @@ pub fn create(
     fs::create_dir_all(&node_path)?;
 
     create_gitignore(&node_path, language)?;
-    pixi::create_pixi_toml(&node_path, node_name, language, description)?;
-    create_peppy_config(&node_path, node_name)?;
+    pixi::create_pixi_toml(&node_path, &node_name, language, description)?;
+    create_peppy_config(&node_path, &node_name)?;
 
     match language {
-        Language::Python => python::add_python_node_config(node_name, &node_path)?,
-        Language::Rust => rust::add_rust_node_config(node_name, &node_path)?,
+        Language::Python => python::add_python_node_config(&node_name, &node_path)?,
+        Language::Rust => rust::add_rust_node_config(&node_name, &node_path)?,
     }
 
     println!("Created node '{}' at: {}", node_name, node_path.display());
@@ -131,11 +96,13 @@ fn create_gitignore(node_path: &Path, lang: Language) -> Result<(), NodeCreation
     Ok(())
 }
 
-fn create_peppy_config(node_path: &Path, node_name: &str) -> Result<(), NodeCreationError> {
+fn create_peppy_config(node_path: &Path, node_name: &NodeName) -> Result<(), NodeCreationError> {
     let peppy_star_path = node_path.join("peppy.star");
     let mut file = fs::File::create(peppy_star_path)?;
 
-    let template = PeppyNodeTemplate { name: node_name };
+    let template = PeppyNodeTemplate {
+        name: node_name.as_str(),
+    };
     let peppy_content = template.render().map_err(|e| {
         NodeCreationError::DirectoryCreation(std::io::Error::other(format!(
             "Failed to render peppy template: {}",
@@ -152,14 +119,6 @@ fn create_peppy_config(node_path: &Path, node_name: &str) -> Result<(), NodeCrea
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_language_from_str() {
-        assert_eq!(Language::from_str("python").unwrap(), Language::Python);
-        assert_eq!(Language::from_str("rust").unwrap(), Language::Rust);
-        assert!(Language::from_str("javascript").is_err());
-        assert!(Language::from_str("").is_err());
-    }
-
     // Can be run from the command line with:
     // cargo run --manifest-path <path_to_root_Cargo.toml> -- node create my_project
     #[test]
@@ -167,16 +126,16 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let node_name = "test_node";
+        let node_name = NodeName::new("test_node").unwrap();
 
-        let result = create_peppy_config(temp_dir.path(), node_name);
+        let result = create_peppy_config(temp_dir.path(), &node_name);
         assert!(result.is_ok());
 
         let peppy_path = temp_dir.path().join("peppy.star");
         assert!(peppy_path.exists());
 
         let content = fs::read_to_string(peppy_path).unwrap();
-        assert!(content.contains(node_name));
+        assert!(content.contains(node_name.as_str()));
     }
 
     #[test]
