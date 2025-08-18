@@ -24,7 +24,8 @@ enum Commands {
         #[command(subcommand)]
         command: node::NodeCommands,
     },
-    /// Run the peppy service that listen to node communication, node configuration file changes and also act as a Zenoh router
+    /// Run the peppy service that listen to node communication, node configuration file changes and also act as a Zenoh router.
+    /// This is the background service that runs with the systemd peppy service.
     Serve {
         /// Host address to bind to
         #[arg(long, default_value = "127.0.0.1")]

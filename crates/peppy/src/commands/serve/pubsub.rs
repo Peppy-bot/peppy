@@ -1,19 +1,6 @@
-// The Messenger is an abstraction of a PubSub system such as Zenoh
-pub trait Messenger {
-    fn send(&self, msg: &str);
-}
+mod backends;
+pub mod error;
+mod messenger;
 
-pub struct PubSub<'a, T: Messenger> {
-    messenger: &'a T,
-}
-
-impl<'a, T> PubSub<'a, T>
-where
-    T: Messenger,
-{
-    pub fn new(messenger: &'a T, max: usize) -> PubSub<'a, T> {
-        PubSub {
-            messenger,
-        }
-    }
-}
+pub use backends::zenoh::ZenohBackend;
+pub use messenger::{DynMessenger, Message, Messenger, MessengerBackend, Subscription};
