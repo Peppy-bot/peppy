@@ -2,6 +2,8 @@ use askama::Template;
 use std::fs;
 use std::path::Path;
 
+use crate::commands::node::types::NodeName;
+
 #[derive(Template)]
 #[template(path = "dependencies/lib.rs.j2")]
 struct LibRsTemplate;
@@ -12,7 +14,7 @@ struct CargoTomlTemplate<'a> {
     node_name: &'a str,
 }
 
-pub fn add_rust_node_config(node_name: &str, to_path: &Path) -> Result<(), std::io::Error> {
+pub fn add_rust_node_config(node_name: &NodeName, to_path: &Path) -> Result<(), std::io::Error> {
     // Create src directory
     let src_dir = to_path.join("src");
     fs::create_dir_all(&src_dir)?;
@@ -25,7 +27,9 @@ pub fn add_rust_node_config(node_name: &str, to_path: &Path) -> Result<(), std::
     fs::write(lib_rs_path, lib_content)?;
 
     // Create Cargo.toml from template
-    let cargo_template = CargoTomlTemplate { node_name };
+    let cargo_template = CargoTomlTemplate {
+        node_name: node_name.as_str(),
+    };
     let cargo_content = cargo_template.render().map_err(std::io::Error::other)?;
 
     let cargo_toml_path = to_path.join("Cargo.toml");
@@ -41,10 +45,10 @@ mod tests {
     #[test]
     fn test_add_rust_node_config() {
         use tempfile::TempDir;
-        let node_name = "test_node";
+        let node_name = NodeName::new("test_node").unwrap();
         let temp_dir = TempDir::new().unwrap();
 
-        let result = add_rust_node_config(node_name, temp_dir.path());
+        let result = add_rust_node_config(&node_name, temp_dir.path());
         assert!(result.is_ok());
 
         // Verify the expected Rust crate files were created

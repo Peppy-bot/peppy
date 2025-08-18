@@ -3,4 +3,5 @@ pub mod error;
 mod messenger;
 
 pub use backends::zenoh::ZenohBackend;
-pub use messenger::{DynMessenger, Message, Messenger, MessengerBackend, Subscription};
+pub use error::MessengerError;
+pub use messenger::{DynMessenger, MessengerBackend};
