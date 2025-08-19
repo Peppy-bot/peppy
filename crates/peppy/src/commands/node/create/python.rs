@@ -1,3 +1,4 @@
+use anyhow::Result;
 use askama::Template;
 use std::fs;
 use std::io::Write;
@@ -11,7 +12,7 @@ struct PyProjectTomlTemplate<'a> {
     node_name: &'a str,
 }
 
-pub fn add_python_node_config(node_name: &NodeName, to_path: &Path) -> Result<(), std::io::Error> {
+pub fn add_python_node_config(node_name: &NodeName, to_path: &Path) -> Result<()> {
     // Create the package directory
     let package_dir = to_path.join(node_name.as_str());
     fs::create_dir_all(&package_dir)?;
@@ -25,7 +26,7 @@ pub fn add_python_node_config(node_name: &NodeName, to_path: &Path) -> Result<()
     let pyproject_template = PyProjectTomlTemplate {
         node_name: node_name.as_str(),
     };
-    let pyproject_content = pyproject_template.render().map_err(std::io::Error::other)?;
+    let pyproject_content = pyproject_template.render()?;
 
     let pyproject_toml_path = to_path.join("pyproject.toml");
     fs::write(pyproject_toml_path, pyproject_content)?;

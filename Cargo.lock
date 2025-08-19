@@ -2066,6 +2066,7 @@ dependencies = [
 name = "peppy"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
  "askama",
  "async-trait",
  "bytes",
@@ -2075,6 +2076,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.15",
  "tokio",
+ "tracing",
  "zenoh",
 ]
 
@@ -2082,6 +2084,7 @@ dependencies = [
 name = "peppycl"
 version = "0.0.1"
 dependencies = [
+ "thiserror 2.0.15",
  "tokio",
  "zenoh",
 ]

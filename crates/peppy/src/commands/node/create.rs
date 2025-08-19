@@ -2,7 +2,7 @@ mod pixi;
 mod python;
 mod rust;
 
-use super::error::NodeCreationError;
+use super::error::NodeCommandError;
 use super::types::{Language, NodeName};
 use askama::Template;
 use std::fs;
@@ -31,36 +31,39 @@ pub fn create(
     node_name: &str,
     lang: &str,
     description: Option<&str>,
-) -> Result<(), NodeCreationError> {
+) -> Result<(), NodeCommandError> {
     let language = Language::from_str(lang)?;
     let node_name = NodeName::new(node_name)?;
 
     let node_path = match to_dir {
         Some(dir) => dir.join(node_name.as_str()),
-        None => std::env::current_dir()
-            .map_err(NodeCreationError::CurrentDir)?
-            .join(node_name.as_str()),
+        None => std::env::current_dir()?.join(node_name.as_str()),
     };
 
     if node_path.exists() {
-        return Err(NodeCreationError::FolderAlreadyExist(
+        return Err(NodeCommandError::FolderAlreadyExist(
             node_path.display().to_string(),
         ));
     }
 
     if !from_dir.join("peppy.star").exists() {
-        return Err(NodeCreationError::RootConfigurationNotFound);
+        return Err(NodeCommandError::RootConfigurationNotFound);
     }
 
     fs::create_dir_all(&node_path)?;
 
-    create_gitignore(&node_path, language)?;
-    pixi::create_pixi_toml(&node_path, &node_name, language, description)?;
-    create_peppy_config(&node_path, &node_name)?;
+    create_gitignore(&node_path, language)
+        .map_err(|e| NodeCommandError::GitConfigCreation(e.to_string()))?;
+    pixi::create_pixi_toml(&node_path, &node_name, language, description)
+        .map_err(|e| NodeCommandError::PixiConfigCreation(e.to_string()))?;
+    create_peppy_config(&node_path, &node_name)
+        .map_err(|e| NodeCommandError::PeppyConfigCreation(e.to_string()))?;
 
     match language {
-        Language::Python => python::add_python_node_config(&node_name, &node_path)?,
-        Language::Rust => rust::add_rust_node_config(&node_name, &node_path)?,
+        Language::Python => python::add_python_node_config(&node_name, &node_path)
+            .map_err(|e| NodeCommandError::PythonConfigCreation(e.to_string()))?,
+        Language::Rust => rust::add_rust_node_config(&node_name, &node_path)
+            .map_err(|e| NodeCommandError::RustConfigCreation(e.to_string()))?,
     }
 
     println!("Created node '{}' at: {}", node_name, node_path.display());
@@ -68,25 +71,15 @@ pub fn create(
     Ok(())
 }
 
-fn create_gitignore(node_path: &Path, lang: Language) -> Result<(), NodeCreationError> {
+fn create_gitignore(node_path: &Path, lang: Language) -> anyhow::Result<()> {
     let gitignore_content = match lang {
         Language::Python => {
             let template = PythonGitignoreTemplate;
-            template.render().map_err(|e| {
-                NodeCreationError::DirectoryCreation(std::io::Error::other(format!(
-                    "Failed to render Python gitignore template: {}",
-                    e
-                )))
-            })?
+            template.render()?
         }
         Language::Rust => {
             let template = RustGitignoreTemplate;
-            template.render().map_err(|e| {
-                NodeCreationError::DirectoryCreation(std::io::Error::other(format!(
-                    "Failed to render Rust gitignore template: {}",
-                    e
-                )))
-            })?
+            template.render()?
         }
     };
 
@@ -96,19 +89,14 @@ fn create_gitignore(node_path: &Path, lang: Language) -> Result<(), NodeCreation
     Ok(())
 }
 
-fn create_peppy_config(node_path: &Path, node_name: &NodeName) -> Result<(), NodeCreationError> {
+fn create_peppy_config(node_path: &Path, node_name: &NodeName) -> anyhow::Result<()> {
     let peppy_star_path = node_path.join("peppy.star");
     let mut file = fs::File::create(peppy_star_path)?;
 
     let template = PeppyNodeTemplate {
         name: node_name.as_str(),
     };
-    let peppy_content = template.render().map_err(|e| {
-        NodeCreationError::DirectoryCreation(std::io::Error::other(format!(
-            "Failed to render peppy template: {}",
-            e
-        )))
-    })?;
+    let peppy_content = template.render()?;
 
     file.write_all(peppy_content.as_bytes())?;
 
@@ -153,7 +141,7 @@ mod tests {
         );
         assert!(matches!(
             result,
-            Err(NodeCreationError::RootConfigurationNotFound)
+            Err(NodeCommandError::RootConfigurationNotFound)
         ))
     }
 
@@ -182,10 +170,10 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(NodeCreationError::FolderAlreadyExist(_))
+            Err(NodeCommandError::FolderAlreadyExist(_))
         ));
 
-        if let Err(NodeCreationError::FolderAlreadyExist(path)) = result {
+        if let Err(NodeCommandError::FolderAlreadyExist(path)) = result {
             assert!(path.contains(node_name));
         }
     }

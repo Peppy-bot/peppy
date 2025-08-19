@@ -1,7 +1,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use super::error::NodeCreationError;
+use super::error::NodeCommandError;
 
 /// A validated node name that ensures it follows naming conventions.
 /// Node names must start with a letter and contain only alphanumeric characters,
@@ -11,18 +11,18 @@ pub struct NodeName(String);
 
 impl NodeName {
     /// Creates a new NodeName after validating the input.
-    pub fn new(name: impl Into<String>) -> Result<Self, NodeCreationError> {
+    pub fn new(name: impl Into<String>) -> Result<Self, NodeCommandError> {
         let name = name.into();
 
         if name.is_empty() {
-            return Err(NodeCreationError::InvalidNodeName(
+            return Err(NodeCommandError::InvalidNodeName(
                 "Node name cannot be empty".to_string(),
             ));
         }
 
         // Check if the first character is a letter
         if !name.chars().next().unwrap().is_ascii_alphabetic() {
-            return Err(NodeCreationError::InvalidNodeName(format!(
+            return Err(NodeCommandError::InvalidNodeName(format!(
                 "Node name '{}' must start with a letter",
                 name
             )));
@@ -33,7 +33,7 @@ impl NodeName {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         {
-            return Err(NodeCreationError::InvalidNodeName(format!(
+            return Err(NodeCommandError::InvalidNodeName(format!(
                 "Node name '{}' contains invalid characters",
                 name
             )));
@@ -67,13 +67,13 @@ pub enum Language {
 }
 
 impl FromStr for Language {
-    type Err = NodeCreationError;
+    type Err = NodeCommandError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "python" => Ok(Language::Python),
             "rust" => Ok(Language::Rust),
-            _ => Err(NodeCreationError::UnsupportedLanguage),
+            _ => Err(NodeCommandError::UnsupportedLanguage),
         }
     }
 }
