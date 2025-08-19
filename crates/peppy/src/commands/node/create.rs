@@ -8,7 +8,6 @@ use askama::Template;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use std::str::FromStr;
 
 #[derive(Template)]
 #[template(path = "peppy_new_node.star.j2")]
@@ -28,12 +27,10 @@ struct RustGitignoreTemplate;
 pub fn create(
     from_dir: &Path,
     to_dir: Option<&Path>,
-    node_name: &str,
-    lang: &str,
+    node_name: NodeName,
+    language: Language,
     description: Option<&str>,
 ) -> Result<(), NodeCommandError> {
-    let language = Language::from_str(lang)?;
-    let node_name = NodeName::new(node_name)?;
 
     let node_path = match to_dir {
         Some(dir) => dir.join(node_name.as_str()),
@@ -135,8 +132,8 @@ mod tests {
         let result = create(
             temp_dir.path(),
             None,
-            "video_node",
-            "python",
+            NodeName::new("video_node").unwrap(),
+            Language::Python,
             Some("Test video node"),
         );
         assert!(matches!(
@@ -163,8 +160,8 @@ mod tests {
         let result = create(
             temp_dir.path(),
             Some(temp_dir.path()),
-            node_name,
-            "python",
+            NodeName::new(node_name).unwrap(),
+            Language::Python,
             Some("Test node"),
         );
 

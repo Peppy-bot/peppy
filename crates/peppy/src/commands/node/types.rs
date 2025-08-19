@@ -60,10 +60,27 @@ impl AsRef<str> for NodeName {
     }
 }
 
+impl FromStr for NodeName {
+    type Err = NodeCommandError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::new(s)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
     Python,
     Rust,
+}
+
+impl fmt::Display for Language {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Language::Python => write!(f, "python"),
+            Language::Rust => write!(f, "rust"),
+        }
+    }
 }
 
 impl FromStr for Language {
