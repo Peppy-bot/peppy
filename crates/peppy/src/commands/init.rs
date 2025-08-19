@@ -29,6 +29,9 @@ mod tests {
 
     #[test]
     fn test_create_peppy_config() {
+        use starlark::environment::{Globals, Module};
+        use starlark::eval::Evaluator;
+        use starlark::syntax::{AstModule, Dialect};
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -46,5 +49,24 @@ mod tests {
         assert!(content.contains("def create_root_node()"));
         assert!(content.contains("namespace = \"/\""));
         assert!(content.contains("qos_profile = \"default\""));
+
+        // Validate that the generated file is valid Starlark syntax
+        let ast = AstModule::parse("peppy.star", content.to_owned(), &Dialect::Extended);
+        assert!(
+            ast.is_ok(),
+            "Generated peppy.star file should be valid Starlark syntax"
+        );
+
+        // Also evaluate it to ensure it's not just syntactically valid but also executable
+        let ast_module = ast.unwrap();
+        let globals = Globals::extended_internal();
+        let module = Module::new();
+        let mut evaluator = Evaluator::new(&module);
+        let eval_result = evaluator.eval_module(ast_module, &globals);
+        assert!(
+            eval_result.is_ok(),
+            "Failed to evaluate peppy.star: {:?}",
+            eval_result.err()
+        );
     }
 }

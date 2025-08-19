@@ -31,7 +31,6 @@ pub fn create(
     language: Language,
     description: Option<&str>,
 ) -> Result<(), NodeCommandError> {
-
     let node_path = match to_dir {
         Some(dir) => dir.join(node_name.as_str()),
         None => std::env::current_dir()?.join(node_name.as_str()),
@@ -108,6 +107,9 @@ mod tests {
     // cargo run --manifest-path <path_to_root_Cargo.toml> -- node create my_project
     #[test]
     fn test_create_peppy_config() {
+        use starlark::environment::{Globals, Module};
+        use starlark::eval::Evaluator;
+        use starlark::syntax::{AstModule, Dialect};
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -119,8 +121,29 @@ mod tests {
         let peppy_path = temp_dir.path().join("peppy.star");
         assert!(peppy_path.exists());
 
-        let content = fs::read_to_string(peppy_path).unwrap();
+        let content = fs::read_to_string(&peppy_path).unwrap();
         assert!(content.contains(node_name.as_str()));
+
+        // Validate that the generated file is valid Starlark syntax
+        let ast = AstModule::parse(
+            &peppy_path.to_string_lossy(),
+            content.clone(),
+            &Dialect::Extended,
+        );
+        assert!(ast.is_ok(), "Failed to parse peppy.star as valid Starlark");
+
+        // Also try to evaluate it to ensure it's not just syntactically valid
+        // but also executable
+        let ast_module = ast.unwrap();
+        let globals = Globals::extended_internal();
+        let module = Module::new();
+        let mut evaluator = Evaluator::new(&module);
+        let eval_result = evaluator.eval_module(ast_module, &globals);
+        assert!(
+            eval_result.is_ok(),
+            "Failed to evaluate peppy.star: {:?}",
+            eval_result.err()
+        );
     }
 
     #[test]
