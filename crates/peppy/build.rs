@@ -66,5 +66,5 @@ fn build_pixi(release_tag: &str) {
 }
 
 fn main() {
-    build_pixi("v0.51.0");
+    build_pixi("v0.52.0");
 }
