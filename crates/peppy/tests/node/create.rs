@@ -1,4 +1,5 @@
 use peppy::commands::node::create;
+use peppy::commands::node::types::{Language, NodeName};
 use std::fs;
 use tempfile::TempDir;
 
@@ -11,8 +12,8 @@ fn test_create_command_default_directory() {
     let result = create::create(
         temp_dir.path(),
         Some(temp_dir.path()),
-        node_name,
-        "rust",
+        NodeName::new(node_name).unwrap(),
+        Language::Rust,
         None,
     );
     let node_path = temp_dir.path().join(node_name);
@@ -41,8 +42,8 @@ fn test_create_command_with_to_dir() {
     let result = create::create(
         temp_dir.path(),
         Some(temp_dir.path()),
-        node_name,
-        "rust",
+        NodeName::new(node_name).unwrap(),
+        Language::Rust,
         None,
     );
 
@@ -70,8 +71,8 @@ fn test_pixi_toml_content() {
     let result = create::create(
         temp_dir.path(),
         Some(temp_dir.path()),
-        node_name,
-        "rust",
+        NodeName::new(node_name).unwrap(),
+        Language::Rust,
         None,
     );
 
@@ -95,8 +96,8 @@ fn test_peppy_star_content() {
     let result = create::create(
         temp_dir.path(),
         Some(temp_dir.path()),
-        node_name,
-        "rust",
+        NodeName::new(node_name).unwrap(),
+        Language::Rust,
         None,
     );
 
