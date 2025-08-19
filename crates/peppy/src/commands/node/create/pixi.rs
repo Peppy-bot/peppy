@@ -1,10 +1,10 @@
+use anyhow::Result;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 
 use askama::Template;
 
-use crate::commands::node::error::NodeCreationError;
 use crate::commands::node::types::{Language, NodeName};
 use crate::commands::pixi::execute_pixi;
 
@@ -22,9 +22,9 @@ pub fn create_pixi_toml(
     node_name: &NodeName,
     lang: Language,
     node_description: Option<&str>,
-) -> Result<(), NodeCreationError> {
+) -> Result<()> {
     let pixi_toml_path = node_path.join("pixi.toml");
-    let mut file = fs::File::create(pixi_toml_path)?;
+    let mut file = fs::File::create(&pixi_toml_path)?;
 
     let dependencies = match lang {
         Language::Python => vec!["python", "peppycl"],
@@ -57,12 +57,8 @@ pub fn create_pixi_toml(
         dependencies_extra_msg,
         channels,
     };
-    let pixi_content = template.render().map_err(|e| {
-        NodeCreationError::DirectoryCreation(std::io::Error::other(format!(
-            "Failed to render pixi template: {}",
-            e
-        )))
-    })?;
+
+    let pixi_content = template.render()?;
 
     file.write_all(pixi_content.as_bytes())?;
 

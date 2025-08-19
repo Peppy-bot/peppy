@@ -1,3 +1,4 @@
+use anyhow::Result;
 use askama::Template;
 use std::fs;
 use std::path::Path;
@@ -14,7 +15,7 @@ struct CargoTomlTemplate<'a> {
     node_name: &'a str,
 }
 
-pub fn add_rust_node_config(node_name: &NodeName, to_path: &Path) -> Result<(), std::io::Error> {
+pub fn add_rust_node_config(node_name: &NodeName, to_path: &Path) -> Result<()> {
     // Create src directory
     let src_dir = to_path.join("src");
     fs::create_dir_all(&src_dir)?;
