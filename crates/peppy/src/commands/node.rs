@@ -9,6 +9,57 @@ pub mod types;
 use super::{Command, CommandError};
 use types::{Language, NodeName};
 
+struct NodeBuilder {
+    current_dir: PathBuf,
+    to_dir: Option<PathBuf>,
+    node_name: NodeName,
+    lang: Language,
+    description: Option<String>,
+}
+
+impl NodeBuilder {
+    fn new(node_name: NodeName) -> Self {
+        Self {
+            current_dir: PathBuf::new(),
+            to_dir: None,
+            node_name,
+            lang: Language::Rust,
+            description: None,
+        }
+    }
+
+    fn current_dir(mut self, dir: PathBuf) -> Self {
+        self.current_dir = dir;
+        self
+    }
+
+    fn to_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.to_dir = dir;
+        self
+    }
+
+    fn lang(mut self, lang: Language) -> Self {
+        self.lang = lang;
+        self
+    }
+
+    fn description(mut self, description: Option<String>) -> Self {
+        self.description = description;
+        self
+    }
+
+    fn build(self) -> Result<(), CommandError> {
+        create::create(
+            &self.current_dir,
+            self.to_dir.as_deref(),
+            self.node_name,
+            self.lang,
+            self.description.as_deref(),
+        )?;
+        Ok(())
+    }
+}
+
 #[derive(Subcommand)]
 pub enum NodeCommands {
     /// Create a new peppy node
@@ -45,14 +96,12 @@ impl Command for NodeCommand {
                 description,
             } => {
                 let current_dir = std::env::current_dir()?;
-                create::create(
-                    &current_dir,
-                    to_dir.as_deref(),
-                    node_name,
-                    lang,
-                    description.as_deref(),
-                )?;
-                Ok(())
+                NodeBuilder::new(node_name)
+                    .current_dir(current_dir)
+                    .to_dir(to_dir)
+                    .lang(lang)
+                    .description(description)
+                    .build()
             }
             NodeCommands::List {} => {
                 eprintln!("Listing nodes...");
