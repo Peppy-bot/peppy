@@ -1,6 +1,7 @@
 mod node_watcher;
 mod pubsub;
 
+use super::{Command, CommandError};
 use pubsub::{DynMessenger, MessengerError, ZenohBackend};
 
 #[tokio::main]
@@ -8,6 +9,19 @@ async fn start_messenger(backend: Box<dyn pubsub::MessengerBackend>) -> Result<(
     let messenger = DynMessenger::new(backend).await?;
     messenger.publish("foo", b"bar").await?;
     Ok(())
+}
+
+pub struct ServeCommand {
+    pub host: String,
+    pub zenoh_port: u16,
+}
+
+impl Command for ServeCommand {
+    fn execute(self) -> Result<(), CommandError> {
+        println!("Launching nodes on: {}:{}", &self.host, self.zenoh_port);
+        handle_serve(&self.host, self.zenoh_port);
+        Ok(())
+    }
 }
 
 pub fn handle_serve(_host: &str, _zenoh_port: u16) {

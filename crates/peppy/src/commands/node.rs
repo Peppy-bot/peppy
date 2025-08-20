@@ -6,6 +6,7 @@ pub mod error;
 pub mod list;
 pub mod types;
 
+use super::{Command, CommandError};
 use types::{Language, NodeName};
 
 #[derive(Subcommand)]
@@ -30,34 +31,47 @@ pub enum NodeCommands {
     Check {},
 }
 
-pub fn handle_node_command(command: NodeCommands) {
-    match command {
-        NodeCommands::Create {
-            to_dir,
-            lang,
-            node_name,
-            description,
-        } => {
-            let current_dir = std::env::current_dir().unwrap();
+pub struct NodeCommand {
+    pub command: NodeCommands,
+}
 
-            if let Err(e) = create::create(
-                &current_dir,
-                to_dir.as_deref(),
-                node_name,
+impl Command for NodeCommand {
+    fn execute(self) -> Result<(), CommandError> {
+        match self.command {
+            NodeCommands::Create {
+                to_dir,
                 lang,
-                description.as_deref(),
-            ) {
-                eprintln!("Failed to create node: {}", e);
-                std::process::exit(1);
+                node_name,
+                description,
+            } => {
+                let current_dir = std::env::current_dir()?;
+                create::create(
+                    &current_dir,
+                    to_dir.as_deref(),
+                    node_name,
+                    lang,
+                    description.as_deref(),
+                )?;
+                Ok(())
+            }
+            NodeCommands::List {} => {
+                eprintln!("Listing nodes...");
+                list::list_nodes();
+                Ok(())
+            }
+            NodeCommands::Check {} => {
+                eprintln!("Checking nodes...");
+                list::check();
+                Ok(())
             }
         }
-        NodeCommands::List {} => {
-            eprintln!("Listing nodes...");
-            list::list_nodes();
-        }
-        NodeCommands::Check {} => {
-            eprintln!("Checking nodes...");
-            list::check();
-        }
+    }
+}
+
+pub fn handle_node_command(command: NodeCommands) {
+    let node_command = NodeCommand { command };
+    if let Err(e) = node_command.execute() {
+        eprintln!("Failed to execute node command: {}", e);
+        std::process::exit(1);
     }
 }

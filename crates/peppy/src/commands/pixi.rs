@@ -1,5 +1,18 @@
 use std::path::Path;
-use std::process::Command;
+use std::process::Command as ProcessCommand;
+
+use super::{Command, CommandError};
+
+pub struct PixiCommand {
+    pub args: Vec<String>,
+}
+
+impl Command for PixiCommand {
+    fn execute(self) -> Result<(), CommandError> {
+        execute_pixi(&self.args, None);
+        Ok(())
+    }
+}
 
 pub fn execute_pixi(args: &[String], from_dir: Option<&Path>) {
     let pixi_path = if let Some(path) = option_env!("PIXI_BINARY_PATH") {
@@ -13,7 +26,7 @@ pub fn execute_pixi(args: &[String], from_dir: Option<&Path>) {
         std::process::exit(1);
     };
 
-    let mut command = Command::new(pixi_path);
+    let mut command = ProcessCommand::new(pixi_path);
 
     if let Some(dir) = from_dir {
         command.current_dir(dir);

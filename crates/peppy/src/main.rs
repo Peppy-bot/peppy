@@ -1,7 +1,10 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-use peppy::commands::{init, node, pixi, serve};
+use peppy::commands::{
+    init::InitCommand, node::{NodeCommand, NodeCommands}, pixi::PixiCommand, 
+    serve::ServeCommand, sync::SyncCommand, Command
+};
 
 #[derive(Parser)]
 #[command(name = "peppy")]
@@ -22,7 +25,7 @@ enum Commands {
     /// Node-related commands
     Node {
         #[command(subcommand)]
-        command: node::NodeCommands,
+        command: NodeCommands,
     },
     /// Run the peppy service that listen to node communication, node configuration file changes and also act as a Zenoh router.
     /// This is the background service that runs with the systemd peppy service.
@@ -52,36 +55,26 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
-    match cli.command {
+    let result = match cli.command {
         Commands::Init { in_dir } => {
-            let current_dir = if let Some(in_dir) = in_dir {
-                in_dir
-            } else {
-                std::env::current_dir().expect("Failed to get current directory")
-            };
-            init::init(&current_dir).expect("Failed to initialize peppy.star");
+            InitCommand { in_dir }.execute()
         }
         Commands::Serve { host, zenoh_port } => {
-            println!("Launching nodes on: {}:{}", &host, zenoh_port);
-            serve::handle_serve(&host, zenoh_port);
+            ServeCommand { host, zenoh_port }.execute()
         }
         Commands::Pixi { args } => {
-            pixi::execute_pixi(&args, None);
+            PixiCommand { args }.execute()
         }
         Commands::Sync { file } => {
-            let current_dir = std::env::current_dir().expect("Failed to get current directory");
-
-            let full_path = if file.is_relative() {
-                current_dir.join(file.strip_prefix("./").unwrap_or(&file))
-            } else {
-                file
-            };
-
-            println!("Syncing file: {}", full_path.display());
-            // TODO: Implement the actual sync logic here
+            SyncCommand { file }.execute()
         }
         Commands::Node { command } => {
-            node::handle_node_command(command);
+            NodeCommand { command }.execute()
         }
+    };
+
+    if let Err(e) = result {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
     }
 }
