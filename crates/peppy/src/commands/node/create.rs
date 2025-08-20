@@ -17,7 +17,6 @@ struct PeppyNodeTemplate<'a> {
     name: &'a str,
 }
 
-
 /// Creates a new node and updates the peppy.star configuration file where the command is run
 pub fn create(
     from_dir: &Path,
@@ -45,7 +44,7 @@ pub fn create(
 
     // Use factory pattern for language-specific operations
     let factory = create_factory(language);
-    
+
     factory.create_gitignore(&node_path)?;
     factory.create_pixi_config(&node_path, &node_name, description)?;
     create_peppy_config(&node_path, &node_name)
@@ -56,7 +55,6 @@ pub fn create(
 
     Ok(())
 }
-
 
 fn create_peppy_config(node_path: &Path, node_name: &NodeName) -> anyhow::Result<()> {
     let peppy_star_path = node_path.join("peppy.star");
@@ -173,8 +171,8 @@ mod tests {
 
     #[test]
     fn test_create_gitignore_python() {
-        use tempfile::TempDir;
         use crate::commands::node::create::factory::{NodeFactory, PythonNodeFactory};
+        use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
         let factory = PythonNodeFactory;
@@ -192,8 +190,8 @@ mod tests {
 
     #[test]
     fn test_create_gitignore_rust() {
-        use tempfile::TempDir;
         use crate::commands::node::create::factory::{NodeFactory, RustNodeFactory};
+        use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
         let factory = RustNodeFactory;

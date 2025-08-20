@@ -2,8 +2,12 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use peppy::commands::{
-    init::InitCommand, node::{NodeCommand, NodeCommands}, pixi::PixiCommand, 
-    serve::ServeCommand, sync::SyncCommand, Command
+    Command,
+    init::InitCommand,
+    node::{NodeCommand, NodeCommands},
+    pixi::PixiCommand,
+    serve::ServeCommand,
+    sync::SyncCommand,
 };
 
 #[derive(Parser)]
@@ -56,21 +60,11 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Init { in_dir } => {
-            InitCommand { in_dir }.execute()
-        }
-        Commands::Serve { host, zenoh_port } => {
-            ServeCommand { host, zenoh_port }.execute()
-        }
-        Commands::Pixi { args } => {
-            PixiCommand { args }.execute()
-        }
-        Commands::Sync { file } => {
-            SyncCommand { file }.execute()
-        }
-        Commands::Node { command } => {
-            NodeCommand { command }.execute()
-        }
+        Commands::Init { in_dir } => InitCommand { in_dir }.execute(),
+        Commands::Serve { host, zenoh_port } => ServeCommand { host, zenoh_port }.execute(),
+        Commands::Pixi { args } => PixiCommand { args }.execute(),
+        Commands::Sync { file } => SyncCommand { file }.execute(),
+        Commands::Node { command } => NodeCommand { command }.execute(),
     };
 
     if let Err(e) = result {
