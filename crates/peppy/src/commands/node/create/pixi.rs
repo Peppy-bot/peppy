@@ -17,59 +17,75 @@ struct PixiTomlTemplate<'a> {
     channels: &'a str,
 }
 
+/// Language-specific configuration for pixi.toml
+struct LanguageConfig {
+    dependencies: Vec<&'static str>,
+    dependencies_msg: &'static str,
+    channels: &'static str,
+    tasks: Vec<(&'static str, &'static str)>,
+    default_description_suffix: &'static str,
+}
+
+impl LanguageConfig {
+    fn for_language(lang: Language) -> Self {
+        match lang {
+            Language::Python => Self {
+                dependencies: vec!["python", "peppycl"],
+                dependencies_msg: "# Python/Conda dependencies",
+                channels: r#"["https://repo.prefix.dev/peppy", "conda-forge"]"#,
+                tasks: vec![],
+                default_description_suffix: "Python",
+            },
+            Language::Rust => Self {
+                dependencies: vec!["rust"],
+                dependencies_msg: "# Add system dependencies here, not Rust dependencies. Rust dependencies are added to Cargo.toml",
+                channels: r#"["conda-forge"]"#,
+                tasks: vec![("build", "cargo build"), ("start", "cargo run")],
+                default_description_suffix: "Rust",
+            },
+        }
+    }
+}
+
 pub fn create_pixi_toml(
     node_path: &Path,
     node_name: &NodeName,
     lang: Language,
     node_description: Option<&str>,
 ) -> Result<()> {
+    let config = LanguageConfig::for_language(lang);
+
     let pixi_toml_path = node_path.join("pixi.toml");
     let mut file = fs::File::create(&pixi_toml_path)?;
 
-    let dependencies = match lang {
-        Language::Python => vec!["python", "peppycl"],
-        Language::Rust => vec!["rust"],
-    };
-
-    let dependencies_extra_msg = match lang {
-        Language::Python => "# Python/Conda dependencies",
-        Language::Rust => {
-            "# Add system dependencies here, not Rust dependencies. Rust dependencies are added to Cargo.toml"
-        }
-    };
-
-    let channels = match lang {
-        Language::Python => "[\"https://repo.prefix.dev/peppy\", \"conda-forge\"]",
-        Language::Rust => "[\"conda-forge\"]",
-    };
-
-    let tasks = match lang {
-        Language::Python => vec![],
-        Language::Rust => vec![("build", "cargo build"), ("start", "cargo run")],
-    };
-
-    let default_description = format!("{} Peppy Python node", node_name.as_str());
-    let description = node_description.unwrap_or(default_description.as_str());
+    let default_description = format!(
+        "{} Peppy {} node",
+        node_name.as_str(),
+        config.default_description_suffix
+    );
+    let description = node_description.unwrap_or(&default_description);
 
     let template = PixiTomlTemplate {
         node_name: node_name.as_str(),
         description,
-        dependencies_extra_msg,
-        channels,
+        dependencies_extra_msg: config.dependencies_msg,
+        channels: config.channels,
     };
 
     let pixi_content = template.render()?;
-
     file.write_all(pixi_content.as_bytes())?;
 
+    // Add dependencies
     execute_pixi(
         &["add".to_string()]
             .into_iter()
-            .chain(dependencies.iter().map(|s| s.to_string()))
+            .chain(config.dependencies.iter().map(|s| s.to_string()))
             .collect::<Vec<_>>(),
         Some(node_path),
     );
-    tasks.iter().for_each(|(name, command)| {
+
+    // Add tasks
+    config.tasks.iter().for_each(|(name, command)| {
         execute_pixi(
             &[
                 "task".to_string(),
