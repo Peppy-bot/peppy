@@ -2,9 +2,27 @@ use askama::Template;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::{Command, CommandError};
+
 #[derive(Template)]
 #[template(path = "init.star.j2")]
 struct InitStarTemplate;
+
+pub struct InitCommand {
+    pub in_dir: Option<PathBuf>,
+}
+
+impl Command for InitCommand {
+    fn execute(self) -> Result<(), CommandError> {
+        let current_dir = if let Some(in_dir) = self.in_dir {
+            in_dir
+        } else {
+            std::env::current_dir()?
+        };
+        init(&current_dir)?;
+        Ok(())
+    }
+}
 
 pub fn init(path: &Path) -> Result<PathBuf, std::io::Error> {
     // Create the directory if it doesn't exist
