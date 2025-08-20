@@ -5,11 +5,63 @@ mod rust;
 
 use super::error::NodeCommandError;
 use super::types::{Language, NodeName};
+use crate::commands::CommandError;
 use askama::Template;
 use factory::create_factory;
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+pub struct NodeBuilder {
+    current_dir: PathBuf,
+    to_dir: Option<PathBuf>,
+    node_name: NodeName,
+    lang: Language,
+    description: Option<String>,
+}
+
+impl NodeBuilder {
+    pub fn new(node_name: NodeName) -> Self {
+        Self {
+            current_dir: PathBuf::new(),
+            to_dir: None,
+            node_name,
+            lang: Language::Rust,
+            description: None,
+        }
+    }
+
+    pub fn current_dir(mut self, dir: PathBuf) -> Self {
+        self.current_dir = dir;
+        self
+    }
+
+    pub fn to_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.to_dir = dir;
+        self
+    }
+
+    pub fn lang(mut self, lang: Language) -> Self {
+        self.lang = lang;
+        self
+    }
+
+    pub fn description(mut self, description: Option<String>) -> Self {
+        self.description = description;
+        self
+    }
+
+    pub fn build(self) -> Result<(), CommandError> {
+        create(
+            &self.current_dir,
+            self.to_dir.as_deref(),
+            self.node_name,
+            self.lang,
+            self.description.as_deref(),
+        )?;
+        Ok(())
+    }
+}
 
 #[derive(Template)]
 #[template(path = "peppy_new_node.star.j2")]
