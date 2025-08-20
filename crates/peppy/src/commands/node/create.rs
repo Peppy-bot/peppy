@@ -1,3 +1,4 @@
+mod factory;
 mod pixi;
 mod python;
 mod rust;
@@ -5,6 +6,7 @@ mod rust;
 use super::error::NodeCommandError;
 use super::types::{Language, NodeName};
 use askama::Template;
+use factory::create_factory;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -15,13 +17,6 @@ struct PeppyNodeTemplate<'a> {
     name: &'a str,
 }
 
-#[derive(Template)]
-#[template(path = "gitignore/py.gitignore.j2")]
-struct PythonGitignoreTemplate;
-
-#[derive(Template)]
-#[template(path = "gitignore/rust.gitignore.j2")]
-struct RustGitignoreTemplate;
 
 /// Creates a new node and updates the peppy.star configuration file where the command is run
 pub fn create(
@@ -48,42 +43,20 @@ pub fn create(
 
     fs::create_dir_all(&node_path)?;
 
-    create_gitignore(&node_path, language)
-        .map_err(|e| NodeCommandError::GitConfigCreation(e.to_string()))?;
-    pixi::create_pixi_toml(&node_path, &node_name, language, description)
-        .map_err(|e| NodeCommandError::PixiConfigCreation(e.to_string()))?;
+    // Use factory pattern for language-specific operations
+    let factory = create_factory(language);
+    
+    factory.create_gitignore(&node_path)?;
+    factory.create_pixi_config(&node_path, &node_name, description)?;
     create_peppy_config(&node_path, &node_name)
         .map_err(|e| NodeCommandError::PeppyConfigCreation(e.to_string()))?;
-
-    match language {
-        Language::Python => python::add_python_node_config(&node_name, &node_path)
-            .map_err(|e| NodeCommandError::PythonConfigCreation(e.to_string()))?,
-        Language::Rust => rust::add_rust_node_config(&node_name, &node_path)
-            .map_err(|e| NodeCommandError::RustConfigCreation(e.to_string()))?,
-    }
+    factory.create_language_config(&node_name, &node_path)?;
 
     println!("Created node '{}' at: {}", node_name, node_path.display());
 
     Ok(())
 }
 
-fn create_gitignore(node_path: &Path, lang: Language) -> anyhow::Result<()> {
-    let gitignore_content = match lang {
-        Language::Python => {
-            let template = PythonGitignoreTemplate;
-            template.render()?
-        }
-        Language::Rust => {
-            let template = RustGitignoreTemplate;
-            template.render()?
-        }
-    };
-
-    let gitignore_path = node_path.join(".gitignore");
-    let mut file = fs::File::create(&gitignore_path)?;
-    file.write_all(gitignore_content.as_bytes())?;
-    Ok(())
-}
 
 fn create_peppy_config(node_path: &Path, node_name: &NodeName) -> anyhow::Result<()> {
     let peppy_star_path = node_path.join("peppy.star");
@@ -201,10 +174,12 @@ mod tests {
     #[test]
     fn test_create_gitignore_python() {
         use tempfile::TempDir;
+        use crate::commands::node::create::factory::{NodeFactory, PythonNodeFactory};
 
         let temp_dir = TempDir::new().unwrap();
+        let factory = PythonNodeFactory;
 
-        let result = create_gitignore(temp_dir.path(), Language::Python);
+        let result = factory.create_gitignore(temp_dir.path());
         assert!(result.is_ok());
 
         let gitignore_path = temp_dir.path().join(".gitignore");
@@ -218,10 +193,12 @@ mod tests {
     #[test]
     fn test_create_gitignore_rust() {
         use tempfile::TempDir;
+        use crate::commands::node::create::factory::{NodeFactory, RustNodeFactory};
 
         let temp_dir = TempDir::new().unwrap();
+        let factory = RustNodeFactory;
 
-        let result = create_gitignore(temp_dir.path(), Language::Rust);
+        let result = factory.create_gitignore(temp_dir.path());
         assert!(result.is_ok());
 
         let gitignore_path = temp_dir.path().join(".gitignore");
