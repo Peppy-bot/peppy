@@ -10,4 +10,7 @@ pub enum CommandError {
 
     #[error("Command execution failed: {0}")]
     ExecutionFailed(String),
+
+    #[error("Pixi command error: {0}")]
+    PixiError(String),
 }
