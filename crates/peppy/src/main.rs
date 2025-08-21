@@ -38,9 +38,9 @@ enum Commands {
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
 
-        /// Port used for the Zenoh router
+        /// Port used for the Messaging router
         #[arg(long, default_value = "7447")]
-        zenoh_port: u16,
+        port: u16,
     },
     /// Give raw access to pixi commands (e.g. peppy pixi install, peppy pixi list) while using the environment in .peppy rather than .pixi
     Pixi {
@@ -61,7 +61,7 @@ fn main() {
 
     let result = match cli.command {
         Commands::Init { in_dir } => InitCommand { in_dir }.execute(),
-        Commands::Serve { host, zenoh_port } => ServeCommand { host, zenoh_port }.execute(),
+        Commands::Serve { host, port } => ServeCommand { host, port }.execute(),
         Commands::Pixi { args } => PixiCommand { args }.execute(),
         Commands::Sync { file } => SyncCommand { file }.execute(),
         Commands::Node { command } => NodeCommand { command }.execute(),

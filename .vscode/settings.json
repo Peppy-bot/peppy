@@ -1,7 +1,3 @@
 {
-  "python.terminal.activateEnvironment": false,
-  "pixi.activateEnvironment": false,
-  "terminal.integrated.env.linux": {
-    "PIXI_SKIP_AUTO_ACTIVATE": "true"
-  }
+  "python.terminal.activateEnvironment": false
 }
