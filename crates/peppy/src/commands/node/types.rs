@@ -69,6 +69,7 @@ impl FromStr for NodeName {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Language {
     Python,
     Rust,
