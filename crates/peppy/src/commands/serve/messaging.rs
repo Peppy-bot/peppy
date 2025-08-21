@@ -21,6 +21,7 @@ pub struct Subscription {
     pub rx: tokio::sync::mpsc::Receiver<Message>,
 }
 
+#[derive(Clone)]
 pub struct Message {
     pub topic: String,
     pub payload: bytes::Bytes,
