@@ -143,7 +143,7 @@ impl MessengerBackend for MockAdapter {
 #[cfg(test)]
 mod tests {
     use crate::commands::serve::MessagingFactory;
-    use crate::commands::serve::messaging::Message;
+    use crate::commands::serve::messaging::{Message, MessengerBackend};
     use crate::commands::serve::types::{Engine, MessagingConfiguration};
 
     #[tokio::test]

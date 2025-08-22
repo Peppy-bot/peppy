@@ -4,8 +4,8 @@ mod types;
 
 use super::Command;
 use crate::Result;
-use messaging::MessagingFactory;
-use types::MessagingConfiguration;
+use messaging::{MessagingFactory, MessengerBackend};
+use types::{MessagingConfiguration, Messenger};
 
 pub struct ServeCommand {
     pub host: String,
@@ -21,7 +21,7 @@ impl Command for ServeCommand {
 }
 
 #[tokio::main]
-async fn start_router(mut messenger: Box<dyn messaging::MessengerBackend>) -> Result<()> {
+async fn start_router(mut messenger: Messenger) -> Result<()> {
     messenger.start_router().await?;
     Ok(())
 }
