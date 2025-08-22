@@ -142,14 +142,13 @@ impl MessengerBackend for MockAdapter {
 
 #[cfg(test)]
 mod tests {
-    use crate::commands::serve::MessagingFactory;
     use crate::commands::serve::messaging::{Message, MessengerBackend};
-    use crate::commands::serve::types::{Engine, MessagingConfiguration};
+    use crate::commands::serve::types::{Engine, MessagingConfiguration, Messenger};
 
     #[tokio::test]
     async fn test_build_messenger() {
         let config = MessagingConfiguration::new("localhost", 7447).with_engine(Engine::Mock);
-        let mut messenger = MessagingFactory::build_messenger(config);
+        let mut messenger = Messenger::from_config(config);
 
         // Must start router before connecting
         assert!(messenger.start_router().await.is_ok());
@@ -160,7 +159,7 @@ mod tests {
     #[tokio::test]
     async fn test_fail_build_messenger() {
         let config = MessagingConfiguration::new("localhost", 7447).with_engine(Engine::Mock);
-        let mut messenger = MessagingFactory::build_messenger(config);
+        let mut messenger = Messenger::from_config(config);
 
         // Attempt to connect before starting the router
         assert!(!messenger.connect().await.is_ok());
@@ -171,7 +170,7 @@ mod tests {
     #[tokio::test]
     async fn test_all_operations() {
         let config = MessagingConfiguration::new("localhost", 8080).with_engine(Engine::Mock);
-        let mut messenger = MessagingFactory::build_messenger(config);
+        let mut messenger = Messenger::from_config(config);
 
         // Test all operations succeed with MockAdapter
         assert!(messenger.start_router().await.is_ok());
@@ -200,7 +199,7 @@ mod tests {
         ];
 
         for config in configs {
-            let mut messenger = MessagingFactory::build_messenger(config);
+            let mut messenger = Messenger::from_config(config);
             // Mock should always succeed regardless of configuration
             assert!(messenger.start_router().await.is_ok());
             assert!(messenger.connect().await.is_ok());
@@ -210,7 +209,7 @@ mod tests {
     #[tokio::test]
     async fn test_subscription_returns_valid_channel() {
         let config = MessagingConfiguration::new("localhost", 7447).with_engine(Engine::Mock);
-        let mut messenger = MessagingFactory::build_messenger(config);
+        let mut messenger = Messenger::from_config(config);
 
         // Must start router and connect first
         assert!(messenger.start_router().await.is_ok());
@@ -230,7 +229,7 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_subscriptions() {
         let config = MessagingConfiguration::new("localhost", 7447).with_engine(Engine::Mock);
-        let mut messenger = MessagingFactory::build_messenger(config);
+        let mut messenger = Messenger::from_config(config);
 
         // Must start router and connect first
         assert!(messenger.start_router().await.is_ok());
@@ -249,7 +248,7 @@ mod tests {
     #[tokio::test]
     async fn test_publish_multiple_messages() {
         let config = MessagingConfiguration::new("localhost", 7447).with_engine(Engine::Mock);
-        let mut messenger = MessagingFactory::build_messenger(config);
+        let mut messenger = Messenger::from_config(config);
 
         // Must start router and connect first
         assert!(messenger.start_router().await.is_ok());
@@ -271,7 +270,7 @@ mod tests {
     async fn test_factory_creates_mock_correctly() {
         // Test that factory correctly creates MockAdapter when Mock engine is specified
         let config = MessagingConfiguration::new("test.local", 12345).with_engine(Engine::Mock);
-        let mut messenger = MessagingFactory::build_messenger(config);
+        let mut messenger = Messenger::from_config(config);
 
         // These should all succeed if MockAdapter was created properly
         assert!(messenger.start_router().await.is_ok());
