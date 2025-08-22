@@ -4,7 +4,7 @@ mod types;
 
 use super::Command;
 use crate::Result;
-use messaging::{MessagingFactory, MessengerBackend};
+use messaging::MessengerBackend;
 use types::{MessagingConfiguration, Messenger};
 
 pub struct ServeCommand {
@@ -29,7 +29,7 @@ async fn start_router(mut messenger: Messenger) -> Result<()> {
 pub fn handle_serve(engine_configuration: MessagingConfiguration) {
     node_watcher::watch_node_configuration_files_changes();
 
-    let messenger = MessagingFactory::build_messenger(engine_configuration);
+    let messenger = Messenger::from_config(engine_configuration);
 
     // Start the Zenoh router
     let router_thread = std::thread::spawn(move || {
