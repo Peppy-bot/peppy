@@ -26,15 +26,15 @@ impl Default for MockAdapter {
 }
 
 impl MockAdapter {
-    pub fn is_connected(&self) -> bool {
+    fn is_connected(&self) -> bool {
         self.is_connected
     }
 
-    pub fn is_router_started(&self) -> bool {
+    fn is_router_started(&self) -> bool {
         self.is_router_started
     }
 
-    pub fn get_messages(&self, topic: &str) -> Vec<Message> {
+    fn get_messages(&self, topic: &str) -> Vec<Message> {
         self.messages
             .lock()
             .unwrap()
