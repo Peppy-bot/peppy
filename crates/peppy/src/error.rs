@@ -4,17 +4,16 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, From)]
 pub enum Error {
+    // -- general
+    #[from]
+    Io(std::io::Error),
+
     // -- serve
     UnsupportedEngine,
 
     // -- commands
-    #[from]
-    Io(std::io::Error),
-
     ExecutionFailed(String),
-
     PixiError(String),
-
     SyncError(String),
 
     // -- Node
@@ -30,17 +29,13 @@ pub enum Error {
 
     // -- messaging
     ConnectionError,
-
     PublishError {
         topic: String,
     },
-
     SubscribeError {
         topic: String,
     },
-
     ShutdownError,
-
     BackendError(String),
 
     // -- libs

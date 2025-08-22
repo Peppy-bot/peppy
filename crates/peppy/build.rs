@@ -1,23 +1,49 @@
 use std::env;
+use std::path::PathBuf;
 use std::process::Command;
+
+fn get_temp_cache_dir() -> PathBuf {
+    let temp_dir = env::temp_dir();
+    let cache_dir = temp_dir.join("peppy-pixi-cache");
+
+    // Create cache directory if it doesn't exist
+    if !cache_dir.exists() {
+        std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
+    }
+
+    cache_dir
+}
 
 fn build_pixi(release_tag: &str) {
     // Build pixi binary when the build_pixi feature is enabled
     if env::var("CARGO_FEATURE_BUILD_PIXI").is_ok() {
         println!("cargo:rerun-if-changed=build.rs");
 
-        // Clone and build pixi as a separate binary
+        // Use named temp directory for persistent cache
+        let cache_dir = get_temp_cache_dir();
+        let cached_pixi_path = cache_dir.join(format!("pixi-{}", release_tag));
+
+        // Always copy to OUT_DIR for runtime access
         let out_dir = env::var("OUT_DIR").unwrap();
         let pixi_binary_path = format!("{}/pixi", out_dir);
 
-        // Check if pixi needs to be built
-        if !std::path::Path::new(&pixi_binary_path).exists() {
+        // Check if pixi is already cached
+        if cached_pixi_path.exists() {
+            println!(
+                "cargo:warning=Using cached pixi binary from {:?}",
+                cached_pixi_path
+            );
+
+            // Copy cached binary to OUT_DIR
+            std::fs::copy(&cached_pixi_path, &pixi_binary_path)
+                .expect("Failed to copy cached pixi binary");
+        } else {
             println!("cargo:warning=Building pixi binary from source...");
 
-            // Clean up any existing pixi-src directory first
-            let pixi_src_dir = format!("{}/pixi-src", out_dir);
-            if std::path::Path::new(&pixi_src_dir).exists() {
-                let _ = std::fs::remove_dir_all(&pixi_src_dir);
+            // Build in a temporary directory within cache
+            let build_dir = cache_dir.join("pixi-src");
+            if build_dir.exists() {
+                let _ = std::fs::remove_dir_all(&build_dir);
             }
 
             // Clone pixi repository
@@ -29,7 +55,7 @@ fn build_pixi(release_tag: &str) {
                     "--branch",
                     release_tag,
                     "https://github.com/prefix-dev/pixi",
-                    &pixi_src_dir,
+                    build_dir.to_str().unwrap(),
                 ])
                 .output()
                 .expect("Failed to execute git clone");
@@ -44,7 +70,7 @@ fn build_pixi(release_tag: &str) {
 
             // Build pixi
             let status = Command::new("cargo")
-                .current_dir(format!("{}/pixi-src", out_dir))
+                .current_dir(&build_dir)
                 .args(["build", "--release", "--bin", "pixi"])
                 .status();
 
@@ -53,11 +79,16 @@ fn build_pixi(release_tag: &str) {
                 return;
             }
 
-            // Copy the built binary to our output directory
-            let _ = std::fs::copy(
-                format!("{}/pixi-src/target/release/pixi", out_dir),
-                &pixi_binary_path,
-            );
+            // Copy to cache with version tag
+            std::fs::copy(build_dir.join("target/release/pixi"), &cached_pixi_path)
+                .expect("Failed to cache pixi binary");
+
+            // Copy to OUT_DIR for runtime
+            std::fs::copy(&cached_pixi_path, &pixi_binary_path)
+                .expect("Failed to copy pixi binary to OUT_DIR");
+
+            // Clean up build directory
+            let _ = std::fs::remove_dir_all(&build_dir);
         }
 
         // Set environment variable for runtime to find the pixi binary
