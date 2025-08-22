@@ -2,6 +2,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use crate::{Error, Result};
+use super::messaging::adapters::{mock::MockAdapter, zenoh::ZenohAdapter};
 
 pub struct MessagingConfiguration {
     pub engine: Engine,
@@ -29,6 +30,11 @@ impl MessagingConfiguration {
 pub enum Engine {
     Zenoh,
     Mock,
+}
+
+pub enum Messenger {
+    Zenoh(ZenohAdapter),
+    Mock(MockAdapter),
 }
 
 impl fmt::Display for Engine {
