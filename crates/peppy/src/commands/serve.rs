@@ -1,13 +1,11 @@
-mod error;
-mod factory;
 mod messaging;
 mod node_watcher;
 mod types;
 
-use factory::MessagingFactory;
+use super::Command;
+use crate::Result;
+use messaging::MessagingFactory;
 use types::MessagingConfiguration;
-
-use super::{Command, CommandError};
 
 pub struct ServeCommand {
     pub host: String,
@@ -15,7 +13,7 @@ pub struct ServeCommand {
 }
 
 impl Command for ServeCommand {
-    fn execute(self) -> Result<(), CommandError> {
+    fn execute(self) -> Result<()> {
         println!("Launching nodes on: {}:{}", &self.host, self.port);
         handle_serve(MessagingConfiguration::new(&self.host, self.port));
         Ok(())
@@ -23,9 +21,7 @@ impl Command for ServeCommand {
 }
 
 #[tokio::main]
-async fn start_router(
-    mut messenger: Box<dyn messaging::MessengerBackend>,
-) -> Result<(), messaging::MessengerError> {
+async fn start_router(mut messenger: Box<dyn messaging::MessengerBackend>) -> Result<()> {
     messenger.start_router().await?;
     Ok(())
 }

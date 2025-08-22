@@ -1,3 +1,4 @@
-pub mod commands;
+mod error;
 
-pub use commands::node::create::create;
+pub use self::error::{Error, Result};
+pub mod commands;

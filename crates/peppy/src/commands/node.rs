@@ -2,11 +2,11 @@ use clap::Subcommand;
 use std::path::PathBuf;
 
 pub mod create;
-pub mod error;
 pub mod list;
 pub mod types;
 
-use super::{Command, CommandError};
+use super::{Command, Error as CommandError};
+
 use create::NodeBuilder;
 use types::{Language, NodeName};
 

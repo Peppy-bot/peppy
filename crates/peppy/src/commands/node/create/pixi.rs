@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::{Error, Result};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -72,7 +72,9 @@ pub fn create_pixi_toml(
         channels: config.channels,
     };
 
-    let pixi_content = template.render()?;
+    let pixi_content = template
+        .render()
+        .map_err(|e| Error::AskamaError(e.to_string()))?;
     file.write_all(pixi_content.as_bytes())?;
 
     // Create PixiFacade instance with node path as working directory
