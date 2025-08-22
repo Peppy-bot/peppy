@@ -1,13 +1,15 @@
 mod adapters;
 
 use super::types::{Engine, MessagingConfiguration};
-use crate::{Error, Result};
+use crate::Result;
 use adapters::mock::MockAdapter;
 use adapters::zenoh::ZenohAdapter;
 use async_trait::async_trait;
 
 #[async_trait]
-pub trait MessengerBackend: Send + Sync {
+pub(in crate::commands::serve) trait MessengerBackend:
+    Send + Sync
+{
     async fn start_router(&mut self) -> Result<()>;
     async fn connect(&mut self) -> Result<()>;
     async fn publish(&self, message: Message) -> Result<()>;
