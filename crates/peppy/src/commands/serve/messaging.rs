@@ -1,19 +1,18 @@
 mod adapters;
-mod error;
 
-pub use adapters::mock::MockAdapter;
-pub use adapters::zenoh::ZenohAdapter;
-pub use error::MessengerError;
-
+use super::types::{Engine, MessagingConfiguration};
+use crate::{Error, Result};
+use adapters::mock::MockAdapter;
+use adapters::zenoh::ZenohAdapter;
 use async_trait::async_trait;
 
 #[async_trait]
 pub trait MessengerBackend: Send + Sync {
-    async fn start_router(&mut self) -> Result<(), MessengerError>;
-    async fn connect(&mut self) -> Result<(), MessengerError>;
-    async fn publish(&self, message: Message) -> Result<(), MessengerError>;
-    async fn subscribe(&self, topic: &str) -> Result<Subscription, MessengerError>;
-    async fn shutdown(&mut self) -> Result<(), MessengerError>;
+    async fn start_router(&mut self) -> Result<()>;
+    async fn connect(&mut self) -> Result<()>;
+    async fn publish(&self, message: Message) -> Result<()>;
+    async fn subscribe(&self, topic: &str) -> Result<Subscription>;
+    async fn shutdown(&mut self) -> Result<()>;
 }
 
 pub struct Subscription {
@@ -32,6 +31,17 @@ impl Message {
         Self {
             topic: topic.to_string(),
             payload: bytes::Bytes::from(payload.to_vec()),
+        }
+    }
+}
+
+pub struct MessagingFactory {}
+
+impl MessagingFactory {
+    pub fn build_messenger(configuration: MessagingConfiguration) -> Box<dyn MessengerBackend> {
+        match configuration.engine {
+            Engine::Zenoh => Box::new(ZenohAdapter::new(configuration.host, configuration.port)),
+            Engine::Mock => Box::new(MockAdapter::default()),
         }
     }
 }

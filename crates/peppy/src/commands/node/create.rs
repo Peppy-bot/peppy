@@ -3,9 +3,8 @@ mod pixi;
 mod python;
 mod rust;
 
-use super::error::NodeCommandError;
 use super::types::{Language, NodeName};
-use crate::commands::CommandError;
+use crate::{Error, Result};
 use askama::Template;
 use factory::create_factory;
 use std::fs;
@@ -51,7 +50,7 @@ impl NodeBuilder {
         self
     }
 
-    pub fn build(self) -> Result<(), CommandError> {
+    pub fn build(self) -> Result<()> {
         create(
             &self.current_dir,
             self.to_dir.as_deref(),
@@ -76,20 +75,18 @@ pub fn create(
     node_name: NodeName,
     language: Language,
     description: Option<&str>,
-) -> Result<(), NodeCommandError> {
+) -> Result<()> {
     let node_path = match to_dir {
         Some(dir) => dir.join(node_name.as_str()),
         None => std::env::current_dir()?.join(node_name.as_str()),
     };
 
     if node_path.exists() {
-        return Err(NodeCommandError::FolderAlreadyExist(
-            node_path.display().to_string(),
-        ));
+        return Err(Error::FolderAlreadyExist(node_path.display().to_string()));
     }
 
     if !from_dir.join("peppy.star").exists() {
-        return Err(NodeCommandError::RootConfigurationNotFound);
+        return Err(Error::RootConfigurationNotFound);
     }
 
     fs::create_dir_all(&node_path)?;
@@ -100,7 +97,7 @@ pub fn create(
     factory.create_gitignore(&node_path)?;
     factory.create_pixi_config(&node_path, &node_name, description)?;
     create_peppy_config(&node_path, &node_name)
-        .map_err(|e| NodeCommandError::PeppyConfigCreation(e.to_string()))?;
+        .map_err(|e| Error::PeppyConfigCreation(e.to_string()))?;
     factory.create_language_config(&node_name, &node_path)?;
 
     println!("Created node '{}' at: {}", node_name, node_path.display());
@@ -108,14 +105,16 @@ pub fn create(
     Ok(())
 }
 
-fn create_peppy_config(node_path: &Path, node_name: &NodeName) -> anyhow::Result<()> {
+fn create_peppy_config(node_path: &Path, node_name: &NodeName) -> Result<()> {
     let peppy_star_path = node_path.join("peppy.star");
     let mut file = fs::File::create(peppy_star_path)?;
 
     let template = PeppyNodeTemplate {
         name: node_name.as_str(),
     };
-    let peppy_content = template.render()?;
+    let peppy_content = template
+        .render()
+        .map_err(|e| Error::AskamaError(e.to_string()))?;
 
     file.write_all(peppy_content.as_bytes())?;
 
@@ -182,10 +181,7 @@ mod tests {
             Language::Python,
             Some("Test video node"),
         );
-        assert!(matches!(
-            result,
-            Err(NodeCommandError::RootConfigurationNotFound)
-        ))
+        assert!(matches!(result, Err(Error::RootConfigurationNotFound)))
     }
 
     #[test]
@@ -211,12 +207,9 @@ mod tests {
             Some("Test node"),
         );
 
-        assert!(matches!(
-            result,
-            Err(NodeCommandError::FolderAlreadyExist(_))
-        ));
+        assert!(matches!(result, Err(Error::FolderAlreadyExist(_))));
 
-        if let Err(NodeCommandError::FolderAlreadyExist(path)) = result {
+        if let Err(Error::FolderAlreadyExist(path)) = result {
             assert!(path.contains(node_name));
         }
     }

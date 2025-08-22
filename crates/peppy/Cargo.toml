@@ -10,12 +10,11 @@ askama = "0.14.0" # To help out on code generation (py and Rust) to create inter
 capnp = "0.21.4" # ROS 2 uses CDR (Common Data Representation) for message serialization/deserialization
 clap = { version = "4.5.42", features = ["derive"] }
 starlark = "0.13.0" # To parse peppy.star
-thiserror = "2.0.14"
 tokio = "1.47.0"
 zenoh = "1.5.0"
 async-trait = "0.1.89"
 tracing = "0.1.41"
-anyhow = "1.0.99"
+derive_more = { version = "2", features = ["from"] }
 
 [dev-dependencies]
 tempfile = "3.8"

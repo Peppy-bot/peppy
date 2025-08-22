@@ -1,3 +1,5 @@
+// https://www.youtube.com/watch?v=XCrZleaIUO4
+
 /// A simple hello world function for the peppycl library.
 ///
 /// # Examples

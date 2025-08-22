@@ -1,5 +1,5 @@
-use crate::commands::serve::messaging::error::MessengerError;
-use crate::commands::serve::messaging::{Message, MessengerBackend, Subscription};
+use super::super::{Message, MessengerBackend, Subscription};
+use crate::{Error, Result};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -46,22 +46,22 @@ impl MockAdapter {
 
 #[async_trait]
 impl MessengerBackend for MockAdapter {
-    async fn start_router(&mut self) -> Result<(), MessengerError> {
+    async fn start_router(&mut self) -> Result<()> {
         self.is_router_started = true;
         Ok(())
     }
 
-    async fn connect(&mut self) -> Result<(), MessengerError> {
+    async fn connect(&mut self) -> Result<()> {
         if !self.is_router_started {
-            return Err(MessengerError::ConnectionError);
+            return Err(Error::ConnectionError);
         }
         self.is_connected = true;
         Ok(())
     }
 
-    async fn publish(&self, message: Message) -> Result<(), MessengerError> {
+    async fn publish(&self, message: Message) -> Result<()> {
         if !self.is_connected {
-            return Err(MessengerError::PublishError {
+            return Err(Error::PublishError {
                 topic: message.topic.clone(),
             });
         }
@@ -91,9 +91,9 @@ impl MessengerBackend for MockAdapter {
         Ok(())
     }
 
-    async fn subscribe(&self, topic: &str) -> Result<Subscription, MessengerError> {
+    async fn subscribe(&self, topic: &str) -> Result<Subscription> {
         if !self.is_connected {
-            return Err(MessengerError::SubscribeError {
+            return Err(Error::SubscribeError {
                 topic: topic.to_string(),
             });
         }
@@ -124,9 +124,9 @@ impl MessengerBackend for MockAdapter {
         Ok(Subscription { rx })
     }
 
-    async fn shutdown(&mut self) -> Result<(), MessengerError> {
+    async fn shutdown(&mut self) -> Result<()> {
         if !self.is_connected {
-            return Err(MessengerError::ShutdownError);
+            return Err(Error::ShutdownError);
         }
 
         self.is_connected = false;
@@ -142,7 +142,7 @@ impl MessengerBackend for MockAdapter {
 
 #[cfg(test)]
 mod tests {
-    use crate::commands::serve::factory::MessagingFactory;
+    use crate::commands::serve::MessagingFactory;
     use crate::commands::serve::messaging::Message;
     use crate::commands::serve::types::{Engine, MessagingConfiguration};
 

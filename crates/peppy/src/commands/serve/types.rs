@@ -1,7 +1,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use super::error::ServeCommandError;
+use crate::{Error, Result};
 
 pub struct MessagingConfiguration {
     pub engine: Engine,
@@ -41,13 +41,13 @@ impl fmt::Display for Engine {
 }
 
 impl FromStr for Engine {
-    type Err = ServeCommandError;
+    type Err = Error;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self> {
         match s {
             "zenoh" => Ok(Engine::Zenoh),
             "mock" => Ok(Engine::Mock),
-            _ => Err(ServeCommandError::UnsupportedEngine),
+            _ => Err(Error::UnsupportedEngine),
         }
     }
 }

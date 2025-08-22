@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::{Error, Result};
 use askama::Template;
 use std::fs;
 use std::io::Write;
@@ -26,7 +26,9 @@ pub fn add_python_node_config(node_name: &NodeName, to_path: &Path) -> Result<()
     let pyproject_template = PyProjectTomlTemplate {
         node_name: node_name.as_str(),
     };
-    let pyproject_content = pyproject_template.render()?;
+    let pyproject_content = pyproject_template
+        .render()
+        .map_err(|e| Error::AskamaError(e.to_string()))?;
 
     let pyproject_toml_path = to_path.join("pyproject.toml");
     fs::write(pyproject_toml_path, pyproject_content)?;

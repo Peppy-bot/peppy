@@ -1,7 +1,6 @@
+use crate::{Error, Result};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
-
-use anyhow::{Context, Result, bail};
 
 /// A facade for pixi operations that provides a simplified interface
 /// and centralized error handling
@@ -16,11 +15,9 @@ impl PixiFacade {
         let pixi_path = if let Some(path) = option_env!("PIXI_BINARY_PATH") {
             path.to_string()
         } else {
-            bail!(
-                "Pixi binary not found. Please rebuild with the 'build_pixi' feature enabled:\n\
-                  cargo build --features build_pixi\n\n\
-                Alternatively, ensure pixi is installed and available in your PATH."
-            );
+            return Err(Error::PixiError(
+                "Pixi not found. Build with: cargo build --features build_pixi".to_string(),
+            ));
         };
 
         Ok(Self {
@@ -35,7 +32,8 @@ impl PixiFacade {
         args.extend(dependencies.iter().map(|s| s.to_string()));
 
         self.execute(&args)
-            .context("Failed to add pixi dependencies")
+            .map_err(|e| Error::PixiError(format!("Failed to add pixi dependencies: {}", e)))?;
+        Ok(())
     }
 
     /// Adds a task to the pixi project
@@ -47,29 +45,31 @@ impl PixiFacade {
             task_command.to_string(),
         ];
 
-        self.execute(&args)
-            .context(format!("Failed to add pixi task '{}'", task_name))
+        self.execute(&args).map_err(|e| {
+            Error::PixiError(format!("Failed to add pixi task '{}': {}", task_name, e))
+        })
     }
 
     /// Installs dependencies for a pixi project
     pub fn install(&self) -> Result<()> {
         let args = vec!["install".to_string()];
         self.execute(&args)
-            .context("Failed to install pixi dependencies")
+            .map_err(|e| Error::PixiError(format!("Failed to install pixi dependencies: {}", e)))
     }
 
     /// Runs a pixi task
     pub fn run_task(&self, task_name: &str) -> Result<()> {
         let args = vec!["run".to_string(), task_name.to_string()];
-        self.execute(&args)
-            .context(format!("Failed to run pixi task '{}'", task_name))
+        self.execute(&args).map_err(|e| {
+            Error::PixiError(format!("Failed to run pixi task '{}': {}", task_name, e))
+        })
     }
 
     /// Initializes a new pixi project in the working directory
     pub fn init(&self) -> Result<()> {
         let args = vec!["init".to_string()];
         self.execute(&args)
-            .context("Failed to initialize pixi project")
+            .map_err(|e| Error::PixiError(format!("Failed to initialize pixi project: {}", e)))
     }
 
     /// Internal method to execute pixi commands with proper error handling
@@ -78,15 +78,15 @@ impl PixiFacade {
         command.current_dir(&self.working_dir);
         command.args(args);
 
-        let status = command
-            .status()
-            .with_context(|| format!("Failed to execute pixi command: {:?}", args))?;
+        let status = command.status().map_err(|e| {
+            Error::PixiError(format!("Failed to execute pixi command {:?}: {}", args, e))
+        })?;
 
         if !status.success() {
-            bail!(
+            return Err(Error::PixiError(format!(
                 "Pixi command failed with exit code: {}",
                 status.code().unwrap_or(-1)
-            );
+            )));
         }
 
         Ok(())
@@ -99,9 +99,9 @@ impl PixiFacade {
         command.current_dir(&self.working_dir);
         command.args(args);
 
-        command
-            .status()
-            .with_context(|| format!("Failed to execute pixi command: {:?}", args))
+        command.status().map_err(|e| {
+            Error::PixiError(format!("Failed to execute pixi command {:?}: {}", args, e))
+        })
     }
 }
 

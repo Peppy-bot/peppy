@@ -1,9 +1,8 @@
-use anyhow::Result;
+use crate::Result;
+use crate::commands::node::types::NodeName;
 use askama::Template;
 use std::fs;
 use std::path::Path;
-
-use crate::commands::node::types::NodeName;
 
 #[derive(Template)]
 #[template(path = "dependencies/lib.rs.j2")]

@@ -1,14 +1,16 @@
 use std::path::PathBuf;
 
-use super::{Command, CommandError};
+use super::Command;
+use crate::{Error, Result};
 
 pub struct SyncCommand {
     pub file: PathBuf,
 }
 
 impl Command for SyncCommand {
-    fn execute(self) -> Result<(), CommandError> {
-        let current_dir = std::env::current_dir()?;
+    fn execute(self) -> Result<()> {
+        let current_dir = std::env::current_dir()
+            .map_err(|e| Error::SyncError(format!("Failed to get current directory: {}", e)))?;
 
         let full_path = if self.file.is_relative() {
             current_dir.join(self.file.strip_prefix("./").unwrap_or(&self.file))

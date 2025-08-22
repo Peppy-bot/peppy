@@ -1,7 +1,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use super::error::NodeCommandError;
+use crate::{Error, Result};
 
 /// A validated node name that ensures it follows naming conventions.
 /// Node names must start with a letter and contain only alphanumeric characters,
@@ -11,18 +11,18 @@ pub struct NodeName(String);
 
 impl NodeName {
     /// Creates a new NodeName after validating the input.
-    pub fn new(name: impl Into<String>) -> Result<Self, NodeCommandError> {
+    pub fn new(name: impl Into<String>) -> Result<Self> {
         let name = name.into();
 
         if name.is_empty() {
-            return Err(NodeCommandError::InvalidNodeName(
+            return Err(Error::InvalidNodeName(
                 "Node name cannot be empty".to_string(),
             ));
         }
 
         // Check if the first character is a letter
         if !name.chars().next().unwrap().is_ascii_alphabetic() {
-            return Err(NodeCommandError::InvalidNodeName(format!(
+            return Err(Error::InvalidNodeName(format!(
                 "Node name '{}' must start with a letter",
                 name
             )));
@@ -33,7 +33,7 @@ impl NodeName {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         {
-            return Err(NodeCommandError::InvalidNodeName(format!(
+            return Err(Error::InvalidNodeName(format!(
                 "Node name '{}' contains invalid characters",
                 name
             )));
@@ -61,9 +61,9 @@ impl AsRef<str> for NodeName {
 }
 
 impl FromStr for NodeName {
-    type Err = NodeCommandError;
+    type Err = Error;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self> {
         Self::new(s)
     }
 }
@@ -85,13 +85,13 @@ impl fmt::Display for Language {
 }
 
 impl FromStr for Language {
-    type Err = NodeCommandError;
+    type Err = Error;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self> {
         match s {
             "python" => Ok(Language::Python),
             "rust" => Ok(Language::Rust),
-            _ => Err(NodeCommandError::UnsupportedLanguage),
+            _ => Err(Error::UnsupportedLanguage),
         }
     }
 }
