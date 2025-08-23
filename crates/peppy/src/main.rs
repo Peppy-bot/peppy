@@ -34,13 +34,17 @@ enum Commands {
     /// Run the peppy service that listen to node communication, node configuration file changes and also act as a Zenoh router.
     /// This is the background service that runs with the systemd peppy service.
     Serve {
+        /// Messaging engine to use (zenoh by default)
+        #[arg(long, default_value = "zenoh")]
+        engine: String,
+
         /// Host address to bind to
         #[arg(long, default_value = "127.0.0.1")]
-        host: String,
+        host: Option<String>,
 
-        /// Port used for the Messaging router
+        /// Port used for the messaging router
         #[arg(long, default_value = "7447")]
-        port: u16,
+        port: Option<u16>,
     },
     /// Give raw access to pixi commands (e.g. peppy pixi install, peppy pixi list) while using the environment in .peppy rather than .pixi
     Pixi {
@@ -61,7 +65,7 @@ fn main() {
 
     let result = match cli.command {
         Commands::Init { in_dir } => InitCommand { in_dir }.execute(),
-        Commands::Serve { host, port } => ServeCommand { host, port }.execute(),
+        Commands::Serve { engine, host, port } => ServeCommand { engine, host, port }.execute(),
         Commands::Pixi { args } => PixiCommand { args }.execute(),
         Commands::Sync { file } => SyncCommand { file }.execute(),
         Commands::Node { command } => NodeCommand { command }.execute(),

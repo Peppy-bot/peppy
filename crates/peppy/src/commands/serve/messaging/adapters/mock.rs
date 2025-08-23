@@ -126,14 +126,11 @@ impl MessengerBackend for MockAdapter {
 #[cfg(test)]
 mod tests {
     use super::super::super::types::Engine;
-    use crate::commands::serve::messaging::{
-        Message, MessagingConfiguration, Messenger, MessengerBackend,
-    };
+    use crate::commands::serve::messaging::{Message, Messenger, MessengerBackend};
 
     #[tokio::test]
     async fn test_build_messenger() {
-        let config = MessagingConfiguration::new("localhost", 7447).with_engine(Engine::Mock);
-        let mut messenger = Messenger::from_config(config);
+        let mut messenger = Messenger::from_engine(Engine::Mock);
 
         // Must start router before connecting
         assert!(messenger.start_router().await.is_ok());
@@ -143,8 +140,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fail_build_messenger() {
-        let config = MessagingConfiguration::new("localhost", 7447).with_engine(Engine::Mock);
-        let mut messenger = Messenger::from_config(config);
+        let mut messenger = Messenger::from_engine(Engine::Mock);
 
         // Attempt to connect before starting the router
         assert!(!messenger.connect().await.is_ok());
@@ -154,8 +150,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_all_operations() {
-        let config = MessagingConfiguration::new("localhost", 8080).with_engine(Engine::Mock);
-        let mut messenger = Messenger::from_config(config);
+        let mut messenger = Messenger::from_engine(Engine::Mock);
 
         // Test all operations succeed with MockAdapter
         assert!(messenger.start_router().await.is_ok());
@@ -174,27 +169,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_different_configurations() {
-        // Test MockAdapter with different host and port configurations
-        let configs = vec![
-            MessagingConfiguration::new("192.168.1.1", 9999).with_engine(Engine::Mock),
-            MessagingConfiguration::new("example.com", 443).with_engine(Engine::Mock),
-            MessagingConfiguration::new("0.0.0.0", 0).with_engine(Engine::Mock),
-            MessagingConfiguration::new("localhost", 65535).with_engine(Engine::Mock),
-        ];
-
-        for config in configs {
-            let mut messenger = Messenger::from_config(config);
-            // Mock should always succeed regardless of configuration
-            assert!(messenger.start_router().await.is_ok());
-            assert!(messenger.connect().await.is_ok());
-        }
-    }
-
-    #[tokio::test]
     async fn test_subscription_returns_valid_channel() {
-        let config = MessagingConfiguration::new("localhost", 7447).with_engine(Engine::Mock);
-        let mut messenger = Messenger::from_config(config);
+        let mut messenger = Messenger::from_engine(Engine::Mock);
 
         // Must start router and connect first
         assert!(messenger.start_router().await.is_ok());
@@ -213,8 +189,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_subscriptions() {
-        let config = MessagingConfiguration::new("localhost", 7447).with_engine(Engine::Mock);
-        let mut messenger = Messenger::from_config(config);
+        let mut messenger = Messenger::from_engine(Engine::Mock);
 
         // Must start router and connect first
         assert!(messenger.start_router().await.is_ok());
@@ -232,8 +207,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_publish_multiple_messages() {
-        let config = MessagingConfiguration::new("localhost", 7447).with_engine(Engine::Mock);
-        let mut messenger = Messenger::from_config(config);
+        let mut messenger = Messenger::from_engine(Engine::Mock);
 
         // Must start router and connect first
         assert!(messenger.start_router().await.is_ok());
@@ -254,8 +228,7 @@ mod tests {
     #[tokio::test]
     async fn test_factory_creates_mock_correctly() {
         // Test that factory correctly creates MockAdapter when Mock engine is specified
-        let config = MessagingConfiguration::new("test.local", 12345).with_engine(Engine::Mock);
-        let mut messenger = Messenger::from_config(config);
+        let mut messenger = Messenger::from_engine(Engine::Mock);
 
         // These should all succeed if MockAdapter was created properly
         assert!(messenger.start_router().await.is_ok());

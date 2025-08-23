@@ -1,5 +1,5 @@
-use super::messaging::{MessagingConfiguration, Messenger, MessengerBackend};
-use super::types::{AsyncServeSubCommand, CommandContext};
+use super::messaging::{Engine, Messenger, MessengerBackend};
+use super::types::{CommandContext, ServeAsyncCommand};
 use crate::Result;
 use std::thread::{self, JoinHandle};
 
@@ -19,13 +19,13 @@ impl RouterCommand {
     }
 }
 
-impl AsyncServeSubCommand for RouterCommand {
+impl ServeAsyncCommand for RouterCommand {
     fn execute_async(&self) -> Result<JoinHandle<Result<()>>> {
         let context = self.context.clone();
 
         let handle = thread::spawn(move || {
-            let engine_configuration = MessagingConfiguration::new(&context.host, context.port);
-            let messenger = Messenger::from_config(engine_configuration);
+            let engine = Engine::from_str_with_config(&context.engine, context.host, context.port)?;
+            let messenger = Messenger::from_engine(engine);
 
             RouterCommand::start_router(messenger)
         });
