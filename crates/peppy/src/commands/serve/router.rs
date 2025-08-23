@@ -11,6 +11,12 @@ impl RouterCommand {
     pub fn new(context: CommandContext) -> Self {
         Self { context }
     }
+
+    #[tokio::main]
+    async fn start_router(mut messenger: Messenger) -> Result<()> {
+        messenger.start_router().await?;
+        Ok(())
+    }
 }
 
 impl AsyncServeSubCommand for RouterCommand {
@@ -21,15 +27,9 @@ impl AsyncServeSubCommand for RouterCommand {
             let engine_configuration = MessagingConfiguration::new(&context.host, context.port);
             let messenger = Messenger::from_config(engine_configuration);
 
-            start_router(messenger)
+            RouterCommand::start_router(messenger)
         });
 
         Ok(handle)
     }
-}
-
-#[tokio::main]
-async fn start_router(mut messenger: Messenger) -> Result<()> {
-    messenger.start_router().await?;
-    Ok(())
 }

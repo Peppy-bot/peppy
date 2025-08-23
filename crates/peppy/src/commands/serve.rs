@@ -1,7 +1,7 @@
 mod builder;
 mod messaging;
-mod node_watcher_command;
-mod router_command;
+mod node_watcher;
+mod router;
 mod types;
 
 use super::Command;

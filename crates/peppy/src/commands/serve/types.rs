@@ -57,3 +57,27 @@ impl CompositeCommand {
         Ok(handles)
     }
 }
+
+pub struct Serve {
+    composite_command: CompositeCommand,
+}
+
+impl Serve {
+    pub fn new(composite_command: CompositeCommand) -> Self {
+        Self { composite_command }
+    }
+
+    pub fn execute(self) -> crate::Result<()> {
+        let handles = self.composite_command.execute()?;
+
+        for handle in handles {
+            match handle.join() {
+                Err(e) => eprintln!("Thread panicked: {:?}", e),
+                Ok(Err(e)) => eprintln!("Command error: {}", e),
+                Ok(Ok(())) => {}
+            }
+        }
+
+        Ok(())
+    }
+}
