@@ -3,7 +3,6 @@ mod messaging;
 mod node_watcher_command;
 mod router_command;
 mod serve_builder;
-mod types;
 
 use super::Command;
 use crate::Result;

@@ -1,4 +1,4 @@
-use super::super::{Message, MessengerBackend, Subscription};
+use super::super::types::{Message, MessengerBackend, Subscription};
 use crate::{Error, Result};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -140,10 +140,12 @@ impl MessengerBackend for MockAdapter {
     }
 }
 
+// Those tests purpose is to test the behaviour of a real messaging system and check if they map to the behaviour of the mock
 #[cfg(test)]
 mod tests {
-    use crate::commands::serve::messaging::{Message, MessengerBackend};
-    use crate::commands::serve::types::{Engine, MessagingConfiguration, Messenger};
+    use crate::commands::serve::messaging::{
+        Engine, Message, MessagingConfiguration, Messenger, MessengerBackend,
+    };
 
     #[tokio::test]
     async fn test_build_messenger() {
