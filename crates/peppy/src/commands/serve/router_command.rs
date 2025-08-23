@@ -1,6 +1,5 @@
 use super::command_pattern::{AsyncServeSubCommand, CommandContext};
-use super::messaging::MessengerBackend;
-use super::types::{MessagingConfiguration, Messenger};
+use super::messaging::{MessagingConfiguration, Messenger, MessengerBackend};
 use crate::Result;
 use std::thread::{self, JoinHandle};
 
