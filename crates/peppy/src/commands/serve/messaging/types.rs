@@ -1,5 +1,4 @@
 use std::fmt;
-use std::str::FromStr;
 
 use super::adapters::{mock::MockAdapter, zenoh::ZenohAdapter};
 use crate::{Error, Result};
@@ -34,65 +33,51 @@ impl Message {
     }
 }
 
-pub struct MessagingConfiguration {
-    pub engine: Engine,
-    pub host: String,
-    pub port: u16,
-}
-
-impl MessagingConfiguration {
-    pub fn new(host: &str, port: u16) -> Self {
-        Self {
-            engine: Engine::Zenoh, // Default engine
-            host: host.to_string(),
-            port,
-        }
-    }
-
-    pub fn with_engine(mut self, engine: Engine) -> Self {
-        self.engine = engine;
-        self
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Engine {
-    Zenoh,
+    Zenoh { host: String, port: u16 },
     Mock,
 }
 
 impl fmt::Display for Engine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Engine::Zenoh => write!(f, "zenoh"),
+            Engine::Zenoh { .. } => write!(f, "zenoh"),
             Engine::Mock => write!(f, "mock"),
         }
     }
 }
 
-impl FromStr for Engine {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self> {
+impl Engine {
+    pub fn from_str_with_config(s: &str, host: Option<String>, port: Option<u16>) -> Result<Self> {
         match s {
-            "zenoh" => Ok(Engine::Zenoh),
+            "zenoh" => {
+                let host = host.ok_or(Error::MissingEngineConfig)?;
+                let port = port.ok_or(Error::MissingEngineConfig)?;
+                Ok(Engine::Zenoh { host, port })
+            }
+            #[cfg(test)]
             "mock" => Ok(Engine::Mock),
             _ => Err(Error::UnsupportedEngine),
         }
     }
 }
 
-pub enum Messenger {
+pub struct Messenger {
+    adapter: MessengerAdapter,
+}
+
+enum MessengerAdapter {
     Zenoh(ZenohAdapter),
     Mock(MockAdapter),
 }
 
 macro_rules! delegate_to_variant {
     ($self:expr, $method:ident $(, $arg:expr)*) => {
-        match $self {
-            Messenger::Zenoh(adapter) => adapter.$method($($arg),*).await,
-            Messenger::Mock(adapter) => adapter.$method($($arg),*).await,
+        match &mut $self.adapter {
+            MessengerAdapter::Zenoh(adapter) => adapter.$method($($arg),*).await,
+            MessengerAdapter::Mock(adapter) => adapter.$method($($arg),*).await,
         }
     };
 }
@@ -108,11 +93,17 @@ impl MessengerBackend for Messenger {
     }
 
     async fn publish(&self, message: Message) -> Result<()> {
-        delegate_to_variant!(self, publish, message)
+        match &self.adapter {
+            MessengerAdapter::Zenoh(adapter) => adapter.publish(message).await,
+            MessengerAdapter::Mock(adapter) => adapter.publish(message).await,
+        }
     }
 
     async fn subscribe(&self, topic: &str) -> Result<Subscription> {
-        delegate_to_variant!(self, subscribe, topic)
+        match &self.adapter {
+            MessengerAdapter::Zenoh(adapter) => adapter.subscribe(topic).await,
+            MessengerAdapter::Mock(adapter) => adapter.subscribe(topic).await,
+        }
     }
 
     async fn shutdown(&mut self) -> Result<()> {
@@ -121,12 +112,58 @@ impl MessengerBackend for Messenger {
 }
 
 impl Messenger {
-    pub fn from_config(configuration: MessagingConfiguration) -> Self {
-        match configuration.engine {
-            Engine::Zenoh => {
-                Messenger::Zenoh(ZenohAdapter::new(configuration.host, configuration.port))
+    pub fn from_engine(engine: Engine) -> Self {
+        let adapter = match engine {
+            Engine::Zenoh { host, port } => MessengerAdapter::Zenoh(ZenohAdapter::new(host, port)),
+            Engine::Mock => MessengerAdapter::Mock(MockAdapter::default()),
+        };
+        Self { adapter }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_only_zenoh_engine_allowed() {
+        // Test that zenoh engine is accepted
+        let result =
+            Engine::from_str_with_config("zenoh", Some("localhost".to_string()), Some(8080));
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            Engine::Zenoh {
+                host: "localhost".to_string(),
+                port: 8080
             }
-            Engine::Mock => Messenger::Mock(MockAdapter::default()),
-        }
+        );
+
+        // Test that mock engine is allowed in test mode
+        let result = Engine::from_str_with_config("mock", None, None);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Engine::Mock);
+
+        // Test that any other engine is rejected
+        let result =
+            Engine::from_str_with_config("rabbitmq", Some("localhost".to_string()), Some(5672));
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::UnsupportedEngine));
+    }
+
+    #[test]
+    fn test_zenoh_requires_config() {
+        // Test that zenoh requires host and port
+        let result = Engine::from_str_with_config("zenoh", None, Some(8080));
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::MissingEngineConfig));
+
+        let result = Engine::from_str_with_config("zenoh", Some("localhost".to_string()), None);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::MissingEngineConfig));
+
+        let result = Engine::from_str_with_config("zenoh", None, None);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::MissingEngineConfig));
     }
 }

@@ -1,4 +1,4 @@
-use super::types::{AsyncServeSubCommand, CommandContext};
+use super::types::{CommandContext, ServeAsyncCommand};
 use crate::Result;
 use std::thread::{self, JoinHandle};
 
@@ -31,7 +31,7 @@ impl NodeWatcherCommand {
     }
 }
 
-impl AsyncServeSubCommand for NodeWatcherCommand {
+impl ServeAsyncCommand for NodeWatcherCommand {
     fn execute_async(&self) -> Result<JoinHandle<Result<()>>> {
         let _context = self.context.clone();
 

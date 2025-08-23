@@ -10,6 +10,7 @@ pub enum Error {
 
     // -- serve
     UnsupportedEngine,
+    MissingEngineConfig,
 
     // -- commands
     ExecutionFailed(String),

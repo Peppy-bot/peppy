@@ -9,8 +9,8 @@ pub struct ServeCommandBuilder {
 }
 
 impl ServeCommandBuilder {
-    pub fn new(host: String, port: u16) -> Self {
-        let context = CommandContext::new(host, port);
+    pub fn new(engine: String, host: Option<String>, port: Option<u16>) -> Self {
+        let context = CommandContext::new(host, port, engine);
         Self {
             context,
             composite_command: CompositeCommand::new(),

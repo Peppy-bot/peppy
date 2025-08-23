@@ -1,29 +1,30 @@
 use crate::Result;
 use std::thread::JoinHandle;
 
-pub trait ServeSubCommand: Send + Sync {
+pub trait ServeSyncCommand: Send + Sync {
     fn execute(&self) -> Result<()>;
 }
 
-pub trait AsyncServeSubCommand: Send + Sync {
+pub trait ServeAsyncCommand: Send + Sync {
     fn execute_async(&self) -> Result<JoinHandle<Result<()>>>;
 }
 
 #[derive(Clone)]
 pub struct CommandContext {
-    pub host: String,
-    pub port: u16,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub engine: String,
 }
 
 impl CommandContext {
-    pub fn new(host: String, port: u16) -> Self {
-        Self { host, port }
+    pub fn new(host: Option<String>, port: Option<u16>, engine: String) -> Self {
+        Self { host, port, engine }
     }
 }
 
 pub struct CompositeCommand {
-    commands: Vec<Box<dyn ServeSubCommand>>,
-    async_commands: Vec<Box<dyn AsyncServeSubCommand>>,
+    commands: Vec<Box<dyn ServeSyncCommand>>,
+    async_commands: Vec<Box<dyn ServeAsyncCommand>>,
 }
 
 impl CompositeCommand {
@@ -34,12 +35,12 @@ impl CompositeCommand {
         }
     }
 
-    pub fn add_command(mut self, command: Box<dyn ServeSubCommand>) -> Self {
+    pub fn _add_command(mut self, command: Box<dyn ServeSyncCommand>) -> Self {
         self.commands.push(command);
         self
     }
 
-    pub fn add_async_command(mut self, command: Box<dyn AsyncServeSubCommand>) -> Self {
+    pub fn add_async_command(mut self, command: Box<dyn ServeAsyncCommand>) -> Self {
         self.async_commands.push(command);
         self
     }
