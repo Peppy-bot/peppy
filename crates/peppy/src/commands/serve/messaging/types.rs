@@ -36,7 +36,11 @@ impl Message {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Engine {
-    Zenoh { host: String, port: u16 },
+    Zenoh {
+        host: String,
+        port: u16,
+    },
+    #[cfg(test)]
     Mock,
 }
 
@@ -44,6 +48,7 @@ impl fmt::Display for Engine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Engine::Zenoh { .. } => write!(f, "zenoh"),
+            #[cfg(test)]
             Engine::Mock => write!(f, "mock"),
         }
     }
@@ -70,13 +75,22 @@ pub struct Messenger {
 
 enum MessengerAdapter {
     Zenoh(ZenohAdapter),
+    #[cfg(test)]
     Mock(MockAdapter),
 }
 
 macro_rules! delegate_to_variant {
-    ($self:expr, $method:ident $(, $arg:expr)*) => {
+    (mut $self:expr, $method:ident $(, $arg:expr)*) => {
         match &mut $self.adapter {
             MessengerAdapter::Zenoh(adapter) => adapter.$method($($arg),*).await,
+            #[cfg(test)]
+            MessengerAdapter::Mock(adapter) => adapter.$method($($arg),*).await,
+        }
+    };
+    ($self:expr, $method:ident $(, $arg:expr)*) => {
+        match &$self.adapter {
+            MessengerAdapter::Zenoh(adapter) => adapter.$method($($arg),*).await,
+            #[cfg(test)]
             MessengerAdapter::Mock(adapter) => adapter.$method($($arg),*).await,
         }
     };
@@ -85,29 +99,23 @@ macro_rules! delegate_to_variant {
 #[async_trait]
 impl MessengerBackend for Messenger {
     async fn start_router(&mut self) -> Result<()> {
-        delegate_to_variant!(self, start_router)
+        delegate_to_variant!(mut self, start_router)
     }
 
     async fn connect(&mut self) -> Result<()> {
-        delegate_to_variant!(self, connect)
+        delegate_to_variant!(mut self, connect)
     }
 
     async fn publish(&self, message: Message) -> Result<()> {
-        match &self.adapter {
-            MessengerAdapter::Zenoh(adapter) => adapter.publish(message).await,
-            MessengerAdapter::Mock(adapter) => adapter.publish(message).await,
-        }
+        delegate_to_variant!(self, publish, message)
     }
 
     async fn subscribe(&self, topic: &str) -> Result<Subscription> {
-        match &self.adapter {
-            MessengerAdapter::Zenoh(adapter) => adapter.subscribe(topic).await,
-            MessengerAdapter::Mock(adapter) => adapter.subscribe(topic).await,
-        }
+        delegate_to_variant!(self, subscribe, topic)
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        delegate_to_variant!(self, shutdown)
+        delegate_to_variant!(mut self, shutdown)
     }
 }
 
@@ -115,6 +123,7 @@ impl Messenger {
     pub fn from_engine(engine: Engine) -> Self {
         let adapter = match engine {
             Engine::Zenoh { host, port } => MessengerAdapter::Zenoh(ZenohAdapter::new(host, port)),
+            #[cfg(test)]
             Engine::Mock => MessengerAdapter::Mock(MockAdapter::default()),
         };
         Self { adapter }
@@ -129,13 +138,13 @@ mod tests {
     fn test_only_zenoh_engine_allowed() {
         // Test that zenoh engine is accepted
         let result =
-            Engine::from_str_with_config("zenoh", Some("localhost".to_string()), Some(8080));
+            Engine::from_str_with_config("zenoh", Some("localhost".to_string()), Some(7447));
         assert!(result.is_ok());
         assert_eq!(
             result.unwrap(),
             Engine::Zenoh {
                 host: "localhost".to_string(),
-                port: 8080
+                port: 7447
             }
         );
 
