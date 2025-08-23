@@ -1,5 +1,6 @@
-use super::node_watcher_command::NodeWatcherCommand;
-use super::router_command::RouterCommand;
+use super::node_watcher::NodeWatcherCommand;
+use super::router::RouterCommand;
+use super::types::Serve;
 use super::types::{CommandContext, CompositeCommand};
 
 pub struct ServeCommandBuilder {
@@ -28,31 +29,7 @@ impl ServeCommandBuilder {
         self
     }
 
-    pub fn build(self) -> ServeExecutor {
-        ServeExecutor::new(self.composite_command)
-    }
-}
-
-pub struct ServeExecutor {
-    composite_command: CompositeCommand,
-}
-
-impl ServeExecutor {
-    fn new(composite_command: CompositeCommand) -> Self {
-        Self { composite_command }
-    }
-
-    pub fn execute(self) -> crate::Result<()> {
-        let handles = self.composite_command.execute()?;
-
-        for handle in handles {
-            match handle.join() {
-                Err(e) => eprintln!("Thread panicked: {:?}", e),
-                Ok(Err(e)) => eprintln!("Command error: {}", e),
-                Ok(Ok(())) => {}
-            }
-        }
-
-        Ok(())
+    pub fn build(self) -> Serve {
+        Serve::new(self.composite_command)
     }
 }

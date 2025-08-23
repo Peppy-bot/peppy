@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
+#[allow(dead_code)]
 pub struct MockAdapter {
     is_connected: bool,
     is_router_started: bool,
@@ -22,25 +23,6 @@ impl Default for MockAdapter {
             messages: Arc::new(Mutex::new(HashMap::new())),
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
         }
-    }
-}
-
-impl MockAdapter {
-    fn is_connected(&self) -> bool {
-        self.is_connected
-    }
-
-    fn is_router_started(&self) -> bool {
-        self.is_router_started
-    }
-
-    fn get_messages(&self, topic: &str) -> Vec<Message> {
-        self.messages
-            .lock()
-            .unwrap()
-            .get(topic)
-            .cloned()
-            .unwrap_or_default()
     }
 }
 
@@ -143,8 +125,9 @@ impl MessengerBackend for MockAdapter {
 // Those tests purpose is to test the behaviour of a real messaging system and check if they map to the behaviour of the mock
 #[cfg(test)]
 mod tests {
+    use super::super::super::types::Engine;
     use crate::commands::serve::messaging::{
-        Engine, Message, MessagingConfiguration, Messenger, MessengerBackend,
+        Message, MessagingConfiguration, Messenger, MessengerBackend,
     };
 
     #[tokio::test]
