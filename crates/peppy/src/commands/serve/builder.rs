@@ -1,6 +1,6 @@
-use super::command_pattern::{CommandContext, CompositeCommand};
 use super::node_watcher_command::NodeWatcherCommand;
 use super::router_command::RouterCommand;
+use super::types::{CommandContext, CompositeCommand};
 
 pub struct ServeCommandBuilder {
     context: CommandContext,
