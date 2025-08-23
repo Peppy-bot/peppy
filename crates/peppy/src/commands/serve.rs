@@ -1,12 +1,12 @@
-mod command_pattern;
+mod builder;
 mod messaging;
 mod node_watcher_command;
 mod router_command;
-mod serve_builder;
+mod types;
 
 use super::Command;
 use crate::Result;
-use serve_builder::ServeCommandBuilder;
+use builder::ServeCommandBuilder;
 
 pub struct ServeCommand {
     pub host: String,
