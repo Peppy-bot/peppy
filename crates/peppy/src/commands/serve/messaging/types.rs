@@ -1,6 +1,8 @@
 use std::fmt;
 
-use super::adapters::{mock::MockAdapter, zenoh::ZenohAdapter};
+#[cfg(test)]
+use super::adapters::mock::MockAdapter;
+use super::adapters::zenoh::ZenohAdapter;
 use crate::{Error, Result};
 use async_trait::async_trait;
 
