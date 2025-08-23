@@ -1,11 +1,13 @@
+mod command_pattern;
 mod messaging;
-mod node_watcher;
+mod node_watcher_command;
+mod router_command;
+mod serve_builder;
 mod types;
 
 use super::Command;
 use crate::Result;
-use messaging::MessengerBackend;
-use types::{MessagingConfiguration, Messenger};
+use serve_builder::ServeCommandBuilder;
 
 pub struct ServeCommand {
     pub host: String,
@@ -15,34 +17,20 @@ pub struct ServeCommand {
 impl Command for ServeCommand {
     fn execute(self) -> Result<()> {
         println!("Launching nodes on: {}:{}", &self.host, self.port);
-        handle_serve(MessagingConfiguration::new(&self.host, self.port));
-        Ok(())
-    }
-}
+        // TODO Run a separate thread that listen to Zenoh communication so that it can internally create a map of those communication between nodes
+        // TODO Run a separate thread that is a web server API that display the node communication, node list etc...
 
-#[tokio::main]
-async fn start_router(mut messenger: Messenger) -> Result<()> {
-    messenger.start_router().await?;
-    Ok(())
-}
+        let executor = ServeCommandBuilder::new(self.host, self.port)
+            .with_node_watcher()
+            .with_messaging_router()
+            // Future commands can be added here:
+            // .with_async_command(Arc::new(ZenohListenerCommand::new(...)))
+            // .with_async_command(Arc::new(WebApiCommand::new(...)))
+            .build();
 
-pub fn handle_serve(engine_configuration: MessagingConfiguration) {
-    node_watcher::watch_node_configuration_files_changes();
-
-    let messenger = Messenger::from_config(engine_configuration);
-
-    // Start the Zenoh router
-    let router_thread = std::thread::spawn(move || {
-        if let Err(e) = start_router(messenger) {
-            eprintln!("Router error: {}", e);
+        if let Err(e) = executor.execute() {
+            eprintln!("Serve command failed: {}", e);
         }
-    });
-
-    // Run a separate thread that listen to Zenoh communication so that it can internally create a map of those communication between nodes
-    // Run a separate thread that is a web server API that display the node communication, node list etc...
-
-    // Wait for router thread to complete
-    if let Err(e) = router_thread.join() {
-        eprintln!("Router thread panicked: {:?}", e);
+        Ok(())
     }
 }
