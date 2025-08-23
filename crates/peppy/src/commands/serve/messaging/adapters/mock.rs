@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
-#[allow(dead_code)]
 pub struct MockAdapter {
     is_connected: bool,
     is_router_started: bool,
