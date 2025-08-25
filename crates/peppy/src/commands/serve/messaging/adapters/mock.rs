@@ -1,6 +1,5 @@
 use super::super::types::{Message, MessengerBackend, Subscription};
 use crate::{Error, Result};
-use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -25,7 +24,6 @@ impl Default for MockAdapter {
     }
 }
 
-#[async_trait]
 impl MessengerBackend for MockAdapter {
     async fn start_router(&mut self) -> Result<()> {
         self.is_router_started = true;

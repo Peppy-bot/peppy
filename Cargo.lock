@@ -2087,7 +2087,6 @@ name = "peppy"
 version = "0.0.1"
 dependencies = [
  "askama",
- "async-trait",
  "bytes",
  "capnp",
  "clap",

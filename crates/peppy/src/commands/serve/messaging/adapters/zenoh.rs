@@ -1,6 +1,5 @@
 use super::super::{Message, MessengerBackend, Subscription};
 use crate::Result;
-use async_trait::async_trait;
 
 pub struct ZenohAdapter {
     // hold zenoh session, pubs, subs, etc.
@@ -23,7 +22,6 @@ impl Default for ZenohAdapter {
     }
 }
 
-#[async_trait]
 impl MessengerBackend for ZenohAdapter {
     async fn start_router(&mut self) -> Result<()> {
         // start a Zenoh router session
