@@ -71,29 +71,18 @@ impl Engine {
     }
 }
 
-pub struct Messenger {
-    adapter: MessengerAdapter,
-}
-
-enum MessengerAdapter {
+pub enum Messenger {
     Zenoh(ZenohAdapter),
     #[cfg(test)]
     Mock(MockAdapter),
 }
 
-macro_rules! delegate_to_variant {
-    (mut $self:expr, $method:ident $(, $arg:expr)*) => {
-        match &mut $self.adapter {
-            MessengerAdapter::Zenoh(adapter) => adapter.$method($($arg),*).await,
-            #[cfg(test)]
-            MessengerAdapter::Mock(adapter) => adapter.$method($($arg),*).await,
-        }
-    };
+macro_rules! dispatch {
     ($self:expr, $method:ident $(, $arg:expr)*) => {
-        match &$self.adapter {
-            MessengerAdapter::Zenoh(adapter) => adapter.$method($($arg),*).await,
+        match $self {
+            Messenger::Zenoh(adapter) => adapter.$method($($arg),*).await,
             #[cfg(test)]
-            MessengerAdapter::Mock(adapter) => adapter.$method($($arg),*).await,
+            Messenger::Mock(adapter) => adapter.$method($($arg),*).await,
         }
     };
 }
@@ -101,34 +90,33 @@ macro_rules! delegate_to_variant {
 #[async_trait]
 impl MessengerBackend for Messenger {
     async fn start_router(&mut self) -> Result<()> {
-        delegate_to_variant!(mut self, start_router)
+        dispatch!(self, start_router)
     }
 
     async fn connect(&mut self) -> Result<()> {
-        delegate_to_variant!(mut self, connect)
+        dispatch!(self, connect)
     }
 
     async fn publish(&self, message: Message) -> Result<()> {
-        delegate_to_variant!(self, publish, message)
+        dispatch!(self, publish, message)
     }
 
     async fn subscribe(&self, topic: &str) -> Result<Subscription> {
-        delegate_to_variant!(self, subscribe, topic)
+        dispatch!(self, subscribe, topic)
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        delegate_to_variant!(mut self, shutdown)
+        dispatch!(self, shutdown)
     }
 }
 
 impl Messenger {
     pub fn from_engine(engine: Engine) -> Self {
-        let adapter = match engine {
-            Engine::Zenoh { host, port } => MessengerAdapter::Zenoh(ZenohAdapter::new(host, port)),
+        match engine {
+            Engine::Zenoh { host, port } => Messenger::Zenoh(ZenohAdapter::new(host, port)),
             #[cfg(test)]
-            Engine::Mock => MessengerAdapter::Mock(MockAdapter::default()),
-        };
-        Self { adapter }
+            Engine::Mock => Messenger::Mock(MockAdapter::default()),
+        }
     }
 }
 
