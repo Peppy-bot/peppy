@@ -4,9 +4,7 @@ use std::fmt;
 use super::adapters::mock::MockAdapter;
 use super::adapters::zenoh::ZenohAdapter;
 use crate::{Error, Result};
-use async_trait::async_trait;
 
-#[async_trait]
 pub trait MessengerBackend: Send + Sync {
     async fn start_router(&mut self) -> Result<()>;
     async fn connect(&mut self) -> Result<()>;
@@ -87,7 +85,6 @@ macro_rules! dispatch {
     };
 }
 
-#[async_trait]
 impl MessengerBackend for Messenger {
     async fn start_router(&mut self) -> Result<()> {
         dispatch!(self, start_router)
