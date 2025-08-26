@@ -57,11 +57,11 @@ impl fmt::Display for Engine {
 }
 
 impl Engine {
-    pub fn from_str_with_config(s: &str, host: Option<String>, port: Option<u16>) -> Result<Self> {
-        match s {
+    pub fn from_context(context: &CommandContext) -> Result<Self> {
+        match context.engine.as_str() {
             "zenoh" => {
-                let host = host.ok_or(Error::MissingEngineConfig)?;
-                let port = port.ok_or(Error::MissingEngineConfig)?;
+                let host = context.host.clone().ok_or(Error::MissingEngineConfig)?;
+                let port = context.port.ok_or(Error::MissingEngineConfig)?;
                 Ok(Engine::Zenoh { host, port })
             }
             #[cfg(test)]
@@ -84,8 +84,7 @@ enum MessengerAdapter {
 
 impl Messenger {
     pub fn new(context: CommandContext) -> Result<Self> {
-        let engine =
-            Engine::from_str_with_config(&context.engine, context.host.clone(), context.port)?;
+        let engine = Engine::from_context(&context)?;
         let adapter = match engine {
             Engine::Zenoh { host, port } => MessengerAdapter::Zenoh(ZenohAdapter::new(host, port)),
             #[cfg(test)]
@@ -153,8 +152,12 @@ mod tests {
     #[test]
     fn test_only_zenoh_engine_allowed() {
         // Test that zenoh engine is accepted
-        let result =
-            Engine::from_str_with_config("zenoh", Some("localhost".to_string()), Some(7447));
+        let context = CommandContext::new(
+            Some("localhost".to_string()),
+            Some(7447),
+            "zenoh".to_string(),
+        );
+        let result = Engine::from_context(&context);
         assert!(result.is_ok());
         assert_eq!(
             result.unwrap(),
@@ -165,13 +168,18 @@ mod tests {
         );
 
         // Test that mock engine is allowed in test mode
-        let result = Engine::from_str_with_config("mock", None, None);
+        let context = CommandContext::new(None, None, "mock".to_string());
+        let result = Engine::from_context(&context);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Engine::Mock);
 
         // Test that any other engine is rejected
-        let result =
-            Engine::from_str_with_config("rabbitmq", Some("localhost".to_string()), Some(5672));
+        let context = CommandContext::new(
+            Some("localhost".to_string()),
+            Some(5672),
+            "rabbitmq".to_string(),
+        );
+        let result = Engine::from_context(&context);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::UnsupportedEngine));
     }
@@ -179,15 +187,18 @@ mod tests {
     #[test]
     fn test_zenoh_requires_config() {
         // Test that zenoh requires host and port
-        let result = Engine::from_str_with_config("zenoh", None, Some(8080));
+        let context = CommandContext::new(None, Some(8080), "zenoh".to_string());
+        let result = Engine::from_context(&context);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::MissingEngineConfig));
 
-        let result = Engine::from_str_with_config("zenoh", Some("localhost".to_string()), None);
+        let context = CommandContext::new(Some("localhost".to_string()), None, "zenoh".to_string());
+        let result = Engine::from_context(&context);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::MissingEngineConfig));
 
-        let result = Engine::from_str_with_config("zenoh", None, None);
+        let context = CommandContext::new(None, None, "zenoh".to_string());
+        let result = Engine::from_context(&context);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::MissingEngineConfig));
     }
