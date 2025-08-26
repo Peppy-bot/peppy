@@ -1,5 +1,5 @@
+use super::messaging::Messenger;
 use super::node_watcher::NodeWatcherCommand;
-use super::router::RouterCommand;
 use super::types::Serve;
 use super::types::{CommandContext, CompositeCommand};
 
@@ -24,8 +24,11 @@ impl ServeCommandBuilder {
     }
 
     pub fn with_messaging_router(mut self) -> Self {
-        let router = Box::new(RouterCommand::new(self.context.clone()));
-        self.composite_command = self.composite_command.add_async_command(router);
+        let messenger = Box::new(
+            Messenger::new(self.context.clone())
+                .expect("Failed to create messenger with given context"),
+        );
+        self.composite_command = self.composite_command.add_async_command(messenger);
         self
     }
 
