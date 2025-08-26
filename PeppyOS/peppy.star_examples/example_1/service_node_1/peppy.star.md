@@ -6,6 +6,7 @@ def create_video_stream_api():
     """Turns the received frames into a video feed"""
     return struct(
         namespace = "/",
+        version = "0.1.0",
 
         # Subscribed topics
         subscribes_to = [

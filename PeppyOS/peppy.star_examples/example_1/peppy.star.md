@@ -11,6 +11,7 @@ def create_root_node():
     """Creates and returns the root node configuration."""
     return struct(
         namespace = "/",
+        version = "0.1.0",
 
         # Node lifecycle settings
         auto_start = True,
