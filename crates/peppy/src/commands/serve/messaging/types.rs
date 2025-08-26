@@ -1,8 +1,10 @@
 use std::fmt;
+use std::thread::{self, JoinHandle};
 
 #[cfg(test)]
 use super::adapters::mock::MockAdapter;
 use super::adapters::zenoh::ZenohAdapter;
+use crate::commands::serve::types::{CommandContext, ServeAsyncCommand};
 use crate::{Error, Result};
 
 pub trait MessengerBackend: Send + Sync {
@@ -69,51 +71,78 @@ impl Engine {
     }
 }
 
-pub enum Messenger {
+pub struct Messenger {
+    adapter: MessengerAdapter,
+    context: CommandContext,
+}
+
+enum MessengerAdapter {
     Zenoh(ZenohAdapter),
     #[cfg(test)]
     Mock(MockAdapter),
 }
 
-macro_rules! dispatch {
-    ($self:expr, $method:ident $(, $arg:expr)*) => {
-        match $self {
-            Messenger::Zenoh(adapter) => adapter.$method($($arg),*).await,
+impl Messenger {
+    pub fn new(context: CommandContext) -> Result<Self> {
+        let engine =
+            Engine::from_str_with_config(&context.engine, context.host.clone(), context.port)?;
+        let adapter = match engine {
+            Engine::Zenoh { host, port } => MessengerAdapter::Zenoh(ZenohAdapter::new(host, port)),
             #[cfg(test)]
-            Messenger::Mock(adapter) => adapter.$method($($arg),*).await,
+            Engine::Mock => MessengerAdapter::Mock(MockAdapter::default()),
+        };
+        Ok(Self { adapter, context })
+    }
+
+    #[tokio::main]
+    async fn run_router(mut self) -> Result<()> {
+        self.start_router().await?;
+        Ok(())
+    }
+}
+
+impl ServeAsyncCommand for Messenger {
+    fn execute_async(&self) -> Result<JoinHandle<Result<()>>> {
+        let context = self.context.clone();
+
+        let handle = thread::spawn(move || {
+            let messenger = Messenger::new(context)?;
+            messenger.run_router()
+        });
+
+        Ok(handle)
+    }
+}
+
+macro_rules! dispatch {
+    ($adapter:expr, $method:ident $(, $arg:expr)*) => {
+        match $adapter {
+            MessengerAdapter::Zenoh(adapter) => adapter.$method($($arg),*).await,
+            #[cfg(test)]
+            MessengerAdapter::Mock(adapter) => adapter.$method($($arg),*).await,
         }
     };
 }
 
 impl MessengerBackend for Messenger {
     async fn start_router(&mut self) -> Result<()> {
-        dispatch!(self, start_router)
+        dispatch!(&mut self.adapter, start_router)
     }
 
     async fn connect(&mut self) -> Result<()> {
-        dispatch!(self, connect)
+        dispatch!(&mut self.adapter, connect)
     }
 
     async fn publish(&self, message: Message) -> Result<()> {
-        dispatch!(self, publish, message)
+        dispatch!(&self.adapter, publish, message)
     }
 
     async fn subscribe(&self, topic: &str) -> Result<Subscription> {
-        dispatch!(self, subscribe, topic)
+        dispatch!(&self.adapter, subscribe, topic)
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        dispatch!(self, shutdown)
-    }
-}
-
-impl Messenger {
-    pub fn from_engine(engine: Engine) -> Self {
-        match engine {
-            Engine::Zenoh { host, port } => Messenger::Zenoh(ZenohAdapter::new(host, port)),
-            #[cfg(test)]
-            Engine::Mock => Messenger::Mock(MockAdapter::default()),
-        }
+        dispatch!(&mut self.adapter, shutdown)
     }
 }
 

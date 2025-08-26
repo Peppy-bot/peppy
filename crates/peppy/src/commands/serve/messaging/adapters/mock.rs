@@ -122,12 +122,17 @@ impl MessengerBackend for MockAdapter {
 // Those tests purpose is to test the behaviour of a real messaging system and check if they map to the behaviour of the mock
 #[cfg(test)]
 mod tests {
-    use super::super::super::types::Engine;
     use crate::commands::serve::messaging::{Message, Messenger, MessengerBackend};
+    use crate::commands::serve::types::CommandContext;
+
+    fn create_test_messenger() -> Messenger {
+        let context = CommandContext::new(None, None, "mock".to_string());
+        Messenger::new(context).unwrap()
+    }
 
     #[tokio::test]
     async fn test_build_messenger() {
-        let mut messenger = Messenger::from_engine(Engine::Mock);
+        let mut messenger = create_test_messenger();
 
         // Must start router before connecting
         assert!(messenger.start_router().await.is_ok());
@@ -137,7 +142,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fail_build_messenger() {
-        let mut messenger = Messenger::from_engine(Engine::Mock);
+        let mut messenger = create_test_messenger();
 
         // Attempt to connect before starting the router
         assert!(!messenger.connect().await.is_ok());
@@ -147,19 +152,27 @@ mod tests {
 
     #[tokio::test]
     async fn test_all_operations() {
-        let mut messenger = Messenger::from_engine(Engine::Mock);
+        let mut messenger = create_test_messenger();
 
         // Test all operations succeed with MockAdapter
         assert!(messenger.start_router().await.is_ok());
         assert!(messenger.connect().await.is_ok());
 
-        // Test publish
-        let message = Message::new("test/topic", b"test payload");
-        assert!(messenger.publish(message).await.is_ok());
-
-        // Test subscribe
+        // Test subscribe first
         let subscription = messenger.subscribe("test/topic").await;
         assert!(subscription.is_ok());
+        let mut subscription = subscription.unwrap();
+
+        // Test publish
+        let message = Message::new("test/topic", b"test payload");
+        assert!(messenger.publish(message.clone()).await.is_ok());
+
+        // Verify subscription receives the published message
+        let received = subscription.rx.recv().await;
+        assert!(received.is_some());
+        let received_msg = received.unwrap();
+        assert_eq!(received_msg.topic, message.topic);
+        assert_eq!(received_msg.payload, message.payload);
 
         // Test shutdown
         assert!(messenger.shutdown().await.is_ok());
@@ -167,7 +180,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_subscription_returns_valid_channel() {
-        let mut messenger = Messenger::from_engine(Engine::Mock);
+        let mut messenger = create_test_messenger();
 
         // Must start router and connect first
         assert!(messenger.start_router().await.is_ok());
@@ -186,7 +199,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_subscriptions() {
-        let mut messenger = Messenger::from_engine(Engine::Mock);
+        let mut messenger = create_test_messenger();
 
         // Must start router and connect first
         assert!(messenger.start_router().await.is_ok());
@@ -204,7 +217,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_publish_multiple_messages() {
-        let mut messenger = Messenger::from_engine(Engine::Mock);
+        let mut messenger = create_test_messenger();
 
         // Must start router and connect first
         assert!(messenger.start_router().await.is_ok());
@@ -225,7 +238,7 @@ mod tests {
     #[tokio::test]
     async fn test_factory_creates_mock_correctly() {
         // Test that factory correctly creates MockAdapter when Mock engine is specified
-        let mut messenger = Messenger::from_engine(Engine::Mock);
+        let mut messenger = create_test_messenger();
 
         // These should all succeed if MockAdapter was created properly
         assert!(messenger.start_router().await.is_ok());
