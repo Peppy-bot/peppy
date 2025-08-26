@@ -27,7 +27,7 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "peppy.star_examples/example_1/peppy.star.md",
+                "file": "peppy.star_examples/example_1/service_node_1/peppy.star.md",
                 "mode": "source",
                 "source": false
               },
@@ -185,14 +185,14 @@
   },
   "active": "64b4e8ef76784234",
   "lastOpenFiles": [
+    "peppy.star_examples/example_1/Readme.md",
+    "peppy.star_examples/example_1/peppy.star.md",
     "peppy.star_examples/example_1/service_node_1/peppy.star.md",
     "peppy.star_examples/example_1/emitting_node_1/peppy.star.md",
-    "peppy.star_examples/example_1/peppy.star.md",
     "peppy.star_examples/example_1/service_node_1/peppy.star",
     "peppy.star_examples/example_1/emitting_node_1/peppy.star",
     "peppy.star_examples/example_1/peppy.star",
     "PeppyOS.md",
-    "peppy.star_examples/example_1/Readme.md",
     "peppy.star_examples/example_1/service_node_1",
     "peppy.star_examples/example_1/emitting_node_1",
     "peppy.star_examples/example_1",
