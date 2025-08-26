@@ -39,7 +39,7 @@ enum Commands {
         engine: String,
 
         /// Host address to bind to
-        #[arg(long, default_value = "127.0.0.1")]
+        #[arg(long, default_value = "0.0.0.0")]
         host: Option<String>,
 
         /// Port used for the messaging router

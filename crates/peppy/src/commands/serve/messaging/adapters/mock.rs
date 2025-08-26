@@ -126,7 +126,7 @@ mod tests {
     use crate::commands::serve::types::CommandContext;
 
     fn create_test_messenger() -> Messenger {
-        let context = CommandContext::new(None, None, "mock".to_string());
+        let context = CommandContext::new("mock".to_string(), None, None);
         Messenger::new(context).unwrap()
     }
 

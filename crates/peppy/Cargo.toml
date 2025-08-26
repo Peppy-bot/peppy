@@ -21,6 +21,8 @@ service-manager = "0.8.0"
 tempfile = "3.8"
 
 [features]
-default = ["build_pixi"]
+default = ["build_pixi", "build_zenoh"]
 # Feature to enable building pixi from source
 build_pixi = []
+# Feature to enable building zenoh from source
+build_zenoh = []

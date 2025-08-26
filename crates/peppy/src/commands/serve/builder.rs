@@ -10,7 +10,7 @@ pub struct ServeCommandBuilder {
 
 impl ServeCommandBuilder {
     pub fn new(engine: String, host: Option<String>, port: Option<u16>) -> Self {
-        let context = CommandContext::new(host, port, engine);
+        let context = CommandContext::new(engine, host, port);
         Self {
             context,
             composite_command: CompositeCommand::new(),
