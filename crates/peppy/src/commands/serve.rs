@@ -1,11 +1,14 @@
+pub mod messaging;
+
 mod builder;
-mod messaging;
 mod node_watcher;
 mod types;
 
 use super::Command;
 use crate::Result;
 use builder::ServeCommandBuilder;
+
+pub use types::CommandContext;
 
 pub struct ServeCommand {
     pub engine: String,

@@ -153,9 +153,9 @@ mod tests {
     fn test_only_zenoh_engine_allowed() {
         // Test that zenoh engine is accepted
         let context = CommandContext::new(
+            "zenoh".to_string(),
             Some("localhost".to_string()),
             Some(7447),
-            "zenoh".to_string(),
         );
         let result = Engine::from_context(&context);
         assert!(result.is_ok());
@@ -168,16 +168,16 @@ mod tests {
         );
 
         // Test that mock engine is allowed in test mode
-        let context = CommandContext::new(None, None, "mock".to_string());
+        let context = CommandContext::new("mock".to_string(), None, None);
         let result = Engine::from_context(&context);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Engine::Mock);
 
         // Test that any other engine is rejected
         let context = CommandContext::new(
+            "rabbitmq".to_string(),
             Some("localhost".to_string()),
             Some(5672),
-            "rabbitmq".to_string(),
         );
         let result = Engine::from_context(&context);
         assert!(result.is_err());
@@ -187,17 +187,17 @@ mod tests {
     #[test]
     fn test_zenoh_requires_config() {
         // Test that zenoh requires host and port
-        let context = CommandContext::new(None, Some(8080), "zenoh".to_string());
+        let context = CommandContext::new("zenoh".to_string(), None, Some(8080));
         let result = Engine::from_context(&context);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::MissingEngineConfig));
 
-        let context = CommandContext::new(Some("localhost".to_string()), None, "zenoh".to_string());
+        let context = CommandContext::new("zenoh".to_string(), Some("localhost".to_string()), None);
         let result = Engine::from_context(&context);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::MissingEngineConfig));
 
-        let context = CommandContext::new(None, None, "zenoh".to_string());
+        let context = CommandContext::new("zenoh".to_string(), None, None);
         let result = Engine::from_context(&context);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::MissingEngineConfig));

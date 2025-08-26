@@ -17,7 +17,7 @@ pub struct CommandContext {
 }
 
 impl CommandContext {
-    pub fn new(host: Option<String>, port: Option<u16>, engine: String) -> Self {
+    pub fn new(engine: String, host: Option<String>, port: Option<u16>) -> Self {
         Self { host, port, engine }
     }
 }
