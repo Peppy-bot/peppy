@@ -11,10 +11,7 @@ use crate::{Error, Result};
 
 pub trait MessengerBackend {
     /// Starts the router in background and immediately return
-    fn start_router(&mut self) -> Result<()>;
-
-    /// Connects to the router started with `start_router`
-    fn connect(&mut self) -> Result<()>;
+    fn init(&mut self) -> Result<()>;
 
     /// Shuts down the router instance
     fn shutdown(&mut self) -> Result<()>;
@@ -50,7 +47,7 @@ impl Message {
 #[non_exhaustive]
 pub enum Engine {
     Zenoh {
-        config: PathBuf,
+        config: Option<PathBuf>,
     },
     #[cfg(test)]
     Mock,
@@ -69,13 +66,9 @@ impl fmt::Display for Engine {
 impl Engine {
     pub fn from_context(context: &CommandContext) -> Result<Self> {
         match context.engine.as_str() {
-            "zenoh" => {
-                let config = context
-                    .config_path
-                    .clone()
-                    .ok_or(Error::MissingEngineConfig)?;
-                Ok(Engine::Zenoh { config })
-            }
+            "zenoh" => Ok(Engine::Zenoh {
+                config: context.config_path.clone(),
+            }),
             #[cfg(test)]
             "mock" => Ok(Engine::Mock),
             _ => Err(Error::UnsupportedEngine),
@@ -98,7 +91,7 @@ impl Messenger {
     pub fn new(context: CommandContext) -> Result<Self> {
         let engine = Engine::from_context(&context)?;
         let adapter = match engine {
-            Engine::Zenoh { config } => MessengerAdapter::Zenoh(ZenohAdapter::new(Some(config))?),
+            Engine::Zenoh { config } => MessengerAdapter::Zenoh(ZenohAdapter::new(config)?),
             #[cfg(test)]
             Engine::Mock => MessengerAdapter::Mock(MockAdapter::default()),
         };
@@ -107,7 +100,7 @@ impl Messenger {
 
     #[tokio::main]
     async fn run_router(mut self) -> Result<()> {
-        self.start_router()?;
+        self.init()?;
         Ok(())
     }
 }
@@ -126,7 +119,17 @@ impl ServeAsyncCommand for Messenger {
 }
 
 macro_rules! dispatch {
+    // Sync methods
     ($adapter:expr, $method:ident $(, $arg:expr)*) => {
+        match $adapter {
+            MessengerAdapter::Zenoh(adapter) => adapter.$method($($arg),*),
+            #[cfg(test)]
+            MessengerAdapter::Mock(adapter) => adapter.$method($($arg),*),
+        }
+    };
+
+    // Async methods
+    (@async $adapter:expr, $method:ident $(, $arg:expr)*) => {
         match $adapter {
             MessengerAdapter::Zenoh(adapter) => adapter.$method($($arg),*).await,
             #[cfg(test)]
@@ -136,46 +139,27 @@ macro_rules! dispatch {
 }
 
 impl MessengerBackend for Messenger {
-    fn start_router(&mut self) -> Result<()> {
-        match &mut self.adapter {
-            MessengerAdapter::Zenoh(adapter) => adapter.start_router(),
-            #[cfg(test)]
-            MessengerAdapter::Mock(adapter) => adapter.start_router(),
-        }
-    }
-
-    fn connect(&mut self) -> Result<()> {
-        match &mut self.adapter {
-            MessengerAdapter::Zenoh(adapter) => adapter.connect(),
-            #[cfg(test)]
-            MessengerAdapter::Mock(adapter) => adapter.connect(),
-        }
+    fn init(&mut self) -> Result<()> {
+        let _ = 0;
+        dispatch!(&mut self.adapter, init)
     }
 
     async fn publish(&self, message: Message) -> Result<()> {
-        dispatch!(&self.adapter, publish, message)
+        dispatch!(@async &self.adapter, publish, message)
     }
 
     async fn subscribe(&self, topic: &str) -> Result<Subscription> {
-        dispatch!(&self.adapter, subscribe, topic)
+        dispatch!(@async &self.adapter, subscribe, topic)
     }
 
     fn shutdown(&mut self) -> Result<()> {
-        match &mut self.adapter {
-            MessengerAdapter::Zenoh(adapter) => adapter.shutdown(),
-            #[cfg(test)]
-            MessengerAdapter::Mock(adapter) => adapter.shutdown(),
-        }
+        dispatch!(&mut self.adapter, shutdown)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::adapters::zenoh::{Protocol, ZenohConfigTemplate};
-
     use super::*;
-    use askama::Template;
-    use std::fs;
     use tempfile::tempdir;
 
     #[test]
@@ -184,17 +168,6 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let config_path = temp_dir.path().join("test_config.json5");
 
-        // Render the template with test values
-        let template = ZenohConfigTemplate {
-            host: "localhost".to_string(),
-            port: 7447,
-            protocol: Protocol::Tcp,
-        };
-        let rendered_config = template.render().unwrap();
-
-        // Write the rendered config
-        fs::write(&config_path, rendered_config).unwrap();
-
         // Test that zenoh engine is accepted with config
         let context = CommandContext::new("zenoh".to_string(), Some(config_path.clone()));
         let result = Engine::from_context(&context);
@@ -202,7 +175,7 @@ mod tests {
         assert_eq!(
             result.unwrap(),
             Engine::Zenoh {
-                config: config_path
+                config: Some(config_path)
             }
         );
 
@@ -220,31 +193,5 @@ mod tests {
         let result = Engine::from_context(&context);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::UnsupportedEngine));
-    }
-
-    #[test]
-    fn test_zenoh_requires_config() {
-        // Test that zenoh requires a config path
-        let context = CommandContext::new("zenoh".to_string(), None);
-        let result = Engine::from_context(&context);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::MissingEngineConfig));
-
-        // Test that zenoh with config path succeeds
-        let temp_dir = tempdir().unwrap();
-        let config_path = temp_dir.path().join("test_config.json5");
-
-        // Render the template
-        let template = ZenohConfigTemplate {
-            host: "localhost".to_string(),
-            port: 7447,
-            protocol: Protocol::Tcp,
-        };
-        let rendered_config = template.render().unwrap();
-        fs::write(&config_path, rendered_config).unwrap();
-
-        let context = CommandContext::new("zenoh".to_string(), Some(config_path));
-        let result = Engine::from_context(&context);
-        assert!(result.is_ok());
     }
 }

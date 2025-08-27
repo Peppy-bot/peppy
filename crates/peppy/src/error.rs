@@ -15,6 +15,7 @@ pub enum Error {
     // -- commands
     ExecutionFailed(String),
     PixiError(String),
+    ZenohdError(String),
     SyncError(String),
 
     // -- Node

@@ -2,23 +2,12 @@ use peppy::commands::serve::CommandContext;
 use peppy::commands::serve::messaging::{Message, Messenger, MessengerBackend};
 
 #[tokio::test]
-async fn test_zenoh_messaging() {
-    // Use mock adapter for testing (zenoh would require actual network setup)
-    let config_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/templates/zenoh/test_config.json5.j2"
-    );
-    let context = CommandContext::new("zenoh", config_path);
+async fn test_local_zenoh_messaging() {
+    let context = CommandContext::new("zenoh".to_string(), None);
     let mut messenger = Messenger::new(context).expect("Failed to create messenger");
 
     // Start the router
-    messenger
-        .start_router()
-        .await
-        .expect("Failed to start router");
-
-    // Connect to the messaging system
-    messenger.connect().await.expect("Failed to connect");
+    messenger.init().expect("Failed to start router");
 
     // Subscribe to multiple topics
     let mut sub1 = messenger
@@ -97,5 +86,5 @@ async fn test_zenoh_messaging() {
     assert_eq!(late_received2.topic, "test/topic1");
 
     // Shutdown the messaging system
-    messenger.shutdown().await.expect("Failed to shutdown");
+    messenger.shutdown().expect("Failed to shutdown");
 }
