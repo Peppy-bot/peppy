@@ -6,7 +6,7 @@ use std::path::Path;
 use askama::Template;
 
 use crate::commands::node::types::{Language, NodeName};
-use crate::commands::pixi::PixiFacade;
+use crate::pixi;
 
 #[derive(Template)]
 #[template(path = "pixi.toml.j2")]
@@ -78,7 +78,7 @@ pub fn create_pixi_toml(
     file.write_all(pixi_content.as_bytes())?;
 
     // Create PixiFacade instance with node path as working directory
-    let pixi = PixiFacade::new(node_path.to_path_buf())?;
+    let pixi = pixi::PixiFacade::new(node_path.to_path_buf())?;
 
     // Install dependencies
     pixi.install()?;

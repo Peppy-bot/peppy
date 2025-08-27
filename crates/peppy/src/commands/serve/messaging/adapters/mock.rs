@@ -25,15 +25,8 @@ impl Default for MockAdapter {
 }
 
 impl MessengerBackend for MockAdapter {
-    fn start_router(&mut self) -> Result<()> {
+    fn init(&mut self) -> Result<()> {
         self.is_router_started = true;
-        Ok(())
-    }
-
-    fn connect(&mut self) -> Result<()> {
-        if !self.is_router_started {
-            return Err(Error::ConnectionError);
-        }
         self.is_connected = true;
         Ok(())
     }
@@ -135,19 +128,16 @@ mod tests {
         let mut messenger = create_test_messenger();
 
         // Must start router before connecting
-        assert!(messenger.start_router().is_ok());
-        assert!(messenger.connect().is_ok());
+        assert!(messenger.init().is_ok());
         assert!(messenger.shutdown().is_ok());
     }
 
     #[tokio::test]
-    async fn test_fail_build_messenger() {
+    async fn test_shutdown_without_init_fails() {
         let mut messenger = create_test_messenger();
 
-        // Attempt to connect before starting the router
-        assert!(!messenger.connect().is_ok());
-        assert!(messenger.start_router().is_ok());
-        assert!(!messenger.shutdown().is_ok());
+        // Shutdown should fail if init() hasn't been called
+        assert!(messenger.shutdown().is_err());
     }
 
     #[tokio::test]
@@ -155,8 +145,7 @@ mod tests {
         let mut messenger = create_test_messenger();
 
         // Test all operations succeed with MockAdapter
-        assert!(messenger.start_router().is_ok());
-        assert!(messenger.connect().is_ok());
+        assert!(messenger.init().is_ok());
 
         // Test subscribe first
         let subscription = messenger.subscribe("test/topic").await;
@@ -183,8 +172,7 @@ mod tests {
         let mut messenger = create_test_messenger();
 
         // Must start router and connect first
-        assert!(messenger.start_router().is_ok());
-        assert!(messenger.connect().is_ok());
+        assert!(messenger.init().is_ok());
 
         // Test that subscription returns a valid channel
         let mut subscription = messenger.subscribe("test/topic").await.unwrap();
@@ -202,8 +190,7 @@ mod tests {
         let mut messenger = create_test_messenger();
 
         // Must start router and connect first
-        assert!(messenger.start_router().is_ok());
-        assert!(messenger.connect().is_ok());
+        assert!(messenger.init().is_ok());
 
         // Test multiple subscriptions to different topics
         let sub1 = messenger.subscribe("topic/1").await;
@@ -220,8 +207,7 @@ mod tests {
         let mut messenger = create_test_messenger();
 
         // Must start router and connect first
-        assert!(messenger.start_router().is_ok());
-        assert!(messenger.connect().is_ok());
+        assert!(messenger.init().is_ok());
 
         // Test publishing multiple messages
         let messages = vec![
@@ -241,8 +227,7 @@ mod tests {
         let mut messenger = create_test_messenger();
 
         // These should all succeed if MockAdapter was created properly
-        assert!(messenger.start_router().is_ok());
-        assert!(messenger.connect().is_ok());
+        assert!(messenger.init().is_ok());
         assert!(messenger.shutdown().is_ok());
     }
 }
