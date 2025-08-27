@@ -30,6 +30,7 @@ pub enum Error {
 
     // -- messaging
     ConnectionError,
+    ConfigurationError(String),
     PublishError {
         topic: String,
     },

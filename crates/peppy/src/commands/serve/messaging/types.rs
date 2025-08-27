@@ -1,4 +1,6 @@
 use std::fmt;
+use std::future::Future;
+use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
 
 #[cfg(test)]
@@ -7,12 +9,21 @@ use super::adapters::zenoh::ZenohAdapter;
 use crate::commands::serve::types::{CommandContext, ServeAsyncCommand};
 use crate::{Error, Result};
 
-pub trait MessengerBackend: Send + Sync {
-    async fn start_router(&mut self) -> Result<()>;
-    async fn connect(&mut self) -> Result<()>;
-    async fn publish(&self, message: Message) -> Result<()>;
-    async fn subscribe(&self, topic: &str) -> Result<Subscription>;
-    async fn shutdown(&mut self) -> Result<()>;
+pub trait MessengerBackend {
+    /// Starts the router in background and immediately return
+    fn start_router(&mut self) -> Result<()>;
+
+    /// Connects to the router started with `start_router`
+    fn connect(&mut self) -> Result<()>;
+
+    /// Shuts down the router instance
+    fn shutdown(&mut self) -> Result<()>;
+
+    /// Publish a message to a topic
+    fn publish(&self, message: Message) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
+
+    /// Subscribes to a topic
+    fn subscribe(&self, topic: &str) -> impl Future<Output = Result<Subscription>> + Send; // async equivalent for trait
 }
 
 pub struct Subscription {
@@ -39,8 +50,7 @@ impl Message {
 #[non_exhaustive]
 pub enum Engine {
     Zenoh {
-        host: String,
-        port: u16,
+        config: PathBuf,
     },
     #[cfg(test)]
     Mock,
@@ -60,9 +70,11 @@ impl Engine {
     pub fn from_context(context: &CommandContext) -> Result<Self> {
         match context.engine.as_str() {
             "zenoh" => {
-                let host = context.host.clone().ok_or(Error::MissingEngineConfig)?;
-                let port = context.port.ok_or(Error::MissingEngineConfig)?;
-                Ok(Engine::Zenoh { host, port })
+                let config = context
+                    .config_path
+                    .clone()
+                    .ok_or(Error::MissingEngineConfig)?;
+                Ok(Engine::Zenoh { config })
             }
             #[cfg(test)]
             "mock" => Ok(Engine::Mock),
@@ -86,7 +98,7 @@ impl Messenger {
     pub fn new(context: CommandContext) -> Result<Self> {
         let engine = Engine::from_context(&context)?;
         let adapter = match engine {
-            Engine::Zenoh { host, port } => MessengerAdapter::Zenoh(ZenohAdapter::new(host, port)),
+            Engine::Zenoh { config } => MessengerAdapter::Zenoh(ZenohAdapter::new(Some(config))?),
             #[cfg(test)]
             Engine::Mock => MessengerAdapter::Mock(MockAdapter::default()),
         };
@@ -95,7 +107,7 @@ impl Messenger {
 
     #[tokio::main]
     async fn run_router(mut self) -> Result<()> {
-        self.start_router().await?;
+        self.start_router()?;
         Ok(())
     }
 }
@@ -124,12 +136,20 @@ macro_rules! dispatch {
 }
 
 impl MessengerBackend for Messenger {
-    async fn start_router(&mut self) -> Result<()> {
-        dispatch!(&mut self.adapter, start_router)
+    fn start_router(&mut self) -> Result<()> {
+        match &mut self.adapter {
+            MessengerAdapter::Zenoh(adapter) => adapter.start_router(),
+            #[cfg(test)]
+            MessengerAdapter::Mock(adapter) => adapter.start_router(),
+        }
     }
 
-    async fn connect(&mut self) -> Result<()> {
-        dispatch!(&mut self.adapter, connect)
+    fn connect(&mut self) -> Result<()> {
+        match &mut self.adapter {
+            MessengerAdapter::Zenoh(adapter) => adapter.connect(),
+            #[cfg(test)]
+            MessengerAdapter::Mock(adapter) => adapter.connect(),
+        }
     }
 
     async fn publish(&self, message: Message) -> Result<()> {
@@ -140,35 +160,54 @@ impl MessengerBackend for Messenger {
         dispatch!(&self.adapter, subscribe, topic)
     }
 
-    async fn shutdown(&mut self) -> Result<()> {
-        dispatch!(&mut self.adapter, shutdown)
+    fn shutdown(&mut self) -> Result<()> {
+        match &mut self.adapter {
+            MessengerAdapter::Zenoh(adapter) => adapter.shutdown(),
+            #[cfg(test)]
+            MessengerAdapter::Mock(adapter) => adapter.shutdown(),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::adapters::zenoh::{Protocol, ZenohConfigTemplate};
+
     use super::*;
+    use askama::Template;
+    use std::fs;
+    use tempfile::tempdir;
 
     #[test]
     fn test_only_zenoh_engine_allowed() {
-        // Test that zenoh engine is accepted
-        let context = CommandContext::new(
-            "zenoh".to_string(),
-            Some("localhost".to_string()),
-            Some(7447),
-        );
+        // Create a temporary directory for test config
+        let temp_dir = tempdir().unwrap();
+        let config_path = temp_dir.path().join("test_config.json5");
+
+        // Render the template with test values
+        let template = ZenohConfigTemplate {
+            host: "localhost".to_string(),
+            port: 7447,
+            protocol: Protocol::Tcp,
+        };
+        let rendered_config = template.render().unwrap();
+
+        // Write the rendered config
+        fs::write(&config_path, rendered_config).unwrap();
+
+        // Test that zenoh engine is accepted with config
+        let context = CommandContext::new("zenoh".to_string(), Some(config_path.clone()));
         let result = Engine::from_context(&context);
         assert!(result.is_ok());
         assert_eq!(
             result.unwrap(),
             Engine::Zenoh {
-                host: "localhost".to_string(),
-                port: 7447
+                config: config_path
             }
         );
 
         // Test that mock engine is allowed in test mode
-        let context = CommandContext::new("mock".to_string(), None, None);
+        let context = CommandContext::new("mock".to_string(), None);
         let result = Engine::from_context(&context);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Engine::Mock);
@@ -176,8 +215,7 @@ mod tests {
         // Test that any other engine is rejected
         let context = CommandContext::new(
             "rabbitmq".to_string(),
-            Some("localhost".to_string()),
-            Some(5672),
+            Some(PathBuf::from("some/config.json")),
         );
         let result = Engine::from_context(&context);
         assert!(result.is_err());
@@ -186,20 +224,27 @@ mod tests {
 
     #[test]
     fn test_zenoh_requires_config() {
-        // Test that zenoh requires host and port
-        let context = CommandContext::new("zenoh".to_string(), None, Some(8080));
+        // Test that zenoh requires a config path
+        let context = CommandContext::new("zenoh".to_string(), None);
         let result = Engine::from_context(&context);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::MissingEngineConfig));
 
-        let context = CommandContext::new("zenoh".to_string(), Some("localhost".to_string()), None);
-        let result = Engine::from_context(&context);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::MissingEngineConfig));
+        // Test that zenoh with config path succeeds
+        let temp_dir = tempdir().unwrap();
+        let config_path = temp_dir.path().join("test_config.json5");
 
-        let context = CommandContext::new("zenoh".to_string(), None, None);
+        // Render the template
+        let template = ZenohConfigTemplate {
+            host: "localhost".to_string(),
+            port: 7447,
+            protocol: Protocol::Tcp,
+        };
+        let rendered_config = template.render().unwrap();
+        fs::write(&config_path, rendered_config).unwrap();
+
+        let context = CommandContext::new("zenoh".to_string(), Some(config_path));
         let result = Engine::from_context(&context);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::MissingEngineConfig));
+        assert!(result.is_ok());
     }
 }

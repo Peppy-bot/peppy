@@ -4,11 +4,11 @@ use peppy::commands::serve::messaging::{Message, Messenger, MessengerBackend};
 #[tokio::test]
 async fn test_zenoh_messaging() {
     // Use mock adapter for testing (zenoh would require actual network setup)
-    let context = CommandContext::new(
-        "zenoh".to_string(),
-        Some("localhost".to_string()),
-        Some(7447),
+    let config_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/templates/zenoh/test_config.json5.j2"
     );
+    let context = CommandContext::new("zenoh", config_path);
     let mut messenger = Messenger::new(context).expect("Failed to create messenger");
 
     // Start the router
