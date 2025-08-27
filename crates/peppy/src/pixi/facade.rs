@@ -22,7 +22,7 @@ impl PixiFacade {
 
         Ok(Self {
             pixi_path,
-            working_dir: working_dir,
+            working_dir,
         })
     }
 
@@ -58,6 +58,7 @@ impl PixiFacade {
     }
 
     /// Runs a pixi task
+    #[allow(dead_code)]
     pub fn run_task(&self, task_name: &str) -> Result<()> {
         let args = vec!["run".to_string(), task_name.to_string()];
         self.execute(&args).map_err(|e| {
@@ -66,6 +67,7 @@ impl PixiFacade {
     }
 
     /// Initializes a new pixi project in the working directory
+    #[allow(dead_code)]
     pub fn init(&self) -> Result<()> {
         let args = vec!["init".to_string()];
         self.execute(&args)

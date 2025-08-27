@@ -43,7 +43,7 @@ impl MessengerBackend for MockAdapter {
             let mut messages = self.messages.lock().unwrap();
             messages
                 .entry(message.topic.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(message.clone());
         }
 
@@ -77,7 +77,7 @@ impl MessengerBackend for MockAdapter {
             let mut subscriptions = self.subscriptions.lock().unwrap();
             subscriptions
                 .entry(topic.to_string())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(tx.clone());
         }
 
