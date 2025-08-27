@@ -239,34 +239,68 @@ mod tests {
 
     #[test]
     fn test_zenohd_router_lifecycle() {
-        let mut facade = ZenohdFacade::new(None).expect("Failed to create facade");
-        
+        // Create a config with a random port to avoid conflicts
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let config_path = temp_dir.path().join("test_zenoh_config.json5");
+
+        // Use a random port to avoid conflicts
+        let port = 8000 + (std::process::id() % 1000);
+        let config_content = format!(
+            r#"{{
+            "listen": {{
+                "endpoints": {{
+                    "router": ["tcp/127.0.0.1:{}"]
+                }}
+            }}
+        }}"#,
+            port
+        );
+
+        fs::write(&config_path, config_content).expect("Failed to write test config");
+
+        let mut facade = ZenohdFacade::new(Some(config_path)).expect("Failed to create facade");
+
         // Start the router
         let start_result = facade.start_router();
-        assert!(start_result.is_ok(), "Failed to start router: {:?}", start_result.err());
-        
+        assert!(
+            start_result.is_ok(),
+            "Failed to start router: {:?}",
+            start_result.err()
+        );
+
         // Verify the process was launched
-        assert!(facade.router_process.is_some(), "Router process should be Some after starting");
-        
+        assert!(
+            facade.router_process.is_some(),
+            "Router process should be Some after starting"
+        );
+
         // Check if the process is still running using try_wait
-        let is_running = facade.router_process
+        let is_running = facade
+            .router_process
             .as_mut()
             .unwrap()
             .try_wait()
             .expect("Failed to check process status")
             .is_none();
-        
+
         assert!(is_running, "Router process should be running after start");
-        
+
         // Get the process ID for verification
         let pid = facade.router_process.as_ref().unwrap().id();
         assert!(pid > 0, "Process ID should be valid");
-        
+
         // Stop the router
         let stop_result = facade.stop_router();
-        assert!(stop_result.is_ok(), "Failed to stop router: {:?}", stop_result.err());
-        
+        assert!(
+            stop_result.is_ok(),
+            "Failed to stop router: {:?}",
+            stop_result.err()
+        );
+
         // Verify the process handle was cleared
-        assert!(facade.router_process.is_none(), "Router process should be None after stopping");
+        assert!(
+            facade.router_process.is_none(),
+            "Router process should be None after stopping"
+        );
     }
 }
