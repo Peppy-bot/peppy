@@ -9,7 +9,9 @@ use zenoh::config::Config;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
+#[derive(Default)]
 pub enum Protocol {
+    #[default]
     Tcp,
     Udp,
     Quic,
@@ -24,12 +26,6 @@ impl fmt::Display for Protocol {
             Protocol::Quic => write!(f, "quic"),
             Protocol::Ws => write!(f, "ws"),
         }
-    }
-}
-
-impl Default for Protocol {
-    fn default() -> Self {
-        Protocol::Tcp
     }
 }
 
@@ -184,21 +180,19 @@ impl ZenohdFacade {
         }
 
         // Terminate the zenohd router process if it's running
-        if self.router_process.is_some() {
-            if let Some(mut child) = self.router_process.take() {
-                // Try to kill the process gracefully
-                match child.kill() {
-                    Ok(()) => {
-                        tracing::info!("Zenohd router process terminated");
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to terminate zenohd router process: {}", e);
-                    }
+        if let Some(mut child) = self.router_process.take() {
+            // Try to kill the process gracefully
+            match child.kill() {
+                Ok(()) => {
+                    tracing::info!("Zenohd router process terminated");
                 }
-
-                // Wait for the process to actually exit
-                let _ = child.wait();
+                Err(e) => {
+                    tracing::warn!("Failed to terminate zenohd router process: {}", e);
+                }
             }
+
+            // Wait for the process to actually exit
+            let _ = child.wait();
         }
 
         Ok(())

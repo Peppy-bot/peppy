@@ -81,6 +81,7 @@ pub struct Messenger {
     context: CommandContext,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum MessengerAdapter {
     Zenoh(ZenohAdapter),
     #[cfg(test)]
