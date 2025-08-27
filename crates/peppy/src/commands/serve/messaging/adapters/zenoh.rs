@@ -1,33 +1,90 @@
 use super::super::{Message, MessengerBackend, Subscription};
 use crate::{Error, Result};
+use askama::Template;
+use std::fmt;
+use std::fs;
+use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use zenoh::Session;
 use zenoh::config::Config;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum Protocol {
+    Tcp,
+    Udp,
+    Quic,
+    Ws,
+}
+
+impl fmt::Display for Protocol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Protocol::Tcp => write!(f, "tcp"),
+            Protocol::Udp => write!(f, "udp"),
+            Protocol::Quic => write!(f, "quic"),
+            Protocol::Ws => write!(f, "ws"),
+        }
+    }
+}
+
+impl Default for Protocol {
+    fn default() -> Self {
+        Protocol::Tcp
+    }
+}
+
+#[derive(Template)]
+#[template(path = "zenoh/default_config.json5.j2")]
+pub struct ZenohConfigTemplate {
+    pub host: String,
+    pub port: u16,
+    pub protocol: Protocol,
+}
+
 pub struct ZenohAdapter {
-    // hold zenoh session, pubs, subs, etc.
-    host: String,
-    port: u16,
+    config: zenoh::config::Config,
     session: Option<Session>,
     router_process: Option<Child>,
 }
 
 impl ZenohAdapter {
-    pub fn new(host: String, port: u16) -> Self {
-        Self {
-            host,
-            port,
+    pub fn new(config: Option<PathBuf>) -> Result<Self> {
+        let config = match config {
+            Some(config_path) => Config::from_file(config_path).map_err(|e| {
+                Error::ConfigurationError(format!("Failed to load config file: {}", e))
+            })?,
+            None => Config::from_json5(&Self::render_default_config()).map_err(|e| {
+                Error::ConfigurationError(format!("Failed to parse default config: {}", e))
+            })?,
+        };
+        Ok(Self {
+            config,
             session: None,
             router_process: None,
-        }
+        })
+    }
+
+    /// Renders the Zenoh configuration from the template
+    pub fn render_default_config() -> String {
+        let template = ZenohConfigTemplate {
+            host: "0.0.0.0".to_string(),
+            port: 7447,
+            protocol: Protocol::default(),
+        };
+
+        template
+            .render()
+            .unwrap_or_else(|e| panic!("Failed to render Zenoh config: {}", e))
     }
 }
 
 impl Default for ZenohAdapter {
     fn default() -> Self {
         Self {
-            host: "0.0.0.0".into(),
-            port: 7447,
+            config: Config::from_json5(&ZenohAdapter::render_default_config())
+                .expect("Default config should always be valid"),
             session: None,
             router_process: None,
         }
@@ -37,24 +94,49 @@ impl Default for ZenohAdapter {
 impl MessengerBackend for ZenohAdapter {
     /// Starts a zenohd process, using std::process::Command is the recommended way as using the
     /// rust crate directly prevents the user from using plugins/adminspace
-    async fn start_router(&mut self) -> Result<()> {
-        let listen_endpoint_str = format!("tcp/{}:{}", self.host, self.port);
+    fn start_router(&mut self) -> Result<()> {
+        // Write config to a temporary file
+        let temp_dir = std::env::temp_dir();
+        let config_path = temp_dir.join("zenohd_config.json5");
 
-        // Start zenohd as a separate process
+        // Convert the config to JSON5 string
+        let config_str = json5::to_string(&self.config)
+            .map_err(|e| Error::BackendError(format!("Failed to serialize config: {}", e)))?;
+
+        // Write config to file
+        let mut file = fs::File::create(&config_path)
+            .map_err(|e| Error::BackendError(format!("Failed to create config file: {}", e)))?;
+        file.write_all(config_str.as_bytes())
+            .map_err(|e| Error::BackendError(format!("Failed to write config file: {}", e)))?;
+
+        // Extract listen endpoint from config for logging
+        let config_value: serde_json::Value = json5::from_str(&config_str)
+            .map_err(|e| Error::BackendError(format!("Failed to parse config: {}", e)))?;
+        let listen_endpoint = config_value
+            .get("listen")
+            .and_then(|v| v.get("endpoints"))
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.as_str())
+            .unwrap();
+
+        // Start zenohd as a separate process with the config file
         let mut child = Command::new("zenohd")
-            .arg("--listen")
-            .arg(&listen_endpoint_str)
+            .arg("-c")
+            .arg(&config_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| Error::BackendError(format!("Failed to start zenohd: {}", e)))?;
 
         // Give zenohd a moment to start up
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        std::thread::sleep(std::time::Duration::from_millis(500));
 
         // Check if the process is still running
         match child.try_wait() {
             Ok(Some(status)) => {
+                // Clean up config file on failure
+                let _ = fs::remove_file(&config_path);
                 return Err(Error::BackendError(format!(
                     "zenohd exited unexpectedly with status: {}",
                     status
@@ -62,9 +144,11 @@ impl MessengerBackend for ZenohAdapter {
             }
             Ok(None) => {
                 // Process is still running, which is what we want
-                tracing::info!("Zenoh router started, listening on {}", listen_endpoint_str);
+                tracing::info!("Zenoh router started, listening on {}", listen_endpoint);
             }
             Err(e) => {
+                // Clean up config file on failure
+                let _ = fs::remove_file(&config_path);
                 return Err(Error::BackendError(format!(
                     "Failed to check zenohd status: {}",
                     e
@@ -78,8 +162,20 @@ impl MessengerBackend for ZenohAdapter {
         Ok(())
     }
 
-    async fn connect(&mut self) -> Result<()> {
-        let connect_endpoint = format!("tcp/{}:{}", self.host, self.port);
+    fn connect(&mut self) -> Result<()> {
+        // Extract the connect endpoint from the config
+        // Default to the standard endpoint if not specified
+        let config_str = json5::to_string(&self.config)
+            .map_err(|e| Error::BackendError(format!("Failed to serialize config: {}", e)))?;
+        let config_value: serde_json::Value = json5::from_str(&config_str)
+            .map_err(|e| Error::BackendError(format!("Failed to parse config: {}", e)))?;
+        let connect_endpoint = config_value
+            .get("listen")
+            .and_then(|v| v.get("endpoints"))
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.as_str())
+            .unwrap();
 
         let mut config = Config::default();
 
@@ -93,9 +189,15 @@ impl MessengerBackend for ZenohAdapter {
             .insert_json5("connect/endpoints", &format!("[\"{}\"]", connect_endpoint))
             .map_err(|e| Error::BackendError(format!("Failed to set connect endpoint: {}", e)))?;
 
-        let session = zenoh::open(config).await.map_err(|e| {
-            Error::BackendError(format!("Failed to connect to Zenoh router: {}", e))
-        })?;
+        // Use blocking zenoh API since trait requires sync
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| Error::BackendError(format!("Failed to create runtime: {}", e)))?;
+
+        let session = runtime
+            .block_on(async { zenoh::open(config).await })
+            .map_err(|e| {
+                Error::BackendError(format!("Failed to connect to Zenoh router: {}", e))
+            })?;
 
         self.session = Some(session);
         tracing::info!("Connected to Zenoh router at {}", connect_endpoint);
@@ -114,7 +216,7 @@ impl MessengerBackend for ZenohAdapter {
         Ok(Subscription { rx })
     }
 
-    async fn shutdown(&mut self) -> Result<()> {
+    fn shutdown(&mut self) -> Result<()> {
         // Close the Zenoh session if it exists
         if let Some(session) = self.session.take() {
             drop(session);

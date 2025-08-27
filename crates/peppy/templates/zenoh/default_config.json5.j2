@@ -1,0 +1,22 @@
+// Test configuration for serve tests
+{
+  // Communication backend configuration
+  backend: "zenoh",
+  
+  // Server configuration
+  server: {
+    host: {{ host }},
+    port: {{ port }}
+  },
+  
+  // Additional zenoh-specific settings
+  zenoh: {
+    mode: "peer",
+    listen: ["{{ protocol }}/{{ host }}:{{ port }}"],
+    scouting: {
+      multicast: {
+        enabled: false
+      }
+    }
+  }
+}

@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use super::messaging::Messenger;
 use super::node_watcher::NodeWatcherCommand;
 use super::types::Serve;
@@ -9,8 +11,8 @@ pub struct ServeCommandBuilder {
 }
 
 impl ServeCommandBuilder {
-    pub fn new(engine: String, host: Option<String>, port: Option<u16>) -> Self {
-        let context = CommandContext::new(engine, host, port);
+    pub fn new(engine: String, config_path: Option<PathBuf>) -> Self {
+        let context = CommandContext::new(engine, config_path);
         Self {
             context,
             composite_command: CompositeCommand::new(),

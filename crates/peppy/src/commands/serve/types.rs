@@ -1,4 +1,5 @@
 use crate::Result;
+use std::path::PathBuf;
 use std::thread::JoinHandle;
 
 pub trait ServeSyncCommand: Send + Sync {
@@ -11,14 +12,16 @@ pub trait ServeAsyncCommand: Send + Sync {
 
 #[derive(Clone)]
 pub struct CommandContext {
-    pub host: Option<String>,
-    pub port: Option<u16>,
     pub engine: String,
+    pub config_path: Option<PathBuf>,
 }
 
 impl CommandContext {
-    pub fn new(engine: String, host: Option<String>, port: Option<u16>) -> Self {
-        Self { host, port, engine }
+    pub fn new(engine: String, config_path: Option<PathBuf>) -> Self {
+        Self {
+            engine,
+            config_path,
+        }
     }
 }
 
