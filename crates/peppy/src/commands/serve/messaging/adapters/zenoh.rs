@@ -1,19 +1,22 @@
 use super::super::{Message, MessengerBackend, Subscription};
 use crate::{Error, Result, zenohd};
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 pub struct ZenohAdapter {
     zenohd: zenohd::ZenohdFacade,
-    session: Option<zenoh::Session>,
+    session: Option<Arc<zenoh::Session>>,
+    publishers: HashMap<String, Arc<zenoh::pubsub::Publisher<'static>>>,
 }
 
 impl ZenohAdapter {
     pub fn new(config: Option<PathBuf>) -> Result<Self> {
         let facade = zenohd::ZenohdFacade::new(config)?;
+        let publishers = HashMap::new();
 
         Ok(Self {
             zenohd: facade,
             session: None,
+            publishers,
         })
     }
 }
@@ -27,12 +30,62 @@ impl MessengerBackend for ZenohAdapter {
             .await
             .map_err(|e| Error::BackendError(format!("Failed to create Zenoh session: {}", e)))?;
 
-        self.session = Some(session);
+        self.session = Some(Arc::new(session));
         Ok(())
     }
 
-    async fn publish(&self, _message: Message) -> Result<()> {
-        // zenoh publish
+    async fn publish(&mut self, message: Message) -> Result<()> {
+        let publisher = if let Some(pub_ref) = self.publishers.get(&message.topic) {
+            Arc::clone(pub_ref)
+        } else {
+            let session = self.session.as_ref().ok_or_else(|| {
+                Error::MessagingSessionError("Session not initialized".to_string())
+            })?;
+
+            let new_publisher = Arc::new(
+                session
+                    .declare_publisher(message.topic.clone())
+                    .await
+                    .map_err(|e| {
+                        Error::PublisherCreationError(format!(
+                            "Failed to create publisher for topic '{}': {}",
+                            message.topic, e
+                        ))
+                    })?,
+            );
+
+            // Register matching listener only once when creating the publisher
+            new_publisher
+                .matching_listener()
+                .callback(|matching_status| {
+                    if matching_status.matching() {
+                        println!("Publisher has matching subscribers.");
+                    } else {
+                        println!("Publisher has NO MORE matching subscribers.");
+                    }
+                })
+                .background()
+                .await
+                .map_err(|e| {
+                    Error::MatchingListenerError(format!(
+                        "Failed to register matching listener: {}",
+                        e
+                    ))
+                })?;
+
+            self.publishers
+                .insert(message.topic.clone(), Arc::clone(&new_publisher));
+            new_publisher
+        };
+
+        // Publish the message payload
+        publisher
+            .put(message.payload)
+            .await
+            .map_err(|e| Error::PublishError {
+                topic: message.topic.clone(),
+            })?;
+
         Ok(())
     }
 

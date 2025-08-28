@@ -17,7 +17,7 @@ pub trait MessengerBackend {
     fn shutdown(&mut self) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
 
     /// Publish a message to a topic
-    fn publish(&self, message: Message) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
+    fn publish(&mut self, message: Message) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
 
     /// Subscribes to a topic
     fn subscribe(&self, topic: &str) -> impl Future<Output = Result<Subscription>> + Send; // async equivalent for trait
@@ -134,8 +134,8 @@ impl MessengerBackend for Messenger {
         dispatch!(&mut self.adapter, init)
     }
 
-    async fn publish(&self, message: Message) -> Result<()> {
-        dispatch!(&self.adapter, publish, message)
+    async fn publish(&mut self, message: Message) -> Result<()> {
+        dispatch!(&mut self.adapter, publish, message)
     }
 
     async fn subscribe(&self, topic: &str) -> Result<Subscription> {

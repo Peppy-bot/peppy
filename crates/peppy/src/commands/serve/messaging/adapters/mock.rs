@@ -31,7 +31,7 @@ impl MessengerBackend for MockAdapter {
         Ok(())
     }
 
-    async fn publish(&self, message: Message) -> Result<()> {
+    async fn publish(&mut self, message: Message) -> Result<()> {
         if !self.is_connected {
             return Err(Error::PublishError {
                 topic: message.topic.clone(),
