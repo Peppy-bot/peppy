@@ -29,14 +29,14 @@ impl fmt::Display for Protocol {
 }
 
 #[derive(Template)]
-#[template(path = "zenoh/default_config.json5.j2")]
-pub struct ZenohConfigTemplate {
+#[template(path = "zenoh/default_router_config.json5.j2")]
+pub struct ZenohRouterConfigTemplate {
     pub host: String,
     pub port: u16,
     pub protocol: Protocol,
 }
 
-impl Default for ZenohConfigTemplate {
+impl Default for ZenohRouterConfigTemplate {
     fn default() -> Self {
         Self {
             host: "0.0.0.0".to_string(),
@@ -51,6 +51,8 @@ impl Default for ZenohConfigTemplate {
 pub struct ZenohdFacade {
     zenohd_path: String,
     pub config: zenoh::config::Config,
+    pub router_endpoint: String,
+    pub config_template: ZenohRouterConfigTemplate,
     pub router_process: Option<Child>,
 }
 
@@ -58,12 +60,60 @@ impl ZenohdFacade {
     /// Creates a new ZenohdFacade instance with a working directory
     pub fn new(config_file: Option<PathBuf>) -> Result<Self> {
         let zenohd_path = ZenohdFacade::get_zenohd_binary()?;
-        let config = ZenohdFacade::get_config(config_file)?;
+        let (config, router_endpoint, config_template) =
+            ZenohdFacade::get_config_and_endpoint(config_file)?;
         Ok(Self {
             zenohd_path,
             config,
+            router_endpoint,
+            config_template,
             router_process: None,
         })
+    }
+
+    /// Parses an endpoint string like "tcp/127.0.0.1:7447" into protocol, host, and port
+    fn parse_endpoint(endpoint: &str) -> Result<(Protocol, String, u16)> {
+        // Handle both formats: "tcp/127.0.0.1:7447" and "tcp://127.0.0.1:7447"
+        let parts: Vec<&str> = if endpoint.contains("://") {
+            endpoint.splitn(2, "://").collect()
+        } else {
+            endpoint.splitn(2, '/').collect()
+        };
+
+        if parts.len() != 2 {
+            return Err(Error::ConfigurationError(format!(
+                "Invalid endpoint format: {}",
+                endpoint
+            )));
+        }
+
+        let protocol = match parts[0] {
+            "tcp" => Protocol::Tcp,
+            "udp" => Protocol::Udp,
+            "quic" => Protocol::Quic,
+            "ws" => Protocol::Ws,
+            _ => {
+                return Err(Error::ConfigurationError(format!(
+                    "Unknown protocol: {}",
+                    parts[0]
+                )));
+            }
+        };
+
+        let host_port_parts: Vec<&str> = parts[1].rsplitn(2, ':').collect();
+        if host_port_parts.len() != 2 {
+            return Err(Error::ConfigurationError(format!(
+                "Invalid host:port format: {}",
+                parts[1]
+            )));
+        }
+
+        let port = host_port_parts[0].parse::<u16>().map_err(|_| {
+            Error::ConfigurationError(format!("Invalid port: {}", host_port_parts[0]))
+        })?;
+        let host = host_port_parts[1].to_string();
+
+        Ok((protocol, host, port))
     }
 
     fn get_zenohd_binary() -> Result<String> {
@@ -77,14 +127,58 @@ impl ZenohdFacade {
         }
     }
 
-    fn get_config(config_file: Option<PathBuf>) -> Result<zenoh::config::Config> {
+    fn get_config_and_endpoint(
+        config_file: Option<PathBuf>,
+    ) -> Result<(zenoh::config::Config, String, ZenohRouterConfigTemplate)> {
         match config_file {
-            Some(config_path) => Config::from_file(config_path).map_err(|e| {
-                Error::ConfigurationError(format!("Failed to load config file: {}", e))
-            }),
-            None => Config::from_json5(&Self::render_default_config()).map_err(|e| {
-                Error::ConfigurationError(format!("Failed to parse default config: {}", e))
-            }),
+            Some(config_path) => {
+                let config = Config::from_file(&config_path).map_err(|e| {
+                    Error::ConfigurationError(format!("Failed to load config file: {}", e))
+                })?;
+
+                // Read the config file to extract endpoint
+                let config_str = fs::read_to_string(&config_path).map_err(|e| {
+                    Error::ConfigurationError(format!("Failed to read config file: {}", e))
+                })?;
+
+                // Parse as JSON5 to extract endpoint
+                let config_json: serde_json::Value = json5::from_str(&config_str).map_err(|e| {
+                    Error::ConfigurationError(format!("Failed to parse config JSON: {}", e))
+                })?;
+
+                let endpoint = config_json
+                    .get("listen")
+                    .and_then(|v| v.get("endpoints"))
+                    .and_then(|v| v.get("router"))
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("tcp/127.0.0.1:7447")
+                    .to_string();
+
+                // Parse the endpoint to extract protocol, host, and port for the template
+                let (protocol, host, port) = Self::parse_endpoint(&endpoint)?;
+                let template = ZenohRouterConfigTemplate {
+                    protocol,
+                    host,
+                    port,
+                };
+                Ok((config, endpoint, template))
+            }
+            None => {
+                let template = ZenohRouterConfigTemplate::default();
+                // For connecting, we need to use 127.0.0.1 even if the server listens on 0.0.0.0
+                let connect_host = if template.host == "0.0.0.0" {
+                    "127.0.0.1"
+                } else {
+                    &template.host
+                };
+                let endpoint = format!("{}/{}:{}", template.protocol, connect_host, template.port);
+                let config = Config::from_json5(&Self::render_default_config()).map_err(|e| {
+                    Error::ConfigurationError(format!("Failed to parse default config: {}", e))
+                })?;
+                Ok((config, endpoint, template))
+            }
         }
     }
 
@@ -94,12 +188,8 @@ impl ZenohdFacade {
         // TODO: move this file into the .pixi /etc environment
         let config_path = temp_dir.join("zenohd_config.json5");
 
-        // Remove existing file if it exists
-        if config_path.exists() {
-            fs::remove_file(&config_path).map_err(|e| {
-                Error::BackendError(format!("Failed to remove existing config file: {}", e))
-            })?;
-        }
+        // Remove existing file if it exists (ignore errors if it doesn't exist)
+        let _ = fs::remove_file(&config_path);
 
         // Convert the config to JSON5 string
         let config_str = json5::to_string(&self.config)
@@ -115,7 +205,7 @@ impl ZenohdFacade {
 
     /// Renders the Zenoh configuration from the template
     fn render_default_config() -> String {
-        let template = ZenohConfigTemplate::default();
+        let template = ZenohRouterConfigTemplate::default();
 
         template
             .render()
@@ -124,6 +214,9 @@ impl ZenohdFacade {
 
     pub fn start_router(&mut self) -> Result<()> {
         let config_path = self.get_config_as_path()?;
+
+        tracing::info!("Starting zenohd from path: {}", self.zenohd_path);
+        tracing::info!("Using config file: {:?}", config_path);
 
         // Start zenohd as a separate process with the config file
         let mut child = Command::new(&self.zenohd_path)
@@ -135,16 +228,23 @@ impl ZenohdFacade {
             .map_err(|e| Error::BackendError(format!("Failed to start zenohd: {}", e)))?;
 
         // Give zenohd a moment to start up
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(std::time::Duration::from_millis(1000));
 
         // Check if the process is still running
         match child.try_wait() {
             Ok(Some(status)) => {
+                // Try to read stderr for error messages
+                let mut stderr = String::new();
+                if let Some(mut stderr_handle) = child.stderr.take() {
+                    use std::io::Read;
+                    let _ = stderr_handle.read_to_string(&mut stderr);
+                }
+
                 // Clean up config file on failure
                 let _ = fs::remove_file(&config_path);
                 return Err(Error::BackendError(format!(
-                    "zenohd exited unexpectedly with status: {}",
-                    status
+                    "zenohd exited unexpectedly with status: {}. stderr: {}",
+                    status, stderr
                 )));
             }
             Ok(None) => {
@@ -208,6 +308,7 @@ mod tests {
 
         // Write config directly in the test, inspired by the template
         let config_content = r#"{
+            "mode": "router",
             "listen": {
                 "endpoints": {
                     "router": ["tcp/127.0.0.1:7447"]
@@ -232,6 +333,7 @@ mod tests {
         let port = 8000 + (std::process::id() % 1000);
         let config_content = format!(
             r#"{{
+            "mode": "router",
             "listen": {{
                 "endpoints": {{
                     "router": ["tcp/127.0.0.1:{}"]
@@ -244,6 +346,7 @@ mod tests {
         fs::write(&config_path, config_content).expect("Failed to write test config");
 
         let mut facade = ZenohdFacade::new(Some(config_path)).expect("Failed to create facade");
+        assert_eq!(facade.router_endpoint, format!("tcp/127.0.0.1:{}", port));
 
         // Start the router
         let start_result = facade.start_router();

@@ -1,7 +1,16 @@
 use super::super::{Message, MessengerBackend, Subscription, ThroughputMode};
 use crate::{Error, Result, zenohd};
+use askama::Template;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tracing::{debug, info};
+
+#[derive(Template)]
+#[template(path = "zenoh/default_client_config.json5.j2")]
+struct ZenohClientConfigTemplate {
+    pub host: String,
+    pub port: u16,
+    pub protocol: zenohd::Protocol,
+}
 
 pub struct ZenohAdapter {
     zenohd: zenohd::ZenohdFacade,
@@ -10,8 +19,8 @@ pub struct ZenohAdapter {
 }
 
 impl ZenohAdapter {
-    pub fn new(config: Option<PathBuf>) -> Result<Self> {
-        let facade = zenohd::ZenohdFacade::new(config)?;
+    pub fn new(router_config: Option<PathBuf>) -> Result<Self> {
+        let facade = zenohd::ZenohdFacade::new(router_config)?;
         let publishers = HashMap::new();
 
         Ok(Self {
@@ -20,22 +29,54 @@ impl ZenohAdapter {
             publishers,
         })
     }
+
+    fn create_client_config(&self) -> zenoh::config::Config {
+        // Use the same config from the router but for client connection
+        let connect_host = if self.zenohd.config_template.host == "0.0.0.0" {
+            "127.0.0.1".to_string()
+        } else {
+            self.zenohd.config_template.host.clone()
+        };
+
+        let client_template = ZenohClientConfigTemplate {
+            host: connect_host,
+            port: self.zenohd.config_template.port,
+            protocol: self.zenohd.config_template.protocol,
+        };
+
+        let client_config_str = client_template
+            .render()
+            .expect("Failed to render client config template");
+
+        zenoh::config::Config::from_json5(&client_config_str)
+            .expect("Failed to create client config")
+    }
 }
 
 impl MessengerBackend for ZenohAdapter {
     /// Starts a zenohd process, using std::process::Command is the recommended way as using the
     /// rust crate directly prevents the user from using plugins/adminspace
     async fn init(&mut self) -> Result<()> {
+        info!("Starting zenohd router...");
         self.zenohd.start_router()?;
-        let session = zenoh::open(self.zenohd.config.clone())
+
+        // Create a client config that connects to the router
+        // Extract the endpoint from the router's listen config
+        let client_config = self.create_client_config();
+        info!("Connecting to router at: {}", self.zenohd.router_endpoint);
+
+        let session = zenoh::open(client_config)
             .await
             .map_err(|e| Error::BackendError(format!("Failed to create Zenoh session: {}", e)))?;
 
+        info!("Zenoh session created successfully");
         self.session = Some(Arc::new(session));
         Ok(())
     }
 
     async fn publish(&mut self, message: Message) -> Result<()> {
+        info!("Publishing message to topic: {}", message.topic);
+
         let publisher = if let Some(pub_ref) = self.publishers.get(&message.topic) {
             Arc::clone(pub_ref)
         } else {
@@ -81,11 +122,17 @@ impl MessengerBackend for ZenohAdapter {
 
         // Publish the message payload
         publisher
-            .put(message.payload)
+            .put(message.payload.clone())
             .await
             .map_err(|e| Error::PublishError {
                 topic: e.to_string(),
             })?;
+
+        info!(
+            "Successfully published message to topic: {} (payload size: {} bytes)",
+            message.topic,
+            message.payload.len()
+        );
 
         Ok(())
     }
@@ -95,6 +142,8 @@ impl MessengerBackend for ZenohAdapter {
         topic: &str,
         throughput_mode: ThroughputMode,
     ) -> Result<Subscription> {
+        info!("Creating subscription for topic: {}", topic);
+
         // create zenoh subscriber, forward events into rx
         let (tx, rx) = tokio::sync::mpsc::channel(throughput_mode.channel_size());
 
@@ -108,11 +157,17 @@ impl MessengerBackend for ZenohAdapter {
             .await
             .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
 
+        info!("Subscriber created for topic: {}", topic);
+
         // Spawn background task to forward messages with abort handle
+        let topic_clone = topic.to_string();
         let join_handle = tokio::spawn(async move {
+            info!("Subscriber task started for topic: {}", topic_clone);
             loop {
                 match subscriber.recv_async().await {
                     Ok(sample) => {
+                        info!("Received message on topic: {}", sample.key_expr().as_str());
+
                         // Get the raw bytes from the sample
                         let payload_bytes = sample.payload().to_bytes();
 
