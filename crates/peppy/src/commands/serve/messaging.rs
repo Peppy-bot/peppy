@@ -1,4 +1,4 @@
 mod adapters;
 mod types;
 
-pub use types::{Message, Messenger, MessengerBackend, Subscription};
+pub use types::{Message, Messenger, MessengerBackend, Subscription, ThroughputMode};
