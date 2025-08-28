@@ -10,6 +10,7 @@ use factory::create_factory;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use tracing::info;
 
 pub struct NodeBuilder {
     current_dir: PathBuf,
@@ -100,7 +101,7 @@ pub fn create(
         .map_err(|e| Error::PeppyConfigCreation(e.to_string()))?;
     factory.create_language_config(&node_name, &node_path)?;
 
-    println!("Created node '{}' at: {}", node_name, node_path.display());
+    info!("Created node '{}' at: {}", node_name, node_path.display());
 
     Ok(())
 }

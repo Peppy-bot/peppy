@@ -1,6 +1,7 @@
 use askama::Template;
 use std::fs;
 use std::path::{Path, PathBuf};
+use tracing::info;
 
 use super::Command;
 use crate::Result;
@@ -38,7 +39,7 @@ pub fn init(path: &Path) -> Result<PathBuf> {
     fs::write(&peppy_star_path, default_content)?;
 
     // TODO: Must also install the systemd service in the OS if it's not already the case"
-    println!("Created root node at {}", peppy_star_path.display());
+    info!("Created root node at {}", peppy_star_path.display());
     Ok(peppy_star_path)
 }
 

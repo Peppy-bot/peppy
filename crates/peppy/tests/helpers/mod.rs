@@ -1,12 +1,13 @@
 use std::path::Path;
+use tracing::{error, info};
 
 use peppy::commands::init;
 
 pub fn setup(current_dir: &Path) {
-    println!("Setup function called!");
+    info!("Setup function called!");
 
     match init::init(current_dir) {
-        Ok(path) => println!("Initialized peppy.star at: {:?}", path),
-        Err(e) => eprintln!("Failed to initialize: {}", e),
+        Ok(path) => info!("Initialized peppy.star at: {:?}", path),
+        Err(e) => error!("Failed to initialize: {}", e),
     }
 }

@@ -5,6 +5,7 @@ mod node_watcher;
 mod types;
 
 use std::path::PathBuf;
+use tracing::error;
 
 use super::Command;
 use crate::Result;
@@ -30,7 +31,7 @@ impl Command for ServeCommand {
             .build();
 
         if let Err(e) = executor.execute() {
-            eprintln!("Serve command failed: {}", e);
+            error!("Serve command failed: {}", e);
         }
         Ok(())
     }

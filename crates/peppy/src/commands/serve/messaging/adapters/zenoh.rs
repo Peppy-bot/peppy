@@ -1,6 +1,7 @@
 use super::super::{Message, MessengerBackend, Subscription};
 use crate::{Error, Result, zenohd};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use tracing::{debug, info};
 
 pub struct ZenohAdapter {
     zenohd: zenohd::ZenohdFacade,
@@ -59,9 +60,9 @@ impl MessengerBackend for ZenohAdapter {
                 .matching_listener()
                 .callback(|matching_status| {
                     if matching_status.matching() {
-                        println!("Publisher has matching subscribers.");
+                        info!("Publisher has matching subscribers");
                     } else {
-                        println!("Publisher has NO MORE matching subscribers.");
+                        debug!("Publisher has no more matching subscribers");
                     }
                 })
                 .background()
@@ -83,7 +84,7 @@ impl MessengerBackend for ZenohAdapter {
             .put(message.payload)
             .await
             .map_err(|e| Error::PublishError {
-                topic: message.topic.clone(),
+                topic: e.to_string(),
             })?;
 
         Ok(())
