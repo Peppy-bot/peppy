@@ -6,9 +6,9 @@ use std::process::Command;
 const PIXI_VERSION: &str = "v0.52.0";
 const ZENOH_VERSION: &str = "1.5.0";
 
-fn get_temp_cache_dir() -> PathBuf {
+fn get_temp_cache_dir(cache_suffix: &str) -> PathBuf {
     let temp_dir = env::temp_dir();
-    let cache_dir = temp_dir.join("peppy-pixi-cache");
+    let cache_dir = temp_dir.join(format!("{}-peppy-cache", cache_suffix));
 
     // Create cache directory if it doesn't exist
     if !cache_dir.exists() {
@@ -24,7 +24,7 @@ fn build_pixi(release_tag: &str) {
         println!("cargo:rerun-if-changed=build.rs");
 
         // Use named temp directory for persistent cache
-        let cache_dir = get_temp_cache_dir();
+        let cache_dir = get_temp_cache_dir("pixi");
         let cached_pixi_path = cache_dir.join(format!("pixi-{}", release_tag));
 
         // Always copy to OUT_DIR for runtime access
@@ -106,7 +106,7 @@ fn build_zenoh(release_tag: &str) {
         println!("cargo:rerun-if-changed=build.rs");
 
         // Use named temp directory for persistent cache
-        let cache_dir = get_temp_cache_dir();
+        let cache_dir = get_temp_cache_dir("zenoh");
         let cached_zenoh_path = cache_dir.join(format!("zenohd-{}", release_tag));
 
         // Always copy to OUT_DIR for runtime access
