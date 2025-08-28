@@ -4,7 +4,6 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::{fmt, fs};
-use zenoh::Session;
 use zenoh::config::Config;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,9 +50,8 @@ impl Default for ZenohConfigTemplate {
 /// This facade allows calling the binary in the background.
 pub struct ZenohdFacade {
     zenohd_path: String,
-    config: zenoh::config::Config,
+    pub config: zenoh::config::Config,
     pub router_process: Option<Child>,
-    session: Option<Session>,
 }
 
 impl ZenohdFacade {
@@ -65,7 +63,6 @@ impl ZenohdFacade {
             zenohd_path,
             config,
             router_process: None,
-            session: None,
         })
     }
 
@@ -174,25 +171,19 @@ impl ZenohdFacade {
     }
 
     pub fn stop_router(&mut self) -> Result<()> {
-        // Close the Zenoh session if it exists
-        if let Some(session) = self.session.take() {
-            drop(session);
-        }
-
         // Terminate the zenohd router process if it's running
         if let Some(mut child) = self.router_process.take() {
             // Try to kill the process gracefully
-            match child.kill() {
-                Ok(()) => {
-                    tracing::info!("Zenohd router process terminated");
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to terminate zenohd router process: {}", e);
-                }
+            if let Err(e) = child.kill() {
+                tracing::warn!("Failed to terminate zenohd router process: {}", e);
+            } else {
+                tracing::info!("Zenohd router process terminated");
             }
 
-            // Wait for the process to actually exit
-            let _ = child.wait();
+            // Wait for the process to actually exit and log any error
+            if let Err(e) = child.wait() {
+                tracing::warn!("Error waiting for zenohd process to exit: {}", e);
+            }
         }
 
         Ok(())
@@ -296,5 +287,19 @@ mod tests {
             facade.router_process.is_none(),
             "Router process should be None after stopping"
         );
+    }
+
+    #[test]
+    fn test_stop_router_multiple_times() {
+        let mut facade = ZenohdFacade::new(None).expect("Failed to create facade");
+
+        // First stop should succeed (no process to stop)
+        assert!(facade.stop_router().is_ok());
+
+        // Second stop should also succeed (idempotent)
+        assert!(facade.stop_router().is_ok());
+
+        // Process should remain None
+        assert!(facade.router_process.is_none());
     }
 }

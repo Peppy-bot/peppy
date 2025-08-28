@@ -11,10 +11,10 @@ use crate::{Error, Result};
 
 pub trait MessengerBackend {
     /// Starts the router in background and immediately return
-    fn init(&mut self) -> Result<()>;
+    fn init(&mut self) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
 
     /// Shuts down the router instance
-    fn shutdown(&mut self) -> Result<()>;
+    fn shutdown(&mut self) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
 
     /// Publish a message to a topic
     fn publish(&self, message: Message) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
@@ -101,7 +101,7 @@ impl Messenger {
 
     #[tokio::main]
     async fn run_router(mut self) -> Result<()> {
-        self.init()?;
+        self.init().await?;
         Ok(())
     }
 }
@@ -120,17 +120,7 @@ impl ServeAsyncCommand for Messenger {
 }
 
 macro_rules! dispatch {
-    // Sync methods
     ($adapter:expr, $method:ident $(, $arg:expr)*) => {
-        match $adapter {
-            MessengerAdapter::Zenoh(adapter) => adapter.$method($($arg),*),
-            #[cfg(test)]
-            MessengerAdapter::Mock(adapter) => adapter.$method($($arg),*),
-        }
-    };
-
-    // Async methods
-    (@async $adapter:expr, $method:ident $(, $arg:expr)*) => {
         match $adapter {
             MessengerAdapter::Zenoh(adapter) => adapter.$method($($arg),*).await,
             #[cfg(test)]
@@ -140,20 +130,19 @@ macro_rules! dispatch {
 }
 
 impl MessengerBackend for Messenger {
-    fn init(&mut self) -> Result<()> {
-        let _ = 0;
+    async fn init(&mut self) -> Result<()> {
         dispatch!(&mut self.adapter, init)
     }
 
     async fn publish(&self, message: Message) -> Result<()> {
-        dispatch!(@async &self.adapter, publish, message)
+        dispatch!(&self.adapter, publish, message)
     }
 
     async fn subscribe(&self, topic: &str) -> Result<Subscription> {
-        dispatch!(@async &self.adapter, subscribe, topic)
+        dispatch!(&self.adapter, subscribe, topic)
     }
 
-    fn shutdown(&mut self) -> Result<()> {
+    async fn shutdown(&mut self) -> Result<()> {
         dispatch!(&mut self.adapter, shutdown)
     }
 }
