@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use tracing::info;
 
 use super::Command;
 use crate::{Error, Result};
@@ -18,7 +19,7 @@ impl Command for SyncCommand {
             self.file
         };
 
-        println!("Syncing file: {}", full_path.display());
+        info!("Syncing file: {}", full_path.display());
         // TODO: Implement the actual sync logic here
         Ok(())
     }

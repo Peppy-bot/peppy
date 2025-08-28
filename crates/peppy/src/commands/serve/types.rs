@@ -1,6 +1,7 @@
 use crate::Result;
 use std::path::PathBuf;
 use std::thread::JoinHandle;
+use tracing::error;
 
 pub trait ServeSyncCommand: Send + Sync {
     fn execute(&self) -> Result<()>;
@@ -76,8 +77,8 @@ impl Serve {
 
         for handle in handles {
             match handle.join() {
-                Err(e) => eprintln!("Thread panicked: {:?}", e),
-                Ok(Err(e)) => eprintln!("Command error: {}", e),
+                Err(e) => error!("Thread panicked: {:?}", e),
+                Ok(Err(e)) => error!("Command error: {}", e),
                 Ok(Ok(())) => {}
             }
         }

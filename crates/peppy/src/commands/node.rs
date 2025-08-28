@@ -1,5 +1,6 @@
 use clap::Subcommand;
 use std::path::PathBuf;
+use tracing::{error, info};
 
 pub mod create;
 pub mod list;
@@ -54,12 +55,12 @@ impl Command for NodeCommand {
                     .build()
             }
             NodeCommands::List {} => {
-                eprintln!("Listing nodes...");
+                info!("Listing nodes...");
                 list::list_nodes();
                 Ok(())
             }
             NodeCommands::Check {} => {
-                eprintln!("Checking nodes...");
+                info!("Checking nodes...");
                 list::check();
                 Ok(())
             }
@@ -70,7 +71,7 @@ impl Command for NodeCommand {
 pub fn handle_node_command(command: NodeCommands) {
     let node_command = NodeCommand { command };
     if let Err(e) = node_command.execute() {
-        eprintln!("Failed to execute node command: {}", e);
+        error!("Failed to execute node command: {}", e);
         std::process::exit(1);
     }
 }

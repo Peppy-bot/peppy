@@ -13,6 +13,7 @@ starlark = "0.13.0" # To parse peppy.star
 tokio = "1.47.0"
 zenoh = "1.5.0"
 tracing = "0.1.41"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 derive_more = { version = "2", features = ["from"] }
 rayon = "1.11.0"
 service-manager = "0.8.0"

@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use tracing::error;
 
 use peppy::commands::{
     Command,
@@ -57,6 +58,14 @@ enum Commands {
 }
 
 fn main() {
+    // Initialize tracing subscriber with environment filter
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive(tracing::Level::INFO.into()),
+        )
+        .init();
+
     let cli = Cli::parse();
 
     let result = match cli.command {
@@ -75,7 +84,7 @@ fn main() {
     };
 
     if let Err(e) = result {
-        eprintln!("Error: {}", e);
+        error!("Error: {}", e);
         std::process::exit(1);
     }
 }
