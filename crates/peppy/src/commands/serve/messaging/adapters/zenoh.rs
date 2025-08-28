@@ -1,4 +1,4 @@
-use super::super::{Message, MessengerBackend, Subscription};
+use super::super::{Message, MessengerBackend, Subscription, ThroughputMode};
 use crate::{Error, Result, zenohd};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tracing::{debug, info};
@@ -90,11 +90,56 @@ impl MessengerBackend for ZenohAdapter {
         Ok(())
     }
 
-    async fn subscribe(&self, _topic: &str) -> Result<Subscription> {
+    async fn subscribe(
+        &self,
+        topic: &str,
+        throughput_mode: ThroughputMode,
+    ) -> Result<Subscription> {
         // create zenoh subscriber, forward events into rx
-        let (_tx, rx) = tokio::sync::mpsc::channel(128);
-        // spawn task to pump zenoh samples into tx
-        Ok(Subscription { rx })
+        let (tx, rx) = tokio::sync::mpsc::channel(throughput_mode.channel_size());
+
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+
+        let subscriber = session
+            .declare_subscriber(topic)
+            .await
+            .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
+
+        // Spawn background task to forward messages with abort handle
+        let join_handle = tokio::spawn(async move {
+            loop {
+                match subscriber.recv_async().await {
+                    Ok(sample) => {
+                        // Get the raw bytes from the sample
+                        let payload_bytes = sample.payload().to_bytes();
+
+                        // Create a Message object with topic and payload as bytes::Bytes
+                        let message = Message {
+                            topic: sample.key_expr().as_str().to_string(),
+                            payload: bytes::Bytes::from(payload_bytes.into_owned()),
+                        };
+
+                        // Send the Message on the tx channel
+                        if let Err(e) = tx.send(message).await {
+                            tracing::error!("Failed to send message: {}", e);
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Subscriber stopped receiving messages: {}", e);
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Get the abort handle from the join handle
+        let abort_handle = join_handle.abort_handle();
+
+        Ok(Subscription::new(rx, abort_handle))
     }
 
     async fn shutdown(&mut self) -> Result<()> {

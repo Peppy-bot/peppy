@@ -9,6 +9,27 @@ use super::adapters::zenoh::ZenohAdapter;
 use crate::commands::serve::types::{CommandContext, ServeAsyncCommand};
 use crate::{Error, Result};
 
+/// Configuration for channel buffer sizing based on expected throughput
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThroughputMode {
+    /// Low throughput mode with smaller buffer (32 messages)
+    /// Suitable for control messages or low-frequency updates
+    LowThroughput,
+    /// High throughput mode with larger buffer (1024 messages)
+    /// Suitable for data streaming or high-frequency sensor data
+    HighThroughput,
+}
+
+impl ThroughputMode {
+    /// Returns the channel buffer size for this throughput mode
+    pub fn channel_size(&self) -> usize {
+        match self {
+            ThroughputMode::LowThroughput => 32,
+            ThroughputMode::HighThroughput => 1024,
+        }
+    }
+}
+
 pub trait MessengerBackend {
     /// Starts the router in background and immediately return
     fn init(&mut self) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
@@ -20,12 +41,34 @@ pub trait MessengerBackend {
     fn publish(&mut self, message: Message) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
 
     /// Subscribes to a topic
-    fn subscribe(&self, topic: &str) -> impl Future<Output = Result<Subscription>> + Send; // async equivalent for trait
+    fn subscribe(
+        &self,
+        topic: &str,
+        throughput_mode: ThroughputMode,
+    ) -> impl Future<Output = Result<Subscription>> + Send; // async equivalent for trait
 }
 
 pub struct Subscription {
     // stream of messages; could be tokio::sync::mpsc::Receiver or a Stream
     pub rx: tokio::sync::mpsc::Receiver<Message>,
+    // Handle to abort the background task when subscription is dropped
+    abort_handle: tokio::task::AbortHandle,
+}
+
+impl Subscription {
+    pub fn new(
+        rx: tokio::sync::mpsc::Receiver<Message>,
+        abort_handle: tokio::task::AbortHandle,
+    ) -> Self {
+        Self { rx, abort_handle }
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        // Abort the background task to prevent resource leaks
+        self.abort_handle.abort();
+    }
 }
 
 #[derive(Clone)]
@@ -138,8 +181,12 @@ impl MessengerBackend for Messenger {
         dispatch!(&mut self.adapter, publish, message)
     }
 
-    async fn subscribe(&self, topic: &str) -> Result<Subscription> {
-        dispatch!(&self.adapter, subscribe, topic)
+    async fn subscribe(
+        &self,
+        topic: &str,
+        throughput_mode: ThroughputMode,
+    ) -> Result<Subscription> {
+        dispatch!(&self.adapter, subscribe, topic, throughput_mode)
     }
 
     async fn shutdown(&mut self) -> Result<()> {

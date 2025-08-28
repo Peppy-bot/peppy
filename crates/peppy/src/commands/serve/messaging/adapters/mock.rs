@@ -1,4 +1,4 @@
-use super::super::types::{Message, MessengerBackend, Subscription};
+use super::super::types::{Message, MessengerBackend, Subscription, ThroughputMode};
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -63,14 +63,18 @@ impl MessengerBackend for MockAdapter {
         Ok(())
     }
 
-    async fn subscribe(&self, topic: &str) -> Result<Subscription> {
+    async fn subscribe(
+        &self,
+        topic: &str,
+        throughput_mode: ThroughputMode,
+    ) -> Result<Subscription> {
         if !self.is_connected {
             return Err(Error::SubscribeError {
                 topic: topic.to_string(),
             });
         }
 
-        let (tx, rx) = mpsc::channel(128);
+        let (tx, rx) = mpsc::channel(throughput_mode.channel_size());
 
         // Store the sender for this subscription
         {
@@ -93,7 +97,12 @@ impl MessengerBackend for MockAdapter {
             }
         }
 
-        Ok(Subscription { rx })
+        // Create a dummy task that does nothing, just to get an abort handle
+        // This maintains compatibility with the Subscription type
+        let join_handle = tokio::spawn(async {});
+        let abort_handle = join_handle.abort_handle();
+
+        Ok(Subscription::new(rx, abort_handle))
     }
 
     async fn shutdown(&mut self) -> Result<()> {
@@ -115,7 +124,7 @@ impl MessengerBackend for MockAdapter {
 // Those tests purpose is to test the behaviour of a real messaging system and check if they map to the behaviour of the mock
 #[cfg(test)]
 mod tests {
-    use crate::commands::serve::messaging::{Message, Messenger, MessengerBackend};
+    use crate::commands::serve::messaging::{Message, Messenger, MessengerBackend, ThroughputMode};
     use crate::commands::serve::types::CommandContext;
 
     fn create_test_messenger() -> Messenger {
@@ -148,7 +157,9 @@ mod tests {
         assert!(messenger.init().await.is_ok());
 
         // Test subscribe first
-        let subscription = messenger.subscribe("test/topic").await;
+        let subscription = messenger
+            .subscribe("test/topic", ThroughputMode::LowThroughput)
+            .await;
         assert!(subscription.is_ok());
         let mut subscription = subscription.unwrap();
 
@@ -175,7 +186,10 @@ mod tests {
         assert!(messenger.init().await.is_ok());
 
         // Test that subscription returns a valid channel
-        let mut subscription = messenger.subscribe("test/topic").await.unwrap();
+        let mut subscription = messenger
+            .subscribe("test/topic", ThroughputMode::LowThroughput)
+            .await
+            .unwrap();
 
         // The receiver should be created even if no messages are sent
         // Try to receive with a timeout to check if channel is empty
@@ -193,9 +207,15 @@ mod tests {
         assert!(messenger.init().await.is_ok());
 
         // Test multiple subscriptions to different topics
-        let sub1 = messenger.subscribe("topic/1").await;
-        let sub2 = messenger.subscribe("topic/2").await;
-        let sub3 = messenger.subscribe("topic/3").await;
+        let sub1 = messenger
+            .subscribe("topic/1", ThroughputMode::LowThroughput)
+            .await;
+        let sub2 = messenger
+            .subscribe("topic/2", ThroughputMode::HighThroughput)
+            .await;
+        let sub3 = messenger
+            .subscribe("topic/3", ThroughputMode::LowThroughput)
+            .await;
 
         assert!(sub1.is_ok());
         assert!(sub2.is_ok());

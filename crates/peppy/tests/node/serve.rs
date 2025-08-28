@@ -1,5 +1,5 @@
 use peppy::commands::serve::CommandContext;
-use peppy::commands::serve::messaging::{Message, Messenger, MessengerBackend};
+use peppy::commands::serve::messaging::{Message, Messenger, MessengerBackend, ThroughputMode};
 
 #[tokio::test]
 async fn test_local_zenoh_messaging() {
@@ -11,11 +11,11 @@ async fn test_local_zenoh_messaging() {
 
     // Subscribe to multiple topics
     let mut sub1 = messenger
-        .subscribe("test/topic1")
+        .subscribe("test/topic1", ThroughputMode::LowThroughput)
         .await
         .expect("Failed to subscribe to topic1");
     let mut sub2 = messenger
-        .subscribe("test/topic2")
+        .subscribe("test/topic2", ThroughputMode::HighThroughput)
         .await
         .expect("Failed to subscribe to topic2");
 
@@ -66,7 +66,7 @@ async fn test_local_zenoh_messaging() {
 
     // Test subscribing after messages have been published
     let mut late_sub = messenger
-        .subscribe("test/topic1")
+        .subscribe("test/topic1", ThroughputMode::LowThroughput)
         .await
         .expect("Failed to create late subscription");
 
