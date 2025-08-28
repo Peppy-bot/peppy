@@ -7,7 +7,7 @@ async fn test_local_zenoh_messaging() {
     let mut messenger = Messenger::new(context).expect("Failed to create messenger");
 
     // Start the router
-    messenger.init().expect("Failed to start router");
+    messenger.init().await.expect("Failed to start router");
 
     // Subscribe to multiple topics
     let mut sub1 = messenger
@@ -86,5 +86,5 @@ async fn test_local_zenoh_messaging() {
     assert_eq!(late_received2.topic, "test/topic1");
 
     // Shutdown the messaging system
-    messenger.shutdown().expect("Failed to shutdown");
+    messenger.shutdown().await.expect("Failed to shutdown");
 }
