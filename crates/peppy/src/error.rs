@@ -40,6 +40,9 @@ pub enum Error {
     },
     ShutdownError,
     BackendError(String),
+    MessagingSessionError(String),
+    PublisherCreationError(String),
+    MatchingListenerError(String),
 
     // -- libs
     AskamaError(String),
