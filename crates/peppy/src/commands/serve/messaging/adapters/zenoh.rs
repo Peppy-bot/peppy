@@ -1,7 +1,16 @@
 use super::super::{Message, MessengerBackend, Subscription, ThroughputMode};
 use crate::{Error, Result, zenohd};
+use askama::Template;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tracing::{debug, info};
+
+#[derive(Template)]
+#[template(path = "zenoh/default_client_config.json5.j2")]
+pub struct ZenohClientConfigTemplate {
+    pub host: String,
+    pub port: u16,
+    pub protocol: zenohd::ZenohNetProtocol,
+}
 
 pub struct ZenohAdapter {
     zenohd: zenohd::ZenohdFacade,
@@ -10,8 +19,8 @@ pub struct ZenohAdapter {
 }
 
 impl ZenohAdapter {
-    pub fn new(config: Option<PathBuf>) -> Result<Self> {
-        let facade = zenohd::ZenohdFacade::new(config)?;
+    pub fn new(router_config: Option<PathBuf>) -> Result<Self> {
+        let facade = zenohd::ZenohdFacade::new(router_config)?;
         let publishers = HashMap::new();
 
         Ok(Self {
@@ -20,14 +29,46 @@ impl ZenohAdapter {
             publishers,
         })
     }
+
+    fn create_client_config(&self) -> zenoh::config::Config {
+        // Use the same config from the router but for client connection
+        let connect_host = if self.zenohd.zenoh_endpoint.host == "0.0.0.0" {
+            "127.0.0.1".to_string()
+        } else {
+            self.zenohd.zenoh_endpoint.host.clone()
+        };
+
+        let client_template = ZenohClientConfigTemplate {
+            host: connect_host,
+            port: self.zenohd.zenoh_endpoint.port,
+            protocol: self.zenohd.zenoh_endpoint.protocol,
+        };
+
+        let client_config_str = client_template
+            .render()
+            .expect("Failed to render client config template");
+
+        zenoh::config::Config::from_json5(&client_config_str)
+            .expect("Failed to create client config")
+    }
 }
 
 impl MessengerBackend for ZenohAdapter {
     /// Starts a zenohd process, using std::process::Command is the recommended way as using the
     /// rust crate directly prevents the user from using plugins/adminspace
     async fn init(&mut self) -> Result<()> {
+        info!("Starting zenohd router...");
         self.zenohd.start_router()?;
-        let session = zenoh::open(self.zenohd.config.clone())
+
+        // Create a client config that connects to the router
+        // Extract the endpoint from the router's listen config
+        let client_config = self.create_client_config();
+        info!(
+            "Connecting to router at: {}",
+            &self.zenohd.zenoh_endpoint.host
+        );
+
+        let session = zenoh::open(client_config)
             .await
             .map_err(|e| Error::BackendError(format!("Failed to create Zenoh session: {}", e)))?;
 
