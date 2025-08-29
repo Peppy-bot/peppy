@@ -29,6 +29,7 @@ impl ThroughputMode {
     }
 }
 
+/// Defines the messaging interface
 pub trait MessengerBackend {
     /// Starts the router in background and immediately return
     fn init(&mut self) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
@@ -47,6 +48,7 @@ pub trait MessengerBackend {
     ) -> impl Future<Output = Result<Subscription>> + Send; // async equivalent for trait
 }
 
+/// Handles message receiving and cleanup
 pub struct Subscription {
     // stream of messages; could be tokio::sync::mpsc::Receiver or a Stream
     pub rx: tokio::sync::mpsc::Receiver<Message>,
@@ -70,6 +72,7 @@ impl Drop for Subscription {
     }
 }
 
+/// Core message structure
 #[derive(Clone)]
 pub struct Message {
     pub topic: String,
@@ -85,6 +88,7 @@ impl Message {
     }
 }
 
+/// Lists the different messaging backends
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Engine {
@@ -118,16 +122,10 @@ impl Engine {
     }
 }
 
+/// Main messaging implementation
 pub struct Messenger {
     adapter: MessengerAdapter,
     pub context: MessagingEngineContext,
-}
-
-#[allow(clippy::large_enum_variant)]
-enum MessengerAdapter {
-    Zenoh(ZenohAdapter),
-    #[cfg(test)]
-    Mock(MockAdapter),
 }
 
 impl Messenger {
@@ -140,6 +138,14 @@ impl Messenger {
         };
         Ok(Self { adapter, context })
     }
+}
+
+/// Dispatches the Messenger calls to the appropriate backend without using the heap
+#[allow(clippy::large_enum_variant)]
+enum MessengerAdapter {
+    Zenoh(ZenohAdapter),
+    #[cfg(test)]
+    Mock(MockAdapter),
 }
 
 macro_rules! dispatch {
