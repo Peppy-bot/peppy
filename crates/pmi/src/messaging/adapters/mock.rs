@@ -125,10 +125,10 @@ impl MessengerBackend for MockAdapter {
 #[cfg(test)]
 mod tests {
     use crate::messaging::{Message, Messenger, MessengerBackend, ThroughputMode};
-    use crate::types::CommandContext;
+    use crate::types::MessagingEngineContext;
 
     fn create_test_messenger() -> Messenger {
-        let context = CommandContext::new("mock".to_string(), None);
+        let context = MessagingEngineContext::new("mock".to_string(), None);
         Messenger::new(context).unwrap()
     }
 

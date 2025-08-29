@@ -1,26 +1,27 @@
 use std::path::PathBuf;
 
+use super::CompositeCommand;
+use super::Serve;
 use super::node_watcher::NodeWatcherCommand;
-use super::types::Serve;
-use super::types::{CommandContext, CompositeCommand};
+use pmi::MessagingEngineContext;
 use pmi::messaging::Messenger;
 
 pub struct ServeCommandBuilder {
-    context: CommandContext,
+    context: MessagingEngineContext,
     composite_command: CompositeCommand,
 }
 
 impl ServeCommandBuilder {
     pub fn new(engine: String, config_path: Option<PathBuf>) -> Self {
-        let context = CommandContext::new(engine, config_path);
+        let context = MessagingEngineContext::new(engine, config_path);
         Self {
             context,
-            composite_command: CompositeCommand::new(),
+            composite_command: CompositeCommand::default(),
         }
     }
 
     pub fn with_node_watcher(mut self) -> Self {
-        let watcher = Box::new(NodeWatcherCommand::new(self.context.clone()));
+        let watcher = Box::new(NodeWatcherCommand {});
         self.composite_command = self.composite_command.add_async_command(watcher);
         self
     }
@@ -34,7 +35,7 @@ impl ServeCommandBuilder {
         self
     }
 
-    pub fn build(self) -> Serve {
+    pub fn build(self) -> super::Serve {
         Serve::new(self.composite_command)
     }
 }

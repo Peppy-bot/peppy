@@ -1,5 +1,5 @@
-use pmi::types::CommandContext;
 use pmi::messaging::{Message, Messenger, MessengerBackend, ThroughputMode};
+use pmi::types::MessagingEngineContext;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_local_zenoh_messaging() {
@@ -21,7 +21,7 @@ async fn test_local_zenoh_messaging() {
     let config_path = temp_dir.path().join("test_zenoh_config.json5");
     std::fs::write(&config_path, config_content).expect("Failed to write test config");
 
-    let context = CommandContext::new("zenoh".to_string(), Some(config_path));
+    let context = MessagingEngineContext::new("zenoh".to_string(), Some(config_path));
     let mut messenger = Messenger::new(context).expect("Failed to create messenger");
 
     // Start the router
