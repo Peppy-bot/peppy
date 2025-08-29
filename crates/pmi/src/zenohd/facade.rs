@@ -1,4 +1,4 @@
-use crate::{Error, Result};
+use super::super::error::{Error, Result};
 use askama::Template;
 use std::io::Write;
 use std::path::PathBuf;

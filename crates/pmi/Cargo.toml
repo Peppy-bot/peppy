@@ -1,0 +1,22 @@
+[package]
+name = "pmi"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+askama = "0.14.0"
+bytes = "1"
+json5 = "0.4"
+serde_json = "1.0"
+tokio = "1.47.0"
+tracing = "0.1.41"
+zenoh = "1.5.0"
+
+[dev-dependencies]
+tempfile = "3.8"
+
+[features]
+default = ["build_zenoh"]
+# Feature to enable building zenoh from source
+build_zenoh = []
