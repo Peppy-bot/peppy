@@ -35,7 +35,7 @@ pub trait MessengerBackend {
     fn init(&mut self) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
 
     /// Shuts down the router instance
-    fn shutdown(&mut self) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
+    fn shutdown(self) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
 
     /// Publish a message to a topic
     fn publish(&mut self, message: Message) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
@@ -175,8 +175,8 @@ impl MessengerBackend for Messenger {
         dispatch!(&self.adapter, subscribe, topic, throughput_mode)
     }
 
-    async fn shutdown(&mut self) -> Result<()> {
-        dispatch!(&mut self.adapter, shutdown)
+    async fn shutdown(self) -> Result<()> {
+        dispatch!(self.adapter, shutdown)
     }
 }
 

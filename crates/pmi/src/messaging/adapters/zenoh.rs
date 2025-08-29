@@ -184,7 +184,7 @@ impl MessengerBackend for ZenohAdapter {
         Ok(Subscription::new(rx, abort_handle))
     }
 
-    async fn shutdown(&mut self) -> Result<()> {
+    async fn shutdown(mut self) -> Result<()> {
         self.zenohd.stop_router()?;
         // Close the Zenoh session if it exists
         if let Some(session) = self.session.take() {

@@ -9,7 +9,7 @@ use super::Command;
 use crate::{Error, Result};
 
 use builder::ServeCommandBuilder;
-use pmi::messaging::{Messenger, MessengerBackend};
+use pmi::{Messenger, MessengerBackend};
 
 pub trait ServeSyncCommand: Send + Sync {
     fn execute(&self) -> Result<()>;

@@ -3,8 +3,7 @@ use std::path::PathBuf;
 use super::CompositeCommand;
 use super::Serve;
 use super::node_watcher::NodeWatcherCommand;
-use pmi::MessagingEngineContext;
-use pmi::messaging::Messenger;
+use pmi::{MessagingEngineContext, Messenger};
 
 pub struct ServeCommandBuilder {
     context: MessagingEngineContext,
