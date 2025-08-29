@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-pmi = { path = "../pmi", features = ["zenoh"] }
+pmi = { path = "../pmi-internal", features = ["zenoh"] }
 bytes = "1"
 askama = "0.14.0" # To help out on code generation (py and Rust) to create interface libs in .pixi envs or use (quote! macro + syn + prettyplease)
 # https://docs.rs/quote/latest/quote/

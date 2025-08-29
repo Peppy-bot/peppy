@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 readme = "Readme.md"
 
 [dependencies]
-pmi = { path = "../pmi", features = ["zenoh"] }
+pmi = { path = "../pmi-internal", features = ["zenoh"] }
 thiserror = "2.0.14" # Avoid Anyhow in this crate
 tokio = "1.47.0"
 zenoh = "1.5.0"
