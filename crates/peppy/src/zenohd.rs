@@ -1,3 +1,3 @@
 pub mod facade;
 
-pub use facade::ZenohdFacade;
+pub use facade::{ZenohNetProtocol, ZenohdFacade};

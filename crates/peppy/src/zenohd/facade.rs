@@ -9,7 +9,7 @@ use zenoh::config::Config;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 #[derive(Default)]
-pub enum Protocol {
+pub enum ZenohNetProtocol {
     #[default]
     Tcp,
     Udp,
@@ -17,33 +17,40 @@ pub enum Protocol {
     Ws,
 }
 
-impl fmt::Display for Protocol {
+impl fmt::Display for ZenohNetProtocol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Protocol::Tcp => write!(f, "tcp"),
-            Protocol::Udp => write!(f, "udp"),
-            Protocol::Quic => write!(f, "quic"),
-            Protocol::Ws => write!(f, "ws"),
+            ZenohNetProtocol::Tcp => write!(f, "tcp"),
+            ZenohNetProtocol::Udp => write!(f, "udp"),
+            ZenohNetProtocol::Quic => write!(f, "quic"),
+            ZenohNetProtocol::Ws => write!(f, "ws"),
         }
     }
 }
 
 #[derive(Template)]
-#[template(path = "zenoh/default_config.json5.j2")]
-pub struct ZenohConfigTemplate {
+#[template(path = "zenoh/default_router_config.json5.j2")]
+pub struct ZenohRouterConfigTemplate {
     pub host: String,
     pub port: u16,
-    pub protocol: Protocol,
+    pub protocol: ZenohNetProtocol,
 }
 
-impl Default for ZenohConfigTemplate {
+impl Default for ZenohRouterConfigTemplate {
     fn default() -> Self {
         Self {
             host: "0.0.0.0".to_string(),
             port: 7447,
-            protocol: Protocol::default(),
+            protocol: ZenohNetProtocol::default(),
         }
     }
+}
+
+/// This structure stores the Zenoh endpoint to be reused by clients by extracting it from the config file
+pub struct ZenohEndpoint {
+    pub host: String,
+    pub port: u16,
+    pub protocol: ZenohNetProtocol,
 }
 
 /// The Zenoh daemon binary facade. Zenohd is not accessible via the Rust API (or in a very limited fashion).
@@ -52,6 +59,7 @@ pub struct ZenohdFacade {
     zenohd_path: String,
     pub config: zenoh::config::Config,
     pub router_process: Option<Child>,
+    pub zenoh_endpoint: ZenohEndpoint,
 }
 
 impl ZenohdFacade {
@@ -59,10 +67,12 @@ impl ZenohdFacade {
     pub fn new(config_file: Option<PathBuf>) -> Result<Self> {
         let zenohd_path = ZenohdFacade::get_zenohd_binary()?;
         let config = ZenohdFacade::get_config(config_file)?;
+        let zenoh_endpoint = ZenohdFacade::get_endpoint_from_config(&config)?;
         Ok(Self {
             zenohd_path,
             config,
             router_process: None,
+            zenoh_endpoint,
         })
     }
 
@@ -86,6 +96,52 @@ impl ZenohdFacade {
                 Error::ConfigurationError(format!("Failed to parse default config: {}", e))
             }),
         }
+    }
+
+    fn get_endpoint_from_config(config: &zenoh::config::Config) -> Result<ZenohEndpoint> {
+        // Get the listen configuration
+        let listen_json = config.get_json("listen").map_err(|e| {
+            Error::ConfigurationError(format!("Failed to get listen config: {}", e))
+        })?;
+
+        let listen: serde_json::Value = serde_json::from_str(&listen_json).map_err(|e| {
+            Error::ConfigurationError(format!("Failed to parse listen config: {}", e))
+        })?;
+
+        let endpoint_str = listen["endpoints"]["router"][0].as_str().ok_or_else(|| {
+            Error::ConfigurationError("No router endpoint found in config".to_string())
+        })?;
+
+        let (protocol_str, host_port) = endpoint_str.split_once('/').ok_or_else(|| {
+            Error::ConfigurationError(format!("Invalid endpoint format: {}", endpoint_str))
+        })?;
+
+        let protocol = match protocol_str {
+            "tcp" => ZenohNetProtocol::Tcp,
+            "udp" => ZenohNetProtocol::Udp,
+            "quic" => ZenohNetProtocol::Quic,
+            "ws" => ZenohNetProtocol::Ws,
+            _ => {
+                return Err(Error::ConfigurationError(format!(
+                    "Unknown protocol: {}",
+                    protocol_str
+                )));
+            }
+        };
+
+        let (host, port_str) = host_port.split_once(':').ok_or_else(|| {
+            Error::ConfigurationError(format!("Invalid host:port format: {}", host_port))
+        })?;
+
+        let port = port_str
+            .parse::<u16>()
+            .map_err(|_| Error::ConfigurationError(format!("Invalid port number: {}", port_str)))?;
+
+        Ok(ZenohEndpoint {
+            host: host.to_string(),
+            port,
+            protocol,
+        })
     }
 
     fn get_config_as_path(&self) -> Result<PathBuf> {
@@ -115,7 +171,7 @@ impl ZenohdFacade {
 
     /// Renders the Zenoh configuration from the template
     fn render_default_config() -> String {
-        let template = ZenohConfigTemplate::default();
+        let template = ZenohRouterConfigTemplate::default();
 
         template
             .render()
@@ -206,20 +262,37 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
         let config_path = temp_dir.path().join("test_zenoh_config.json5");
 
+        // Store the expected host and port in separate variables
+        let expected_host = "127.0.0.1";
+        let expected_port = 7447;
+        let expected_protocol = "tcp";
+
         // Write config directly in the test, inspired by the template
-        let config_content = r#"{
-            "listen": {
-                "endpoints": {
-                    "router": ["tcp/127.0.0.1:7447"]
-                }
-            }
-        }"#;
+        let config_content = format!(
+            r#"{{
+            "listen": {{
+                "endpoints": {{
+                    "router": ["{}/{expected_host}:{expected_port}"]
+                }}
+            }}
+        }}"#,
+            expected_protocol
+        );
 
         fs::write(&config_path, config_content).expect("Failed to write test config");
 
         // Create facade with the config file
         let facade = ZenohdFacade::new(Some(config_path));
+        if let Err(e) = &facade {
+            eprintln!("Error creating facade: {:?}", e);
+        }
         assert!(facade.is_ok());
+
+        // Verify that the endpoint was correctly extracted from the config
+        let facade = facade.unwrap();
+        assert_eq!(facade.zenoh_endpoint.host, expected_host);
+        assert_eq!(facade.zenoh_endpoint.port, expected_port);
+        assert_eq!(facade.zenoh_endpoint.protocol, ZenohNetProtocol::Tcp);
     }
 
     #[test]
