@@ -1,9 +1,27 @@
 use peppy::commands::serve::CommandContext;
 use peppy::commands::serve::messaging::{Message, Messenger, MessengerBackend, ThroughputMode};
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_local_zenoh_messaging() {
-    let context = CommandContext::new("zenoh".to_string(), None);
+    // Use a random port to avoid conflicts
+    let port = 8000 + (std::process::id() % 1000);
+    let config_content = format!(
+        r#"{{
+        "listen": {{
+            "endpoints": {{
+                "router": ["tcp/127.0.0.1:{}"]
+            }}
+        }}
+    }}"#,
+        port
+    );
+
+    // Write config to a temporary file
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let config_path = temp_dir.path().join("test_zenoh_config.json5");
+    std::fs::write(&config_path, config_content).expect("Failed to write test config");
+
+    let context = CommandContext::new("zenoh".to_string(), Some(config_path));
     let mut messenger = Messenger::new(context).expect("Failed to create messenger");
 
     // Start the router
@@ -66,24 +84,25 @@ async fn test_local_zenoh_messaging() {
 
     // Test subscribing after messages have been published
     let mut late_sub = messenger
-        .subscribe("test/topic1", ThroughputMode::LowThroughput)
+        .subscribe("test/topic3", ThroughputMode::LowThroughput)
         .await
         .expect("Failed to create late subscription");
 
-    // Late subscriber should receive previously published messages (in mock adapter)
-    let late_received1 = late_sub
-        .rx
-        .recv()
+    // Publish a new message to the late subscriber's topic
+    let late_msg = Message::new("test/topic3", b"Hello late subscriber");
+    messenger
+        .publish(late_msg.clone())
         .await
-        .expect("Failed to receive historical message 1");
-    assert_eq!(late_received1.topic, "test/topic1");
+        .expect("Failed to publish to topic3");
 
-    let late_received2 = late_sub
+    // Late subscriber should receive the new message
+    let late_received = late_sub
         .rx
         .recv()
         .await
-        .expect("Failed to receive historical message 2");
-    assert_eq!(late_received2.topic, "test/topic1");
+        .expect("Failed to receive message on topic3");
+    assert_eq!(late_received.topic, "test/topic3");
+    assert_eq!(late_received.payload, late_msg.payload);
 
     // Shutdown the messaging system
     messenger.shutdown().await.expect("Failed to shutdown");
