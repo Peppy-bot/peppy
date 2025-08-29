@@ -1,13 +1,12 @@
 use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
-use std::thread::{self, JoinHandle};
 
 use super::super::error::{Error, Result};
 #[cfg(test)]
 use super::adapters::mock::MockAdapter;
 use super::adapters::zenoh::ZenohAdapter;
-use crate::types::{CommandContext, ServeAsyncCommand};
+use crate::types::MessagingEngineContext;
 
 /// Configuration for channel buffer sizing based on expected throughput
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,7 +106,7 @@ impl fmt::Display for Engine {
 }
 
 impl Engine {
-    pub fn from_context(context: &CommandContext) -> Result<Self> {
+    pub fn from_context(context: &MessagingEngineContext) -> Result<Self> {
         match context.engine.as_str() {
             "zenoh" => Ok(Engine::Zenoh {
                 config: context.config_path.clone(),
@@ -121,7 +120,7 @@ impl Engine {
 
 pub struct Messenger {
     adapter: MessengerAdapter,
-    context: CommandContext,
+    pub context: MessagingEngineContext,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -132,7 +131,7 @@ enum MessengerAdapter {
 }
 
 impl Messenger {
-    pub fn new(context: CommandContext) -> Result<Self> {
+    pub fn new(context: MessagingEngineContext) -> Result<Self> {
         let engine = Engine::from_context(&context)?;
         let adapter = match engine {
             Engine::Zenoh { config } => MessengerAdapter::Zenoh(ZenohAdapter::new(config)?),
@@ -140,25 +139,6 @@ impl Messenger {
             Engine::Mock => MessengerAdapter::Mock(MockAdapter::default()),
         };
         Ok(Self { adapter, context })
-    }
-
-    #[tokio::main]
-    async fn run_router(mut self) -> Result<()> {
-        self.init().await?;
-        Ok(())
-    }
-}
-
-impl ServeAsyncCommand for Messenger {
-    fn execute_async(&self) -> Result<JoinHandle<Result<()>>> {
-        let context = self.context.clone();
-
-        let handle = thread::spawn(move || {
-            let messenger = Messenger::new(context)?;
-            messenger.run_router()
-        });
-
-        Ok(handle)
     }
 }
 
@@ -206,7 +186,7 @@ mod tests {
         let config_path = temp_dir.path().join("test_config.json5");
 
         // Test that zenoh engine is accepted with config
-        let context = CommandContext::new("zenoh".to_string(), Some(config_path.clone()));
+        let context = MessagingEngineContext::new("zenoh".to_string(), Some(config_path.clone()));
         let result = Engine::from_context(&context);
         assert!(result.is_ok());
         assert_eq!(
@@ -217,13 +197,13 @@ mod tests {
         );
 
         // Test that mock engine is allowed in test mode
-        let context = CommandContext::new("mock".to_string(), None);
+        let context = MessagingEngineContext::new("mock".to_string(), None);
         let result = Engine::from_context(&context);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Engine::Mock);
 
         // Test that any other engine is rejected
-        let context = CommandContext::new(
+        let context = MessagingEngineContext::new(
             "rabbitmq".to_string(),
             Some(PathBuf::from("some/config.json")),
         );

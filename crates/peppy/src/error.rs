@@ -1,3 +1,4 @@
+use core::fmt::{Display, Formatter};
 use derive_more::From;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -30,26 +31,14 @@ pub enum Error {
     PythonConfigCreation(String),
 
     // -- messaging
-    ConnectionError,
-    ConfigurationError(String),
-    PublishError {
-        topic: String,
-    },
-    SubscribeError {
-        topic: String,
-    },
-    ShutdownError,
-    BackendError(String),
-    MessagingSessionError(String),
-    PublisherCreationError(String),
-    MatchingListenerError(String),
+    PeppyMessagingInterfaceError(pmi::PeppyMessagingInterfaceError),
 
     // -- libs
     AskamaError(String),
 }
 
-impl core::fmt::Display for Error {
-    fn fmt(&self, fmt: &mut core::fmt::Formatter) -> core::result::Result<(), core::fmt::Error> {
+impl Display for Error {
+    fn fmt(&self, fmt: &mut Formatter) -> core::result::Result<(), core::fmt::Error> {
         write!(fmt, "{self:?}")
     }
 }

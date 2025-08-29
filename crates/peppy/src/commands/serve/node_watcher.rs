@@ -1,16 +1,11 @@
-use super::types::{CommandContext, ServeAsyncCommand};
-use crate::Result;
-use std::thread::{self, JoinHandle};
+//use super::types::{CommandContext, ServeAsyncCommand};
 
-pub struct NodeWatcherCommand {
-    context: CommandContext,
-}
+use crate::Result;
+use tokio::task::JoinHandle;
+
+pub struct NodeWatcherCommand {}
 
 impl NodeWatcherCommand {
-    pub fn new(context: CommandContext) -> Self {
-        Self { context }
-    }
-
     // Use the following design pattern in this module:
     // Observer Pattern for Node Watching
     //
@@ -31,11 +26,9 @@ impl NodeWatcherCommand {
     }
 }
 
-impl ServeAsyncCommand for NodeWatcherCommand {
+impl super::ServeAsyncCommand for NodeWatcherCommand {
     fn execute_async(&self) -> Result<JoinHandle<Result<()>>> {
-        let _context = self.context.clone();
-
-        let handle = thread::spawn(move || {
+        let handle = tokio::spawn(async move {
             NodeWatcherCommand::watch_node_configuration_files_changes();
             Ok(())
         });
