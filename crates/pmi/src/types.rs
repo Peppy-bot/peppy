@@ -1,4 +1,4 @@
-use crate::Result;
+use crate::error::Result;
 use std::path::PathBuf;
 use std::thread::JoinHandle;
 use tracing::error;
@@ -72,7 +72,7 @@ impl Serve {
         Self { composite_command }
     }
 
-    pub fn execute(self) -> crate::Result<()> {
+    pub fn execute(self) -> Result<()> {
         let handles = self.composite_command.execute()?;
 
         for handle in handles {

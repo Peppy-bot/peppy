@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
-use super::messaging::Messenger;
 use super::node_watcher::NodeWatcherCommand;
 use super::types::Serve;
 use super::types::{CommandContext, CompositeCommand};
+use pmi::messaging::Messenger;
 
 pub struct ServeCommandBuilder {
     context: CommandContext,

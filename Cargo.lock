@@ -2147,6 +2147,7 @@ dependencies = [
  "clap",
  "derive_more 2.0.1",
  "json5",
+ "pmi",
  "rayon",
  "serde_json",
  "service-manager",
@@ -2162,6 +2163,7 @@ dependencies = [
 name = "peppycl"
 version = "0.0.1"
 dependencies = [
+ "pmi",
  "thiserror 2.0.16",
  "tokio",
  "zenoh",
@@ -2322,6 +2324,20 @@ dependencies = [
  "quick-xml",
  "serde",
  "time",
+]
+
+[[package]]
+name = "pmi"
+version = "0.0.1"
+dependencies = [
+ "askama",
+ "bytes",
+ "json5",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "zenoh",
 ]
 
 [[package]]

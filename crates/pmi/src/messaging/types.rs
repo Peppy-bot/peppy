@@ -3,11 +3,11 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
 
+use super::super::error::{Error, Result};
 #[cfg(test)]
 use super::adapters::mock::MockAdapter;
 use super::adapters::zenoh::ZenohAdapter;
-use crate::commands::serve::types::{CommandContext, ServeAsyncCommand};
-use crate::{Error, Result};
+use crate::types::{CommandContext, ServeAsyncCommand};
 
 /// Configuration for channel buffer sizing based on expected throughput
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

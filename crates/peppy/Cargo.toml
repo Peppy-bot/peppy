@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+pmi = { path = "../pmi" }
 bytes = "1"
 askama = "0.14.0" # To help out on code generation (py and Rust) to create interface libs in .pixi envs or use (quote! macro + syn + prettyplease)
 # https://docs.rs/quote/latest/quote/
@@ -24,8 +25,7 @@ serde_json = "1.0"
 tempfile = "3.8"
 
 [features]
-default = ["build_pixi", "build_zenoh"]
+default = ["build_pixi"]
 # Feature to enable building pixi from source
 build_pixi = []
-# Feature to enable building zenoh from source
-build_zenoh = []
+
