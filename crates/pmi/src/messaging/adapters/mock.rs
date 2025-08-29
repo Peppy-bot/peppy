@@ -105,7 +105,7 @@ impl MessengerBackend for MockAdapter {
         Ok(Subscription::new(rx, abort_handle))
     }
 
-    async fn shutdown(&mut self) -> Result<()> {
+    async fn shutdown(mut self) -> Result<()> {
         if !self.is_connected {
             return Err(Error::ShutdownError);
         }
@@ -143,7 +143,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_shutdown_without_init_fails() {
-        let mut messenger = create_test_messenger();
+        let messenger = create_test_messenger();
 
         // Shutdown should fail if init() hasn't been called
         assert!(messenger.shutdown().await.is_err());

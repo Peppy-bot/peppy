@@ -1,5 +1,5 @@
-use pmi::messaging::{Message, Messenger, MessengerBackend, ThroughputMode};
-use pmi::types::MessagingEngineContext;
+use pmi::MessagingEngineContext;
+use pmi::{Message, Messenger, MessengerBackend, ThroughputMode};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_local_zenoh_messaging() {
