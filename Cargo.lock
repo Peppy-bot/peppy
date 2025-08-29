@@ -2143,20 +2143,16 @@ version = "0.0.1"
 dependencies = [
  "askama",
  "bytes",
- "capnp",
  "clap",
  "derive_more 2.0.1",
- "json5",
  "pmi",
  "rayon",
- "serde_json",
  "service-manager",
  "starlark",
  "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "zenoh",
 ]
 
 [[package]]
@@ -2332,6 +2328,7 @@ version = "0.0.1"
 dependencies = [
  "askama",
  "bytes",
+ "capnp",
  "json5",
  "serde_json",
  "tempfile",

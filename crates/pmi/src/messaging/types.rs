@@ -3,8 +3,8 @@ use std::future::Future;
 use std::path::PathBuf;
 
 use super::super::error::{Error, Result};
-#[cfg(test)]
 use super::adapters::mock::MockAdapter;
+#[cfg(feature = "zenoh")]
 use super::adapters::zenoh::ZenohAdapter;
 use crate::types::MessagingEngineContext;
 
@@ -92,18 +92,18 @@ impl Message {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Engine {
+    #[cfg(feature = "zenoh")]
     Zenoh {
         config: Option<PathBuf>,
     },
-    #[cfg(test)]
     Mock,
 }
 
 impl fmt::Display for Engine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(feature = "zenoh")]
             Engine::Zenoh { .. } => write!(f, "zenoh"),
-            #[cfg(test)]
             Engine::Mock => write!(f, "mock"),
         }
     }
@@ -112,10 +112,10 @@ impl fmt::Display for Engine {
 impl Engine {
     pub fn from_context(context: &MessagingEngineContext) -> Result<Self> {
         match context.engine.as_str() {
+            #[cfg(feature = "zenoh")]
             "zenoh" => Ok(Engine::Zenoh {
                 config: context.config_path.clone(),
             }),
-            #[cfg(test)]
             "mock" => Ok(Engine::Mock),
             _ => Err(Error::UnsupportedEngine),
         }
@@ -132,8 +132,8 @@ impl Messenger {
     pub fn new(context: MessagingEngineContext) -> Result<Self> {
         let engine = Engine::from_context(&context)?;
         let adapter = match engine {
+            #[cfg(feature = "zenoh")]
             Engine::Zenoh { config } => MessengerAdapter::Zenoh(ZenohAdapter::new(config)?),
-            #[cfg(test)]
             Engine::Mock => MessengerAdapter::Mock(MockAdapter::default()),
         };
         Ok(Self { adapter, context })
@@ -143,16 +143,16 @@ impl Messenger {
 /// Dispatches the Messenger calls to the appropriate backend without using the heap
 #[allow(clippy::large_enum_variant)]
 enum MessengerAdapter {
+    #[cfg(feature = "zenoh")]
     Zenoh(ZenohAdapter),
-    #[cfg(test)]
     Mock(MockAdapter),
 }
 
 macro_rules! dispatch {
     ($adapter:expr, $method:ident $(, $arg:expr)*) => {
         match $adapter {
+            #[cfg(feature = "zenoh")]
             MessengerAdapter::Zenoh(adapter) => adapter.$method($($arg),*).await,
-            #[cfg(test)]
             MessengerAdapter::Mock(adapter) => adapter.$method($($arg),*).await,
         }
     };
@@ -186,22 +186,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn test_only_zenoh_engine_allowed() {
-        // Create a temporary directory for test config
-        let temp_dir = tempdir().unwrap();
-        let config_path = temp_dir.path().join("test_config.json5");
-
-        // Test that zenoh engine is accepted with config
-        let context = MessagingEngineContext::new("zenoh".to_string(), Some(config_path.clone()));
-        let result = Engine::from_context(&context);
-        assert!(result.is_ok());
-        assert_eq!(
-            result.unwrap(),
-            Engine::Zenoh {
-                config: Some(config_path)
-            }
-        );
-
+    fn test_mock_engine() {
         // Test that mock engine is allowed in test mode
         let context = MessagingEngineContext::new("mock".to_string(), None);
         let result = Engine::from_context(&context);
@@ -216,5 +201,24 @@ mod tests {
         let result = Engine::from_context(&context);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::UnsupportedEngine));
+    }
+
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn test_zenoh_engine() {
+        // Create a temporary directory for test config
+        let temp_dir = tempdir().unwrap();
+        let config_path = temp_dir.path().join("test_config.json5");
+
+        // Test that zenoh engine is accepted with config
+        let context = MessagingEngineContext::new("zenoh".to_string(), Some(config_path.clone()));
+        let result = Engine::from_context(&context);
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            Engine::Zenoh {
+                config: Some(config_path)
+            }
+        );
     }
 }
