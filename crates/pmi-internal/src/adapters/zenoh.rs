@@ -65,8 +65,8 @@ impl MessengerBackend for ZenohAdapter {
         // Extract the endpoint from the router's listen config
         let client_config = self.create_client_config();
         info!(
-            "Connecting to router at: {}",
-            &self.zenohd.zenoh_endpoint.host
+            "Starting router on: {}:{}",
+            &self.zenohd.zenoh_endpoint.host, self.zenohd.zenoh_endpoint.port
         );
 
         let session = zenoh::open(client_config)

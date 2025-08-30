@@ -10,7 +10,7 @@ askama = "0.14.0" # To help out on code generation (py and Rust) to create inter
 # https://docs.rs/quote/latest/quote/
 clap = { version = "4.5.42", features = ["derive"] }
 starlark = "0.13.0" # To parse peppy.star
-tokio = "1.47.0"
+tokio = { version = "1.47.0", features = ["signal"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 derive_more = { version = "2", features = ["from"] }

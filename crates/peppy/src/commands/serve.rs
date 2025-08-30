@@ -3,7 +3,7 @@ mod node_watcher;
 
 use std::path::PathBuf;
 use tokio::task::JoinHandle;
-use tracing::error;
+use tracing::{error, info};
 
 use super::Command;
 use crate::{Error, Result};
@@ -32,6 +32,18 @@ impl ServeAsyncCommand for Messenger {
                 .init()
                 .await
                 .map_err(Error::PeppyMessagingInterfaceError)?;
+
+            // Keep the messenger alive until shutdown signal (Ctrl+C)
+            tokio::signal::ctrl_c().await.map_err(|e| {
+                Error::ExecutionFailed(format!("Failed to listen for ctrl-c: {}", e))
+            })?;
+
+            info!("Shutting down messenger...");
+            messenger
+                .shutdown()
+                .await
+                .map_err(Error::PeppyMessagingInterfaceError)?;
+
             Ok(())
         });
 
@@ -80,11 +92,16 @@ impl Serve {
     }
 
     pub fn execute(self) -> Result<()> {
+        // Create the tokio runtime first
+        let runtime =
+            tokio::runtime::Runtime::new().map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+
+        // Enter the runtime context before executing commands that use tokio::spawn
+        let _guard = runtime.enter();
         let handles = self.composite_command.execute()?;
 
         // Block on all async tasks
-        let runtime =
-            tokio::runtime::Runtime::new().map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+        info!("Running serve command...");
         runtime.block_on(async {
             for handle in handles {
                 match handle.await {
