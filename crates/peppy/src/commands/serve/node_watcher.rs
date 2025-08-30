@@ -2,6 +2,7 @@
 
 use crate::Result;
 use tokio::task::JoinHandle;
+use tracing::info;
 
 pub struct NodeWatcherCommand {}
 
@@ -20,7 +21,7 @@ impl NodeWatcherCommand {
     // The node_watcher should specify what type event has been detected, for example if it's an internal event (a file belonging to this project has changed) or an external event (a node outside this project has joined the network of nodes).
     // The main subscriber to this node_watcher is the python dependency or the Rust crate that is automatically generated inside the .pixi virtualenv (and added to pixi.toml) when a file configuration changes.
     fn watch_node_configuration_files_changes() {
-        todo!(
+        info!(
             "Run a separate thread that watches changes on peppy.star and updates the pixi envs accordingly"
         );
     }
