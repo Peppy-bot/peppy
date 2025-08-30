@@ -1,5 +1,5 @@
 use super::super::error::{Error, Result};
-use super::super::types::{Message, MessengerBackend, Subscription, ThroughputMode};
+use super::super::messaging_types::{Message, MessengerBackend, Subscription, ThroughputMode};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -124,7 +124,7 @@ impl MessengerBackend for MockAdapter {
 // Those tests purpose is to test the behaviour of a real messaging system and check if they map to the behaviour of the mock
 #[cfg(test)]
 mod tests {
-    use crate::types::MessagingEngineContext;
+    use crate::messaging_types::MessagingEngineContext;
     use crate::{Message, Messenger, MessengerBackend, ThroughputMode};
 
     fn create_test_messenger() -> Messenger {

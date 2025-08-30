@@ -8,9 +8,11 @@ edition.workspace = true
 askama = "0.14.0"
 bytes = "1"
 json5 = "0.4"
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.47.0", features = ["sync", "rt"] }
 tracing = "0.1.41"
+derive_more = { version = "2", features = ["from"] }
 capnp = "0.21.4" # ROS 2 uses CDR (Common Data Representation) for message serialization/deserialization
 
 # Optional deps

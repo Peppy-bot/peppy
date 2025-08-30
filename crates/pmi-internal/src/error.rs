@@ -1,11 +1,21 @@
+use derive_more::From;
+
 pub type Result<T> = core::result::Result<T, Error>;
 
-#[derive(Debug)]
+#[derive(Debug, From)]
 pub enum Error {
+    // -- general
+    #[from]
+    Io(std::io::Error),
+
     ConnectionError,
     ConfigurationError(String),
-    PublishError { topic: String },
-    SubscribeError { topic: String },
+    PublishError {
+        topic: String,
+    },
+    SubscribeError {
+        topic: String,
+    },
     ShutdownError,
     BackendError(String),
     MessagingSessionError(String),
@@ -13,6 +23,11 @@ pub enum Error {
     MatchingListenerError(String),
     UnsupportedEngine,
     ZenohdError(String),
+
+    // Encoding
+    UnsupportedEncoding(String),
+    EncodingError(String),
+    DecodingError(String),
 
     // -- libs
     AskamaError(String),
