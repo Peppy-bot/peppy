@@ -1,6 +1,6 @@
 // Mock backend is always available as a fallback when zenoh is not enabled
 
-mod messaging;
+mod adapters;
 
 mod error;
 mod types;
@@ -9,5 +9,6 @@ mod zenohd;
 
 // Exports for users of the lib
 pub use error::Error as PeppyMessagingInterfaceError;
-pub use messaging::{Message, Messenger, MessengerBackend, ThroughputMode};
-pub use types::MessagingEngineContext;
+pub use types::{
+    Message, MessagingEngineContext, Messenger, MessengerBackend, Subscription, ThroughputMode,
+};
