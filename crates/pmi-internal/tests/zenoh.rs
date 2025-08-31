@@ -1,7 +1,7 @@
 #[cfg(feature = "zenoh")]
 mod zenoh_tests {
     use pmi::MessagingEngineContext;
-    use pmi::{Message, Messenger, MessengerBackend, ThroughputMode};
+    use pmi::{Message, Messenger, MessengerBackend, PublisherQoS, SubscriberQoS};
 
     /// Helper function to create a configured messenger with a unique port
     async fn create_test_messenger() -> (Messenger, tempfile::TempDir) {
@@ -68,7 +68,7 @@ mod zenoh_tests {
 
         // Attempt to publish without starting session - should fail
         let msg = Message::new("test/topic", b"This should fail");
-        let result = messenger.publish(msg).await;
+        let result = messenger.publish(msg, PublisherQoS::Standard).await;
         assert!(
             result.is_err(),
             "Publishing before start_session should fail"
@@ -94,14 +94,14 @@ mod zenoh_tests {
 
         // Subscribe to a topic
         let mut sub = messenger
-            .subscribe("test/topic", ThroughputMode::LowThroughput)
+            .subscribe("test/topic", SubscriberQoS::Standard)
             .await
             .expect("Failed to subscribe");
 
         // Publish a message
         let msg = Message::new("test/topic", b"Hello World");
         messenger
-            .publish(msg.clone())
+            .publish(msg.clone(), PublisherQoS::Standard)
             .await
             .expect("Failed to publish");
 
@@ -129,11 +129,11 @@ mod zenoh_tests {
 
         // Subscribe to multiple topics with different throughput modes
         let mut sub1 = messenger
-            .subscribe("test/topic1", ThroughputMode::LowThroughput)
+            .subscribe("test/topic1", SubscriberQoS::Standard)
             .await
             .expect("Failed to subscribe to topic1");
         let mut sub2 = messenger
-            .subscribe("test/topic2", ThroughputMode::HighThroughput)
+            .subscribe("test/topic2", SubscriberQoS::HighThroughput)
             .await
             .expect("Failed to subscribe to topic2");
 
@@ -142,11 +142,11 @@ mod zenoh_tests {
         let msg2 = Message::new("test/topic2", b"Message for topic2");
 
         messenger
-            .publish(msg1.clone())
+            .publish(msg1.clone(), PublisherQoS::Standard)
             .await
             .expect("Failed to publish to topic1");
         messenger
-            .publish(msg2.clone())
+            .publish(msg2.clone(), PublisherQoS::Standard)
             .await
             .expect("Failed to publish to topic2");
 
@@ -177,7 +177,7 @@ mod zenoh_tests {
             .expect("Failed to start session");
 
         let mut sub = messenger
-            .subscribe("test/topic", ThroughputMode::LowThroughput)
+            .subscribe("test/topic", SubscriberQoS::Standard)
             .await
             .expect("Failed to subscribe");
 
@@ -187,15 +187,15 @@ mod zenoh_tests {
         let msg3 = Message::new("test/topic", b"Third message");
 
         messenger
-            .publish(msg1.clone())
+            .publish(msg1.clone(), PublisherQoS::Standard)
             .await
             .expect("Failed to publish msg1");
         messenger
-            .publish(msg2.clone())
+            .publish(msg2.clone(), PublisherQoS::Standard)
             .await
             .expect("Failed to publish msg2");
         messenger
-            .publish(msg3.clone())
+            .publish(msg3.clone(), PublisherQoS::Standard)
             .await
             .expect("Failed to publish msg3");
 
@@ -229,20 +229,20 @@ mod zenoh_tests {
         // Publish a message before any subscription
         let early_msg = Message::new("test/topic", b"Early message");
         messenger
-            .publish(early_msg.clone())
+            .publish(early_msg.clone(), PublisherQoS::Standard)
             .await
             .expect("Failed to publish early message");
 
         // Create subscription after the message was published
         let mut late_sub = messenger
-            .subscribe("test/topic", ThroughputMode::LowThroughput)
+            .subscribe("test/topic", SubscriberQoS::Standard)
             .await
             .expect("Failed to create late subscription");
 
         // Publish a new message
         let new_msg = Message::new("test/topic", b"New message for late subscriber");
         messenger
-            .publish(new_msg.clone())
+            .publish(new_msg.clone(), PublisherQoS::Standard)
             .await
             .expect("Failed to publish new message");
 

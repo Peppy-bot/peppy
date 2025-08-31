@@ -1,12 +1,12 @@
 #[cfg(feature = "zenoh")]
 #[test]
 fn test_with_zenoh_feature() {
-    use pmi::{Message, MessagingEngineContext, Messenger, ThroughputMode};
+    use pmi::{Message, MessagingEngineContext, Messenger, SubscriberQoS};
 
     // Verify core types are available
     let _msg = Message::new("test/topic", b"test payload");
-    let _mode = ThroughputMode::LowThroughput;
-    assert_eq!(_mode.channel_size(), 32);
+    let _qos = SubscriberQoS::Standard;
+    assert_eq!(_qos.channel_size(), 128);
 
     // Verify Messenger can be created with Zenoh backend
     let zenoh_context = MessagingEngineContext {
@@ -33,12 +33,12 @@ fn test_with_zenoh_feature() {
 #[cfg(not(feature = "zenoh"))]
 #[test]
 fn test_without_zenoh_feature() {
-    use pmi::{Message, MessagingEngineContext, Messenger, ThroughputMode};
+    use pmi::{Message, MessagingEngineContext, Messenger, SubscriberQoS};
 
     // Verify core types are available (same as with zenoh)
     let _msg = Message::new("test/topic", b"test payload");
-    let _mode = ThroughputMode::HighThroughput;
-    assert_eq!(_mode.channel_size(), 1024);
+    let _qos = SubscriberQoS::HighThroughput;
+    assert_eq!(_qos.channel_size(), 1024);
 
     // Verify Messenger can be created with Mock backend (now the default)
     let mock_context = MessagingEngineContext {

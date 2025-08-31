@@ -166,10 +166,10 @@ impl ZenohdFacade {
             .map_err(|e| Error::BackendError(format!("Failed to create config file: {}", e)))?;
         file.write_all(config_str.as_bytes())
             .map_err(|e| Error::BackendError(format!("Failed to write config file: {}", e)))?;
-        
+
         // Leak the temp_dir to keep it alive for the lifetime of the process
         Box::leak(temp_dir);
-        
+
         Ok(config_path)
     }
 
