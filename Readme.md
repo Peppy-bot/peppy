@@ -11,6 +11,10 @@ PeppyOS is a modern robotics middleware framework designed for robots. Similar t
 - **Language Agnostic**: Support for Python and Rust (more languages will be supported in the future including [Mojo](https://www.modular.com/mojo))
 - **Cross-platform**: Linux, Windows, and macOS support
 
+Non-goals:
+
+- We do _not_ aim for API stability between releases until 1.0, preferring to iterate quickly and refine the API as much as possible. But we do [follow SemVer](https://doc.rust-lang.org/cargo/reference/semver.html).
+
 ## 📋 Table of Contents
 
 - [Installation](#installation)
