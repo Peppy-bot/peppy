@@ -55,25 +55,27 @@ impl ZenohAdapter {
 }
 
 impl MessengerBackend for ZenohAdapter {
-    /// Starts a zenohd process, using std::process::Command is the recommended way as using the
-    /// rust crate directly prevents the user from using plugins/adminspace
-    async fn init(&mut self) -> Result<()> {
-        info!("Starting zenohd router...");
-        self.zenohd.start_router()?;
-
+    async fn start_session(&mut self) -> Result<()> {
         // Create a client config that connects to the router
         // Extract the endpoint from the router's listen config
         let client_config = self.create_client_config();
-        info!(
-            "Starting router on: {}:{}",
-            &self.zenohd.zenoh_endpoint.host, self.zenohd.zenoh_endpoint.port
-        );
-
         let session = zenoh::open(client_config)
             .await
             .map_err(|e| Error::BackendError(format!("Failed to create Zenoh session: {}", e)))?;
 
+        info!(
+            "Zenoh session started on: {}:{}",
+            &self.zenohd.zenoh_endpoint.host, self.zenohd.zenoh_endpoint.port
+        );
         self.session = Some(Arc::new(session));
+        Ok(())
+    }
+
+    async fn stop_session(mut self) -> Result<()> {
+        // Close the Zenoh session if it exists
+        if let Some(session) = self.session.take() {
+            drop(session);
+        }
         Ok(())
     }
 
@@ -184,12 +186,13 @@ impl MessengerBackend for ZenohAdapter {
         Ok(Subscription::new(rx, abort_handle))
     }
 
-    async fn shutdown(mut self) -> Result<()> {
+    async fn start_router(&mut self) -> Result<()> {
+        self.zenohd.start_router()?;
+        Ok(())
+    }
+
+    async fn stop_router(&mut self) -> Result<()> {
         self.zenohd.stop_router()?;
-        // Close the Zenoh session if it exists
-        if let Some(session) = self.session.take() {
-            drop(session);
-        }
         Ok(())
     }
 }

@@ -5,18 +5,18 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 pub struct MockAdapter {
-    is_connected: bool,
-    is_router_started: bool,
+    pub is_session_connected: bool,
+    pub is_router_started: bool,
     // Store published messages by topic
-    messages: Arc<Mutex<HashMap<String, Vec<Message>>>>,
+    pub messages: Arc<Mutex<HashMap<String, Vec<Message>>>>,
     // Store active subscriptions
-    subscriptions: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<Message>>>>>,
+    pub subscriptions: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<Message>>>>>,
 }
 
 impl Default for MockAdapter {
     fn default() -> Self {
         Self {
-            is_connected: false,
+            is_session_connected: false,
             is_router_started: false,
             messages: Arc::new(Mutex::new(HashMap::new())),
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
@@ -25,14 +25,28 @@ impl Default for MockAdapter {
 }
 
 impl MessengerBackend for MockAdapter {
-    async fn init(&mut self) -> Result<()> {
-        self.is_router_started = true;
-        self.is_connected = true;
+    async fn start_session(&mut self) -> Result<()> {
+        self.is_session_connected = true;
+        Ok(())
+    }
+
+    async fn stop_session(mut self) -> Result<()> {
+        if !self.is_session_connected {
+            return Err(Error::ShutdownError);
+        }
+
+        self.is_session_connected = false;
+        self.is_router_started = false;
+
+        // Clear all data
+        self.messages.lock().unwrap().clear();
+        self.subscriptions.lock().unwrap().clear();
+
         Ok(())
     }
 
     async fn publish(&mut self, message: Message) -> Result<()> {
-        if !self.is_connected {
+        if !self.is_session_connected {
             return Err(Error::PublishError {
                 topic: message.topic.clone(),
             });
@@ -68,7 +82,7 @@ impl MessengerBackend for MockAdapter {
         topic: &str,
         throughput_mode: ThroughputMode,
     ) -> Result<Subscription> {
-        if !self.is_connected {
+        if !self.is_session_connected {
             return Err(Error::SubscribeError {
                 topic: topic.to_string(),
             });
@@ -105,18 +119,13 @@ impl MessengerBackend for MockAdapter {
         Ok(Subscription::new(rx, abort_handle))
     }
 
-    async fn shutdown(mut self) -> Result<()> {
-        if !self.is_connected {
-            return Err(Error::ShutdownError);
-        }
+    async fn start_router(&mut self) -> Result<()> {
+        self.is_router_started = true;
+        Ok(())
+    }
 
-        self.is_connected = false;
+    async fn stop_router(&mut self) -> Result<()> {
         self.is_router_started = false;
-
-        // Clear all data
-        self.messages.lock().unwrap().clear();
-        self.subscriptions.lock().unwrap().clear();
-
         Ok(())
     }
 }
@@ -133,28 +142,55 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_build_messenger() {
-        let mut messenger = create_test_messenger();
+    async fn test_build_mock_messenger() {
+        use super::MockAdapter;
 
-        // Must start router before connecting
-        assert!(messenger.init().await.is_ok());
-        assert!(messenger.shutdown().await.is_ok());
+        let mut mock = MockAdapter::default();
+
+        // Initially, nothing should be started or connected
+        assert!(!mock.is_router_started);
+        assert!(!mock.is_session_connected);
+
+        // Test start_router - should set is_router_started but not is_connected
+        assert!(mock.start_router().await.is_ok());
+        assert!(mock.is_router_started);
+        assert!(!mock.is_session_connected);
+
+        // Test stop_router - should clear is_router_started
+        assert!(mock.stop_router().await.is_ok());
+        assert!(!mock.is_router_started);
+        assert!(!mock.is_session_connected);
+
+        // Start router again for the rest of the test
+        assert!(mock.start_router().await.is_ok());
+        assert!(mock.is_router_started);
+
+        // Test init - should set is_connected
+        assert!(mock.start_session().await.is_ok());
+        assert!(mock.is_router_started);
+        assert!(mock.is_session_connected);
+
+        // Test publish - should work when connected
+        let test_message = Message::new("test_topic", &[1, 2, 3]);
+        assert!(mock.publish(test_message).await.is_ok());
+
+        // Verify message was stored
+        {
+            let messages = mock.messages.lock().unwrap();
+            assert!(messages.contains_key("test_topic"));
+            assert_eq!(messages.get("test_topic").unwrap().len(), 1);
+        }
+
+        // Test shutdown consumes self and succeeds when connected
+        assert!(mock.stop_session().await.is_ok());
     }
 
     #[tokio::test]
-    async fn test_shutdown_without_init_fails() {
-        let messenger = create_test_messenger();
-
-        // Shutdown should fail if init() hasn't been called
-        assert!(messenger.shutdown().await.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_all_operations() {
+    async fn test_mock_messenger_operations() {
         let mut messenger = create_test_messenger();
 
         // Test all operations succeed with MockAdapter
-        assert!(messenger.init().await.is_ok());
+        assert!(messenger.start_session().await.is_ok());
 
         // Test subscribe first
         let subscription = messenger
@@ -175,15 +211,15 @@ mod tests {
         assert_eq!(received_msg.payload, message.payload);
 
         // Test shutdown
-        assert!(messenger.shutdown().await.is_ok());
+        assert!(messenger.stop_session().await.is_ok());
     }
 
     #[tokio::test]
-    async fn test_subscription_returns_valid_channel() {
+    async fn test_mock_messenger_subscription_returns_valid_channel() {
         let mut messenger = create_test_messenger();
 
         // Must start router and connect first
-        assert!(messenger.init().await.is_ok());
+        assert!(messenger.start_session().await.is_ok());
 
         // Test that subscription returns a valid channel
         let mut subscription = messenger
@@ -200,11 +236,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_multiple_subscriptions() {
+    async fn test_mock_messenger_multiple_subscriptions() {
         let mut messenger = create_test_messenger();
 
         // Must start router and connect first
-        assert!(messenger.init().await.is_ok());
+        assert!(messenger.start_session().await.is_ok());
 
         // Test multiple subscriptions to different topics
         let sub1 = messenger
@@ -223,11 +259,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_publish_multiple_messages() {
+    async fn test_mock_messenger_publish_multiple_messages() {
         let mut messenger = create_test_messenger();
 
+        // Test publishing before start_session should fail
+        let early_message = Message::new("topic/early", b"too_early");
+        assert!(messenger.publish(early_message).await.is_err());
+
         // Must start router and connect first
-        assert!(messenger.init().await.is_ok());
+        assert!(messenger.start_session().await.is_ok());
 
         // Test publishing multiple messages
         let messages = vec![
@@ -239,15 +279,5 @@ mod tests {
         for message in messages {
             assert!(messenger.publish(message).await.is_ok());
         }
-    }
-
-    #[tokio::test]
-    async fn test_factory_creates_mock_correctly() {
-        // Test that factory correctly creates MockAdapter when Mock engine is specified
-        let mut messenger = create_test_messenger();
-
-        // These should all succeed if MockAdapter was created properly
-        assert!(messenger.init().await.is_ok());
-        assert!(messenger.shutdown().await.is_ok());
     }
 }

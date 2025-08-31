@@ -14,7 +14,6 @@ edition = "2024"
 # default-members = [
 #   "crates/cli",
 #   "crates/core",
-#   "crates/pyext",
 # ]
 
 # Optionally share common dependency versions across members (requires newer Cargo).
