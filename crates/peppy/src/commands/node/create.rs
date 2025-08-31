@@ -5,10 +5,9 @@ mod rust;
 
 use super::types::{Language, NodeName};
 use crate::{Error, Result};
-use askama::Template;
+use config::create_peppy_node_config;
 use factory::create_factory;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use tracing::info;
 
@@ -63,12 +62,6 @@ impl NodeBuilder {
     }
 }
 
-#[derive(Template)]
-#[template(path = "peppy_new_node.star.j2")]
-struct PeppyNodeTemplate<'a> {
-    name: &'a str,
-}
-
 /// Creates a new node and updates the peppy.star configuration file where the command is run
 pub fn create(
     from_dir: &Path,
@@ -97,7 +90,7 @@ pub fn create(
 
     factory.create_gitignore(&node_path)?;
     factory.create_pixi_config(&node_path, &node_name, description)?;
-    create_peppy_config(&node_path, &node_name)
+    create_peppy_node_config(&node_path, node_name.as_str())
         .map_err(|e| Error::PeppyConfigCreation(e.to_string()))?;
     factory.create_language_config(&node_name, &node_path)?;
 
@@ -106,68 +99,9 @@ pub fn create(
     Ok(())
 }
 
-fn create_peppy_config(node_path: &Path, node_name: &NodeName) -> Result<()> {
-    let peppy_star_path = node_path.join("peppy.star");
-    let mut file = fs::File::create(peppy_star_path)?;
-
-    let template = PeppyNodeTemplate {
-        name: node_name.as_str(),
-    };
-    let peppy_content = template
-        .render()
-        .map_err(|e| Error::AskamaError(e.to_string()))?;
-
-    file.write_all(peppy_content.as_bytes())?;
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Can be run from the command line with:
-    // cargo run --manifest-path <path_to_root_Cargo.toml> -- node create my_project
-    #[test]
-    fn test_create_peppy_config() {
-        use starlark::environment::{Globals, Module};
-        use starlark::eval::Evaluator;
-        use starlark::syntax::{AstModule, Dialect};
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new().unwrap();
-        let node_name = NodeName::new("test_node").unwrap();
-
-        let result = create_peppy_config(temp_dir.path(), &node_name);
-        assert!(result.is_ok());
-
-        let peppy_path = temp_dir.path().join("peppy.star");
-        assert!(peppy_path.exists());
-
-        let content = fs::read_to_string(&peppy_path).unwrap();
-        assert!(content.contains(node_name.as_str()));
-
-        // Validate that the generated file is valid Starlark syntax
-        let ast = AstModule::parse(
-            &peppy_path.to_string_lossy(),
-            content.clone(),
-            &Dialect::Extended,
-        );
-        assert!(ast.is_ok(), "Failed to parse peppy.star as valid Starlark");
-
-        // Also try to evaluate it to ensure it's not just syntactically valid
-        // but also executable
-        let ast_module = ast.unwrap();
-        let globals = Globals::extended_internal();
-        let module = Module::new();
-        let mut evaluator = Evaluator::new(&module);
-        let eval_result = evaluator.eval_module(ast_module, &globals);
-        assert!(
-            eval_result.is_ok(),
-            "Failed to evaluate peppy.star: {:?}",
-            eval_result.err()
-        );
-    }
 
     #[test]
     fn test_check_root_node_config_missing() {

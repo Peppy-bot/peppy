@@ -1,3 +1,7 @@
+mod create;
+
+pub use create::{create_peppy_node_config, init_root_node};
+
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use starlark::environment::{Globals, Module};
@@ -110,11 +114,9 @@ pub fn parse_starlark_config(config_file: PathBuf) -> Result<NodeConfig> {
             .ok_or(Error::ConfigParse(
                 "respawn_delay attribute not found".to_string(),
             ))?;
-    let respawn_delay = respawn_delay_val
-        .unpack_i32()
-        .ok_or(Error::ConfigParse(
-            "respawn_delay must be a number".to_string(),
-        ))? as f64;
+    let respawn_delay = respawn_delay_val.unpack_i32().ok_or(Error::ConfigParse(
+        "respawn_delay must be a number".to_string(),
+    ))? as f64;
 
     let qos_profile = root_node
         .get_attr("qos_profile", &heap)?
@@ -212,10 +214,9 @@ pub fn parse_starlark_config(config_file: PathBuf) -> Result<NodeConfig> {
                 .ok_or(Error::ConfigParse(
                     "publish_rate_hz attribute not found".to_string(),
                 ))?;
-            val.unpack_i32()
-                .ok_or(Error::ConfigParse(
-                    "publish_rate_hz must be a number".to_string(),
-                ))? as f64
+            val.unpack_i32().ok_or(Error::ConfigParse(
+                "publish_rate_hz must be a number".to_string(),
+            ))? as f64
         },
     };
 

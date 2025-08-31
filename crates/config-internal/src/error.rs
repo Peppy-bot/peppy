@@ -8,13 +8,16 @@ pub enum Error {
     // -- general
     #[from]
     Io(std::io::Error),
-    
+
     // -- starlark
     #[from]
     Starlark(starlark::Error),
-    
+
     // -- config parsing
     ConfigParse(String),
+
+    // -- Askama
+    AskamaError(String),
 }
 
 impl Display for Error {

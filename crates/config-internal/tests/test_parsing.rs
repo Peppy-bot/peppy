@@ -1,4 +1,4 @@
-use config_internal::parse_starlark_config;
+use config::parse_starlark_config;
 use std::fs;
 use tempfile::TempDir;
 
