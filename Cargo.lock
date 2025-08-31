@@ -549,14 +549,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "config-internal"
+name = "config"
 version = "0.0.1"
 dependencies = [
+ "askama",
  "derive_more 2.0.1",
  "serde",
  "starlark",
  "starlark_derive",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -2142,11 +2144,11 @@ dependencies = [
  "askama",
  "bytes",
  "clap",
+ "config",
  "derive_more 2.0.1",
  "pmi",
  "rayon",
  "service-manager",
- "starlark",
  "tempfile",
  "tokio",
  "tracing",
@@ -2157,6 +2159,7 @@ dependencies = [
 name = "peppycl"
 version = "0.0.1"
 dependencies = [
+ "config",
  "pmi",
  "thiserror 2.0.16",
  "tokio",

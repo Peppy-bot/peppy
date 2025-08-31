@@ -5,11 +5,11 @@ edition.workspace = true
 
 [dependencies]
 pmi = { path = "../pmi-internal", features = ["zenoh"] }
+config = { path = "../config-internal"}
 bytes = "1"
-askama = "0.14.0" # To help out on code generation (py and Rust) to create interface libs in .pixi envs or use (quote! macro + syn + prettyplease)
+askama = "0.14.0"
 # https://docs.rs/quote/latest/quote/
 clap = { version = "4.5.42", features = ["derive"] }
-starlark = "0.13.0" # To parse peppy.star
 tokio = { version = "1.47.0", features = ["signal"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
