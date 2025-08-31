@@ -145,10 +145,10 @@ impl ZenohdFacade {
     }
 
     fn get_config_as_path(&self) -> Result<PathBuf> {
-        // Write config to a temporary file
-        let temp_dir = std::env::temp_dir();
+        // Write config to a temporary file that persists by leaking the TempDir
+        let temp_dir = Box::new(tempfile::TempDir::new().expect("Failed to create temp dir"));
         // TODO: move this file into the .pixi /etc environment
-        let config_path = temp_dir.join("zenohd_config.json5");
+        let config_path = temp_dir.path().join("zenohd_config.json5");
 
         // Remove existing file if it exists
         if config_path.exists() {
@@ -166,6 +166,10 @@ impl ZenohdFacade {
             .map_err(|e| Error::BackendError(format!("Failed to create config file: {}", e)))?;
         file.write_all(config_str.as_bytes())
             .map_err(|e| Error::BackendError(format!("Failed to write config file: {}", e)))?;
+        
+        // Leak the temp_dir to keep it alive for the lifetime of the process
+        Box::leak(temp_dir);
+        
         Ok(config_path)
     }
 
@@ -178,10 +182,11 @@ impl ZenohdFacade {
             .unwrap_or_else(|e| panic!("Failed to render Zenoh config: {}", e))
     }
 
+    /// Starts a zenohd process, using std::process::Command is the recommended way as using the
+    /// rust crate directly prevents the user from using plugins/adminspace
     pub fn start_router(&mut self) -> Result<()> {
         let config_path = self.get_config_as_path()?;
 
-        // Start zenohd as a separate process with the config file
         let mut child = Command::new(&self.zenohd_path)
             .arg("-c")
             .arg(&config_path)
@@ -190,8 +195,8 @@ impl ZenohdFacade {
             .spawn()
             .map_err(|e| Error::BackendError(format!("Failed to start zenohd: {}", e)))?;
 
-        // Give zenohd a moment to start up
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Give zenohd a moment to start up and bind to the port
+        std::thread::sleep(std::time::Duration::from_millis(800));
 
         // Check if the process is still running
         match child.try_wait() {

@@ -3,33 +3,131 @@ mod zenoh_tests {
     use pmi::MessagingEngineContext;
     use pmi::{Message, Messenger, MessengerBackend, ThroughputMode};
 
+    /// Helper function to create a configured messenger with a unique port
+    async fn create_test_messenger() -> (Messenger, tempfile::TempDir) {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        // Use atomic counter for unique port allocation across parallel tests
+        static PORT_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+        // Try up to 10 times to find an available port
+        for _ in 0..10 {
+            let counter = PORT_COUNTER.fetch_add(1, Ordering::SeqCst);
+
+            // Use a wider port range to reduce collisions
+            // Each test gets a port spaced by 10 to avoid conflicts
+            let port = 20000 + (counter * 10);
+
+            // Ensure we don't exceed valid port range
+            if port > 60000 {
+                PORT_COUNTER.store(0, Ordering::SeqCst);
+                continue;
+            }
+
+            let config_content = format!(
+                r#"{{
+                    "listen": {{
+                        "endpoints": {{
+                            "router": ["tcp/127.0.0.1:{}"]
+                        }}
+                    }}
+                }}"#,
+                port
+            );
+
+            // Create a unique temporary directory for each test
+            let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+
+            // Use a unique config filename within the temp directory
+            let config_filename = format!("test_zenoh_config_{}.json5", port);
+            let config_path = temp_dir.path().join(config_filename);
+            std::fs::write(&config_path, config_content).expect("Failed to write test config");
+
+            let context = MessagingEngineContext::new("zenoh".to_string(), Some(config_path));
+            match Messenger::new(context) {
+                Ok(messenger) => return (messenger, temp_dir),
+                Err(_) => {
+                    // Port might be in use, try next one
+                    continue;
+                }
+            }
+        }
+
+        panic!("Failed to create test messenger after 10 attempts");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn test_local_zenoh_messaging() {
-        // Use a random port to avoid conflicts
-        let port = 8000 + (std::process::id() % 1000);
-        let config_content = format!(
-            r#"{{
-        "listen": {{
-            "endpoints": {{
-                "router": ["tcp/127.0.0.1:{}"]
-            }}
-        }}
-    }}"#,
-            port
+    async fn test_publish_before_start_session_fails() {
+        let (mut messenger, _temp_dir) = create_test_messenger().await;
+
+        // Start the router but not the session
+        messenger
+            .start_router()
+            .await
+            .expect("Failed to start router");
+
+        // Attempt to publish without starting session - should fail
+        let msg = Message::new("test/topic", b"This should fail");
+        let result = messenger.publish(msg).await;
+        assert!(
+            result.is_err(),
+            "Publishing before start_session should fail"
         );
 
-        // Write config to a temporary file
-        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
-        let config_path = temp_dir.path().join("test_zenoh_config.json5");
-        std::fs::write(&config_path, config_content).expect("Failed to write test config");
+        // Shutdown the router
+        messenger.stop_router().await.expect("Failed to shutdown");
+    }
 
-        let context = MessagingEngineContext::new("zenoh".to_string(), Some(config_path));
-        let mut messenger = Messenger::new(context).expect("Failed to create messenger");
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_basic_publish_subscribe() {
+        let (mut messenger, _temp_dir) = create_test_messenger().await;
 
-        // Start the router
-        messenger.init().await.expect("Failed to start router");
+        messenger
+            .start_router()
+            .await
+            .expect("Failed to start router");
 
-        // Subscribe to multiple topics
+        messenger
+            .start_session()
+            .await
+            .expect("Failed to start session");
+
+        // Subscribe to a topic
+        let mut sub = messenger
+            .subscribe("test/topic", ThroughputMode::LowThroughput)
+            .await
+            .expect("Failed to subscribe");
+
+        // Publish a message
+        let msg = Message::new("test/topic", b"Hello World");
+        messenger
+            .publish(msg.clone())
+            .await
+            .expect("Failed to publish");
+
+        // Verify subscriber receives the message
+        let received = sub.rx.recv().await.expect("Failed to receive message");
+        assert_eq!(received.topic, "test/topic");
+        assert_eq!(received.payload, msg.payload);
+
+        messenger.stop_router().await.expect("Failed to shutdown");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_multiple_topics() {
+        let (mut messenger, _temp_dir) = create_test_messenger().await;
+
+        messenger
+            .start_router()
+            .await
+            .expect("Failed to start router");
+
+        messenger
+            .start_session()
+            .await
+            .expect("Failed to start session");
+
+        // Subscribe to multiple topics with different throughput modes
         let mut sub1 = messenger
             .subscribe("test/topic1", ThroughputMode::LowThroughput)
             .await
@@ -39,10 +137,9 @@ mod zenoh_tests {
             .await
             .expect("Failed to subscribe to topic2");
 
-        // Publish messages to different topics
-        let msg1 = Message::new("test/topic1", b"Hello from topic1");
-        let msg2 = Message::new("test/topic2", b"Hello from topic2");
-        let msg3 = Message::new("test/topic1", b"Second message on topic1");
+        // Publish to different topics
+        let msg1 = Message::new("test/topic1", b"Message for topic1");
+        let msg2 = Message::new("test/topic2", b"Message for topic2");
 
         messenger
             .publish(msg1.clone())
@@ -52,61 +149,108 @@ mod zenoh_tests {
             .publish(msg2.clone())
             .await
             .expect("Failed to publish to topic2");
-        messenger
-            .publish(msg3.clone())
-            .await
-            .expect("Failed to publish second message to topic1");
 
-        // Verify subscribers receive the correct messages
-        // Topic1 should receive two messages
-        let received1_1 = sub1
-            .rx
-            .recv()
-            .await
-            .expect("Failed to receive message 1 on topic1");
-        assert_eq!(received1_1.topic, "test/topic1");
-        assert_eq!(received1_1.payload, msg1.payload);
+        // Verify each subscriber receives only its topic's message
+        let received1 = sub1.rx.recv().await.expect("Failed to receive on topic1");
+        assert_eq!(received1.topic, "test/topic1");
+        assert_eq!(received1.payload, msg1.payload);
 
-        let received1_2 = sub1
-            .rx
-            .recv()
-            .await
-            .expect("Failed to receive message 2 on topic1");
-        assert_eq!(received1_2.topic, "test/topic1");
-        assert_eq!(received1_2.payload, msg3.payload);
-
-        // Topic2 should receive one message
-        let received2 = sub2
-            .rx
-            .recv()
-            .await
-            .expect("Failed to receive message on topic2");
+        let received2 = sub2.rx.recv().await.expect("Failed to receive on topic2");
         assert_eq!(received2.topic, "test/topic2");
         assert_eq!(received2.payload, msg2.payload);
 
-        // Test subscribing after messages have been published
+        messenger.stop_router().await.expect("Failed to shutdown");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_multiple_messages_same_topic() {
+        let (mut messenger, _temp_dir) = create_test_messenger().await;
+
+        messenger
+            .start_router()
+            .await
+            .expect("Failed to start router");
+
+        messenger
+            .start_session()
+            .await
+            .expect("Failed to start session");
+
+        let mut sub = messenger
+            .subscribe("test/topic", ThroughputMode::LowThroughput)
+            .await
+            .expect("Failed to subscribe");
+
+        // Publish multiple messages to the same topic
+        let msg1 = Message::new("test/topic", b"First message");
+        let msg2 = Message::new("test/topic", b"Second message");
+        let msg3 = Message::new("test/topic", b"Third message");
+
+        messenger
+            .publish(msg1.clone())
+            .await
+            .expect("Failed to publish msg1");
+        messenger
+            .publish(msg2.clone())
+            .await
+            .expect("Failed to publish msg2");
+        messenger
+            .publish(msg3.clone())
+            .await
+            .expect("Failed to publish msg3");
+
+        // Verify all messages are received in order
+        let received1 = sub.rx.recv().await.expect("Failed to receive msg1");
+        assert_eq!(received1.payload, msg1.payload);
+
+        let received2 = sub.rx.recv().await.expect("Failed to receive msg2");
+        assert_eq!(received2.payload, msg2.payload);
+
+        let received3 = sub.rx.recv().await.expect("Failed to receive msg3");
+        assert_eq!(received3.payload, msg3.payload);
+
+        messenger.stop_router().await.expect("Failed to shutdown");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_late_subscription() {
+        let (mut messenger, _temp_dir) = create_test_messenger().await;
+
+        messenger
+            .start_router()
+            .await
+            .expect("Failed to start router");
+
+        messenger
+            .start_session()
+            .await
+            .expect("Failed to start session");
+
+        // Publish a message before any subscription
+        let early_msg = Message::new("test/topic", b"Early message");
+        messenger
+            .publish(early_msg.clone())
+            .await
+            .expect("Failed to publish early message");
+
+        // Create subscription after the message was published
         let mut late_sub = messenger
-            .subscribe("test/topic3", ThroughputMode::LowThroughput)
+            .subscribe("test/topic", ThroughputMode::LowThroughput)
             .await
             .expect("Failed to create late subscription");
 
-        // Publish a new message to the late subscriber's topic
-        let late_msg = Message::new("test/topic3", b"Hello late subscriber");
+        // Publish a new message
+        let new_msg = Message::new("test/topic", b"New message for late subscriber");
         messenger
-            .publish(late_msg.clone())
+            .publish(new_msg.clone())
             .await
-            .expect("Failed to publish to topic3");
+            .expect("Failed to publish new message");
 
-        // Late subscriber should receive the new message
-        let late_received = late_sub
-            .rx
-            .recv()
-            .await
-            .expect("Failed to receive message on topic3");
-        assert_eq!(late_received.topic, "test/topic3");
-        assert_eq!(late_received.payload, late_msg.payload);
+        // Late subscriber should only receive the new message, not the early one
+        let received = late_sub.rx.recv().await.expect("Failed to receive message");
+        assert_eq!(received.topic, "test/topic");
+        assert_eq!(received.payload, new_msg.payload);
 
-        // Shutdown the messaging system
-        messenger.shutdown().await.expect("Failed to shutdown");
+        messenger.stop_router().await.expect("Failed to shutdown");
     }
 }

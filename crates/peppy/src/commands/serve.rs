@@ -28,8 +28,9 @@ impl ServeAsyncCommand for Messenger {
                 Messenger::new(context).map_err(Error::PeppyMessagingInterfaceError)?;
 
             // Starts the zenoh router
+            info!("Starting the messaging router...");
             messenger
-                .init()
+                .start_router()
                 .await
                 .map_err(Error::PeppyMessagingInterfaceError)?;
 
@@ -38,9 +39,9 @@ impl ServeAsyncCommand for Messenger {
                 Error::ExecutionFailed(format!("Failed to listen for ctrl-c: {}", e))
             })?;
 
-            info!("Shutting down messenger...");
+            info!("Shutting down the messaging router...");
             messenger
-                .shutdown()
+                .stop_router()
                 .await
                 .map_err(Error::PeppyMessagingInterfaceError)?;
 

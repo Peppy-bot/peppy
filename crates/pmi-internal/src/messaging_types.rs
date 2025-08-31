@@ -46,11 +46,11 @@ impl ThroughputMode {
 
 /// Defines the messaging interface
 pub trait MessengerBackend {
-    /// Starts the router in background and immediately return
-    fn init(&mut self) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
+    /// Initialize the pubsub session
+    fn start_session(&mut self) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
 
-    /// Shuts down the router instance
-    fn shutdown(self) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
+    /// Shuts down the pubsub session
+    fn stop_session(self) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
 
     /// Publish a message to a topic
     fn publish(&mut self, message: Message) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
@@ -61,6 +61,13 @@ pub trait MessengerBackend {
         topic: &str,
         throughput_mode: ThroughputMode,
     ) -> impl Future<Output = Result<Subscription>> + Send; // async equivalent for trait
+
+    /// Starts the router in background and immediately return for engines that uses a router.
+    /// The router should only be started if the lib is intended to connect nodes together
+    fn start_router(&mut self) -> impl Future<Output = Result<()>> + Send;
+
+    /// Stops the router
+    fn stop_router(&mut self) -> impl Future<Output = Result<()>> + Send;
 }
 
 /// Handles message receiving and cleanup
@@ -174,8 +181,8 @@ macro_rules! dispatch {
 }
 
 impl MessengerBackend for Messenger {
-    async fn init(&mut self) -> Result<()> {
-        dispatch!(&mut self.adapter, init)
+    async fn start_session(&mut self) -> Result<()> {
+        dispatch!(&mut self.adapter, start_session)
     }
 
     async fn publish(&mut self, message: Message) -> Result<()> {
@@ -190,8 +197,16 @@ impl MessengerBackend for Messenger {
         dispatch!(&self.adapter, subscribe, topic, throughput_mode)
     }
 
-    async fn shutdown(self) -> Result<()> {
-        dispatch!(self.adapter, shutdown)
+    async fn stop_session(self) -> Result<()> {
+        dispatch!(self.adapter, stop_session)
+    }
+
+    async fn start_router(&mut self) -> Result<()> {
+        dispatch!(&mut self.adapter, start_router)
+    }
+
+    async fn stop_router(&mut self) -> Result<()> {
+        dispatch!(&mut self.adapter, stop_router)
     }
 }
 

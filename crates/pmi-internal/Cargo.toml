@@ -14,12 +14,12 @@ tokio = { version = "1.47.0", features = ["sync", "rt"] }
 tracing = "0.1.41"
 derive_more = { version = "2", features = ["from"] }
 capnp = "0.21.4" # ROS 2 uses CDR (Common Data Representation) for message serialization/deserialization
+tempfile = "3"
 
 # Optional deps
 zenoh = { version = "1.5.0", optional = true }
 
 [dev-dependencies]
-tempfile = "3.8"
 tokio = { version = "1.47.0", features = ["sync", "rt", "macros", "time", "test-util"] }
 
 [features]
