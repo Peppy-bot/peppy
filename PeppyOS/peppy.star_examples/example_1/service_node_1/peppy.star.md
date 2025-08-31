@@ -24,6 +24,7 @@ def create_video_stream_api():
                 service_type = "custom_srvs/GetSystemInfo",
                 service_name = "/api/get_system_info",
                 callback = "handle_get_system_info",
+		        qos_profile = "reliable",
             ),
         ],
 
@@ -33,6 +34,7 @@ def create_video_stream_api():
                 action_type = "custom_actions/ProcessVideo",
                 action_name = "/api/process_video",
                 callback = "handle_process_video_action",
+                qos_profile = "reliable",
             ),
         ],
 
@@ -86,9 +88,6 @@ def create_video_stream_api():
                 max_fps = 30,
             ),
         ),
-
-        # Quality of Service settings
-        qos_profile = "reliable",
 
         # Resource limits
         resources = struct(

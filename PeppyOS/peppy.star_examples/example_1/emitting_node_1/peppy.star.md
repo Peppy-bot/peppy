@@ -18,6 +18,7 @@ def create_uvc_camera_node():
             struct(
                 topic_type = "sensor_msgs/Image",
                 topic_name = "/camera/video_feed",
+                qos_profile = "sensor_data",
                 message_format = struct(
                     header = struct(
                         stamp = "time",
@@ -53,9 +54,6 @@ def create_uvc_camera_node():
             ),
             pixel_format = "YUYV",  # "YUYV", "MJPEG", "H264"
         ),
-
-        # Quality of Service settings
-        qos_profile = "sensor_data",
 
         # Resource limits
         resources = struct(
