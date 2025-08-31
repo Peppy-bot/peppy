@@ -23,23 +23,52 @@ impl MessagingEngineContext {
     }
 }
 
-/// Configuration for channel buffer sizing based on expected throughput
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThroughputMode {
-    /// Low throughput mode with smaller buffer (32 messages)
-    /// Suitable for control messages or low-frequency updates
-    LowThroughput,
-    /// High throughput mode with larger buffer (1024 messages)
-    /// Suitable for data streaming or high-frequency sensor data
+/// QoS settings for publishing messages
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublisherQoS {
+    /// Best effort delivery with minimal latency
+    /// - Priority: DataLow
+    /// - Congestion: Drop
+    /// - Express: true
+    BestEffort,
+
+    /// Standard reliable delivery for regular messages
+    /// - Priority: Data
+    /// - Congestion: Drop
+    /// - Express: false
+    #[default]
+    Standard,
+
+    /// Important messages that should be prioritized
+    /// - Priority: DataHigh
+    /// - Congestion: Block
+    /// - Express: false
+    Important,
+
+    /// Critical real-time messages (e.g., safety-critical commands)
+    /// - Priority: RealTime
+    /// - Congestion: Block
+    /// - Express: true
+    Critical,
+}
+
+/// QoS settings for subscribing to messages
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubscriberQoS {
+    /// Standard reliable reception for regular messages
+    #[default]
+    Standard,
+
+    /// High throughput reliable reception (e.g., sensor data streams)
     HighThroughput,
 }
 
-impl ThroughputMode {
-    /// Returns the channel buffer size for this throughput mode
+impl SubscriberQoS {
+    /// Returns the channel buffer size for this QoS setting
     pub fn channel_size(&self) -> usize {
         match self {
-            ThroughputMode::LowThroughput => 32,
-            ThroughputMode::HighThroughput => 1024,
+            SubscriberQoS::Standard => 128,
+            SubscriberQoS::HighThroughput => 1024,
         }
     }
 }
@@ -53,13 +82,17 @@ pub trait MessengerBackend {
     fn stop_session(self) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
 
     /// Publish a message to a topic
-    fn publish(&mut self, message: Message) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
+    fn publish(
+        &mut self,
+        message: Message,
+        qos: PublisherQoS,
+    ) -> impl Future<Output = Result<()>> + Send; // async equivalent for trait
 
     /// Subscribes to a topic
     fn subscribe(
         &self,
         topic: &str,
-        throughput_mode: ThroughputMode,
+        qos: SubscriberQoS,
     ) -> impl Future<Output = Result<Subscription>> + Send; // async equivalent for trait
 
     /// Starts the router in background and immediately return for engines that uses a router.
@@ -185,16 +218,12 @@ impl MessengerBackend for Messenger {
         dispatch!(&mut self.adapter, start_session)
     }
 
-    async fn publish(&mut self, message: Message) -> Result<()> {
-        dispatch!(&mut self.adapter, publish, message)
+    async fn publish(&mut self, message: Message, qos: PublisherQoS) -> Result<()> {
+        dispatch!(&mut self.adapter, publish, message, qos)
     }
 
-    async fn subscribe(
-        &self,
-        topic: &str,
-        throughput_mode: ThroughputMode,
-    ) -> Result<Subscription> {
-        dispatch!(&self.adapter, subscribe, topic, throughput_mode)
+    async fn subscribe(&self, topic: &str, qos: SubscriberQoS) -> Result<Subscription> {
+        dispatch!(&self.adapter, subscribe, topic, qos)
     }
 
     async fn stop_session(self) -> Result<()> {

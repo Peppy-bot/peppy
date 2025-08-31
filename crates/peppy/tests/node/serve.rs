@@ -103,7 +103,7 @@ fn test_serve_command_with_graceful_shutdown() {
         use std::process::{Command, Stdio};
         let pid = std::process::id();
         Command::new("kill")
-            .args(&["-INT", &pid.to_string()])
+            .args(["-INT", &pid.to_string()])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()

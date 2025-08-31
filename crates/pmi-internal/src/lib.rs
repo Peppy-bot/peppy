@@ -12,5 +12,6 @@ mod zenohd;
 pub use encoding::{Encoder, EncodingBackend, EncodingFormat};
 pub use error::Error as PeppyMessagingInterfaceError;
 pub use messaging_types::{
-    Message, MessagingEngineContext, Messenger, MessengerBackend, Subscription, ThroughputMode,
+    Message, MessagingEngineContext, Messenger, MessengerBackend, PublisherQoS, SubscriberQoS,
+    Subscription,
 };

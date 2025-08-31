@@ -1,9 +1,11 @@
 use crate::error::{Error, Result};
+use crate::messaging_types::{PublisherQoS, SubscriberQoS};
 use crate::zenohd;
-use crate::{Message, MessengerBackend, Subscription, ThroughputMode};
+use crate::{Message, MessengerBackend, Subscription};
 use askama::Template;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tracing::{debug, info};
+use zenoh::qos::{CongestionControl, Priority};
 
 #[derive(Template)]
 #[template(path = "zenoh/default_client_config.json5.j2")]
@@ -79,7 +81,7 @@ impl MessengerBackend for ZenohAdapter {
         Ok(())
     }
 
-    async fn publish(&mut self, message: Message) -> Result<()> {
+    async fn publish(&mut self, message: Message, qos: PublisherQoS) -> Result<()> {
         let publisher = if let Some(pub_ref) = self.publishers.get(&message.topic) {
             Arc::clone(pub_ref)
         } else {
@@ -87,9 +89,20 @@ impl MessengerBackend for ZenohAdapter {
                 Error::MessagingSessionError("Session not initialized".to_string())
             })?;
 
+            // Map QoS to Zenoh settings
+            let (priority, congestion_control, express) = match qos {
+                PublisherQoS::BestEffort => (Priority::DataLow, CongestionControl::Drop, true),
+                PublisherQoS::Standard => (Priority::Data, CongestionControl::Drop, false),
+                PublisherQoS::Important => (Priority::DataHigh, CongestionControl::Block, false),
+                PublisherQoS::Critical => (Priority::RealTime, CongestionControl::Block, true),
+            };
+
             let new_publisher = Arc::new(
                 session
                     .declare_publisher(message.topic.clone())
+                    .congestion_control(congestion_control)
+                    .priority(priority)
+                    .express(express)
                     .await
                     .map_err(|e| {
                         Error::PublisherCreationError(format!(
@@ -99,7 +112,6 @@ impl MessengerBackend for ZenohAdapter {
                     })?,
             );
 
-            // Register matching listener only once when creating the publisher
             new_publisher
                 .matching_listener()
                 .callback(|matching_status| {
@@ -134,13 +146,9 @@ impl MessengerBackend for ZenohAdapter {
         Ok(())
     }
 
-    async fn subscribe(
-        &self,
-        topic: &str,
-        throughput_mode: ThroughputMode,
-    ) -> Result<Subscription> {
+    async fn subscribe(&self, topic: &str, qos: SubscriberQoS) -> Result<Subscription> {
         // create zenoh subscriber, forward events into rx
-        let (tx, rx) = tokio::sync::mpsc::channel(throughput_mode.channel_size());
+        let (tx, rx) = tokio::sync::mpsc::channel(qos.channel_size());
 
         let session = self
             .session

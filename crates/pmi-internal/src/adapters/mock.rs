@@ -1,5 +1,7 @@
 use super::super::error::{Error, Result};
-use super::super::messaging_types::{Message, MessengerBackend, Subscription, ThroughputMode};
+use super::super::messaging_types::{
+    Message, MessengerBackend, PublisherQoS, SubscriberQoS, Subscription,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -45,7 +47,7 @@ impl MessengerBackend for MockAdapter {
         Ok(())
     }
 
-    async fn publish(&mut self, message: Message) -> Result<()> {
+    async fn publish(&mut self, message: Message, _qos: PublisherQoS) -> Result<()> {
         if !self.is_session_connected {
             return Err(Error::PublishError {
                 topic: message.topic.clone(),
@@ -77,18 +79,14 @@ impl MessengerBackend for MockAdapter {
         Ok(())
     }
 
-    async fn subscribe(
-        &self,
-        topic: &str,
-        throughput_mode: ThroughputMode,
-    ) -> Result<Subscription> {
+    async fn subscribe(&self, topic: &str, qos: SubscriberQoS) -> Result<Subscription> {
         if !self.is_session_connected {
             return Err(Error::SubscribeError {
                 topic: topic.to_string(),
             });
         }
 
-        let (tx, rx) = mpsc::channel(throughput_mode.channel_size());
+        let (tx, rx) = mpsc::channel(qos.channel_size());
 
         // Store the sender for this subscription
         {
@@ -134,7 +132,8 @@ impl MessengerBackend for MockAdapter {
 #[cfg(test)]
 mod tests {
     use crate::messaging_types::MessagingEngineContext;
-    use crate::{Message, Messenger, MessengerBackend, ThroughputMode};
+    use crate::messaging_types::{PublisherQoS, SubscriberQoS};
+    use crate::{Message, Messenger, MessengerBackend};
 
     fn create_test_messenger() -> Messenger {
         let context = MessagingEngineContext::new("mock".to_string(), None);
@@ -172,7 +171,11 @@ mod tests {
 
         // Test publish - should work when connected
         let test_message = Message::new("test_topic", &[1, 2, 3]);
-        assert!(mock.publish(test_message).await.is_ok());
+        assert!(
+            mock.publish(test_message, PublisherQoS::Standard)
+                .await
+                .is_ok()
+        );
 
         // Verify message was stored
         {
@@ -194,14 +197,19 @@ mod tests {
 
         // Test subscribe first
         let subscription = messenger
-            .subscribe("test/topic", ThroughputMode::LowThroughput)
+            .subscribe("test/topic", SubscriberQoS::Standard)
             .await;
         assert!(subscription.is_ok());
         let mut subscription = subscription.unwrap();
 
         // Test publish
         let message = Message::new("test/topic", b"test payload");
-        assert!(messenger.publish(message.clone()).await.is_ok());
+        assert!(
+            messenger
+                .publish(message.clone(), PublisherQoS::Standard)
+                .await
+                .is_ok()
+        );
 
         // Verify subscription receives the published message
         let received = subscription.rx.recv().await;
@@ -223,7 +231,7 @@ mod tests {
 
         // Test that subscription returns a valid channel
         let mut subscription = messenger
-            .subscribe("test/topic", ThroughputMode::LowThroughput)
+            .subscribe("test/topic", SubscriberQoS::Standard)
             .await
             .unwrap();
 
@@ -244,13 +252,13 @@ mod tests {
 
         // Test multiple subscriptions to different topics
         let sub1 = messenger
-            .subscribe("topic/1", ThroughputMode::LowThroughput)
+            .subscribe("topic/1", SubscriberQoS::Standard)
             .await;
         let sub2 = messenger
-            .subscribe("topic/2", ThroughputMode::HighThroughput)
+            .subscribe("topic/2", SubscriberQoS::HighThroughput)
             .await;
         let sub3 = messenger
-            .subscribe("topic/3", ThroughputMode::LowThroughput)
+            .subscribe("topic/3", SubscriberQoS::HighThroughput)
             .await;
 
         assert!(sub1.is_ok());
@@ -264,7 +272,12 @@ mod tests {
 
         // Test publishing before start_session should fail
         let early_message = Message::new("topic/early", b"too_early");
-        assert!(messenger.publish(early_message).await.is_err());
+        assert!(
+            messenger
+                .publish(early_message, PublisherQoS::Standard)
+                .await
+                .is_err()
+        );
 
         // Must start router and connect first
         assert!(messenger.start_session().await.is_ok());
@@ -277,7 +290,12 @@ mod tests {
         ];
 
         for message in messages {
-            assert!(messenger.publish(message).await.is_ok());
+            assert!(
+                messenger
+                    .publish(message, PublisherQoS::Standard)
+                    .await
+                    .is_ok()
+            );
         }
     }
 }
