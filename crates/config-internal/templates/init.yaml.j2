@@ -6,22 +6,16 @@
 
 # There is one root node/service per machine/OS and they automatically discover the other root nodes that are on the same network running on different computers
 
-# When running in production, the `peppy service install` command moves the current node and its children into the OS directories and installs a systemd service that runs on a different port and namespace on the device (so that the dev and prod environments do not )
+# When running in production, the `peppy service install` command moves the current node and its children into the OS directories and installs a systemd service that runs on a different namespace on the device (so that the dev and prod environments do not get mingled together)
 
 node_config:
   name: "<root_node>" # Reserved name, a random name will be generated for the root node
   namespace: "{{ namespace }}" # namespace is implicitely prefixed with `/dev` in dev environment (running outside `systemd`) and `/prod` when installed with `peppy service install`
   version: "0.1.0"
-  auto_start: true
   respawn: false
   respawn_delay: 2.0 # seconds
 
 node_parameters:
-
-exposes:
-  topics: []
-  services: []
-  actions: []
 
 resources:
   max_memory_mb: {{ max_memory_mb }}

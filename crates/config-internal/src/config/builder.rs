@@ -6,6 +6,26 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// Template for root node configuration
+#[derive(Template)]
+#[template(path = "init.yaml.j2")]
+struct RootNodeTemplate<'a> {
+    namespace: &'a str,
+    max_memory_mb: u32,
+    cpu_affinity: &'a Vec<u32>,
+    logging_level: &'a str,
+    logging_file_path: &'a str,
+}
+
+/// Template for standard node configuration
+#[derive(Template)]
+#[template(path = "peppy_new_node_simple.yaml.j2")]
+struct StandardNodeTemplate<'a> {
+    name: &'a str,
+    namespace: &'a str,
+    logging_level: &'a str,
+}
+
 /// Trait for validating YAML configurations
 pub trait Validator: Send + Sync {
     fn validate(&self, content: &str) -> Result<()>;
@@ -230,26 +250,6 @@ impl YamlConfigBuilder {
     pub fn build(self) -> Result<String> {
         self.validate()
     }
-}
-
-/// Template for root node configuration
-#[derive(Template)]
-#[template(path = "init.yaml.j2")]
-struct RootNodeTemplate<'a> {
-    namespace: &'a str,
-    max_memory_mb: u32,
-    cpu_affinity: &'a Vec<u32>,
-    logging_level: &'a str,
-    logging_file_path: &'a str,
-}
-
-/// Template for standard node configuration
-#[derive(Template)]
-#[template(path = "peppy_new_node.yaml.j2")]
-struct StandardNodeTemplate<'a> {
-    name: &'a str,
-    namespace: &'a str,
-    logging_level: &'a str,
 }
 
 #[cfg(test)]
