@@ -24,9 +24,9 @@ node_parameters:
 exposes:
   topics:
     - name: "/camera/video_feed"
-      type: "sensor_msgs/Image"
+      type: "sensor_message/image"
       qos_profile: "sensor_data"
-# FIME: Those belong to parameters
+# FIXME: Those belong to parameters
 #      message_format:
 #        header:
 #          stamp: "time"
@@ -38,7 +38,7 @@ exposes:
 #          - uint8
 #          - uint8
   services:
-    - service_type: "standard/SetBool"
+    - service_type: "standard/set_bool"
       service_name: "/camera/enable"
       callback: "handle_camera_enable"
 
