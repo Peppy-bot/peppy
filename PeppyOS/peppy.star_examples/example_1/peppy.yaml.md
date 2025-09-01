@@ -10,12 +10,13 @@
 # When running in production, the `peppy service deploy` command moves the current node and its children into the OS directories and installs a systemd service that runs on a different namespace on the device (so that the dev and prod environments do not get mingled together)
 
 node_config:
-  is_root: true
-  name: "my_robot" # Because it's a root node, this name will be prefixed by a small UID to avoid conflicts with other root nodes in the same network
-  namespace: "/" # namespace is implicitely prefixed with `/dev` in dev environment (running outside `systemd`) and `/prod` when installed with `peppy service install`
+  is_root: true # There can only be a single field like this one by instance run with `peppy node serve`
+  name: "my_robot_1" # It's a good practice to give a unique name to the root node to avoid name conflicts with other root nodes under the same network
+  namespace: "/" # namespace is implicitely prefixed with `/dev` in dev environment (running outside `systemd`) and `/prod` when installed with `peppy service deploy`
   version: "0.1.0"
-  respawn: false
-  respawn_delay: 2.0 # seconds
+  respawn: true
+  # Always restart the root node if it crashes
+  respawn_delay: 1 # seconds
 
 node_parameters:
   status:

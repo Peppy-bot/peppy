@@ -7,8 +7,9 @@ node_config:
   tags:
     - "peppy"
     - "rest"
+    - "backend"
   respawn: true
-  respawn_delay: 3.0
+  respawn_delay: 2.0
 
 node_parameters:
   http:
@@ -19,24 +20,21 @@ node_parameters:
     max_connections: 100
     request_timeout_ms: 30000
 
-exposes:
-  services:
-    - type: "http/rest"
-      name: "/peppy/rest_api"
+# This node does not expose anything for other nodes. It exposes a REST API to the end user but that is outside of the realm of node-to-node communication
+exposes: []
 
-subscribes_to: []
+subscribes_to:
+  topics:      
+    # Subscribes to the current root_node status but also any node that emits to `/root_node/status`
+    - type: "configuration/metadata"
+      name: "{any}:/root_node/status" # {any} means any node that emits on  `/root_node/status`
+      callback: "on_node_status_received"
+      optional: true # Do not prevent this node from starting if nodes emitting to `/root_node/status` are not found on the network
 
 resources:
-  max_memory_mb: 256
+  max_memory_mb: 512
   cpu_affinity: []
 
 logging:
   min_level: "info"
-
-diagnostics:
-  enabled: true
-  publish_rate_hz: 1.0
-  health_checks:
-    - "camera_connected"
-    - "frame_rate_nominal"
 ```

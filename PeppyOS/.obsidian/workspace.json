@@ -13,7 +13,7 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "peppy.star_examples/example_1/emitting_node_uvc_camera/peppy.yaml.md",
+                "file": "peppy.star_examples/example_1/service_web_video_stream/peppy.yaml.md",
                 "mode": "source",
                 "source": false
               },
@@ -171,11 +171,11 @@
   },
   "active": "9dae4ed2adf98cba",
   "lastOpenFiles": [
+    "peppy.star_examples/example_1/emitting_node_uvc_camera/peppy.yaml.md",
     "peppy.star_examples/example_1/peppy_frontend/peppy.yaml.md",
     "peppy.star_examples/example_1/peppy_rest_api/peppy.yaml.md",
-    "peppy.star_examples/example_1/service_node_video_stream/peppy.yaml.md",
+    "peppy.star_examples/example_1/service_web_video_stream/peppy.yaml.md",
     "peppy.star_examples/example_1/peppy.yaml.md",
-    "peppy.star_examples/example_1/emitting_node_uvc_camera/peppy.yaml.md",
     "peppy/peppy.md",
     "peppycl/lib/spin.md",
     "peppycl/peppycl.md",
@@ -189,7 +189,7 @@
     "peppy.star_examples/example_1/emitting_node_1/peppy.star",
     "peppy.star_examples/example_1/peppy.star",
     "PeppyOS.md",
-    "peppy.star_examples/example_1/service_node_video_stream",
+    "peppy.star_examples/example_1/service_web_video_stream",
     "peppy.star_examples/example_1/emitting_node_uvc_camera",
     "peppy/cmd/node/create.md",
     "Untitled.canvas",

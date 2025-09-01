@@ -2,15 +2,13 @@
 # PeppyOS REST API Service Node Configuration
 # This node provides a REST API interface for system interaction
 
+# FIXME: `depends_on` is a repetition with `subscribes_to`
 depends_on:
   # The peppy service running as a daemon will first try to access the node by polling its local registery and if no local node with `uvc_camera` is present, it will download it from the nodes.peppy.bot repository
   - name: "uvc_camera"
-    # Will pull this particular version if specified, otherwise pulls the most recent one (always specify it to avoid breaking changes)
+    # Will pull this particular version if specified, otherwise pulls the most recent one (always specify it to avoid breaking changes if pulled from nodes.peppy.bot, or leave blank if the node is local to this project)
     version: "0.1"
-    namespace: "/"
-    # If specified, will override default parameters or provide the ones that are required
-    # FIXME: What happens if two nodes subscribe to `uvc_camera` but need different parameters? Maybe overriding parameters here is not a good idea
-    parameters: []
+    namespace: "/" # In what ns is this node deployed?
 
 node_config:
   name: "web_video_stream"
@@ -18,7 +16,6 @@ node_config:
   version: "0.1.0"
   respawn: true
   respawn_delay: 10.0
-  shutdown_timeout_s: 30.0
 
 # The parameters of the current node
 node_parameters:
@@ -36,7 +33,7 @@ node_parameters:
 
 subscribes_to:
   topics:
-    - type: "sensor_msgs/Image"
+    - type: "sensor_message/image"
       name: "uvc_camera:/camera/video_feed"
       callback: "on_handle_video_feed"
 #  actions:
@@ -44,10 +41,8 @@ subscribes_to:
 #      action_name: "/api/process_video"
 #      callback: "handle_process_video_action"
 
-exposes:
-  services:
-    - type: "http/web_url"
-      name: "/video"
+# This node does not expose anything for other nodes. It exposes a web url (http://localhost:8081/video) to the end user but that is outside of the realm of node-to-node communication
+exposes: []
 
 resources:
   max_memory_mb: 512
