@@ -4,16 +4,16 @@
     "type": "split",
     "children": [
       {
-        "id": "f6c301ea84cd04aa",
+        "id": "b5cd28ec3e21bd43",
         "type": "tabs",
         "children": [
           {
-            "id": "64b4e8ef76784234",
+            "id": "9dae4ed2adf98cba",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "peppy.star_examples/example_1/peppy.yaml.md",
+                "file": "peppy.star_examples/example_1/emitting_node_uvc_camera/peppy.yaml.md",
                 "mode": "source",
                 "source": false
               },
@@ -169,15 +169,21 @@
       "command-palette:Open command palette": false
     }
   },
-  "active": "64b4e8ef76784234",
+  "active": "9dae4ed2adf98cba",
   "lastOpenFiles": [
+    "peppy.star_examples/example_1/peppy_frontend/peppy.yaml.md",
+    "peppy.star_examples/example_1/peppy_rest_api/peppy.yaml.md",
     "peppy.star_examples/example_1/service_node_video_stream/peppy.yaml.md",
     "peppy.star_examples/example_1/peppy.yaml.md",
-    "peppy.star_examples/example_1/peppy_rest_api/peppy.yaml.md",
-    "peppy.star_examples/example_1/peppy_frontend/peppy.yaml.md",
+    "peppy.star_examples/example_1/emitting_node_uvc_camera/peppy.yaml.md",
+    "peppy/peppy.md",
+    "peppycl/lib/spin.md",
+    "peppycl/peppycl.md",
+    "Untitled.base",
+    "Untitled 1.base",
+    "peppy.star_examples/example_1/peppy.yaml",
     "peppy.star_examples/example_1/peppy_frontend",
     "peppy.star_examples/example_1/peppy_rest_api",
-    "peppy.star_examples/example_1/emitting_node_uvc_camera/peppy.yaml.md",
     "peppy.star_examples/example_1/Readme.md",
     "peppy.star_examples/example_1/service_node_1/peppy.star",
     "peppy.star_examples/example_1/emitting_node_1/peppy.star",
@@ -185,18 +191,12 @@
     "PeppyOS.md",
     "peppy.star_examples/example_1/service_node_video_stream",
     "peppy.star_examples/example_1/emitting_node_uvc_camera",
-    "peppy.star_examples/example_1",
-    "peppy.star_examples",
     "peppy/cmd/node/create.md",
     "Untitled.canvas",
-    "peppycl/peppycl.md",
-    "sync",
     "peppy/cmd/node/node.md",
-    "peppy/peppy.md",
     "2025-08-12.md",
     "peppy/cmd/serve/serve.md",
     "peppy/cmd/sync.md",
-    "peppycl/lib/spin.md",
     "`peppy`.md"
   ]
 }

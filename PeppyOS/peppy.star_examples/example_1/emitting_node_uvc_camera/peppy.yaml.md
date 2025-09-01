@@ -9,35 +9,36 @@ node_config:
     - "uvc"
     - "camera"
     - "usb"
-  auto_start: true
   respawn: true
   respawn_delay: 5.0
 
 node_parameters:
-  device_path: "/dev/video5"
-  frame_rate: 30
-  resolution:
-    width: 1920
-    height: 1080
-  pixel_format: "YUYV"
+  video:
+    device_path: "/dev/video5"
+    frame_rate: 30
+    resolution:
+      width: 1920
+      height: 1080
+    encoding: "YUYV" # "rgb8", "bgr8", "yuyv", "mjpeg"
 
 exposes:
   topics:
     - name: "/camera/video_feed"
       type: "sensor_msgs/Image"
-      qos_profile: "sensor_data" # Options: "standard", "reliable", "sensor_data"
-      message_format:
-        header:
-          stamp: "time"
-        encoding: str # "rgb8", "bgr8", "yuyv", "mjpeg"
-        width: uint32
-        height: uint32
-        image:
-          - uint8
-          - uint8
-          - uint8
+      qos_profile: "sensor_data"
+# FIME: Those belong to parameters
+#      message_format:
+#        header:
+#          stamp: "time"
+#        encoding: str # "rgb8", "bgr8", "yuyv", "mjpeg"
+#        width: uint32
+#        height: uint32
+#        image:
+#          - uint8
+#          - uint8
+#          - uint8
   services:
-    - service_type: "std_srvs/SetBool"
+    - service_type: "standard/SetBool"
       service_name: "/camera/enable"
       callback: "handle_camera_enable"
 
