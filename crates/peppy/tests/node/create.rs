@@ -87,7 +87,7 @@ fn test_pixi_toml_content() {
 }
 
 #[test]
-fn test_peppy_star_content() {
+fn test_peppy_yaml_content() {
     let temp_dir = TempDir::new().unwrap();
     super::helpers::setup(temp_dir.path());
 

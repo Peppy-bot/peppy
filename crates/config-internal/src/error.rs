@@ -9,10 +9,6 @@ pub enum Error {
     #[from]
     Io(std::io::Error),
 
-    // -- starlark
-    #[from]
-    Starlark(starlark::Error),
-
     // -- config parsing
     ConfigParse(String),
 
