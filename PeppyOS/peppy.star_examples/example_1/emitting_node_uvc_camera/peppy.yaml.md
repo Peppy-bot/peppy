@@ -1,0 +1,60 @@
+```yaml
+# A simple node that emits video frames from a UVC camera
+
+node_config:
+  name: "uvc_camera"
+  namespace: "/"
+  version: "0.1.0"
+  tags:
+    - "uvc"
+    - "camera"
+    - "usb"
+  auto_start: true
+  respawn: true
+  respawn_delay: 5.0
+
+node_parameters:
+  device_path: "/dev/video5"
+  frame_rate: 30
+  resolution:
+    width: 1920
+    height: 1080
+  pixel_format: "YUYV"
+
+exposes:
+  topics:
+    - name: "/camera/video_feed"
+      type: "sensor_msgs/Image"
+      qos_profile: "sensor_data" # Options: "standard", "reliable", "sensor_data"
+      message_format:
+        header:
+          stamp: "time"
+        encoding: str # "rgb8", "bgr8", "yuyv", "mjpeg"
+        width: uint32
+        height: uint32
+        image:
+          - uint8
+          - uint8
+          - uint8
+  services:
+    - service_type: "std_srvs/SetBool"
+      service_name: "/camera/enable"
+      callback: "handle_camera_enable"
+
+subscribes_to: []
+
+resources:
+  max_memory_mb: 256
+  cpu_affinity: []
+
+logging:
+  min_level: "info"
+
+diagnostics:
+  enabled: true
+  publish_rate_hz: 1.0
+  health_checks:
+    - "camera_connected"
+    - "frame_rate_nominal"
+    - "buffer_underrun"
+```
