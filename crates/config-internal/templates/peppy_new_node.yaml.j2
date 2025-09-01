@@ -1,0 +1,27 @@
+# PeppyOS Node Configuration for {{ name }}
+# This configuration file defines the {{ name }} node.
+
+node_config:
+  name: "{{ name }}"
+  namespace: "{{ namespace }}"
+  version: "0.1.0"
+  auto_start: true
+  respawn: false
+  respawn_delay: 2.0 # seconds
+
+node_parameters:
+
+exposes:
+  topics: []
+  services: []
+  actions: []
+
+resources:
+  max_memory_mb: 512
+  cpu_affinity: []
+
+logging:
+  min_level: "{{ logging_level }}"
+  file_path: "/var/log/peppy/{{ name }}.log"
+  max_file_size_mb: 100
+  format: "text"
