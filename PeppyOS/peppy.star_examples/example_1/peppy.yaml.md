@@ -5,27 +5,40 @@
 
 # Any new node that is created should be added to the root_node by running the command `peppy node add <path_to_peppy.yaml>`
 
-# There is one root node/service per machine/OS and they automatically discover the other root nodes that are on the same network running on different computers
+# There is only one root node/service per machine/OS and they automatically discover the other root nodes that are on the same network running on different computers
 
-# When running in production, the `peppy service install` command moves the current node and its children into the OS directories and installs a systemd service that runs on a different port and namespace on the device (so that the dev and prod environments do not )
+# When running in production, the `peppy service deploy` command moves the current node and its children into the OS directories and installs a systemd service that runs on a different namespace on the device (so that the dev and prod environments do not get mingled together)
 
 node_config:
-  name: "<root_node>" # Reserved name, a random name will be generated for the root node
+  is_root: true
+  name: "my_robot" # Because it's a root node, this name will be prefixed by a small UID to avoid conflicts with other root nodes in the same network
   namespace: "/" # namespace is implicitely prefixed with `/dev` in dev environment (running outside `systemd`) and `/prod` when installed with `peppy service install`
   version: "0.1.0"
-  auto_start: true
   respawn: false
   respawn_delay: 2.0 # seconds
 
 node_parameters:
+  status:
+    frequency: 1Hz # Every second the root node publishes its latest status
 
+# The root node cannot subscribe to any node
 exposes:
-  topics: []
+  topics:
+    # Exposes its status that includes:
+    #  - Its name & configuration
+    #  - The node list
+    #  - The communication channels between the nodes
+    #  - etc..
+    # This publishing allow another node such as `peppy_rest_api` to aggregate root nodes statuses
+    # and expose that information under a single REST API for a frontend to consume.
+    - type: "configuration/metadata"
+      name: "/root_node/status"
+      qos_profile: "standard"  # Options: "standard", "reliable", "sensor_data"
   services: []
   actions: []
 
 resources:
-  max_memory_mb: 512
+  max_memory_mb: 1024
   cpu_affinity: []
 
 logging:
