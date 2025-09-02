@@ -9,7 +9,6 @@ use config::create_peppy_node_config;
 use factory::create_factory;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tracing::info;
 
 pub struct NodeBuilder {
     current_dir: PathBuf,
@@ -17,6 +16,7 @@ pub struct NodeBuilder {
     node_name: NodeName,
     lang: Language,
     description: Option<String>,
+    full: bool,
 }
 
 impl NodeBuilder {
@@ -27,6 +27,7 @@ impl NodeBuilder {
             node_name,
             lang: Language::Rust,
             description: None,
+            full: false,
         }
     }
 
@@ -50,6 +51,11 @@ impl NodeBuilder {
         self
     }
 
+    pub fn full(mut self, full: bool) -> Self {
+        self.full = full;
+        self
+    }
+
     pub fn build(self) -> Result<()> {
         create(
             &self.current_dir,
@@ -57,6 +63,7 @@ impl NodeBuilder {
             self.node_name,
             self.lang,
             self.description.as_deref(),
+            self.full,
         )?;
         Ok(())
     }
@@ -69,6 +76,7 @@ pub fn create(
     node_name: NodeName,
     language: Language,
     description: Option<&str>,
+    full: bool,
 ) -> Result<()> {
     let node_path = match to_dir {
         Some(dir) => dir.join(node_name.as_str()),
@@ -90,12 +98,9 @@ pub fn create(
 
     factory.create_gitignore(&node_path)?;
     factory.create_pixi_config(&node_path, &node_name, description)?;
-    create_peppy_node_config(&node_path, node_name.as_str())
+    create_peppy_node_config(&node_path, node_name.as_str(), full)
         .map_err(|e| Error::PeppyConfigCreation(e.to_string()))?;
     factory.create_language_config(&node_name, &node_path)?;
-
-    info!("Created node '{}' at: {}", node_name, node_path.display());
-
     Ok(())
 }
 
@@ -115,6 +120,7 @@ mod tests {
             NodeName::new("video_node").unwrap(),
             Language::Python,
             Some("Test video node"),
+            false,
         );
         assert!(matches!(result, Err(Error::RootConfigurationNotFound)))
     }
@@ -126,8 +132,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let node_name = "existing_node";
 
-        // Create peppy.star in the temp directory to avoid RootConfigurationNotFound error
-        fs::write(temp_dir.path().join("peppy.star"), "# Root config").unwrap();
+        // Create peppy.yaml in the temp directory to avoid RootConfigurationNotFound error
+        fs::write(temp_dir.path().join("peppy.yaml"), "# Root config").unwrap();
 
         // Create a directory with the same name as the node
         let existing_dir = temp_dir.path().join(node_name);
@@ -140,6 +146,7 @@ mod tests {
             NodeName::new(node_name).unwrap(),
             Language::Python,
             Some("Test node"),
+            false,
         );
 
         assert!(matches!(result, Err(Error::FolderAlreadyExist(_))));
