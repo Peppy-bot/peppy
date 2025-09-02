@@ -1,4 +1,3 @@
-```yaml
 # PeppyOS Root Node Configuration
 # This is the main configuration file that defines the root node of the current machine.
 # It's run using the `peppy node serve` command. It will automatically use the `peppy.yaml` file in the same path the command is run as the root configuration file and will look into child folders for other `peppy.yaml` files for children nodes.
@@ -16,13 +15,14 @@ node_config:
   version: "0.1.0"
   respawn: true
   # Always restart the root node if it crashes
-  respawn_delay: 1 # seconds
+  respawn_delay: 1.0 # In seconds. Only relevant when the node is installed as a `systemd` service with `peppy node deploy`
 
 node_parameters:
   status:
     frequency: 1Hz # Every second the root node publishes its latest status
 
-# The root node cannot subscribe to any node
+# No `subscribes_to`. The root node cannot subscribe to any node
+
 exposes:
   topics:
     # Exposes its status that includes:
@@ -34,7 +34,7 @@ exposes:
     # and expose that information under a single REST API for a frontend to consume.
     - type: "configuration/metadata"
       name: "/root_node/status"
-      qos_profile: "standard"  # Options: "standard", "reliable", "sensor_data"
+      qos_profile: "standard" # Options: "standard", "reliable", "sensor_data"
   services: []
   actions: []
 
@@ -47,4 +47,3 @@ logging:
   file_path: "/var/log/peppy/peppy_root.log"
   max_file_size_mb: 100
   format: "text"
-```
