@@ -19,7 +19,11 @@ pub fn create_peppy_node_config(node_path: &Path, node_name: &str, full: bool) -
         .with_logging_level("info")
         .write_to(&peppy_yaml_path)?;
 
-    info!("Created {} node in {}", &node_name, peppy_yaml_path.display());
+    info!(
+        "Created {} node in {}",
+        &node_name,
+        peppy_yaml_path.display()
+    );
     Ok(peppy_yaml_path)
 }
 
