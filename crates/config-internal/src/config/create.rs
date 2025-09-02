@@ -5,15 +5,21 @@ use crate::error::Result;
 use std::path::PathBuf;
 use std::{fs, path::Path};
 
-pub fn create_peppy_node_config(node_path: &Path, node_name: &str) -> Result<PathBuf> {
+pub fn create_peppy_node_config(node_path: &Path, node_name: &str, full: bool) -> Result<PathBuf> {
     let peppy_yaml_path = node_path.join("peppy.yaml");
 
-    NodeConfigBuilder::simple_node(node_name)
+    let builder = if full {
+        NodeConfigBuilder::full_node(node_name)
+    } else {
+        NodeConfigBuilder::simple_node(node_name)
+    };
+
+    builder
         .with_namespace("/")
         .with_logging_level("info")
         .write_to(&peppy_yaml_path)?;
 
-    info!("Created node at {}", peppy_yaml_path.display());
+    info!("Created {} node in {}", &node_name, peppy_yaml_path.display());
     Ok(peppy_yaml_path)
 }
 
@@ -34,6 +40,8 @@ pub fn init_root_node(path: &Path, name: &str) -> Result<PathBuf> {
 mod tests {
     use super::*;
 
+    // Can be run from the command line with:
+    // cargo run --manifest-path <path_to_root_Cargo.toml> -- init <node_name>
     #[test]
     fn test_init_root_node() {
         use tempfile::TempDir;
@@ -51,7 +59,7 @@ mod tests {
     }
 
     // Can be run from the command line with:
-    // cargo run --manifest-path <path_to_root_Cargo.toml> -- node create my_project
+    // cargo run --manifest-path <path_to_root_Cargo.toml> -- node create my_node
     #[test]
     fn test_create_peppy_config() {
         use tempfile::TempDir;
@@ -59,7 +67,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let node_name = "test_node";
 
-        let result = create_peppy_node_config(temp_dir.path(), &node_name);
+        let result = create_peppy_node_config(temp_dir.path(), &node_name, false);
         assert!(result.is_ok());
 
         let peppy_path = temp_dir.path().join("peppy.yaml");

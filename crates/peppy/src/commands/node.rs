@@ -17,13 +17,16 @@ pub enum NodeCommands {
     Create {
         /// Name of the node directory to create
         node_name: NodeName,
+        /// Optional: Create the node with a more detailed configuration & defaults
+        #[arg(long, default_value_t = false)]
+        full: bool,
         /// Optional: Description for the node
         #[arg(long)]
         description: Option<String>,
         /// Optional: target directory (defaults to current directory)
         #[arg(long)]
         to_dir: Option<PathBuf>,
-        /// Programming language for the node, either `rust` or `python`. Defaults to `rust`
+        /// Programming language for the node, either `rust` or `python`
         #[arg(long, default_value = "rust")]
         lang: Language,
     },
@@ -45,6 +48,7 @@ impl Command for NodeCommand {
                 lang,
                 node_name,
                 description,
+                full,
             } => {
                 let current_dir = std::env::current_dir()?;
                 NodeBuilder::new(node_name)
@@ -52,6 +56,7 @@ impl Command for NodeCommand {
                     .to_dir(to_dir)
                     .lang(lang)
                     .description(description)
+                    .full(full)
                     .build()
             }
             NodeCommands::List {} => {

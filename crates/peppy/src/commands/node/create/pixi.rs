@@ -117,7 +117,7 @@ mod tests {
         assert!(content.contains(node_name.as_str()));
         assert!(content.contains(description));
         assert!(content.contains("# Python/Conda dependencies"));
-        
+
         assert!(content.contains("[project]"));
         assert!(content.contains("name = \"test_node\""));
         assert!(content.contains("channels = ["));
@@ -154,7 +154,7 @@ mod tests {
         assert!(content.contains(node_name.as_str()));
         assert!(content.contains(description));
         assert!(content.contains("# Add system dependencies here, not Rust dependencies"));
-        
+
         assert!(content.contains("[project]"));
         assert!(content.contains("name = \"rust_test_node\""));
         assert!(content.contains("channels = [\"conda-forge\"]"));

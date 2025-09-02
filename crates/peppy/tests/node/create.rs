@@ -1,6 +1,5 @@
 use peppy::commands::node::create;
 use peppy::commands::node::types::{Language, NodeName};
-use std::fs;
 use tempfile::TempDir;
 
 #[test]
@@ -15,6 +14,7 @@ fn test_create_command_default_directory() {
         NodeName::new(node_name).unwrap(),
         Language::Rust,
         None,
+        false,
     );
     let node_path = temp_dir.path().join(node_name);
 
@@ -45,6 +45,7 @@ fn test_create_command_with_to_dir() {
         NodeName::new(node_name).unwrap(),
         Language::Rust,
         None,
+        false,
     );
 
     assert!(result.is_ok(), "Create should succeed: {:?}", result.err());
