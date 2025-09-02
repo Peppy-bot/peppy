@@ -11,14 +11,10 @@
             "id": "9dae4ed2adf98cba",
             "type": "leaf",
             "state": {
-              "type": "markdown",
-              "state": {
-                "file": "peppy.star_examples/example_1/service_web_video_stream/peppy.yaml.md",
-                "mode": "source",
-                "source": false
-              },
+              "type": "empty",
+              "state": {},
               "icon": "lucide-file",
-              "title": "peppy.yaml"
+              "title": "New tab"
             }
           }
         ]
@@ -169,13 +165,14 @@
       "command-palette:Open command palette": false
     }
   },
-  "active": "9dae4ed2adf98cba",
+  "active": "f6051bed33ba9ceb",
   "lastOpenFiles": [
-    "peppy.star_examples/example_1/emitting_node_uvc_camera/peppy.yaml.md",
     "peppy.star_examples/example_1/peppy_frontend/peppy.yaml.md",
     "peppy.star_examples/example_1/peppy_rest_api/peppy.yaml.md",
     "peppy.star_examples/example_1/service_web_video_stream/peppy.yaml.md",
     "peppy.star_examples/example_1/peppy.yaml.md",
+    "peppy.star_examples/example_1/Readme.md",
+    "peppy.star_examples/example_1/emitting_node_uvc_camera/peppy.yaml.md",
     "peppy/peppy.md",
     "peppycl/lib/spin.md",
     "peppycl/peppycl.md",
@@ -184,7 +181,6 @@
     "peppy.star_examples/example_1/peppy.yaml",
     "peppy.star_examples/example_1/peppy_frontend",
     "peppy.star_examples/example_1/peppy_rest_api",
-    "peppy.star_examples/example_1/Readme.md",
     "peppy.star_examples/example_1/service_node_1/peppy.star",
     "peppy.star_examples/example_1/emitting_node_1/peppy.star",
     "peppy.star_examples/example_1/peppy.star",

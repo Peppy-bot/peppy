@@ -1,4 +1,3 @@
-```yaml
 # A simple node that emits video frames from a UVC camera
 
 node_config:
@@ -26,17 +25,17 @@ exposes:
     - name: "/camera/video_feed"
       type: "sensor_message/image"
       qos_profile: "sensor_data"
-# FIXME: Those belong to parameters
-#      message_format:
-#        header:
-#          stamp: "time"
-#        encoding: str # "rgb8", "bgr8", "yuyv", "mjpeg"
-#        width: uint32
-#        height: uint32
-#        image:
-#          - uint8
-#          - uint8
-#          - uint8
+  # FIXME: Those belong to parameters
+  #      message_format:
+  #        header:
+  #          stamp: "time"
+  #        encoding: str # "rgb8", "bgr8", "yuyv", "mjpeg"
+  #        width: uint32
+  #        height: uint32
+  #        image:
+  #          - uint8
+  #          - uint8
+  #          - uint8
   services:
     - service_type: "standard/set_bool"
       service_name: "/camera/enable"
@@ -58,4 +57,3 @@ diagnostics:
     - "camera_connected"
     - "frame_rate_nominal"
     - "buffer_underrun"
-```
