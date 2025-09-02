@@ -1,4 +1,4 @@
-use crate::config::NodeConfig;
+use super::types::{Exposes, Logging, NodeConfig, NodeInfo, NodeParameters, Resources};
 use crate::error::{Error, Result};
 use saphyr::{LoadableYamlNode, Yaml};
 use std::fs;
@@ -32,7 +32,7 @@ pub fn parse_yaml_config(config_file: PathBuf) -> Result<NodeConfig> {
     })
 }
 
-fn parse_node_info(doc: &Yaml) -> Result<crate::config::NodeInfo> {
+fn parse_node_info(doc: &Yaml) -> Result<NodeInfo> {
     let node_config = &doc["node_config"];
 
     if node_config.is_badvalue() {
@@ -41,7 +41,16 @@ fn parse_node_info(doc: &Yaml) -> Result<crate::config::NodeInfo> {
         ));
     }
 
-    Ok(crate::config::NodeInfo {
+    let default_node_info = NodeInfo {
+        name: String::new(),
+        namespace: String::new(),
+        version: "0.1.0".to_string(),
+        auto_start: false,
+        respawn: false,
+        respawn_delay: 1.0,
+    };
+
+    Ok(NodeInfo {
         name: node_config["name"]
             .as_str()
             .ok_or_else(|| Error::ConfigParse("name must be a string".to_string()))?
@@ -53,82 +62,86 @@ fn parse_node_info(doc: &Yaml) -> Result<crate::config::NodeInfo> {
         version: node_config["version"]
             .as_str()
             .map(|s| s.to_string())
-            .unwrap_or_else(|| crate::config::default_version()),
+            .unwrap_or(default_node_info.version),
         auto_start: node_config["auto_start"]
             .as_bool()
-            .unwrap_or(crate::config::default_false()),
+            .unwrap_or(default_node_info.auto_start),
         respawn: node_config["respawn"]
             .as_bool()
-            .unwrap_or(crate::config::default_false()),
+            .unwrap_or(default_node_info.respawn),
         respawn_delay: node_config["respawn_delay"]
             .as_floating_point()
-            .unwrap_or(crate::config::default_respawn_delay()),
+            .unwrap_or(default_node_info.respawn_delay),
     })
 }
 
-fn parse_node_parameters(_doc: &Yaml) -> Result<crate::config::NodeParameters> {
+fn parse_node_parameters(_doc: &Yaml) -> Result<NodeParameters> {
     // For now, return default parameters
     // In the future, this can be extended to parse custom parameters
-    Ok(crate::config::NodeParameters::default())
+    Ok(NodeParameters::default())
 }
 
-fn parse_exposes(doc: &Yaml) -> Result<crate::config::Exposes> {
+fn parse_exposes(doc: &Yaml) -> Result<Exposes> {
     let exposes = &doc["exposes"];
 
     if exposes.is_badvalue() {
         // Return default if section not found
-        return Ok(crate::config::Exposes::default());
+        return Ok(Exposes::default());
     }
 
-    Ok(crate::config::Exposes {
+    Ok(Exposes {
         topics: parse_string_array(&exposes["topics"])?,
         services: parse_string_array(&exposes["services"])?,
         actions: parse_string_array(&exposes["actions"])?,
     })
 }
 
-fn parse_resources(doc: &Yaml) -> Result<crate::config::Resources> {
+fn parse_resources(doc: &Yaml) -> Result<Resources> {
     let resources = &doc["resources"];
 
     if resources.is_badvalue() {
         // Return default if section not found
-        return Ok(crate::config::Resources::default());
+        return Ok(Resources::default());
     }
 
-    Ok(crate::config::Resources {
+    let default_resources = Resources::default();
+
+    Ok(Resources {
         max_memory_mb: resources["max_memory_mb"]
             .as_integer()
             .map(|i| i as u32)
-            .unwrap_or(crate::config::default_max_memory_mb()),
+            .unwrap_or(default_resources.max_memory_mb),
         cpu_affinity: parse_u32_array(&resources["cpu_affinity"])?,
     })
 }
 
-fn parse_logging(doc: &Yaml) -> Result<crate::config::Logging> {
+fn parse_logging(doc: &Yaml) -> Result<Logging> {
     let logging = &doc["logging"];
 
     if logging.is_badvalue() {
         // Return default if section not found
-        return Ok(crate::config::Logging::default());
+        return Ok(Logging::default());
     }
 
-    Ok(crate::config::Logging {
+    let default_logging = Logging::default();
+
+    Ok(Logging {
         min_level: logging["min_level"]
             .as_str()
             .map(|s| s.to_string())
-            .unwrap_or_else(|| crate::config::default_log_level()),
+            .unwrap_or(default_logging.min_level),
         file_path: logging["file_path"]
             .as_str()
             .map(|s| s.to_string())
-            .unwrap_or_else(|| crate::config::default_log_file_path()),
+            .unwrap_or(default_logging.file_path),
         max_file_size_mb: logging["max_file_size_mb"]
             .as_integer()
             .map(|i| i as u32)
-            .unwrap_or(crate::config::default_max_file_size_mb()),
+            .unwrap_or(default_logging.max_file_size_mb),
         format: logging["format"]
             .as_str()
             .map(|s| s.to_string())
-            .unwrap_or_else(|| crate::config::default_log_format()),
+            .unwrap_or(default_logging.format),
     })
 }
 

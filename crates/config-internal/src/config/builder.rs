@@ -1,7 +1,7 @@
+use super::types::{Exposes, Logging, NodeConfig, NodeInfo, NodeParameters, Resources};
 use crate::error::{Error, Result};
 use askama::Template;
 use saphyr::{LoadableYamlNode, Yaml};
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -45,24 +45,9 @@ impl Validator for SyntaxValidator {
     }
 }
 
-/// Configuration parameters for node creation
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct NodeParameters {
-    // Dynamic parameters can be added here
-}
-
 /// Builder for creating YAML configuration files
 pub struct NodeConfigBuilder {
-    name: String, // TODO: Create a newtype pattern to validate the name
-    namespace: String,
-    version: String,
-    auto_start: Option<bool>,
-    respawn: Option<bool>,
-    respawn_delay: Option<f64>,
-    max_memory_mb: Option<u32>,
-    cpu_affinity: Option<Vec<u32>>,
-    logging_level: String,
-    logging_file_path: Option<String>,
+    config: NodeConfig,
     validators: Vec<Box<dyn Validator>>,
     template_type: ConfigTemplateType,
 }
@@ -70,16 +55,20 @@ pub struct NodeConfigBuilder {
 impl Default for NodeConfigBuilder {
     fn default() -> Self {
         Self {
-            name: String::new(),
-            namespace: "/".to_string(),
-            version: "0.1.0".to_string(),
-            auto_start: None,
-            respawn: None,
-            respawn_delay: None,
-            max_memory_mb: None,
-            cpu_affinity: None,
-            logging_level: "info".to_string(),
-            logging_file_path: None,
+            config: NodeConfig {
+                node_config: NodeInfo {
+                    name: String::new(),
+                    namespace: "/".to_string(),
+                    version: "0.1.0".to_string(),
+                    auto_start: false,
+                    respawn: false,
+                    respawn_delay: 1.0,
+                },
+                node_parameters: NodeParameters::default(),
+                exposes: Exposes::default(),
+                resources: Resources::default(),
+                logging: Logging::default(),
+            },
             validators: Vec::new(),
             template_type: ConfigTemplateType::default(),
         }
@@ -103,93 +92,90 @@ pub enum ConfigTemplateType {
 impl NodeConfigBuilder {
     /// Creates a builder for root node configuration
     pub fn root_node(name: &str) -> Self {
-        Self {
-            name: name.into(),
-            respawn: Some(true),
-            respawn_delay: Some(1.0),
-            logging_file_path: Some(format!("/var/log/peppy/{}_root.log", name)),
-            validators: vec![Box::new(SyntaxValidator)],
-            template_type: ConfigTemplateType::RootNode,
-            ..Default::default()
-        }
+        let mut builder = Self::default();
+        builder.config.node_config.name = name.into();
+        builder.config.node_config.respawn = true;
+        builder.config.node_config.respawn_delay = 1.0;
+        builder.config.logging.file_path = format!("/var/log/peppy/{}_root.log", name);
+        builder.validators = vec![Box::new(SyntaxValidator)];
+        builder.template_type = ConfigTemplateType::RootNode;
+        builder
     }
 
     /// Creates a builder for simple node configuration
     pub fn simple_node(name: &str) -> Self {
-        Self {
-            name: name.into(),
-            validators: vec![Box::new(SyntaxValidator)],
-            template_type: ConfigTemplateType::SimpleNode,
-            ..Default::default()
-        }
+        let mut builder = Self::default();
+        builder.config.node_config.name = name.into();
+        builder.validators = vec![Box::new(SyntaxValidator)];
+        builder.template_type = ConfigTemplateType::SimpleNode;
+        builder
     }
 
     /// Creates a builder for full node configuration
     pub fn full_node(name: &str) -> Self {
-        Self {
-            name: name.into(),
-            respawn: Some(true),
-            respawn_delay: Some(2.0),
-            max_memory_mb: Some(1024),
-            logging_file_path: Some(format!("/var/log/peppy/{}_node.log", name)),
-            validators: vec![Box::new(SyntaxValidator)],
-            template_type: ConfigTemplateType::FullNode,
-            ..Default::default()
-        }
+        let mut builder = Self::default();
+        builder.config.node_config.name = name.into();
+        builder.config.node_config.respawn = true;
+        builder.config.node_config.respawn_delay = 2.0;
+        builder.config.resources.max_memory_mb = 1024;
+        builder.config.logging.file_path = format!("/var/log/peppy/{}_node.log", name);
+        builder.validators = vec![Box::new(SyntaxValidator)];
+        builder.template_type = ConfigTemplateType::FullNode;
+        builder
     }
 
     /// Sets the node name
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
-        self.name = name.into();
+        self.config.node_config.name = name.into();
         self
     }
 
     /// Sets the namespace
     pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
-        self.namespace = namespace.into();
+        self.config.node_config.namespace = namespace.into();
         self
     }
 
     /// Sets the version
     pub fn with_version(mut self, version: impl Into<String>) -> Self {
-        self.version = version.into();
+        self.config.node_config.version = version.into();
         self
     }
 
     /// Sets the logging level
     pub fn with_logging_level(mut self, level: impl Into<String>) -> Self {
-        self.logging_level = level.into();
+        self.config.logging.min_level = level.into();
         self
     }
 
     /// Sets the logging file path
     pub fn with_logging_file_path(mut self, path: impl Into<String>) -> Self {
-        self.logging_file_path = Some(path.into());
+        self.config.logging.file_path = path.into();
         self
     }
 
     /// Sets memory limit in MB
     pub fn with_memory_limit(mut self, limit_mb: u32) -> Self {
-        self.max_memory_mb = Some(limit_mb);
+        self.config.resources.max_memory_mb = limit_mb;
         self
     }
 
     /// Sets CPU affinity
     pub fn with_cpu_affinity(mut self, cores: Vec<u32>) -> Self {
-        self.cpu_affinity = Some(cores);
+        self.config.resources.cpu_affinity = cores;
         self
     }
 
     /// Sets auto-start
     pub fn with_auto_start(mut self, auto_start: bool) -> Self {
-        self.auto_start = Some(auto_start);
+        self.config.node_config.auto_start = auto_start;
         self
     }
 
     /// Sets respawn
     pub fn with_respawn(mut self, respawn: bool, delay: f64) -> Self {
-        self.respawn = Some(respawn);
-        self.respawn_delay = Some(delay);
+        self.config.node_config.respawn = respawn;
+        self.config.node_config.respawn_delay = delay;
         self
     }
 
@@ -214,15 +200,17 @@ impl NodeConfigBuilder {
     fn render(&self) -> Result<String> {
         match &self.template_type {
             ConfigTemplateType::RootNode => {
-                let template = RootNodeTemplate { name: &self.name };
+                let template = RootNodeTemplate {
+                    name: &self.config.node_config.name,
+                };
                 template
                     .render()
                     .map_err(|e| Error::AskamaError(e.to_string()))
             }
             ConfigTemplateType::SimpleNode => {
                 let template = SimpleNodeTemplate {
-                    name: &self.name,
-                    namespace: &self.namespace,
+                    name: &self.config.node_config.name,
+                    namespace: &self.config.node_config.namespace,
                 };
                 template
                     .render()
@@ -230,8 +218,8 @@ impl NodeConfigBuilder {
             }
             ConfigTemplateType::FullNode => {
                 let template = FullNodeTemplate {
-                    name: &self.name,
-                    namespace: &self.namespace,
+                    name: &self.config.node_config.name,
+                    namespace: &self.config.node_config.namespace,
                 };
                 template
                     .render()
