@@ -18,7 +18,10 @@ node_parameters:
     endpoint: "/"
 
 # This node does not expose anything for other nodes. It exposes an Astro frontend to the end user but that is outside of the realm of node-to-node communication
-exposes: []
+exposes:
+  topics: []
+  services: []
+  actions: []
 
 # This node does not subscribe to any other node, it connects to `peppy_backend` via its REST API, which is outside the node-to-node communication realm
 subscribes_to: []

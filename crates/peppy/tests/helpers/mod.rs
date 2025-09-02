@@ -5,8 +5,8 @@ use tracing::{error, info};
 pub fn setup(current_dir: &Path) {
     info!("Setup function called!");
 
-    match init_root_node(current_dir) {
-        Ok(path) => info!("Initialized peppy.star at: {:?}", path),
+    match init_root_node(current_dir, "test_root") {
+        Ok(path) => info!("Initialized peppy.yaml at: {:?}", path),
         Err(e) => error!("Failed to initialize: {}", e),
     }
 }

@@ -79,7 +79,7 @@ pub fn create(
         return Err(Error::FolderAlreadyExist(node_path.display().to_string()));
     }
 
-    if !from_dir.join("peppy.star").exists() {
+    if !from_dir.join("peppy.yaml").exists() {
         return Err(Error::RootConfigurationNotFound);
     }
 

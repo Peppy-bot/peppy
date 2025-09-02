@@ -20,7 +20,10 @@ node_parameters:
     request_timeout_ms: 30000
 
 # This node does not expose anything for other nodes. It exposes a REST API to the end user but that is outside of the realm of node-to-node communication
-exposes: []
+exposes:
+  topics: []
+  services: []
+  actions: []
 
 subscribes_to:
   topics:

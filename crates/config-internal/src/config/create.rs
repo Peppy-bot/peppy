@@ -1,35 +1,31 @@
 use tracing::info;
 
-use crate::config::YamlConfigBuilder;
+use super::builder::NodeConfigBuilder;
 use crate::error::Result;
 use std::path::PathBuf;
 use std::{fs, path::Path};
 
-pub fn create_peppy_node_config(node_path: &Path, node_name: &str) -> Result<()> {
+pub fn create_peppy_node_config(node_path: &Path, node_name: &str) -> Result<PathBuf> {
     let peppy_yaml_path = node_path.join("peppy.yaml");
 
-    // Use the new builder pattern
-    YamlConfigBuilder::standard_node(node_name)
+    NodeConfigBuilder::simple_node(node_name)
         .with_namespace("/")
         .with_logging_level("info")
-        .write_to(peppy_yaml_path)?;
-
-    Ok(())
-}
-
-pub fn init_root_node(path: &Path) -> Result<PathBuf> {
-    // Create the directory if it doesn't exist
-    fs::create_dir_all(path)?;
-
-    let peppy_yaml_path = path.join("peppy.yaml");
-
-    // Use the new builder pattern for root node
-    YamlConfigBuilder::root_node()
-        .with_namespace("/")
-        .with_memory_limit(512)
         .write_to(&peppy_yaml_path)?;
 
-    // TODO: Must also install the systemd service in the OS if it's not already the case"
+    info!("Created node at {}", peppy_yaml_path.display());
+    Ok(peppy_yaml_path)
+}
+
+pub fn init_root_node(path: &Path, name: &str) -> Result<PathBuf> {
+    // Create the directory if it doesn't exist
+    fs::create_dir_all(path)?;
+    let peppy_yaml_path = path.join("peppy.yaml");
+
+    NodeConfigBuilder::root_node(name)
+        .with_namespace("/")
+        .write_to(&peppy_yaml_path)?;
+
     info!("Created root node at {}", peppy_yaml_path.display());
     Ok(peppy_yaml_path)
 }
@@ -37,7 +33,6 @@ pub fn init_root_node(path: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use saphyr::{LoadableYamlNode, Yaml};
 
     #[test]
     fn test_init_root_node() {
@@ -48,23 +43,11 @@ mod tests {
 
         assert!(!non_existent_path.exists());
 
-        let peppy_yaml_path = init_root_node(&non_existent_path).unwrap();
+        let peppy_yaml_path = init_root_node(&non_existent_path, "root_node").unwrap();
 
         assert!(non_existent_path.exists());
         assert!(peppy_yaml_path.exists());
         assert_eq!(peppy_yaml_path.file_name().unwrap(), "peppy.yaml");
-
-        let content = fs::read_to_string(&peppy_yaml_path).unwrap();
-        assert!(content.contains("node_config:"));
-        assert!(content.contains("namespace: \"/\""));
-        assert!(content.contains("<root_node>"));
-
-        // Validate that the generated file is valid YAML syntax
-        let docs = Yaml::load_from_str(&content);
-        assert!(
-            docs.is_ok(),
-            "Generated peppy.yaml file should be valid YAML syntax"
-        );
     }
 
     // Can be run from the command line with:
@@ -81,12 +64,5 @@ mod tests {
 
         let peppy_path = temp_dir.path().join("peppy.yaml");
         assert!(peppy_path.exists());
-
-        let content = fs::read_to_string(&peppy_path).unwrap();
-        assert!(content.contains(node_name));
-
-        // Validate that the generated file is valid YAML syntax
-        let docs = Yaml::load_from_str(&content);
-        assert!(docs.is_ok(), "Failed to parse peppy.yaml as valid YAML");
     }
 }

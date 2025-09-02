@@ -1,15 +1,18 @@
 # PeppyOS Node Configuration for {{ name }}
-# This configuration file defines the {{ name }} node.
-
 node_config:
   name: "{{ name }}"
   namespace: "{{ namespace }}"
   version: "0.1.0"
-  auto_start: true
-  respawn: false
-  respawn_delay: 2.0 # seconds
+  respawn: true # Only relevant if deployed as a system service with `peppy node deploy`
+  respawn_delay: 2.0 # In case of a crash, how much time until the node restarts
 
-node_parameters:
+# The parameters of the current node
+node_parameters: {}
+
+subscribes_to:
+  topics: []
+  services: []
+  actions: []
 
 exposes:
   topics: []
@@ -17,11 +20,10 @@ exposes:
   actions: []
 
 resources:
-  max_memory_mb: 512
-  cpu_affinity: []
+  max_memory_mb: 1024
 
 logging:
-  min_level: "{{ logging_level }}"
-  file_path: "/var/log/peppy/{{ name }}.log"
-  max_file_size_mb: 100
+  min_level: "info"
+  file_path: "/var/log/peppy/{{ name }}_node.log"
+  max_file_size_mb: 10
   format: "text"

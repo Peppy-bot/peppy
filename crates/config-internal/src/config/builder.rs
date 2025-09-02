@@ -8,22 +8,25 @@ use std::path::{Path, PathBuf};
 
 /// Template for root node configuration
 #[derive(Template)]
-#[template(path = "init.yaml.j2")]
+#[template(path = "root_node.yaml.j2")]
 struct RootNodeTemplate<'a> {
-    namespace: &'a str,
-    max_memory_mb: u32,
-    cpu_affinity: &'a Vec<u32>,
-    logging_level: &'a str,
-    logging_file_path: &'a str,
+    name: &'a str,
 }
 
-/// Template for standard node configuration
+/// Template for simple node configuration
 #[derive(Template)]
 #[template(path = "peppy_new_node_simple.yaml.j2")]
-struct StandardNodeTemplate<'a> {
+struct SimpleNodeTemplate<'a> {
     name: &'a str,
     namespace: &'a str,
-    logging_level: &'a str,
+}
+
+/// Template for full node configuration
+#[derive(Template)]
+#[template(path = "peppy_new_node_full.yaml.j2")]
+struct FullNodeTemplate<'a> {
+    name: &'a str,
+    namespace: &'a str,
 }
 
 /// Trait for validating YAML configurations
@@ -49,67 +52,90 @@ pub struct NodeParameters {
 }
 
 /// Builder for creating YAML configuration files
-pub struct YamlConfigBuilder {
-    name: String,
+pub struct NodeConfigBuilder {
+    name: String, // TODO: Create a newtype pattern to validate the name
     namespace: String,
     version: String,
-    auto_start: bool,
-    respawn: bool,
-    respawn_delay: f64,
-    max_memory_mb: u32,
-    cpu_affinity: Vec<u32>,
+    auto_start: Option<bool>,
+    respawn: Option<bool>,
+    respawn_delay: Option<f64>,
+    max_memory_mb: Option<u32>,
+    cpu_affinity: Option<Vec<u32>>,
     logging_level: String,
-    logging_file_path: String,
+    logging_file_path: Option<String>,
     validators: Vec<Box<dyn Validator>>,
     template_type: ConfigTemplateType,
+}
+
+impl Default for NodeConfigBuilder {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            namespace: "/".to_string(),
+            version: "0.1.0".to_string(),
+            auto_start: None,
+            respawn: None,
+            respawn_delay: None,
+            max_memory_mb: None,
+            cpu_affinity: None,
+            logging_level: "info".to_string(),
+            logging_file_path: None,
+            validators: Vec::new(),
+            template_type: ConfigTemplateType::default(),
+        }
+    }
+}
+
+impl Default for ConfigTemplateType {
+    fn default() -> Self {
+        ConfigTemplateType::SimpleNode
+    }
 }
 
 /// Supported template types
 #[derive(Debug, Clone)]
 pub enum ConfigTemplateType {
     RootNode,
-    StandardNode,
-    Custom(String), // Path to custom template
+    SimpleNode,
+    FullNode,
 }
 
-impl Default for YamlConfigBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl YamlConfigBuilder {
-    /// Creates a new builder with default settings
-    pub fn new() -> Self {
+impl NodeConfigBuilder {
+    /// Creates a builder for root node configuration
+    pub fn root_node(name: &str) -> Self {
         Self {
-            name: String::new(),
-            namespace: "/".to_string(),
-            version: "0.1.0".to_string(),
-            auto_start: true,
-            respawn: false,
-            respawn_delay: 2.0,
-            max_memory_mb: 512,
-            cpu_affinity: Vec::new(),
-            logging_level: "info".to_string(),
-            logging_file_path: String::new(),
+            name: name.into(),
+            respawn: Some(true),
+            respawn_delay: Some(1.0),
+            logging_file_path: Some(format!("/var/log/peppy/{}_root.log", name)),
             validators: vec![Box::new(SyntaxValidator)],
-            template_type: ConfigTemplateType::StandardNode,
+            template_type: ConfigTemplateType::RootNode,
+            ..Default::default()
         }
     }
 
-    /// Creates a builder for root node configuration
-    pub fn root_node() -> Self {
-        let mut builder = Self::new();
-        builder.template_type = ConfigTemplateType::RootNode;
-        builder.name = "<root_node>".to_string();
-        builder
+    /// Creates a builder for simple node configuration
+    pub fn simple_node(name: &str) -> Self {
+        Self {
+            name: name.into(),
+            validators: vec![Box::new(SyntaxValidator)],
+            template_type: ConfigTemplateType::SimpleNode,
+            ..Default::default()
+        }
     }
 
-    /// Creates a builder for standard node configuration
-    pub fn standard_node(name: impl Into<String>) -> Self {
-        let mut builder = Self::new();
-        builder.name = name.into();
-        builder
+    /// Creates a builder for full node configuration
+    pub fn full_node(name: &str) -> Self {
+        Self {
+            name: name.into(),
+            respawn: Some(true),
+            respawn_delay: Some(2.0),
+            max_memory_mb: Some(1024),
+            logging_file_path: Some(format!("/var/log/peppy/{}_node.log", name)),
+            validators: vec![Box::new(SyntaxValidator)],
+            template_type: ConfigTemplateType::FullNode,
+            ..Default::default()
+        }
     }
 
     /// Sets the node name
@@ -138,44 +164,38 @@ impl YamlConfigBuilder {
 
     /// Sets the logging file path
     pub fn with_logging_file_path(mut self, path: impl Into<String>) -> Self {
-        self.logging_file_path = path.into();
+        self.logging_file_path = Some(path.into());
         self
     }
 
     /// Sets memory limit in MB
     pub fn with_memory_limit(mut self, limit_mb: u32) -> Self {
-        self.max_memory_mb = limit_mb;
+        self.max_memory_mb = Some(limit_mb);
         self
     }
 
     /// Sets CPU affinity
     pub fn with_cpu_affinity(mut self, cores: Vec<u32>) -> Self {
-        self.cpu_affinity = cores;
+        self.cpu_affinity = Some(cores);
         self
     }
 
     /// Sets auto-start
     pub fn with_auto_start(mut self, auto_start: bool) -> Self {
-        self.auto_start = auto_start;
+        self.auto_start = Some(auto_start);
         self
     }
 
     /// Sets respawn
     pub fn with_respawn(mut self, respawn: bool, delay: f64) -> Self {
-        self.respawn = respawn;
-        self.respawn_delay = delay;
+        self.respawn = Some(respawn);
+        self.respawn_delay = Some(delay);
         self
     }
 
     /// Adds a custom validator
     pub fn add_validator(mut self, validator: Box<dyn Validator>) -> Self {
         self.validators.push(validator);
-        self
-    }
-
-    /// Uses a custom template
-    pub fn with_custom_template(mut self, template_path: impl Into<String>) -> Self {
-        self.template_type = ConfigTemplateType::Custom(template_path.into());
         self
     }
 
@@ -194,38 +214,28 @@ impl YamlConfigBuilder {
     fn render(&self) -> Result<String> {
         match &self.template_type {
             ConfigTemplateType::RootNode => {
-                let template = RootNodeTemplate {
-                    namespace: &self.namespace,
-                    max_memory_mb: self.max_memory_mb,
-                    cpu_affinity: &self.cpu_affinity,
-                    logging_level: &self.logging_level,
-                    logging_file_path: if self.logging_file_path.is_empty() {
-                        "/var/log/peppy/peppy_root.log"
-                    } else {
-                        &self.logging_file_path
-                    },
-                };
+                let template = RootNodeTemplate { name: &self.name };
                 template
                     .render()
                     .map_err(|e| Error::AskamaError(e.to_string()))
             }
-            ConfigTemplateType::StandardNode => {
-                let template = StandardNodeTemplate {
+            ConfigTemplateType::SimpleNode => {
+                let template = SimpleNodeTemplate {
                     name: &self.name,
                     namespace: &self.namespace,
-                    logging_level: &self.logging_level,
                 };
                 template
                     .render()
                     .map_err(|e| Error::AskamaError(e.to_string()))
             }
-            ConfigTemplateType::Custom(template_path) => {
-                // For custom templates, we'd need to handle dynamic template loading
-                // This is a placeholder for now
-                Err(Error::ConfigParse(format!(
-                    "Custom template loading not yet implemented: {}",
-                    template_path
-                )))
+            ConfigTemplateType::FullNode => {
+                let template = FullNodeTemplate {
+                    name: &self.name,
+                    namespace: &self.namespace,
+                };
+                template
+                    .render()
+                    .map_err(|e| Error::AskamaError(e.to_string()))
             }
         }
     }
@@ -255,65 +265,49 @@ impl YamlConfigBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     #[test]
-    fn test_builder_standard_node() {
-        let content = YamlConfigBuilder::standard_node("test_node")
+    fn test_root_node_content_validation() {
+        let content = NodeConfigBuilder::root_node("test_root").build().unwrap();
+
+        assert!(content.contains("test_root"));
+        assert!(content.contains("is_root: true"));
+        assert!(content.contains("namespace: \"/\""));
+
+        // Validate YAML syntax
+        let docs = Yaml::load_from_str(&content);
+        assert!(docs.is_ok(), "Root node config should be valid YAML");
+    }
+
+    #[test]
+    fn test_simple_node_content_validation() {
+        let content = NodeConfigBuilder::simple_node("test_simple")
             .with_namespace("/robot")
-            .with_logging_level("debug")
+            .with_logging_level("info")
             .build()
             .unwrap();
 
-        assert!(content.contains("test_node"));
+        assert!(content.contains("test_simple"));
         assert!(content.contains("/robot"));
-        assert!(content.contains("debug"));
+
+        // Validate YAML syntax
+        let docs = Yaml::load_from_str(&content);
+        assert!(docs.is_ok(), "Simple node config should be valid YAML");
     }
 
     #[test]
-    fn test_builder_root_node() {
-        let content = YamlConfigBuilder::root_node()
+    fn test_full_node_content_validation() {
+        let content = NodeConfigBuilder::full_node("test_full")
             .with_namespace("/system")
-            .with_memory_limit(1024)
-            .with_cpu_affinity(vec![0, 1, 2])
             .build()
             .unwrap();
 
-        assert!(content.contains("<root_node>"));
+        assert!(content.contains("test_full"));
         assert!(content.contains("/system"));
-        assert!(content.contains("1024"));
-        assert!(content.contains("[0, 1, 2]"));
-    }
+        assert!(content.contains("respawn"));
 
-    #[test]
-    fn test_builder_write_to_file() {
-        let temp_dir = TempDir::new().unwrap();
-        let config_path = temp_dir.path().join("test.yaml");
-
-        let result = YamlConfigBuilder::standard_node("file_test")
-            .with_namespace("/app")
-            .write_to(&config_path);
-
-        assert!(result.is_ok());
-        assert!(config_path.exists());
-
-        let content = fs::read_to_string(&config_path).unwrap();
-        assert!(content.contains("file_test"));
-        assert!(content.contains("/app"));
-    }
-
-    #[test]
-    fn test_fluent_api_chaining() {
-        let content = YamlConfigBuilder::new()
-            .with_name("chained_node")
-            .with_namespace("/app")
-            .with_logging_level("warn")
-            .with_memory_limit(256)
-            .build()
-            .unwrap();
-
-        assert!(content.contains("chained_node"));
-        assert!(content.contains("/app"));
-        assert!(content.contains("warn"));
+        // Validate YAML syntax
+        let docs = Yaml::load_from_str(&content);
+        assert!(docs.is_ok(), "Full node config should be valid YAML");
     }
 }

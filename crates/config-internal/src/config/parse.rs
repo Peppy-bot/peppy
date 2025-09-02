@@ -52,17 +52,17 @@ fn parse_node_info(doc: &Yaml) -> Result<crate::config::NodeInfo> {
             .to_string(),
         version: node_config["version"]
             .as_str()
-            .ok_or_else(|| Error::ConfigParse("version must be a string".to_string()))?
-            .to_string(),
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| crate::config::default_version()),
         auto_start: node_config["auto_start"]
             .as_bool()
-            .ok_or_else(|| Error::ConfigParse("auto_start must be a boolean".to_string()))?,
+            .unwrap_or(crate::config::default_false()),
         respawn: node_config["respawn"]
             .as_bool()
-            .ok_or_else(|| Error::ConfigParse("respawn must be a boolean".to_string()))?,
+            .unwrap_or(crate::config::default_false()),
         respawn_delay: node_config["respawn_delay"]
             .as_floating_point()
-            .ok_or_else(|| Error::ConfigParse("respawn_delay must be a number".to_string()))?,
+            .unwrap_or(crate::config::default_respawn_delay()),
     })
 }
 
@@ -76,7 +76,8 @@ fn parse_exposes(doc: &Yaml) -> Result<crate::config::Exposes> {
     let exposes = &doc["exposes"];
 
     if exposes.is_badvalue() {
-        return Err(Error::ConfigParse("exposes section not found".to_string()));
+        // Return default if section not found
+        return Ok(crate::config::Exposes::default());
     }
 
     Ok(crate::config::Exposes {
@@ -90,16 +91,15 @@ fn parse_resources(doc: &Yaml) -> Result<crate::config::Resources> {
     let resources = &doc["resources"];
 
     if resources.is_badvalue() {
-        return Err(Error::ConfigParse(
-            "resources section not found".to_string(),
-        ));
+        // Return default if section not found
+        return Ok(crate::config::Resources::default());
     }
 
     Ok(crate::config::Resources {
         max_memory_mb: resources["max_memory_mb"]
             .as_integer()
-            .ok_or_else(|| Error::ConfigParse("max_memory_mb must be an integer".to_string()))?
-            as u32,
+            .map(|i| i as u32)
+            .unwrap_or(crate::config::default_max_memory_mb()),
         cpu_affinity: parse_u32_array(&resources["cpu_affinity"])?,
     })
 }
@@ -108,26 +108,27 @@ fn parse_logging(doc: &Yaml) -> Result<crate::config::Logging> {
     let logging = &doc["logging"];
 
     if logging.is_badvalue() {
-        return Err(Error::ConfigParse("logging section not found".to_string()));
+        // Return default if section not found
+        return Ok(crate::config::Logging::default());
     }
 
     Ok(crate::config::Logging {
         min_level: logging["min_level"]
             .as_str()
-            .ok_or_else(|| Error::ConfigParse("min_level must be a string".to_string()))?
-            .to_string(),
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| crate::config::default_log_level()),
         file_path: logging["file_path"]
             .as_str()
-            .ok_or_else(|| Error::ConfigParse("file_path must be a string".to_string()))?
-            .to_string(),
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| crate::config::default_log_file_path()),
         max_file_size_mb: logging["max_file_size_mb"]
             .as_integer()
-            .ok_or_else(|| Error::ConfigParse("max_file_size_mb must be an integer".to_string()))?
-            as u32,
+            .map(|i| i as u32)
+            .unwrap_or(crate::config::default_max_file_size_mb()),
         format: logging["format"]
             .as_str()
-            .ok_or_else(|| Error::ConfigParse("format must be a string".to_string()))?
-            .to_string(),
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| crate::config::default_log_format()),
     })
 }
 
