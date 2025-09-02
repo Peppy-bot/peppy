@@ -30,7 +30,10 @@ subscribes_to:
       callback: "on_handle_video_feed" # The code callback that will automatically be exposed in the Rust/Python code via auto code generation
 
 # This node does not expose anything for other nodes. It exposes a web url (http://localhost:8081/video) to the end user but that is outside of the realm of node-to-node communication
-exposes: []
+exposes:
+  topics: []
+  services: []
+  actions: []
 
 resources:
   max_memory_mb: 512

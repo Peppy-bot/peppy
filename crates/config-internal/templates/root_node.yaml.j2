@@ -1,0 +1,25 @@
+# Root node configuration for {{ name }}
+node_config:
+  is_root: true
+  name: "{{ name }}"
+  namespace: "/"
+  version: "0.1.0"
+  respawn: true
+  respawn_delay: 1.0
+
+node_parameters:
+  # Publishes its status
+  status:
+    frequency: 1Hz
+
+exposes:
+  topics:
+    - type: "configuration/metadata"
+      name: "/root_node/status"
+      qos_profile: "standard"
+
+logging:
+  min_level: "info"
+  file_path: "/var/log/peppy/{{ name }}_root.log"
+  max_file_size_mb: 10
+  format: "text"

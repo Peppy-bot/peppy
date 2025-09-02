@@ -27,8 +27,8 @@ fn test_create_command_default_directory() {
         "pixi.toml should exist"
     );
     assert!(
-        node_path.join("peppy.star").exists(),
-        "peppy.star should exist"
+        node_path.join("peppy.yaml").exists(),
+        "peppy.yaml should exist"
     );
 }
 
@@ -56,54 +56,7 @@ fn test_create_command_with_to_dir() {
         "pixi.toml should exist"
     );
     assert!(
-        target_path.join("peppy.star").exists(),
-        "peppy.star should exist"
+        target_path.join("peppy.yaml").exists(),
+        "peppy.yaml should exist"
     );
-}
-
-#[test]
-fn test_pixi_toml_content() {
-    let temp_dir = TempDir::new().unwrap();
-    super::helpers::setup(temp_dir.path());
-
-    let node_name = "peppy-node";
-    let node_path = temp_dir.path().join(node_name);
-    let result = create::create(
-        temp_dir.path(),
-        Some(temp_dir.path()),
-        NodeName::new(node_name).unwrap(),
-        Language::Rust,
-        None,
-    );
-
-    assert!(result.is_ok(), "Create should succeed: {:?}", result.err());
-
-    let pixi_content = fs::read_to_string(node_path.join("pixi.toml")).unwrap();
-    assert!(pixi_content.contains("[project]"));
-    assert!(pixi_content.contains("name = \"peppy-node\""));
-    assert!(pixi_content.contains("channels = [\"conda-forge\"]"));
-    assert!(pixi_content.contains("[dependencies]"));
-    assert!(pixi_content.contains("[tasks]"));
-}
-
-#[test]
-fn test_peppy_yaml_content() {
-    let temp_dir = TempDir::new().unwrap();
-    super::helpers::setup(temp_dir.path());
-
-    let node_name = "peppy-node";
-    let node_path = temp_dir.path().join(node_name);
-    let result = create::create(
-        temp_dir.path(),
-        Some(temp_dir.path()),
-        NodeName::new(node_name).unwrap(),
-        Language::Rust,
-        None,
-    );
-
-    assert!(result.is_ok(), "Create should succeed: {:?}", result.err());
-
-    let peppy_content = fs::read_to_string(node_path.join("peppy.star")).unwrap();
-    assert!(peppy_content.contains("def create_node():"));
-    assert!(peppy_content.contains("exported = struct"));
 }

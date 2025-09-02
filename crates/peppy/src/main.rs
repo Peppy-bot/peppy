@@ -23,6 +23,8 @@ struct Cli {
 enum Commands {
     // Create the initial peppy.star node in the current directory and install the peppy daemon if not already present
     Init {
+        /// Name of the node to initialize
+        node_name: String,
         /// Optional target directory (defaults to current directory)
         #[arg(long)]
         in_dir: Option<PathBuf>,
@@ -69,7 +71,7 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Init { in_dir } => InitCommand { in_dir }.execute(),
+        Commands::Init { node_name, in_dir } => InitCommand { node_name, in_dir }.execute(),
         Commands::Serve {
             engine,
             config_path,
