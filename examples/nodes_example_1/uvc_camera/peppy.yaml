@@ -37,15 +37,14 @@ exposes:
   #          - uint8
   #          - uint8
   services:
-    - service_type: "standard/set_bool"
-      service_name: "/camera/enable"
+    - type: "standard/set_bool"
+      name: "/camera/enable"
       callback: "handle_camera_enable"
 
 subscribes_to: []
 
 resources:
   max_memory_mb: 256
-  cpu_affinity: []
 
 logging:
   min_level: "info"

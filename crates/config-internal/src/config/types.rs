@@ -5,14 +5,16 @@ use std::convert::TryFrom;
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NodeConfig {
     pub node_config: NodeInfo,
-    #[serde(default)]
-    pub node_parameters: NodeParameters,
-    #[serde(default)]
-    pub exposes: Exposes,
-    #[serde(default)]
-    pub resources: Resources,
-    #[serde(default)]
-    pub logging: Logging,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_parameters: Option<NodeParameters>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposes: Option<Exposes>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscribes_to: Option<SubscribesTo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<Resources>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logging: Option<Logging>,
 }
 
 /// Validated node name. Lowercase letters, digits, '_' and '-' only.
@@ -101,12 +103,12 @@ pub struct NodeInfo {
     pub namespace: Namespace,
     #[serde(default = "default_version")]
     pub version: String,
-    #[serde(default = "default_false")]
-    pub auto_start: bool,
-    #[serde(default = "default_false")]
-    pub respawn: bool,
-    #[serde(default = "default_respawn_delay")]
-    pub respawn_delay: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_start: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub respawn: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub respawn_delay: Option<f64>,
 }
 
 impl Default for NodeInfo {
@@ -116,41 +118,94 @@ impl Default for NodeInfo {
             name: Name::new("node").expect("default name is valid"),
             namespace: Namespace::new("/").expect("default namespace is valid"),
             version: "0.1.0".to_string(),
-            auto_start: false,
-            respawn: false,
-            respawn_delay: 1.0,
+            auto_start: None,
+            respawn: None,
+            respawn_delay: None,
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct NodeParameters {
-    // Dynamic parameters can be added here
-}
+pub struct NodeParameters {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Exposes {
-    #[serde(default)]
-    pub topics: Vec<String>,
-    #[serde(default)]
-    pub services: Vec<String>,
-    #[serde(default)]
-    pub actions: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topics: Option<Vec<Topic>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub services: Option<Vec<Service>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actions: Option<Vec<Action>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SubscribesTo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topics: Option<Vec<Topic>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub services: Option<Vec<Service>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actions: Option<Vec<Action>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum QoSProfile {
+    #[default]
+    Standard,
+    Reliable,
+    SensorData,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Topic {
+    #[serde(default, rename = "type")]
+    pub topic_type: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub qos_profile: QoSProfile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Service {
+    #[serde(default, rename = "type")]
+    pub service_type: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub qos_profile: QoSProfile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Action {
+    #[serde(default, rename = "type")]
+    pub action_type: String,
+    #[serde(default)]
+    pub name: String,
+    // For the moment, actions are undecided/unfinished
+}
+
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct Resources {
-    #[serde(default = "default_max_memory_mb")]
-    pub max_memory_mb: u32,
-    #[serde(default)]
-    pub cpu_affinity: Vec<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_memory_mb: Option<u32>,
 }
 
-impl Default for Resources {
-    fn default() -> Self {
-        Self {
-            max_memory_mb: default_max_memory_mb(),
-            cpu_affinity: Vec::new(),
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum LogFormat {
+    #[serde(rename = "text")]
+    #[default]
+    Text,
+    #[serde(rename = "json")]
+    Json,
+}
+
+impl From<String> for LogFormat {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "json" => LogFormat::Json,
+            _ => LogFormat::Text, // Default to Text for any other value
         }
     }
 }
@@ -159,21 +214,21 @@ impl Default for Resources {
 pub struct Logging {
     #[serde(default = "default_log_level")]
     pub min_level: String,
-    #[serde(default = "default_log_file_path")]
-    pub file_path: String,
-    #[serde(default = "default_max_file_size_mb")]
-    pub max_file_size_mb: u32,
-    #[serde(default = "default_log_format")]
-    pub format: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_file_size_mb: Option<u32>,
+    #[serde(default)]
+    pub format: LogFormat,
 }
 
 impl Default for Logging {
     fn default() -> Self {
         Self {
             min_level: default_log_level(),
-            file_path: default_log_file_path(),
-            max_file_size_mb: default_max_file_size_mb(),
-            format: default_log_format(),
+            file_path: None,
+            max_file_size_mb: None,
+            format: LogFormat::default(),
         }
     }
 }
@@ -183,32 +238,8 @@ fn default_version() -> String {
     "0.1.0".to_string()
 }
 
-fn default_false() -> bool {
-    false
-}
-
-fn default_respawn_delay() -> f64 {
-    1.0
-}
-
-fn default_max_memory_mb() -> u32 {
-    512
-}
-
 fn default_log_level() -> String {
     "info".to_string()
-}
-
-fn default_log_file_path() -> String {
-    "".to_string()
-}
-
-fn default_max_file_size_mb() -> u32 {
-    10
-}
-
-fn default_log_format() -> String {
-    "text".to_string()
 }
 
 /// Supported template types

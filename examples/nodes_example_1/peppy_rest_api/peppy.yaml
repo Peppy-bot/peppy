@@ -37,7 +37,6 @@ subscribes_to:
 
 resources:
   max_memory_mb: 512
-  cpu_affinity: []
 
 logging:
   min_level: "info"

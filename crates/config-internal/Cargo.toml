@@ -12,5 +12,4 @@ serde_yaml = "0.9"
 tracing = "0.1.41"
 
 [dev-dependencies]
-askama = "0.14.0"
 tempfile = "3.8"

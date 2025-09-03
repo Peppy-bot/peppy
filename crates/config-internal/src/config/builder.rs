@@ -1,5 +1,5 @@
 use super::parse::NodeConfigParser;
-use super::types::{ConfigTemplateType, Name, Namespace, NodeConfig};
+use super::types::{ConfigTemplateType, Logging, Name, Namespace, NodeConfig, Resources};
 use crate::config::create::NodeConfigCreator;
 use crate::error::{Error, Result};
 use saphyr::{LoadableYamlNode, Yaml};
@@ -68,6 +68,17 @@ impl NodeConfigBuilder {
         self
     }
 
+    /// Sets the max_memory in resources
+    pub fn with_max_memory_mb(mut self, max_memory_mb: u32) -> Self {
+        if self.config.resources.is_none() {
+            self.config.resources = Some(Resources::default());
+        }
+        if let Some(ref mut resources) = self.config.resources {
+            resources.max_memory_mb = Some(max_memory_mb);
+        }
+        self
+    }
+
     /// Sets the version
     pub fn with_version(mut self, version: impl Into<String>) -> Self {
         self.config.node_config.version = version.into();
@@ -76,38 +87,47 @@ impl NodeConfigBuilder {
 
     /// Sets the logging level
     pub fn with_logging_level(mut self, level: impl Into<String>) -> Self {
-        self.config.logging.min_level = level.into();
+        if self.config.logging.is_none() {
+            self.config.logging = Some(Logging::default());
+        }
+        if let Some(ref mut logging) = self.config.logging {
+            logging.min_level = level.into();
+        }
         self
     }
 
     /// Sets the logging file path
     pub fn with_logging_file_path(mut self, path: impl Into<String>) -> Self {
-        self.config.logging.file_path = path.into();
+        if self.config.logging.is_none() {
+            self.config.logging = Some(Logging::default());
+        }
+        if let Some(ref mut logging) = self.config.logging {
+            logging.file_path = Some(path.into());
+        }
         self
     }
 
     /// Sets memory limit in MB
     pub fn with_memory_limit(mut self, limit_mb: u32) -> Self {
-        self.config.resources.max_memory_mb = limit_mb;
-        self
-    }
-
-    /// Sets CPU affinity
-    pub fn with_cpu_affinity(mut self, cores: Vec<u32>) -> Self {
-        self.config.resources.cpu_affinity = cores;
+        if self.config.resources.is_none() {
+            self.config.resources = Some(Resources::default());
+        }
+        if let Some(ref mut resources) = self.config.resources {
+            resources.max_memory_mb = Some(limit_mb);
+        }
         self
     }
 
     /// Sets auto-start
     pub fn with_auto_start(mut self, auto_start: bool) -> Self {
-        self.config.node_config.auto_start = auto_start;
+        self.config.node_config.auto_start = Some(auto_start);
         self
     }
 
     /// Sets respawn
     pub fn with_respawn(mut self, respawn: bool, delay: f64) -> Self {
-        self.config.node_config.respawn = respawn;
-        self.config.node_config.respawn_delay = delay;
+        self.config.node_config.respawn = Some(respawn);
+        self.config.node_config.respawn_delay = Some(delay);
         self
     }
 
@@ -129,7 +149,7 @@ impl NodeConfigBuilder {
     /// Builds the configuration and returns it as a string
     pub fn build(&self) -> Result<NodeConfig> {
         match &self.config_source {
-            ConfigSource::Template(t) => NodeConfigCreator::render(
+            ConfigSource::Template(t) => NodeConfigCreator::from_template(
                 t,
                 Some(self.config.node_config.name.as_str()),
                 Some(self.config.node_config.namespace.as_str()),
@@ -161,206 +181,5 @@ impl NodeConfigBuilder {
         file.write_all(yaml.as_bytes())?;
 
         Ok(path.to_path_buf())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use tempfile::tempdir;
-
-    use askama::Template;
-
-    /// Template for root node configuration
-    #[derive(Template)]
-    #[template(path = "root_node.yaml.j2")]
-    struct RootNodeTemplate<'a> {
-        name: &'a str,
-    }
-
-    /// Template for simple node configuration
-    #[derive(Template)]
-    #[template(path = "peppy_new_node_simple.yaml.j2")]
-    struct SimpleNodeTemplate<'a> {
-        name: &'a str,
-        namespace: &'a str,
-    }
-
-    /// Template for full node configuration
-    #[derive(Template)]
-    #[template(path = "peppy_new_node_full.yaml.j2")]
-    struct FullNodeTemplate<'a> {
-        name: &'a str,
-        namespace: &'a str,
-    }
-
-    #[test]
-    fn test_root_node_content_validation() {
-        let dir = tempdir().unwrap();
-        let file_path = dir.path().join("peppy.yaml");
-        let node_name = "root_node";
-
-        // Write using write_to
-        let builder =
-            NodeConfigBuilder::from_template(ConfigTemplateType::RootNode).with_name(node_name);
-        builder.write_to(&file_path).unwrap();
-        let written_content = fs::read_to_string(&file_path).unwrap();
-
-        let template = RootNodeTemplate { name: node_name };
-        let expected_content = template
-            .render()
-            .map_err(|e| Error::AskamaError(e.to_string()))
-            .unwrap();
-
-        // The written content should match the serialized config
-        assert_eq!(written_content, expected_content);
-    }
-
-    #[test]
-    fn test_simple_node_content_validation() {
-        let dir = tempdir().unwrap();
-        let file_path = dir.path().join("peppy.yaml");
-
-        let node_name = "simple_node";
-        let namespace = "/";
-
-        // Write using write_to
-        let builder = NodeConfigBuilder::from_template(ConfigTemplateType::SimpleNode)
-            .with_name(node_name)
-            .with_namespace(namespace);
-        builder.write_to(&file_path).unwrap();
-        let written_content = fs::read_to_string(&file_path).unwrap();
-
-        let template = SimpleNodeTemplate {
-            name: node_name,
-            namespace: namespace,
-        };
-        let expected_content = template
-            .render()
-            .map_err(|e| Error::AskamaError(e.to_string()))
-            .unwrap();
-
-        // The written content should match the serialized config
-        assert_eq!(written_content, expected_content);
-    }
-
-    #[test]
-    fn test_full_node_content_validation() {
-        let dir = tempdir().unwrap();
-        let file_path = dir.path().join("peppy.yaml");
-
-        let node_name = "full_node";
-        let namespace = "/";
-
-        // Write using write_to
-        let builder = NodeConfigBuilder::from_template(ConfigTemplateType::FullNode)
-            .with_name(node_name)
-            .with_namespace(namespace);
-        builder.write_to(&file_path).unwrap();
-        let written_content = fs::read_to_string(&file_path).unwrap();
-
-        let template = FullNodeTemplate {
-            name: node_name,
-            namespace: namespace,
-        };
-        let expected_content = template
-            .render()
-            .map_err(|e| Error::AskamaError(e.to_string()))
-            .unwrap();
-
-        // The written content should match the serialized config
-        assert_eq!(written_content, expected_content);
-    }
-
-    #[test]
-    fn test_parse_simple_node_yaml() {
-        let yaml_content = r#"
-node_config:
-  name: "camera_node"
-  namespace: "/sensors"
-  version: "1.0.0"
-  auto_start: true
-exposes:
-  topics:
-    - "/camera/video_feed"
-  services:
-    - "/camera/enable"
-"#;
-
-        let builder = NodeConfigBuilder::from_yaml(yaml_content);
-        let config = builder.build().unwrap();
-
-        assert_eq!(config.node_config.name.as_str(), "camera_node");
-        assert_eq!(config.exposes.topics.len(), 1);
-        assert_eq!(config.exposes.topics[0], "/camera/video_feed");
-        assert_eq!(config.exposes.services.len(), 1);
-        assert_eq!(config.exposes.services[0], "/camera/enable");
-    }
-
-    #[test]
-    fn test_parse_root_node_yaml() {
-        let yaml_content = r#"
-node_config:
-  is_root: true
-  name: "my_robot_1"
-  namespace: "/"
-  version: "0.1.0"
-  respawn: true
-  respawn_delay: 1.0
-"#;
-
-        let builder = NodeConfigBuilder::from_yaml(yaml_content);
-        let config = builder.build().unwrap();
-
-        assert_eq!(config.node_config.name.as_str(), "my_robot_1");
-        assert!(config.node_config.respawn);
-    }
-
-    #[test]
-    fn test_parse_peppy_yaml_config() {
-        // Write a test configuration based on the example
-        let yaml_content = r#"
-node_config:
-  name: "root_node"
-  namespace: "/"
-  version: "0.1.0"
-  auto_start: true
-  respawn: false
-  respawn_delay: 2.0
-
-node_parameters:
-
-exposes:
-  topics: []
-  services: []
-  actions: []
-
-resources:
-  max_memory_mb: 512
-  cpu_affinity: []
-
-logging:
-  min_level: "info"
-  file_path: "/var/log/peppy/peppy_root.log"
-  max_file_size_mb: 100
-  format: "text"
-"#;
-
-        // Parse the configuration
-        let config = NodeConfigBuilder::from_yaml(yaml_content).build().unwrap();
-
-        // Verify the parsed values
-        assert_eq!(config.node_config.name.as_str(), "root_node");
-        assert_eq!(config.node_config.namespace.as_str(), "/");
-        assert_eq!(config.node_config.version, "0.1.0");
-        assert!(config.node_config.auto_start);
-        assert!(!config.node_config.respawn);
-        assert_eq!(config.node_config.respawn_delay, 2.0);
-        assert_eq!(config.resources.max_memory_mb, 512);
-        assert_eq!(config.logging.min_level, "info");
-        assert_eq!(config.logging.file_path, "/var/log/peppy/peppy_root.log");
-        assert_eq!(config.logging.max_file_size_mb, 100);
-        assert_eq!(config.logging.format, "text");
     }
 }

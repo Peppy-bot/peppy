@@ -1,4 +1,7 @@
-use super::types::{Name, Namespace, NodeConfig};
+use super::types::{
+    Action, Exposes, LogFormat, Logging, Name, Namespace, NodeConfig, QoSProfile, Resources,
+    Service, SubscribesTo, Topic,
+};
 use crate::error::{Error, Result};
 use saphyr::{LoadableYamlNode, Yaml};
 
@@ -20,6 +23,7 @@ impl NodeConfigParser {
         let doc = &docs[0];
         NodeConfigParser::parse_node_config_section(doc, &mut config)?;
         NodeConfigParser::parse_exposes_section(doc, &mut config)?;
+        NodeConfigParser::parse_subscribes_to_section(doc, &mut config)?;
         NodeConfigParser::parse_resources_section(doc, &mut config)?;
         NodeConfigParser::parse_logging_section(doc, &mut config)?;
 
@@ -43,15 +47,15 @@ impl NodeConfigParser {
             }
 
             if let Some(v) = Self::get_bool(node_config, "auto_start")? {
-                config.node_config.auto_start = v;
+                config.node_config.auto_start = Some(v);
             }
 
             if let Some(v) = Self::get_bool(node_config, "respawn")? {
-                config.node_config.respawn = v;
+                config.node_config.respawn = Some(v);
             }
 
             if let Some(v) = Self::get_f64(node_config, "respawn_delay")? {
-                config.node_config.respawn_delay = v;
+                config.node_config.respawn_delay = Some(v);
             }
         }
         Ok(())
@@ -59,51 +63,80 @@ impl NodeConfigParser {
 
     fn parse_exposes_section(doc: &Yaml, config: &mut NodeConfig) -> Result<()> {
         if let Some(exposes) = doc.as_mapping_get("exposes") {
-            if let Some(v) = Self::get_vec_str(exposes, "topics")? {
-                config.exposes.topics = v;
+            let mut exposes_section = Exposes::default();
+
+            if let Some(v) = Self::get_topics(exposes, "topics")? {
+                exposes_section.topics = Some(v);
             }
 
-            if let Some(v) = Self::get_vec_str(exposes, "services")? {
-                config.exposes.services = v;
+            if let Some(v) = Self::get_services(exposes, "services")? {
+                exposes_section.services = Some(v);
             }
 
-            if let Some(v) = Self::get_vec_str(exposes, "actions")? {
-                config.exposes.actions = v;
+            if let Some(v) = Self::get_actions(exposes, "actions")? {
+                exposes_section.actions = Some(v);
             }
+
+            config.exposes = Some(exposes_section);
+        }
+        Ok(())
+    }
+
+    fn parse_subscribes_to_section(doc: &Yaml, config: &mut NodeConfig) -> Result<()> {
+        if let Some(subscribes_to) = doc.as_mapping_get("subscribes_to") {
+            let mut subscribes_to_section = SubscribesTo::default();
+
+            if let Some(v) = Self::get_topics(subscribes_to, "topics")? {
+                subscribes_to_section.topics = Some(v);
+            }
+
+            if let Some(v) = Self::get_services(subscribes_to, "services")? {
+                subscribes_to_section.services = Some(v);
+            }
+
+            if let Some(v) = Self::get_actions(subscribes_to, "actions")? {
+                subscribes_to_section.actions = Some(v);
+            }
+
+            config.subscribes_to = Some(subscribes_to_section);
         }
         Ok(())
     }
 
     fn parse_resources_section(doc: &Yaml, config: &mut NodeConfig) -> Result<()> {
         if let Some(resources) = doc.as_mapping_get("resources") {
+            let mut resources_section = Resources::default();
+
             if let Some(v) = Self::get_u32(resources, "max_memory_mb")? {
-                config.resources.max_memory_mb = v;
+                resources_section.max_memory_mb = Some(v);
             }
 
-            if let Some(v) = Self::get_vec_u32(resources, "cpu_affinity")? {
-                config.resources.cpu_affinity = v;
-            }
+            config.resources = Some(resources_section);
         }
         Ok(())
     }
 
     fn parse_logging_section(doc: &Yaml, config: &mut NodeConfig) -> Result<()> {
         if let Some(logging) = doc.as_mapping_get("logging") {
+            let mut logging_section = Logging::default();
+
             if let Some(v) = Self::get_str(logging, "min_level")? {
-                config.logging.min_level = v.to_string();
+                logging_section.min_level = v.to_string();
             }
 
             if let Some(v) = Self::get_str(logging, "file_path")? {
-                config.logging.file_path = v.to_string();
+                logging_section.file_path = Some(v.to_string());
             }
 
             if let Some(v) = Self::get_u32(logging, "max_file_size_mb")? {
-                config.logging.max_file_size_mb = v;
+                logging_section.max_file_size_mb = Some(v);
             }
 
             if let Some(v) = Self::get_str(logging, "format")? {
-                config.logging.format = v.to_string();
+                logging_section.format = LogFormat::from(v.to_string());
             }
+
+            config.logging = Some(logging_section);
         }
         Ok(())
     }
@@ -178,19 +211,26 @@ impl NodeConfigParser {
         None
     }
 
-    fn get_vec_str(map: &Yaml, key: &str) -> Result<Option<Vec<String>>> {
+    fn get_topics(map: &Yaml, key: &str) -> Result<Option<Vec<Topic>>> {
         if let Some(value) = map.as_mapping_get(key) {
             if let Some(vec) = value.as_vec() {
                 let mut out = Vec::with_capacity(vec.len());
-                for (i, item) in vec.iter().enumerate() {
-                    if let Some(s) = item.as_str() {
-                        out.push(s.to_string());
-                    } else {
-                        return Err(Error::ConfigParse(format!(
-                            "Expected string for key '{}[{}]'",
-                            key, i
-                        )));
+                for item in vec.iter() {
+                    let mut topic = Topic::default();
+
+                    if let Some(t) = Self::get_str(item, "type")? {
+                        topic.topic_type = t.to_string();
                     }
+
+                    if let Some(n) = Self::get_str(item, "name")? {
+                        topic.name = n.to_string();
+                    }
+
+                    if let Some(qos) = Self::get_str(item, "qos_profile")? {
+                        topic.qos_profile = Self::parse_qos_profile(qos)?;
+                    }
+
+                    out.push(topic);
                 }
                 Ok(Some(out))
             } else {
@@ -204,19 +244,26 @@ impl NodeConfigParser {
         }
     }
 
-    fn get_vec_u32(map: &Yaml, key: &str) -> Result<Option<Vec<u32>>> {
+    fn get_services(map: &Yaml, key: &str) -> Result<Option<Vec<Service>>> {
         if let Some(value) = map.as_mapping_get(key) {
             if let Some(vec) = value.as_vec() {
                 let mut out = Vec::with_capacity(vec.len());
-                for (i, item) in vec.iter().enumerate() {
-                    if let Some(v) = Self::yaml_to_u32(item) {
-                        out.push(v);
-                    } else {
-                        return Err(Error::ConfigParse(format!(
-                            "Expected number for key '{}[{}]'",
-                            key, i
-                        )));
+                for item in vec.iter() {
+                    let mut service = Service::default();
+
+                    if let Some(t) = Self::get_str(item, "type")? {
+                        service.service_type = t.to_string();
                     }
+
+                    if let Some(n) = Self::get_str(item, "name")? {
+                        service.name = n.to_string();
+                    }
+
+                    if let Some(qos) = Self::get_str(item, "qos_profile")? {
+                        service.qos_profile = Self::parse_qos_profile(qos)?;
+                    }
+
+                    out.push(service);
                 }
                 Ok(Some(out))
             } else {
@@ -228,5 +275,490 @@ impl NodeConfigParser {
         } else {
             Ok(None)
         }
+    }
+
+    fn get_actions(map: &Yaml, key: &str) -> Result<Option<Vec<Action>>> {
+        if let Some(value) = map.as_mapping_get(key) {
+            if let Some(vec) = value.as_vec() {
+                let mut out = Vec::with_capacity(vec.len());
+                for item in vec.iter() {
+                    let mut action = Action::default();
+
+                    if let Some(t) = Self::get_str(item, "type")? {
+                        action.action_type = t.to_string();
+                    }
+
+                    if let Some(n) = Self::get_str(item, "name")? {
+                        action.name = n.to_string();
+                    }
+
+                    out.push(action);
+                }
+                Ok(Some(out))
+            } else {
+                Err(Error::ConfigParse(format!(
+                    "Expected array for key '{}'",
+                    key
+                )))
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn parse_qos_profile(value: &str) -> Result<QoSProfile> {
+        match value {
+            "standard" => Ok(QoSProfile::Standard),
+            "reliable" => Ok(QoSProfile::Reliable),
+            "sensor_data" => Ok(QoSProfile::SensorData),
+            _ => Err(Error::ConfigParse(format!(
+                "Invalid QoS profile: {}. Expected one of: standard, reliable, sensor_data",
+                value
+            ))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_minimal_config() {
+        let yaml = r#"
+node_config:
+  name: test_node
+  namespace: /test
+"#;
+        let config = NodeConfigParser::from_content(yaml).unwrap();
+        assert_eq!(config.node_config.name.as_str(), "test_node");
+        assert_eq!(config.node_config.namespace.as_str(), "/test");
+        assert_eq!(config.node_config.version, "0.1.0"); // default
+    }
+
+    #[test]
+    fn test_parse_full_node_config() {
+        let yaml = r#"
+node_config:
+  name: my_node
+  namespace: /robot
+  version: "1.0.0"
+  auto_start: true
+  respawn: false
+  respawn_delay: 5.5
+"#;
+        let config = NodeConfigParser::from_content(yaml).unwrap();
+        assert_eq!(config.node_config.name.as_str(), "my_node");
+        assert_eq!(config.node_config.namespace.as_str(), "/robot");
+        assert_eq!(config.node_config.version, "1.0.0");
+        assert_eq!(config.node_config.auto_start, Some(true));
+        assert_eq!(config.node_config.respawn, Some(false));
+        assert_eq!(config.node_config.respawn_delay, Some(5.5));
+    }
+
+    #[test]
+    fn test_parse_exposes_topics() {
+        let yaml = r#"
+node_config:
+  name: test_node
+  namespace: /test
+exposes:
+  topics:
+    - type: "sensor_msgs/Image"
+      name: "/camera/image_raw"
+      qos_profile: "sensor_data"
+    - type: "geometry_msgs/Twist"
+      name: "/cmd_vel"
+      qos_profile: "reliable"
+"#;
+        let config = NodeConfigParser::from_content(yaml).unwrap();
+        let exposes = config.exposes.unwrap();
+        let topics = exposes.topics.unwrap();
+
+        assert_eq!(topics.len(), 2);
+        assert_eq!(topics[0].topic_type, "sensor_msgs/Image");
+        assert_eq!(topics[0].name, "/camera/image_raw");
+        assert!(matches!(topics[0].qos_profile, QoSProfile::SensorData));
+
+        assert_eq!(topics[1].topic_type, "geometry_msgs/Twist");
+        assert_eq!(topics[1].name, "/cmd_vel");
+        assert!(matches!(topics[1].qos_profile, QoSProfile::Reliable));
+    }
+
+    #[test]
+    fn test_parse_exposes_services() {
+        let yaml = r#"
+node_config:
+  name: test_node
+  namespace: /test
+exposes:
+  services:
+    - type: "std_srvs/SetBool"
+      name: "/enable_motor"
+      qos_profile: "standard"
+"#;
+        let config = NodeConfigParser::from_content(yaml).unwrap();
+        let exposes = config.exposes.unwrap();
+        let services = exposes.services.unwrap();
+
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].service_type, "std_srvs/SetBool");
+        assert_eq!(services[0].name, "/enable_motor");
+        assert!(matches!(services[0].qos_profile, QoSProfile::Standard));
+    }
+
+    #[test]
+    fn test_parse_exposes_actions() {
+        let yaml = r#"
+node_config:
+  name: test_node
+  namespace: /test
+exposes:
+  actions:
+    - type: "navigation/MoveToGoal"
+      name: "/move_to_goal"
+"#;
+        let config = NodeConfigParser::from_content(yaml).unwrap();
+        let exposes = config.exposes.unwrap();
+        let actions = exposes.actions.unwrap();
+
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].action_type, "navigation/MoveToGoal");
+        assert_eq!(actions[0].name, "/move_to_goal");
+    }
+
+    #[test]
+    fn test_parse_subscribes_to() {
+        let yaml = r#"
+node_config:
+  name: test_node
+  namespace: /test
+subscribes_to:
+  topics:
+    - type: "sensor_msgs/LaserScan"
+      name: "/scan"
+      qos_profile: "sensor_data"
+  services:
+    - type: "std_srvs/Trigger"
+      name: "/reset"
+      qos_profile: "reliable"
+  actions:
+    - type: "nav_msgs/FollowPath"
+      name: "/follow_path"
+"#;
+        let config = NodeConfigParser::from_content(yaml).unwrap();
+        let subscribes_to = config.subscribes_to.unwrap();
+
+        let topics = subscribes_to.topics.unwrap();
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0].topic_type, "sensor_msgs/LaserScan");
+
+        let services = subscribes_to.services.unwrap();
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].service_type, "std_srvs/Trigger");
+
+        let actions = subscribes_to.actions.unwrap();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].action_type, "nav_msgs/FollowPath");
+    }
+
+    #[test]
+    fn test_parse_resources() {
+        let yaml = r#"
+node_config:
+  name: test_node
+  namespace: /test
+resources:
+  max_memory_mb: 2048
+"#;
+        let config = NodeConfigParser::from_content(yaml).unwrap();
+        let resources = config.resources.unwrap();
+        assert_eq!(resources.max_memory_mb, Some(2048));
+    }
+
+    #[test]
+    fn test_parse_logging() {
+        let yaml = r#"
+node_config:
+  name: test_node
+  namespace: /test
+logging:
+  min_level: "debug"
+  file_path: "/var/log/test.log"
+  max_file_size_mb: 50
+  format: "json"
+"#;
+        let config = NodeConfigParser::from_content(yaml).unwrap();
+        let logging = config.logging.unwrap();
+        assert_eq!(logging.min_level, "debug");
+        assert_eq!(logging.file_path, Some("/var/log/test.log".to_string()));
+        assert_eq!(logging.max_file_size_mb, Some(50));
+        assert_eq!(logging.format, LogFormat::Json);
+    }
+
+    #[test]
+    fn test_parse_complex_config() {
+        let yaml = r#"
+node_config:
+  name: camera_driver
+  namespace: /sensors/camera
+  version: "2.1.0"
+  auto_start: true
+  respawn: true
+  respawn_delay: 2.0
+
+exposes:
+  topics:
+    - type: "sensor_msgs/Image"
+      name: "/camera/image_raw"
+      qos_profile: "sensor_data"
+    - type: "sensor_msgs/CameraInfo"
+      name: "/camera/info"
+      qos_profile: "standard"
+  services:
+    - type: "std_srvs/SetBool"
+      name: "/camera/enable"
+      qos_profile: "reliable"
+
+subscribes_to:
+  topics:
+    - type: "std_msgs/String"
+      name: "/camera/command"
+      qos_profile: "reliable"
+
+resources:
+  max_memory_mb: 512
+
+logging:
+  min_level: "warn"
+  file_path: "/var/log/camera.log"
+  max_file_size_mb: 100
+  format: "text"
+"#;
+        let config = NodeConfigParser::from_content(yaml).unwrap();
+
+        // Verify node config
+        assert_eq!(config.node_config.name.as_str(), "camera_driver");
+        assert_eq!(config.node_config.namespace.as_str(), "/sensors/camera");
+        assert_eq!(config.node_config.version, "2.1.0");
+
+        // Verify exposes
+        let exposes = config.exposes.unwrap();
+        assert_eq!(exposes.topics.as_ref().unwrap().len(), 2);
+        assert_eq!(exposes.services.as_ref().unwrap().len(), 1);
+
+        // Verify subscribes_to
+        let subscribes_to = config.subscribes_to.unwrap();
+        assert_eq!(subscribes_to.topics.as_ref().unwrap().len(), 1);
+
+        // Verify resources
+        assert_eq!(config.resources.unwrap().max_memory_mb, Some(512));
+
+        // Verify logging
+        assert_eq!(config.logging.unwrap().min_level, "warn");
+    }
+
+    #[test]
+    fn test_empty_yaml() {
+        let yaml = "";
+        let result = NodeConfigParser::from_content(yaml);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::ConfigParse(_)));
+    }
+
+    #[test]
+    fn test_invalid_name() {
+        let yaml = r#"
+node_config:
+  name: "Invalid-Name!"
+  namespace: /test
+"#;
+        let result = NodeConfigParser::from_content(yaml);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::InvalidName(_)));
+    }
+
+    #[test]
+    fn test_invalid_namespace() {
+        let yaml = r#"
+node_config:
+  name: test_node
+  namespace: "/Invalid Namespace"
+"#;
+        let result = NodeConfigParser::from_content(yaml);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::InvalidNamespace(_)));
+    }
+
+    #[test]
+    fn test_invalid_qos_profile() {
+        let yaml = r#"
+node_config:
+  name: test_node
+  namespace: /test
+exposes:
+  topics:
+    - type: "std_msgs/String"
+      name: "/topic"
+      qos_profile: "invalid_qos"
+"#;
+        let result = NodeConfigParser::from_content(yaml);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::ConfigParse(_)));
+    }
+
+    #[test]
+    fn test_empty_exposes_lists() {
+        let yaml = r#"
+node_config:
+  name: test_node
+  namespace: /test
+exposes:
+  topics: []
+  services: []
+  actions: []
+"#;
+        let config = NodeConfigParser::from_content(yaml).unwrap();
+        let exposes = config.exposes.unwrap();
+
+        assert_eq!(exposes.topics.as_ref().unwrap().len(), 0);
+        assert_eq!(exposes.services.as_ref().unwrap().len(), 0);
+        assert_eq!(exposes.actions.as_ref().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_partial_topic_definition() {
+        let yaml = r#"
+node_config:
+  name: test_node
+  namespace: /test
+exposes:
+  topics:
+    - name: "/topic_without_type"
+"#;
+        let config = NodeConfigParser::from_content(yaml).unwrap();
+        let exposes = config.exposes.unwrap();
+        let topics = exposes.topics.unwrap();
+
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0].topic_type, ""); // default empty string
+        assert_eq!(topics[0].name, "/topic_without_type");
+        assert!(matches!(topics[0].qos_profile, QoSProfile::Standard)); // default
+    }
+
+    // ------------- The tests below this line might be redundant
+    #[test]
+    fn test_parse_simple_node_yaml() {
+        let yaml_content = r#"
+node_config:
+  name: "camera_node"
+  namespace: "/sensors"
+  version: "1.0.0"
+  auto_start: true
+
+exposes:
+  topics:
+    - type: "configuration/metadata"
+      name: "/root_node/status"
+      qos_profile: "standard"
+  services:
+    - type: "standard/set_bool"
+      name: "/camera/enable"
+      callback: "handle_camera_enable"
+"#;
+
+        let config = NodeConfigParser::from_content(yaml_content).unwrap();
+
+        assert_eq!(config.node_config.name.as_str(), "camera_node");
+        assert_eq!(config.node_config.namespace.as_str(), "/sensors");
+        assert_eq!(config.node_config.version, "1.0.0");
+        assert_eq!(config.node_config.auto_start, Some(true));
+
+        let exposes = config.exposes.unwrap();
+
+        // Test topics
+        let topics = exposes.topics.unwrap();
+        assert_eq!(topics.len(), 1);
+        let topic = &topics[0];
+        assert_eq!(topic.topic_type.as_str(), "configuration/metadata");
+        assert_eq!(topic.name.as_str(), "/root_node/status");
+        assert!(matches!(topic.qos_profile, QoSProfile::Standard));
+
+        // Test services
+        let services = exposes.services.unwrap();
+        assert_eq!(services.len(), 1);
+        let service = &services[0];
+        assert_eq!(service.service_type.as_str(), "standard/set_bool");
+        assert_eq!(service.name.as_str(), "/camera/enable");
+        assert!(matches!(service.qos_profile, QoSProfile::Standard));
+    }
+
+    #[test]
+    fn test_parse_root_node_yaml() {
+        let yaml_content = r#"
+node_config:
+  is_root: true
+  name: "my_robot_1"
+  namespace: "/"
+  version: "0.1.0"
+  respawn: true
+  respawn_delay: 1.0
+"#;
+
+        let config = NodeConfigParser::from_content(yaml_content).unwrap();
+
+        assert_eq!(config.node_config.name.as_str(), "my_robot_1");
+        assert!(config.node_config.respawn.unwrap());
+    }
+
+    #[test]
+    fn test_parse_peppy_yaml_config() {
+        // Write a test configuration based on the example
+        let yaml_content = r#"
+node_config:
+  name: "root_node"
+  namespace: "/"
+  version: "0.1.0"
+  auto_start: true
+  respawn: false
+  respawn_delay: 2.0
+
+node_parameters:
+
+exposes:
+  topics: []
+  services: []
+  actions: []
+
+resources:
+  max_memory_mb: 512
+
+logging:
+  min_level: "info"
+  file_path: "/var/log/peppy/peppy_root.log"
+  max_file_size_mb: 100
+  format: "text"
+"#;
+
+        // Parse the configuration
+        let config = NodeConfigParser::from_content(yaml_content).unwrap();
+
+        // Verify the parsed values
+        assert_eq!(config.node_config.name.as_str(), "root_node");
+        assert_eq!(config.node_config.namespace.as_str(), "/");
+        assert_eq!(config.node_config.version, "0.1.0");
+        assert!(config.node_config.auto_start.unwrap());
+        assert!(!config.node_config.respawn.unwrap());
+        assert_eq!(config.node_config.respawn_delay, Some(2.0));
+        let resources = config.resources.unwrap();
+        assert_eq!(resources.max_memory_mb, Some(512));
+        let logging = config.logging.unwrap();
+        assert_eq!(logging.min_level, "info");
+        assert_eq!(
+            logging.file_path,
+            Some(String::from("/var/log/peppy/peppy_root.log"))
+        );
+        assert_eq!(logging.max_file_size_mb, Some(100));
+        assert_eq!(logging.format, LogFormat::Text);
     }
 }
