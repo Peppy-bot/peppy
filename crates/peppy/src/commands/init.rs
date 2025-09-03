@@ -36,7 +36,7 @@ pub fn init_root_node(path: impl AsRef<Path>, name: &str) -> Result<PathBuf> {
         .with_name(name)
         .with_namespace("/")
         .write_to(&peppy_yaml_path)
-        .map_err(|e| Error::PeppyConfigError(e))?;
+        .map_err(Error::PeppyConfigError)?;
 
     info!("Created root node at {}", peppy_yaml_path.display());
     Ok(peppy_yaml_path)
