@@ -1,5 +1,6 @@
 mod config;
 mod error;
 
-pub use config::{create_peppy_node_config, init_root_node, parse_yaml_config};
+pub use config::ConfigTemplateType;
+pub use config::NodeConfigBuilder;
 pub use error::{Error as ConfigError, Result as ConfigResult};

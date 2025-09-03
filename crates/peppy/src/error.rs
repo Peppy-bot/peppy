@@ -30,8 +30,11 @@ pub enum Error {
     RustConfigCreation(String),
     PythonConfigCreation(String),
 
-    // -- messaging
+    // -- pmi-internal
     PeppyMessagingInterfaceError(pmi::PeppyMessagingInterfaceError),
+
+    // -- config-internal
+    PeppyConfigError(config::ConfigError),
 
     // -- libs
     AskamaError(String),

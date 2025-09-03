@@ -5,10 +5,11 @@ mod rust;
 
 use super::types::{Language, NodeName};
 use crate::{Error, Result};
-use config::create_peppy_node_config;
+use config::{ConfigTemplateType, NodeConfigBuilder};
 use factory::create_factory;
 use std::fs;
 use std::path::{Path, PathBuf};
+use tracing::info;
 
 pub struct NodeBuilder {
     current_dir: PathBuf,
@@ -104,9 +105,49 @@ pub fn create(
     Ok(())
 }
 
+pub fn create_peppy_node_config(node_path: &Path, node_name: &str, full: bool) -> Result<PathBuf> {
+    let peppy_yaml_path = node_path.join("peppy.yaml");
+
+    let builder = if full {
+        NodeConfigBuilder::from_template(ConfigTemplateType::FullNode)
+    } else {
+        NodeConfigBuilder::from_template(ConfigTemplateType::SimpleNode)
+    };
+
+    builder
+        .with_name(node_name)
+        .with_namespace("/")
+        .with_logging_level("info")
+        .write_to(&peppy_yaml_path)
+        .map_err(|e| Error::PeppyConfigError(e))?;
+
+    info!(
+        "Created {} node in {}",
+        &node_name,
+        peppy_yaml_path.display()
+    );
+    Ok(peppy_yaml_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Can be run from the command line with:
+    // cargo run --manifest-path <path_to_root_Cargo.toml> -- node create my_node
+    #[test]
+    fn test_create_peppy_config() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let node_name = "test_node";
+
+        let result = create_peppy_node_config(temp_dir.path(), &node_name, false);
+        assert!(result.is_ok());
+
+        let peppy_path = temp_dir.path().join("peppy.yaml");
+        assert!(peppy_path.exists());
+    }
 
     #[test]
     fn test_check_root_node_config_missing() {

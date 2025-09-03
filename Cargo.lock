@@ -462,6 +462,7 @@ dependencies = [
  "derive_more",
  "saphyr",
  "serde",
+ "serde_yaml",
  "tempfile",
  "tracing",
 ]
