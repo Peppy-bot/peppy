@@ -13,6 +13,18 @@ pub struct NodeConfig {
     pub logging: Logging,
 }
 
+impl Default for NodeConfig {
+    fn default() -> Self {
+        Self {
+            node_config: NodeInfo::default(),
+            node_parameters: NodeParameters::default(),
+            exposes: Exposes::default(),
+            resources: Resources::default(),
+            logging: Logging::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeInfo {
     pub name: String,
@@ -25,6 +37,19 @@ pub struct NodeInfo {
     pub respawn: bool,
     #[serde(default = "default_respawn_delay")]
     pub respawn_delay: f64,
+}
+
+impl Default for NodeInfo {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            namespace: "/".to_string(),
+            version: "0.1.0".to_string(),
+            auto_start: false,
+            respawn: false,
+            respawn_delay: 1.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -113,4 +138,18 @@ fn default_max_file_size_mb() -> u32 {
 
 fn default_log_format() -> String {
     "text".to_string()
+}
+
+/// Supported template types
+#[derive(Debug, Clone)]
+pub enum ConfigTemplateType {
+    RootNode,
+    SimpleNode,
+    FullNode,
+}
+
+impl Default for ConfigTemplateType {
+    fn default() -> Self {
+        ConfigTemplateType::SimpleNode
+    }
 }

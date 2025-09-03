@@ -1,80 +1,68 @@
-use tracing::info;
-
-use super::builder::NodeConfigBuilder;
+use crate::config::types::ConfigTemplateType;
+use crate::error::Error;
 use crate::error::Result;
-use std::path::PathBuf;
-use std::{fs, path::Path};
+use askama::Template;
 
-pub fn create_peppy_node_config(node_path: &Path, node_name: &str, full: bool) -> Result<PathBuf> {
-    let peppy_yaml_path = node_path.join("peppy.yaml");
-
-    let builder = if full {
-        NodeConfigBuilder::full_node(node_name)
-    } else {
-        NodeConfigBuilder::simple_node(node_name)
-    };
-
-    builder
-        .with_namespace("/")
-        .with_logging_level("info")
-        .write_to(&peppy_yaml_path)?;
-
-    info!(
-        "Created {} node in {}",
-        &node_name,
-        peppy_yaml_path.display()
-    );
-    Ok(peppy_yaml_path)
+/// Template for root node configuration
+#[derive(Template)]
+#[template(path = "root_node.yaml.j2")]
+struct RootNodeTemplate<'a> {
+    name: &'a str,
 }
 
-pub fn init_root_node(path: &Path, name: &str) -> Result<PathBuf> {
-    // Create the directory if it doesn't exist
-    fs::create_dir_all(path)?;
-    let peppy_yaml_path = path.join("peppy.yaml");
-
-    NodeConfigBuilder::root_node(name)
-        .with_namespace("/")
-        .write_to(&peppy_yaml_path)?;
-
-    info!("Created root node at {}", peppy_yaml_path.display());
-    Ok(peppy_yaml_path)
+/// Template for simple node configuration
+#[derive(Template)]
+#[template(path = "peppy_new_node_simple.yaml.j2")]
+struct SimpleNodeTemplate<'a> {
+    name: &'a str,
+    namespace: &'a str,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Template for full node configuration
+#[derive(Template)]
+#[template(path = "peppy_new_node_full.yaml.j2")]
+struct FullNodeTemplate<'a> {
+    name: &'a str,
+    namespace: &'a str,
+}
 
-    // Can be run from the command line with:
-    // cargo run --manifest-path <path_to_root_Cargo.toml> -- init <node_name>
-    #[test]
-    fn test_init_root_node() {
-        use tempfile::TempDir;
+pub struct NodeConfigTemplate;
 
-        let temp_dir = TempDir::new().unwrap();
-        let non_existent_path = temp_dir.path().join("new_folder");
-
-        assert!(!non_existent_path.exists());
-
-        let peppy_yaml_path = init_root_node(&non_existent_path, "root_node").unwrap();
-
-        assert!(non_existent_path.exists());
-        assert!(peppy_yaml_path.exists());
-        assert_eq!(peppy_yaml_path.file_name().unwrap(), "peppy.yaml");
-    }
-
-    // Can be run from the command line with:
-    // cargo run --manifest-path <path_to_root_Cargo.toml> -- node create my_node
-    #[test]
-    fn test_create_peppy_config() {
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new().unwrap();
-        let node_name = "test_node";
-
-        let result = create_peppy_node_config(temp_dir.path(), &node_name, false);
-        assert!(result.is_ok());
-
-        let peppy_path = temp_dir.path().join("peppy.yaml");
-        assert!(peppy_path.exists());
+impl NodeConfigTemplate {
+    /// Renders the template to a string
+    // TODO use newtype pattern for `name`
+    pub fn render(
+        template_type: &ConfigTemplateType,
+        node_name: Option<&str>,
+        node_namespace: Option<&str>,
+    ) -> Result<String> {
+        match template_type {
+            ConfigTemplateType::RootNode => {
+                let template = RootNodeTemplate {
+                    name: node_name.unwrap(),
+                };
+                template
+                    .render()
+                    .map_err(|e| Error::AskamaError(e.to_string()))
+            }
+            ConfigTemplateType::SimpleNode => {
+                let template = SimpleNodeTemplate {
+                    name: node_name.unwrap(),
+                    namespace: node_namespace.unwrap(),
+                };
+                template
+                    .render()
+                    .map_err(|e| Error::AskamaError(e.to_string()))
+            }
+            ConfigTemplateType::FullNode => {
+                let template = FullNodeTemplate {
+                    name: node_name.unwrap(),
+                    namespace: node_namespace.unwrap(),
+                };
+                template
+                    .render()
+                    .map_err(|e| Error::AskamaError(e.to_string()))
+            }
+        }
     }
 }
