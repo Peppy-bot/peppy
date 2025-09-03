@@ -119,7 +119,7 @@ pub fn create_peppy_node_config(node_path: &Path, node_name: &str, full: bool) -
         .with_namespace("/")
         .with_logging_level("info")
         .write_to(&peppy_yaml_path)
-        .map_err(|e| Error::PeppyConfigError(e))?;
+        .map_err(Error::PeppyConfigError)?;
 
     info!(
         "Created {} node in {}",
@@ -142,7 +142,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let node_name = "test_node";
 
-        let result = create_peppy_node_config(temp_dir.path(), &node_name, false);
+        let result = create_peppy_node_config(temp_dir.path(), node_name, false);
         assert!(result.is_ok());
 
         let peppy_path = temp_dir.path().join("peppy.yaml");

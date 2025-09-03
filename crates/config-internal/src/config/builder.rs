@@ -134,7 +134,7 @@ impl NodeConfigBuilder {
                 Some(self.config.node_config.name.as_str()),
                 Some(self.config.node_config.namespace.as_str()),
             ),
-            ConfigSource::Yaml(content) => NodeConfigParser::from_content(&content),
+            ConfigSource::Yaml(content) => NodeConfigParser::from_content(content),
         };
 
         self.validate(content?)
@@ -254,7 +254,7 @@ node_config:
         let config: NodeConfig = serde_yaml::from_str(&content).unwrap();
 
         assert_eq!(config.node_config.name.as_str(), "my_robot_1");
-        assert_eq!(config.node_config.respawn, true);
+        assert!(config.node_config.respawn);
     }
 
     #[test]
@@ -295,8 +295,8 @@ logging:
         assert_eq!(config.node_config.name.as_str(), "root_node");
         assert_eq!(config.node_config.namespace.as_str(), "/");
         assert_eq!(config.node_config.version, "0.1.0");
-        assert_eq!(config.node_config.auto_start, true);
-        assert_eq!(config.node_config.respawn, false);
+        assert!(config.node_config.auto_start);
+        assert!(!config.node_config.respawn);
         assert_eq!(config.node_config.respawn_delay, 2.0);
         assert_eq!(config.resources.max_memory_mb, 512);
         assert_eq!(config.logging.min_level, "info");

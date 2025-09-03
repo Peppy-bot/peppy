@@ -2,7 +2,7 @@ use crate::error::Error;
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NodeConfig {
     pub node_config: NodeInfo,
     #[serde(default)]
@@ -13,18 +13,6 @@ pub struct NodeConfig {
     pub resources: Resources,
     #[serde(default)]
     pub logging: Logging,
-}
-
-impl Default for NodeConfig {
-    fn default() -> Self {
-        Self {
-            node_config: NodeInfo::default(),
-            node_parameters: NodeParameters::default(),
-            exposes: Exposes::default(),
-            resources: Resources::default(),
-            logging: Logging::default(),
-        }
-    }
 }
 
 /// Validated node name. Lowercase letters, digits, '_' and '-' only.
@@ -224,17 +212,12 @@ fn default_log_format() -> String {
 }
 
 /// Supported template types
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum ConfigTemplateType {
     RootNode,
+    #[default]
     SimpleNode,
     FullNode,
-}
-
-impl Default for ConfigTemplateType {
-    fn default() -> Self {
-        ConfigTemplateType::SimpleNode
-    }
 }
 
 #[cfg(test)]
