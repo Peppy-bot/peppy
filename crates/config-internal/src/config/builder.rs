@@ -1,6 +1,6 @@
 use super::parse::NodeConfigParser;
 use super::types::{ConfigTemplateType, Name, Namespace, NodeConfig};
-use crate::config::create::NodeConfigTemplate;
+use crate::config::create::NodeConfigCreator;
 use crate::error::{Error, Result};
 use saphyr::{LoadableYamlNode, Yaml};
 use std::fs;
@@ -40,7 +40,7 @@ impl NodeConfigBuilder {
     pub fn from_template(template_type: ConfigTemplateType) -> Self {
         Self {
             config: NodeConfig::default(),
-            validators: vec![Box::new(SyntaxValidator)],
+            validators: Vec::new(),
             config_source: ConfigSource::Template(template_type),
         }
     }
@@ -127,17 +127,19 @@ impl NodeConfigBuilder {
     }
 
     /// Builds the configuration and returns it as a string
-    pub fn build(&self) -> Result<String> {
-        let content = match &self.config_source {
-            ConfigSource::Template(t) => NodeConfigTemplate::render(
+    pub fn build(&self) -> Result<NodeConfig> {
+        match &self.config_source {
+            ConfigSource::Template(t) => NodeConfigCreator::render(
                 t,
                 Some(self.config.node_config.name.as_str()),
                 Some(self.config.node_config.namespace.as_str()),
             ),
-            ConfigSource::Yaml(content) => NodeConfigParser::from_content(content),
-        };
-
-        self.validate(content?)
+            ConfigSource::Yaml(content) => {
+                // Validation only useful for provided Yaml
+                self.validate(content.into())?;
+                NodeConfigParser::from_content(content)
+            }
+        }
     }
 
     /// Builds and writes the configuration to a file
@@ -145,13 +147,18 @@ impl NodeConfigBuilder {
         let content = self.build()?;
         let path = path.as_ref();
 
+        // Serialize the populated config back to YAML
+        // FIXME: Replace deprecated serde_yaml when a good alternative pops up, like `saphyr-serde`
+        let yaml = serde_yaml::to_string(&content)
+            .map_err(|e| Error::ConfigParse(format!("Failed to serialize YAML: {}", e)))?;
+
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
 
         let mut file = fs::File::create(path)?;
-        file.write_all(content.as_bytes())?;
+        file.write_all(yaml.as_bytes())?;
 
         Ok(path.to_path_buf())
     }
@@ -160,55 +167,110 @@ impl NodeConfigBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    use askama::Template;
+
+    /// Template for root node configuration
+    #[derive(Template)]
+    #[template(path = "root_node.yaml.j2")]
+    struct RootNodeTemplate<'a> {
+        name: &'a str,
+    }
+
+    /// Template for simple node configuration
+    #[derive(Template)]
+    #[template(path = "peppy_new_node_simple.yaml.j2")]
+    struct SimpleNodeTemplate<'a> {
+        name: &'a str,
+        namespace: &'a str,
+    }
+
+    /// Template for full node configuration
+    #[derive(Template)]
+    #[template(path = "peppy_new_node_full.yaml.j2")]
+    struct FullNodeTemplate<'a> {
+        name: &'a str,
+        namespace: &'a str,
+    }
 
     #[test]
     fn test_root_node_content_validation() {
-        let content = NodeConfigBuilder::from_template(ConfigTemplateType::RootNode)
-            .with_name("test_root")
-            .build()
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("peppy.yaml");
+        let node_name = "root_node";
+
+        // Write using write_to
+        let builder =
+            NodeConfigBuilder::from_template(ConfigTemplateType::RootNode).with_name(node_name);
+        builder.write_to(&file_path).unwrap();
+        let written_content = fs::read_to_string(&file_path).unwrap();
+
+        let template = RootNodeTemplate { name: node_name };
+        let expected_content = template
+            .render()
+            .map_err(|e| Error::AskamaError(e.to_string()))
             .unwrap();
 
-        assert!(content.contains("test_root"));
-        assert!(content.contains("is_root: true"));
-        assert!(content.contains("namespace: \"/\""));
-
-        // Validate YAML syntax
-        let docs = Yaml::load_from_str(&content);
-        assert!(docs.is_ok(), "Root node config should be valid YAML");
+        // The written content should match the serialized config
+        assert_eq!(written_content, expected_content);
     }
 
     #[test]
     fn test_simple_node_content_validation() {
-        let content = NodeConfigBuilder::from_template(ConfigTemplateType::SimpleNode)
-            .with_name("test_simple")
-            .with_namespace("/robot")
-            .with_logging_level("info")
-            .build()
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("peppy.yaml");
+
+        let node_name = "simple_node";
+        let namespace = "/";
+
+        // Write using write_to
+        let builder = NodeConfigBuilder::from_template(ConfigTemplateType::SimpleNode)
+            .with_name(node_name)
+            .with_namespace(namespace);
+        builder.write_to(&file_path).unwrap();
+        let written_content = fs::read_to_string(&file_path).unwrap();
+
+        let template = SimpleNodeTemplate {
+            name: node_name,
+            namespace: namespace,
+        };
+        let expected_content = template
+            .render()
+            .map_err(|e| Error::AskamaError(e.to_string()))
             .unwrap();
 
-        assert!(content.contains("test_simple"));
-        assert!(content.contains("/robot"));
-
-        // Validate YAML syntax
-        let docs = Yaml::load_from_str(&content);
-        assert!(docs.is_ok(), "Simple node config should be valid YAML");
+        // The written content should match the serialized config
+        assert_eq!(written_content, expected_content);
     }
 
     #[test]
     fn test_full_node_content_validation() {
-        let content = NodeConfigBuilder::from_template(ConfigTemplateType::FullNode)
-            .with_name("test_full")
-            .with_namespace("/system")
-            .build()
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("peppy.yaml");
+
+        let node_name = "full_node";
+        let namespace = "/";
+
+        // Write using write_to
+        let builder = NodeConfigBuilder::from_template(ConfigTemplateType::FullNode)
+            .with_name(node_name)
+            .with_namespace(namespace);
+        builder.write_to(&file_path).unwrap();
+        let written_content = fs::read_to_string(&file_path).unwrap();
+
+        let template = FullNodeTemplate {
+            name: node_name,
+            namespace: namespace,
+        };
+        let expected_content = template
+            .render()
+            .map_err(|e| Error::AskamaError(e.to_string()))
             .unwrap();
 
-        assert!(content.contains("test_full"));
-        assert!(content.contains("/system"));
-        assert!(content.contains("respawn"));
-
-        // Validate YAML syntax
-        let docs = Yaml::load_from_str(&content);
-        assert!(docs.is_ok(), "Full node config should be valid YAML");
+        // The written content should match the serialized config
+        assert_eq!(written_content, expected_content);
     }
 
     #[test]
@@ -227,8 +289,7 @@ exposes:
 "#;
 
         let builder = NodeConfigBuilder::from_yaml(yaml_content);
-        let content = builder.build().unwrap();
-        let config: NodeConfig = serde_yaml::from_str(&content).unwrap();
+        let config = builder.build().unwrap();
 
         assert_eq!(config.node_config.name.as_str(), "camera_node");
         assert_eq!(config.exposes.topics.len(), 1);
@@ -250,8 +311,7 @@ node_config:
 "#;
 
         let builder = NodeConfigBuilder::from_yaml(yaml_content);
-        let content = builder.build().unwrap();
-        let config: NodeConfig = serde_yaml::from_str(&content).unwrap();
+        let config = builder.build().unwrap();
 
         assert_eq!(config.node_config.name.as_str(), "my_robot_1");
         assert!(config.node_config.respawn);
@@ -288,8 +348,7 @@ logging:
 "#;
 
         // Parse the configuration
-        let content = NodeConfigBuilder::from_yaml(yaml_content).build().unwrap();
-        let config: NodeConfig = serde_yaml::from_str(&content).unwrap();
+        let config = NodeConfigBuilder::from_yaml(yaml_content).build().unwrap();
 
         // Verify the parsed values
         assert_eq!(config.node_config.name.as_str(), "root_node");

@@ -7,7 +7,7 @@ pub struct NodeConfigParser;
 
 impl NodeConfigParser {
     /// Takes a yaml content as parameter
-    pub fn from_content(content: &str) -> Result<String> {
+    pub fn from_content(content: &str) -> Result<NodeConfig> {
         let docs: Vec<Yaml<'_>> = Yaml::load_from_str(content)
             .map_err(|e| Error::ConfigParse(format!("Failed to parse YAML: {}", e)))?;
 
@@ -23,11 +23,7 @@ impl NodeConfigParser {
         NodeConfigParser::parse_resources_section(doc, &mut config)?;
         NodeConfigParser::parse_logging_section(doc, &mut config)?;
 
-        // Serialize the populated config back to YAML
-        // FIXME: Replace deprecated serde_yaml when a good alternative pops up, like `saphyr-serde`
-        let yaml = serde_yaml::to_string(&config)
-            .map_err(|e| Error::ConfigParse(format!("Failed to serialize YAML: {}", e)))?;
-        Ok(yaml)
+        Ok(config)
     }
 
     fn parse_node_config_section(doc: &Yaml, config: &mut NodeConfig) -> Result<()> {
