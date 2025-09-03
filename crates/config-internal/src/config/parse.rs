@@ -36,11 +36,11 @@ impl NodeConfigParser {
         if let Some(node_config) = doc.as_mapping_get("node_config") {
             // Required/optional string fields
             if let Some(n) = Self::get_str(node_config, "name")? {
-                config.node_config.name = n.to_string();
+                config.node_config.name = crate::config::types::Name::new(n.to_string())?;
             }
 
             if let Some(ns) = Self::get_str(node_config, "namespace")? {
-                config.node_config.namespace = ns.to_string();
+                config.node_config.namespace = crate::config::types::Namespace::new(ns.to_string())?;
             }
 
             // Optional fields

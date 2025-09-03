@@ -12,6 +12,10 @@ pub enum Error {
     // -- config parsing
     ConfigParse(String),
 
+    // -- identifier validation
+    InvalidName(String),
+    InvalidNamespace(String),
+
     // -- Askama
     AskamaError(String),
 }

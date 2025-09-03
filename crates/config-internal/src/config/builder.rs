@@ -1,5 +1,5 @@
 use super::parse::NodeConfigParser;
-use super::types::{ConfigTemplateType, NodeConfig};
+use super::types::{ConfigTemplateType, Name, Namespace, NodeConfig};
 use crate::config::create::NodeConfigTemplate;
 use crate::error::{Error, Result};
 use saphyr::{LoadableYamlNode, Yaml};
@@ -56,13 +56,15 @@ impl NodeConfigBuilder {
 
     /// Sets the node name
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
-        self.config.node_config.name = name.into();
+        self.config.node_config.name =
+            Name::new(name.into()).expect("invalid node name passed to builder");
         self
     }
 
     /// Sets the namespace
     pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
-        self.config.node_config.namespace = namespace.into();
+        self.config.node_config.namespace =
+            Namespace::new(namespace.into()).expect("invalid namespace passed to builder");
         self
     }
 
@@ -129,8 +131,8 @@ impl NodeConfigBuilder {
         let content = match &self.config_source {
             ConfigSource::Template(t) => NodeConfigTemplate::render(
                 t,
-                Some(&self.config.node_config.name),
-                Some(&self.config.node_config.namespace),
+                Some(self.config.node_config.name.as_str()),
+                Some(self.config.node_config.namespace.as_str()),
             ),
             ConfigSource::Yaml(content) => NodeConfigParser::from_content(&content),
         };
@@ -228,7 +230,7 @@ exposes:
         let content = builder.build().unwrap();
         let config: NodeConfig = serde_yaml::from_str(&content).unwrap();
 
-        assert_eq!(config.node_config.name, "camera_node");
+        assert_eq!(config.node_config.name.as_str(), "camera_node");
         assert_eq!(config.exposes.topics.len(), 1);
         assert_eq!(config.exposes.topics[0], "/camera/video_feed");
         assert_eq!(config.exposes.services.len(), 1);
@@ -251,7 +253,7 @@ node_config:
         let content = builder.build().unwrap();
         let config: NodeConfig = serde_yaml::from_str(&content).unwrap();
 
-        assert_eq!(config.node_config.name, "my_robot_1");
+        assert_eq!(config.node_config.name.as_str(), "my_robot_1");
         assert_eq!(config.node_config.respawn, true);
     }
 
@@ -260,7 +262,7 @@ node_config:
         // Write a test configuration based on the example
         let yaml_content = r#"
 node_config:
-  name: "<root_node>"
+  name: "root_node"
   namespace: "/"
   version: "0.1.0"
   auto_start: true
@@ -290,8 +292,8 @@ logging:
         let config: NodeConfig = serde_yaml::from_str(&content).unwrap();
 
         // Verify the parsed values
-        assert_eq!(config.node_config.name, "<root_node>");
-        assert_eq!(config.node_config.namespace, "/");
+        assert_eq!(config.node_config.name.as_str(), "root_node");
+        assert_eq!(config.node_config.namespace.as_str(), "/");
         assert_eq!(config.node_config.version, "0.1.0");
         assert_eq!(config.node_config.auto_start, true);
         assert_eq!(config.node_config.respawn, false);

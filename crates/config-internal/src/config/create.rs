@@ -30,7 +30,6 @@ pub struct NodeConfigTemplate;
 
 impl NodeConfigTemplate {
     /// Renders the template to a string
-    // TODO use newtype pattern for `name`
     pub fn render(
         template_type: &ConfigTemplateType,
         node_name: Option<&str>,

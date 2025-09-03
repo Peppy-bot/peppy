@@ -1,4 +1,6 @@
+use crate::error::Error;
 use serde::{Deserialize, Serialize};
+use std::convert::TryFrom;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConfig {
@@ -25,10 +27,90 @@ impl Default for NodeConfig {
     }
 }
 
+/// Validated node name. Lowercase letters, digits, '_' and '-' only.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Name(String);
+
+impl Name {
+    pub fn new<S: Into<String>>(s: S) -> Result<Self, Error> {
+        Self::try_from(s.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn is_valid_char(c: char) -> bool {
+        c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-'
+    }
+}
+
+impl TryFrom<String> for Name {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.is_empty() {
+            return Err(Error::InvalidName("Name cannot be empty".to_string()));
+        }
+        if value.chars().all(Name::is_valid_char) {
+            return Ok(Name(value));
+        }
+        Err(Error::InvalidName(value))
+    }
+}
+
+impl From<Name> for String {
+    fn from(v: Name) -> Self {
+        v.0
+    }
+}
+
+/// Validated namespace. Same as Name but allows '/'.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Namespace(String);
+
+impl Namespace {
+    pub fn new<S: Into<String>>(s: S) -> Result<Self, Error> {
+        Self::try_from(s.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn is_valid_char(c: char) -> bool {
+        c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-' || c == '/'
+    }
+}
+
+impl TryFrom<String> for Namespace {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.is_empty() {
+            return Err(Error::InvalidNamespace(
+                "Namespace cannot be empty".to_string(),
+            ));
+        }
+        if value.chars().all(Namespace::is_valid_char) {
+            return Ok(Namespace(value));
+        }
+        Err(Error::InvalidNamespace(value))
+    }
+}
+
+impl From<Namespace> for String {
+    fn from(v: Namespace) -> Self {
+        v.0
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeInfo {
-    pub name: String,
-    pub namespace: String,
+    pub name: Name,
+    pub namespace: Namespace,
     #[serde(default = "default_version")]
     pub version: String,
     #[serde(default = "default_false")]
@@ -42,8 +124,9 @@ pub struct NodeInfo {
 impl Default for NodeInfo {
     fn default() -> Self {
         Self {
-            name: String::new(),
-            namespace: "/".to_string(),
+            // Default values must be non-empty to comply with validation
+            name: Name::new("node").expect("default name is valid"),
+            namespace: Namespace::new("/").expect("default namespace is valid"),
             version: "0.1.0".to_string(),
             auto_start: false,
             respawn: false,
@@ -151,5 +234,32 @@ pub enum ConfigTemplateType {
 impl Default for ConfigTemplateType {
     fn default() -> Self {
         ConfigTemplateType::SimpleNode
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn name_validation() {
+        assert!(Name::new("node").is_ok());
+        assert!(Name::new("my_node-1").is_ok());
+
+        assert!(Name::new("").is_err()); // empty not permitted
+        assert!(Name::new("Node").is_err()); // capital
+        assert!(Name::new("node/").is_err()); // slash not allowed
+        assert!(Name::new("node@!").is_err()); // specials not allowed
+    }
+
+    #[test]
+    fn namespace_validation() {
+        assert!(Namespace::new("/").is_ok());
+        assert!(Namespace::new("/robot").is_ok());
+        assert!(Namespace::new("/robot/camera_v1").is_ok());
+
+        assert!(Namespace::new("").is_err()); // empty not permitted
+        assert!(Namespace::new("/Robot").is_err()); // capital
+        assert!(Namespace::new("/robot$cam").is_err()); // special
     }
 }
