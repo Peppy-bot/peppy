@@ -40,7 +40,6 @@ exposes:
 
 resources:
   max_memory_mb: 1024
-  cpu_affinity: []
 
 logging:
   min_level: "info"

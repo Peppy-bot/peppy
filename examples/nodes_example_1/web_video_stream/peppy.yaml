@@ -37,8 +37,6 @@ exposes:
 
 resources:
   max_memory_mb: 512
-  cpu_affinity: []
-  max_threads: 10
 
 logging:
   min_level: "info"
