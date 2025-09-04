@@ -5,7 +5,7 @@ use std::{
 
 use super::Command;
 use crate::{Error, Result};
-use config::{ConfigTemplateType, NodeConfigBuilder};
+use config::{ConfigTemplateType, NodeConfigCreator};
 use tracing::info;
 
 pub struct InitCommand {
@@ -32,9 +32,8 @@ pub fn init_root_node(path: impl AsRef<Path>, name: &str) -> Result<PathBuf> {
     fs::create_dir_all(path)?;
     let peppy_yaml_path = path.join("peppy.yaml");
 
-    NodeConfigBuilder::from_template(ConfigTemplateType::RootNode)
-        .with_name(name)
-        .with_namespace("/")
+    NodeConfigCreator::from_template(&ConfigTemplateType::RootNode, Some(name), Some("/"))
+        .map_err(Error::PeppyConfigError)?
         .write_to(&peppy_yaml_path)
         .map_err(Error::PeppyConfigError)?;
 
