@@ -1,15 +1,17 @@
+mod list;
+mod run;
+mod types;
+
 use clap::Subcommand;
 use std::path::PathBuf;
 use tracing::{error, info};
 
-pub mod create;
-pub mod list;
-pub mod types;
-
 use super::{Command, Error as CommandError};
 
 use create::NodeBuilder;
-use types::{Language, NodeName};
+
+pub mod create;
+pub use types::{Language, NodeName};
 
 #[derive(Subcommand)]
 pub enum NodeCommands {
@@ -30,10 +32,16 @@ pub enum NodeCommands {
         #[arg(long, default_value = "rust")]
         lang: Language,
     },
-    /// List nodes in the current system
+    /// Runs a specific node
+    Run {
+        /// Name of the node to start. If it isn't found in the current network, it will be pulled from the nodes.peppy.bot repo
+        node_name: NodeName,
+        /// Optional: path to the configuration file. If provided, will attempt to run that node directly from that path
+        #[arg(long)]
+        configuration_file: Option<PathBuf>,
+    },
+    /// List nodes in the current node network
     List {},
-    /// Check that the root peppy.star node and its children are properly formed
-    Check {},
 }
 
 pub struct NodeCommand {
@@ -59,14 +67,17 @@ impl Command for NodeCommand {
                     .full(full)
                     .build()
             }
+            NodeCommands::Run {
+                node_name,
+                configuration_file,
+            } => {
+                info!("Running node {node_name}...");
+                run::run_node(node_name, configuration_file);
+                Ok(())
+            }
             NodeCommands::List {} => {
                 info!("Listing nodes...");
                 list::list_nodes();
-                Ok(())
-            }
-            NodeCommands::Check {} => {
-                info!("Checking nodes...");
-                list::check();
                 Ok(())
             }
         }

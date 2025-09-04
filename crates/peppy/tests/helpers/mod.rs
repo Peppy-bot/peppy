@@ -1,4 +1,4 @@
-use peppy::commands::init::init_root_node;
+use peppy::init::init_root_node;
 use std::path::Path;
 use tracing::{error, info};
 

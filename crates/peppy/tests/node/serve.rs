@@ -2,7 +2,7 @@ use std::thread;
 use std::time::Duration;
 
 use peppy::Result;
-use peppy::commands::serve::{CompositeCommand, Serve, ServeAsyncCommand};
+use peppy::serve::{CompositeCommand, Serve, ServeAsyncCommand};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::task::JoinHandle;
