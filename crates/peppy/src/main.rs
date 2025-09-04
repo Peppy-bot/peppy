@@ -2,14 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing::error;
 
-use peppy::commands::{
-    Command,
-    init::InitCommand,
-    node::{NodeCommand, NodeCommands},
-    pixi::PixiCommand,
-    serve::ServeCommand,
-    sync::SyncCommand,
-};
+use peppy::{Command, init, node, pixi, serve, sync};
 
 #[derive(Parser)]
 #[command(name = "peppy")]
@@ -32,7 +25,7 @@ enum Commands {
     /// Node-related commands
     Node {
         #[command(subcommand)]
-        command: NodeCommands,
+        command: node::NodeCommands,
     },
     /// Run the peppy service that listen to node communication, node configuration file changes and also act as a Zenoh router.
     /// This is the background service that runs with the systemd peppy service.
@@ -71,18 +64,18 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Init { node_name, in_dir } => InitCommand { node_name, in_dir }.execute(),
+        Commands::Init { node_name, in_dir } => init::InitCommand { node_name, in_dir }.execute(),
         Commands::Serve {
             engine,
             config_path,
-        } => ServeCommand {
+        } => serve::ServeCommand {
             engine,
             config_path,
         }
         .execute(),
-        Commands::Pixi { args } => PixiCommand { args }.execute(),
-        Commands::Sync { file } => SyncCommand { file }.execute(),
-        Commands::Node { command } => NodeCommand { command }.execute(),
+        Commands::Pixi { args } => pixi::PixiCommand { args }.execute(),
+        Commands::Sync { file } => sync::SyncCommand { file }.execute(),
+        Commands::Node { command } => node::NodeCommand { command }.execute(),
     };
 
     if let Err(e) = result {

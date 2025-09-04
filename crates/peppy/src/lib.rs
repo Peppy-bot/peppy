@@ -1,5 +1,7 @@
+mod commands;
 mod error;
-mod pixi;
 
-pub use self::error::{Error, Result};
-pub mod commands;
+pub use commands::*;
+pub use pixi::*;
+
+pub use error::{Error, Result};
