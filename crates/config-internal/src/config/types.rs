@@ -148,7 +148,7 @@ pub struct SubscribesTo {
     pub actions: Option<Vec<Action>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum QoSProfile {
     #[default]

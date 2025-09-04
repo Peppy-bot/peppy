@@ -337,6 +337,99 @@ node_config:
     }
 
     #[test]
+    fn test_parse_complex_config() {
+        let yaml = r#"
+node_config:
+  name: camera_driver
+  namespace: /sensors/camera
+  version: "2.1.0"
+  auto_start: true
+  respawn: true
+  respawn_delay: 2.0
+
+exposes:
+  topics:
+    - type: "sensor_msgs/Image"
+      name: "/camera/image_raw"
+      qos_profile: "sensor_data"
+    - type: "sensor_msgs/CameraInfo"
+      name: "/camera/info"
+      qos_profile: "standard"
+  services:
+    - type: "std_srvs/SetBool"
+      name: "/camera/enable"
+      qos_profile: "reliable"
+  actions: []
+
+subscribes_to:
+  topics:
+    - type: "std_msgs/String"
+      name: "/camera/command"
+      qos_profile: "reliable"
+
+resources:
+  max_memory_mb: 512
+
+logging:
+  min_level: "warn"
+  file_path: "/var/log/camera.log"
+  max_file_size_mb: 100
+  format: "text"
+"#;
+        let config = NodeConfigParser::from_content(yaml).unwrap();
+
+        // Verify node config
+        assert_eq!(config.node_config.name.as_str(), "camera_driver");
+        assert_eq!(config.node_config.namespace.as_str(), "/sensors/camera");
+        assert_eq!(config.node_config.version, "2.1.0");
+        assert!(config.node_config.auto_start.unwrap());
+        assert!(config.node_config.respawn.unwrap());
+        assert_eq!(config.node_config.respawn_delay, Some(2.0));
+
+        // Verify exposes
+        let exposes = config.exposes.unwrap();
+        assert_eq!(exposes.topics.as_ref().unwrap().len(), 2);
+        assert_eq!(exposes.services.as_ref().unwrap().len(), 1);
+        assert_eq!(exposes.actions.as_ref().unwrap().len(), 0);
+
+        // Verify topics content
+        let topics = exposes.topics.unwrap();
+        assert_eq!(topics[0].topic_type, "sensor_msgs/Image");
+        assert_eq!(topics[0].name, "/camera/image_raw");
+        assert_eq!(topics[0].qos_profile, QoSProfile::SensorData);
+
+        assert_eq!(topics[1].topic_type, "sensor_msgs/CameraInfo");
+        assert_eq!(topics[1].name, "/camera/info");
+        assert_eq!(topics[1].qos_profile, QoSProfile::Standard);
+
+        // Verify services content
+        let services = exposes.services.unwrap();
+        assert_eq!(services[0].service_type, "std_srvs/SetBool");
+        assert_eq!(services[0].name, "/camera/enable");
+        assert_eq!(services[0].qos_profile, QoSProfile::Reliable);
+
+        // Verify subscribes_to
+        let subscribes_to = config.subscribes_to.unwrap();
+        assert_eq!(subscribes_to.topics.as_ref().unwrap().len(), 1);
+
+        // Verify subscribes_to content
+        let topics = subscribes_to.topics.unwrap();
+        assert_eq!(topics[0].topic_type, "std_msgs/String");
+        assert_eq!(topics[0].name, "/camera/command");
+        assert_eq!(topics[0].qos_profile, QoSProfile::Reliable);
+
+        // Verify resources
+        assert_eq!(config.resources.unwrap().max_memory_mb, Some(512));
+
+        // Verify logging
+        let logging = config.logging.unwrap();
+        assert_eq!(logging.min_level, "warn");
+        assert_eq!(logging.file_path, Some(String::from("/var/log/camera.log")));
+        assert_eq!(logging.max_file_size_mb, Some(100));
+        assert_eq!(logging.format, LogFormat::Text);
+    }
+
+    #[test]
     fn test_parse_full_node_config() {
         let yaml = r#"
 node_config:
@@ -497,68 +590,6 @@ logging:
     }
 
     #[test]
-    fn test_parse_complex_config() {
-        let yaml = r#"
-node_config:
-  name: camera_driver
-  namespace: /sensors/camera
-  version: "2.1.0"
-  auto_start: true
-  respawn: true
-  respawn_delay: 2.0
-
-exposes:
-  topics:
-    - type: "sensor_msgs/Image"
-      name: "/camera/image_raw"
-      qos_profile: "sensor_data"
-    - type: "sensor_msgs/CameraInfo"
-      name: "/camera/info"
-      qos_profile: "standard"
-  services:
-    - type: "std_srvs/SetBool"
-      name: "/camera/enable"
-      qos_profile: "reliable"
-
-subscribes_to:
-  topics:
-    - type: "std_msgs/String"
-      name: "/camera/command"
-      qos_profile: "reliable"
-
-resources:
-  max_memory_mb: 512
-
-logging:
-  min_level: "warn"
-  file_path: "/var/log/camera.log"
-  max_file_size_mb: 100
-  format: "text"
-"#;
-        let config = NodeConfigParser::from_content(yaml).unwrap();
-
-        // Verify node config
-        assert_eq!(config.node_config.name.as_str(), "camera_driver");
-        assert_eq!(config.node_config.namespace.as_str(), "/sensors/camera");
-        assert_eq!(config.node_config.version, "2.1.0");
-
-        // Verify exposes
-        let exposes = config.exposes.unwrap();
-        assert_eq!(exposes.topics.as_ref().unwrap().len(), 2);
-        assert_eq!(exposes.services.as_ref().unwrap().len(), 1);
-
-        // Verify subscribes_to
-        let subscribes_to = config.subscribes_to.unwrap();
-        assert_eq!(subscribes_to.topics.as_ref().unwrap().len(), 1);
-
-        // Verify resources
-        assert_eq!(config.resources.unwrap().max_memory_mb, Some(512));
-
-        // Verify logging
-        assert_eq!(config.logging.unwrap().min_level, "warn");
-    }
-
-    #[test]
     fn test_empty_yaml() {
         let yaml = "";
         let result = NodeConfigParser::from_content(yaml);
@@ -644,121 +675,5 @@ exposes:
         assert_eq!(topics[0].topic_type, ""); // default empty string
         assert_eq!(topics[0].name, "/topic_without_type");
         assert!(matches!(topics[0].qos_profile, QoSProfile::Standard)); // default
-    }
-
-    // ------------- The tests below this line might be redundant
-    #[test]
-    fn test_parse_simple_node_yaml() {
-        let yaml_content = r#"
-node_config:
-  name: "camera_node"
-  namespace: "/sensors"
-  version: "1.0.0"
-  auto_start: true
-
-exposes:
-  topics:
-    - type: "configuration/metadata"
-      name: "/root_node/status"
-      qos_profile: "standard"
-  services:
-    - type: "standard/set_bool"
-      name: "/camera/enable"
-      callback: "handle_camera_enable"
-"#;
-
-        let config = NodeConfigParser::from_content(yaml_content).unwrap();
-
-        assert_eq!(config.node_config.name.as_str(), "camera_node");
-        assert_eq!(config.node_config.namespace.as_str(), "/sensors");
-        assert_eq!(config.node_config.version, "1.0.0");
-        assert_eq!(config.node_config.auto_start, Some(true));
-
-        let exposes = config.exposes.unwrap();
-
-        // Test topics
-        let topics = exposes.topics.unwrap();
-        assert_eq!(topics.len(), 1);
-        let topic = &topics[0];
-        assert_eq!(topic.topic_type.as_str(), "configuration/metadata");
-        assert_eq!(topic.name.as_str(), "/root_node/status");
-        assert!(matches!(topic.qos_profile, QoSProfile::Standard));
-
-        // Test services
-        let services = exposes.services.unwrap();
-        assert_eq!(services.len(), 1);
-        let service = &services[0];
-        assert_eq!(service.service_type.as_str(), "standard/set_bool");
-        assert_eq!(service.name.as_str(), "/camera/enable");
-        assert!(matches!(service.qos_profile, QoSProfile::Standard));
-    }
-
-    #[test]
-    fn test_parse_root_node_yaml() {
-        let yaml_content = r#"
-node_config:
-  is_root: true
-  name: "my_robot_1"
-  namespace: "/"
-  version: "0.1.0"
-  respawn: true
-  respawn_delay: 1.0
-"#;
-
-        let config = NodeConfigParser::from_content(yaml_content).unwrap();
-
-        assert_eq!(config.node_config.name.as_str(), "my_robot_1");
-        assert!(config.node_config.respawn.unwrap());
-    }
-
-    #[test]
-    fn test_parse_peppy_yaml_config() {
-        // Write a test configuration based on the example
-        let yaml_content = r#"
-node_config:
-  name: "root_node"
-  namespace: "/"
-  version: "0.1.0"
-  auto_start: true
-  respawn: false
-  respawn_delay: 2.0
-
-node_parameters:
-
-exposes:
-  topics: []
-  services: []
-  actions: []
-
-resources:
-  max_memory_mb: 512
-
-logging:
-  min_level: "info"
-  file_path: "/var/log/peppy/peppy_root.log"
-  max_file_size_mb: 100
-  format: "text"
-"#;
-
-        // Parse the configuration
-        let config = NodeConfigParser::from_content(yaml_content).unwrap();
-
-        // Verify the parsed values
-        assert_eq!(config.node_config.name.as_str(), "root_node");
-        assert_eq!(config.node_config.namespace.as_str(), "/");
-        assert_eq!(config.node_config.version, "0.1.0");
-        assert!(config.node_config.auto_start.unwrap());
-        assert!(!config.node_config.respawn.unwrap());
-        assert_eq!(config.node_config.respawn_delay, Some(2.0));
-        let resources = config.resources.unwrap();
-        assert_eq!(resources.max_memory_mb, Some(512));
-        let logging = config.logging.unwrap();
-        assert_eq!(logging.min_level, "info");
-        assert_eq!(
-            logging.file_path,
-            Some(String::from("/var/log/peppy/peppy_root.log"))
-        );
-        assert_eq!(logging.max_file_size_mb, Some(100));
-        assert_eq!(logging.format, LogFormat::Text);
     }
 }

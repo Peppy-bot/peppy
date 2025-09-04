@@ -104,9 +104,6 @@ impl NodeConfigCreator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::NodeConfigBuilder;
-    use std::fs;
-    use tempfile::tempdir;
 
     #[test]
     fn test_root_node_content_validation() {
@@ -130,16 +127,13 @@ logging:
   format: text
 "#
         );
+        let template =
+            NodeConfigCreator::from_template(&ConfigTemplateType::RootNode, Some(node_name), None)
+                .unwrap();
 
-        let dir = tempdir().unwrap();
-        let file_path = dir.path().join("peppy.yaml");
-        NodeConfigBuilder::from_template(ConfigTemplateType::RootNode)
-            .with_name(node_name)
-            .write_to(&file_path)
-            .unwrap();
-
-        let written_content = fs::read_to_string(&file_path).unwrap();
-        assert_eq!(written_content, expected_content);
+        // Convert NodeConfig to YAML string for comparison
+        let yaml_output = serde_yaml::to_string(&template).unwrap();
+        assert_eq!(yaml_output, expected_content);
     }
 
     #[test]
@@ -157,23 +151,21 @@ logging:
 "#
         );
 
-        let dir = tempdir().unwrap();
-        let file_path = dir.path().join("peppy.yaml");
-        NodeConfigBuilder::from_template(ConfigTemplateType::SimpleNode)
-            .with_name(node_name)
-            .with_namespace(namespace)
-            .write_to(&file_path)
-            .unwrap();
-
-        let written_content = fs::read_to_string(&file_path).unwrap();
-        assert_eq!(written_content, expected_content);
+        let template = NodeConfigCreator::from_template(
+            &ConfigTemplateType::SimpleNode,
+            Some(node_name),
+            Some(namespace),
+        )
+        .unwrap();
+        // Convert NodeConfig to YAML string for comparison
+        let yaml_output = serde_yaml::to_string(&template).unwrap();
+        assert_eq!(yaml_output, expected_content);
     }
 
     #[test]
     fn test_full_node_content_validation() {
         let node_name = "root_node";
         let namespace = "/ns";
-        let max_memory_mb = 1024;
         let expected_content = format!(
             r#"node_config:
   name: {node_name}
@@ -182,7 +174,7 @@ logging:
   respawn: true
   respawn_delay: 1.0
 resources:
-  max_memory_mb: {max_memory_mb}
+  max_memory_mb: 1024
 logging:
   min_level: info
   file_path: .pixi/envs/default/var/log/peppy/root_node_node.log
@@ -190,18 +182,14 @@ logging:
   format: text
 "#
         );
-
-        let dir = tempdir().unwrap();
-        let file_path = dir.path().join("peppy.yaml");
-
-        NodeConfigBuilder::from_template(ConfigTemplateType::FullNode)
-            .with_name(node_name)
-            .with_namespace(namespace)
-            .with_max_memory_mb(max_memory_mb)
-            .write_to(&file_path)
-            .unwrap();
-
-        let written_content = fs::read_to_string(&file_path).unwrap();
-        assert_eq!(written_content, expected_content);
+        let template = NodeConfigCreator::from_template(
+            &ConfigTemplateType::FullNode,
+            Some(node_name),
+            Some(namespace),
+        )
+        .unwrap();
+        // Convert NodeConfig to YAML string for comparison
+        let yaml_output = serde_yaml::to_string(&template).unwrap();
+        assert_eq!(yaml_output, expected_content);
     }
 }
