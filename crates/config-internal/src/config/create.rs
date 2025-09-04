@@ -1,3 +1,9 @@
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
+
 use super::types::{
     ConfigTemplateType, Exposes, Logging, Name, Namespace, NodeConfig, QoSProfile, Resources, Topic,
 };
@@ -5,6 +11,28 @@ use crate::{
     config::types::LogFormat,
     error::{Error, Result},
 };
+
+impl NodeConfig {
+    /// Builds and writes the configuration to a file
+    pub fn write_to(self, path: impl AsRef<Path>) -> Result<PathBuf> {
+        let path = path.as_ref();
+
+        // Serialize the populated config back to YAML
+        // FIXME: Replace deprecated serde_yaml when a good alternative pops up, like `saphyr-serde`
+        let yaml = serde_yaml::to_string(&self)
+            .map_err(|e| Error::ConfigParse(format!("Failed to serialize YAML: {}", e)))?;
+
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let mut file = fs::File::create(path)?;
+        file.write_all(yaml.as_bytes())?;
+
+        Ok(path.to_path_buf())
+    }
+}
 
 pub struct NodeConfigCreator;
 
@@ -104,6 +132,8 @@ impl NodeConfigCreator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn test_root_node_content_validation() {
@@ -131,8 +161,12 @@ logging:
             NodeConfigCreator::from_template(&ConfigTemplateType::RootNode, Some(node_name), None)
                 .unwrap();
 
-        // Convert NodeConfig to YAML string for comparison
-        let yaml_output = serde_yaml::to_string(&template).unwrap();
+        // Write to a temporary file and read back the content
+        let temp_file = NamedTempFile::new().unwrap();
+        let temp_path = temp_file.path().to_path_buf();
+        template.write_to(&temp_path).unwrap();
+        let yaml_output = fs::read_to_string(&temp_path).unwrap();
+
         assert_eq!(yaml_output, expected_content);
     }
 
@@ -157,8 +191,13 @@ logging:
             Some(namespace),
         )
         .unwrap();
-        // Convert NodeConfig to YAML string for comparison
-        let yaml_output = serde_yaml::to_string(&template).unwrap();
+
+        // Write to a temporary file and read back the content
+        let temp_file = NamedTempFile::new().unwrap();
+        let temp_path = temp_file.path().to_path_buf();
+        template.write_to(&temp_path).unwrap();
+        let yaml_output = fs::read_to_string(&temp_path).unwrap();
+
         assert_eq!(yaml_output, expected_content);
     }
 
@@ -188,8 +227,13 @@ logging:
             Some(namespace),
         )
         .unwrap();
-        // Convert NodeConfig to YAML string for comparison
-        let yaml_output = serde_yaml::to_string(&template).unwrap();
+
+        // Write to a temporary file and read back the content
+        let temp_file = NamedTempFile::new().unwrap();
+        let temp_path = temp_file.path().to_path_buf();
+        template.write_to(&temp_path).unwrap();
+        let yaml_output = fs::read_to_string(&temp_path).unwrap();
+
         assert_eq!(yaml_output, expected_content);
     }
 }

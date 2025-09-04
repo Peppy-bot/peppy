@@ -5,7 +5,7 @@ mod rust;
 
 use super::types::{Language, NodeName};
 use crate::{Error, Result};
-use config::{ConfigTemplateType, NodeConfigBuilder};
+use config::{ConfigTemplateType, NodeConfigCreator};
 use factory::create_factory;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -109,15 +109,17 @@ pub fn create_peppy_node_config(node_path: &Path, node_name: &str, full: bool) -
     let peppy_yaml_path = node_path.join("peppy.yaml");
 
     let builder = if full {
-        NodeConfigBuilder::from_template(ConfigTemplateType::FullNode)
+        NodeConfigCreator::from_template(&ConfigTemplateType::FullNode, Some(node_name), Some("/"))
     } else {
-        NodeConfigBuilder::from_template(ConfigTemplateType::SimpleNode)
+        NodeConfigCreator::from_template(
+            &ConfigTemplateType::SimpleNode,
+            Some(node_name),
+            Some("/"),
+        )
     };
 
     builder
-        .with_name(node_name)
-        .with_namespace("/")
-        .with_logging_level("info")
+        .map_err(Error::PeppyConfigError)?
         .write_to(&peppy_yaml_path)
         .map_err(Error::PeppyConfigError)?;
 
