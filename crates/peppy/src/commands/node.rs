@@ -36,7 +36,7 @@ pub enum NodeCommands {
     Run {
         /// Name of the node to start. If it isn't found in the current network, it will be pulled from the nodes.peppy.bot repo
         node_name: NodeName,
-        /// Optional: path to the configuration file. If provided, will attempt to run that node directly from that path
+        /// Optional: path to the configuration file. If provided, will attempt to run that node directly from that path and add it to the node list
         #[arg(long)]
         configuration_file: Option<PathBuf>,
     },
