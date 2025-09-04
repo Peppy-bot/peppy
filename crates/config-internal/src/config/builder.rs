@@ -183,3 +183,46 @@ impl NodeConfigBuilder {
         Ok(path.to_path_buf())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_build_full_node_with_max_memory() {
+        let node_name = "root_node";
+        let namespace = "/ns";
+        let max_memory_mb = 1056;
+        let expected_content = format!(
+            r#"node_config:
+  name: {node_name}
+  namespace: {namespace}
+  version: 0.1.0
+  respawn: true
+  respawn_delay: 1.0
+resources:
+  max_memory_mb: {max_memory_mb}
+logging:
+  min_level: info
+  file_path: .pixi/envs/default/var/log/peppy/root_node_node.log
+  max_file_size_mb: 10
+  format: text
+"#
+        );
+
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("peppy.yaml");
+
+        NodeConfigBuilder::from_template(ConfigTemplateType::FullNode)
+            .with_name(node_name)
+            .with_namespace(namespace)
+            .with_max_memory_mb(max_memory_mb)
+            .write_to(&file_path)
+            .unwrap();
+
+        let written_content = fs::read_to_string(&file_path).unwrap();
+        assert_eq!(written_content, expected_content);
+    }
+}
