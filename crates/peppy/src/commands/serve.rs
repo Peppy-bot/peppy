@@ -19,39 +19,6 @@ pub trait ServeAsyncCommand: Send + Sync {
     fn execute_async(&self) -> Result<JoinHandle<Result<()>>>;
 }
 
-impl ServeAsyncCommand for Messenger {
-    fn execute_async(&self) -> Result<JoinHandle<Result<()>>> {
-        let context = self.context.clone();
-
-        let handle = tokio::spawn(async move {
-            let mut messenger =
-                Messenger::new(context).map_err(Error::PeppyMessagingInterfaceError)?;
-
-            // Starts the zenoh router
-            info!("Starting the messaging router...");
-            messenger
-                .start_router()
-                .await
-                .map_err(Error::PeppyMessagingInterfaceError)?;
-
-            // Keep the messenger alive until shutdown signal (Ctrl+C)
-            tokio::signal::ctrl_c().await.map_err(|e| {
-                Error::ExecutionFailed(format!("Failed to listen for ctrl-c: {}", e))
-            })?;
-
-            info!("Shutting down the messaging router...");
-            messenger
-                .stop_router()
-                .await
-                .map_err(Error::PeppyMessagingInterfaceError)?;
-
-            Ok(())
-        });
-
-        Ok(handle)
-    }
-}
-
 #[derive(Default)]
 pub struct CompositeCommand {
     commands: Vec<Box<dyn ServeSyncCommand>>,
@@ -138,5 +105,38 @@ impl Command for ServeCommand {
             error!("Serve command failed: {}", e);
         }
         Ok(())
+    }
+}
+
+impl ServeAsyncCommand for Messenger {
+    fn execute_async(&self) -> Result<JoinHandle<Result<()>>> {
+        let context = self.context.clone();
+
+        let handle = tokio::spawn(async move {
+            let mut messenger =
+                Messenger::new(context).map_err(Error::PeppyMessagingInterfaceError)?;
+
+            // Starts the zenoh router
+            info!("Starting the messaging router...");
+            messenger
+                .start_router()
+                .await
+                .map_err(Error::PeppyMessagingInterfaceError)?;
+
+            // Keep the messenger alive until shutdown signal (Ctrl+C)
+            tokio::signal::ctrl_c().await.map_err(|e| {
+                Error::ExecutionFailed(format!("Failed to listen for ctrl-c: {}", e))
+            })?;
+
+            info!("Shutting down the messaging router...");
+            messenger
+                .stop_router()
+                .await
+                .map_err(Error::PeppyMessagingInterfaceError)?;
+
+            Ok(())
+        });
+
+        Ok(handle)
     }
 }
