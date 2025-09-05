@@ -28,8 +28,8 @@ exposes:
 subscribes_to:
   topics:
     # Subscribes to the current root_node status but also any node that emits to `/root_node/status`
-    - node: "{any}:0.1.0" # `{any}:0.1.0` means any node that emits on  `/root_node/status` with a version of `0.1.0`.
-      # When `{any}` is used, no node will be automatically pulled, only the ones that already exist in the network will be considered
+    - node: "{any}:0.1.0" # `{any}:0.1.0` means any node that emits on `/root_node/status` with a version of `0.1.0`.
+      # `{any}:{any}` can also be used to list to any node on any version on `/root_node/status`
       name: "/root_node/status" # The name of the topic of the `{any}:0.1.0` nodes we're interested in
       namespace: "/" # In what ns is this node deployed? (Or will be deployed to if not present)
       callback: "on_node_status_received" # The code callback that will automatically be exposed in the Rust/Python code via auto code generation

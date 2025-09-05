@@ -24,8 +24,8 @@ node_parameters:
 
 subscribes_to:
   topics:
-    - node: "uvc_camera:0.1.0" # Will pull this particular version if specified, otherwise pulls the most recent one (always specify it to avoid breaking changes if pulled from nodes.peppy.bot)
-      namespace: "/" # In what ns is this node deployed? (Or will be deployed to if not present)
+    - node: "uvc_camera:0.1.0" # Will look for that node on that particular version on the network
+      namespace: "/" # In what ns is this node deployed?
       name: "/camera/video_feed" # The name of the topic of the `uvc_camera` node we're interested in
       callback: "on_handle_video_feed" # The code callback that will automatically be exposed in the Rust/Python code via auto code generation
 
