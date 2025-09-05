@@ -109,6 +109,7 @@ impl Command for ServeCommand {
 }
 
 impl ServeAsyncCommand for Messenger {
+    // TODO: Only one instance of `serve` can run on a given machine (prod or dev included). Check the port and PID to make sure there isn't more than one instance running
     fn execute_async(&self) -> Result<JoinHandle<Result<()>>> {
         let context = self.context.clone();
 

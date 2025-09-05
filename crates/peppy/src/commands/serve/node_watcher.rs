@@ -1,39 +1,67 @@
-//use super::types::{CommandContext, ServeAsyncCommand};
+mod filesystem;
+mod network;
+mod types;
 
 use crate::Result;
-use tokio::task::JoinHandle;
+use crate::consts::PEPPY_CONFIG_FILE;
+use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::info;
+use types::NodeDetectionEvent;
 
-pub struct NodeWatcherCommand {}
+pub struct NodeWatcher {}
 
-impl NodeWatcherCommand {
-    // Use the following design pattern in this module:
-    // Observer Pattern for Node Watching
-    //
-    // The node_watcher.rs could be enhanced with:
-    // - A proper event system where components can subscribe to node configuration changes
-    // - This would decouple the watcher from its consumers
-    // - Makes it easier to add new reactions to configuration changes
-
-    // The goal of this module is to observe the change in `peppy.star` configuration files the `peppy.star` root configuration is pointing to.
-    // If a file has changed, the watcher should notify all subscribers about the change.
-    // Beyond configuration file change, a node can also communicate with other nodes via pubsub even tho this node is not part of the file configuration of the current project.
+impl NodeWatcher {
+    // TODO: Accumulate all the nodes into a Vec<NodeConfig> and pass them into a function that handles the business logic
     // The node_watcher should specify what type event has been detected, for example if it's an internal event (a file belonging to this project has changed) or an external event (a node outside this project has joined the network of nodes).
-    // The main subscriber to this node_watcher is the python dependency or the Rust crate that is automatically generated inside the .pixi virtualenv (and added to pixi.toml) when a file configuration changes.
-    fn watch_node_configuration_files_changes() {
+    async fn watch_nodes() -> Result<()> {
+        let (tx, mut rx) = mpsc::channel(100);
+        // 1. Starting from its root directory, look for all the `PEPPY_CONFIG_FILE` configurations
+        let root_dir = std::env::current_dir().expect("Failed to get current directory");
+        let initial_config_files = filesystem::find_peppy_nodes_from_dir(&root_dir);
+
         info!(
-            "Run a separate thread that watches changes on peppy.star and updates the pixi envs accordingly"
+            "Found {} initial {} files in {:?}",
+            initial_config_files.len(),
+            PEPPY_CONFIG_FILE,
+            root_dir
         );
+
+        // 2. Spawn file watcher - watches current dir recursively
+        let tx_files = tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = filesystem::watch_files(tx_files, root_dir).await {
+                eprintln!("File watcher failed: {:?}", e);
+            }
+        });
+
+        // 3. Spawn network event producer, nodes can be outside the `root_dir` so they have to be detected on the network
+        let tx_net = tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = network::network_events(tx_net).await {
+                eprintln!("Network watcher failed: {:?}", e);
+            }
+        });
+
+        // Aggregate: receive from unified event channel
+        while let Some(event) = rx.recv().await {
+            match event {
+                NodeDetectionEvent::FileEvent(file_event) => {
+                    println!("File event: {:?}", file_event);
+                }
+                NodeDetectionEvent::NetworkEvent(uri) => {
+                    println!("Network event: {:?}", uri);
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
-impl super::ServeAsyncCommand for NodeWatcherCommand {
+impl super::ServeAsyncCommand for NodeWatcher {
     fn execute_async(&self) -> Result<JoinHandle<Result<()>>> {
-        let handle = tokio::spawn(async move {
-            NodeWatcherCommand::watch_node_configuration_files_changes();
-            Ok(())
-        });
-
-        Ok(handle)
+        Ok(tokio::spawn(
+            async move { NodeWatcher::watch_nodes().await },
+        ))
     }
 }
