@@ -1,16 +1,21 @@
 # A simple node that emits video frames from a UVC camera
-
 node_config:
   name: "uvc_camera"
   namespace: "/"
   version: "0.1.0"
+  auto_start: false # Can be started with the `/camera/enable` service
   tags:
     - "uvc"
     - "camera"
     - "usb"
   respawn: true
   respawn_delay: 5.0
+  # When pull is set to `true`, `peppy` will attempt to pull the node from nodes.peppy.bot
+  # based on the node_config.name and node_config.version
+  # Any configuration that is defined within that configuration file will overwrite the one defined in the remote node
+  pull: true
 
+# Parameters before the node starts
 node_parameters:
   video:
     device_path: "/dev/video5"
@@ -25,17 +30,16 @@ exposes:
     - name: "/camera/video_feed"
       type: "sensor_message/image"
       qos_profile: "sensor_data"
-  # FIXME: Those belong to parameters
-  #      message_format:
-  #        header:
-  #          stamp: "time"
-  #        encoding: str # "rgb8", "bgr8", "yuyv", "mjpeg"
-  #        width: uint32
-  #        height: uint32
-  #        image:
-  #          - uint8
-  #          - uint8
-  #          - uint8
+      message_format:
+        header:
+          stamp: "time"
+        encoding: str # "rgb8", "bgr8", "yuyv", "mjpeg"
+        width: uint32
+        height: uint32
+        image:
+          - uint8
+          - uint8
+          - uint8
   services:
     - type: "standard/set_bool"
       name: "/camera/enable"
