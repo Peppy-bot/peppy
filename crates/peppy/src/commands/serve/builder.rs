@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use super::CompositeCommand;
 use super::Serve;
-use super::node_watcher::NodeWatcherCommand;
+use super::node_watcher::NodeWatcher;
 use pmi::{MessagingEngineContext, Messenger};
 
 pub struct ServeCommandBuilder {
@@ -20,7 +20,7 @@ impl ServeCommandBuilder {
     }
 
     pub fn with_node_watcher(mut self) -> Self {
-        let watcher = Box::new(NodeWatcherCommand {});
+        let watcher = Box::new(NodeWatcher {});
         self.composite_command = self.composite_command.add_async_command(watcher);
         self
     }
