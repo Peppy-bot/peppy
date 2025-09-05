@@ -13,15 +13,15 @@ impl Command for PixiCommand {
     fn execute(self) -> Result<()> {
         // Use current directory as working directory
         let current_dir = std::env::current_dir()
-            .map_err(|e| Error::PixiError(format!("Failed to get current directory: {}", e)))?;
+            .map_err(|e| Error::Pixi(format!("Failed to get current directory: {}", e)))?;
 
         let pixi_facade =
-            facade::PixiFacade::new(current_dir).map_err(|e| Error::PixiError(e.to_string()))?;
+            facade::PixiFacade::new(current_dir).map_err(|e| Error::Pixi(e.to_string()))?;
 
         // Use execute_with_status to preserve original exit code behavior
         let status = pixi_facade
             .execute_with_status(&self.args)
-            .map_err(|e| Error::PixiError(e.to_string()))?;
+            .map_err(|e| Error::Pixi(e.to_string()))?;
 
         if !status.success() {
             std::process::exit(status.code().unwrap_or(1));

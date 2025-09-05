@@ -11,7 +11,7 @@ pub struct SyncCommand {
 impl Command for SyncCommand {
     fn execute(self) -> Result<()> {
         let current_dir = std::env::current_dir()
-            .map_err(|e| Error::SyncError(format!("Failed to get current directory: {}", e)))?;
+            .map_err(|e| Error::Sync(format!("Failed to get current directory: {}", e)))?;
 
         let full_path = if self.file.is_relative() {
             current_dir.join(self.file.strip_prefix("./").unwrap_or(&self.file))

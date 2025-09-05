@@ -74,7 +74,7 @@ pub fn create_pixi_toml(
 
     let pixi_content = template
         .render()
-        .map_err(|e| Error::AskamaError(e.to_string()))?;
+        .map_err(|e| Error::Askama(e.to_string()))?;
     file.write_all(pixi_content.as_bytes())?;
 
     // Create PixiFacade instance with node path as working directory

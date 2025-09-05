@@ -114,15 +114,14 @@ impl ServeAsyncCommand for Messenger {
         let context = self.context.clone();
 
         let handle = tokio::spawn(async move {
-            let mut messenger =
-                Messenger::new(context).map_err(Error::PeppyMessagingInterfaceError)?;
+            let mut messenger = Messenger::new(context).map_err(Error::PeppyMessagingInterface)?;
 
             // Starts the zenoh router
             info!("Starting the messaging router...");
             messenger
                 .start_router()
                 .await
-                .map_err(Error::PeppyMessagingInterfaceError)?;
+                .map_err(Error::PeppyMessagingInterface)?;
 
             // Keep the messenger alive until shutdown signal (Ctrl+C)
             tokio::signal::ctrl_c().await.map_err(|e| {
@@ -133,7 +132,7 @@ impl ServeAsyncCommand for Messenger {
             messenger
                 .stop_router()
                 .await
-                .map_err(Error::PeppyMessagingInterfaceError)?;
+                .map_err(Error::PeppyMessagingInterface)?;
 
             Ok(())
         });

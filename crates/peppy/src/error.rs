@@ -15,9 +15,9 @@ pub enum Error {
 
     // -- commands
     ExecutionFailed(String),
-    PixiError(String),
-    ZenohdError(String),
-    SyncError(String),
+    Pixi(String),
+    Zenohd(String),
+    Sync(String),
 
     // -- Node
     RootConfigurationNotFound,
@@ -34,13 +34,13 @@ pub enum Error {
     NodeWatcher(String),
 
     // -- pmi-internal
-    PeppyMessagingInterfaceError(pmi::PeppyMessagingInterfaceError),
+    PeppyMessagingInterface(pmi::PeppyMessagingInterfaceError),
 
     // -- config-internal
-    PeppyConfigError(config::ConfigError),
+    PeppyConfig(config::ConfigError),
 
     // -- libs
-    AskamaError(String),
+    Askama(String),
 }
 
 impl Display for Error {
