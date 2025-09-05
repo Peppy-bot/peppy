@@ -119,9 +119,9 @@ pub fn create_peppy_node_config(node_path: &Path, node_name: &str, full: bool) -
     };
 
     builder
-        .map_err(Error::PeppyConfigError)?
+        .map_err(Error::PeppyConfig)?
         .write_to(&peppy_yaml_path)
-        .map_err(Error::PeppyConfigError)?;
+        .map_err(Error::PeppyConfig)?;
 
     info!(
         "Created {} node in {}",

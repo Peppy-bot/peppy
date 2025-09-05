@@ -33,9 +33,9 @@ pub fn init_root_node(path: impl AsRef<Path>, name: &str) -> Result<PathBuf> {
     let peppy_yaml_path = path.join("peppy.yaml");
 
     NodeConfigCreator::from_template(&ConfigTemplateType::RootNode, Some(name), Some("/"))
-        .map_err(Error::PeppyConfigError)?
+        .map_err(Error::PeppyConfig)?
         .write_to(&peppy_yaml_path)
-        .map_err(Error::PeppyConfigError)?;
+        .map_err(Error::PeppyConfig)?;
 
     info!("Created root node at {}", peppy_yaml_path.display());
     Ok(peppy_yaml_path)
