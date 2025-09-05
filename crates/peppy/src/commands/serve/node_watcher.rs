@@ -11,7 +11,7 @@ use types::NodeDetectionEvent;
 pub struct NodeWatcher {}
 
 impl NodeWatcher {
-    // TODO: Accumulate all the nodes into a Vec<NodeConfig> and pass them into a function that handles the business logic
+    // TODO: Accumulate all the nodes into a Vec<Node> and pass them into a function that handles the business logic
     // The node_watcher should specify what type event has been detected, for example if it's an internal event (a file belonging to this project has changed) or an external event (a node outside this project has joined the network of nodes).
     async fn watch_nodes() -> Result<()> {
         let (tx, mut rx) = mpsc::channel(100);
@@ -26,6 +26,9 @@ impl NodeWatcher {
             root_dir
         );
 
+        // TODO: Allow the user to start `serve` on a given network
+        let initial_network_config_files = network::find_peppy_nodes_on_network(None);
+
         // 2. Spawn file watcher - watches current dir recursively
         let tx_files = tx.clone();
         tokio::spawn(async move {
@@ -37,7 +40,7 @@ impl NodeWatcher {
         // 3. Spawn network event producer, nodes can be outside the `root_dir` so they have to be detected on the network
         let tx_net = tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = network::network_events(tx_net).await {
+            if let Err(e) = network::watch_network_nodes(tx_net).await {
                 eprintln!("Network watcher failed: {:?}", e);
             }
         });

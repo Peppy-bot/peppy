@@ -19,6 +19,8 @@ service-manager = "0.8.0"
 walkdir = "2.5"
 notify = "8.2"
 notify-debouncer-mini = "0.7"
+ipnet = "2.11"
+netdev = "0.37"
 
 [dev-dependencies]
 tempfile = "3.8"
