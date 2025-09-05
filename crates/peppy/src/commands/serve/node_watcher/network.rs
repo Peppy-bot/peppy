@@ -26,7 +26,8 @@ pub fn get_current_network() -> Option<ipnet::IpNet> {
     }
 }
 
-pub fn find_peppy_nodes_on_network(netmask: Option<ipnet::IpNet>) -> Vec<PathBuf> {
+/// Finds all the other root nodes on the same network. Those root nodes will expose their own nodes
+pub fn find_root_nodes_on_network(netmask: Option<ipnet::IpNet>) -> Vec<PathBuf> {
     let network = match netmask {
         Some(net) => net,
         None => match get_current_network() {

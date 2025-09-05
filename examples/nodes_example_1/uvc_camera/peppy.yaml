@@ -1,3 +1,4 @@
+# TODO: Make sure that the node works exactly the same if it's run on a real camera or in simulation (Mujoco/Isaac Sim)
 # A simple node that emits video frames from a UVC camera
 node_config:
   name: "uvc_camera"

@@ -27,7 +27,7 @@ impl NodeWatcher {
         );
 
         // TODO: Allow the user to start `serve` on a given network
-        let initial_network_config_files = network::find_peppy_nodes_on_network(None);
+        let initial_network_config_files = network::find_root_nodes_on_network(None);
 
         // 2. Spawn file watcher - watches current dir recursively
         let tx_files = tx.clone();
