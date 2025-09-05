@@ -1,6 +1,6 @@
 use super::types::NodeDetectionEvent;
-use crate::Result;
 use crate::consts::PEPPY_CONFIG_FILE;
+use crate::{Error, Result};
 use notify;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
@@ -34,5 +34,53 @@ pub async fn watch_files(
     tx: mpsc::Sender<NodeDetectionEvent>,
     from_dir: impl AsRef<Path>,
 ) -> Result<()> {
+    use super::types::FileEvent;
+    use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+
+    let from_dir = from_dir.as_ref().to_path_buf();
+
+    let (notify_tx, mut notify_rx) = mpsc::channel(100);
+
+    let mut watcher: RecommendedWatcher =
+        notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if let Ok(event) = res {
+                let _ = notify_tx.blocking_send(event);
+            }
+        })
+        .map_err(|e| Error::NodeWatcher(format!("Failed to create file watcher: {}", e)))?;
+
+    watcher
+        .watch(&from_dir, RecursiveMode::Recursive)
+        .map_err(|e| Error::NodeWatcher(format!("Failed to watch directory: {}", e)))?;
+
+    while let Some(event) = notify_rx.recv().await {
+        use notify::EventKind;
+
+        for path in &event.paths {
+            if path.file_name() != Some(std::ffi::OsStr::new(PEPPY_CONFIG_FILE)) {
+                continue;
+            }
+
+            let detection_event = match event.kind {
+                EventKind::Create(_) => Some(NodeDetectionEvent::FileEvent(
+                    FileEvent::NodeConfigCreated(path.clone()),
+                )),
+                EventKind::Modify(_) => Some(NodeDetectionEvent::FileEvent(
+                    FileEvent::NodeConfigModified(path.clone()),
+                )),
+                EventKind::Remove(_) => Some(NodeDetectionEvent::FileEvent(
+                    FileEvent::NodeConfigDeleted(path.clone()),
+                )),
+                _ => None,
+            };
+
+            if let Some(event) = detection_event {
+                tx.send(event).await.map_err(|e| {
+                    Error::NodeWatcher(format!("Failed to send node detection event: {}", e))
+                })?;
+            }
+        }
+    }
+
     Ok(())
 }

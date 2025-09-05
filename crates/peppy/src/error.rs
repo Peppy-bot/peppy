@@ -30,6 +30,9 @@ pub enum Error {
     RustConfigCreation(String),
     PythonConfigCreation(String),
 
+    // -- NodeWatcher
+    NodeWatcher(String),
+
     // -- pmi-internal
     PeppyMessagingInterfaceError(pmi::PeppyMessagingInterfaceError),
 
