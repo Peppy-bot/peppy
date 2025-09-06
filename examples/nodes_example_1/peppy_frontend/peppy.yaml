@@ -1,3 +1,5 @@
+# This is the example of a node that should NOT be a peppy node as its sole interaction is with the `peppy_rest_api` via http.
+# There is no reason for this node
 # Frontend node that connects to a peppy backend
 node_config:
   name: "peppy_frontend"
