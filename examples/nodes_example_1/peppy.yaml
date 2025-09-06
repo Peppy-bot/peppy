@@ -10,11 +10,14 @@
 
 node_config:
   is_root: true # There can only be a single field like this one by instance run with `peppy node serve`
+  # `name` can only have alphanumeric, underscore, or hyphen characters.
   name: "my_robot_1" # It's a good practice to give a unique name to the root node to avoid name conflicts with other root nodes under the same network
-  namespace: "/" # namespace is implicitely prefixed with `/dev` in dev environment (running outside `systemd`) and `/prod` when installed with `peppy service deploy`
+  # namespace is implicitely prefixed with `/dev` in dev environment (running outside `systemd`) and `/prod` when installed with `peppy service deploy` as well as with the root node name (so that other root nodes in the same network can easily address this one).
+  # For example, in dev, this root node and its children will be found in `/dev/my_robot_1`
+  namespace: "/"
   version: "0.1.0"
   auto_start: true # Always true for the root node
-  respawn: true
+  respawn: true # Always true for the root node
   # Always restart the root node if it crashes
   respawn_delay: 1.0 # In seconds. Only relevant when the node is installed as a `systemd` service with `peppy node deploy`
 
@@ -22,21 +25,37 @@ node_parameters:
   status:
     frequency: 1Hz # Every second the root node publishes its latest status
 
-# No `subscribes_to`. The root node cannot subscribe to any node
+subscribes_to:
+  topics:
+    # This topic discovers other root nodes on the same network, in the same namespace
+    # topic format is `namespace/<node_name>:version` where `namespace` is optional and will be automatically resolved to `/dev/<root_node_name>/` in `dev` and `/prod/<root_node_name>/` in prod
+    - name: "{any}" # Will look for any node
+      version: "{any}" # On any version
+      namespace: "/" # In `/dev` or `/prod` namespace (depending where the root node is running from)
+      type: "/peppy/status" # With that particular type
+      callback: "on_root_node_discovered" # The callback that is called when a node is discovered
+  services:
+    -  # TODO: subscribe to other root node services
 
 exposes:
   topics:
-    # Exposes its status that includes:
+    # Exposes its status for other root nodes on the same network to discover
+    - type: "/peppy/status"
+      qos_profile: "standard" # Options: "standard", "reliable", "sensor_data"
+      message_format:
+        name: str
+  services:
+    # Exposes its node status including:
     #  - Its name & configuration
     #  - The node list
-    #  - The communication channels between the nodes
     #  - etc..
-    # This publishing allow another node such as `peppy_rest_api` to aggregate root nodes statuses
-    # and expose that information under a single REST API for a frontend to consume.
-    - type: "configuration/metadata"
-      name: "/root_node/status"
-      qos_profile: "standard" # Options: "standard", "reliable", "sensor_data"
-  services: []
+    # This allows another node such as `peppy_rest_api` to aggregate root nodes statuses
+    # It also allow root nodes on the same network to discover each other and their content.
+    - type: "/peppy/node"
+      qos_profile: "standard"
+      message_format:
+        # Use that message format if the payload is subject to change
+        payload: bytes
   actions: []
 
 resources:
