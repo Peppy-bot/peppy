@@ -5,16 +5,13 @@ node_config:
   namespace: "/"
   version: "0.1.0"
   auto_start: false # Can be started with the `/camera/enable` service
+  # Tags are useful if the node is published with `peppy nodes publish`
   tags:
     - "uvc"
     - "camera"
     - "usb"
   respawn: true
-  respawn_delay: 5.0
-  # When pull is set to `true`, `peppy` will attempt to pull the node from nodes.peppy.bot
-  # based on the node_config.name and node_config.version
-  # Any configuration that is defined within that configuration file will overwrite the one defined in the remote node
-  pull: true
+  respawn_delay: 3.0
 
 # Parameters before the node starts
 node_parameters:
@@ -28,8 +25,7 @@ node_parameters:
 
 exposes:
   topics:
-    - name: "/camera/video_feed"
-      type: "sensor_message/image"
+    - type: "video_stream/image"
       qos_profile: "sensor_data"
       message_format:
         header:
@@ -43,8 +39,8 @@ exposes:
           - uint8
   services:
     - type: "standard/set_bool"
-      name: "/camera/enable"
-      callback: "handle_camera_enable"
+      message_format:
+        enable: bool
 
 subscribes_to: []
 

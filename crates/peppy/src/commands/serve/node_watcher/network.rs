@@ -27,6 +27,8 @@ pub fn get_current_network() -> Option<ipnet::IpNet> {
 }
 
 /// Finds all the other root nodes on the same network. Those root nodes will expose their own nodes
+/// Only root nodes are exposed to the network. They broadcast their status on the network for other root nodes to find them.
+/// If the current root node finds another one on the network, it connects to its /nodes service to pull its list of nodes.
 pub fn find_root_nodes_on_network(netmask: Option<ipnet::IpNet>) -> Vec<PathBuf> {
     let network = match netmask {
         Some(net) => net,
