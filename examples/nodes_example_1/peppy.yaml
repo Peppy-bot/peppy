@@ -35,7 +35,12 @@ subscribes_to:
       type: "/peppy/status" # With that particular type
       callback: "on_root_node_discovered" # The callback that is called when a node is discovered
   services:
-    -  # TODO: subscribe to other root node services
+    # Subscribe to other root nodes on the same network
+    - name: "{any}" # Will look for any node
+      version: "{any}" # On any version
+      namespace: "/" # In `/dev` or `/prod` namespace (depending where the root node is running from)
+      type: "/peppy/node"
+      callback: "on_payload_node_received" # The callback that is called when a node sends its payload
 
 exposes:
   topics:
