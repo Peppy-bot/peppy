@@ -29,13 +29,11 @@ impl NodeWatcher {
         // TODO: Allow the user to start `serve` on a given network
         let initial_network_config_files = network::find_root_nodes_on_network(None);
 
-        // 2. Spawn file watcher - watches current dir recursively
+        // 2. Initialize file watcher (returns immediately once ready)
         let tx_files = tx.clone();
-        tokio::spawn(async move {
-            if let Err(e) = filesystem::watch_files(tx_files, root_dir).await {
-                eprintln!("File watcher failed: {:?}", e);
-            }
-        });
+        if let Err(e) = filesystem::watch_files(tx_files, root_dir).await {
+            eprintln!("File watcher failed to initialize: {:?}", e);
+        }
 
         // 3. Spawn network event producer, nodes can be outside the `root_dir` so they have to be detected on the network
         let tx_net = tx.clone();

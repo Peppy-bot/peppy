@@ -6,6 +6,7 @@ use notify::event::{AccessKind, AccessMode, ModifyKind, RenameMode};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 /// Finds the `PEPPY_CONFIG_FILE` recursively starting at `from_dir`
 pub fn find_peppy_nodes_from_dir(from_dir: impl AsRef<Path>) -> Vec<PathBuf> {
@@ -58,7 +59,7 @@ fn normalize_event_path_to_base(path: &Path, base: &Path, base_canon: &Path) -> 
 pub async fn watch_files(
     tx: mpsc::Sender<NodeDetectionEvent>,
     from_dir: impl AsRef<Path>,
-) -> Result<()> {
+) -> Result<JoinHandle<Result<()>>> {
     use super::types::FileEvent;
     use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
@@ -92,92 +93,100 @@ pub async fn watch_files(
         .watch(&from_dir_abs, RecursiveMode::Recursive)
         .map_err(|e| Error::NodeWatcher(format!("Failed to watch directory: {}", e)))?;
 
-    while let Some(event) = notify_rx.recv().await {
-        for path in &event.paths {
-            if path.file_name() != Some(std::ffi::OsStr::new(PEPPY_CONFIG_FILE)) {
-                continue;
-            }
+    // Spawn the processing loop and return immediately with a handle.
+    let handle: JoinHandle<Result<()>> = tokio::spawn(async move {
+        // Keep watcher alive within this task's scope
+        let mut _watcher = watcher;
 
-            let path = normalize_event_path_to_base(path, &from_dir_abs, &from_dir_canon);
+        while let Some(event) = notify_rx.recv().await {
+            for path in &event.paths {
+                if path.file_name() != Some(std::ffi::OsStr::new(PEPPY_CONFIG_FILE)) {
+                    continue;
+                }
 
-            // Normalize platform-specific variants into our 3 high-level events
-            let detection_event = match event.kind {
-                // File created
-                notify::EventKind::Create(_) => {
-                    // Ignore create notifications for files that already existed before watching
-                    if known_configs.contains(&path) {
-                        None
-                    } else {
-                        known_configs.insert(path.clone());
-                        Some(NodeDetectionEvent::FileEvent(FileEvent::NodeConfigCreated(
-                            path.clone(),
-                        )))
+                let path = normalize_event_path_to_base(path, &from_dir_abs, &from_dir_canon);
+
+                // Normalize platform-specific variants into our 3 high-level events
+                let detection_event = match event.kind {
+                    // File created
+                    notify::EventKind::Create(_) => {
+                        // Ignore create notifications for files that already existed before watching
+                        if known_configs.contains(&path) {
+                            None
+                        } else {
+                            known_configs.insert(path.clone());
+                            Some(NodeDetectionEvent::FileEvent(FileEvent::NodeConfigCreated(
+                                path.clone(),
+                            )))
+                        }
                     }
-                }
-                // Rename events: treat rename-from as deleted and rename-to as created
-                notify::EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
-                    known_configs.remove(&path);
-                    Some(NodeDetectionEvent::FileEvent(FileEvent::NodeConfigDeleted(
-                        path.clone(),
-                    )))
-                }
-                notify::EventKind::Modify(ModifyKind::Name(RenameMode::To)) => {
-                    if !known_configs.contains(&path) {
-                        known_configs.insert(path.clone());
-                        Some(NodeDetectionEvent::FileEvent(FileEvent::NodeConfigCreated(
-                            path.clone(),
-                        )))
-                    } else {
-                        None
-                    }
-                }
-                // Any other modification: if the file no longer exists, surface as Deleted
-                notify::EventKind::Modify(_) => {
-                    let exists = path.exists();
-                    if exists {
-                        Some(NodeDetectionEvent::FileEvent(
-                            FileEvent::NodeConfigModified(path.clone()),
-                        ))
-                    } else {
+                    // Rename events: treat rename-from as deleted and rename-to as created
+                    notify::EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
                         known_configs.remove(&path);
                         Some(NodeDetectionEvent::FileEvent(FileEvent::NodeConfigDeleted(
                             path.clone(),
                         )))
                     }
-                }
-                // Some platforms (e.g. macOS) emit a close-write access instead of a modify
-                notify::EventKind::Access(AccessKind::Close(AccessMode::Write)) => {
-                    let exists = path.exists();
-                    if exists {
-                        Some(NodeDetectionEvent::FileEvent(
-                            FileEvent::NodeConfigModified(path.clone()),
-                        ))
-                    } else {
+                    notify::EventKind::Modify(ModifyKind::Name(RenameMode::To)) => {
+                        if !known_configs.contains(&path) {
+                            known_configs.insert(path.clone());
+                            Some(NodeDetectionEvent::FileEvent(FileEvent::NodeConfigCreated(
+                                path.clone(),
+                            )))
+                        } else {
+                            None
+                        }
+                    }
+                    // Any other modification: if the file no longer exists, surface as Deleted
+                    notify::EventKind::Modify(_) => {
+                        let exists = path.exists();
+                        if exists {
+                            Some(NodeDetectionEvent::FileEvent(
+                                FileEvent::NodeConfigModified(path.clone()),
+                            ))
+                        } else {
+                            known_configs.remove(&path);
+                            Some(NodeDetectionEvent::FileEvent(FileEvent::NodeConfigDeleted(
+                                path.clone(),
+                            )))
+                        }
+                    }
+                    // Some platforms (e.g. macOS) emit a close-write access instead of a modify
+                    notify::EventKind::Access(AccessKind::Close(AccessMode::Write)) => {
+                        let exists = path.exists();
+                        if exists {
+                            Some(NodeDetectionEvent::FileEvent(
+                                FileEvent::NodeConfigModified(path.clone()),
+                            ))
+                        } else {
+                            known_configs.remove(&path);
+                            Some(NodeDetectionEvent::FileEvent(FileEvent::NodeConfigDeleted(
+                                path.clone(),
+                            )))
+                        }
+                    }
+                    // File removed
+                    notify::EventKind::Remove(_) => {
                         known_configs.remove(&path);
                         Some(NodeDetectionEvent::FileEvent(FileEvent::NodeConfigDeleted(
                             path.clone(),
                         )))
                     }
-                }
-                // File removed
-                notify::EventKind::Remove(_) => {
-                    known_configs.remove(&path);
-                    Some(NodeDetectionEvent::FileEvent(FileEvent::NodeConfigDeleted(
-                        path.clone(),
-                    )))
-                }
-                _ => None,
-            };
+                    _ => None,
+                };
 
-            if let Some(event) = detection_event {
-                tx.send(event).await.map_err(|e| {
-                    Error::NodeWatcher(format!("Failed to send node detection event: {}", e))
-                })?;
+                if let Some(event) = detection_event {
+                    tx.send(event).await.map_err(|e| {
+                        Error::NodeWatcher(format!("Failed to send node detection event: {}", e))
+                    })?;
+                }
             }
         }
-    }
 
-    Ok(())
+        Ok(())
+    });
+
+    Ok(handle)
 }
 
 #[cfg(test)]
@@ -338,11 +347,8 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(10);
         let watch_dir = temp_dir.path().to_path_buf();
 
-        // Start watching in a background task
-        let watch_handle = tokio::spawn(async move { watch_files(tx, watch_dir).await });
-
-        // Give the watcher time to initialize
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Initialize watcher (await until ready) and get background handle
+        let watch_handle = watch_files(tx, watch_dir).await.expect("watcher init");
 
         // Create a peppy config file
         let peppy_file = temp_dir.path().join(PEPPY_CONFIG_FILE);
@@ -380,11 +386,8 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(10);
         let watch_dir = temp_dir.path().to_path_buf();
 
-        // Start watching
-        let watch_handle = tokio::spawn(async move { watch_files(tx, watch_dir).await });
-
-        // Give the watcher time to initialize
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Initialize watcher and get background handle
+        let watch_handle = watch_files(tx, watch_dir).await.expect("watcher init");
 
         // Modify the file
         fs::write(&peppy_file, "node: modified").unwrap();
@@ -420,11 +423,8 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(10);
         let watch_dir = temp_dir.path().to_path_buf();
 
-        // Start watching
-        let watch_handle = tokio::spawn(async move { watch_files(tx, watch_dir).await });
-
-        // Give the watcher time to initialize
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Initialize watcher and get background handle
+        let watch_handle = watch_files(tx, watch_dir).await.expect("watcher init");
 
         // Delete the file
         fs::remove_file(&peppy_file).unwrap();
@@ -454,11 +454,8 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(10);
         let watch_dir = temp_dir.path().to_path_buf();
 
-        // Start watching
-        let watch_handle = tokio::spawn(async move { watch_files(tx, watch_dir).await });
-
-        // Give the watcher time to initialize
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Initialize watcher and get background handle
+        let watch_handle = watch_files(tx, watch_dir).await.expect("watcher init");
 
         // Create non-peppy files
         fs::write(temp_dir.path().join("other.yaml"), "some: content").unwrap();
@@ -488,11 +485,8 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(10);
         let watch_dir = temp_dir.path().to_path_buf();
 
-        // Start watching
-        let watch_handle = tokio::spawn(async move { watch_files(tx, watch_dir).await });
-
-        // Give the watcher time to initialize
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Initialize watcher and get background handle
+        let watch_handle = watch_files(tx, watch_dir).await.expect("watcher init");
 
         // Create a peppy config in nested directory
         let nested_peppy = nested_dir.join(PEPPY_CONFIG_FILE);
@@ -527,11 +521,8 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(10);
         let watch_dir = temp_dir.path().to_path_buf();
 
-        // Start watching
-        let watch_handle = tokio::spawn(async move { watch_files(tx, watch_dir).await });
-
-        // Give the watcher time to initialize
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Initialize watcher and get background handle
+        let watch_handle = watch_files(tx, watch_dir).await.expect("watcher init");
 
         // Create first peppy config file
         let peppy1 = temp_dir.path().join(PEPPY_CONFIG_FILE);
@@ -567,8 +558,6 @@ mod tests {
             panic!("Expected NodeConfigModified event for peppy1");
         }
 
-        // Small delay and drain any pending modify events from the second write
-        tokio::time::sleep(Duration::from_millis(100)).await;
         while let Ok(Some(NodeDetectionEvent::FileEvent(FileEvent::NodeConfigModified(_)))) =
             timeout(Duration::from_millis(10), rx.recv()).await
         {
