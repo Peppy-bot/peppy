@@ -8,8 +8,6 @@ use tracing::info;
 pub struct NodeWatcher {}
 
 impl NodeWatcher {
-    // TODO: Accumulate all the nodes into a Vec<Node> and pass them into a function that handles the business logic
-    // The node_watcher should specify what type event has been detected, for example if it's an internal event (a file belonging to this project has changed) or an external event (a node outside this project has joined the network of nodes).
     async fn watch_nodes() -> Result<()> {
         let (tx, mut rx) = mpsc::channel(100);
         // 1. Starting from its root directory, look for all the `PEPPY_CONFIG_FILE` configurations
@@ -31,7 +29,7 @@ impl NodeWatcher {
 
         // Aggregate: receive from unified event channel
         while let Some(event) = rx.recv().await {
-            // Do something with the event
+            // Transform the files to NodeConfig
             let _ = event;
         }
 
