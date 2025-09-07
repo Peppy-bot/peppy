@@ -176,7 +176,9 @@ pub async fn watch_files(
 mod tests {
     use super::*;
     use std::fs;
+    use std::time::Duration;
     use tempfile::TempDir;
+    use tokio::time::timeout;
 
     #[test]
     fn test_find_peppy_nodes_empty_dir() {
@@ -322,10 +324,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_files_detects_created_config() {
-        use super::super::types::FileEvent;
-        use std::time::Duration;
-        use tokio::time::timeout;
-
         let temp_dir = TempDir::new().unwrap();
         let (tx, mut rx) = mpsc::channel(10);
         let watch_dir = temp_dir.path().to_path_buf();
@@ -356,10 +354,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_files_detects_modified_config() {
-        use super::super::types::FileEvent;
-        use std::time::Duration;
-        use tokio::time::timeout;
-
         let temp_dir = TempDir::new().unwrap();
         let peppy_file = temp_dir.path().join(PEPPY_CONFIG_FILE);
 
@@ -393,10 +387,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_files_detects_deleted_config() {
-        use super::super::types::FileEvent;
-        use std::time::Duration;
-        use tokio::time::timeout;
-
         let temp_dir = TempDir::new().unwrap();
         let peppy_file = temp_dir.path().join(PEPPY_CONFIG_FILE);
 
@@ -457,10 +447,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_files_detects_nested_config_changes() {
-        use super::super::types::FileEvent;
-        use std::time::Duration;
-        use tokio::time::timeout;
-
         let temp_dir = TempDir::new().unwrap();
         let nested_dir = temp_dir.path().join("nested");
         fs::create_dir(&nested_dir).unwrap();
@@ -496,10 +482,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_files_handles_multiple_events() {
-        use super::super::types::FileEvent;
-        use std::time::Duration;
-        use tokio::time::timeout;
-
         let temp_dir = TempDir::new().unwrap();
         let (tx, mut rx) = mpsc::channel(10);
         let watch_dir = temp_dir.path().to_path_buf();

@@ -4,11 +4,19 @@ use super::types::{
 };
 use crate::error::{Error, Result};
 use saphyr::{LoadableYamlNode, Yaml};
+use std::fs;
+use std::path::Path;
 
 /// Parser responsible for extracting configuration sections from YAML documents
 pub struct NodeConfigParser;
 
 impl NodeConfigParser {
+    pub fn from_path(file: impl AsRef<Path>) -> Result<NodeConfig> {
+        let content = fs::read_to_string(file)
+            .map_err(|e| Error::ConfigParse(format!("Failed to read file: {}", e)))?;
+        Self::from_content(&content)
+    }
+
     /// Takes a yaml content as parameter
     pub fn from_content(content: &str) -> Result<NodeConfig> {
         let docs: Vec<Yaml<'_>> = Yaml::load_from_str(content)
