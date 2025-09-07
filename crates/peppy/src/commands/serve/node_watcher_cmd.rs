@@ -1,12 +1,9 @@
-mod filesystem;
-mod network;
-mod types;
-
-use crate::Result;
-use crate::consts::PEPPY_CONFIG_FILE;
+use super::ServeAsyncCommand;
+use crate::error::Result;
+use config::consts::PEPPY_CONFIG_FILE;
+use config::{find_peppy_nodes_from_dir, watch_files};
 use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::info;
-use types::NodeDetectionEvent;
 
 pub struct NodeWatcher {}
 
@@ -17,7 +14,7 @@ impl NodeWatcher {
         let (tx, mut rx) = mpsc::channel(100);
         // 1. Starting from its root directory, look for all the `PEPPY_CONFIG_FILE` configurations
         let root_dir = std::env::current_dir().expect("Failed to get current directory");
-        let initial_config_files = filesystem::find_peppy_nodes_from_dir(&root_dir);
+        let initial_config_files = find_peppy_nodes_from_dir(&root_dir);
 
         info!(
             "Found {} initial {} files in {:?}",
@@ -26,40 +23,24 @@ impl NodeWatcher {
             root_dir
         );
 
-        // TODO: Allow the user to start `serve` on a given network
-        let initial_network_config_files = network::find_root_nodes_on_network(None);
-
         // 2. Initialize file watcher (returns immediately once ready)
         let tx_files = tx.clone();
-        if let Err(e) = filesystem::watch_files(tx_files, root_dir).await {
+        if let Err(e) = watch_files(tx_files, root_dir).await {
             eprintln!("File watcher failed to initialize: {:?}", e);
         }
 
-        // 3. Spawn network event producer, nodes can be outside the `root_dir` so they have to be detected on the network
-        let tx_net = tx.clone();
-        tokio::spawn(async move {
-            if let Err(e) = network::watch_network_nodes(tx_net).await {
-                eprintln!("Network watcher failed: {:?}", e);
-            }
-        });
-
         // Aggregate: receive from unified event channel
         while let Some(event) = rx.recv().await {
-            match event {
-                NodeDetectionEvent::FileEvent(file_event) => {
-                    println!("File event: {:?}", file_event);
-                }
-                NodeDetectionEvent::NetworkEvent(uri) => {
-                    println!("Network event: {:?}", uri);
-                }
-            }
+            // Do something with the event
+            let _ = event;
         }
 
         Ok(())
     }
 }
 
-impl super::ServeAsyncCommand for NodeWatcher {
+impl ServeAsyncCommand for NodeWatcher {
+    // TODO: Function signature looks weird
     fn execute_async(&self) -> Result<JoinHandle<Result<()>>> {
         Ok(tokio::spawn(
             async move { NodeWatcher::watch_nodes().await },

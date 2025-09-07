@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use super::CompositeCommand;
 use super::Serve;
-use super::node_watcher::NodeWatcher;
+use super::node_watcher_cmd::NodeWatcher;
 use pmi::{MessagingEngineContext, Messenger};
 
 pub struct ServeCommandBuilder {
