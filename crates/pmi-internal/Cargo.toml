@@ -5,6 +5,7 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
+config = { path = "../config-internal" }
 askama = "0.14.0"
 bytes = "1"
 json5 = "0.4"

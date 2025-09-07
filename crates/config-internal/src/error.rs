@@ -16,6 +16,9 @@ pub enum Error {
     InvalidName(String),
     InvalidNamespace(String),
 
+    // -- Node watcher
+    NodeWatcher(String),
+
     // -- Askama
     AskamaError(String),
 }

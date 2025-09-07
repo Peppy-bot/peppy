@@ -1,5 +1,6 @@
 mod builder;
-mod node_watcher;
+mod messenger_cmd;
+mod node_watcher_cmd;
 
 use std::path::PathBuf;
 use tokio::task::JoinHandle;
@@ -9,7 +10,6 @@ use super::Command;
 use crate::{Error, Result};
 
 use builder::ServeCommandBuilder;
-use pmi::{Messenger, MessengerBackend};
 
 pub trait ServeSyncCommand: Send + Sync {
     fn execute(&self) -> Result<()>;
@@ -91,8 +91,7 @@ pub struct ServeCommand {
 
 impl Command for ServeCommand {
     fn execute(self) -> Result<()> {
-        // TODO Run a separate thread that listen to Zenoh communication so that it can internally create a map of those communication between nodes
-        // TODO Run a separate thread that is a web server API that display the node communication, node list etc...
+        // TODO: Only one instance of `serve` can run on a given machine (prod or dev included). Check the port and PID to make sure there isn't more than one instance running
         let executor = ServeCommandBuilder::new(self.engine, self.config_path)
             .with_node_watcher()
             .with_messaging_router()
@@ -105,38 +104,5 @@ impl Command for ServeCommand {
             error!("Serve command failed: {}", e);
         }
         Ok(())
-    }
-}
-
-impl ServeAsyncCommand for Messenger {
-    // TODO: Only one instance of `serve` can run on a given machine (prod or dev included). Check the port and PID to make sure there isn't more than one instance running
-    fn execute_async(&self) -> Result<JoinHandle<Result<()>>> {
-        let context = self.context.clone();
-
-        let handle = tokio::spawn(async move {
-            let mut messenger = Messenger::new(context).map_err(Error::PeppyMessagingInterface)?;
-
-            // Starts the zenoh router
-            info!("Starting the messaging router...");
-            messenger
-                .start_router()
-                .await
-                .map_err(Error::PeppyMessagingInterface)?;
-
-            // Keep the messenger alive until shutdown signal (Ctrl+C)
-            tokio::signal::ctrl_c().await.map_err(|e| {
-                Error::ExecutionFailed(format!("Failed to listen for ctrl-c: {}", e))
-            })?;
-
-            info!("Shutting down the messaging router...");
-            messenger
-                .stop_router()
-                .await
-                .map_err(Error::PeppyMessagingInterface)?;
-
-            Ok(())
-        });
-
-        Ok(handle)
     }
 }

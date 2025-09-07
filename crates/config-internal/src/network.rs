@@ -1,3 +1,4 @@
+// TODO: deprecated module, probably needs removal
 use super::types::{NetworkEvent, NodeDetectionEvent};
 use crate::Result;
 use std::{path::PathBuf, time::Duration};
