@@ -114,7 +114,12 @@ impl NodeConfigWatcher {
                 }
             }
             NodeConfigEvent::Deleted(path) => {
-                state.remove(&path);
+                // Keep the entry but mark it as deleted, so consumers
+                // can surface a meaningful error instead of losing history.
+                state.insert(
+                    path.clone(),
+                    Err(ParsingError::DeletedFile(path.display().to_string())),
+                );
             }
         }
     }
@@ -322,8 +327,64 @@ mod tests {
             .expect("rx2 should receive delete update")
             .expect("rx2 still active");
 
-        assert!(!rx1.borrow().contains_key(&created));
-        assert!(!rx2.borrow().contains_key(&created));
+        // Entry should remain but reflect a DeletedFile error
+        let s1 = rx1.borrow();
+        let s2 = rx2.borrow();
+        assert!(s1.contains_key(&created));
+        assert!(s2.contains_key(&created));
+        assert!(matches!(s1[&created], Err(ParsingError::DeletedFile(_))));
+        assert!(matches!(s2[&created], Err(ParsingError::DeletedFile(_))));
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_create_delete_recreate_updates_state() {
+        let temp = TempDir::new().unwrap();
+        let config_path = write_config(temp.path(), "first", "/ns");
+
+        let watcher = NodeConfigWatcher::new(temp.path()).expect("watcher init");
+        let mut rx = watcher.subscribe();
+
+        // Initial state reflects the created file
+        assert_eq!(
+            rx.borrow()[&config_path]
+                .as_ref()
+                .unwrap()
+                .node_config
+                .name
+                .as_str(),
+            "first"
+        );
+
+        let handle = watcher.start().await.expect("start background");
+
+        // Delete the file and expect an error state with DeletedFile
+        std::fs::remove_file(&config_path).expect("delete config file");
+        timeout(Duration::from_secs(2), rx.changed())
+            .await
+            .expect("state change expected after delete")
+            .expect("receiver still active");
+        assert!(matches!(
+            rx.borrow()[&config_path],
+            Err(ParsingError::DeletedFile(_))
+        ));
+
+        // Recreate the file with a new valid name and expect Ok again
+        write_config(temp.path(), "second", "/ns");
+        timeout(Duration::from_secs(2), rx.changed())
+            .await
+            .expect("state change expected after recreate")
+            .expect("receiver still active");
+        assert_eq!(
+            rx.borrow()[&config_path]
+                .as_ref()
+                .unwrap()
+                .node_config
+                .name
+                .as_str(),
+            "second"
+        );
 
         handle.abort();
     }

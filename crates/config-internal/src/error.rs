@@ -25,6 +25,9 @@ pub enum ParsingError {
     BadArray(String),
     #[error("Invalid QoS type {0}")]
     InValidQoS(String),
+
+    #[error("Deleted file {0}")]
+    DeletedFile(String),
 }
 
 #[derive(Debug, Error)]
