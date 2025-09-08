@@ -17,5 +17,5 @@ fn get_path_relative_to_exe(relative_path: &str) -> Option<PathBuf> {
 pub fn list_nodes() {
     todo!();
     #[allow(unreachable_code)]
-    let _peppy_config = get_path_relative_to_exe("./peppy.star");
+    let _peppy_config = get_path_relative_to_exe("./peppy.json5");
 }

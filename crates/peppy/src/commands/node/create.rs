@@ -70,7 +70,7 @@ impl NodeBuilder {
     }
 }
 
-/// Creates a new node and updates the peppy.star configuration file where the command is run
+/// Creates a new node and updates the peppy.json5 configuration file where the command is run
 pub fn create(
     from_dir: &Path,
     to_dir: Option<&Path>,
@@ -152,7 +152,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        // Create from a directory without peppy.star
+        // Create from a directory without peppy.json5
         let result = create(
             temp_dir.path(),
             None,
