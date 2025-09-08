@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use super::super::config::NodeConfigParser;
 use super::discovery::find_peppy_nodes_from_dir;
 use super::events::NodeConfigEvent;
 use super::fs::watch_files;
-use crate::NodeConfigParser;
 use crate::error::{Error, ParsingError, Result};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;

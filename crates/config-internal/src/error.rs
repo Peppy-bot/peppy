@@ -26,6 +26,10 @@ pub enum ParsingError {
     #[error("Invalid QoS type {0}")]
     InValidQoS(String),
 
+    // -- schema conformance
+    #[error("Unknown key in {0}: {1}")]
+    UnknownKey(String, String),
+
     #[error("Deleted file {0}")]
     DeletedFile(String),
 }

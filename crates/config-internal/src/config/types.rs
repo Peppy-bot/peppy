@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct NodeConfig {
     pub node_config: NodeInfo,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,6 +101,7 @@ impl From<Namespace> for String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NodeInfo {
     pub name: Name,
     pub namespace: Namespace,
@@ -131,6 +133,7 @@ impl Default for NodeInfo {
 pub struct NodeParameters {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Exposes {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub topics: Option<Vec<Topic>>,
@@ -141,6 +144,7 @@ pub struct Exposes {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct SubscribesTo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub topics: Option<Vec<Topic>>,
@@ -160,6 +164,7 @@ pub enum QoSProfile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Topic {
     #[serde(default, rename = "type")]
     pub topic_type: String,
@@ -170,6 +175,7 @@ pub struct Topic {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Service {
     #[serde(default, rename = "type")]
     pub service_type: String,
@@ -180,6 +186,7 @@ pub struct Service {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Action {
     #[serde(default, rename = "type")]
     pub action_type: String,
@@ -189,6 +196,7 @@ pub struct Action {
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Resources {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_memory_mb: Option<u32>,
@@ -213,6 +221,7 @@ impl From<String> for LogFormat {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Logging {
     #[serde(default = "default_log_level")]
     pub min_level: String,
