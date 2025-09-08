@@ -161,13 +161,15 @@ mod tests {
 
     fn write_config(dir: &Path, name: &str, namespace: &str) -> PathBuf {
         let path = dir.join(PEPPY_CONFIG_FILE);
-        let yaml = format!(
-            r#"node_config:
-  name: {name}
-  namespace: {namespace}
-"#
+        let json5 = format!(
+            r#"{{
+  node_config: {{
+    name: "{name}",
+    namespace: "{namespace}",
+  }}
+}}"#
         );
-        fs::write(&path, yaml).unwrap();
+        fs::write(&path, json5).unwrap();
         path
     }
 
@@ -208,7 +210,7 @@ mod tests {
         // Invalid name (spaces and '!') should fail parsing on initial load
         fs::write(
             temp.path().join(PEPPY_CONFIG_FILE),
-            "node_config:\n  name: Invalid Name!\n  namespace: /ns\n",
+            "{ node_config: { name: 'Invalid Name!', namespace: '/ns' } }",
         )
         .unwrap();
 
@@ -242,7 +244,7 @@ mod tests {
         // Write invalid content (invalid node name)
         fs::write(
             &config_path,
-            "node_config:\n  name: Invalid Name!\n  namespace: /ns\n",
+            "{ node_config: { name: 'Invalid Name!', namespace: '/ns' } }",
         )
         .unwrap();
 

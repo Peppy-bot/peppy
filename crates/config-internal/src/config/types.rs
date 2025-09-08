@@ -3,14 +3,17 @@ use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct NodeConfig {
     pub node_config: NodeInfo,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_parameters: Option<NodeParameters>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exposes: Option<Exposes>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "opt_subscribes_to_from_any"
+    )]
     pub subscribes_to: Option<SubscribesTo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources: Option<Resources>,
@@ -101,7 +104,6 @@ impl From<Namespace> for String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct NodeInfo {
     pub name: Name,
     pub namespace: Namespace,
@@ -133,7 +135,6 @@ impl Default for NodeInfo {
 pub struct NodeParameters {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct Exposes {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub topics: Option<Vec<Topic>>,
@@ -144,7 +145,6 @@ pub struct Exposes {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct SubscribesTo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub topics: Option<Vec<Topic>>,
@@ -164,7 +164,6 @@ pub enum QoSProfile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct Topic {
     #[serde(default, rename = "type")]
     pub topic_type: String,
@@ -175,7 +174,6 @@ pub struct Topic {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct Service {
     #[serde(default, rename = "type")]
     pub service_type: String,
@@ -186,7 +184,6 @@ pub struct Service {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct Action {
     #[serde(default, rename = "type")]
     pub action_type: String,
@@ -196,7 +193,6 @@ pub struct Action {
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Resources {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_memory_mb: Option<u32>,
@@ -221,7 +217,6 @@ impl From<String> for LogFormat {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Logging {
     #[serde(default = "default_log_level")]
     pub min_level: String,
@@ -260,6 +255,63 @@ pub enum ConfigTemplateType {
     #[default]
     SimpleNode,
     FullNode,
+}
+
+// Custom deserializer to accept either an object or an empty array for subscribes_to.
+// Some example configurations use `subscribes_to: []` to denote no subscriptions.
+fn opt_subscribes_to_from_any<'de, D>(deserializer: D) -> core::result::Result<Option<SubscribesTo>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use core::fmt;
+    use serde::de::{self, MapAccess, SeqAccess, Visitor};
+
+    struct MaybeSubscribesVisitor;
+
+    impl<'de> Visitor<'de> for MaybeSubscribesVisitor {
+        type Value = Option<SubscribesTo>;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(f, "subscribes_to object or empty array")
+        }
+
+        fn visit_none<E>(self) -> core::result::Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> core::result::Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> core::result::Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            // Accept only empty array
+            if let Some(_first) = seq.next_element::<de::IgnoredAny>()? {
+                Err(de::Error::custom("expected empty array for subscribes_to"))
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn visit_map<A>(self, map: A) -> core::result::Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let de = de::value::MapAccessDeserializer::new(map);
+            let st = SubscribesTo::deserialize(de)?;
+            Ok(Some(st))
+        }
+    }
+
+    deserializer.deserialize_any(MaybeSubscribesVisitor)
 }
 
 #[cfg(test)]

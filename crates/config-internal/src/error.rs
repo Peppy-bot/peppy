@@ -7,8 +7,8 @@ pub enum ParsingError {
     // -- General yaml syntax
     #[error("Cannot read: {0}")]
     CannotRead(String),
-    #[error("Cannot parse YAML: {0}")]
-    CannotParseYaml(String),
+    #[error("Cannot parse configuration: {0}")]
+    CannotParseConfig(String),
     #[error("Empty content found in: {0}")]
     EmptyContent(String),
 
