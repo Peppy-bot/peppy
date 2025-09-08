@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
-pub enum FileEvent {
-    NodeConfigCreated(PathBuf),
-    NodeConfigModified(PathBuf),
-    NodeConfigDeleted(PathBuf),
+pub enum NodeConfigEvent {
+    Created(PathBuf),
+    Modified(PathBuf),
+    Deleted(PathBuf),
 }

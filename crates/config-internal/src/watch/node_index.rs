@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::discovery::find_peppy_nodes_from_dir;
-use super::events::FileEvent;
+use super::events::NodeConfigEvent;
 use super::fs::watch_files;
 use crate::NodeConfigParser;
 use crate::error::Result;
@@ -78,9 +78,9 @@ impl NodeConfigWatcher {
         Ok(handle)
     }
 
-    fn update_state(state: &mut HashMap<PathBuf, NodeConfig>, event: FileEvent) {
+    fn update_state(state: &mut HashMap<PathBuf, NodeConfig>, event: NodeConfigEvent) {
         match event {
-            FileEvent::NodeConfigCreated(path) | FileEvent::NodeConfigModified(path) => {
+            NodeConfigEvent::Created(path) | NodeConfigEvent::Modified(path) => {
                 match NodeConfigParser::from_path(&path) {
                     Ok(config) => {
                         state.insert(path, config);
@@ -88,7 +88,7 @@ impl NodeConfigWatcher {
                     Err(err) => warn!("Could not parse {}: {}", path.display(), err),
                 }
             }
-            FileEvent::NodeConfigDeleted(path) => {
+            NodeConfigEvent::Deleted(path) => {
                 state.remove(&path);
             }
         }
