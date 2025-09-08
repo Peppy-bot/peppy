@@ -32,7 +32,7 @@ pub fn init_root_node(path: impl AsRef<Path>, name: &str) -> Result<PathBuf> {
     fs::create_dir_all(path)?;
     let peppy_yaml_path = path.join("peppy.yaml");
 
-    NodeConfigCreator::from_template(&ConfigTemplateType::RootNode, Some(name), Some("/"))
+    NodeConfigCreator::from_template(&ConfigTemplateType::RootNode, name, Some("/"))
         .map_err(Error::PeppyConfig)?
         .write_to(&peppy_yaml_path)
         .map_err(Error::PeppyConfig)?;
