@@ -19,8 +19,7 @@ impl NodeConfig {
 
         // Serialize the populated config back to YAML
         // FIXME: Replace deprecated serde_yaml when a good alternative pops up, like `saphyr-serde`
-        let yaml = serde_yaml::to_string(&self)
-            .map_err(|e| Error::ConfigParse(format!("Failed to serialize YAML: {}", e)))?;
+        let yaml = serde_yaml::to_string(&self).map_err(|e| Error::Serialize(e.to_string()))?;
 
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
@@ -40,17 +39,18 @@ impl NodeConfigCreator {
     /// Renders the template to a string
     pub fn from_template(
         template_type: &ConfigTemplateType,
-        node_name: Option<&str>,
+        node_name: &str,
         node_namespace: Option<&str>,
     ) -> Result<NodeConfig> {
         // Build a NodeConfig directly instead of rendering+parsing YAML
-        let name = node_name.ok_or_else(|| Error::ConfigParse("Missing node name".to_string()))?;
         let ns = node_namespace.unwrap_or("/");
 
         match template_type {
-            ConfigTemplateType::RootNode => NodeConfigCreator::get_root_node_config(name),
-            ConfigTemplateType::SimpleNode => NodeConfigCreator::get_simple_node_config(name, ns),
-            ConfigTemplateType::FullNode => NodeConfigCreator::get_full_node_config(name, ns),
+            ConfigTemplateType::RootNode => NodeConfigCreator::get_root_node_config(node_name),
+            ConfigTemplateType::SimpleNode => {
+                NodeConfigCreator::get_simple_node_config(node_name, ns)
+            }
+            ConfigTemplateType::FullNode => NodeConfigCreator::get_full_node_config(node_name, ns),
         }
     }
 
@@ -158,7 +158,7 @@ logging:
 "#
         );
         let template =
-            NodeConfigCreator::from_template(&ConfigTemplateType::RootNode, Some(node_name), None)
+            NodeConfigCreator::from_template(&ConfigTemplateType::RootNode, node_name, None)
                 .unwrap();
 
         // Write to a temporary file and read back the content
@@ -187,7 +187,7 @@ logging:
 
         let template = NodeConfigCreator::from_template(
             &ConfigTemplateType::SimpleNode,
-            Some(node_name),
+            node_name,
             Some(namespace),
         )
         .unwrap();
@@ -223,7 +223,7 @@ logging:
         );
         let template = NodeConfigCreator::from_template(
             &ConfigTemplateType::FullNode,
-            Some(node_name),
+            node_name,
             Some(namespace),
         )
         .unwrap();

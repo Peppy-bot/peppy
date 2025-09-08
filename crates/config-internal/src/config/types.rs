@@ -1,4 +1,4 @@
-use crate::error::Error;
+use crate::error::ParsingError;
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 
@@ -23,7 +23,7 @@ pub struct NodeConfig {
 pub struct Name(String);
 
 impl Name {
-    pub fn new<S: Into<String>>(s: S) -> Result<Self, Error> {
+    pub fn new<S: Into<String>>(s: S) -> Result<Self, ParsingError> {
         Self::try_from(s.into())
     }
 
@@ -37,16 +37,18 @@ impl Name {
 }
 
 impl TryFrom<String> for Name {
-    type Error = Error;
+    type Error = ParsingError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         if value.is_empty() {
-            return Err(Error::InvalidName("Name cannot be empty".to_string()));
+            return Err(ParsingError::InvalidName(
+                "Name cannot be empty".to_string(),
+            ));
         }
         if value.chars().all(Name::is_valid_char) {
             return Ok(Name(value));
         }
-        Err(Error::InvalidName(value))
+        Err(ParsingError::InvalidName(value))
     }
 }
 
@@ -62,7 +64,7 @@ impl From<Name> for String {
 pub struct Namespace(String);
 
 impl Namespace {
-    pub fn new<S: Into<String>>(s: S) -> Result<Self, Error> {
+    pub fn new<S: Into<String>>(s: S) -> Result<Self, ParsingError> {
         Self::try_from(s.into())
     }
 
@@ -76,18 +78,18 @@ impl Namespace {
 }
 
 impl TryFrom<String> for Namespace {
-    type Error = Error;
+    type Error = ParsingError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         if value.is_empty() {
-            return Err(Error::InvalidNamespace(
+            return Err(ParsingError::InvalidNamespace(
                 "Namespace cannot be empty".to_string(),
             ));
         }
         if value.chars().all(Namespace::is_valid_char) {
             return Ok(Namespace(value));
         }
-        Err(Error::InvalidNamespace(value))
+        Err(ParsingError::InvalidNamespace(value))
     }
 }
 
