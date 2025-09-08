@@ -2,7 +2,7 @@ use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum ParsingError {
     // -- General yaml syntax
     #[error("Cannot read: {0}")]
