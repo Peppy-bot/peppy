@@ -88,7 +88,7 @@ pub fn create(
         return Err(Error::FolderAlreadyExist(node_path.display().to_string()));
     }
 
-    if !from_dir.join("peppy.yaml").exists() {
+    if !from_dir.join("peppy.json5").exists() {
         return Err(Error::RootConfigurationNotFound);
     }
 
@@ -106,7 +106,7 @@ pub fn create(
 }
 
 pub fn create_peppy_node_config(node_path: &Path, node_name: &str, full: bool) -> Result<PathBuf> {
-    let peppy_yaml_path = node_path.join("peppy.yaml");
+    let peppy_yaml_path = node_path.join("peppy.json5");
 
     let builder = if full {
         NodeConfigCreator::from_template(&ConfigTemplateType::FullNode, node_name, Some("/"))
@@ -143,7 +143,7 @@ mod tests {
         let result = create_peppy_node_config(temp_dir.path(), node_name, false);
         assert!(result.is_ok());
 
-        let peppy_path = temp_dir.path().join("peppy.yaml");
+        let peppy_path = temp_dir.path().join("peppy.json5");
         assert!(peppy_path.exists());
     }
 
@@ -171,8 +171,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let node_name = "existing_node";
 
-        // Create peppy.yaml in the temp directory to avoid RootConfigurationNotFound error
-        fs::write(temp_dir.path().join("peppy.yaml"), "# Root config").unwrap();
+        // Create peppy.json5 in the temp directory to avoid RootConfigurationNotFound error
+        fs::write(temp_dir.path().join("peppy.json5"), "# Root config").unwrap();
 
         // Create a directory with the same name as the node
         let existing_dir = temp_dir.path().join(node_name);

@@ -13,11 +13,11 @@ use tracing::{info, warn};
 use crate::{NodeConfig, consts::PEPPY_CONFIG_FILE};
 
 /// Aggregated state keyed by config file path. Each entry reflects the
-/// current parse result of the corresponding `peppy.yaml` file.
+/// current parse result of the corresponding `peppy.json5` file.
 pub type NodeIndexState = HashMap<PathBuf, core::result::Result<NodeConfig, ParsingError>>;
 
 /// A simple, self-contained watcher that maintains aggregated state for a directory tree.
-/// The state maps each `peppy.yaml` file path to the latest parse result
+/// The state maps each `peppy.json5` file path to the latest parse result
 /// (`Ok(NodeConfig)` or `Err(ParsingError)`).
 ///
 /// Usage:

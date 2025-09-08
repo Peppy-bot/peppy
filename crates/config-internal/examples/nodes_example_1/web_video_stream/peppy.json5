@@ -1,0 +1,68 @@
+{
+  // PeppyOS REST API Service Node Configuration
+  // This node provides a REST API interface for system interaction
+  node_config: {
+    name: "web_video_stream",
+    namespace: "/",
+    version: "0.1.0",
+    respawn: true,
+    respawn_delay: 10.0,
+  },
+  // The parameters of the current node
+  node_parameters: {
+    http: {
+      host: "localhost",
+      port: 8081,
+      cors_enabled: true,
+      cors_origins: "*",
+      max_connections: 100,
+      request_timeout_ms: 30000,
+    },
+    video_stream: {
+      format: "mjpeg",
+      quality: 80,
+      max_fps: 30,
+    },
+  },
+  subscribes_to: {
+    topics: [
+      // If the node cannot be found in the root node nodes list, it will be pulled from `nodes.peppy.bot` 
+      // in a folder with the same name as its name
+      // topic format is `namespace/<node_name>:version` where `namespace` is optional and will be automatically 
+      // resolved to `/dev/<root_node_name>/` in `dev` and `/prod/<root_node_name>/` in prod
+      {
+        name: "uvc_camera", // Will look for that node name
+        version: "0.1.0", // On that particular version
+        namespace: "/", // In that particular namespace (prefixed by `/dev` or `/prod` by default)
+        type: "video_stream/image", // The type of message we're interested in
+        callback: "on_handle_video_frame", // The code callback that will automatically be exposed in the Rust/Python code via auto code generation
+      }
+    ],
+  },
+  // This node does not expose anything for other nodes. It exposes a web url (http://localhost:8081/video)
+  // to the end user but that is outside of the realm of node-to-node communication
+  exposes: {
+    topics: [],
+    services: [],
+    actions: [],
+  },
+  resources: {
+    max_memory_mb: 512,
+  },
+  logging: {
+    min_level: "info",
+    file_path: "/var/log/peppy/rest_api.log",
+    max_file_size_mb: 100,
+    format: "text",
+  },
+  diagnostics: {
+    enabled: true,
+    publish_rate_hz: 0.5,
+    health_checks: [
+      "http_server_running",
+      "websocket_connections",
+      "request_latency",
+      "error_rate",
+    ],
+  },
+}

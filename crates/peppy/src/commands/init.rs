@@ -30,7 +30,7 @@ pub fn init_root_node(path: impl AsRef<Path>, name: &str) -> Result<PathBuf> {
     let path = path.as_ref();
     // Create the directory if it doesn't exist
     fs::create_dir_all(path)?;
-    let peppy_yaml_path = path.join("peppy.yaml");
+    let peppy_yaml_path = path.join("peppy.json5");
 
     NodeConfigCreator::from_template(&ConfigTemplateType::RootNode, name, Some("/"))
         .map_err(Error::PeppyConfig)?
@@ -60,6 +60,6 @@ mod tests {
 
         assert!(non_existent_path.exists());
         assert!(peppy_yaml_path.exists());
-        assert_eq!(peppy_yaml_path.file_name().unwrap(), "peppy.yaml");
+        assert_eq!(peppy_yaml_path.file_name().unwrap(), "peppy.json5");
     }
 }
