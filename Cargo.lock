@@ -465,13 +465,13 @@ dependencies = [
 name = "config"
 version = "0.0.1"
 dependencies = [
- "derive_more",
  "notify",
  "notify-debouncer-mini",
  "saphyr",
  "serde",
  "serde_yaml",
  "tempfile",
+ "thiserror 2.0.16",
  "tokio",
  "tracing",
  "walkdir",

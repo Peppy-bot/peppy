@@ -5,12 +5,23 @@ use super::discovery::find_peppy_nodes_from_dir;
 use super::events::NodeConfigEvent;
 use super::fs::watch_files;
 use crate::NodeConfigParser;
-use crate::error::Result;
+use crate::error::{ParsingError, Result};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::{NodeConfig, consts::PEPPY_CONFIG_FILE};
+
+pub enum NodeState {
+    Valid,
+    Invalid(ParsingError),
+    Removed,
+}
+
+pub struct NodeStateConfig {
+    state: NodeState,
+    config: NodeConfig,
+}
 
 /// A simple, self-contained watcher that maintains an aggregated mapping of
 /// `peppy.yaml` file paths to parsed `NodeConfig`s for a directory tree.
@@ -107,5 +118,126 @@ impl NodeConfigWatcher {
             .into_iter()
             .map(|path| NodeConfigParser::from_path(&path).map(|config| (path, config)))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::consts::PEPPY_CONFIG_FILE;
+    use std::fs;
+    use std::time::Duration;
+    use tempfile::TempDir;
+    use tokio::time::timeout;
+
+    fn write_config(dir: &Path, name: &str, namespace: &str) -> PathBuf {
+        let path = dir.join(PEPPY_CONFIG_FILE);
+        let yaml = format!(
+            r#"node_config:
+  name: {name}
+  namespace: {namespace}
+"#
+        );
+        fs::write(&path, yaml).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_initial_state_loads_all_configs() {
+        let temp = TempDir::new().unwrap();
+
+        // root config
+        let root = write_config(temp.path(), "root_node", "/root");
+
+        // nested config
+        let nested_dir = temp.path().join("nested");
+        fs::create_dir(&nested_dir).unwrap();
+        let nested = write_config(&nested_dir, "nested_node", "/nested");
+
+        let watcher = NodeConfigWatcher::new(temp.path()).expect("watcher init");
+        let rx = watcher.subscribe();
+        let state = rx.borrow().clone();
+
+        assert_eq!(state.len(), 2);
+        assert!(state.contains_key(&root));
+        assert!(state.contains_key(&nested));
+        assert_eq!(state[&root].node_config.name.as_str(), "root_node");
+        assert_eq!(state[&nested].node_config.name.as_str(), "nested_node");
+    }
+
+    #[test]
+    fn test_new_errors_on_invalid_initial_config() {
+        let temp = TempDir::new().unwrap();
+
+        // Invalid name (spaces and '!') should fail parsing on initial load
+        fs::write(
+            temp.path().join(PEPPY_CONFIG_FILE),
+            "node_config:\n  name: Invalid Name!\n  namespace: /ns\n",
+        )
+        .unwrap();
+
+        let res = NodeConfigWatcher::new(temp.path());
+        assert!(
+            res.is_err(),
+            "watcher should error on invalid initial config"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_invalid_modify_does_not_replace_existing_state() {
+        let temp = TempDir::new().unwrap();
+        let config_path = write_config(temp.path(), "ok", "/ns");
+
+        let watcher = NodeConfigWatcher::new(temp.path()).expect("watcher init");
+        let mut rx = watcher.subscribe();
+        assert_eq!(rx.borrow()[&config_path].node_config.name.as_str(), "ok");
+
+        let handle = watcher.start().await.expect("start background");
+
+        // Write invalid content (invalid node name)
+        fs::write(
+            &config_path,
+            "node_config:\n  name: Invalid Name!\n  namespace: /ns\n",
+        )
+        .unwrap();
+
+        // Wait for a change notification
+        timeout(Duration::from_secs(2), rx.changed())
+            .await
+            .expect("state change expected")
+            .expect("receiver still active");
+        // State should remain with previous valid content
+        assert_eq!(rx.borrow()[&config_path].node_config.name.as_str(), "ok");
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_state_updates_propagate_to_multiple_subscribers() {
+        let temp = TempDir::new().unwrap();
+        let watcher = NodeConfigWatcher::new(temp.path()).expect("watcher init");
+
+        let mut rx1 = watcher.subscribe();
+        let mut rx2 = watcher.subscribe();
+
+        let handle = watcher.start().await.expect("start background");
+
+        // Create a new config
+        let created = write_config(temp.path(), "multi_sub", "/ns");
+
+        // Both subscribers should receive the update
+        timeout(Duration::from_secs(2), rx1.changed())
+            .await
+            .expect("rx1 should receive update")
+            .expect("rx1 still active");
+        timeout(Duration::from_secs(2), rx2.changed())
+            .await
+            .expect("rx2 should receive update")
+            .expect("rx2 still active");
+
+        assert!(rx1.borrow().contains_key(&created));
+        assert!(rx2.borrow().contains_key(&created));
+
+        handle.abort();
     }
 }

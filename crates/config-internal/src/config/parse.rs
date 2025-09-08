@@ -2,7 +2,7 @@ use super::types::{
     Action, Exposes, LogFormat, Logging, Name, Namespace, NodeConfig, QoSProfile, Resources,
     Service, SubscribesTo, Topic,
 };
-use crate::error::{Error, Result};
+use crate::error::{ParsingError, Result};
 use saphyr::{LoadableYamlNode, Yaml};
 use std::fs;
 use std::path::Path;
@@ -12,19 +12,21 @@ pub struct NodeConfigParser;
 
 impl NodeConfigParser {
     pub fn from_path(file: impl AsRef<Path>) -> Result<NodeConfig> {
-        let content = fs::read_to_string(file)
-            .map_err(|e| Error::ConfigParse(format!("Failed to read file: {}", e)))?;
-        Self::from_content(&content)
+        let path = file.as_ref();
+        let content = fs::read_to_string(path)
+            .map_err(|_| ParsingError::CannotRead(path.display().to_string()))?;
+
+        if content.trim().is_empty() {
+            Err(ParsingError::EmptyContent(path.display().to_string()).into())
+        } else {
+            Self::from_content(&content)
+        }
     }
 
     /// Takes a yaml content as parameter
     pub fn from_content(content: &str) -> Result<NodeConfig> {
         let docs: Vec<Yaml<'_>> = Yaml::load_from_str(content)
-            .map_err(|e| Error::ConfigParse(format!("Failed to parse YAML: {}", e)))?;
-
-        if docs.is_empty() {
-            return Err(Error::ConfigParse("Empty YAML document".to_string()));
-        }
+            .map_err(|e| ParsingError::CannotParseYaml(e.to_string()))?;
 
         let mut config = NodeConfig::default();
         // Parse sections into builder.config
@@ -175,10 +177,7 @@ impl NodeConfigParser {
             if let Some(v) = parse(value) {
                 Ok(Some(v))
             } else {
-                Err(Error::ConfigParse(format!(
-                    "Expected {} for key '{}'",
-                    ty, key
-                )))
+                Err(ParsingError::InvalidScalar(ty.to_string(), key.to_string()))?
             }
         } else {
             Ok(None)
@@ -242,10 +241,7 @@ impl NodeConfigParser {
                 }
                 Ok(Some(out))
             } else {
-                Err(Error::ConfigParse(format!(
-                    "Expected array for key '{}'",
-                    key
-                )))
+                Err(ParsingError::BadArray(key.to_string()))?
             }
         } else {
             Ok(None)
@@ -275,10 +271,7 @@ impl NodeConfigParser {
                 }
                 Ok(Some(out))
             } else {
-                Err(Error::ConfigParse(format!(
-                    "Expected array for key '{}'",
-                    key
-                )))
+                Err(ParsingError::BadArray(key.to_string()))?
             }
         } else {
             Ok(None)
@@ -304,10 +297,7 @@ impl NodeConfigParser {
                 }
                 Ok(Some(out))
             } else {
-                Err(Error::ConfigParse(format!(
-                    "Expected array for key '{}'",
-                    key
-                )))
+                Err(ParsingError::BadArray(key.to_string()))?
             }
         } else {
             Ok(None)
@@ -315,21 +305,16 @@ impl NodeConfigParser {
     }
 
     fn parse_qos_profile(value: &str) -> Result<QoSProfile> {
-        match value {
-            "standard" => Ok(QoSProfile::Standard),
-            "reliable" => Ok(QoSProfile::Reliable),
-            "sensor_data" => Ok(QoSProfile::SensorData),
-            _ => Err(Error::ConfigParse(format!(
-                "Invalid QoS profile: {}. Expected one of: standard, reliable, sensor_data",
-                value
-            ))),
-        }
+        let qos: QoSProfile =
+            serde_yaml::from_str(value).map_err(|_| ParsingError::InValidQoS(value.to_string()))?;
+        Ok(qos)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Error;
 
     #[test]
     fn test_parse_minimal_config() {
@@ -598,11 +583,15 @@ logging:
     }
 
     #[test]
-    fn test_empty_yaml() {
-        let yaml = "";
-        let result = NodeConfigParser::from_content(yaml);
+    fn test_empty_yaml_file() {
+        // Create a temporary empty file to trigger EmptyContent from from_path
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let result = NodeConfigParser::from_path(tmp.path());
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::ConfigParse(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::EmptyContent(_))
+        ));
     }
 
     #[test]
@@ -614,7 +603,10 @@ node_config:
 "#;
         let result = NodeConfigParser::from_content(yaml);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::InvalidName(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::InvalidName(_))
+        ));
     }
 
     #[test]
@@ -626,7 +618,10 @@ node_config:
 "#;
         let result = NodeConfigParser::from_content(yaml);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::InvalidNamespace(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::InvalidNamespace(_))
+        ));
     }
 
     #[test]
@@ -643,7 +638,10 @@ exposes:
 "#;
         let result = NodeConfigParser::from_content(yaml);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::ConfigParse(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::InValidQoS(_))
+        ));
     }
 
     #[test]
@@ -683,5 +681,76 @@ exposes:
         assert_eq!(topics[0].topic_type, ""); // default empty string
         assert_eq!(topics[0].name, "/topic_without_type");
         assert!(matches!(topics[0].qos_profile, QoSProfile::Standard)); // default
+    }
+
+    #[test]
+    fn test_cannot_read_file() {
+        let result = NodeConfigParser::from_path("/path/that/does/not/exist.yaml");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::CannotRead(_))
+        ));
+    }
+
+    #[test]
+    fn test_cannot_parse_yaml() {
+        let yaml = r#"node_config: [unclosed"#; // invalid YAML
+        let result = NodeConfigParser::from_content(yaml);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::CannotParseYaml(_))
+        ));
+    }
+
+    #[test]
+    fn test_invalid_scalar_boolean() {
+        let yaml = r#"
+node_config:
+  name: test_node
+  namespace: /test
+  auto_start: "true"  # string instead of boolean
+"#;
+        let result = NodeConfigParser::from_content(yaml);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::InvalidScalar(t, k)) if t == "boolean" && k == "auto_start"
+        ));
+    }
+
+    #[test]
+    fn test_invalid_scalar_number() {
+        let yaml = r#"
+node_config:
+  name: test_node
+  namespace: /test
+resources:
+  max_memory_mb: "abc"  # string that cannot be parsed to number
+"#;
+        let result = NodeConfigParser::from_content(yaml);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::InvalidScalar(t, k)) if t == "number" && k == "max_memory_mb"
+        ));
+    }
+
+    #[test]
+    fn test_bad_array_topics() {
+        let yaml = r#"
+node_config:
+  name: test_node
+  namespace: /test
+exposes:
+  topics: 123  # not an array
+"#;
+        let result = NodeConfigParser::from_content(yaml);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::BadArray(k)) if k == "topics"
+        ));
     }
 }
