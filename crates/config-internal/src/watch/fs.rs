@@ -1,7 +1,6 @@
 use super::discovery::find_peppy_nodes_from_dir;
 use crate::consts::PEPPY_CONFIG_FILE;
 use crate::error::{Error, Result};
-use notify;
 use notify::event::{AccessKind, AccessMode, ModifyKind, RenameMode};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
@@ -9,11 +8,11 @@ use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use super::events::FileEvent;
+use super::events::NodeConfigEvent;
 
 // Async function to watch file changes using notify and send into channel
 pub async fn watch_files(
-    tx: mpsc::Sender<FileEvent>,
+    tx: mpsc::Sender<NodeConfigEvent>,
     from_dir: impl AsRef<Path>,
 ) -> Result<JoinHandle<Result<()>>> {
     let from_dir_input = from_dir.as_ref().to_path_buf();
@@ -68,18 +67,18 @@ pub async fn watch_files(
                             None
                         } else {
                             known_configs.insert(path.clone());
-                            Some(FileEvent::NodeConfigCreated(path.clone()))
+                            Some(NodeConfigEvent::Created(path.clone()))
                         }
                     }
                     // Rename events: treat rename-from as deleted and rename-to as created
                     notify::EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
                         known_configs.remove(&path);
-                        Some(FileEvent::NodeConfigDeleted(path.clone()))
+                        Some(NodeConfigEvent::Deleted(path.clone()))
                     }
                     notify::EventKind::Modify(ModifyKind::Name(RenameMode::To)) => {
                         if !known_configs.contains(&path) {
                             known_configs.insert(path.clone());
-                            Some(FileEvent::NodeConfigCreated(path.clone()))
+                            Some(NodeConfigEvent::Created(path.clone()))
                         } else {
                             None
                         }
@@ -88,26 +87,26 @@ pub async fn watch_files(
                     notify::EventKind::Modify(_) => {
                         let exists = path.exists();
                         if exists {
-                            Some(FileEvent::NodeConfigModified(path.clone()))
+                            Some(NodeConfigEvent::Modified(path.clone()))
                         } else {
                             known_configs.remove(&path);
-                            Some(FileEvent::NodeConfigDeleted(path.clone()))
+                            Some(NodeConfigEvent::Deleted(path.clone()))
                         }
                     }
                     // Some platforms (e.g. macOS) emit a close-write access instead of a modify
                     notify::EventKind::Access(AccessKind::Close(AccessMode::Write)) => {
                         let exists = path.exists();
                         if exists {
-                            Some(FileEvent::NodeConfigModified(path.clone()))
+                            Some(NodeConfigEvent::Modified(path.clone()))
                         } else {
                             known_configs.remove(&path);
-                            Some(FileEvent::NodeConfigDeleted(path.clone()))
+                            Some(NodeConfigEvent::Deleted(path.clone()))
                         }
                     }
                     // File removed
                     notify::EventKind::Remove(_) => {
                         known_configs.remove(&path);
-                        Some(FileEvent::NodeConfigDeleted(path.clone()))
+                        Some(NodeConfigEvent::Deleted(path.clone()))
                     }
                     _ => None,
                 };
@@ -151,7 +150,7 @@ fn normalize_event_path_to_base(path: &Path, base: &Path, base_canon: &Path) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::super::events::FileEvent;
+    use super::super::events::NodeConfigEvent;
     use super::*;
     use crate::consts::PEPPY_CONFIG_FILE;
     use std::fs;
@@ -180,7 +179,7 @@ mod tests {
         let event = event.unwrap();
         assert!(event.is_some());
 
-        if let Some(FileEvent::NodeConfigCreated(path)) = event {
+        if let Some(NodeConfigEvent::Created(path)) = event {
             assert_eq!(path, peppy_file);
         } else {
             panic!("Expected NodeConfigCreated event, got: {:?}", event);
@@ -214,7 +213,7 @@ mod tests {
         let event = event.unwrap();
         assert!(event.is_some());
 
-        if let Some(FileEvent::NodeConfigModified(path)) = event {
+        if let Some(NodeConfigEvent::Modified(path)) = event {
             assert_eq!(path, peppy_file);
         } else {
             panic!("Expected NodeConfigModified event, got: {:?}", event);
@@ -247,7 +246,7 @@ mod tests {
         let event = event.unwrap();
         assert!(event.is_some());
 
-        if let Some(FileEvent::NodeConfigDeleted(path)) = event {
+        if let Some(NodeConfigEvent::Deleted(path)) = event {
             assert_eq!(path, peppy_file);
         } else {
             panic!("Expected NodeConfigDeleted event, got: {:?}", event);
@@ -303,7 +302,7 @@ mod tests {
         let event = event.unwrap();
         assert!(event.is_some());
 
-        if let Some(FileEvent::NodeConfigCreated(path)) = event {
+        if let Some(NodeConfigEvent::Created(path)) = event {
             assert_eq!(path, nested_peppy);
         } else {
             panic!(
@@ -333,7 +332,7 @@ mod tests {
         assert!(event1.is_ok(), "Should receive first event");
 
         // Verify the first event is a create event
-        if let Ok(Some(FileEvent::NodeConfigCreated(path))) = event1 {
+        if let Ok(Some(NodeConfigEvent::Created(path))) = event1 {
             assert_eq!(path, peppy1, "First event should be for peppy1");
         } else {
             panic!("Expected NodeConfigCreated event for peppy1");
@@ -347,7 +346,7 @@ mod tests {
         assert!(event2.is_ok(), "Should receive second event");
 
         // Verify the second event is a modify event
-        if let Ok(Some(FileEvent::NodeConfigModified(path))) = event2 {
+        if let Ok(Some(NodeConfigEvent::Modified(path))) = event2 {
             assert_eq!(
                 path, peppy1,
                 "Second event should be for peppy1 modification"
@@ -356,7 +355,7 @@ mod tests {
             panic!("Expected NodeConfigModified event for peppy1");
         }
 
-        while let Ok(Some(FileEvent::NodeConfigModified(_))) =
+        while let Ok(Some(NodeConfigEvent::Modified(_))) =
             timeout(Duration::from_millis(10), rx.recv()).await
         {
             // Drain extra modify events
@@ -370,7 +369,7 @@ mod tests {
         assert!(event3.is_ok(), "Should receive third event");
 
         // Verify the third event is a delete event
-        if let Ok(Some(FileEvent::NodeConfigDeleted(path))) = event3 {
+        if let Ok(Some(NodeConfigEvent::Deleted(path))) = event3 {
             assert_eq!(path, peppy1, "Third event should be for peppy1 deletion");
         } else {
             panic!(

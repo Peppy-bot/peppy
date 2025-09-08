@@ -8,7 +8,7 @@ pub struct NodeWatcher {}
 impl NodeWatcher {
     async fn watch_nodes() -> Result<()> {
         let root_dir = std::env::current_dir().expect("Failed to get current directory");
-        let node_config_watcher = NodeConfigWatcher::new(root_dir);
+        let _node_config_watcher = NodeConfigWatcher::new(root_dir);
 
         // TODO: Using `node_config_watcher`, start/restart/stop the nodes
 
