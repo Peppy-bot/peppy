@@ -1,13 +1,16 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use super::discovery::find_peppy_nodes_from_dir;
+use super::events::FileEvent;
+use super::fs::watch_files;
+use crate::NodeConfigParser;
 use crate::error::Result;
-use crate::{FileEvent, NodeConfigParser};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use crate::{NodeConfig, consts::PEPPY_CONFIG_FILE, find_peppy_nodes_from_dir, watch_files};
+use crate::{NodeConfig, consts::PEPPY_CONFIG_FILE};
 
 /// A simple, self-contained watcher that maintains an aggregated mapping of
 /// `peppy.yaml` file paths to parsed `NodeConfig`s for a directory tree.
