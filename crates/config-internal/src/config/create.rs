@@ -17,9 +17,8 @@ impl NodeConfig {
     pub fn write_to(self, path: impl AsRef<Path>) -> Result<PathBuf> {
         let path = path.as_ref();
 
-        // Serialize the populated config back to YAML
-        // FIXME: Replace deprecated serde_yaml when a good alternative pops up, like `saphyr-serde`
-        let yaml = serde_yaml::to_string(&self).map_err(|e| Error::Serialize(e.to_string()))?;
+        // Serialize the populated config back to JSON5
+        let json5 = serde_json5::to_string(&self).map_err(|e| Error::Serialize(e.to_string()))?;
 
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
@@ -27,7 +26,7 @@ impl NodeConfig {
         }
 
         let mut file = fs::File::create(path)?;
-        file.write_all(yaml.as_bytes())?;
+        file.write_all(json5.as_bytes())?;
 
         Ok(path.to_path_buf())
     }
@@ -138,25 +137,6 @@ mod tests {
     #[test]
     fn test_root_node_content_validation() {
         let node_name = "root_node";
-        let expected_content = format!(
-            r#"node_config:
-  name: {node_name}
-  namespace: /
-  version: 0.1.0
-  respawn: true
-  respawn_delay: 1.0
-exposes:
-  topics:
-  - type: configuration/metadata
-    name: /root_node/status
-    qos_profile: standard
-logging:
-  min_level: info
-  file_path: .pixi/envs/default/var/log/peppy/{node_name}_node.log
-  max_file_size_mb: 10
-  format: text
-"#
-        );
         let template =
             NodeConfigCreator::from_template(&ConfigTemplateType::RootNode, node_name, None)
                 .unwrap();
@@ -165,26 +145,42 @@ logging:
         let temp_file = NamedTempFile::new().unwrap();
         let temp_path = temp_file.path().to_path_buf();
         template.write_to(&temp_path).unwrap();
-        let yaml_output = fs::read_to_string(&temp_path).unwrap();
+        let output = fs::read_to_string(&temp_path).unwrap();
 
-        assert_eq!(yaml_output, expected_content);
+        // JSON5 ground truth (human-friendly JSON5, not strict JSON)
+        let expected_json5 = r#"{
+            node_config: {
+                name: "root_node",
+                namespace: "/",
+                version: "0.1.0",
+                respawn: true,
+                respawn_delay: 1,
+            },
+            exposes: {
+                topics: [
+                    { type: "configuration/metadata", name: "/root_node/status", qos_profile: "standard" },
+                ],
+            },
+            logging: {
+                min_level: "info",
+                file_path: ".pixi/envs/default/var/log/peppy/root_node_node.log",
+                max_file_size_mb: 10,
+                format: "text",
+            },
+        }"#;
+
+        // Normalize by parsing both and comparing canonical JSON5 serialization
+        let expected_cfg: NodeConfig = serde_json5::from_str(expected_json5).unwrap();
+        let actual_cfg: NodeConfig = serde_json5::from_str(&output).unwrap();
+        let expected_min = serde_json5::to_string(&expected_cfg).unwrap();
+        let actual_min = serde_json5::to_string(&actual_cfg).unwrap();
+        assert_eq!(actual_min, expected_min);
     }
 
     #[test]
     fn test_simple_node_content_validation() {
         let node_name = "root_node";
         let namespace = "/ns";
-        let expected_content = format!(
-            r#"node_config:
-  name: {node_name}
-  namespace: {namespace}
-  version: 0.1.0
-logging:
-  min_level: info
-  format: text
-"#
-        );
-
         let template = NodeConfigCreator::from_template(
             &ConfigTemplateType::SimpleNode,
             node_name,
@@ -196,31 +192,33 @@ logging:
         let temp_file = NamedTempFile::new().unwrap();
         let temp_path = temp_file.path().to_path_buf();
         template.write_to(&temp_path).unwrap();
-        let yaml_output = fs::read_to_string(&temp_path).unwrap();
+        let output = fs::read_to_string(&temp_path).unwrap();
 
-        assert_eq!(yaml_output, expected_content);
+        // JSON5 ground truth with human-friendly syntax
+        let expected_json5 = r#"{
+            node_config: {
+                name: "root_node",
+                namespace: "/ns",
+                version: "0.1.0",
+            },
+            logging: {
+                min_level: "info",
+                format: "text",
+            },
+        }"#;
+
+        // Normalize and compare canonical JSON5
+        let expected_cfg: NodeConfig = serde_json5::from_str(expected_json5).unwrap();
+        let actual_cfg: NodeConfig = serde_json5::from_str(&output).unwrap();
+        let expected_min = serde_json5::to_string(&expected_cfg).unwrap();
+        let actual_min = serde_json5::to_string(&actual_cfg).unwrap();
+        assert_eq!(actual_min, expected_min);
     }
 
     #[test]
     fn test_full_node_content_validation() {
         let node_name = "root_node";
         let namespace = "/ns";
-        let expected_content = format!(
-            r#"node_config:
-  name: {node_name}
-  namespace: {namespace}
-  version: 0.1.0
-  respawn: true
-  respawn_delay: 1.0
-resources:
-  max_memory_mb: 1024
-logging:
-  min_level: info
-  file_path: .pixi/envs/default/var/log/peppy/root_node_node.log
-  max_file_size_mb: 10
-  format: text
-"#
-        );
         let template = NodeConfigCreator::from_template(
             &ConfigTemplateType::FullNode,
             node_name,
@@ -232,8 +230,33 @@ logging:
         let temp_file = NamedTempFile::new().unwrap();
         let temp_path = temp_file.path().to_path_buf();
         template.write_to(&temp_path).unwrap();
-        let yaml_output = fs::read_to_string(&temp_path).unwrap();
+        let output = fs::read_to_string(&temp_path).unwrap();
 
-        assert_eq!(yaml_output, expected_content);
+        // JSON5 ground truth with human-friendly syntax
+        let expected_json5 = r#"{
+            node_config: {
+                name: "root_node",
+                namespace: "/ns",
+                version: "0.1.0",
+                respawn: true,
+                respawn_delay: 1,
+            },
+            resources: {
+                max_memory_mb: 1024,
+            },
+            logging: {
+                min_level: "info",
+                file_path: ".pixi/envs/default/var/log/peppy/root_node_node.log",
+                max_file_size_mb: 10,
+                format: "text",
+            },
+        }"#;
+
+        // Normalize and compare canonical JSON5
+        let expected_cfg: NodeConfig = serde_json5::from_str(expected_json5).unwrap();
+        let actual_cfg: NodeConfig = serde_json5::from_str(&output).unwrap();
+        let expected_min = serde_json5::to_string(&expected_cfg).unwrap();
+        let actual_min = serde_json5::to_string(&actual_cfg).unwrap();
+        assert_eq!(actual_min, expected_min);
     }
 }
