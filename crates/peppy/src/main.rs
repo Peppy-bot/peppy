@@ -14,7 +14,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    // Create the initial peppy.star node in the current directory and install the peppy daemon if not already present
+    // Create the initial peppy.json5 node in the current directory and install the peppy daemon if not already present
     Init {
         /// Name of the node to initialize
         node_name: String,
@@ -46,8 +46,8 @@ enum Commands {
     },
     /// Checks that the peppy service is running correctly, that the node configuration are valid and synchronizes the node interfaces libraries
     Sync {
-        /// Path to the peppy.star file (defaults to ./peppy.star)
-        #[arg(default_value = "peppy.star")]
+        /// Path to the peppy.json5 file (defaults to ./peppy.json5)
+        #[arg(default_value = "peppy.json5")]
         file: PathBuf,
     },
 }
