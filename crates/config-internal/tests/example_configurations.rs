@@ -24,7 +24,7 @@ fn find_example_projects(base: &Path) -> Vec<PathBuf> {
 #[test]
 // Uses the node configuration examples in `examples/nodes_example_*` and builds
 // the node index with `NodeConfigWatcher`. Each project directory is scanned
-// recursively and all `peppy.yaml` files are parsed. The files in
+// recursively and all `peppy.json5` files are parsed. The files in
 // `examples/nodes_example_*` are the ground truth; if this test fails, the
 // parsing/types are out of sync with the examples.
 fn test_example_project_parsing() {
@@ -48,10 +48,10 @@ fn test_example_project_parsing() {
         let rx = watcher.subscribe();
         let state = rx.borrow().clone();
 
-        // Ensure at least the root peppy.yaml is discovered
+        // Ensure at least the root peppy.json5 is discovered
         assert!(
-            state.keys().any(|p| p.ends_with("peppy.yaml")),
-            "No peppy.yaml discovered in project {}",
+            state.keys().any(|p| p.ends_with("peppy.json5")),
+            "No peppy.json5 discovered in project {}",
             project.display()
         );
 

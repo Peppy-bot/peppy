@@ -27,8 +27,8 @@ fn test_create_command_default_directory() {
         "pixi.toml should exist"
     );
     assert!(
-        node_path.join("peppy.yaml").exists(),
-        "peppy.yaml should exist"
+        node_path.join("peppy.json5").exists(),
+        "peppy.json5 should exist"
     );
 }
 
@@ -57,7 +57,7 @@ fn test_create_command_with_to_dir() {
         "pixi.toml should exist"
     );
     assert!(
-        target_path.join("peppy.yaml").exists(),
-        "peppy.yaml should exist"
+        target_path.join("peppy.json5").exists(),
+        "peppy.json5 should exist"
     );
 }

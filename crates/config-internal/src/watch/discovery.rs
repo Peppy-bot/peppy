@@ -69,17 +69,17 @@ mod tests {
     fn test_find_multiple_peppy_nodes_nested() {
         let temp_dir = TempDir::new().unwrap();
 
-        // Create peppy.yaml in root
+        // Create peppy.json5 in root
         let root_peppy = temp_dir.path().join(PEPPY_CONFIG_FILE);
         fs::write(&root_peppy, "node_config: root").unwrap();
 
-        // Create nested directory with peppy.yaml
+        // Create nested directory with peppy.json5
         let nested_dir = temp_dir.path().join("nested");
         fs::create_dir(&nested_dir).unwrap();
         let nested_peppy = nested_dir.join(PEPPY_CONFIG_FILE);
         fs::write(&nested_peppy, "node_config: nested").unwrap();
 
-        // Create deeply nested directory with peppy.yaml
+        // Create deeply nested directory with peppy.json5
         let deep_dir = nested_dir.join("deep");
         fs::create_dir(&deep_dir).unwrap();
         let deep_peppy = deep_dir.join(PEPPY_CONFIG_FILE);
@@ -96,14 +96,14 @@ mod tests {
     fn test_find_peppy_nodes_ignores_other_files() {
         let temp_dir = TempDir::new().unwrap();
 
-        // Create peppy.yaml
+        // Create peppy.json5
         let peppy_file = temp_dir.path().join(PEPPY_CONFIG_FILE);
         fs::write(&peppy_file, "node: test").unwrap();
 
         // Create other files that should be ignored
         fs::write(temp_dir.path().join("config.yaml"), "other: config").unwrap();
         fs::write(temp_dir.path().join("peppy.toml"), "wrong extension").unwrap();
-        fs::write(temp_dir.path().join("not_peppy.yaml"), "not peppy").unwrap();
+        fs::write(temp_dir.path().join("not_peppy.json5"), "not peppy").unwrap();
 
         let result = find_peppy_nodes_from_dir(temp_dir.path());
         assert_eq!(result.len(), 1);
@@ -115,7 +115,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let external_dir = TempDir::new().unwrap();
 
-        // Create peppy.yaml in external directory
+        // Create peppy.json5 in external directory
         let external_peppy = external_dir.path().join(PEPPY_CONFIG_FILE);
         fs::write(&external_peppy, "node: external").unwrap();
 
@@ -126,12 +126,12 @@ mod tests {
         #[cfg(windows)]
         std::os::windows::fs::symlink_dir(external_dir.path(), &symlink_path).unwrap();
 
-        // Create peppy.yaml in main directory
+        // Create peppy.json5 in main directory
         let main_peppy = temp_dir.path().join(PEPPY_CONFIG_FILE);
         fs::write(&main_peppy, "node: main").unwrap();
 
         let result = find_peppy_nodes_from_dir(temp_dir.path());
-        // Should only find the main peppy.yaml, not the one through symlink
+        // Should only find the main peppy.json5, not the one through symlink
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], main_peppy);
     }
@@ -145,7 +145,7 @@ mod tests {
 
             let temp_dir = TempDir::new().unwrap();
 
-            // Create accessible peppy.yaml
+            // Create accessible peppy.json5
             let accessible_peppy = temp_dir.path().join(PEPPY_CONFIG_FILE);
             fs::write(&accessible_peppy, "node: accessible").unwrap();
 
