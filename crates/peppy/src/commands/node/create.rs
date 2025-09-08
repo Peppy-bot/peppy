@@ -109,13 +109,9 @@ pub fn create_peppy_node_config(node_path: &Path, node_name: &str, full: bool) -
     let peppy_yaml_path = node_path.join("peppy.yaml");
 
     let builder = if full {
-        NodeConfigCreator::from_template(&ConfigTemplateType::FullNode, Some(node_name), Some("/"))
+        NodeConfigCreator::from_template(&ConfigTemplateType::FullNode, node_name, Some("/"))
     } else {
-        NodeConfigCreator::from_template(
-            &ConfigTemplateType::SimpleNode,
-            Some(node_name),
-            Some("/"),
-        )
+        NodeConfigCreator::from_template(&ConfigTemplateType::SimpleNode, node_name, Some("/"))
     };
 
     builder

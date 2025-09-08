@@ -12,17 +12,6 @@ use tracing::{info, warn};
 
 use crate::{NodeConfig, consts::PEPPY_CONFIG_FILE};
 
-pub enum NodeState {
-    Valid,
-    Invalid(ParsingError),
-    Removed,
-}
-
-pub struct NodeStateConfig {
-    state: NodeState,
-    config: NodeConfig,
-}
-
 /// A simple, self-contained watcher that maintains an aggregated mapping of
 /// `peppy.yaml` file paths to parsed `NodeConfig`s for a directory tree.
 ///
