@@ -28,6 +28,9 @@ impl NodeConfigParser {
         let docs: Vec<Yaml<'_>> = Yaml::load_from_str(content)
             .map_err(|e| ParsingError::CannotParseYaml(e.to_string()))?;
 
+        // Strict schema validation against unknown keys
+        Self::validate_known_schema(content)?;
+
         let mut config = NodeConfig::default();
         // Parse sections into builder.config
         let doc = &docs[0];
@@ -38,6 +41,24 @@ impl NodeConfigParser {
         NodeConfigParser::parse_logging_section(doc, &mut config)?;
 
         Ok(config)
+    }
+
+    /// Validates that only known keys (as defined by `NodeConfig` and nested
+    /// structs) are present. Uses serde with `deny_unknown_fields` to enforce
+    /// strictness, while allowing arbitrary content inside `node_parameters`.
+    fn validate_known_schema(content: &str) -> Result<()> {
+        match serde_yaml::from_str::<NodeConfig>(content) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("unknown field") {
+                    Err(ParsingError::UnknownKey("root".to_string(), msg).into())
+                } else {
+                    // Defer other errors to the main saphyr-based parsing
+                    Ok(())
+                }
+            }
+        }
     }
 
     fn parse_node_config_section(doc: &Yaml, config: &mut NodeConfig) -> Result<()> {

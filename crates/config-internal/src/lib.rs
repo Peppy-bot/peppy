@@ -4,7 +4,10 @@ mod watch;
 
 pub mod consts;
 
-pub use config::{ConfigTemplateType, NodeConfig, NodeConfigCreator, NodeConfigParser};
+// To create a new config
+pub use config::{ConfigTemplateType, NodeConfig, NodeConfigCreator};
+
+// To parse existing configs
 pub use watch::{NodeConfigWatcher, NodeIndexState};
 
 pub use error::{Error as ConfigError, Result as ConfigResult};
