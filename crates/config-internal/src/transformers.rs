@@ -3,68 +3,106 @@ use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 use crate::{FileEvent, NodeConfigParser};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
+use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::{NodeConfig, consts::PEPPY_CONFIG_FILE, find_peppy_nodes_from_dir, watch_files};
 
-// TODO: Accumulate all the nodes into a Vec<NodeConfig> and pass them into a function that handles the business logic
-// The node_watcher should specify what type event has been detected, for example if it's an internal event (a file belonging to this project has changed) or an external event (a node outside this project has joined the network of nodes).
-pub async fn get_node_config_from_files(
-    from_dir: impl AsRef<Path>,
-) -> Result<HashMap<PathBuf, NodeConfig>> {
-    let (tx, mut rx) = mpsc::channel(100);
-    let initial_config_files = find_peppy_nodes_from_dir(&from_dir);
+/// A simple, self-contained watcher that maintains an aggregated mapping of
+/// `peppy.yaml` file paths to parsed `NodeConfig`s for a directory tree.
+///
+/// Usage:
+/// - Create with `new(dir)`.
+/// - Subscribe to state updates via `subscribe()`.
+/// - Start background watching with `start().await` (returns a handle you can await/abort).
+pub struct NodeConfigWatcher {
+    from_dir: PathBuf,
+    state_tx: watch::Sender<HashMap<PathBuf, NodeConfig>>,
+}
 
-    info!(
-        "Found {} initial {} files in {:?}",
-        initial_config_files.len(),
-        PEPPY_CONFIG_FILE,
-        from_dir.as_ref()
-    );
-
-    // Parse config files into a HashMap
-    let mut configs_by_path = HashMap::with_capacity(initial_config_files.len());
-    for path in initial_config_files {
-        // Parse config and propagate errors during initial loading
-        let config = NodeConfigParser::from_path(&path)?;
-        configs_by_path.insert(path, config);
+impl NodeConfigWatcher {
+    /// Initialize the watcher with the initial aggregated state.
+    pub fn new(from_dir: impl AsRef<Path>) -> Result<Self> {
+        let from_dir = from_dir.as_ref().to_path_buf();
+        let initial_state = Self::load_initial_configs(&from_dir)?;
+        let (state_tx, _state_rx) = watch::channel(initial_state);
+        Ok(Self { from_dir, state_tx })
     }
 
-    // Initialize file watcher (returns immediately once ready and emits new files on tx)
-    if let Err(e) = watch_files(tx, from_dir).await {
-        eprintln!("File watcher failed to initialize: {:?}", e);
+    /// Subscribe to the aggregated state stream. Each subscriber receives a
+    /// watch receiver seeded with the current state and subsequent updates.
+    pub fn subscribe(&self) -> watch::Receiver<HashMap<PathBuf, NodeConfig>> {
+        self.state_tx.subscribe()
     }
 
-    // TODO notify the caller
-    // Aggregate: receive from unified event channel
-    while let Some(event) = rx.recv().await {
-        match event {
-            FileEvent::NodeConfigCreated(path) => match NodeConfigParser::from_path(&path) {
-                Ok(config) => {
-                    configs_by_path.insert(path, config);
+    /// Start watching for changes and updating subscribers with the full state
+    /// on every change. The returned handle can be awaited or aborted. The
+    /// background task will also stop automatically once all receivers are
+    /// dropped.
+    pub async fn start(&self) -> Result<JoinHandle<Result<()>>> {
+        let from_dir = self.from_dir.clone();
+        let state_tx = self.state_tx.clone();
+
+        let (file_events_tx, mut file_events_rx) = mpsc::channel(100);
+        let watch_handle = watch_files(file_events_tx, &from_dir).await?;
+
+        let initial_state = state_tx.borrow().clone();
+
+        let handle = tokio::spawn(async move {
+            let mut state = initial_state;
+            loop {
+                tokio::select! {
+                    // Stop watching when all receivers drop
+                    _ = state_tx.closed() => {
+                        watch_handle.abort();
+                        break;
+                    }
+                    Some(event) = file_events_rx.recv() => {
+                        Self::update_state(&mut state, event);
+                        if state_tx.send(state.clone()).is_err() {
+                            // No receivers left; exit loop
+                            watch_handle.abort();
+                            break;
+                        }
+                    }
+                    else => break,
                 }
-                Err(err) => warn!("Could not parse {}: {}", path.display(), err),
-            },
-            FileEvent::NodeConfigModified(path) => {
-                // Re-parse the modified config and update it in the map
+            }
+            Ok(())
+        });
+
+        Ok(handle)
+    }
+
+    fn update_state(state: &mut HashMap<PathBuf, NodeConfig>, event: FileEvent) {
+        match event {
+            FileEvent::NodeConfigCreated(path) | FileEvent::NodeConfigModified(path) => {
                 match NodeConfigParser::from_path(&path) {
                     Ok(config) => {
-                        configs_by_path.insert(path, config);
+                        state.insert(path, config);
                     }
-                    Err(err) => warn!(
-                        "Could not parse modified config {}: {}",
-                        path.display(),
-                        err
-                    ),
+                    Err(err) => warn!("Could not parse {}: {}", path.display(), err),
                 }
             }
             FileEvent::NodeConfigDeleted(path) => {
-                // Remove the deleted config from the map
-                configs_by_path.remove(&path);
+                state.remove(&path);
             }
         }
     }
 
-    Ok(configs_by_path)
+    fn load_initial_configs(from_dir: &Path) -> Result<HashMap<PathBuf, NodeConfig>> {
+        let config_files = find_peppy_nodes_from_dir(from_dir);
+        info!(
+            "Found {} initial {} files in {:?}",
+            config_files.len(),
+            PEPPY_CONFIG_FILE,
+            from_dir
+        );
+
+        config_files
+            .into_iter()
+            .map(|path| NodeConfigParser::from_path(&path).map(|config| (path, config)))
+            .collect()
+    }
 }
