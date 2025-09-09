@@ -3,22 +3,27 @@ use std::path::{Path, PathBuf};
 
 use config::NodeConfigWatcher;
 
-fn find_example_projects(base: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if let Ok(entries) = fs::read_dir(base) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                    if name.starts_with("nodes_example_") {
-                        out.push(path);
-                    }
-                }
+fn find_example_projects(base_directory: &Path) -> Vec<PathBuf> {
+    let mut example_project_paths = Vec::new();
+
+    if let Ok(directory_entries) = fs::read_dir(base_directory) {
+        for entry in directory_entries.flatten() {
+            let entry_path = entry.path();
+
+            let is_example_node_directory = entry_path.is_dir()
+                && entry_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("nodes_example_"));
+
+            if is_example_node_directory {
+                example_project_paths.push(entry_path);
             }
         }
     }
-    out.sort();
-    out
+
+    example_project_paths.sort();
+    example_project_paths
 }
 
 #[test]

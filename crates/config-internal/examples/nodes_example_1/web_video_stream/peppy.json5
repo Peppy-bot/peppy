@@ -51,7 +51,7 @@
   },
   logging: {
     min_level: "info",
-    file_path: "/var/log/peppy/rest_api.log",
+    file_path: "${ENV_ROOT_DIR}/var/log/peppy/rest_api.log",
     max_file_size_mb: 100,
     format: "text",
   },

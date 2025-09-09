@@ -20,6 +20,8 @@ pub struct NodeConfig {
     pub resources: Option<Resources>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logging: Option<Logging>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<Diagnostics>,
 }
 
 /// Validated node name. Lowercase letters, digits, '_' and '-' only.
@@ -107,10 +109,14 @@ impl From<Namespace> for String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_root: Option<bool>,
     pub name: Name,
     pub namespace: Namespace,
     #[serde(default = "default_version")]
     pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_start: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -126,6 +132,8 @@ impl Default for NodeInfo {
             name: Name::new("node").expect("default name is valid"),
             namespace: Namespace::new("/").expect("default namespace is valid"),
             version: "0.1.0".to_string(),
+            is_root: None,
+            tags: None,
             auto_start: None,
             respawn: None,
             respawn_delay: None,
@@ -133,16 +141,34 @@ impl Default for NodeInfo {
     }
 }
 
+// A flexible value to hold arbitrary JSON5 content
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(untagged)]
+pub enum AnyValue {
+    #[default]
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(String),
+    Array(Vec<AnyValue>),
+    Object(std::collections::BTreeMap<String, AnyValue>),
+}
+
+// Node parameters with open-ended structure
+pub type NodeParameters = std::collections::BTreeMap<String, AnyValue>;
+
+// Common wrapper for dynamic message formats in topics/services
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct NodeParameters {}
+pub struct MessageFormat(pub std::collections::BTreeMap<String, AnyValue>);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Exposes {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub topics: Option<Vec<Topic>>,
+    pub topics: Option<Vec<ExposedTopic>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub services: Option<Vec<Service>>,
+    pub services: Option<Vec<ExposedService>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actions: Option<Vec<Action>>,
 }
@@ -151,9 +177,9 @@ pub struct Exposes {
 #[serde(deny_unknown_fields)]
 pub struct SubscribesTo {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub topics: Option<Vec<Topic>>,
+    pub topics: Option<Vec<SubscribedTopic>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub services: Option<Vec<Service>>,
+    pub services: Option<Vec<SubscribedService>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actions: Option<Vec<Action>>,
 }
@@ -169,24 +195,62 @@ pub enum QoSProfile {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct Topic {
+pub struct ExposedTopic {
+    #[serde(default, rename = "type")]
+    pub topic_type: String,
+    #[serde(default)]
+    pub qos_profile: QoSProfile,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_format: Option<MessageFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ExposedService {
+    #[serde(default, rename = "type")]
+    pub service_type: String,
+    #[serde(default)]
+    pub qos_profile: QoSProfile,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_format: Option<MessageFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct SubscribedTopic {
     #[serde(default, rename = "type")]
     pub topic_type: String,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
-    pub qos_profile: QoSProfile,
+    pub version: String,
+    #[serde(default)]
+    pub namespace: String,
+    #[serde(default)]
+    pub callback: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub optional: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct Service {
+pub struct SubscribedService {
     #[serde(default, rename = "type")]
     pub service_type: String,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
-    pub qos_profile: QoSProfile,
+    pub version: String,
+    #[serde(default)]
+    pub namespace: String,
+    #[serde(default)]
+    pub callback: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub optional: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -257,6 +321,17 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Diagnostics {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publish_rate_hz: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health_checks: Option<Vec<String>>,
+}
+
 /// Supported template types
 #[derive(Debug, Clone, Default)]
 pub enum ConfigTemplateType {
@@ -268,7 +343,9 @@ pub enum ConfigTemplateType {
 
 // Custom deserializer to accept either an object or an empty array for subscribes_to.
 // Some example configurations use `subscribes_to: []` to denote no subscriptions.
-fn opt_subscribes_to_from_any<'de, D>(deserializer: D) -> core::result::Result<Option<SubscribesTo>, D::Error>
+fn opt_subscribes_to_from_any<'de, D>(
+    deserializer: D,
+) -> core::result::Result<Option<SubscribesTo>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
