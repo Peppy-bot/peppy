@@ -2,7 +2,8 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing::error;
 
-use peppy::{Command, init, node, pixi, serve, sync};
+use config::consts::AppEnv;
+use peppy::{Command, init, node, pixi, serve, service};
 
 #[derive(Parser)]
 #[command(name = "peppy")]
@@ -44,15 +45,22 @@ enum Commands {
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
     },
-    /// Checks that the peppy service is running correctly, that the node configuration are valid and synchronizes the node interfaces libraries
-    Sync {
-        /// Path to the peppy.json5 file (defaults to ./peppy.json5)
-        #[arg(default_value = "peppy.json5")]
-        file: PathBuf,
+    /// Commands related to the peppy service (running in `dev` or in systemd/launchctl)
+    Service {
+        #[command(subcommand)]
+        command: service::ServiceCommands,
     },
 }
 
 fn main() {
+    // Set app env based on PEPPY_ENV environment variable
+    let env = if std::env::var("PEPPY_ENV").unwrap_or_default() == "PROD" {
+        AppEnv::Prod
+    } else {
+        AppEnv::Dev
+    };
+    config::consts::set_app_env(env);
+
     // Initialize tracing subscriber with environment filter
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -74,7 +82,7 @@ fn main() {
         }
         .execute(),
         Commands::Pixi { args } => pixi::PixiCommand { args }.execute(),
-        Commands::Sync { file } => sync::SyncCommand { file }.execute(),
+        Commands::Service { command } => service::ServiceCommand { command }.execute(),
         Commands::Node { command } => node::NodeCommand { command }.execute(),
     };
 
