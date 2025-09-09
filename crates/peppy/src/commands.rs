@@ -2,7 +2,7 @@ pub mod init;
 pub mod node;
 pub mod pixi;
 pub mod serve;
-pub mod sync;
+pub mod service;
 
 use crate::{Error, Result};
 
