@@ -32,8 +32,7 @@ pub fn init_root_node(path: impl AsRef<Path>, name: &str) -> Result<PathBuf> {
     fs::create_dir_all(path)?;
     let peppy_yaml_path = path.join("peppy.json5");
 
-    NodeConfigCreator::from_template(&ConfigTemplateType::RootNode, name, Some("/"))
-        .map_err(Error::PeppyConfig)?
+    NodeConfigCreator::new(&ConfigTemplateType::RootNode, name, Some("/"))
         .write_to(&peppy_yaml_path)
         .map_err(Error::PeppyConfig)?;
 
