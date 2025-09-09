@@ -22,3 +22,6 @@ target
 
 .DS_Store
 
+# Pixi stuff, anywhere
+.pixi
+

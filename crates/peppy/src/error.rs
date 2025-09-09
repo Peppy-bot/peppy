@@ -20,7 +20,6 @@ pub enum Error {
     Sync(String),
 
     // -- Node
-    RootConfigurationNotFound,
     UnsupportedLanguage,
     FolderAlreadyExist(String),
     InvalidNodeName(String),

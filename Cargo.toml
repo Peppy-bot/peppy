@@ -2,6 +2,9 @@
 
 [workspace]
 members = ["crates/*"]
+
+# Those ones are examples that use user facing libraries as if they were uploaded to crates.io
+exclude = ["crates/peppycl/examples/*"]
 resolver = "3"
 
 [workspace.package]
