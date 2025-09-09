@@ -105,13 +105,12 @@ pub fn create_peppy_node_config(node_path: &Path, node_name: &str, full: bool) -
     let peppy_yaml_path = node_path.join("peppy.json5");
 
     let builder = if full {
-        NodeConfigCreator::from_template(&ConfigTemplateType::FullNode, node_name, Some("/"))
+        NodeConfigCreator::new(&ConfigTemplateType::FullNode, node_name, Some("/"))
     } else {
-        NodeConfigCreator::from_template(&ConfigTemplateType::SimpleNode, node_name, Some("/"))
+        NodeConfigCreator::new(&ConfigTemplateType::SimpleNode, node_name, Some("/"))
     };
 
     builder
-        .map_err(Error::PeppyConfig)?
         .write_to(&peppy_yaml_path)
         .map_err(Error::PeppyConfig)?;
 

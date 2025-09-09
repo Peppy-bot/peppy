@@ -1,26 +1,93 @@
-use super::types::{
-    AnyValue, ConfigTemplateType, ExposedService, ExposedTopic, Exposes, Logging, MessageFormat,
-    Name, Namespace, NodeConfig, QoSProfile, Resources, SubscribedService, SubscribedTopic,
-};
-use crate::format::prettify_json5;
-use crate::{
-    config::types::LogFormat,
-    error::{Error, Result},
-};
+use super::types::ConfigTemplateType;
+use crate::error::{Error, Result};
+use askama::Template;
 use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
 };
 
-impl NodeConfig {
-    /// Builds and writes the configuration to a file
-    pub fn write_to(self, path: impl AsRef<Path>) -> Result<PathBuf> {
-        let path = path.as_ref();
+#[derive(Template)]
+#[template(path = "root_node.json5.j2")]
+struct RootNodeTemplate {
+    name: String,
+    namespace: String,
+    log_prefix: String,
+    log_file_name: String,
+}
 
-        // Serialize to JSON5, then pretty-format for readability
-        let compact = serde_json5::to_string(&self).map_err(|e| Error::Serialize(e.to_string()))?;
-        let json5 = prettify_json5(&compact);
+#[derive(Template)]
+#[template(path = "simple_node.json5.j2")]
+struct SimpleNodeTemplate {
+    name: String,
+    namespace: String,
+}
+
+#[derive(Template)]
+#[template(path = "full_node.json5.j2")]
+struct FullNodeTemplate {
+    name: String,
+    namespace: String,
+    log_prefix: String,
+    log_file_name: String,
+}
+
+// Note: writing is handled by NodeConfigCreator using Askama templates
+
+#[derive(Debug, Clone)]
+pub struct NodeConfigCreator {
+    template_type: ConfigTemplateType,
+    name: String,
+    namespace: String,
+}
+
+impl NodeConfigCreator {
+    /// Creates a new NodeConfigCreator for a given template type and node metadata
+    pub fn new(
+        template_type: &ConfigTemplateType,
+        node_name: &str,
+        node_namespace: Option<&str>,
+    ) -> Self {
+        let namespace = node_namespace.unwrap_or("/").to_string();
+        Self {
+            template_type: template_type.clone(),
+            name: node_name.to_string(),
+            namespace,
+        }
+    }
+
+    /// Renders the chosen template and writes it to a file
+    pub fn write_to(&self, path: impl AsRef<Path>) -> Result<PathBuf> {
+        let path = path.as_ref();
+        let log_prefix = crate::consts::env_root_dir().to_string();
+
+        let rendered = match self.template_type {
+            ConfigTemplateType::RootNode => {
+                let tpl = RootNodeTemplate {
+                    name: self.name.clone(),
+                    namespace: "/".to_string(),
+                    log_prefix: log_prefix.clone(),
+                    log_file_name: "peppy_root.log".to_string(),
+                };
+                tpl.render().map_err(|e| Error::Serialize(e.to_string()))?
+            }
+            ConfigTemplateType::SimpleNode => {
+                let tpl = SimpleNodeTemplate {
+                    name: self.name.clone(),
+                    namespace: self.namespace.clone(),
+                };
+                tpl.render().map_err(|e| Error::Serialize(e.to_string()))?
+            }
+            ConfigTemplateType::FullNode => {
+                let tpl = FullNodeTemplate {
+                    name: self.name.clone(),
+                    namespace: self.namespace.clone(),
+                    log_prefix: log_prefix.clone(),
+                    log_file_name: format!("{}_node.log", self.name),
+                };
+                tpl.render().map_err(|e| Error::Serialize(e.to_string()))?
+            }
+        };
 
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
@@ -28,167 +95,15 @@ impl NodeConfig {
         }
 
         let mut file = fs::File::create(path)?;
-        file.write_all(json5.as_bytes())?;
+        file.write_all(rendered.as_bytes())?;
 
         Ok(path.to_path_buf())
     }
 }
 
-pub struct NodeConfigCreator;
-
-impl NodeConfigCreator {
-    /// Renders the template to a string
-    pub fn from_template(
-        template_type: &ConfigTemplateType,
-        node_name: &str,
-        node_namespace: Option<&str>,
-    ) -> Result<NodeConfig> {
-        // Build a NodeConfig directly instead of rendering+parsing YAML
-        let ns = node_namespace.unwrap_or("/");
-
-        match template_type {
-            ConfigTemplateType::RootNode => NodeConfigCreator::get_root_node_config(node_name),
-            ConfigTemplateType::SimpleNode => {
-                NodeConfigCreator::get_simple_node_config(node_name, ns)
-            }
-            ConfigTemplateType::FullNode => NodeConfigCreator::get_full_node_config(node_name, ns),
-        }
-    }
-
-    fn get_root_node_config(node_name: &str) -> Result<NodeConfig> {
-        let mut config = NodeConfig::default();
-        // Root node specific fields
-        config.node_config.is_root = Some(true);
-        config.node_config.name = Name::new(node_name)?;
-        config.node_config.namespace = Namespace::new("/")?;
-        config.node_config.auto_start = Some(true);
-        config.node_config.respawn = Some(true);
-        config.node_config.respawn_delay = Some(1.0);
-
-        // node_parameters: { status: { frequency: "1Hz" } }
-        let mut status = std::collections::BTreeMap::new();
-        status.insert("frequency".to_string(), AnyValue::String("1Hz".to_string()));
-        let mut parameters = std::collections::BTreeMap::new();
-        parameters.insert(
-            "status".to_string(),
-            AnyValue::Object(status.into_iter().collect()),
-        );
-        config.node_parameters = Some(parameters);
-
-        // subscribes_to: topics + services
-        config.subscribes_to = Some(super::types::SubscribesTo {
-            topics: Some(vec![SubscribedTopic {
-                topic_type: "/peppy/status".to_string(),
-                name: "{any}".to_string(),
-                version: "{any}".to_string(),
-                namespace: "/".to_string(),
-                callback: "on_root_node_discovered".to_string(),
-                optional: None,
-            }]),
-            services: Some(vec![SubscribedService {
-                service_type: "/peppy/node".to_string(),
-                name: "{any}".to_string(),
-                version: "{any}".to_string(),
-                namespace: "/".to_string(),
-                callback: "on_payload_node_received".to_string(),
-                optional: None,
-            }]),
-            actions: None,
-        });
-
-        // exposes: topics + services
-        let mut topic_msg = MessageFormat::default();
-        topic_msg
-            .0
-            .insert("name".to_string(), AnyValue::String("str".to_string()));
-        let mut service_msg = MessageFormat::default();
-        service_msg
-            .0
-            .insert("payload".to_string(), AnyValue::String("bytes".to_string()));
-        config.exposes = Some(Exposes {
-            topics: Some(vec![ExposedTopic {
-                topic_type: "/peppy/status".to_string(),
-                qos_profile: QoSProfile::Standard,
-                message_format: Some(topic_msg),
-                name: None,
-            }]),
-            services: Some(vec![ExposedService {
-                service_type: "/peppy/node".to_string(),
-                qos_profile: QoSProfile::Standard,
-                message_format: Some(service_msg),
-                name: None,
-            }]),
-            actions: Some(vec![]),
-        });
-
-        // resources
-        config.resources = Some(Resources {
-            max_memory_mb: Some(1024),
-        });
-
-        // logging
-        config.logging = Some(Logging {
-            min_level: String::from("info"),
-            file_path: Some(
-                std::path::Path::new(&crate::consts::env_root_dir())
-                    .join("var")
-                    .join("log")
-                    .join("peppy")
-                    .join("peppy_root.log")
-                    .display()
-                    .to_string(),
-            ),
-            max_file_size_mb: Some(100),
-            format: LogFormat::default(),
-        });
-        Ok(config)
-    }
-
-    fn get_simple_node_config(node_name: &str, namespace: &str) -> Result<NodeConfig> {
-        let mut config = NodeConfig::default();
-        config.node_config.name = Name::new(node_name)?;
-        config.node_config.namespace = Namespace::new(namespace.to_string())?;
-
-        config.logging = Some(Logging {
-            min_level: String::from("info"),
-            file_path: None,
-            max_file_size_mb: None,
-            format: LogFormat::default(),
-        });
-        Ok(config)
-    }
-
-    fn get_full_node_config(node_name: &str, namespace: &str) -> Result<NodeConfig> {
-        let mut config = NodeConfig::default();
-        config.node_config.name = Name::new(node_name)?;
-        config.node_config.namespace = Namespace::new(namespace)?;
-        config.node_config.respawn = Some(true);
-        config.node_config.respawn_delay = Some(1.0);
-
-        config.resources = Some(Resources {
-            max_memory_mb: Some(1024),
-        });
-
-        config.logging = Some(Logging {
-            min_level: String::from("info"),
-            file_path: Some(
-                std::path::Path::new(&crate::consts::env_root_dir())
-                    .join("var")
-                    .join("log")
-                    .join("peppy")
-                    .join(format!("{}_node.log", config.node_config.name.as_str()))
-                    .display()
-                    .to_string(),
-            ),
-            max_file_size_mb: Some(10),
-            format: LogFormat::default(),
-        });
-        Ok(config)
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::types::NodeConfig;
     use super::*;
     use std::fs;
     use tempfile::NamedTempFile;
@@ -196,9 +111,7 @@ mod tests {
     #[test]
     fn test_root_node_content_validation() {
         let node_name = "root_node";
-        let template =
-            NodeConfigCreator::from_template(&ConfigTemplateType::RootNode, node_name, None)
-                .unwrap();
+        let template = NodeConfigCreator::new(&ConfigTemplateType::RootNode, node_name, None);
 
         // Write to a temporary file and read back the content
         let temp_file = NamedTempFile::new().unwrap();
@@ -291,12 +204,8 @@ mod tests {
     fn test_simple_node_content_validation() {
         let node_name = "a_node";
         let namespace = "/ns";
-        let template = NodeConfigCreator::from_template(
-            &ConfigTemplateType::SimpleNode,
-            node_name,
-            Some(namespace),
-        )
-        .unwrap();
+        let template =
+            NodeConfigCreator::new(&ConfigTemplateType::SimpleNode, node_name, Some(namespace));
 
         // Write to a temporary file and read back the content
         let temp_file = NamedTempFile::new().unwrap();
@@ -329,12 +238,8 @@ mod tests {
     fn test_full_node_content_validation() {
         let node_name = "a_node";
         let namespace = "/ns";
-        let template = NodeConfigCreator::from_template(
-            &ConfigTemplateType::FullNode,
-            node_name,
-            Some(namespace),
-        )
-        .unwrap();
+        let template =
+            NodeConfigCreator::new(&ConfigTemplateType::FullNode, node_name, Some(namespace));
 
         // Write to a temporary file and read back the content
         let temp_file = NamedTempFile::new().unwrap();

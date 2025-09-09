@@ -459,6 +459,7 @@ dependencies = [
 name = "config"
 version = "0.0.1"
 dependencies = [
+ "askama",
  "notify",
  "notify-debouncer-mini",
  "serde",
