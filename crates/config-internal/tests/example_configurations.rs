@@ -53,6 +53,8 @@ fn test_example_project_parsing() {
         let rx = watcher.subscribe();
         let state = rx.borrow().clone();
 
+        println!("\nProject: {}", project.display());
+
         // Ensure at least the root peppy.json5 is discovered
         assert!(
             state.keys().any(|p| p.ends_with("peppy.json5")),
@@ -63,7 +65,17 @@ fn test_example_project_parsing() {
         // Assert all discovered configs currently parse successfully
         // NOTE: If this assertion fails, it indicates the config schema in code
         // is out of sync with the example files (ground truth).
-        for (path, result) in state.iter() {
+        let mut entries: Vec<_> = state.iter().collect();
+        entries.sort_by_key(|(p, _)| p.display().to_string());
+
+        println!("Found {} config file(s)", entries.len());
+
+        for (path, result) in entries {
+            match result {
+                Ok(_) => println!("[OK] {}", path.display()),
+                Err(err) => println!("[ERR] {}: {}", path.display(), err),
+            }
+
             assert!(
                 result.is_ok(),
                 "Failed to parse {}: {:?}",
