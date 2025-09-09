@@ -88,10 +88,6 @@ pub fn create(
         return Err(Error::FolderAlreadyExist(node_path.display().to_string()));
     }
 
-    if !from_dir.join("peppy.json5").exists() {
-        return Err(Error::RootConfigurationNotFound);
-    }
-
     fs::create_dir_all(&node_path)?;
 
     // Use factory pattern for language-specific operations
@@ -148,31 +144,11 @@ mod tests {
     }
 
     #[test]
-    fn test_check_root_node_config_missing() {
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new().unwrap();
-        // Create from a directory without peppy.json5
-        let result = create(
-            temp_dir.path(),
-            None,
-            NodeName::new("video_node").unwrap(),
-            Language::Python,
-            Some("Test video node"),
-            false,
-        );
-        assert!(matches!(result, Err(Error::RootConfigurationNotFound)))
-    }
-
-    #[test]
     fn test_folder_already_exists_error() {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
         let node_name = "existing_node";
-
-        // Create peppy.json5 in the temp directory to avoid RootConfigurationNotFound error
-        fs::write(temp_dir.path().join("peppy.json5"), "# Root config").unwrap();
 
         // Create a directory with the same name as the node
         let existing_dir = temp_dir.path().join(node_name);
