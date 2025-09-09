@@ -1,1 +1,30 @@
 pub const PEPPY_CONFIG_FILE: &str = "peppy.json5";
+
+// Application runtime environment (dev/prod) tracked internally.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppEnv {
+    Dev,
+    Prod,
+}
+
+use std::sync::OnceLock;
+
+static APP_ENV: OnceLock<AppEnv> = OnceLock::new();
+
+/// Sets the application environment once. Subsequent calls are ignored.
+pub fn set_app_env(env: AppEnv) {
+    let _ = APP_ENV.set(env);
+}
+
+/// Returns the current application environment, defaulting to Dev.
+pub fn app_env() -> AppEnv {
+    *APP_ENV.get_or_init(|| AppEnv::Dev)
+}
+
+/// Environment-aware root dir value.
+pub fn env_root_dir() -> &'static str {
+    match app_env() {
+        AppEnv::Dev => ".pixi/envs/default/",
+        AppEnv::Prod => "/", // In prod the root dir is `/` on the system
+    }
+}
