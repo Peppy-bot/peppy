@@ -1,16 +1,16 @@
-use std::{
-    fs,
-    io::Write,
-    path::{Path, PathBuf},
-};
-
 use super::types::{
     AnyValue, ConfigTemplateType, ExposedService, ExposedTopic, Exposes, Logging, MessageFormat,
     Name, Namespace, NodeConfig, QoSProfile, Resources, SubscribedService, SubscribedTopic,
 };
+use crate::format::prettify_json5;
 use crate::{
     config::types::LogFormat,
     error::{Error, Result},
+};
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
 };
 
 impl NodeConfig {
@@ -18,8 +18,9 @@ impl NodeConfig {
     pub fn write_to(self, path: impl AsRef<Path>) -> Result<PathBuf> {
         let path = path.as_ref();
 
-        // Serialize the populated config back to JSON5
-        let json5 = serde_json5::to_string(&self).map_err(|e| Error::Serialize(e.to_string()))?;
+        // Serialize to JSON5, then pretty-format for readability
+        let compact = serde_json5::to_string(&self).map_err(|e| Error::Serialize(e.to_string()))?;
+        let json5 = prettify_json5(&compact);
 
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {

@@ -87,12 +87,13 @@ impl Serve {
 pub struct ServeCommand {
     pub engine: String,
     pub config_path: Option<PathBuf>,
+    pub strict: bool,
 }
 
 impl Command for ServeCommand {
     fn execute(self) -> Result<()> {
         // TODO: Only one instance of `serve` can run on a given machine (prod or dev included). Check the port and PID to make sure there isn't more than one instance running
-        let executor = ServeCommandBuilder::new(self.engine, self.config_path)
+        let executor = ServeCommandBuilder::new(self.engine, self.config_path, self.strict)
             .with_node_watcher()
             .with_messaging_router()
             // Future commands can be added here:
