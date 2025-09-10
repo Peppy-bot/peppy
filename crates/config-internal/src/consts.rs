@@ -22,9 +22,9 @@ pub fn app_env() -> AppEnv {
 }
 
 /// Environment-aware root dir value.
-pub fn env_root_dir() -> &'static str {
+pub fn logs_root_dir() -> &'static str {
     match app_env() {
-        AppEnv::Dev => ".pixi/envs/default/",
-        AppEnv::Prod => "/", // In prod the root dir is `/` on the system
+        AppEnv::Dev => ".peppy/logs/",
+        AppEnv::Prod => "/var/log/peppy/", // In prod the root dir is `/` on the system
     }
 }

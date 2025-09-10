@@ -147,7 +147,7 @@ impl ZenohdFacade {
     fn get_config_as_path(&self) -> Result<PathBuf> {
         // Write config to a temporary file that persists by leaking the TempDir
         let temp_dir = Box::new(tempfile::TempDir::new().expect("Failed to create temp dir"));
-        // TODO: move this file into the .pixi /etc environment
+        // TODO: move this file into .peppy/config/
         let config_path = temp_dir.path().join("zenohd_config.json5");
 
         // Remove existing file if it exists

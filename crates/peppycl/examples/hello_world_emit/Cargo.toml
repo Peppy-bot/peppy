@@ -7,4 +7,5 @@ edition = "2024"
 [workspace]
 
 [dependencies]
-peppycl = { path = "../.." }
+peppycl = { path = "../.." } # In a real project this will be pulled from crates.io
+peppygen = { path = "./.peppy/crates/peppygen" }

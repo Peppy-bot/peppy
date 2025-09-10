@@ -55,7 +55,6 @@ cargo run
 cargo run -- node create my-node
 cargo run -- serve --name my-service
 cargo run -- sync peppy.json5
-cargo run -- pixi install
 ```
 
 ## High-Level Architecture
@@ -66,13 +65,10 @@ PeppyOS is a robotics middleware framework similar to ROS 2, built in Rust with 
 
 1. **Node System** (`src/node/`): The fundamental building blocks of PeppyOS
    - Nodes are distributed components that communicate via Zenoh
-   - Each node has its own pixi environment and peppy.json5 configuration
-   - Node creation sets up directory structure with pixi.toml and peppy.json5 files
 
 2. **CLI Interface** (`src/main.rs`): Entry point providing subcommands:
    - `node create`: Creates new nodes with scaffolding
    - `serve`: Runs the peppy service/Zenoh router
-   - `pixi`: Proxies commands to the pixi package manager
    - `sync`: Synchronizes peppy.json5 configuration files
 
 3. **Communication Layer**: Built on Zenoh for real-time, distributed messaging

@@ -12,9 +12,10 @@ struct MainRsTemplate;
 #[template(path = "dependencies/Cargo.toml.j2")]
 struct CargoTomlTemplate<'a> {
     node_name: &'a str,
+    description: &'a str,
 }
 
-pub fn add_rust_node_config(node_name: &NodeName, to_path: &Path) -> Result<()> {
+pub fn add_rust_node_config(node_name: &NodeName, to_path: &Path, description: &str) -> Result<()> {
     // Create src directory
     let src_dir = to_path.join("src");
     fs::create_dir_all(&src_dir)?;
@@ -29,11 +30,20 @@ pub fn add_rust_node_config(node_name: &NodeName, to_path: &Path) -> Result<()> 
     // Create Cargo.toml from template
     let cargo_template = CargoTomlTemplate {
         node_name: node_name.as_str(),
+        description: description,
     };
     let cargo_content = cargo_template.render().map_err(std::io::Error::other)?;
 
     let cargo_toml_path = to_path.join("Cargo.toml");
     fs::write(cargo_toml_path, cargo_content)?;
+
+    std::process::Command::new("cargo")
+        .arg("add")
+        .arg("tokio")
+        .arg("--features")
+        .arg("full")
+        .current_dir(to_path)
+        .output()?;
 
     Ok(())
 }
@@ -47,14 +57,15 @@ mod tests {
         use tempfile::TempDir;
         let node_name = NodeName::new("test_node").unwrap();
         let temp_dir = TempDir::new().unwrap();
+        let description = "A description";
 
-        let result = add_rust_node_config(&node_name, temp_dir.path());
+        let result = add_rust_node_config(&node_name, temp_dir.path(), description);
         assert!(result.is_ok());
 
         // Verify the expected Rust crate files were created
         let cargo_toml = temp_dir.path().join("Cargo.toml");
         let src_dir = temp_dir.path().join("src");
-        let lib_rs = src_dir.join("lib.rs");
+        let main_rs = src_dir.join("main.rs");
 
         // Check that Cargo.toml exists
         assert!(cargo_toml.exists(), "Expected Cargo.toml to be created");
@@ -63,8 +74,8 @@ mod tests {
         assert!(src_dir.exists(), "Expected src directory to be created");
         assert!(src_dir.is_dir(), "src should be a directory");
 
-        // Check that lib.rs exists in the src directory
-        assert!(lib_rs.exists(), "Expected lib.rs in src directory");
+        // Check that main.rs exists in the src directory
+        assert!(main_rs.exists(), "Expected main.rs in src directory");
 
         // Check that Cargo.toml contains peppycl dependency
         let cargo_content = fs::read_to_string(&cargo_toml).unwrap();

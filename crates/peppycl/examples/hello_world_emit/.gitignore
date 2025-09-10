@@ -4,9 +4,6 @@
 *.bak
 *.orig
 
-# Virtual environment
-.pixi/
-
 # Editor-specific files
 .vscode/
 .idea/

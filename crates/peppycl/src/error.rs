@@ -7,7 +7,7 @@ pub enum Error {
     // -- general
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    
+
     // -- config
     #[error(transparent)]
     Config(#[from] config::ConfigError),

@@ -23,10 +23,6 @@ fn test_create_command_default_directory() {
     assert!(node_path.is_dir(), "Node should be a directory");
 
     assert!(
-        node_path.join("pixi.toml").exists(),
-        "pixi.toml should exist"
-    );
-    assert!(
         node_path.join("peppy.json5").exists(),
         "peppy.json5 should exist"
     );
@@ -52,10 +48,6 @@ fn test_create_command_with_to_dir() {
     assert!(target_path.exists(), "Target directory should exist");
     assert!(target_path.is_dir(), "Target should be a directory");
 
-    assert!(
-        target_path.join("pixi.toml").exists(),
-        "pixi.toml should exist"
-    );
     assert!(
         target_path.join("peppy.json5").exists(),
         "peppy.json5 should exist"

@@ -28,5 +28,5 @@ backend = { name = "pixi-build-python", version = "==0.3.2" }
 
 [package.host-dependencies]
 python = "3.12.*"
-rust = "*"           # provides cargo/rustc for building the extension
-maturin = ">=1,<2"   # maturin is the PEP517 backend runner
+rust = "*"         # provides cargo/rustc for building the extension
+maturin = ">=1,<2" # maturin is the PEP517 backend runner
