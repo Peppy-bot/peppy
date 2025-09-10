@@ -1,0 +1,13 @@
+use peppycl; // control center 
+use peppygen; // peppygen exposes generated interface
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Set up the node, subscriptions, services, etc
+    let _node = peppycl::setup_node().await?;
+
+    // Run an infinite future that keeps the program alive and dispatching events
+    tokio::signal::ctrl_c().await?; // Graceful shutdown on Ctrl+C
+    println!("Shutdown signal received, exiting...");
+    Ok(())
+}

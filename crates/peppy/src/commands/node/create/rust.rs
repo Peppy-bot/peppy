@@ -5,8 +5,8 @@ use std::fs;
 use std::path::Path;
 
 #[derive(Template)]
-#[template(path = "dependencies/lib.rs.j2")]
-struct LibRsTemplate;
+#[template(path = "dependencies/main.rs.j2")]
+struct MainRsTemplate;
 
 #[derive(Template)]
 #[template(path = "dependencies/Cargo.toml.j2")]
@@ -19,12 +19,12 @@ pub fn add_rust_node_config(node_name: &NodeName, to_path: &Path) -> Result<()> 
     let src_dir = to_path.join("src");
     fs::create_dir_all(&src_dir)?;
 
-    // Create lib.rs from template
-    let lib_template = LibRsTemplate;
-    let lib_content = lib_template.render().map_err(std::io::Error::other)?;
+    // Create main.rs from template
+    let main_template = MainRsTemplate;
+    let main_content = main_template.render().map_err(std::io::Error::other)?;
 
-    let lib_rs_path = src_dir.join("lib.rs");
-    fs::write(lib_rs_path, lib_content)?;
+    let main_rs_path = src_dir.join("main.rs");
+    fs::write(main_rs_path, main_content)?;
 
     // Create Cargo.toml from template
     let cargo_template = CargoTomlTemplate {
