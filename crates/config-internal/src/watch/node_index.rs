@@ -249,7 +249,7 @@ mod tests {
         .unwrap();
 
         // Wait for a change notification
-        timeout(Duration::from_secs(2), rx.changed())
+        timeout(Duration::from_secs(1), rx.changed())
             .await
             .expect("state change expected")
             .expect("receiver still active");
@@ -272,11 +272,11 @@ mod tests {
         let created = write_config(temp.path(), "multi_sub", "/ns");
 
         // Both subscribers should receive the update
-        timeout(Duration::from_secs(2), rx1.changed())
+        timeout(Duration::from_secs(1), rx1.changed())
             .await
             .expect("rx1 should receive update")
             .expect("rx1 still active");
-        timeout(Duration::from_secs(2), rx2.changed())
+        timeout(Duration::from_secs(1), rx2.changed())
             .await
             .expect("rx2 should receive update")
             .expect("rx2 still active");
@@ -288,11 +288,11 @@ mod tests {
         write_config(temp.path(), "multi_sub_v2", "/ns");
 
         // Both subscribers should receive the modification
-        timeout(Duration::from_secs(2), rx1.changed())
+        timeout(Duration::from_secs(1), rx1.changed())
             .await
             .expect("rx1 should receive modify update")
             .expect("rx1 still active");
-        timeout(Duration::from_secs(2), rx2.changed())
+        timeout(Duration::from_secs(1), rx2.changed())
             .await
             .expect("rx2 should receive modify update")
             .expect("rx2 still active");
@@ -320,11 +320,11 @@ mod tests {
         std::fs::remove_file(&created).expect("delete config file");
 
         // Both subscribers should receive the deletion
-        timeout(Duration::from_secs(2), rx1.changed())
+        timeout(Duration::from_secs(1), rx1.changed())
             .await
             .expect("rx1 should receive delete update")
             .expect("rx1 still active");
-        timeout(Duration::from_secs(2), rx2.changed())
+        timeout(Duration::from_secs(1), rx2.changed())
             .await
             .expect("rx2 should receive delete update")
             .expect("rx2 still active");
@@ -363,7 +363,7 @@ mod tests {
 
         // Delete the file and expect an error state with DeletedFile
         std::fs::remove_file(&config_path).expect("delete config file");
-        timeout(Duration::from_secs(2), rx.changed())
+        timeout(Duration::from_secs(1), rx.changed())
             .await
             .expect("state change expected after delete")
             .expect("receiver still active");
@@ -374,7 +374,7 @@ mod tests {
 
         // Recreate the file with a new valid name and expect Ok again
         write_config(temp.path(), "second", "/ns");
-        timeout(Duration::from_secs(2), rx.changed())
+        timeout(Duration::from_secs(1), rx.changed())
             .await
             .expect("state change expected after recreate")
             .expect("receiver still active");

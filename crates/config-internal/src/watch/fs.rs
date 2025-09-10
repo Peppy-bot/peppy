@@ -173,7 +173,7 @@ mod tests {
         fs::write(&peppy_file, "node: test").unwrap();
 
         // Wait for the event with timeout
-        let event = timeout(Duration::from_secs(2), rx.recv()).await;
+        let event = timeout(Duration::from_secs(1), rx.recv()).await;
 
         assert!(event.is_ok(), "Timeout waiting for file event");
         let event = event.unwrap();
@@ -207,7 +207,7 @@ mod tests {
         fs::write(&peppy_file, "node: modified").unwrap();
 
         // Wait for the event
-        let event = timeout(Duration::from_secs(2), rx.recv()).await;
+        let event = timeout(Duration::from_secs(1), rx.recv()).await;
 
         assert!(event.is_ok(), "Timeout waiting for file event");
         let event = event.unwrap();
@@ -240,7 +240,7 @@ mod tests {
         fs::remove_file(&peppy_file).unwrap();
 
         // Wait for the event
-        let event = timeout(Duration::from_secs(2), rx.recv()).await;
+        let event = timeout(Duration::from_secs(1), rx.recv()).await;
 
         assert!(event.is_ok(), "Timeout waiting for file event");
         let event = event.unwrap();
@@ -296,7 +296,7 @@ mod tests {
         fs::write(&nested_peppy, "node: nested").unwrap();
 
         // Wait for the event
-        let event = timeout(Duration::from_secs(2), rx.recv()).await;
+        let event = timeout(Duration::from_secs(1), rx.recv()).await;
 
         assert!(event.is_ok(), "Timeout waiting for nested file event");
         let event = event.unwrap();
@@ -328,7 +328,7 @@ mod tests {
         fs::write(&peppy1, "node: one").unwrap();
 
         // Wait for first event
-        let event1 = timeout(Duration::from_secs(2), rx.recv()).await;
+        let event1 = timeout(Duration::from_secs(1), rx.recv()).await;
         assert!(event1.is_ok(), "Should receive first event");
 
         // Verify the first event is a create event
@@ -342,7 +342,7 @@ mod tests {
         fs::write(&peppy1, "node: modified").unwrap();
 
         // Wait for modify event
-        let event2 = timeout(Duration::from_secs(2), rx.recv()).await;
+        let event2 = timeout(Duration::from_secs(1), rx.recv()).await;
         assert!(event2.is_ok(), "Should receive second event");
 
         // Verify the second event is a modify event
@@ -365,7 +365,7 @@ mod tests {
         fs::remove_file(&peppy1).unwrap();
 
         // Wait for delete event
-        let event3 = timeout(Duration::from_secs(2), rx.recv()).await;
+        let event3 = timeout(Duration::from_secs(1), rx.recv()).await;
         assert!(event3.is_ok(), "Should receive third event");
 
         // Verify the third event is a delete event

@@ -30,7 +30,7 @@ pub fn add_rust_node_config(node_name: &NodeName, to_path: &Path, description: &
     // Create Cargo.toml from template
     let cargo_template = CargoTomlTemplate {
         node_name: node_name.as_str(),
-        description: description,
+        description,
     };
     let cargo_content = cargo_template.render().map_err(std::io::Error::other)?;
 

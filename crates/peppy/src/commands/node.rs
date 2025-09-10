@@ -57,16 +57,12 @@ impl Command for NodeCommand {
                 node_name,
                 description,
                 full,
-            } => {
-                let current_dir = std::env::current_dir()?;
-                NodeBuilder::new(node_name)
-                    .current_dir(current_dir)
-                    .to_dir(to_dir)
-                    .lang(lang)
-                    .description(description)
-                    .full(full)
-                    .build()
-            }
+            } => NodeBuilder::new(node_name)
+                .to_dir(to_dir)
+                .lang(lang)
+                .description(description)
+                .full(full)
+                .build(),
             NodeCommands::Run {
                 node_name,
                 configuration_file,

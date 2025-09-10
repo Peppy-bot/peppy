@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use tracing::info;
 
 pub struct NodeBuilder {
-    current_dir: PathBuf,
     to_dir: Option<PathBuf>,
     node_name: NodeName,
     lang: Language,
@@ -22,18 +21,12 @@ pub struct NodeBuilder {
 impl NodeBuilder {
     pub fn new(node_name: NodeName) -> Self {
         Self {
-            current_dir: PathBuf::new(),
             to_dir: None,
             node_name,
             lang: Language::Rust,
             description: None,
             full: false,
         }
-    }
-
-    pub fn current_dir(mut self, dir: PathBuf) -> Self {
-        self.current_dir = dir;
-        self
     }
 
     pub fn to_dir(mut self, dir: Option<PathBuf>) -> Self {
@@ -58,7 +51,6 @@ impl NodeBuilder {
 
     pub fn build(self) -> Result<()> {
         create(
-            &self.current_dir,
             self.to_dir.as_deref(),
             self.node_name,
             self.lang,
@@ -71,7 +63,6 @@ impl NodeBuilder {
 
 /// Creates a new node and updates the peppy.json5 configuration file where the command is run
 pub fn create(
-    from_dir: &Path,
     to_dir: Option<&Path>,
     node_name: NodeName,
     language: Language,
@@ -157,7 +148,6 @@ mod tests {
 
         // Try to create a node with the same name
         let result = create(
-            temp_dir.path(),
             Some(temp_dir.path()),
             NodeName::new(node_name).unwrap(),
             Language::Python,
