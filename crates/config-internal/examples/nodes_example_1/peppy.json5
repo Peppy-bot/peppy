@@ -80,8 +80,8 @@
   },
   logging: {
     min_level: "info",
-    // ${ENV_ROOT_DIR} is `.pixi/envs/default` in dev mode and `` (empty) in production
-    file_path: "${ENV_ROOT_DIR}/var/log/peppy/peppy_root.log",
+    // ${LOGS_ROOT_DIR} is `.peppy/logs/` in dev mode and `/var/log/peppy/` (empty) in production
+    file_path: "${LOGS_ROOT_DIR}/peppy_root.log",
     max_file_size_mb: 100,
     format: "text"
   }

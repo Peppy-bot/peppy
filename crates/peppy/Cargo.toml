@@ -5,8 +5,8 @@ edition.workspace = true
 
 [dependencies]
 pmi = { path = "../pmi-internal", features = ["zenoh"] }
-config = { path = "../config-internal"}
-peppycl = { path = "../peppycl"} # Is itself dependant on peppycl to start the root_node
+config = { path = "../config-internal" }
+peppycl = { path = "../peppycl" }                        # Is itself dependant on peppycl to start the root_node
 bytes = "1"
 askama = "0.14.0"
 # https://docs.rs/quote/latest/quote/
@@ -22,9 +22,3 @@ netdev = "0.37"
 
 [dev-dependencies]
 tempfile = "3.8"
-
-[features]
-default = ["build_pixi"]
-# Feature to enable building pixi from source
-build_pixi = []
-

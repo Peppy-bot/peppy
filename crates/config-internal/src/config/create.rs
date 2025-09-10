@@ -12,7 +12,6 @@ use std::{
 struct RootNodeTemplate {
     name: String,
     namespace: String,
-    log_prefix: String,
     log_file_name: String,
 }
 
@@ -28,7 +27,6 @@ struct SimpleNodeTemplate {
 struct FullNodeTemplate {
     name: String,
     namespace: String,
-    log_prefix: String,
     log_file_name: String,
 }
 
@@ -59,14 +57,12 @@ impl NodeConfigCreator {
     /// Renders the chosen template and writes it to a file
     pub fn write_to(&self, path: impl AsRef<Path>) -> Result<PathBuf> {
         let path = path.as_ref();
-        let log_prefix = crate::consts::env_root_dir().to_string();
 
         let rendered = match self.template_type {
             ConfigTemplateType::RootNode => {
                 let tpl = RootNodeTemplate {
                     name: self.name.clone(),
                     namespace: "/".to_string(),
-                    log_prefix: log_prefix.clone(),
                     log_file_name: "peppy_root.log".to_string(),
                 };
                 tpl.render().map_err(|e| Error::Serialize(e.to_string()))?
@@ -82,7 +78,6 @@ impl NodeConfigCreator {
                 let tpl = FullNodeTemplate {
                     name: self.name.clone(),
                     namespace: self.namespace.clone(),
-                    log_prefix: log_prefix.clone(),
                     log_file_name: format!("{}_node.log", self.name),
                 };
                 tpl.render().map_err(|e| Error::Serialize(e.to_string()))?
@@ -184,9 +179,8 @@ mod tests {
             },
             logging: {
                 min_level: "info",
-                file_path: ""#
-            + crate::consts::env_root_dir()
-            + r#"var/log/peppy/peppy_root.log",
+                // ${LOGS_ROOT_DIR} is `.peppy/logs/` in dev mode and `/var/log/peppy/` (empty) in production
+                file_path: "${LOGS_ROOT_DIR}/peppy_root.log",
                 max_file_size_mb: 100,
                 format: "text"
             }
@@ -261,7 +255,7 @@ mod tests {
             },
             logging: {
                 min_level: "info",
-                file_path: ".pixi/envs/default/var/log/peppy/a_node_node.log",
+                file_path: "${LOGS_ROOT_DIR}/a_node_node.log",
                 max_file_size_mb: 10,
                 format: "text",
             },

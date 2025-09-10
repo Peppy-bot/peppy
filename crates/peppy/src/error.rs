@@ -15,7 +15,6 @@ pub enum Error {
 
     // -- commands
     ExecutionFailed(String),
-    Pixi(String),
     Zenohd(String),
     Sync(String),
 
@@ -25,7 +24,6 @@ pub enum Error {
     InvalidNodeName(String),
     GitConfigCreation(String),
     PeppyConfigCreation(String),
-    PixiConfigCreation(String),
     RustConfigCreation(String),
     PythonConfigCreation(String),
 

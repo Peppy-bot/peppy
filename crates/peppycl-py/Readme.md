@@ -4,7 +4,7 @@ Peppy control interface lib in Python. Connects to a peppyOS service. Builds on 
 
 ## How to build?
 
-Change the version attribute in `./peppycl/_version.py` and `./pixi.toml` and run `pixi build`.
+TODO
 
 ## How to publish?
 

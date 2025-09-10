@@ -11,7 +11,7 @@
     },
     logging: {
         min_level: "info",
-        file_path: "{{ log_prefix }}var/log/peppy/{{ log_file_name }}",
+        file_path: "${LOGS_ROOT_DIR}/{{ log_file_name }}",
         max_file_size_mb: 10,
         format: "text"
     }

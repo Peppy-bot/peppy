@@ -1,5 +1,4 @@
 mod factory;
-mod pixi;
 mod python;
 mod rust;
 
@@ -94,10 +93,13 @@ pub fn create(
     let factory = create_factory(language);
 
     factory.create_gitignore(&node_path)?;
-    factory.create_pixi_config(&node_path, &node_name, description)?;
     create_peppy_node_config(&node_path, node_name.as_str(), full)
         .map_err(|e| Error::PeppyConfigCreation(e.to_string()))?;
-    factory.create_language_config(&node_name, &node_path)?;
+    factory.create_language_config(
+        &node_name,
+        &node_path,
+        description.unwrap_or(&format!("{node_name} {language} node")),
+    )?;
     Ok(())
 }
 
@@ -186,7 +188,6 @@ mod tests {
 
         let content = fs::read_to_string(gitignore_path).unwrap();
         assert!(content.contains("__pycache__"));
-        assert!(content.contains(".pixi"));
     }
 
     #[test]
@@ -205,6 +206,5 @@ mod tests {
 
         let content = fs::read_to_string(gitignore_path).unwrap();
         assert!(content.contains("/target/"));
-        assert!(content.contains(".pixi"));
     }
 }

@@ -22,7 +22,9 @@ impl ServeCommandBuilder {
     }
 
     pub fn with_node_watcher(mut self) -> Self {
-        let watcher = Box::new(NodeWatcher { strict: self.strict });
+        let watcher = Box::new(NodeWatcher {
+            strict: self.strict,
+        });
         self.composite_command = self.composite_command.add_async_command(watcher);
         self
     }

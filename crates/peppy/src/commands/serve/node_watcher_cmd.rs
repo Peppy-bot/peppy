@@ -22,6 +22,8 @@ impl ServeAsyncCommand for NodeWatcher {
     // TODO: Function signature looks weird
     fn execute_async(&self) -> Result<JoinHandle<Result<()>>> {
         let strict = self.strict;
-        Ok(tokio::spawn(async move { NodeWatcher::watch_nodes(strict).await }))
+        Ok(tokio::spawn(async move {
+            NodeWatcher::watch_nodes(strict).await
+        }))
     }
 }

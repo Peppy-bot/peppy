@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use tracing::error;
 
 use config::consts::AppEnv;
-use peppy::{Command, init, node, pixi, serve, service};
+use peppy::{Command, init, node, serve, service};
 
 #[derive(Parser)]
 #[command(name = "peppy")]
@@ -49,12 +49,6 @@ enum Commands {
         /// Explicitly disable strict mode (overrides the default from env)
         #[arg(long = "not-strict", conflicts_with = "strict")]
         not_strict: bool,
-    },
-    /// Give raw access to pixi commands (e.g. peppy pixi install, peppy pixi list) while using the environment in .peppy rather than .pixi
-    Pixi {
-        /// Arguments to pass to the pixi CLI
-        #[arg(trailing_var_arg = true)]
-        args: Vec<String>,
     },
     /// Commands related to the peppy service (running in `dev` or in systemd/launchctl)
     Service {
@@ -107,7 +101,6 @@ fn main() {
             }
             .execute()
         }
-        Commands::Pixi { args } => pixi::PixiCommand { args }.execute(),
         Commands::Service { command } => service::ServiceCommand { command }.execute(),
         Commands::Node { command } => node::NodeCommand { command }.execute(),
     };

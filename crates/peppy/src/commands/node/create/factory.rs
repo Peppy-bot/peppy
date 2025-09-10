@@ -1,5 +1,5 @@
 use super::super::types::{Language, NodeName};
-use crate::commands::node::create::{pixi, python, rust};
+use crate::commands::node::create::{python, rust};
 use crate::{Error, Result};
 use askama::Template;
 use std::fs;
@@ -12,18 +12,15 @@ pub trait NodeFactory {
     fn language(&self) -> Language;
 
     /// Creates language-specific configuration files
-    fn create_language_config(&self, node_name: &NodeName, node_path: &Path) -> Result<()>;
+    fn create_language_config(
+        &self,
+        node_name: &NodeName,
+        node_path: &Path,
+        description: &str,
+    ) -> Result<()>;
 
     /// Creates the gitignore file for this language
     fn create_gitignore(&self, node_path: &Path) -> Result<()>;
-
-    /// Creates the pixi.toml configuration
-    fn create_pixi_config(
-        &self,
-        node_path: &Path,
-        node_name: &NodeName,
-        description: Option<&str>,
-    ) -> Result<()>;
 }
 
 /// Factory for creating Python nodes
@@ -38,7 +35,12 @@ impl NodeFactory for PythonNodeFactory {
         Language::Python
     }
 
-    fn create_language_config(&self, node_name: &NodeName, node_path: &Path) -> Result<()> {
+    fn create_language_config(
+        &self,
+        node_name: &NodeName,
+        node_path: &Path,
+        _description: &str,
+    ) -> Result<()> {
         python::add_python_node_config(node_name, node_path)
             .map_err(|e| Error::PythonConfigCreation(e.to_string()))
     }
@@ -56,16 +58,6 @@ impl NodeFactory for PythonNodeFactory {
             .map_err(|e| Error::GitConfigCreation(e.to_string()))?;
         Ok(())
     }
-
-    fn create_pixi_config(
-        &self,
-        node_path: &Path,
-        node_name: &NodeName,
-        description: Option<&str>,
-    ) -> Result<()> {
-        pixi::create_pixi_toml(node_path, node_name, self.language(), description)
-            .map_err(|e| Error::PixiConfigCreation(e.to_string()))
-    }
 }
 
 /// Factory for creating Rust nodes
@@ -80,8 +72,13 @@ impl NodeFactory for RustNodeFactory {
         Language::Rust
     }
 
-    fn create_language_config(&self, node_name: &NodeName, node_path: &Path) -> Result<()> {
-        rust::add_rust_node_config(node_name, node_path)
+    fn create_language_config(
+        &self,
+        node_name: &NodeName,
+        node_path: &Path,
+        description: &str,
+    ) -> Result<()> {
+        rust::add_rust_node_config(node_name, node_path, description)
             .map_err(|e| Error::RustConfigCreation(e.to_string()))
     }
 
@@ -97,16 +94,6 @@ impl NodeFactory for RustNodeFactory {
         file.write_all(gitignore_content.as_bytes())
             .map_err(|e| Error::GitConfigCreation(e.to_string()))?;
         Ok(())
-    }
-
-    fn create_pixi_config(
-        &self,
-        node_path: &Path,
-        node_name: &NodeName,
-        description: Option<&str>,
-    ) -> Result<()> {
-        pixi::create_pixi_toml(node_path, node_name, self.language(), description)
-            .map_err(|e| Error::PixiConfigCreation(e.to_string()))
     }
 }
 

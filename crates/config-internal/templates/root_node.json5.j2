@@ -59,7 +59,8 @@
     },
     logging: {
         min_level: "info",
-        file_path: "{{ log_prefix }}var/log/peppy/{{ log_file_name }}",
+        // ${LOGS_ROOT_DIR} is `.peppy/logs/` in dev mode and `/var/log/peppy/` (empty) in production
+        file_path: "${LOGS_ROOT_DIR}/{{ log_file_name }}",
         max_file_size_mb: 100,
         format: "text"
     }

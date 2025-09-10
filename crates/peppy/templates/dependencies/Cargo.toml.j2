@@ -1,12 +1,10 @@
 [package]
 name = "{{ node_name }}"
-description = "{{ node_name }} Peppy Rust node"
+description = "{{ description }}"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 peppycl = "*"
-peppygen = { path = ".pixi/envs/default/lib/peppygen" }
-
-# Enable detached environments and specify custom path
-detached-environments = ".peppy"
+# TODO add peppygen
+# peppygen = { path = ".peppy/crates/peppygen" }
