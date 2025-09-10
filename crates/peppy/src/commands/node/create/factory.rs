@@ -8,9 +8,6 @@ use std::path::Path;
 
 /// Trait for creating language-specific node configurations
 pub trait NodeFactory {
-    /// Returns the language this factory handles
-    fn language(&self) -> Language;
-
     /// Creates language-specific configuration files
     fn create_language_config(
         &self,
@@ -31,10 +28,6 @@ pub struct PythonNodeFactory;
 struct PythonGitignoreTemplate;
 
 impl NodeFactory for PythonNodeFactory {
-    fn language(&self) -> Language {
-        Language::Python
-    }
-
     fn create_language_config(
         &self,
         node_name: &NodeName,
@@ -68,10 +61,6 @@ pub struct RustNodeFactory;
 struct RustGitignoreTemplate;
 
 impl NodeFactory for RustNodeFactory {
-    fn language(&self) -> Language {
-        Language::Rust
-    }
-
     fn create_language_config(
         &self,
         node_name: &NodeName,
