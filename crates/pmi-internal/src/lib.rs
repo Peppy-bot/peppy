@@ -16,6 +16,8 @@ pub use messaging_types::{
     Subscription,
 };
 
-// Zenoh specific exports
+// Zenoh specific exports (only when feature is enabled)
+#[cfg(feature = "zenoh")]
 pub use adapters::zenoh::ZenohClientConfigTemplate;
+#[cfg(feature = "zenoh")]
 pub use zenohd::facade::{ZenohNetProtocol, ZenohRouterConfigTemplate};

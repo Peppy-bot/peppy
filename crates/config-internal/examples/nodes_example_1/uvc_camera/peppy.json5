@@ -2,7 +2,7 @@
 // A simple node that emits video frames from a UVC camera
 {
   node_config: {
-    name: "uvc_camera",
+    name: "uvc_camera", // FIXME: What happens if there are multiple cameras? We only want a single project
     namespace: "/",
     version: "0.1.0",
     auto_start: false, // Can be started with the `/camera/enable` service
