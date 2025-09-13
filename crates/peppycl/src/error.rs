@@ -11,4 +11,8 @@ pub enum Error {
     // -- config
     #[error(transparent)]
     Config(#[from] config::ConfigError),
+
+    // -- pmi-internal
+    #[error(transparent)]
+    PeppyMessagingInterface(#[from] pmi::PeppyMessagingInterfaceError),
 }

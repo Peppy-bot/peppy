@@ -15,3 +15,7 @@ pub use messaging_types::{
     Message, MessagingEngineContext, Messenger, MessengerBackend, PublisherQoS, SubscriberQoS,
     Subscription,
 };
+
+// Zenoh specific exports
+pub use adapters::zenoh::ZenohClientConfigTemplate;
+pub use zenohd::facade::{ZenohNetProtocol, ZenohRouterConfigTemplate};

@@ -253,7 +253,20 @@ impl ZenohdFacade {
 
 #[cfg(test)]
 mod tests {
+    use std::net::TcpListener;
+
     use super::*;
+
+    fn pick_free_tcp_port() -> Option<u16> {
+        (0..10).find_map(|_| {
+            TcpListener::bind(("127.0.0.1", 0)).ok().and_then(|sock| {
+                let port = sock.local_addr().ok()?.port();
+                // Drop socket to free port for messaging router
+                drop(sock);
+                Some(port)
+            })
+        })
+    }
 
     #[test]
     fn test_zenohd_facade_creation_default_config() {
@@ -306,8 +319,7 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
         let config_path = temp_dir.path().join("test_zenoh_config.json5");
 
-        // Use a random port to avoid conflicts
-        let port = 8000 + (std::process::id() % 1000);
+        let port = pick_free_tcp_port().unwrap();
         let config_content = format!(
             r#"{{
             "listen": {{

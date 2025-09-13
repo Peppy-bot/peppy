@@ -13,3 +13,10 @@ config = { path = "../config-internal" }
 thiserror = "2.0"                                        # Avoid Anyhow in this crate
 tokio = { version = "1.47.0", features = ["full"] }
 zenoh = "1.5.0"
+tracing = "0.1.41"
+bytes = "1"
+
+[dev-dependencies]
+tempfile = "3.8"
+askama = "0.14.0"
+tokio = { version = "1.47.0", features = ["full"] }

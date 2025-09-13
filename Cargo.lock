@@ -1937,10 +1937,14 @@ dependencies = [
 name = "peppycl"
 version = "0.0.1"
 dependencies = [
+ "askama",
+ "bytes",
  "config",
  "pmi",
+ "tempfile",
  "thiserror 2.0.16",
  "tokio",
+ "tracing",
  "zenoh",
 ]
 
