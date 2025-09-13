@@ -36,6 +36,7 @@
     exposes: {
         topics: [
             {
+                // It's not recommended to modify this topic
                 type: "/peppy/status",
                 qos_profile: "standard",
                 message_format: {
@@ -45,6 +46,7 @@
         ],
         services: [
             {
+                // It's not recommended to modify this service
                 type: "/peppy/node",
                 qos_profile: "standard",
                 message_format: {

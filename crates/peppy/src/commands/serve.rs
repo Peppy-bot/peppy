@@ -96,6 +96,7 @@ impl Command for ServeCommand {
         let executor = ServeCommandBuilder::new(self.engine, self.config_path, self.strict)
             .with_node_watcher()
             .with_messaging_router()
+            .with_root_node()
             // Future commands can be added here:
             // .with_async_command(Arc::new(ZenohListenerCommand::new(...)))
             // .with_async_command(Arc::new(WebApiCommand::new(...)))
