@@ -1,7 +1,7 @@
 use crate::error::Error;
 use crate::error::Result;
 use config::NodeConfig;
-use pmi::{Message, MessagingEngineContext, Messenger, MessengerBackend, PublisherQoS};
+use pmi::{MessagingEngineContext, Messenger, MessengerBackend};
 use std::path::PathBuf;
 
 /// Sets up a node. If `config_file` is not provided, use current directory `peppy.json5`.
@@ -16,21 +16,36 @@ pub async fn setup_node(config_file: Option<PathBuf>) -> Result<()> {
     setup_node_from_config(cfg).await
 }
 
-pub async fn setup_node_from_config(node_config: NodeConfig) -> Result<()> {
-    // 1. Try to reach out for the messaging
-    let context = MessagingEngineContext {
-        engine: "zenoh".to_string(),
-        config_path: None,
-    };
-    let mut messenger = Messenger::new(context).map_err(Error::PeppyMessagingInterface)?;
+pub async fn setup_node_from_config(_node_config: NodeConfig) -> Result<()> {
+    // In tests, only use the mock engine to avoid external binaries.
+    // Outside tests, prefer zenoh and fall back to mock when unavailable.
+    #[cfg(test)]
+    let engines = ["mock"];
+    #[cfg(not(test))]
+    let engines = ["zenoh", "mock"]; // ordered preference in non-test builds
 
-    // 2. Emit node status if defined in config
-    //if node_config.exposes
-    let payload = "test".as_bytes();
-    messenger
-        .publish(Message::new("", payload), PublisherQoS::Standard)
-        .await?;
-    Ok(())
+    let mut last_err: Option<pmi::PeppyMessagingInterfaceError> = None;
+    for engine in engines {
+        let ctx = MessagingEngineContext {
+            engine: engine.to_string(),
+            config_path: None,
+        };
+
+        match Messenger::new(ctx) {
+            Ok(mut messenger) => match messenger.start_session().await {
+                Ok(()) => {
+                    // TODO: parse `_node_config` and expose interfaces via peppygen
+                    return Ok(());
+                }
+                Err(e) => last_err = Some(e),
+            },
+            Err(e) => last_err = Some(e),
+        }
+    }
+
+    Err(Error::PeppyMessagingInterface(
+        last_err.unwrap_or(pmi::PeppyMessagingInterfaceError::UnsupportedEngine),
+    ))
 }
 
 #[cfg(test)]

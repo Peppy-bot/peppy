@@ -9,7 +9,7 @@ struct SimpleNodeTemplate {
     namespace: String,
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_setup_node_from_config_file() {
     // Start only the messaging router via PMI, not the full `peppy serve` process
     let _router = helpers::start_messaging_router()

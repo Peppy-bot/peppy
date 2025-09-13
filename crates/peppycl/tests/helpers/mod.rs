@@ -1,10 +1,4 @@
-use askama::Template;
-use pmi::{
-    MessagingEngineContext, Messenger, MessengerBackend, ZenohNetProtocol,
-    ZenohRouterConfigTemplate,
-};
-use std::fs;
-use std::net::TcpListener;
+use pmi::{MessagingEngineContext, Messenger, MessengerBackend};
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
 
@@ -48,76 +42,16 @@ impl Drop for RouterGuard {
 /// However here we do not use `peppy serve` directly because `peppycl` is itself a dependency of `peppy` to
 /// start its own root_node.
 pub async fn start_messaging_router() -> Result<RouterGuard, pmi::PeppyMessagingInterfaceError> {
-    eprintln!("Starting messaging router in background (tests)…");
+    eprintln!("Starting mock messaging router in background (tests)…");
 
-    let engine = "zenoh";
-
-    // Allocate an ephemeral free port for this test instance
-    let port = pick_free_tcp_port().unwrap_or(0);
-    let port = if port == 0 { 7447 } else { port };
-
-    // Persist a per-test router config in a tempdir to avoid clashes (used by zenoh)
-    let tempdir = TempDir::new().expect("failed to create tempdir for router config");
-    let cfg_path = tempdir.path().join("router.json5");
-    let cfg = render_default_router_config(port);
-    fs::write(&cfg_path, cfg).expect("failed to write router config");
-
-    // Try requested engine first
-    let mut messenger = Messenger::new(MessagingEngineContext::new(
-        engine.into(),
-        Some(cfg_path.clone()),
-    ))?;
-
-    match messenger.start_router().await {
-        Ok(()) => {
-            eprintln!(
-                "messaging router started on {}/127.0.0.1:{}!",
-                &engine, port
-            );
-            return Ok(RouterGuard {
-                messenger: Some(messenger),
-                _tempdir: Some(tempdir),
-            });
-        }
-        Err(e) => {
-            eprintln!(
-                "failed to start messaging router with engine '{}': {:?}",
-                &engine, e
-            );
-            eprintln!("falling back to 'mock' engine for tests.");
-        }
-    }
-
-    // Fallback to mock engine that requires no external binary
-    let mut mock_messenger = Messenger::new(MessagingEngineContext::new("mock".into(), None))?;
-    mock_messenger.start_router().await?;
+    // Always use mock engine in tests; no external binaries or configs
+    let tempdir = TempDir::new().expect("failed to create tempdir for test state");
+    let mut messenger = Messenger::new(MessagingEngineContext::new("mock".into(), None))?;
+    messenger.start_router().await?;
     eprintln!("mock messaging router started for tests.");
 
     Ok(RouterGuard {
-        messenger: Some(mock_messenger),
+        messenger: Some(messenger),
         _tempdir: Some(tempdir),
     })
-}
-
-fn pick_free_tcp_port() -> Option<u16> {
-    (0..10).find_map(|_| {
-        TcpListener::bind(("127.0.0.1", 0)).ok().and_then(|sock| {
-            let port = sock.local_addr().ok()?.port();
-            // Drop socket to free port for messaging router
-            drop(sock);
-            Some(port)
-        })
-    })
-}
-
-fn render_default_router_config(port: u16) -> String {
-    let template = ZenohRouterConfigTemplate {
-        host: String::from("127.0.0.1"),
-        port,
-        protocol: ZenohNetProtocol::default(),
-    };
-
-    template
-        .render()
-        .unwrap_or_else(|e| panic!("Failed to render Zenoh config: {}", e))
 }
