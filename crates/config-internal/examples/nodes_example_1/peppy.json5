@@ -1,79 +1,113 @@
+// PeppyOS Root Node Configuration
+// This is the main configuration file that defines the root node of the current machine.
+// It's run using the `peppy node serve` command. It will automatically use the `peppy.json5` file in the same path the command is run as the root configuration file and will look into child folders for other `peppy.json5` files for children nodes.
+// Any new node that is created should be added to the root_node by running the command `peppy node add <path_to_peppy.json5>`
+// There is only one root node/service per machine/OS and they automatically discover the other root nodes that are on the same network running on different computers
+// When running in production, the `peppy service deploy` command moves the current node and its children into the OS directories and installs a systemd service that runs on a different namespace on the device (so that the dev and prod environments do not get mingled together)
 {
-  // PeppyOS Root Node Configuration
-  // This is the main configuration file that defines the root node of the current machine.
-  // It's run using the `peppy node serve` command. It will automatically use the `peppy.yaml` file in the same path the command is run as the root configuration file and will look into child folders for other `peppy.yaml` files for children nodes.
-  // Any new node that is created should be added to the root_node by running the command `peppy node add <path_to_peppy.yaml>`
-  // There is only one root node/service per machine/OS and they automatically discover the other root nodes that are on the same network running on different computers
-  // When running in production, the `peppy service deploy` command moves the current node and its children into the OS directories and installs a systemd service that runs on a different namespace on the device (so that the dev and prod environments do not get mingled together)
-  node_config: {
-    is_root: true, // There can only be a single field like this one by instance run with `peppy node serve`
+  manifest: {
     // `name` can only have alphanumeric, underscore, or hyphen characters.
     name: "my_robot_1", // It's a good practice to give a unique name to the root node to avoid name conflicts with other root nodes under the same network
-    // namespace is implicitely prefixed with `/dev` in dev environment (running outside `systemd`) and `/prod` when installed with `peppy service deploy` as well as with the root node name (so that other root nodes in the same network can easily address this one).
-    // For example, in dev, this root node and its children will be found in `/dev/my_robot_1`
-    namespace: "/",
     version: "0.1.0",
+  },
+  config: {
     auto_start: true, // Always true for the root node
     respawn: true, // Always true for the root node
     // Always restart the root node if it crashes
     respawn_delay: 1.0 // In seconds. Only relevant when the node is installed as a `systemd` service with `peppy node deploy`
   },
-  node_parameters: {
-    status: {
-      frequency: "1Hz" // Every second the root node publishes its latest status
+  // In the case of a root node, only a single instance can be started. More than one will make `peppy serve` crash.
+  instances: [
+    {
+      // namespace is implicitely prefixed with `/dev` in dev environment (running outside `systemd`) and `/prod` when installed with `peppy service deploy` as well as with the root node name (so that other root nodes in the same network can easily address this one).
+      // For example, in dev, this root node and its children will be found in `/dev/my_robot_1`
+      namespace: "/",
+      parameters: {
+        // Specific to the root node, it pulls those nodes from nodes.peppy.bot and store/use them in/from the .peppy directory
+        deployments: [
+          {
+            // This is an example of pulling the `uvc_camera` node from nodes.peppy.bot and instanciating it with user defined parameters
+            name: "uvc_camera",
+            version: "0.1.0",
+            instances: [
+              {
+                namespace: "/camera/right",
+                parameters: {
+                  device: {
+                    physical: "/dev/video_right",
+                    sim: "mujoco:camera_right",
+                    priority: "physical" // "physical" or "sim". If the physical path is not accessible, the sim path is attempted
+                  },
+                  video: {
+                    frame_rate: 30,
+                    resolution: {
+                      width: 1920,
+                      height: 1080,
+                    },
+                    encoding: "yuyv", // "rgb8", "bgr8", "yuyv", "mjpeg"
+                  },
+                }
+              }
+            ]
+          }
+        ],
+        status: {
+          frequency: "1Hz" // Every second the root node publishes its latest status
+        }
+      }
     }
-  },
-  subscribes_to: {
-    topics: [
-      // This topic discovers other root nodes on the same network, in the same namespace
-      // topic format is `namespace/<node_name>:version` where `namespace` is optional and will be automatically resolved to `/dev/<root_node_name>/` in `dev` and `/prod/<root_node_name>/` in prod
-      {
-        name: "{any}", // Will look for any node
-        version: "{any}", // On any version
-        namespace: "/", // In `/dev` or `/prod` namespace (depending where the root node is running from)
-        type: "/peppy/status", // With that particular type
-        callback: "on_root_node_discovered" // The callback that is called when a node is discovered
-      }
-    ],
-    services: [
-      // Subscribe to other root nodes on the same network
-      {
-        name: "{any}", // Will look for any node
-        version: "{any}", // On any version
-        namespace: "/", // In `/dev` or `/prod` namespace (depending where the root node is running from)
-        type: "/peppy/node",
-        callback: "on_payload_node_received" // The callback that is called when a node sends its payload
-      }
-    ]
-  },
-  exposes: {
-    topics: [
-      // Exposes its status for other root nodes on the same network to discover
-      {
-        type: "/peppy/status",
-        qos_profile: "standard", // Options: "standard", "reliable", "sensor_data"
-        message_format: {
-          name: "str"
+  ],
+  interfaces: {
+    subscribes_to: {
+      topics: [
+        // This topic discovers other root nodes on the same network, in the same namespace
+        // topic format is `namespace/<node_name>:version` where `namespace` is optional and will be automatically resolved to `/dev/<root_node_name>/` in `dev` and `/prod/<root_node_name>/` in prod
+        {
+          name: "{any}", // Will look for any node
+          version: "{any}", // On any version
+          namespace: "/", // In `/dev` or `/prod` namespace (depending where the root node is running from)
+          callback: "on_root_node_discovered" // The callback that is called when a node is discovered
         }
-      }
-    ],
-    services: [
-      // Exposes its node status including:
-      //  - Its name & configuration
-      //  - The node list
-      //  - etc..
-      // This allows another node such as `peppy_rest_api` to aggregate root nodes statuses
-      // It also allow root nodes on the same network to discover each other and their content.
-      {
-        type: "/peppy/node",
-        qos_profile: "standard",
-        message_format: {
-          // Use that message format if the payload is subject to change
-          payload: "bytes"
+      ],
+      services: [
+        // Subscribe to other root nodes on the same network
+        {
+          name: "{any}", // Will look for any node
+          version: "{any}", // On any version
+          namespace: "/", // In `/dev` or `/prod` namespace (depending where the root node is running from)
+          callback: "on_payload_node_received" // The callback that is called when a node sends its payload
         }
-      }
-    ],
-    actions: []
+      ]
+    },
+    exposes: {
+      topics: [
+        // Exposes its status for other root nodes on the same network to discover
+        {
+          type: "peppy_node_status",
+          qos_profile: "standard", // Options: "standard", "reliable", "sensor_data"
+          message_format: {
+            name: "str"
+          }
+        }
+      ],
+      services: [
+        // Exposes its node status including:
+        //  - Its name & configuration
+        //  - The node list
+        //  - etc..
+        // This allows another node such as `peppy_rest_api` to aggregate root nodes statuses
+        // It also allow root nodes on the same network to discover each other and their content.
+        {
+          name: "peppy_node_status",
+          qos_profile: "standard",
+          message_format: {
+            // Use that message format if the payload is subject to change
+            payload: "bytes"
+          }
+        }
+      ],
+      actions: []
+    }
   },
   resources: {
     max_memory_mb: 1024

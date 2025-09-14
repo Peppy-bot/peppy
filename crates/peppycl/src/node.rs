@@ -4,6 +4,10 @@ use config::NodeConfig;
 use pmi::{MessagingEngineContext, Messenger, MessengerBackend};
 use std::path::PathBuf;
 
+// TODO: We actually need an `on_node_start` and `on_node_initialize(config)` instead of letting the
+// user start the node with `main()`. This way the node can be started from
+// a thread (default) or fork (Process::Command) by the `peppy` program.
+
 /// Sets up a node. If `config_file` is not provided, use current directory `peppy.json5`.
 pub async fn setup_node(config_file: Option<PathBuf>) -> Result<()> {
     // Use provided config file, otherwise default to ./peppy.json5
@@ -43,9 +47,9 @@ pub async fn setup_node_from_config(_node_config: NodeConfig) -> Result<()> {
         }
     }
 
-    Err(Error::PeppyMessagingInterface(
-        last_err.unwrap_or(pmi::PeppyMessagingInterfaceError::UnsupportedEngine),
-    ))
+    Err(Error::PeppyMessagingInterface(last_err.unwrap_or(
+        pmi::PeppyMessagingInterfaceError::UnsupportedEngine,
+    )))
 }
 
 #[cfg(test)]
