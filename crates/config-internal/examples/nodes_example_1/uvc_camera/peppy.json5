@@ -1,75 +1,117 @@
-// TODO: Make sure that the node works exactly the same if it's run on a real camera or in simulation (Mujoco/Isaac Sim)
 // A simple node that emits video frames from a UVC camera
 {
-  node_config: {
-    name: "uvc_camera", // FIXME: What happens if there are multiple cameras? We only want a single project
-    namespace: "/",
+  manifest: {
+    name: "uvc_camera",
     version: "0.1.0",
-    auto_start: false, // Can be started with the `/camera/enable` service
-    // Tags are useful if the node is published with `peppy nodes publish`
+    // sha256: "8e115d5f9208ef16cc49e32d88cd3efce839c9c11688c474069ba43023efdd5f" Usually only specified for nodes that are pulled from nodes.peppy.bot
+    // Tags are useful if the node is published with `peppy node publish`
     tags: [
       "uvc",
       "camera",
       "usb",
     ],
+  },
+  config: {
+    auto_start: false, // Can be started with the `enable_camera` service
     respawn: true,
     respawn_delay: 3.0,
   },
   // Parameters before the node starts
-  node_parameters: {
-    video: {
-      device_path: "/dev/video5",
-      frame_rate: 30,
-      resolution: {
-        width: 1920,
-        height: 1080,
-      },
-      encoding: "yuyv", // "rgb8", "bgr8", "yuyv", "mjpeg"
+  // Each item of the array represents one instance of the node being started in a particular namespace
+  instances: [
+    {
+      namespace: "/camera/front",
+      parameters: {
+        device: {
+          // Can be USB IDs/serial or udev rule
+          physical: "/dev/video4",
+          sim: "mujoco:camera_front",
+          priority: "physical" // "physical" or "sim". If the physical path is not accessible, the sim path is attempted
+        },
+        video: {
+          frame_rate: 30,
+          resolution: {
+            width: 1920,
+            height: 1080,
+          },
+          encoding: "yuyv", // "rgb8", "bgr8", "yuyv", "mjpeg"
+        },
+      }
+    },
+    {
+      namespace: "/camera/rear",
+      parameters: {
+        device: {
+          physical: "/dev/video_front",
+          sim: "isaac_sim:camera_rear",
+          priority: "physical" // "physical" or "sim". If the physical path is not accessible, the sim path is attempted
+        },
+        video: {
+          frame_rate: 30,
+          resolution: {
+            width: 1920,
+            height: 1080,
+          },
+          encoding: "yuyv", // "rgb8", "bgr8", "yuyv", "mjpeg"
+        },
+      }
+    }
+  ],
+  interfaces: {
+    exposes: {
+      topics: [
+        {
+          // One instance is going to emit on ns /camera/front/stream and another on /camera/rear/stream
+          name: "stream",
+          qos_profile: "sensor_data",
+          message_format: {
+            header: {
+              stamp: "time",
+              frame_id: "uint32",
+            },
+            encoding: "string", // "rgb8", "bgr8", "yuyv", "mjpeg"
+            width: "uint32",
+            height: "uint32",
+            image: [
+              "uint8",
+              "uint8",
+              "uint8"
+            ],
+          },
+        }
+      ],
+      services: [
+        {
+          // One instance exposes the service on ns /camera/front/enable_camera and another on /camera/rear/enable_camera
+          name: "enable_camera",
+          qos_profile: "critical",
+          message_format: {
+            enable: "bool",
+          }
+        },
+        {
+          // One instance exposes the service on ns /camera/front/get_camera_info and another on /camera/rear/get_camera_info
+          name: "get_camera_info",
+          qos_profile: "standard",
+          message_format: {
+            card_type: "string",
+            size: "string",
+            interval: "string"
+          },
+        },
+      ],
+    },
+    subscribes_to: {
+      topics: [],
+      services: [],
+      actions: [],
     },
   },
-  exposes: {
-    topics: [
-      {
-        type: "video_stream/image",
-        qos_profile: "sensor_data",
-        message_format: {
-          header: {
-            stamp: "time",
-          },
-          encoding: "str", // "rgb8", "bgr8", "yuyv", "mjpeg"
-          width: "uint32",
-          height: "uint32",
-          image: [
-            "uint8",
-            "uint8",
-            "uint8"
-          ],
-        },
-      },
-    ],
-    services: [
-      {
-        type: "standard/set_bool",
-        message_format: {
-          enable: "bool",
-        },
-      },
-    ],
-  },
-  subscribes_to: [],
   resources: {
+    // This is the resource per instance
     max_memory_mb: 256,
   },
   logging: {
     min_level: "info",
-  },
-  diagnostics: {
-    enabled: true,
-    publish_rate_hz: 1.0,
-    health_checks: [
-      "camera_connected",
-      "frame_rate_nominal",
-      "buffer_underrun",
-    ],
-  },
+  }
 }
