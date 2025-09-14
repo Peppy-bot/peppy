@@ -1,0 +1,9 @@
+[package]
+name = "peppy-root-node"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+# peppycl and peppygen are the only dependencies required for the root node as they are treated like regular nodes
+peppycl = { path = "../peppycl" }

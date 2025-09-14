@@ -116,24 +116,31 @@ mod tests {
 
         let expected_json5 = r#"
         {
-            node_config: {
-                is_root: true,
+            manifest: {
                 name: ""#
             .to_string()
             + node_name
             + r#"",
-                namespace: "/",
-                version: "0.1.0",
+                version: "0.1.0"
+            },
+            config: {
+                is_root: true,
                 auto_start: true,
                 respawn: true,
                 respawn_delay: 1.0
             },
-            node_parameters: {
-                status: {
-                  frequency: "1Hz"
+            instances: [
+              {
+                namespace: "/",
+                parameters: {
+                  status: {
+                    frequency: "1Hz"
+                  }
                 }
-            },
-            subscribes_to: {
+              }
+            ],
+            interfaces: {
+              subscribes_to: {
                 topics: [
                   {
                     name: "{any}",
@@ -152,8 +159,8 @@ mod tests {
                     callback: "on_payload_node_received"
                   }
                 ]
-            },
-            exposes: {
+              },
+              exposes: {
                 topics: [
                   {
                     type: "/peppy/status",
@@ -173,6 +180,7 @@ mod tests {
                   }
                 ],
                 actions: []
+              }
             },
             resources: {
                 max_memory_mb: 1024
@@ -209,15 +217,17 @@ mod tests {
 
         // JSON5 ground truth with human-friendly syntax
         let expected_json5 = r#"{
-            node_config: {
+            manifest: {
                 name: "a_node",
-                namespace: "/ns",
-                version: "0.1.0",
+                version: "0.1.0"
             },
+            instances: [
+                { namespace: "/ns" }
+            ],
             logging: {
                 min_level: "info",
-                format: "text",
-            },
+                format: "text"
+            }
         }"#;
 
         // Normalize and compare canonical JSON5
@@ -243,22 +253,26 @@ mod tests {
 
         // JSON5 ground truth with human-friendly syntax
         let expected_json5 = r#"{
-            node_config: {
+            manifest: {
                 name: "a_node",
-                namespace: "/ns",
-                version: "0.1.0",
-                respawn: true,
-                respawn_delay: 1,
+                version: "0.1.0"
             },
+            config: {
+                respawn: true,
+                respawn_delay: 1
+            },
+            instances: [
+                { namespace: "/ns" }
+            ],
             resources: {
-                max_memory_mb: 1024,
+                max_memory_mb: 1024
             },
             logging: {
                 min_level: "info",
                 file_path: "${LOGS_ROOT_DIR}/a_node_node.log",
                 max_file_size_mb: 10,
-                format: "text",
-            },
+                format: "text"
+            }
         }"#;
 
         // Normalize and compare canonical JSON5
