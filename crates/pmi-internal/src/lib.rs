@@ -12,8 +12,8 @@ mod zenohd;
 pub use encoding::{Encoder, EncodingBackend, EncodingFormat};
 pub use error::Error as PeppyMessagingInterfaceError;
 pub use messaging_types::{
-    Message, MessagingEngineContext, Messenger, MessengerBackend, PublisherQoS, SubscriberQoS,
-    Subscription,
+    Engine, Message, MessagingEngineContext, Messenger, MessengerBackend, PublisherQoS,
+    SubscriberQoS, Subscription,
 };
 
 // Zenoh specific exports (only when feature is enabled)

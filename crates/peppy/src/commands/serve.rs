@@ -1,6 +1,7 @@
 mod builder;
 mod messenger_cmd;
 mod node_watcher_cmd;
+mod peppygen_cmd;
 
 use std::path::PathBuf;
 use tokio::task::JoinHandle;
@@ -16,6 +17,7 @@ pub trait ServeSyncCommand: Send + Sync {
 }
 
 pub trait ServeAsyncCommand: Send + Sync {
+    // TODO: Function signature looks weird
     fn execute_async(&self) -> Result<JoinHandle<Result<()>>>;
 }
 
@@ -96,10 +98,8 @@ impl Command for ServeCommand {
         let executor = ServeCommandBuilder::new(self.engine, self.config_path, self.strict)
             .with_node_watcher()
             .with_messaging_router()
+            .with_peppygen()
             .with_root_node()
-            // Future commands can be added here:
-            // .with_async_command(Arc::new(ZenohListenerCommand::new(...)))
-            // .with_async_command(Arc::new(WebApiCommand::new(...)))
             .build();
 
         if let Err(e) = executor.execute() {

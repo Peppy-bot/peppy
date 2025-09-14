@@ -1,5 +1,4 @@
 mod error;
-mod generator;
 pub mod node;
 
 pub use error::{Error as ControlError, Result as ControlResult};
