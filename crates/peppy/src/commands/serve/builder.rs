@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::InterfacesGenerator;
+
 use super::CompositeCommand;
 use super::Serve;
 use super::node_watcher_cmd::NodeWatcher;
@@ -35,6 +37,14 @@ impl ServeCommandBuilder {
                 .expect("Failed to create messenger with given context"),
         );
         self.composite_command = self.composite_command.add_async_command(messenger);
+        self
+    }
+
+    // TODO use the type state pattern to only allow `with_peppygen` to be run if `with_node_watcher` has been used
+    // When the node_watcher detects a change, peppygen generates the new interfaces for the clients to use
+    pub fn with_peppygen(mut self) -> Self {
+        let generator = Box::new(InterfacesGenerator::new().expect("Failed to create peppygen"));
+        self.composite_command = self.composite_command.add_async_command(generator);
         self
     }
 

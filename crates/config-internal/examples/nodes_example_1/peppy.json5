@@ -27,6 +27,7 @@
         deployments: [
           {
             // This is an example of pulling the `uvc_camera` node from nodes.peppy.bot and instanciating it with user defined parameters
+            // Nodes can also be directly pulled from git if given a path like: `https://github.com/Peppy/uvc_camera.git`. In that case `version` will be used as the git tag
             name: "uvc_camera",
             version: "0.1.0",
             instances: [
