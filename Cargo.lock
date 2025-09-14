@@ -1934,6 +1934,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "peppy-root-node"
+version = "0.0.1"
+dependencies = [
+ "peppycl",
+]
+
+[[package]]
 name = "peppycl"
 version = "0.0.1"
 dependencies = [

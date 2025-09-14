@@ -36,42 +36,51 @@ mod tests {
     #[test]
     fn test_parse_minimal_config() {
         let json5 = r#"{
-            node_config: {
+            manifest: {
                 name: "test_node",
-                namespace: "/test",
-            }
+                version: "0.1.0",
+            },
+            instances: [
+                { namespace: "/test" }
+            ]
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        assert_eq!(config.node_config.name.as_str(), "test_node");
-        assert_eq!(config.node_config.namespace.as_str(), "/test");
-        assert_eq!(config.node_config.version, "0.1.0"); // default
+        assert_eq!(config.manifest.name.as_str(), "test_node");
+        assert_eq!(config.instances[0].namespace.as_str(), "/test");
+        assert_eq!(config.manifest.version, "0.1.0"); // default
     }
 
     #[test]
     fn test_parse_complex_config() {
         let json5 = r#"{
-            node_config: {
+            manifest: {
                 name: "camera_driver",
-                namespace: "/sensors/camera",
-                version: "2.1.0",
+                version: "2.1.0"
+            },
+            config: {
                 auto_start: true,
                 respawn: true,
-                respawn_delay: 2.0,
+                respawn_delay: 2.0
             },
-            exposes: {
-                topics: [
-                { type: "sensor_msgs/Image", name: "/camera/image_raw" },
-                ],
-            },
+            instances: [
+                { namespace: "/sensors/camera" }
+            ],
+            interfaces: {
+                exposes: {
+                    topics: [
+                        { name: "/camera/image_raw" }
+                    ]
+                }
+            }
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        assert_eq!(config.node_config.name.as_str(), "camera_driver");
-        assert_eq!(config.node_config.namespace.as_str(), "/sensors/camera");
-        assert_eq!(config.node_config.version, "2.1.0");
-        assert_eq!(config.node_config.auto_start, Some(true));
-        assert_eq!(config.node_config.respawn, Some(true));
-        assert_eq!(config.node_config.respawn_delay, Some(2.0));
-        assert!(config.exposes.is_some());
+        assert_eq!(config.manifest.name.as_str(), "camera_driver");
+        assert_eq!(config.instances[0].namespace.as_str(), "/sensors/camera");
+        assert_eq!(config.manifest.version, "2.1.0");
+        assert_eq!(config.config.auto_start, Some(true));
+        assert_eq!(config.config.respawn, Some(true));
+        assert_eq!(config.config.respawn_delay, Some(2.0));
+        assert!(config.interfaces.exposes.is_some());
     }
 
     #[test]
@@ -99,7 +108,7 @@ mod tests {
 
     #[test]
     fn test_cannot_parse_json5() {
-        let json5 = r#"{ node_config: [unclosed"#; // invalid JSON5
+        let json5 = r#"{ manifest: [unclosed"#; // invalid JSON5
         let result = NodeConfigParser::from_content(json5);
         assert!(result.is_err());
         assert!(matches!(

@@ -1,11 +1,15 @@
 {
-    node_config: {
-        name: "{{ name }}",
-        namespace: "{{ namespace }}",
-        version: "0.1.0"
-    },
-    logging: {
-        min_level: "info",
-        format: "text"
+  manifest: {
+    name: "{{ name }}",
+    version: "0.1.0"
+  },
+  instances: [
+    {
+      namespace: "{{ namespace }}"
     }
+  ],
+  logging: {
+    min_level: "info",
+    format: "text"
+  }
 }

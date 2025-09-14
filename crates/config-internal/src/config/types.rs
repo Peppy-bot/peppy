@@ -2,20 +2,16 @@ use crate::error::ParsingError;
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
-    pub node_config: NodeInfo,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub node_parameters: Option<NodeParameters>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exposes: Option<Exposes>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "opt_subscribes_to_from_any"
-    )]
-    pub subscribes_to: Option<SubscribesTo>,
+    pub manifest: Manifest,
+    #[serde(default)]
+    pub config: NodeRuntimeConfig,
+    #[serde(default)]
+    pub instances: Vec<NodeInstance>,
+    #[serde(default)]
+    pub interfaces: Interfaces,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources: Option<Resources>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -106,40 +102,7 @@ impl From<Namespace> for String {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NodeInfo {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub is_root: Option<bool>,
-    pub name: Name,
-    pub namespace: Namespace,
-    #[serde(default = "default_version")]
-    pub version: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auto_start: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub respawn: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub respawn_delay: Option<f64>,
-}
-
-impl Default for NodeInfo {
-    fn default() -> Self {
-        Self {
-            // Default values must be non-empty to comply with validation
-            name: Name::new("node").expect("default name is valid"),
-            namespace: Namespace::new("/").expect("default namespace is valid"),
-            version: "0.1.0".to_string(),
-            is_root: None,
-            tags: None,
-            auto_start: None,
-            respawn: None,
-            respawn_delay: None,
-        }
-    }
-}
+// NodeInfo is not part of the new schema; manifest/config/instances carry this information.
 
 // A flexible value to hold arbitrary JSON5 content
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -191,6 +154,7 @@ pub enum QoSProfile {
     Standard,
     Reliable,
     SensorData,
+    Critical,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -271,11 +235,10 @@ pub struct Resources {
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum LogFormat {
-    #[serde(rename = "text")]
     #[default]
     Text,
-    #[serde(rename = "json")]
     Json,
 }
 
@@ -341,63 +304,56 @@ pub enum ConfigTemplateType {
     FullNode,
 }
 
-// Custom deserializer to accept either an object or an empty array for subscribes_to.
-// Some example configurations use `subscribes_to: []` to denote no subscriptions.
-fn opt_subscribes_to_from_any<'de, D>(
-    deserializer: D,
-) -> core::result::Result<Option<SubscribesTo>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use core::fmt;
-    use serde::de::{self, MapAccess, SeqAccess, Visitor};
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Manifest {
+    pub name: Name,
+    #[serde(default = "default_version")]
+    pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
 
-    struct MaybeSubscribesVisitor;
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct NodeRuntimeConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_root: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_start: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub respawn: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub respawn_delay: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub startup_type: Option<StartupType>,
+}
 
-    impl<'de> Visitor<'de> for MaybeSubscribesVisitor {
-        type Value = Option<SubscribesTo>;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeInstance {
+    pub namespace: Namespace,
+    #[serde(default)]
+    pub parameters: NodeParameters,
+}
 
-        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            write!(f, "subscribes_to object or empty array")
-        }
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Interfaces {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exposes: Option<Exposes>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subscribes_to: Option<SubscribesTo>,
+}
 
-        fn visit_none<E>(self) -> core::result::Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(None)
-        }
-
-        fn visit_unit<E>(self) -> core::result::Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(None)
-        }
-
-        fn visit_seq<A>(self, mut seq: A) -> core::result::Result<Self::Value, A::Error>
-        where
-            A: SeqAccess<'de>,
-        {
-            // Accept only empty array
-            if let Some(_first) = seq.next_element::<de::IgnoredAny>()? {
-                Err(de::Error::custom("expected empty array for subscribes_to"))
-            } else {
-                Ok(None)
-            }
-        }
-
-        fn visit_map<A>(self, map: A) -> core::result::Result<Self::Value, A::Error>
-        where
-            A: MapAccess<'de>,
-        {
-            let de = de::value::MapAccessDeserializer::new(map);
-            let st = SubscribesTo::deserialize(de)?;
-            Ok(Some(st))
-        }
-    }
-
-    deserializer.deserialize_any(MaybeSubscribesVisitor)
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum StartupType {
+    #[default]
+    Thread,
+    Fork,
 }
 
 #[cfg(test)]

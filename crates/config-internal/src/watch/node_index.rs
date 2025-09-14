@@ -163,10 +163,12 @@ mod tests {
         let path = dir.join(PEPPY_CONFIG_FILE);
         let json5 = format!(
             r#"{{
-  node_config: {{
+  manifest: {{
     name: "{name}",
-    namespace: "{namespace}",
-  }}
+  }},
+  instances: [
+    {{ namespace: "{namespace}" }}
+  ]
 }}"#
         );
         fs::write(&path, json5).unwrap();
@@ -193,11 +195,11 @@ mod tests {
         assert!(state.contains_key(&root));
         assert!(state.contains_key(&nested));
         assert_eq!(
-            state[&root].as_ref().unwrap().node_config.name.as_str(),
+            state[&root].as_ref().unwrap().manifest.name.as_str(),
             "root_node"
         );
         assert_eq!(
-            state[&nested].as_ref().unwrap().node_config.name.as_str(),
+            state[&nested].as_ref().unwrap().manifest.name.as_str(),
             "nested_node"
         );
         assert!(state.values().all(|e| e.is_ok()));
@@ -210,7 +212,7 @@ mod tests {
         // Invalid name (spaces and '!') should fail parsing on initial load
         fs::write(
             temp.path().join(PEPPY_CONFIG_FILE),
-            "{ node_config: { name: 'Invalid Name!', namespace: '/ns' } }",
+            "{ manifest: { name: 'Invalid Name!' }, instances: [{ namespace: '/ns' }] }",
         )
         .unwrap();
 
@@ -233,7 +235,7 @@ mod tests {
             rx.borrow()[&config_path]
                 .as_ref()
                 .unwrap()
-                .node_config
+                .manifest
                 .name
                 .as_str(),
             "ok"
@@ -244,7 +246,7 @@ mod tests {
         // Write invalid content (invalid node name)
         fs::write(
             &config_path,
-            "{ node_config: { name: 'Invalid Name!', namespace: '/ns' } }",
+            "{ manifest: { name: 'Invalid Name!' }, instances: [{ namespace: '/ns' }] }",
         )
         .unwrap();
 
@@ -301,7 +303,7 @@ mod tests {
             rx1.borrow()[&created]
                 .as_ref()
                 .unwrap()
-                .node_config
+                .manifest
                 .name
                 .as_str(),
             "multi_sub_v2"
@@ -310,7 +312,7 @@ mod tests {
             rx2.borrow()[&created]
                 .as_ref()
                 .unwrap()
-                .node_config
+                .manifest
                 .name
                 .as_str(),
             "multi_sub_v2"
@@ -353,7 +355,7 @@ mod tests {
             rx.borrow()[&config_path]
                 .as_ref()
                 .unwrap()
-                .node_config
+                .manifest
                 .name
                 .as_str(),
             "first"
@@ -382,7 +384,7 @@ mod tests {
             rx.borrow()[&config_path]
                 .as_ref()
                 .unwrap()
-                .node_config
+                .manifest
                 .name
                 .as_str(),
             "second"

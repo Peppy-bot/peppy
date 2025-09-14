@@ -1,18 +1,22 @@
 {
-    node_config: {
-        name: "{{ name }}",
-        namespace: "{{ namespace }}",
-        version: "0.1.0",
-        respawn: true,
-        respawn_delay: 1
-    },
-    resources: {
-        max_memory_mb: 1024
-    },
-    logging: {
-        min_level: "info",
-        file_path: "${LOGS_ROOT_DIR}/{{ log_file_name }}",
-        max_file_size_mb: 10,
-        format: "text"
-    }
+  manifest: {
+    name: "{{ name }}",
+    version: "0.1.0"
+  },
+  config: {
+    respawn: true,
+    respawn_delay: 1
+  },
+  instances: [
+    { namespace: "{{ namespace }}" }
+  ],
+  resources: {
+    max_memory_mb: 1024
+  },
+  logging: {
+    min_level: "info",
+    file_path: "${LOGS_ROOT_DIR}/{{ log_file_name }}",
+    max_file_size_mb: 10,
+    format: "text"
+  }
 }
