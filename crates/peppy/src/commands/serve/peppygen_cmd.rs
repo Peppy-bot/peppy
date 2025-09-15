@@ -1,9 +1,11 @@
-use super::ServeAsyncCommand;
-use crate::{InterfacesGenerator, Result};
-use tokio::task::JoinHandle;
+use super::{ServeAsyncCommand, ServeFuture};
+use crate::InterfacesGenerator;
 
 impl ServeAsyncCommand for InterfacesGenerator {
-    fn execute_async(&self) -> Result<JoinHandle<Result<()>>> {
-        todo!("Finish")
+    fn run(&self) -> ServeFuture {
+        Box::pin(async {
+            let _gen = InterfacesGenerator::new();
+            Ok(())
+        })
     }
 }

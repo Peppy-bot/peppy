@@ -8,7 +8,6 @@ use config::Language;
 use factory::{NodeContext, create_factory};
 use std::fs;
 use std::path::{Path, PathBuf};
-use tracing::info;
 
 pub struct NodeBuilder {
     to_dir: Option<PathBuf>,

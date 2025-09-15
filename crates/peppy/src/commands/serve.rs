@@ -3,7 +3,9 @@ mod messenger_cmd;
 mod node_watcher_cmd;
 mod peppygen_cmd;
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use tokio::task::JoinHandle;
 use tracing::{error, info};
 
@@ -16,9 +18,10 @@ pub trait ServeSyncCommand: Send + Sync {
     fn execute(&self) -> Result<()>;
 }
 
+pub type ServeFuture = Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>;
+
 pub trait ServeAsyncCommand: Send + Sync {
-    // TODO: Function signature looks weird
-    fn execute_async(&self) -> Result<JoinHandle<Result<()>>>;
+    fn run(&self) -> ServeFuture;
 }
 
 #[derive(Default)]
@@ -38,17 +41,17 @@ impl CompositeCommand {
         self
     }
 
-    pub fn execute(self) -> Result<Vec<JoinHandle<Result<()>>>> {
+    pub fn execute(self) -> Result<Vec<ServeFuture>> {
         for command in &self.commands {
             command.execute()?;
         }
 
-        let mut handles = Vec::new();
+        let mut futures: Vec<ServeFuture> = Vec::new();
         for async_command in &self.async_commands {
-            handles.push(async_command.execute_async()?);
+            futures.push(async_command.run());
         }
 
-        Ok(handles)
+        Ok(futures)
     }
 }
 
@@ -62,17 +65,20 @@ impl Serve {
     }
 
     pub fn execute(self) -> Result<()> {
-        // Create the tokio runtime first
-        let runtime =
-            tokio::runtime::Runtime::new().map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all() // enable I/O and time drivers
+            .build()?;
 
-        // Enter the runtime context before executing commands that use tokio::spawn
-        let _guard = runtime.enter();
-        let handles = self.composite_command.execute()?;
+        let futures = self.composite_command.execute()?;
+
+        let mut handles: Vec<JoinHandle<Result<()>>> = Vec::with_capacity(futures.len());
+        for fut in futures {
+            handles.push(runtime.spawn(fut));
+        }
 
         // Block on all async tasks
         info!("Running serve command...");
-        runtime.block_on(async {
+        runtime.block_on(async move {
             for handle in handles {
                 match handle.await {
                     Err(e) => error!("Task panicked: {:?}", e),

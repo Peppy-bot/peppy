@@ -23,6 +23,9 @@ impl ServeCommandBuilder {
         }
     }
 
+    /// The node_watcher starts from the root node and watches over the files changes in its directory and its children directories.
+    /// When a change is detected on one of the peppy.json5 file, it sends a signal to the rest of the program that the configuration of
+    /// a node has been updated
     pub fn with_node_watcher(mut self) -> Self {
         let watcher = Box::new(NodeWatcher {
             strict: self.strict,
@@ -31,6 +34,7 @@ impl ServeCommandBuilder {
         self
     }
 
+    /// The messaging router (Zenoh/MQTT etc...) is reponsible for message passing between the nodes and between the nodes and the peppy program
     pub fn with_messaging_router(mut self) -> Self {
         let messenger = Box::new(
             Messenger::new(self.context.clone())
@@ -41,9 +45,9 @@ impl ServeCommandBuilder {
     }
 
     /// When the node_watcher detects a change, peppygen generates the new interfaces for the clients to use.
-    /// peppygen does not depend on `node_watcher`, it's only one of the components that can send a signal to
-    /// peppygen for code generation. Another process that can do this is `peppy node sync <path_to_config>`
-    /// when nodes are outside the root_node folder and its children.
+    /// peppygen does not depend on `node_watcher`, it's only one of the components that can receive a signal
+    /// for code generation. Another process that can do this is `peppy node sync <path_to_config>` when nodes
+    /// are outside the root_node folder and its children.
     pub fn with_peppygen(mut self) -> Self {
         let generator = Box::new(InterfacesGenerator::new().expect("Failed to create peppygen"));
         self.composite_command = self.composite_command.add_async_command(generator);
@@ -56,7 +60,7 @@ impl ServeCommandBuilder {
         self
     }
 
-    pub fn build(self) -> super::Serve {
+    pub fn build(self) -> Serve {
         Serve::new(self.composite_command)
     }
 }
