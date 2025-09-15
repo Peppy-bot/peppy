@@ -1,6 +1,9 @@
+use crate::error::Error;
 use crate::error::ParsingError;
+use core::fmt;
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -133,7 +136,7 @@ pub struct Exposes {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub services: Option<Vec<ExposedService>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub actions: Option<Vec<Action>>,
+    pub actions: Option<Vec<ExposedAction>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -144,7 +147,7 @@ pub struct SubscribesTo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub services: Option<Vec<SubscribedService>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub actions: Option<Vec<Action>>,
+    pub actions: Option<Vec<SubscribedAction>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -219,9 +222,15 @@ pub struct SubscribedService {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct Action {
-    #[serde(default, rename = "type")]
-    pub action_type: String,
+pub struct SubscribedAction {
+    #[serde(default)]
+    pub name: String,
+    // For the moment, actions are undecided/unfinished
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ExposedAction {
     #[serde(default)]
     pub name: String,
     // For the moment, actions are undecided/unfinished
@@ -314,13 +323,59 @@ pub struct Manifest {
     pub tags: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<Language>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Language {
+    Python,
+    #[default]
+    Rust,
+}
+
+impl fmt::Display for Language {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Language::Python => write!(f, "python"),
+            Language::Rust => write!(f, "rust"),
+        }
+    }
+}
+
+impl FromStr for Language {
+    type Err = Error;
+
+    fn from_str(s: &str) -> crate::error::Result<Self> {
+        match s {
+            "python" => Ok(Language::Python),
+            "rust" => Ok(Language::Rust),
+            _ => Err(Error::UnsupportedLanguage),
+        }
+    }
+}
+
+impl TryFrom<&str> for Language {
+    type Error = Error;
+
+    fn try_from(s: &str) -> crate::error::Result<Self> {
+        s.parse()
+    }
+}
+
+impl From<Language> for &'static str {
+    fn from(lang: Language) -> Self {
+        match lang {
+            Language::Python => "python",
+            Language::Rust => "rust",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct NodeRuntimeConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub is_root: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_start: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]

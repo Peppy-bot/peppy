@@ -3,15 +3,16 @@ mod run;
 mod types;
 
 use clap::Subcommand;
+use config::Language;
 use std::path::PathBuf;
-use tracing::{error, info};
+use tracing::info;
 
 use super::{Command, Error as CommandError};
 
 use create::NodeBuilder;
 
 pub mod create;
-pub use types::{Language, NodeName};
+pub use types::NodeName;
 
 #[derive(Subcommand)]
 pub enum NodeCommands {
@@ -77,13 +78,5 @@ impl Command for NodeCommand {
                 Ok(())
             }
         }
-    }
-}
-
-pub fn handle_node_command(command: NodeCommands) {
-    let node_command = NodeCommand { command };
-    if let Err(e) = node_command.execute() {
-        error!("Failed to execute node command: {}", e);
-        std::process::exit(1);
     }
 }

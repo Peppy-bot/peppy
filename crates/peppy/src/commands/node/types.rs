@@ -1,6 +1,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use config::Language;
+
 use crate::{Error, Result};
 
 /// A validated node name that ensures it follows naming conventions.
@@ -65,34 +67,6 @@ impl FromStr for NodeName {
 
     fn from_str(s: &str) -> Result<Self> {
         Self::new(s)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Language {
-    Python,
-    Rust,
-}
-
-impl fmt::Display for Language {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Language::Python => write!(f, "python"),
-            Language::Rust => write!(f, "rust"),
-        }
-    }
-}
-
-impl FromStr for Language {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "python" => Ok(Language::Python),
-            "rust" => Ok(Language::Rust),
-            _ => Err(Error::UnsupportedLanguage),
-        }
     }
 }
 

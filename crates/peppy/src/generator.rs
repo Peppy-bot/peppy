@@ -1,6 +1,13 @@
-use config::NodeConfig;
+mod builder;
+mod python;
+mod rust;
+
+use config::{Language, NodeConfig};
 
 use crate::Result;
+use builder::generate_interfaces as compose_interfaces;
+use python::PythonGenerator;
+use rust::RustGenerator;
 
 pub struct InterfacesGenerator {}
 
@@ -9,5 +16,14 @@ impl InterfacesGenerator {
         Ok(Self {})
     }
 
-    pub fn generate_interfaces(config: NodeConfig) {}
+    pub fn generate_interfaces(config: &NodeConfig) -> String {
+        // Choose language-specific generator (default to Rust if unspecified)
+        let lang = config.manifest.language.clone().unwrap_or_default();
+        let generator: Box<dyn builder::InterfaceGenerator> = match lang {
+            Language::Rust => Box::new(RustGenerator::new()),
+            Language::Python => Box::new(PythonGenerator::new()),
+        };
+
+        compose_interfaces(generator.as_ref(), &config.interfaces)
+    }
 }

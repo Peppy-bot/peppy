@@ -1,6 +1,7 @@
+use config::Language;
 use tempfile::TempDir;
 
-use peppy::node::{Language, NodeName, create};
+use peppy::node::{NodeName, create};
 
 #[test]
 fn test_create_command_default_directory() {

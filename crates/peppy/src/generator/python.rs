@@ -1,0 +1,64 @@
+use super::builder::InterfaceGenerator;
+use config::{
+    ExposedAction, ExposedService, ExposedTopic, SubscribedAction, SubscribedService,
+    SubscribedTopic,
+};
+
+/// Python-specific implementation of the interface generator.
+pub struct PythonGenerator;
+
+impl PythonGenerator {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl InterfaceGenerator for PythonGenerator {
+    fn gen_subscribed_topics(&self, topics: &[SubscribedTopic]) -> String {
+        let mut out = String::new();
+        for (i, _t) in topics.iter().enumerate() {
+            out.push_str(&format!("def subscribed_topic_{}():\n    pass\n", i));
+        }
+        out
+    }
+
+    fn gen_subscribed_services(&self, services: &[SubscribedService]) -> String {
+        let mut out = String::new();
+        for (i, _s) in services.iter().enumerate() {
+            out.push_str(&format!("def subscribed_service_{}():\n    pass\n", i));
+        }
+        out
+    }
+
+    fn gen_subscribed_actions(&self, actions: &[SubscribedAction]) -> String {
+        let mut out = String::new();
+        for (i, _a) in actions.iter().enumerate() {
+            out.push_str(&format!("def subscribed_action_{}():\n    pass\n", i));
+        }
+        out
+    }
+
+    fn gen_exposed_topics(&self, topics: &[ExposedTopic]) -> String {
+        let mut out = String::new();
+        for (i, _t) in topics.iter().enumerate() {
+            out.push_str(&format!("def exposed_topic_{}():\n    pass\n", i));
+        }
+        out
+    }
+
+    fn gen_exposed_services(&self, services: &[ExposedService]) -> String {
+        let mut out = String::new();
+        for (i, _s) in services.iter().enumerate() {
+            out.push_str(&format!("def exposed_service_{}():\n    pass\n", i));
+        }
+        out
+    }
+
+    fn gen_exposed_actions(&self, actions: &[ExposedAction]) -> String {
+        let mut out = String::new();
+        for (i, _a) in actions.iter().enumerate() {
+            out.push_str(&format!("def exposed_action_{}():\n    pass\n", i));
+        }
+        out
+    }
+}
