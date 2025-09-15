@@ -8,8 +8,12 @@
   manifest: {
     // `name` can only have alphanumeric, underscore, or hyphen characters.
     name: "my_robot_1", // It's a good practice to give a unique name to the root node to avoid name conflicts with other root nodes under the same network
-    version: "0.1.0",
-    language: "rust" // "rust" or "python". The root node is always "rust"
+    tag: "0.1.0",
+    language: "rust", // "rust" or "python". The root node is always "rust"
+    labels: [
+      "root_node",
+      "my_awesome_robot"
+    ]
   },
   config: {
     auto_start: true, // Always true for the root node
@@ -17,57 +21,47 @@
     // Always restart the root node if it crashes
     respawn_delay: 1.0 // In seconds. Only relevant when the node is installed as a `systemd` service with `peppy node deploy`
   },
-  // In the case of a root node, only a single instance can be started. More than one will make `peppy serve` crash.
-  instances: [
+  // Key specific to the root node, there cannot be more than one key like this one per project
+  // `deployments` pulls those nodes from nodes.peppy.bot and store/use them in/from the .peppy directory if they are not present in the children directory relative to this configuration file.
+  // `deployments` adopts a "value specification syntax" in opposition to the "declarative syntax" present in the other config files
+  deployments: [
     {
-      // namespace is implicitely prefixed with `/dev` in dev environment (running outside `systemd`) and `/prod` when installed with `peppy service deploy` as well as with the root node name (so that other root nodes in the same network can easily address this one).
-      // For example, in dev, this root node and its children will be found in `/dev/my_robot_1`
-      namespace: "/",
-      parameters: {
-        // Specific to the root node, it pulls those nodes from nodes.peppy.bot and store/use them in/from the .peppy directory
-        // A pulled node will always use the .peppy directory next to its peppy.json5 configuration to store its code or metadata. It is exposed only to this path on the filesystem.
-        deployments: [
-          {
-            // This is an example of pulling the `uvc_camera` node from nodes.peppy.bot and instanciating it with user defined parameters
-            // Nodes can also be directly pulled from git if given a path like: `https://github.com/Peppy/uvc_camera.git`. In that case `version` will be used as the git tag
-            name: "uvc_camera",
-            version: "0.1.0",
-            instances: [
-              {
-                namespace: "/camera/right",
-                parameters: {
-                  device: {
-                    physical: "/dev/video_right",
-                    sim: "mujoco:camera_right",
-                    priority: "physical" // "physical" or "sim". If the physical path is not accessible, the sim path is attempted
-                  },
-                  video: {
-                    frame_rate: 30,
-                    resolution: {
-                      width: 1920,
-                      height: 1080,
-                    },
-                    encoding: "yuyv", // "rgb8", "bgr8", "yuyv", "mjpeg"
-                  },
-                }
-              }
-            ]
+      // This is an example of pulling the `uvc_camera` node from nodes.peppy.bot and instanciating it with user defined parameters
+      // Nodes can also be directly pulled from git if given a path like: `https://github.com/Peppy/uvc_camera.git`. In that case `tag` will be used as the git tag
+      name: "uvc_camera",
+      tag: "0.1.0",
+      instances: [
+        {
+          // namespace is implicitely prefixed with `/dev` in dev environment (running outside `systemd`) and `/prod` when installed with `peppy service deploy` as well as with the root node name (so that other root nodes in the same network can easily address this one).
+          // For example, in dev, this root node and its children will be found in `/dev/camera/right`
+          namespace: "/camera/right",
+          parameters: {
+            device: {
+              physical: "/dev/video_right",
+              sim: "mujoco:camera_right",
+              priority: "physical" // "physical" or "sim". If the physical path is not accessible, the sim path is attempted
+            },
+            video: {
+              frame_rate: 30,
+              resolution: {
+                width: 1920,
+                height: 1080,
+              },
+              encoding: "yuyv", // "rgb8", "bgr8", "yuyv", "mjpeg"
+            },
           }
-        ],
-        status: {
-          frequency: "1Hz" // Every second the root node publishes its latest status
         }
-      }
+      ]
     }
   ],
   interfaces: {
     subscribes_to: {
       topics: [
         // This topic discovers other root nodes on the same network, in the same namespace
-        // topic format is `namespace/<node_name>:version` where `namespace` is optional and will be automatically resolved to `/dev/<root_node_name>/` in `dev` and `/prod/<root_node_name>/` in prod
         {
-          name: "{any}", // Will look for any node
-          version: "{any}", // On any version
+          node: "{any}", // Will look for any node
+          tag: "{any}", // On any version/tag
+          name: "peppy_node_status", // That publishes its status on that topic
           namespace: "/", // In `/dev` or `/prod` namespace (depending where the root node is running from)
           callback: "on_root_node_discovered" // The callback that is called when a node is discovered
         }
@@ -75,8 +69,9 @@
       services: [
         // Subscribe to other root nodes on the same network
         {
-          name: "{any}", // Will look for any node
-          version: "{any}", // On any version
+          node: "{any}", // Will look for any node
+          tag: "{any}", // On any version/tag
+          name: "peppy_node_status", // That publishes its status on that topic
           namespace: "/", // In `/dev` or `/prod` namespace (depending where the root node is running from)
           callback: "on_payload_node_received" // The callback that is called when a node sends its payload
         }
@@ -86,7 +81,7 @@
       topics: [
         // Exposes its status for other root nodes on the same network to discover
         {
-          type: "peppy_node_status",
+          name: "peppy_node_status",
           qos_profile: "standard", // Options: "standard", "reliable", "sensor_data"
           message_format: {
             name: "str"
@@ -117,8 +112,8 @@
   },
   logging: {
     min_level: "info",
-    // ${LOGS_ROOT_DIR} is `.peppy/logs/` in dev mode and `/var/log/peppy/` (empty) in production
-    file_path: "${LOGS_ROOT_DIR}/peppy_root.log",
+    // Will be stored in `.peppy/log/peppy_root.log` in dev mode and `/var/log/peppy/peppy_root.log` in production
+    file_name: "peppy_root.log",
     max_file_size_mb: 100,
     format: "text"
   }

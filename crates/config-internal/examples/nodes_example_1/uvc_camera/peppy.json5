@@ -2,10 +2,10 @@
 {
   manifest: {
     name: "uvc_camera",
-    version: "0.1.0",
+    tag: "0.1.0",
     // sha256: "8e115d5f9208ef16cc49e32d88cd3efce839c9c11688c474069ba43023efdd5f" Usually only specified for nodes that are pulled from nodes.peppy.bot
-    // Tags are useful if the node is published with `peppy node publish`
-    tags: [
+    // Labels are useful if the node is published with `peppy node publish`
+    labels: [
       "uvc",
       "camera",
       "usb",
@@ -19,45 +19,22 @@
   },
   // Parameters before the node starts
   // Each item of the array represents one instance of the node being started in a particular namespace
-  instances: [
-    {
-      namespace: "/camera/front",
-      parameters: {
-        device: {
-          // Can be USB IDs/serial or udev rule
-          physical: "/dev/video4",
-          sim: "mujoco:camera_front",
-          priority: "physical" // "physical" or "sim". If the physical path is not accessible, the sim path is attempted
-        },
-        video: {
-          frame_rate: 30,
-          resolution: {
-            width: 1920,
-            height: 1080,
-          },
-          encoding: "yuyv", // "rgb8", "bgr8", "yuyv", "mjpeg"
-        },
-      }
+  parameters: {
+    device: {
+      // Can be USB IDs/serial or udev rule
+      physical: "string", // values like `/dev/video4` or `/dev/video_front`
+      sim: "string", // values like `mujoco:camera_front` or `isaac_sim:camera_rear`
+      priority: "string" // "physical" or "sim". If the physical path is not accessible, the sim path is attempted
     },
-    {
-      namespace: "/camera/rear",
-      parameters: {
-        device: {
-          physical: "/dev/video_front",
-          sim: "isaac_sim:camera_rear",
-          priority: "physical" // "physical" or "sim". If the physical path is not accessible, the sim path is attempted
-        },
-        video: {
-          frame_rate: 30,
-          resolution: {
-            width: 1920,
-            height: 1080,
-          },
-          encoding: "yuyv", // "rgb8", "bgr8", "yuyv", "mjpeg"
-        },
-      }
-    }
-  ],
+    video: {
+      frame_rate: "u16",
+      resolution: {
+        width: "u16",
+        height: "u16",
+      },
+      encoding: "string", // "rgb8", "bgr8", "yuyv", "mjpeg"
+    },
+  },
   interfaces: {
     exposes: {
       topics: [
@@ -68,15 +45,15 @@
           message_format: {
             header: {
               stamp: "time",
-              frame_id: "uint32",
+              frame_id: "u32",
             },
             encoding: "string", // "rgb8", "bgr8", "yuyv", "mjpeg"
-            width: "uint32",
-            height: "uint32",
+            width: "u32",
+            height: "u32",
             image: [
-              "uint8",
-              "uint8",
-              "uint8"
+              "u8",
+              "u8",
+              "u8"
             ],
           },
         }
