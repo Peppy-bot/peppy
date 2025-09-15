@@ -1,7 +1,7 @@
 {
   manifest: {
     name: "{{ name }}",
-    version: "0.1.0",
+    tag: "0.1.0",
     language: "rust"
   },
   config: {
@@ -9,33 +9,23 @@
     respawn: true,
     respawn_delay: 1.0
   },
-  instances: [
-    {
-      namespace: "{{ namespace }}",
-      parameters: {
-        status: {
-          frequency: "1Hz"
-        }
-      }
-    }
-  ],
   interfaces: {
     subscribes_to: {
       topics: [
         {
-          name: "{any}",
-          version: "{any}",
+          node: "{any}",
+          tag: "{any}",
+          name: "peppy_node_status",
           namespace: "/",
-          type: "/peppy/status",
           callback: "on_root_node_discovered"
         }
       ],
       services: [
         {
-          name: "{any}",
-          version: "{any}",
+          node: "{any}",
+          tag: "{any}",
+          name: "peppy_node_status",
           namespace: "/",
-          type: "/peppy/node",
           callback: "on_payload_node_received"
         }
       ]
@@ -43,8 +33,7 @@
     exposes: {
       topics: [
         {
-          // It's not recommended to modify this topic
-          type: "/peppy/status",
+          name: "peppy_node_status",
           qos_profile: "standard",
           message_format: {
             name: "str"
@@ -53,8 +42,7 @@
       ],
       services: [
         {
-          // It's not recommended to modify this service
-          type: "/peppy/node",
+          name: "peppy_node_status",
           qos_profile: "standard",
           message_format: {
             payload: "bytes"
@@ -69,8 +57,8 @@
   },
   logging: {
     min_level: "info",
-    // ${LOGS_ROOT_DIR} is `.peppy/logs/` in dev mode and `/var/log/peppy/` (empty) in production
-    file_path: "${LOGS_ROOT_DIR}/{{ log_file_name }}",
+    // Will be stored in `.peppy/logs/` in dev mode and `/var/log/peppy/` in production
+    file_name: "{{ log_file_name }}",
     max_file_size_mb: 100,
     format: "text"
   }

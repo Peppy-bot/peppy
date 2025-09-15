@@ -112,7 +112,7 @@
   },
   logging: {
     min_level: "info",
-    // Will be stored in `.peppy/log/peppy_root.log` in dev mode and `/var/log/peppy/peppy_root.log` in production
+    // Will be stored in `.peppy/logs/peppy_root.log` in dev mode and `/var/log/peppy/peppy_root.log` in production
     file_name: "peppy_root.log",
     max_file_size_mb: 100,
     format: "text"

@@ -12,15 +12,15 @@ pub struct NodeConfig {
     #[serde(default)]
     pub config: NodeRuntimeConfig,
     #[serde(default)]
-    pub instances: Vec<NodeInstance>,
+    pub parameters: NodeParameters,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployments: Option<Vec<Deployment>>, // Root node only feature
     #[serde(default)]
     pub interfaces: Interfaces,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources: Option<Resources>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logging: Option<Logging>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub diagnostics: Option<Diagnostics>,
 }
 
 /// Validated node name. Lowercase letters, digits, '_' and '-' only.
@@ -107,26 +107,60 @@ impl From<Namespace> for String {
 
 // NodeInfo is not part of the new schema; manifest/config/instances carry this information.
 
-// A flexible value to hold arbitrary JSON5 content
+// A flexible value to hold arbitrary JSON5 content (runtime values only)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(untagged)]
-pub enum AnyValue {
+pub enum AnyType {
     #[default]
     Null,
     Bool(bool),
-    Int(i64),
-    Float(f64),
+    /// A plain string value
     String(String),
-    Array(Vec<AnyValue>),
-    Object(std::collections::BTreeMap<String, AnyValue>),
+    Array(Vec<AnyType>),
+    Object(std::collections::BTreeMap<String, AnyType>),
+
+    // Numeric values: prefer signed, then unsigned, then float
+    Int(i64),
+    UInt(u64),
+    Float(f64),
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TypeToken {
+    Bool,
+    #[serde(alias = "str")]
+    String,
+    Bytes,
+    Time,
+    U8,
+    U16,
+    U32,
+    U64,
+    I8,
+    I16,
+    I32,
+    I64,
+    F32,
+    F64,
+}
+// Derives above keep serde logic concise; `TypeToken` handles mapping of known strings.
+
 // Node parameters with open-ended structure
-pub type NodeParameters = std::collections::BTreeMap<String, AnyValue>;
+pub type NodeParameters = std::collections::BTreeMap<String, AnyType>;
 
 // Common wrapper for dynamic message formats in topics/services
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct MessageFormat(pub std::collections::BTreeMap<String, AnyValue>);
+pub struct MessageFormat(pub std::collections::BTreeMap<String, SchemaType>);
+
+// Schema types used inside MessageFormat
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum SchemaType {
+    Type(TypeToken),
+    Array(Vec<SchemaType>),
+    Object(std::collections::BTreeMap<String, SchemaType>),
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -189,12 +223,12 @@ pub struct ExposedService {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SubscribedTopic {
-    #[serde(default, rename = "type")]
-    pub topic_type: String,
+    #[serde(default)]
+    pub node: String,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
-    pub version: String,
+    pub tag: String,
     #[serde(default)]
     pub namespace: String,
     #[serde(default)]
@@ -206,12 +240,12 @@ pub struct SubscribedTopic {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SubscribedService {
-    #[serde(default, rename = "type")]
-    pub service_type: String,
+    #[serde(default)]
+    pub node: String,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
-    pub version: String,
+    pub tag: String,
     #[serde(default)]
     pub namespace: String,
     #[serde(default)]
@@ -266,7 +300,7 @@ pub struct Logging {
     #[serde(default = "default_log_level")]
     pub min_level: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub file_path: Option<String>,
+    pub file_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_file_size_mb: Option<u32>,
     #[serde(default)]
@@ -277,7 +311,7 @@ impl Default for Logging {
     fn default() -> Self {
         Self {
             min_level: default_log_level(),
-            file_path: None,
+            file_name: None,
             max_file_size_mb: None,
             format: LogFormat::default(),
         }
@@ -285,23 +319,8 @@ impl Default for Logging {
 }
 
 // Default value functions
-fn default_version() -> String {
-    "0.1.0".to_string()
-}
-
 fn default_log_level() -> String {
     "info".to_string()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct Diagnostics {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub publish_rate_hz: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub health_checks: Option<Vec<String>>,
 }
 
 /// Supported template types
@@ -317,14 +336,12 @@ pub enum ConfigTemplateType {
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub name: Name,
-    #[serde(default = "default_version")]
-    pub version: String,
+    pub tag: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<String>>,
+    pub labels: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub language: Option<Language>,
+    pub language: Language,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -388,7 +405,15 @@ pub struct NodeRuntimeConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NodeInstance {
+pub struct Deployment {
+    pub name: String, // May be a node name or a git URL
+    pub tag: String,
+    pub instances: Vec<DeploymentInstance>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeploymentInstance {
     pub namespace: Namespace,
     #[serde(default)]
     pub parameters: NodeParameters,
@@ -435,5 +460,68 @@ mod tests {
         assert!(Namespace::new("").is_err()); // empty not permitted
         assert!(Namespace::new("/Robot").is_err()); // capital
         assert!(Namespace::new("/robot$cam").is_err()); // special
+    }
+
+    #[test]
+    fn type_tokens_in_message_format() {
+        // A snippet similar to the camera stream message_format
+        let json5 = r#"{
+            header: { stamp: "time", frame_id: "u32" },
+            encoding: "string",
+            width: "u32",
+            height: "u32",
+            image: ["u8", "u8", "u8"]
+        }"#;
+
+        let mf: MessageFormat = serde_json5::from_str(json5).unwrap();
+
+        // header.stamp
+        match mf.0.get("header").unwrap() {
+            SchemaType::Object(map) => {
+                assert!(matches!(
+                    map.get("stamp"),
+                    Some(SchemaType::Type(TypeToken::Time))
+                ));
+                assert!(matches!(
+                    map.get("frame_id"),
+                    Some(SchemaType::Type(TypeToken::U32))
+                ));
+            }
+            _ => panic!("header should be an object"),
+        }
+
+        // encoding
+        assert!(matches!(
+            mf.0.get("encoding"),
+            Some(SchemaType::Type(TypeToken::String))
+        ));
+        // dimensions
+        assert!(matches!(
+            mf.0.get("width"),
+            Some(SchemaType::Type(TypeToken::U32))
+        ));
+        assert!(matches!(
+            mf.0.get("height"),
+            Some(SchemaType::Type(TypeToken::U32))
+        ));
+
+        // image array of tokens
+        match mf.0.get("image").unwrap() {
+            SchemaType::Array(v) => {
+                assert_eq!(v.len(), 3);
+                assert!(
+                    v.iter()
+                        .all(|e| matches!(e, SchemaType::Type(TypeToken::U8)))
+                );
+            }
+            _ => panic!("image should be an array"),
+        }
+
+        // Round-trip: ensure tokens serialize back to canonical strings
+        let out = serde_json5::to_string(&mf).unwrap();
+        assert!(out.contains("\"u8\""));
+        assert!(out.contains("\"u32\""));
+        assert!(out.contains("\"time\""));
+        assert!(out.contains("\"string\""));
     }
 }

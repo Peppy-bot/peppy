@@ -159,16 +159,15 @@ mod tests {
     use tempfile::TempDir;
     use tokio::time::timeout;
 
-    fn write_config(dir: &Path, name: &str, namespace: &str) -> PathBuf {
+    fn write_config(dir: &Path, name: &str, _namespace: &str) -> PathBuf {
         let path = dir.join(PEPPY_CONFIG_FILE);
         let json5 = format!(
             r#"{{
   manifest: {{
     name: "{name}",
-  }},
-  instances: [
-    {{ namespace: "{namespace}" }}
-  ]
+    tag: "0.1.0",
+    language: "rust"
+  }}
 }}"#
         );
         fs::write(&path, json5).unwrap();
@@ -212,7 +211,7 @@ mod tests {
         // Invalid name (spaces and '!') should fail parsing on initial load
         fs::write(
             temp.path().join(PEPPY_CONFIG_FILE),
-            "{ manifest: { name: 'Invalid Name!' }, instances: [{ namespace: '/ns' }] }",
+            "{ manifest: { name: 'Invalid Name!', tag: '0.1.0', language: 'rust' } }",
         )
         .unwrap();
 
@@ -246,7 +245,7 @@ mod tests {
         // Write invalid content (invalid node name)
         fs::write(
             &config_path,
-            "{ manifest: { name: 'Invalid Name!' }, instances: [{ namespace: '/ns' }] }",
+            "{ manifest: { name: 'Invalid Name!', tag: '0.1.0', language: 'rust' } }",
         )
         .unwrap();
 
