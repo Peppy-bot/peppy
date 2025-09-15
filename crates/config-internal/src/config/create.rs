@@ -137,7 +137,7 @@ mod tests {
             .to_string()
             + node_name
             + r#"",
-                version: "0.1.0",
+                tag: "0.1.0",
                 language: "rust"
             },
             config: {
@@ -145,33 +145,23 @@ mod tests {
                 respawn: true,
                 respawn_delay: 1.0
             },
-            instances: [
-              {
-                namespace: "/",
-                parameters: {
-                  status: {
-                    frequency: "1Hz"
-                  }
-                }
-              }
-            ],
             interfaces: {
               subscribes_to: {
                 topics: [
                   {
-                    name: "{any}",
-                    version: "{any}",
+                    node: "{any}",
+                    tag: "{any}",
+                    name: "peppy_node_status",
                     namespace: "/",
-                    type: "/peppy/status",
                     callback: "on_root_node_discovered"
                   }
                 ],
                 services: [
                   {
-                    name: "{any}",
-                    version: "{any}",
+                    node: "{any}",
+                    tag: "{any}",
+                    name: "peppy_node_status",
                     namespace: "/",
-                    type: "/peppy/node",
                     callback: "on_payload_node_received"
                   }
                 ]
@@ -179,7 +169,7 @@ mod tests {
               exposes: {
                 topics: [
                   {
-                    type: "/peppy/status",
+                    name: "peppy_node_status",
                     qos_profile: "standard",
                     message_format: {
                       name: "str"
@@ -188,7 +178,7 @@ mod tests {
                 ],
                 services: [
                   {
-                    type: "/peppy/node",
+                    name: "peppy_node_status",
                     qos_profile: "standard",
                     message_format: {
                       payload: "bytes"
@@ -203,8 +193,8 @@ mod tests {
             },
             logging: {
                 min_level: "info",
-                // ${LOGS_ROOT_DIR} is `.peppy/logs/` in dev mode and `/var/log/peppy/` (empty) in production
-                file_path: "${LOGS_ROOT_DIR}/peppy_root.log",
+                // Will be stored in `.peppy/logs/` in dev mode and `/var/log/peppy/` (empty) in production
+                file_name: "peppy_root.log",
                 max_file_size_mb: 100,
                 format: "text"
             }
@@ -239,12 +229,9 @@ mod tests {
         let expected_json5 = r#"{
             manifest: {
                 name: "a_node",
-                version: "0.1.0",
+                tag: "0.1.0",
                 language: "rust"
             },
-            instances: [
-                { namespace: "/ns" }
-            ],
             logging: {
                 min_level: "info",
                 format: "text"
@@ -280,22 +267,19 @@ mod tests {
         let expected_json5 = r#"{
             manifest: {
                 name: "a_node",
-                version: "0.1.0",
+                tag: "0.1.0",
                 language: "rust"
             },
             config: {
                 respawn: true,
                 respawn_delay: 1
             },
-            instances: [
-                { namespace: "/ns" }
-            ],
             resources: {
                 max_memory_mb: 1024
             },
             logging: {
                 min_level: "info",
-                file_path: "${LOGS_ROOT_DIR}/a_node_node.log",
+                file_name: "a_node_node.log",
                 max_file_size_mb: 10,
                 format: "text"
             }

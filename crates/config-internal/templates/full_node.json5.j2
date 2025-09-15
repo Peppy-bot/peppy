@@ -1,22 +1,19 @@
 {
   manifest: {
     name: "{{ name }}",
-    version: "0.1.0",
+    tag: "0.1.0",
     language: "{{ language }}"
   },
   config: {
     respawn: true,
     respawn_delay: 1
   },
-  instances: [
-    { namespace: "{{ namespace }}" }
-  ],
   resources: {
     max_memory_mb: 1024
   },
   logging: {
     min_level: "info",
-    file_path: "${LOGS_ROOT_DIR}/{{ log_file_name }}",
+    file_name: "{{ log_file_name }}",
     max_file_size_mb: 10,
     format: "text"
   }

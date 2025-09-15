@@ -18,8 +18,7 @@ impl InterfacesGenerator {
 
     /// Called everytime a new change to a peppy configuration is detected
     pub fn generate_interfaces(config: &NodeConfig) -> Vec<String> {
-        // Choose language-specific generator (default to Rust if unspecified)
-        let lang = config.manifest.language.clone().unwrap_or_default();
+        let lang = config.manifest.language;
         let generator: Box<dyn builder::InterfaceGenerator> = match lang {
             Language::Rust => Box::new(RustGenerator::new()),
             Language::Python => Box::new(PythonGenerator::new()),

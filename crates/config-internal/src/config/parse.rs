@@ -38,16 +38,14 @@ mod tests {
         let json5 = r#"{
             manifest: {
                 name: "test_node",
-                version: "0.1.0",
+                tag: "0.1.0",
+                language: "rust",
             },
-            instances: [
-                { namespace: "/test" }
-            ]
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
         assert_eq!(config.manifest.name.as_str(), "test_node");
-        assert_eq!(config.instances[0].namespace.as_str(), "/test");
-        assert_eq!(config.manifest.version, "0.1.0"); // default
+        assert_eq!(config.manifest.tag, "0.1.0");
+        assert!(config.parameters.is_empty());
     }
 
     #[test]
@@ -55,16 +53,14 @@ mod tests {
         let json5 = r#"{
             manifest: {
                 name: "camera_driver",
-                version: "2.1.0"
+                tag: "2.1.0",
+                language: "rust"
             },
             config: {
                 auto_start: true,
                 respawn: true,
                 respawn_delay: 2.0
             },
-            instances: [
-                { namespace: "/sensors/camera" }
-            ],
             interfaces: {
                 exposes: {
                     topics: [
@@ -75,12 +71,118 @@ mod tests {
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
         assert_eq!(config.manifest.name.as_str(), "camera_driver");
-        assert_eq!(config.instances[0].namespace.as_str(), "/sensors/camera");
-        assert_eq!(config.manifest.version, "2.1.0");
+        assert_eq!(config.manifest.tag, "2.1.0");
         assert_eq!(config.config.auto_start, Some(true));
         assert_eq!(config.config.respawn, Some(true));
         assert_eq!(config.config.respawn_delay, Some(2.0));
         assert!(config.interfaces.exposes.is_some());
+    }
+
+    #[test]
+    fn test_parse_root_config() {
+        let json5 = r#"{
+            manifest: {
+                name: "my_robot_1",
+                tag: "0.1.0",
+                language: "rust"
+            },
+            config: {
+                auto_start: true,
+                respawn: true,
+                respawn_delay: 1.0
+            },
+            deployments: [
+                {
+                    name: "uvc_camera",
+                    tag: "0.1.0",
+                    instances: [
+                        {
+                            namespace: "/camera/front",
+                            parameters: {
+                                device: { physical: "/dev/video_front", sim: "mujoco:camera_front", priority: "physical" },
+                                video: {
+                                    frame_rate: 30,
+                                    resolution: { width: 1280, height: 720 },
+                                    encoding: "mjpeg"
+                                }
+                            }
+                        },
+                        {
+                            namespace: "/camera/rear",
+                            parameters: {
+                                device: { physical: "/dev/video_rear", sim: "mujoco:camera_rear", priority: "sim" },
+                                video: {
+                                    frame_rate: 30,
+                                    resolution: { width: 1280, height: 720 },
+                                    encoding: "mjpeg"
+                                }
+                            }
+                        }
+                    ]
+                },
+                {
+                    name: "web_video_stream",
+                    tag: "0.1.0",
+                    instances: [
+                        {
+                            namespace: "/video",
+                            parameters: {
+                                http: { host: "localhost", port: 8081, max_connections: 1000, request_timeout_ms: 5000 },
+                                video_stream: { format: "mjpeg", quality: 75, max_fps: 30 }
+                            }
+                        }
+                    ]
+                },
+                {
+                    name: "peppy_web",
+                    tag: "0.1.0",
+                    instances: [
+                        {
+                            namespace: "/",
+                            parameters: {
+                                http: { host: "0.0.0.0", port: 8080, max_connections: 500, request_timeout_ms: 5000 }
+                            }
+                        }
+                    ]
+                }
+            ],
+            interfaces: {
+                subscribes_to: {
+                    topics: [
+                        {
+                            node: "{any}",
+                            tag: "{any}",
+                            name: "peppy_node_status",
+                            namespace: "/",
+                            callback: "on_root_node_discovered"
+                        }
+                    ]
+                }
+            },
+            resources: { max_memory_mb: 1024 },
+            logging: { min_level: "info" }
+        }"#;
+
+        let cfg = NodeConfigParser::from_content(json5).unwrap();
+        assert_eq!(cfg.manifest.name.as_str(), "my_robot_1");
+        assert_eq!(cfg.manifest.tag, "0.1.0");
+        assert_eq!(cfg.config.auto_start, Some(true));
+        assert!(cfg.deployments.is_some());
+        let deployments = cfg.deployments.unwrap();
+        assert_eq!(deployments.len(), 3);
+
+        // Check first deployment
+        assert_eq!(deployments[0].name, "uvc_camera");
+        assert_eq!(deployments[0].tag, "0.1.0");
+        assert_eq!(deployments[0].instances.len(), 2);
+
+        // Check second deployment
+        assert_eq!(deployments[1].name, "web_video_stream");
+        assert_eq!(deployments[1].instances.len(), 1);
+
+        // Check third deployment
+        assert_eq!(deployments[2].name, "peppy_web");
+        assert_eq!(deployments[2].instances.len(), 1);
     }
 
     #[test]
