@@ -2,10 +2,10 @@ mod factory;
 mod python;
 mod rust;
 
-use super::types::{Language, NodeName};
+use super::types::NodeName;
 use crate::{Error, Result};
-use config::{ConfigTemplateType, NodeConfigCreator};
-use factory::create_factory;
+use config::Language;
+use factory::{NodeContext, create_factory};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::info;
@@ -81,38 +81,21 @@ pub fn create(
     fs::create_dir_all(&node_path)?;
 
     // Use factory pattern for language-specific operations
-    let factory = create_factory(language);
-
-    factory.create_gitignore(&node_path)?;
-    create_peppy_node_config(&node_path, node_name.as_str(), full)
-        .map_err(|e| Error::PeppyConfigCreation(e.to_string()))?;
-    factory.create_language_config(
-        &node_name,
+    let ctx = NodeContext::new(
+        node_name.clone(),
         &node_path,
-        description.unwrap_or(&format!("{node_name} {language} node")),
-    )?;
-    Ok(())
-}
-
-pub fn create_peppy_node_config(node_path: &Path, node_name: &str, full: bool) -> Result<PathBuf> {
-    let peppy_yaml_path = node_path.join("peppy.json5");
-
-    let builder = if full {
-        NodeConfigCreator::new(&ConfigTemplateType::FullNode, node_name, Some("/"))
-    } else {
-        NodeConfigCreator::new(&ConfigTemplateType::SimpleNode, node_name, Some("/"))
-    };
-
-    builder
-        .write_to(&peppy_yaml_path)
-        .map_err(Error::PeppyConfig)?;
-
-    info!(
-        "Created {} node in {}",
-        &node_name,
-        peppy_yaml_path.display()
+        description.unwrap_or(&format!("{} {} node", node_name.as_str(), language)),
+        language,
     );
-    Ok(peppy_yaml_path)
+
+    let factory = create_factory(ctx);
+
+    factory.create_gitignore()?;
+    factory
+        .create_peppy_node_config(full)
+        .map_err(|e| Error::PeppyConfigCreation(e.to_string()))?;
+    factory.create_language_config()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -128,7 +111,15 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let node_name = "test_node";
 
-        let result = create_peppy_node_config(temp_dir.path(), node_name, false);
+        let ctx = NodeContext::new(
+            NodeName::new(node_name).unwrap(),
+            temp_dir.path(),
+            "Test node",
+            Language::Rust,
+        );
+        let factory = create_factory(ctx);
+
+        let result = factory.create_peppy_node_config(false);
         assert!(result.is_ok());
 
         let peppy_path = temp_dir.path().join("peppy.json5");
@@ -164,13 +155,19 @@ mod tests {
 
     #[test]
     fn test_create_gitignore_python() {
-        use crate::commands::node::create::factory::{NodeFactory, PythonNodeFactory};
+        use crate::commands::node::create::factory::{NodeContext, NodeFactory, PythonNodeFactory};
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let factory = PythonNodeFactory;
+        let ctx = NodeContext::new(
+            NodeName::new("py_node").unwrap(),
+            temp_dir.path(),
+            "desc",
+            Language::Python,
+        );
+        let factory = PythonNodeFactory::new(ctx);
 
-        let result = factory.create_gitignore(temp_dir.path());
+        let result = factory.create_gitignore();
         assert!(result.is_ok());
 
         let gitignore_path = temp_dir.path().join(".gitignore");
@@ -182,13 +179,19 @@ mod tests {
 
     #[test]
     fn test_create_gitignore_rust() {
-        use crate::commands::node::create::factory::{NodeFactory, RustNodeFactory};
+        use crate::commands::node::create::factory::{NodeContext, NodeFactory, RustNodeFactory};
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let factory = RustNodeFactory;
+        let ctx = NodeContext::new(
+            NodeName::new("rs_node").unwrap(),
+            temp_dir.path(),
+            "desc",
+            Language::Rust,
+        );
+        let factory = RustNodeFactory::new(ctx);
 
-        let result = factory.create_gitignore(temp_dir.path());
+        let result = factory.create_gitignore();
         assert!(result.is_ok());
 
         let gitignore_path = temp_dir.path().join(".gitignore");

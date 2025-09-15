@@ -9,6 +9,7 @@
     // `name` can only have alphanumeric, underscore, or hyphen characters.
     name: "my_robot_1", // It's a good practice to give a unique name to the root node to avoid name conflicts with other root nodes under the same network
     version: "0.1.0",
+    language: "rust" // "rust" or "python". The root node is always "rust"
   },
   config: {
     auto_start: true, // Always true for the root node
@@ -24,6 +25,7 @@
       namespace: "/",
       parameters: {
         // Specific to the root node, it pulls those nodes from nodes.peppy.bot and store/use them in/from the .peppy directory
+        // A pulled node will always use the .peppy directory next to its peppy.json5 configuration to store its code or metadata. It is exposed only to this path on the filesystem.
         deployments: [
           {
             // This is an example of pulling the `uvc_camera` node from nodes.peppy.bot and instanciating it with user defined parameters

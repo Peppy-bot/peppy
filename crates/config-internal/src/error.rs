@@ -46,6 +46,10 @@ pub enum Error {
     #[error("Serialize error: {0}")]
     Serialize(String),
 
+    // -- Domain specific
+    #[error("Unsupported language")]
+    UnsupportedLanguage,
+
     // -- Node watcher
     #[error("Node watcher error: {0}")]
     NodeWatcher(String),

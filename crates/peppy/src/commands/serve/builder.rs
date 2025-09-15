@@ -40,8 +40,10 @@ impl ServeCommandBuilder {
         self
     }
 
-    // TODO use the type state pattern to only allow `with_peppygen` to be run if `with_node_watcher` has been used
-    // When the node_watcher detects a change, peppygen generates the new interfaces for the clients to use
+    /// When the node_watcher detects a change, peppygen generates the new interfaces for the clients to use.
+    /// peppygen does not depend on `node_watcher`, it's only one of the components that can send a signal to
+    /// peppygen for code generation. Another process that can do this is `peppy node sync <path_to_config>`
+    /// when nodes are outside the root_node folder and its children.
     pub fn with_peppygen(mut self) -> Self {
         let generator = Box::new(InterfacesGenerator::new().expect("Failed to create peppygen"));
         self.composite_command = self.composite_command.add_async_command(generator);

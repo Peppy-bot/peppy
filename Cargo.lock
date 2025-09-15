@@ -1925,6 +1925,8 @@ dependencies = [
  "netdev",
  "peppycl",
  "pmi",
+ "proc-macro2",
+ "quote",
  "rayon",
  "service-manager",
  "tempfile",

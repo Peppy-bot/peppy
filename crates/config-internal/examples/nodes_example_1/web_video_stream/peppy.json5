@@ -4,6 +4,7 @@
   manifest: {
     name: "web_video_stream",
     version: "0.1.0",
+    language: "python"
   },
   config: {
     respawn: true,

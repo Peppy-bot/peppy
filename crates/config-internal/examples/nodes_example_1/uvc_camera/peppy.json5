@@ -10,6 +10,7 @@
       "camera",
       "usb",
     ],
+    language: "rust"
   },
   config: {
     auto_start: false, // Can be started with the `enable_camera` service
