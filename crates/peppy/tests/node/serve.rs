@@ -2,27 +2,27 @@ use std::thread;
 use std::time::Duration;
 
 use peppy::Result;
-use peppy::serve::{CompositeCommand, Serve, ServeAsyncCommand};
+use peppy::serve::{CompositeCommand, Serve, ServeAsyncCommand, ServeFuture};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::task::JoinHandle;
 
 struct TestAsyncCommand {
     should_succeed: bool,
 }
 
 impl ServeAsyncCommand for TestAsyncCommand {
-    fn execute_async(&self) -> Result<JoinHandle<Result<()>>> {
+    fn run(&self) -> ServeFuture {
         let should_succeed = self.should_succeed;
-        let handle = tokio::spawn(async move {
+        Box::pin(async move {
             tokio::time::sleep(Duration::from_millis(100)).await;
             if should_succeed {
                 Ok(())
             } else {
                 Err(peppy::Error::ExecutionFailed("Test error".to_string()))
             }
-        });
-        Ok(handle)
+        })
     }
 }
 
@@ -58,11 +58,11 @@ fn test_serve_command_with_graceful_shutdown() {
     }
 
     impl ServeAsyncCommand for LongRunningCommand {
-        fn execute_async(&self) -> Result<JoinHandle<Result<()>>> {
+        fn run(&self) -> ServeFuture {
             let running = self.running.clone();
             let shutdown_called = self.shutdown_called.clone();
 
-            let handle = tokio::spawn(async move {
+            Box::pin(async move {
                 running.store(true, Ordering::SeqCst);
 
                 // Simulate waiting for Ctrl+C
@@ -73,8 +73,7 @@ fn test_serve_command_with_graceful_shutdown() {
                 // Simulate shutdown behavior
                 shutdown_called.store(true, Ordering::SeqCst);
                 Ok(())
-            });
-            Ok(handle)
+            })
         }
     }
 

@@ -17,30 +17,33 @@ pub trait InterfaceGenerator {
 }
 
 /// Compose the full interface generation from the language-specific generator.
-pub fn generate_interfaces(generator: &dyn InterfaceGenerator, interfaces: &Interfaces) -> String {
-    let mut out = String::new();
+pub fn generate_interfaces(
+    generator: &dyn InterfaceGenerator,
+    interfaces: &Interfaces,
+) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
 
     if let Some(sub) = &interfaces.subscribes_to {
         if let Some(v) = &sub.topics {
-            out.push_str(&generator.gen_subscribed_topics(v));
+            out.push(generator.gen_subscribed_topics(v));
         }
         if let Some(v) = &sub.services {
-            out.push_str(&generator.gen_subscribed_services(v));
+            out.push(generator.gen_subscribed_services(v));
         }
         if let Some(v) = &sub.actions {
-            out.push_str(&generator.gen_subscribed_actions(v));
+            out.push(generator.gen_subscribed_actions(v));
         }
     }
 
     if let Some(exp) = &interfaces.exposes {
         if let Some(v) = &exp.topics {
-            out.push_str(&generator.gen_exposed_topics(v));
+            out.push(generator.gen_exposed_topics(v));
         }
         if let Some(v) = &exp.services {
-            out.push_str(&generator.gen_exposed_services(v));
+            out.push(generator.gen_exposed_services(v));
         }
         if let Some(v) = &exp.actions {
-            out.push_str(&generator.gen_exposed_actions(v));
+            out.push(generator.gen_exposed_actions(v));
         }
     }
 

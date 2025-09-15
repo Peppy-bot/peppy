@@ -1,7 +1,6 @@
-use super::ServeAsyncCommand;
+use super::{ServeAsyncCommand, ServeFuture};
 use crate::error::Result;
 use config::NodeConfigWatcher;
-use tokio::task::JoinHandle;
 
 pub struct NodeWatcher {
     pub strict: bool,
@@ -19,10 +18,8 @@ impl NodeWatcher {
 }
 
 impl ServeAsyncCommand for NodeWatcher {
-    fn execute_async(&self) -> Result<JoinHandle<Result<()>>> {
+    fn run(&self) -> ServeFuture {
         let strict = self.strict;
-        Ok(tokio::spawn(async move {
-            NodeWatcher::watch_nodes(strict).await
-        }))
+        Box::pin(async move { NodeWatcher::watch_nodes(strict).await })
     }
 }

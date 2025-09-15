@@ -1,14 +1,13 @@
-use super::ServeAsyncCommand;
-use crate::{Error, Result};
+use super::{ServeAsyncCommand, ServeFuture};
+use crate::Error;
 use pmi::{Messenger, MessengerBackend};
-use tokio::task::JoinHandle;
 use tracing::info;
 
 impl ServeAsyncCommand for Messenger {
-    fn execute_async(&self) -> Result<JoinHandle<Result<()>>> {
+    fn run(&self) -> ServeFuture {
         let context = self.context.clone();
 
-        let handle = tokio::spawn(async move {
+        Box::pin(async move {
             let mut messenger = Messenger::new(context).map_err(Error::PeppyMessagingInterface)?;
 
             // Starts the zenoh router
@@ -30,8 +29,6 @@ impl ServeAsyncCommand for Messenger {
                 .map_err(Error::PeppyMessagingInterface)?;
 
             Ok(())
-        });
-
-        Ok(handle)
+        })
     }
 }
