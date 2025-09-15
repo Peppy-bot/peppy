@@ -3,44 +3,36 @@
 {
   manifest: {
     name: "web_video_stream",
-    version: "0.1.0",
+    tag: "0.1.0",
     language: "python"
   },
   config: {
     respawn: true,
     respawn_delay: 5.0,
   },
-  instances: [
-    {
-      namespace: "/",
-      parameters: {
-        // The parameters of the current node
-        http: {
-          host: "localhost",
-          port: 8081,
-          cors_enabled: true,
-          cors_origins: "*",
-          max_connections: 100,
-          request_timeout_ms: 30000,
-        },
-        video_stream: {
-          format: "mjpeg",
-          quality: 80,
-          max_fps: 30,
-        },
-      },
-    }
-  ],
+  // The input parameters of the current node
+  parameters: {
+    http: {
+      host: "string",
+      port: "u16",
+      cors_enabled: "bool",
+      cors_origins: "string",
+      max_connections: "u32",
+      request_timeout_ms: "u32",
+    },
+    video_stream: {
+      format: "string", // example: "mjpeg"
+      quality: "u16",
+      max_fps: "u16",
+    },
+  },
   interfaces: {
     subscribes_to: {
       topics: [
-        // If the node cannot be found in the root node nodes list, it will be pulled from `nodes.peppy.bot` 
-        // in a folder with the same name as its name
-        // topic format is `namespace/<node_name>:version` where `namespace` is optional and will be automatically 
-        // resolved to `/dev/<root_node_name>/` in `dev` and `/prod/<root_node_name>/` in prod
         {
-          name: "uvc_camera", // Will look for that node name
-          version: "0.1.0", // On that particular version
+          node: "uvc_camera", // Will look for that node name
+          tag: "0.1.0", // On that particular tag/version
+          name: "stream", // With this topic name
           namespace: "{any}", // In any namespace (prefixed by `/dev` or `/prod` by default)
           callback: "on_handle_video_frame", // The code callback that will automatically be exposed in the Rust/Python code via auto code generation
           optional: true // In strict mode, do not prevent this node from starting there are no nodes to subscribe to
@@ -60,7 +52,7 @@
   },
   logging: {
     min_level: "info",
-    file_path: "${LOGS_ROOT_DIR}/rest_api.log",
+    file_name: "rest_api.log",
     max_file_size_mb: 100,
     format: "text",
   }

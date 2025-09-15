@@ -2,8 +2,8 @@
 {
   manifest: {
     name: "peppy_web",
-    version: "0.1.0",
-    tags: [
+    tag: "0.1.0",
+    labels: [
       "peppy",
       "REST",
       "backend",
@@ -17,19 +17,14 @@
     respawn_delay: 2.0,
     startup_type: "fork", // Optional: Uses "thread" by default, "fork" uses more resources but ensures that in the event of the root node crash, the current node doesn't crash along with it.
   },
-  instances: [
-    {
-      namespace: "/",
-      parameters: {
-        http: {
-          host: "0.0.0.0",
-          port: 8080,
-          max_connections: 100,
-          request_timeout_ms: 3000,
-        },
-      }
-    }
-  ],
+  parameters: {
+    http: {
+      host: "string",
+      port: "u16",
+      max_connections: "u32",
+      request_timeout_ms: "u32",
+    },
+  },
   interfaces: {
     // This node does not expose anything for other nodes. It exposes a REST API
     // to the end user but that is outside of the realm of node-to-node communication
@@ -43,8 +38,9 @@
         {
           // Subscribes to the current root_node status but also any node that
           // emits to `/<dev or prod>/peppy_node_status`
+          node: "{any}",
+          tag: "{any}", // Any tag/version will do
           name: "peppy_node_status",
-          version: "{any}", // Any version will do
           namespace: "/", // In what ns is this topic emmiting to?
           callback: "on_node_status_received", // Auto exposed callback in code
           optional: true, // In strict mode, do not prevent this node from starting if emitters are not found
@@ -52,8 +48,10 @@
       ],
       services: [
         {
+          node: "{any}",
+          tag: "{any}", // Any tag/version will do
+          namespace: "{any}",
           name: "peppy_node_status",
-          version: "{any}", // Any version will do
           callback: "on_node_payload_received",
           optional: true, // Same optional behavior as topics
         },
