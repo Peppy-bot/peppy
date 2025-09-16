@@ -1,26 +1,29 @@
 use std::path::PathBuf;
 
-use crate::InterfacesGenerator;
-
 use super::CompositeCommand;
 use super::Serve;
 use super::node_watcher_cmd::NodeWatcher;
+use super::peppygen_cmd::InterfacesGenerator;
+use crate::Result;
+use config::NodeConfig;
+use config::NodeConfigParser;
 use pmi::{MessagingEngineContext, Messenger};
 
 pub struct ServeCommandBuilder {
-    context: MessagingEngineContext,
     composite_command: CompositeCommand,
+    node_config: NodeConfig,
     strict: bool,
 }
 
 impl ServeCommandBuilder {
-    pub fn new(engine: String, config_path: Option<PathBuf>, strict: bool) -> Self {
-        let context = MessagingEngineContext::new(engine, config_path);
-        Self {
-            context,
+    pub fn new(root_config_path: PathBuf, strict: bool) -> Result<Self> {
+        let node_config =
+            NodeConfigParser::from_path(&root_config_path).map_err(crate::Error::PeppyConfig)?;
+        Ok(Self {
             composite_command: CompositeCommand::default(),
+            node_config,
             strict,
-        }
+        })
     }
 
     /// The node_watcher starts from the root node and watches over the files changes in its directory and its children directories.
@@ -35,10 +38,11 @@ impl ServeCommandBuilder {
     }
 
     /// The messaging router (Zenoh/MQTT etc...) is reponsible for message passing between the nodes and between the nodes and the peppy program
-    pub fn with_messaging_router(mut self) -> Self {
+    pub fn with_messaging_router(mut self, engine: String) -> Self {
+        // Uses the default pubsub config or the one defined in env vars (`ZENOH_CONFIG` for zenoh)
+        let context = MessagingEngineContext::new(engine, None);
         let messenger = Box::new(
-            Messenger::new(self.context.clone())
-                .expect("Failed to create messenger with given context"),
+            Messenger::new(context).expect("Failed to create messenger with given context"),
         );
         self.composite_command = self.composite_command.add_async_command(messenger);
         self
@@ -49,7 +53,10 @@ impl ServeCommandBuilder {
     /// for code generation. Another process that can do this is `peppy node sync <path_to_config>` when nodes
     /// are outside the root_node folder and its children.
     pub fn with_peppygen(mut self) -> Self {
-        let generator = Box::new(InterfacesGenerator::new().expect("Failed to create peppygen"));
+        let generator = Box::new(
+            self.create_interfaces_generator()
+                .expect("Failed to create peppygen"),
+        );
         self.composite_command = self.composite_command.add_async_command(generator);
         self
     }
@@ -62,5 +69,12 @@ impl ServeCommandBuilder {
 
     pub fn build(self) -> Serve {
         Serve::new(self.composite_command)
+    }
+
+    fn create_interfaces_generator(&self) -> Result<InterfacesGenerator> {
+        InterfacesGenerator::new(
+            &self.node_config.interfaces,
+            &self.node_config.manifest.language,
+        )
     }
 }

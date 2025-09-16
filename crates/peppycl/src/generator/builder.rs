@@ -17,7 +17,7 @@ pub trait InterfaceGenerator {
 }
 
 /// Compose the full interface generation from the language-specific generator.
-pub fn generate_interfaces(
+pub fn compose_interfaces(
     generator: &dyn InterfaceGenerator,
     interfaces: &Interfaces,
 ) -> Vec<String> {

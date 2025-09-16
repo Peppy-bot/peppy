@@ -56,7 +56,7 @@ impl NodeConfigCreator {
             template_type: template_type.clone(),
             name: node_name.to_string(),
             namespace,
-            language: language.clone(),
+            language: *language,
         }
     }
 

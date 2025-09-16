@@ -18,13 +18,29 @@ impl RustGenerator {
 
 impl InterfaceGenerator for RustGenerator {
     fn gen_subscribed_topics(&self, topics: &[SubscribedTopic]) -> String {
+        // Generate a `TokenStream` representing Rust code
+        let fn_name = Ident::new("hello", proc_macro2::Span::call_site());
+        let generated: TokenStream = quote! {
+            use pmi::{MessagingEngineContext, Messenger};
+
+            pub fn #fn_name() {
+                println!("Hello, world!");
+            }
+        };
+
         // Placeholder: produce a simple Rust fn per topic name for now
         let fns: Vec<TokenStream> = topics
             .iter()
             .enumerate()
             .map(|(i, _t)| {
                 let fn_name = Ident::new(&format!("subscribed_topic_{}", i), Span::call_site());
-                quote! { pub fn #fn_name() {} }
+                quote! {
+                    use pmi::{MessagingEngineContext, Messenger};
+
+                    pub async fn #fn_name() {
+                        todo!("await for message with PMI")
+                    }
+                }
             })
             .collect();
         let tokens: TokenStream = quote! { #( #fns )* };
@@ -94,5 +110,34 @@ impl InterfaceGenerator for RustGenerator {
             .collect();
         let tokens: TokenStream = quote! { #( #fns )* };
         tokens.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_gen_subscribed_topics() {
+        let topics = [
+            SubscribedTopic {
+                node: String::from("node_alpha"),
+                name: String::from("topic_alpha"),
+                tag: String::from("alpha"),
+                namespace: String::from("foo"),
+                callback: String::from("on_topic_alpha"),
+                optional: Some(false),
+            },
+            SubscribedTopic {
+                node: String::from("node_beta"),
+                name: String::from("topic_beta"),
+                tag: String::from("beta"),
+                namespace: String::from("bar"),
+                callback: String::from("on_topic_beta"),
+                optional: Some(true),
+            },
+        ];
+        let generator = RustGenerator::new();
+        let res = generator.gen_subscribed_topics(&topics);
     }
 }

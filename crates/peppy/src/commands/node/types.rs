@@ -1,8 +1,6 @@
 use std::fmt;
 use std::str::FromStr;
 
-use config::Language;
-
 use crate::{Error, Result};
 
 /// A validated node name that ensures it follows naming conventions.
@@ -73,6 +71,7 @@ impl FromStr for NodeName {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use config::Language;
 
     #[test]
     fn test_node_name_validation() {

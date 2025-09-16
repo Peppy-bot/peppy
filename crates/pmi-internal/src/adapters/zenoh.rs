@@ -3,7 +3,8 @@ use crate::messaging_types::{PublisherQoS, SubscriberQoS};
 use crate::zenohd;
 use crate::{Message, MessengerBackend, Subscription};
 use askama::Template;
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::path::PathBuf;
+use std::{collections::HashMap, sync::Arc};
 use tracing::{debug, info};
 use zenoh::qos::{CongestionControl, Priority};
 
@@ -22,8 +23,8 @@ pub struct ZenohAdapter {
 }
 
 impl ZenohAdapter {
-    pub fn new(router_config: Option<PathBuf>) -> Result<Self> {
-        let facade = zenohd::ZenohdFacade::new(router_config)?;
+    pub fn new(zenohd_config_path: Option<PathBuf>) -> Result<Self> {
+        let facade = zenohd::ZenohdFacade::new(zenohd_config_path)?;
         let publishers = HashMap::new();
 
         Ok(Self {

@@ -32,7 +32,7 @@ pub async fn setup_node_from_config(_node_config: NodeConfig) -> Result<()> {
     for engine in engines {
         let ctx = MessagingEngineContext {
             engine: engine.to_string(),
-            config_path: None,
+            zenohd_config_path: None,
         };
 
         match Messenger::new(ctx) {

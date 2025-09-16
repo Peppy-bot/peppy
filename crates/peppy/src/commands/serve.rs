@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 use tracing::{error, info};
 
 use super::Command;
-use crate::{Error, Result};
+use crate::Result;
 
 use builder::ServeCommandBuilder;
 
@@ -94,16 +94,16 @@ impl Serve {
 
 pub struct ServeCommand {
     pub engine: String,
-    pub config_path: Option<PathBuf>,
+    pub root_config_path: PathBuf,
     pub strict: bool,
 }
 
 impl Command for ServeCommand {
     fn execute(self) -> Result<()> {
         // TODO: Only one instance of `serve` can run on a given machine (prod or dev included). Check the port and PID to make sure there isn't more than one instance running
-        let executor = ServeCommandBuilder::new(self.engine, self.config_path, self.strict)
+        let executor = ServeCommandBuilder::new(self.root_config_path, self.strict)?
             .with_node_watcher()
-            .with_messaging_router()
+            .with_messaging_router(self.engine)
             .with_peppygen()
             .with_root_node()
             .build();
