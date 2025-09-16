@@ -1,10 +1,7 @@
 use std::thread;
 use std::time::Duration;
 
-use peppy::Result;
 use peppy::serve::{CompositeCommand, Serve, ServeAsyncCommand, ServeFuture};
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 

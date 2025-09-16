@@ -1,9 +1,9 @@
 use super::super::error::{Error, Result};
 use askama::Template;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::{fmt, fs};
+use std::{env, fmt};
 use zenoh::config::Config;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,50 +56,59 @@ pub struct ZenohEndpoint {
 /// The Zenoh daemon binary facade. Zenohd is not accessible via the Rust API (or in a very limited fashion).
 /// This facade allows calling the binary in the background.
 pub struct ZenohdFacade {
-    zenohd_path: String,
-    pub config: zenoh::config::Config,
+    zenohd_path: Option<String>,
+    pub zenohd_config_path: PathBuf,
     pub router_process: Option<Child>,
     pub zenoh_endpoint: ZenohEndpoint,
 }
 
 impl ZenohdFacade {
     /// Creates a new ZenohdFacade instance with a working directory
-    pub fn new(config_file: Option<PathBuf>) -> Result<Self> {
-        let zenohd_path = ZenohdFacade::get_zenohd_binary()?;
-        let config = ZenohdFacade::get_config(config_file)?;
-        let zenoh_endpoint = ZenohdFacade::get_endpoint_from_config(&config)?;
+    pub fn new(zenohd_config_path: Option<PathBuf>) -> Result<Self> {
+        let zenohd_path = ZenohdFacade::get_zenohd_binary();
+        let zenohd_config_path = ZenohdFacade::get_zenohd_config_path(zenohd_config_path);
+        let zenoh_endpoint = ZenohdFacade::get_endpoint_from_config(&zenohd_config_path)?;
         Ok(Self {
             zenohd_path,
-            config,
+            zenohd_config_path,
             router_process: None,
             zenoh_endpoint,
         })
     }
 
-    fn get_zenohd_binary() -> Result<String> {
-        if let Some(path) = option_env!("ZENOHD_BINARY_PATH") {
-            Ok(path.to_string())
-        } else {
-            Err(Error::ZenohdError(
-                "Zenohd binary not found. Build with: cargo build --features build_zenoh"
-                    .to_string(),
-            ))
+    fn get_zenohd_binary() -> Option<String> {
+        option_env!("ZENOHD_BINARY_PATH").map(|path| path.to_string())
+    }
+
+    fn get_zenohd_config_path(zenohd_config_path: Option<PathBuf>) -> PathBuf {
+        match zenohd_config_path {
+            Some(cfg) => cfg,
+            None => match env::var("ZENOH_CONFIG") {
+                Ok(zenohd_config_path) => PathBuf::from(zenohd_config_path),
+                Err(_) => {
+                    let config_content = Self::render_default_config();
+                    let mut temp_file = tempfile::Builder::new()
+                        .prefix("zenohd_config_")
+                        .suffix(".json5")
+                        .tempfile()
+                        .expect("Failed to create temporary zenoh config file");
+
+                    temp_file
+                        .write_all(config_content.as_bytes())
+                        .expect("Failed to write temporary zenoh config file");
+
+                    let (_, temp_path) = temp_file
+                        .keep()
+                        .expect("Failed to persist temporary zenoh config file");
+
+                    temp_path
+                }
+            },
         }
     }
 
-    fn get_config(config_file: Option<PathBuf>) -> Result<zenoh::config::Config> {
-        match config_file {
-            Some(config_path) => Config::from_file(config_path).map_err(|e| {
-                Error::ConfigurationError(format!("Failed to load config file: {}", e))
-            }),
-            None => Config::from_json5(&Self::render_default_config()).map_err(|e| {
-                Error::ConfigurationError(format!("Failed to parse default config: {}", e))
-            }),
-        }
-    }
-
-    fn get_endpoint_from_config(config: &zenoh::config::Config) -> Result<ZenohEndpoint> {
-        // Get the listen configuration
+    fn get_endpoint_from_config(zenohd_config_path: impl AsRef<Path>) -> Result<ZenohEndpoint> {
+        let config = Config::from_file(zenohd_config_path).unwrap();
         let listen_json = config.get_json("listen").map_err(|e| {
             Error::ConfigurationError(format!("Failed to get listen config: {}", e))
         })?;
@@ -144,35 +153,6 @@ impl ZenohdFacade {
         })
     }
 
-    fn get_config_as_path(&self) -> Result<PathBuf> {
-        // Write config to a temporary file that persists by leaking the TempDir
-        let temp_dir = Box::new(tempfile::TempDir::new().expect("Failed to create temp dir"));
-        // TODO: move this file into .peppy/config/
-        let config_path = temp_dir.path().join("zenohd_config.json5");
-
-        // Remove existing file if it exists
-        if config_path.exists() {
-            fs::remove_file(&config_path).map_err(|e| {
-                Error::BackendError(format!("Failed to remove existing config file: {}", e))
-            })?;
-        }
-
-        // Convert the config to JSON5 string
-        let config_str = json5::to_string(&self.config)
-            .map_err(|e| Error::BackendError(format!("Failed to serialize config: {}", e)))?;
-
-        // Write config to file (File::create already truncates if file exists, but we're being explicit)
-        let mut file = fs::File::create(&config_path)
-            .map_err(|e| Error::BackendError(format!("Failed to create config file: {}", e)))?;
-        file.write_all(config_str.as_bytes())
-            .map_err(|e| Error::BackendError(format!("Failed to write config file: {}", e)))?;
-
-        // Leak the temp_dir to keep it alive for the lifetime of the process
-        Box::leak(temp_dir);
-
-        Ok(config_path)
-    }
-
     /// Renders the Zenoh configuration from the template
     fn render_default_config() -> String {
         let template = ZenohRouterConfigTemplate::default();
@@ -185,11 +165,17 @@ impl ZenohdFacade {
     /// Starts a zenohd process, using std::process::Command is the recommended way as using the
     /// rust crate directly prevents the user from using plugins/adminspace
     pub fn start_router(&mut self) -> Result<()> {
-        let config_path = self.get_config_as_path()?;
+        let zenohd_path = self.zenohd_path.as_ref().ok_or_else(|| {
+            Error::ZenohdError(
+                "Zenohd binary not found. Build with: cargo build --features build_zenoh"
+                    .to_string(),
+            )
+        })?;
 
-        let mut child = Command::new(&self.zenohd_path)
+        let mut child = Command::new(zenohd_path)
+            .env("ZENOH_CONFIG", self.zenohd_config_path.as_os_str())
             .arg("-c")
-            .arg(&config_path)
+            .arg(&self.zenohd_config_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -201,8 +187,6 @@ impl ZenohdFacade {
         // Check if the process is still running
         match child.try_wait() {
             Ok(Some(status)) => {
-                // Clean up config file on failure
-                let _ = fs::remove_file(&config_path);
                 return Err(Error::BackendError(format!(
                     "zenohd exited unexpectedly with status: {}",
                     status
@@ -212,12 +196,10 @@ impl ZenohdFacade {
                 // Process is still running, which is what we want
                 tracing::info!(
                     "Zenoh router started, with config {}",
-                    config_path.to_str().unwrap()
+                    self.zenohd_config_path.to_str().unwrap()
                 );
             }
             Err(e) => {
-                // Clean up config file on failure
-                let _ = fs::remove_file(&config_path);
                 return Err(Error::BackendError(format!(
                     "Failed to check zenohd status: {}",
                     e
@@ -253,7 +235,7 @@ impl ZenohdFacade {
 
 #[cfg(test)]
 mod tests {
-    use std::net::TcpListener;
+    use std::{fs, net::TcpListener};
 
     use super::*;
 
@@ -278,7 +260,7 @@ mod tests {
     fn test_zenohd_facade_creation_with_config() {
         // Create a temporary directory that will be cleaned up automatically
         let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
-        let config_path = temp_dir.path().join("test_zenoh_config.json5");
+        let zenohd_config_path = temp_dir.path().join("test_zenoh_config.json5");
 
         // Store the expected host and port in separate variables
         let expected_host = "127.0.0.1";
@@ -297,10 +279,10 @@ mod tests {
             expected_protocol
         );
 
-        fs::write(&config_path, config_content).expect("Failed to write test config");
+        fs::write(&zenohd_config_path, config_content).expect("Failed to write test config");
 
         // Create facade with the config file
-        let facade = ZenohdFacade::new(Some(config_path));
+        let facade = ZenohdFacade::new(Some(zenohd_config_path.clone()));
         if let Err(e) = &facade {
             eprintln!("Error creating facade: {:?}", e);
         }
@@ -317,7 +299,7 @@ mod tests {
     fn test_zenohd_router_lifecycle() {
         // Create a config with a random port to avoid conflicts
         let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
-        let config_path = temp_dir.path().join("test_zenoh_config.json5");
+        let zenohd_config_path = temp_dir.path().join("test_zenoh_config.json5");
 
         let port = pick_free_tcp_port().unwrap();
         let config_content = format!(
@@ -331,9 +313,10 @@ mod tests {
             port
         );
 
-        fs::write(&config_path, config_content).expect("Failed to write test config");
+        fs::write(&zenohd_config_path, config_content).expect("Failed to write test config");
 
-        let mut facade = ZenohdFacade::new(Some(config_path)).expect("Failed to create facade");
+        let mut facade =
+            ZenohdFacade::new(Some(zenohd_config_path.clone())).expect("Failed to create facade");
 
         // Start the router
         let start_result = facade.start_router();

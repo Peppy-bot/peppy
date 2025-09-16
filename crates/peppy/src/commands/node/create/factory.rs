@@ -27,14 +27,14 @@ pub trait NodeFactory {
         let builder = if full {
             NodeConfigCreator::new(
                 &ConfigTemplateType::FullNode,
-                &ctx.node_name.as_str(),
+                ctx.node_name.as_str(),
                 Some("/"),
                 &ctx.language,
             )
         } else {
             NodeConfigCreator::new(
                 &ConfigTemplateType::SimpleNode,
-                &ctx.node_name.as_str(),
+                ctx.node_name.as_str(),
                 Some("/"),
                 &ctx.language,
             )

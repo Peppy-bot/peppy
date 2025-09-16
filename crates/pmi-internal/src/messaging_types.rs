@@ -11,14 +11,15 @@ use super::adapters::zenoh::ZenohAdapter;
 #[derive(Clone)]
 pub struct MessagingEngineContext {
     pub engine: String,
-    pub config_path: Option<PathBuf>,
+    // Specific to Zenoh
+    pub zenohd_config_path: Option<PathBuf>,
 }
 
 impl MessagingEngineContext {
-    pub fn new(engine: String, config_path: Option<PathBuf>) -> Self {
+    pub fn new(engine: String, zenohd_config_path: Option<PathBuf>) -> Self {
         Self {
             engine,
-            config_path,
+            zenohd_config_path,
         }
     }
 }
@@ -148,9 +149,7 @@ impl Message {
 #[non_exhaustive]
 pub enum Engine {
     #[cfg(feature = "zenoh")]
-    Zenoh {
-        config: Option<PathBuf>,
-    },
+    Zenoh,
     Mock,
 }
 
@@ -158,7 +157,7 @@ impl fmt::Display for Engine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             #[cfg(feature = "zenoh")]
-            Engine::Zenoh { .. } => write!(f, "zenoh"),
+            Engine::Zenoh => write!(f, "zenoh"),
             Engine::Mock => write!(f, "mock"),
         }
     }
@@ -168,9 +167,7 @@ impl Engine {
     pub fn from_context(context: &MessagingEngineContext) -> Result<Self> {
         match context.engine.as_str() {
             #[cfg(feature = "zenoh")]
-            "zenoh" => Ok(Engine::Zenoh {
-                config: context.config_path.clone(),
-            }),
+            "zenoh" => Ok(Engine::Zenoh),
             "mock" => Ok(Engine::Mock),
             _ => Err(Error::UnsupportedEngine),
         }
@@ -188,7 +185,9 @@ impl Messenger {
         let engine = Engine::from_context(&context)?;
         let adapter = match engine {
             #[cfg(feature = "zenoh")]
-            Engine::Zenoh { config } => MessengerAdapter::Zenoh(ZenohAdapter::new(config)?),
+            Engine::Zenoh => {
+                MessengerAdapter::Zenoh(ZenohAdapter::new(context.zenohd_config_path.clone())?)
+            }
             Engine::Mock => MessengerAdapter::Mock(MockAdapter::default()),
         };
         Ok(Self { adapter, context })
@@ -242,7 +241,6 @@ impl MessengerBackend for Messenger {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     #[test]
     fn test_mock_engine() {
@@ -253,10 +251,7 @@ mod tests {
         assert_eq!(result.unwrap(), Engine::Mock);
 
         // Test that any other engine is rejected
-        let context = MessagingEngineContext::new(
-            "rabbitmq".to_string(),
-            Some(PathBuf::from("some/config.json")),
-        );
+        let context = MessagingEngineContext::new("rabbitmq".to_string(), None);
         let result = Engine::from_context(&context);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::UnsupportedEngine));
@@ -265,19 +260,10 @@ mod tests {
     #[cfg(feature = "zenoh")]
     #[test]
     fn test_zenoh_engine() {
-        // Create a temporary directory for test config
-        let temp_dir = tempdir().unwrap();
-        let config_path = temp_dir.path().join("test_config.json5");
-
         // Test that zenoh engine is accepted with config
-        let context = MessagingEngineContext::new("zenoh".to_string(), Some(config_path.clone()));
+        let context = MessagingEngineContext::new("zenoh".to_string(), None);
         let result = Engine::from_context(&context);
         assert!(result.is_ok());
-        assert_eq!(
-            result.unwrap(),
-            Engine::Zenoh {
-                config: Some(config_path)
-            }
-        );
+        assert_eq!(result.unwrap(), Engine::Zenoh {});
     }
 }

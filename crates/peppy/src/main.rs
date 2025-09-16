@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use tracing::error;
 
 use config::consts::AppEnv;
-use peppy::{Command, init, node, serve, service};
+use peppy::{Command, PEPPY_CONFIG_FILE, init, node, serve, service};
 
 #[derive(Parser)]
 #[command(name = "peppy")]
@@ -84,6 +84,10 @@ fn main() {
             strict,
             not_strict,
         } => {
+            let config_path = match config_path {
+                Some(pth) => pth,
+                None => std::env::current_dir().unwrap().join(PEPPY_CONFIG_FILE),
+            };
             let strict = if strict {
                 true
             } else if not_strict {
@@ -96,7 +100,7 @@ fn main() {
             };
             serve::ServeCommand {
                 engine,
-                config_path,
+                root_config_path: config_path,
                 strict,
             }
             .execute()

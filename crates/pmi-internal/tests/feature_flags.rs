@@ -11,7 +11,7 @@ fn test_with_zenoh_feature() {
     // Verify Messenger can be created with Zenoh backend
     let zenoh_context = MessagingEngineContext {
         engine: "zenoh".to_string(),
-        config_path: None,
+        zenohd_config_path: None,
     };
     let _zenoh_messenger =
         Messenger::new(zenoh_context).expect("Should create Messenger with Zenoh");
@@ -19,7 +19,7 @@ fn test_with_zenoh_feature() {
     // Verify Mock backend is also available even with zenoh feature
     let mock_context = MessagingEngineContext {
         engine: "mock".to_string(),
-        config_path: None,
+        zenohd_config_path: None,
     };
     let _mock_messenger = Messenger::new(mock_context).expect("Should create Messenger with Mock");
 

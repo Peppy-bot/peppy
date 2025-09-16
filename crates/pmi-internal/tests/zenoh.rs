@@ -1,63 +1,48 @@
 #[cfg(feature = "zenoh")]
 mod zenoh_tests {
+    use std::{fs, net::TcpListener};
+
     use pmi::MessagingEngineContext;
     use pmi::{Message, Messenger, MessengerBackend, PublisherQoS, SubscriberQoS};
 
+    fn pick_free_tcp_port() -> Option<u16> {
+        (0..10).find_map(|_| {
+            TcpListener::bind(("127.0.0.1", 0)).ok().and_then(|sock| {
+                let port = sock.local_addr().ok()?.port();
+                // Drop socket to free port for messaging router
+                drop(sock);
+                Some(port)
+            })
+        })
+    }
+
     /// Helper function to create a configured messenger with a unique port
     async fn create_test_messenger() -> (Messenger, tempfile::TempDir) {
-        use std::sync::atomic::{AtomicU32, Ordering};
+        let port = pick_free_tcp_port().unwrap();
 
-        // Use atomic counter for unique port allocation across parallel tests
-        static PORT_COUNTER: AtomicU32 = AtomicU32::new(0);
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let zenohd_config_path = temp_dir.path().join("test_zenoh_config.json5");
 
-        // Try up to 10 times to find an available port
-        for _ in 0..10 {
-            let counter = PORT_COUNTER.fetch_add(1, Ordering::SeqCst);
-
-            // Use a wider port range to reduce collisions
-            // Each test gets a port spaced by 10 to avoid conflicts
-            let port = 20000 + (counter * 10);
-
-            // Ensure we don't exceed valid port range
-            if port > 60000 {
-                PORT_COUNTER.store(0, Ordering::SeqCst);
-                continue;
-            }
-
-            let config_content = format!(
-                r#"{{
+        let config_content = format!(
+            r#"{{
                     "listen": {{
                         "endpoints": {{
-                            "router": ["tcp/127.0.0.1:{}"]
+                            "router": ["tcp/127.0.0.1:{port}"]
                         }}
                     }}
-                }}"#,
-                port
-            );
+                }}"#
+        );
 
-            // Create a unique temporary directory for each test
-            let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
-
-            // Use a unique config filename within the temp directory
-            let config_filename = format!("test_zenoh_config_{}.json5", port);
-            let config_path = temp_dir.path().join(config_filename);
-            std::fs::write(&config_path, config_content).expect("Failed to write test config");
-
-            let context = MessagingEngineContext::new("zenoh".to_string(), Some(config_path));
-            match Messenger::new(context) {
-                Ok(messenger) => return (messenger, temp_dir),
-                Err(_) => {
-                    // Port might be in use, try next one
-                    continue;
-                }
-            }
-        }
-
-        panic!("Failed to create test messenger after 10 attempts");
+        fs::write(&zenohd_config_path, config_content).unwrap();
+        let context = MessagingEngineContext::new("zenoh".to_string(), Some(zenohd_config_path));
+        let messenger = Messenger::new(context).unwrap();
+        (messenger, temp_dir)
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_publish_before_start_session_fails() {
+        // TODO: How can I make sure that the message is being sent through the zenohd instance started in this test
+        // and not another test since each test runs in parallel and start their own zenohd router?
         let (mut messenger, _temp_dir) = create_test_messenger().await;
 
         // Start the router but not the session
