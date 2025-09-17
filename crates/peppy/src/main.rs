@@ -89,7 +89,7 @@ fn main() {
         } => {
             let config_path = match config_path {
                 Some(pth) => pth,
-                None => std::env::current_dir().unwrap().join(PEPPY_CONFIG_FILE),
+                None => app_ctx.root_dir.join(PEPPY_CONFIG_FILE),
             };
             let strict = if strict {
                 true

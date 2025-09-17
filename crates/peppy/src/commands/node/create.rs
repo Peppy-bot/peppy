@@ -3,14 +3,14 @@ mod python;
 mod rust;
 
 use super::types::NodeName;
-use crate::{Error, Result};
+use crate::{AppContext, Error, Result};
 use config::Language;
 use factory::{NodeContext, create_factory};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 pub struct NodeBuilder {
-    to_dir: Option<PathBuf>,
+    to_dir: PathBuf,
     node_name: NodeName,
     lang: Language,
     description: Option<String>,
@@ -18,9 +18,9 @@ pub struct NodeBuilder {
 }
 
 impl NodeBuilder {
-    pub fn new(node_name: NodeName) -> Self {
+    pub fn new(ctx: &AppContext, node_name: NodeName) -> Self {
         Self {
-            to_dir: None,
+            to_dir: ctx.root_dir.clone(),
             node_name,
             lang: Language::Rust,
             description: None,
@@ -28,8 +28,10 @@ impl NodeBuilder {
         }
     }
 
-    pub fn to_dir(mut self, dir: Option<PathBuf>) -> Self {
-        self.to_dir = dir;
+    /// If to_dir is provided, this is the path used for NodeBuilder, otherwise defaults to the one
+    /// provided by AppContext
+    pub fn to_dir(mut self, dir: impl AsRef<Path>) -> Self {
+        self.to_dir = PathBuf::from(dir.as_ref());
         self
     }
 
@@ -50,7 +52,7 @@ impl NodeBuilder {
 
     pub fn build(self) -> Result<()> {
         create(
-            self.to_dir.as_deref(),
+            self.to_dir,
             self.node_name,
             self.lang,
             self.description.as_deref(),
@@ -62,16 +64,13 @@ impl NodeBuilder {
 
 /// Creates a new node and updates the peppy.json5 configuration file where the command is run
 pub fn create(
-    to_dir: Option<&Path>,
+    to_dir: impl AsRef<Path>,
     node_name: NodeName,
     language: Language,
     description: Option<&str>,
     full: bool,
 ) -> Result<()> {
-    let node_path = match to_dir {
-        Some(dir) => dir.join(node_name.as_str()),
-        None => std::env::current_dir()?.join(node_name.as_str()),
-    };
+    let node_path = to_dir.as_ref().join(node_name.as_str());
 
     if node_path.exists() {
         return Err(Error::FolderAlreadyExist(node_path.display().to_string()));
@@ -138,7 +137,7 @@ mod tests {
 
         // Try to create a node with the same name
         let result = create(
-            Some(temp_dir.path()),
+            temp_dir.path(),
             NodeName::new(node_name).unwrap(),
             Language::Python,
             Some("Test node"),

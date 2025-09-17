@@ -10,7 +10,7 @@ fn test_create_command_default_directory() {
 
     let node_name = "test_node";
     let result = create::create(
-        Some(temp_dir.path()),
+        temp_dir.path(),
         NodeName::new(node_name).unwrap(),
         Language::Rust,
         None,
@@ -36,7 +36,7 @@ fn test_create_command_with_to_dir() {
     let node_name = "test_node";
     let target_path = temp_dir.path().join(node_name);
     let result = create::create(
-        Some(temp_dir.path()),
+        temp_dir.path(),
         NodeName::new(node_name).unwrap(),
         Language::Rust,
         None,
