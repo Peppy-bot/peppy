@@ -1,7 +1,7 @@
 use super::{ServeAsyncCommand, ServeFuture};
 use crate::{AppContext, AppEvent, Result};
 use config::{Interfaces, Language};
-use peppycl::generate_interfaces_code;
+use generator::generate_interfaces_code;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 

@@ -1,0 +1,13 @@
+[package]
+name = "generator"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+pmi = { path = "../pmi-internal" }
+config = { path = "../config-internal" }
+quote = "1.0"
+proc-macro2 = "1.0"
+prettyplease = "0.2"
+syn = { version = "2.0", features = ["full"] }

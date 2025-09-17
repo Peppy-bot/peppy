@@ -18,16 +18,6 @@ impl RustGenerator {
 
 impl InterfaceGenerator for RustGenerator {
     fn gen_subscribed_topics(&self, topics: &[SubscribedTopic]) -> String {
-        // Generate a `TokenStream` representing Rust code
-        let fn_name = Ident::new("hello", proc_macro2::Span::call_site());
-        let generated: TokenStream = quote! {
-            use pmi::{MessagingEngineContext, Messenger};
-
-            pub fn #fn_name() {
-                println!("Hello, world!");
-            }
-        };
-
         // Placeholder: produce a simple Rust fn per topic name for now
         let fns: Vec<TokenStream> = topics
             .iter()
@@ -35,16 +25,23 @@ impl InterfaceGenerator for RustGenerator {
             .map(|(i, _t)| {
                 let fn_name = Ident::new(&format!("subscribed_topic_{}", i), Span::call_site());
                 quote! {
-                    use pmi::{MessagingEngineContext, Messenger};
-
                     pub async fn #fn_name() {
                         todo!("await for message with PMI")
                     }
                 }
             })
             .collect();
-        let tokens: TokenStream = quote! { #( #fns )* };
-        tokens.to_string()
+        let tokens: TokenStream = quote! {
+            use pmi::{MessagingEngineContext, Messenger};
+
+            impl Topics {
+                #( #fns )*
+            }
+        };
+        let file =
+            syn::parse2::<syn::File>(tokens).expect("failed to parse generated subscribed topics");
+
+        prettyplease::unparse(&file)
     }
 
     fn gen_subscribed_services(&self, services: &[SubscribedService]) -> String {
@@ -139,5 +136,6 @@ mod tests {
         ];
         let generator = RustGenerator::new();
         let res = generator.gen_subscribed_topics(&topics);
+        dbg!(res);
     }
 }
