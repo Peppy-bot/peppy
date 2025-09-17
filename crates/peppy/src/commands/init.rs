@@ -4,7 +4,7 @@ use std::{
 };
 
 use super::Command;
-use crate::{Error, Result};
+use crate::{AppContext, Error, Result};
 use config::{ConfigTemplateType, NodeConfigCreator};
 use tracing::info;
 
@@ -14,7 +14,7 @@ pub struct InitCommand {
 }
 
 impl Command for InitCommand {
-    fn execute(self) -> Result<()> {
+    fn execute(self, _ctx: &AppContext) -> Result<()> {
         let current_dir = if let Some(in_dir) = self.in_dir {
             in_dir
         } else {

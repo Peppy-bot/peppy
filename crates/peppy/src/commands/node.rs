@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use tracing::info;
 
 use super::{Command, Error as CommandError};
+use crate::AppContext;
 
 use create::NodeBuilder;
 
@@ -50,7 +51,7 @@ pub struct NodeCommand {
 }
 
 impl Command for NodeCommand {
-    fn execute(self) -> Result<(), CommandError> {
+    fn execute(self, _ctx: &AppContext) -> Result<(), CommandError> {
         match self.command {
             NodeCommands::Create {
                 to_dir,
