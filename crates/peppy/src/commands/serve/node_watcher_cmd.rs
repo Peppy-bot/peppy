@@ -1,13 +1,23 @@
 use super::{ServeAsyncCommand, ServeFuture};
-use crate::error::Result;
+use crate::{AppContext, AppEvent, Result};
 use config::NodeConfigWatcher;
+use tokio::sync::broadcast;
 
 pub struct NodeWatcher {
-    pub strict: bool,
+    strict: bool,
+    event_sender: broadcast::Sender<AppEvent>,
 }
 
 impl NodeWatcher {
-    async fn watch_nodes(_strict: bool) -> Result<()> {
+    pub fn new(strict: bool, ctx: &AppContext) -> Self {
+        let event_sender = ctx.event_sender();
+        Self {
+            strict,
+            event_sender,
+        }
+    }
+
+    async fn watch_nodes(_strict: bool, _event_sender: broadcast::Sender<AppEvent>) -> Result<()> {
         let root_dir = std::env::current_dir().expect("Failed to get current directory");
         let _node_config_watcher = NodeConfigWatcher::new(root_dir);
 
@@ -20,6 +30,7 @@ impl NodeWatcher {
 impl ServeAsyncCommand for NodeWatcher {
     fn run(&self) -> ServeFuture {
         let strict = self.strict;
-        Box::pin(async move { NodeWatcher::watch_nodes(strict).await })
+        let event_sender = self.event_sender.clone();
+        Box::pin(async move { NodeWatcher::watch_nodes(strict, event_sender).await })
     }
 }

@@ -1,6 +1,7 @@
 use clap::Subcommand;
 
 use super::{Command, Error as CommandError};
+use crate::AppContext;
 
 #[derive(Subcommand)]
 pub enum ServiceCommands {
@@ -13,7 +14,7 @@ pub struct ServiceCommand {
 }
 
 impl Command for ServiceCommand {
-    fn execute(self) -> Result<(), CommandError> {
+    fn execute(self, _ctx: &AppContext) -> Result<(), CommandError> {
         match self.command {
             ServiceCommands::Deploy => {
                 todo!(

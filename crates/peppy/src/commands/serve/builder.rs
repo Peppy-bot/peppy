@@ -4,7 +4,7 @@ use super::CompositeCommand;
 use super::Serve;
 use super::node_watcher_cmd::NodeWatcher;
 use super::peppygen_cmd::InterfacesGenerator;
-use crate::Result;
+use crate::{AppContext, Result};
 use config::NodeConfig;
 use config::NodeConfigParser;
 use pmi::{MessagingEngineContext, Messenger};
@@ -29,10 +29,8 @@ impl ServeCommandBuilder {
     /// The node_watcher starts from the root node and watches over the files changes in its directory and its children directories.
     /// When a change is detected on one of the peppy.json5 file, it sends a signal to the rest of the program that the configuration of
     /// a node has been updated
-    pub fn with_node_watcher(mut self) -> Self {
-        let watcher = Box::new(NodeWatcher {
-            strict: self.strict,
-        });
+    pub fn with_node_watcher(mut self, ctx: &AppContext) -> Self {
+        let watcher = Box::new(NodeWatcher::new(self.strict, ctx));
         self.composite_command = self.composite_command.add_async_command(watcher);
         self
     }
