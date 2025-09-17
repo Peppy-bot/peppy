@@ -51,7 +51,7 @@ pub struct NodeCommand {
 }
 
 impl Command for NodeCommand {
-    fn execute(self, _ctx: &AppContext) -> Result<(), CommandError> {
+    fn execute(self, ctx: &AppContext) -> Result<(), CommandError> {
         match self.command {
             NodeCommands::Create {
                 to_dir,
@@ -59,12 +59,18 @@ impl Command for NodeCommand {
                 node_name,
                 description,
                 full,
-            } => NodeBuilder::new(node_name)
-                .to_dir(to_dir)
-                .lang(lang)
-                .description(description)
-                .full(full)
-                .build(),
+            } => {
+                let mut node_builder = NodeBuilder::new(ctx, node_name)
+                    .lang(lang)
+                    .description(description)
+                    .full(full);
+
+                if let Some(dir) = to_dir {
+                    node_builder = node_builder.to_dir(dir);
+                }
+
+                node_builder.build()
+            }
             NodeCommands::Run {
                 node_name,
                 configuration_file,

@@ -16,18 +16,10 @@ pub async fn watch_files(
     from_dir: impl AsRef<Path>,
 ) -> Result<JoinHandle<Result<()>>> {
     let from_dir_input = from_dir.as_ref().to_path_buf();
-    let from_dir_abs = if from_dir_input.is_absolute() {
-        from_dir_input.clone()
-    } else {
-        match std::env::current_dir() {
-            Ok(cwd) => cwd.join(&from_dir_input),
-            Err(_) => from_dir_input.clone(),
-        }
-    };
-    let from_dir_canon = std::fs::canonicalize(&from_dir_abs).unwrap_or(from_dir_abs.clone());
+    let from_dir_canon = std::fs::canonicalize(&from_dir_input)?;
 
     // Track existing configs at startup to suppress spurious Create events
-    let mut known_configs: HashSet<PathBuf> = find_peppy_nodes_from_dir(&from_dir_abs)
+    let mut known_configs: HashSet<PathBuf> = find_peppy_nodes_from_dir(&from_dir_canon)
         .into_iter()
         .collect();
 
@@ -42,7 +34,7 @@ pub async fn watch_files(
         .map_err(|e| Error::NodeWatcher(format!("Failed to create file watcher: {}", e)))?;
 
     watcher
-        .watch(&from_dir_abs, RecursiveMode::Recursive)
+        .watch(&from_dir_canon, RecursiveMode::Recursive)
         .map_err(|e| Error::NodeWatcher(format!("Failed to watch directory: {}", e)))?;
 
     // Spawn the processing loop and return immediately with a handle.
@@ -56,14 +48,12 @@ pub async fn watch_files(
                     continue;
                 }
 
-                let path = normalize_event_path_to_base(path, &from_dir_abs, &from_dir_canon);
-
                 // Normalize platform-specific variants into our 3 high-level events
                 let detection_event = match event.kind {
                     // File created
                     notify::EventKind::Create(_) => {
                         // Ignore create notifications for files that already existed before watching
-                        if known_configs.contains(&path) {
+                        if known_configs.contains(path) {
                             None
                         } else {
                             known_configs.insert(path.clone());
@@ -72,11 +62,11 @@ pub async fn watch_files(
                     }
                     // Rename events: treat rename-from as deleted and rename-to as created
                     notify::EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
-                        known_configs.remove(&path);
+                        known_configs.remove(path);
                         Some(NodeConfigEvent::Deleted(path.clone()))
                     }
                     notify::EventKind::Modify(ModifyKind::Name(RenameMode::To)) => {
-                        if !known_configs.contains(&path) {
+                        if !known_configs.contains(path) {
                             known_configs.insert(path.clone());
                             Some(NodeConfigEvent::Created(path.clone()))
                         } else {
@@ -89,7 +79,7 @@ pub async fn watch_files(
                         if exists {
                             Some(NodeConfigEvent::Modified(path.clone()))
                         } else {
-                            known_configs.remove(&path);
+                            known_configs.remove(path);
                             Some(NodeConfigEvent::Deleted(path.clone()))
                         }
                     }
@@ -99,13 +89,13 @@ pub async fn watch_files(
                         if exists {
                             Some(NodeConfigEvent::Modified(path.clone()))
                         } else {
-                            known_configs.remove(&path);
+                            known_configs.remove(path);
                             Some(NodeConfigEvent::Deleted(path.clone()))
                         }
                     }
                     // File removed
                     notify::EventKind::Remove(_) => {
-                        known_configs.remove(&path);
+                        known_configs.remove(path);
                         Some(NodeConfigEvent::Deleted(path.clone()))
                     }
                     _ => None,
@@ -123,29 +113,6 @@ pub async fn watch_files(
     });
 
     Ok(handle)
-}
-
-#[inline]
-fn normalize_event_path_to_base(path: &Path, base: &Path, base_canon: &Path) -> PathBuf {
-    // Try to canonicalize the file path. For deleted paths, fall back to canonicalizing the parent
-    let canonicalized = match std::fs::canonicalize(path) {
-        Ok(p) => p,
-        Err(_) => match (path.parent(), path.file_name()) {
-            (Some(parent), Some(name)) => match std::fs::canonicalize(parent) {
-                Ok(parent_canon) => parent_canon.join(name),
-                Err(_) => path.to_path_buf(),
-            },
-            _ => path.to_path_buf(),
-        },
-    };
-
-    // If the canonicalized path is under the canonicalized base, remap it to the original base
-    if let Ok(rel) = canonicalized.strip_prefix(base_canon) {
-        return base.join(rel);
-    }
-
-    // Otherwise, return the original path unchanged
-    path.to_path_buf()
 }
 
 #[cfg(test)]

@@ -1,22 +1,22 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use config::NodeIndexState;
 use tokio::sync::broadcast;
 
-const DEFAULT_CHANNEL_CAPACITY: usize = 64;
+pub const DEFAULT_CHANNEL_CAPACITY: usize = 64;
 
 pub struct AppContext {
     broadcaster: broadcast::Sender<AppEvent>,
+    pub root_dir: PathBuf,
 }
 
 impl AppContext {
-    pub fn new(channel_capacity: usize) -> Self {
+    pub fn new(channel_capacity: usize, root_dir: impl AsRef<Path>) -> Self {
         let (broadcaster, _) = broadcast::channel(channel_capacity);
-        Self { broadcaster }
-    }
-
-    pub fn with_default_capacity() -> Self {
-        Self::new(DEFAULT_CHANNEL_CAPACITY)
+        Self {
+            broadcaster,
+            root_dir: PathBuf::from(root_dir.as_ref()),
+        }
     }
 
     pub fn event_sender(&self) -> broadcast::Sender<AppEvent> {
@@ -30,7 +30,8 @@ impl AppContext {
 
 impl Default for AppContext {
     fn default() -> Self {
-        Self::with_default_capacity()
+        let root_dir = std::env::current_dir().expect("Failed to get current directory");
+        Self::new(DEFAULT_CHANNEL_CAPACITY, root_dir)
     }
 }
 

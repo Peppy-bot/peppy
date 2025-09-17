@@ -14,11 +14,11 @@ pub struct InitCommand {
 }
 
 impl Command for InitCommand {
-    fn execute(self, _ctx: &AppContext) -> Result<()> {
+    fn execute(self, ctx: &AppContext) -> Result<()> {
         let current_dir = if let Some(in_dir) = self.in_dir {
             in_dir
         } else {
-            std::env::current_dir()?
+            ctx.root_dir.clone()
         };
         init_root_node(&current_dir, &self.node_name)
             .map_err(|e| crate::Error::ExecutionFailed(e.to_string()))?;
@@ -30,7 +30,7 @@ pub fn init_root_node(path: impl AsRef<Path>, name: &str) -> Result<PathBuf> {
     let path = path.as_ref();
     // Create the directory if it doesn't exist
     fs::create_dir_all(path)?;
-    let peppy_yaml_path = path.join("peppy.json5");
+    let peppy_config_path = path.join("peppy.json5");
 
     NodeConfigCreator::new(
         &ConfigTemplateType::RootNode,
@@ -38,11 +38,11 @@ pub fn init_root_node(path: impl AsRef<Path>, name: &str) -> Result<PathBuf> {
         Some("/"),
         &config::Language::Rust,
     )
-    .write_to(&peppy_yaml_path)
+    .write_to(&peppy_config_path)
     .map_err(Error::PeppyConfig)?;
 
-    info!("Created root node at {}", peppy_yaml_path.display());
-    Ok(peppy_yaml_path)
+    info!("Created root node at {}", peppy_config_path.display());
+    Ok(peppy_config_path)
 }
 
 #[cfg(test)]
