@@ -983,6 +983,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "generator"
+version = "0.0.1"
+dependencies = [
+ "config",
+ "pmi",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1915,6 +1927,7 @@ dependencies = [
  "clap",
  "config",
  "derive_more",
+ "generator",
  "ipnet",
  "netdev",
  "peppycl",
@@ -1942,8 +1955,6 @@ dependencies = [
  "bytes",
  "config",
  "pmi",
- "proc-macro2",
- "quote",
  "tempfile",
  "thiserror 2.0.16",
  "tokio",
@@ -2186,6 +2197,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
  "zerocopy",
+]
+
+[[package]]
+name = "prettyplease"
+version = "0.2.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.106",
 ]
 
 [[package]]
