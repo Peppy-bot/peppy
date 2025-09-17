@@ -104,8 +104,8 @@ impl Command for ServeCommand {
         let executor = ServeCommandBuilder::new(self.root_config_path, self.strict)?
             .with_node_watcher(ctx)
             .with_messaging_router(self.engine)
-            .with_peppygen()
-            .with_root_node()
+            .with_peppygen(ctx)
+            .with_root_node_instance()
             .build();
 
         if let Err(e) = executor.execute() {
