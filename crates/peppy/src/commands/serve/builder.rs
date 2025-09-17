@@ -12,7 +12,7 @@ use pmi::{MessagingEngineContext, Messenger};
 pub struct ServeCommandBuilder {
     composite_command: CompositeCommand,
     node_config: NodeConfig,
-    strict: bool,
+    strict: bool, // TODO: Enable strict mode
 }
 
 impl ServeCommandBuilder {
@@ -30,7 +30,7 @@ impl ServeCommandBuilder {
     /// When a change is detected on one of the peppy.json5 file, it sends a signal to the rest of the program that the configuration of
     /// a node has been updated
     pub fn with_node_watcher(mut self, ctx: &AppContext) -> Self {
-        let watcher = Box::new(NodeWatcher::new(self.strict, ctx));
+        let watcher = Box::new(NodeWatcher::new(ctx));
         self.composite_command = self.composite_command.add_async_command(watcher);
         self
     }
@@ -50,16 +50,20 @@ impl ServeCommandBuilder {
     /// peppygen does not depend on `node_watcher`, it's only one of the components that can receive a signal
     /// for code generation. Another process that can do this is `peppy node sync <path_to_config>` when nodes
     /// are outside the root_node folder and its children.
-    pub fn with_peppygen(mut self) -> Self {
+    pub fn with_peppygen(mut self, ctx: &AppContext) -> Self {
         let generator = Box::new(
-            self.create_interfaces_generator()
-                .expect("Failed to create peppygen"),
+            InterfacesGenerator::new(
+                ctx,
+                &self.node_config.interfaces,
+                &self.node_config.manifest.language,
+            )
+            .expect("Failed to create peppygen"),
         );
         self.composite_command = self.composite_command.add_async_command(generator);
         self
     }
 
-    pub fn with_root_node(mut self) -> Self {
+    pub fn with_root_node_instance(mut self) -> Self {
         // TODO start a peppy root node using the `peppycl` crate based on the config file present in the same folder where the `serve` command is run
         // The root_node starts after the messaging_router
         self
@@ -67,12 +71,5 @@ impl ServeCommandBuilder {
 
     pub fn build(self) -> Serve {
         Serve::new(self.composite_command)
-    }
-
-    fn create_interfaces_generator(&self) -> Result<InterfacesGenerator> {
-        InterfacesGenerator::new(
-            &self.node_config.interfaces,
-            &self.node_config.manifest.language,
-        )
     }
 }

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use config::NodeIndexState;
 use tokio::sync::broadcast;
 
 const DEFAULT_CHANNEL_CAPACITY: usize = 64;
@@ -36,7 +37,7 @@ impl Default for AppContext {
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum AppEvent {
-    NodeConfigChanged(PathBuf),
+    NodeConfigChanged(NodeIndexState),
     Shutdown,
     Custom {
         kind: String,
