@@ -40,9 +40,90 @@ mod zenoh_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_session_fails_with_wrong_router_port() {
+        let (mut messenger, _temp_dir) = create_test_messenger().await;
+
+        let config_path = messenger
+            .context
+            .zenohd_config_path
+            .clone()
+            .expect("Zenoh config path should be present");
+
+        let config_str = fs::read_to_string(&config_path).expect("Failed to read config file");
+        let parsed_config: serde_json::Value =
+            serde_json5::from_str(&config_str).expect("Failed to parse config");
+        let original_endpoint = parsed_config["listen"]["endpoints"]["router"][0]
+            .as_str()
+            .expect("Router endpoint missing from config");
+
+        let (protocol, host_port) = original_endpoint
+            .split_once('/')
+            .expect("Invalid endpoint format");
+        let (host, original_port) = host_port.split_once(':').expect("Invalid host:port format");
+        let original_port: u16 = original_port
+            .parse()
+            .expect("Failed to parse original port");
+
+        let wrong_port = loop {
+            let candidate = pick_free_tcp_port().expect("Failed to find available port");
+            if candidate != original_port {
+                break candidate;
+            }
+        };
+
+        let updated_config = format!(
+            r#"{{
+                    "listen": {{
+                        "endpoints": {{
+                            "router": ["{protocol}/{host}:{wrong_port}"]
+                        }}
+                    }}
+                }}"#
+        );
+        fs::write(&config_path, updated_config).expect("Failed to overwrite config");
+
+        messenger
+            .start_router()
+            .await
+            .expect("Router should start with updated config");
+
+        let session_err = messenger
+            .start_session()
+            .await
+            .expect_err("Session start should fail when ports mismatch");
+        assert!(
+            matches!(
+                session_err,
+                pmi::PeppyMessagingInterfaceError::BackendError(_)
+            ),
+            "Expected backend error when ports mismatch, got: {:?}",
+            session_err
+        );
+
+        let publish_err = messenger
+            .publish(
+                Message::new("test/topic", b"port mismatch should fail"),
+                PublisherQoS::Standard,
+            )
+            .await
+            .expect_err("Publish should fail without an active session");
+        assert!(
+            matches!(
+                publish_err,
+                pmi::PeppyMessagingInterfaceError::MessagingSessionError(_)
+            ),
+            "Expected messaging session error without session, got: {:?}",
+            publish_err
+        );
+
+        messenger
+            .stop_router()
+            .await
+            .expect("Failed to stop router");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_publish_before_start_session_fails() {
-        // TODO: How can I make sure that the message is being sent through the zenohd instance started in this test
-        // and not another test since each test runs in parallel and start their own zenohd router?
         let (mut messenger, _temp_dir) = create_test_messenger().await;
 
         // Start the router but not the session
