@@ -26,10 +26,10 @@
   // `deployments` adopts a "value specification syntax" in opposition to the "declarative syntax" present in the other config files
   deployments: [
     {
-      // This is an example of pulling the `uvc_camera` node from nodes.peppy.bot and instanciating it with user defined parameters
-      // Nodes can also be directly pulled from git if given a path like: `https://github.com/Peppy/uvc_camera.git`. In that case `tag` will be used as the git tag
+      // This is an example of pulling the `uvc_camera` node from github and instanciating it with user defined parameters. In the future we might be able to pull them from nodes.peppy.bot
       name: "uvc_camera",
-      tag: "0.1.0",
+      source: "https://github.com/Peppy/uvc_camera.git", // Can be a github repo, nodes.peppy.bot or "local"
+      tag: "0.1.0", // In that example the tag is a git tag
       instances: [
         {
           // namespace is implicitely prefixed with `/dev` in dev environment (running outside `systemd`) and `/prod` when installed with `peppy service deploy` as well as with the root node name (so that other root nodes in the same network can easily address this one).

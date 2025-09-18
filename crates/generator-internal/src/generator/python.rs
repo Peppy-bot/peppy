@@ -1,3 +1,5 @@
+use crate::generator::types::SubscriberMap;
+
 use super::builder::InterfaceGenerator;
 use config::{
     ExposedAction, ExposedService, ExposedTopic, SubscribedAction, SubscribedService,
@@ -14,7 +16,7 @@ impl PythonGenerator {
 }
 
 impl InterfaceGenerator for PythonGenerator {
-    fn gen_subscribed_topics(&self, topics: &[SubscribedTopic]) -> String {
+    fn gen_subscribed_topics(&self, topics: &[SubscriberMap<SubscribedTopic>]) -> String {
         let mut out = String::new();
         for (i, _t) in topics.iter().enumerate() {
             out.push_str(&format!("def subscribed_topic_{}():\n    pass\n", i));
@@ -22,7 +24,7 @@ impl InterfaceGenerator for PythonGenerator {
         out
     }
 
-    fn gen_subscribed_services(&self, services: &[SubscribedService]) -> String {
+    fn gen_subscribed_services(&self, services: &[SubscriberMap<SubscribedService>]) -> String {
         let mut out = String::new();
         for (i, _s) in services.iter().enumerate() {
             out.push_str(&format!("def subscribed_service_{}():\n    pass\n", i));
@@ -30,7 +32,7 @@ impl InterfaceGenerator for PythonGenerator {
         out
     }
 
-    fn gen_subscribed_actions(&self, actions: &[SubscribedAction]) -> String {
+    fn gen_subscribed_actions(&self, actions: &[SubscriberMap<SubscribedAction>]) -> String {
         let mut out = String::new();
         for (i, _a) in actions.iter().enumerate() {
             out.push_str(&format!("def subscribed_action_{}():\n    pass\n", i));
