@@ -24,12 +24,12 @@ pub type NodeIndexState = HashMap<PathBuf, core::result::Result<NodeConfig, Pars
 /// - Create with `new(dir)`.
 /// - Subscribe to state updates via `subscribe()`.
 /// - Start background watching with `start().await` (returns a handle you can await/abort).
-pub struct NodeConfigWatcher {
+pub struct FSNodeConfigWatcher {
     from_dir: PathBuf,
     state_tx: watch::Sender<NodeIndexState>,
 }
 
-impl NodeConfigWatcher {
+impl FSNodeConfigWatcher {
     /// Initialize the watcher with the initial aggregated state.
     pub fn new(from_dir: impl AsRef<Path>) -> Result<Self> {
         let from_dir = from_dir.as_ref().to_path_buf();
@@ -186,7 +186,7 @@ mod tests {
         fs::create_dir(&nested_dir).unwrap();
         let nested = write_config(&nested_dir, "nested_node", "/nested");
 
-        let watcher = NodeConfigWatcher::new(temp.path()).expect("watcher init");
+        let watcher = FSNodeConfigWatcher::new(temp.path()).expect("watcher init");
         let rx = watcher.subscribe();
         let state = rx.borrow().clone();
 
@@ -215,7 +215,7 @@ mod tests {
         )
         .unwrap();
 
-        let watcher = NodeConfigWatcher::new(temp.path()).expect("watcher init");
+        let watcher = FSNodeConfigWatcher::new(temp.path()).expect("watcher init");
         let rx = watcher.subscribe();
         let state = rx.borrow().clone();
         assert_eq!(state.len(), 1);
@@ -228,7 +228,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let config_path = write_config(temp.path(), "ok", "/ns");
 
-        let watcher = NodeConfigWatcher::new(temp.path()).expect("watcher init");
+        let watcher = FSNodeConfigWatcher::new(temp.path()).expect("watcher init");
         let mut rx = watcher.subscribe();
         assert_eq!(
             rx.borrow()[&config_path]
@@ -262,7 +262,7 @@ mod tests {
     #[tokio::test]
     async fn test_state_updates_propagate_to_multiple_subscribers() {
         let temp = TempDir::new().unwrap();
-        let watcher = NodeConfigWatcher::new(temp.path()).expect("watcher init");
+        let watcher = FSNodeConfigWatcher::new(temp.path()).expect("watcher init");
 
         let mut rx1 = watcher.subscribe();
         let mut rx2 = watcher.subscribe();
@@ -346,7 +346,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let config_path = write_config(temp.path(), "first", "/ns");
 
-        let watcher = NodeConfigWatcher::new(temp.path()).expect("watcher init");
+        let watcher = FSNodeConfigWatcher::new(temp.path()).expect("watcher init");
         let mut rx = watcher.subscribe();
 
         // Initial state reflects the created file

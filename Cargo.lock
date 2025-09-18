@@ -992,6 +992,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.106",
+ "thiserror 2.0.16",
 ]
 
 [[package]]

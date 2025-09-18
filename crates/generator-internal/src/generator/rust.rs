@@ -1,6 +1,7 @@
+use super::types::SubscriberMap;
 use config::{
-    ExposedAction, ExposedService, ExposedTopic, SubscribedAction, SubscribedService,
-    SubscribedTopic,
+    ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
+    SubscribedService, SubscribedTopic,
 };
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
@@ -17,7 +18,7 @@ impl RustGenerator {
 }
 
 impl InterfaceGenerator for RustGenerator {
-    fn gen_subscribed_topics(&self, topics: &[SubscribedTopic]) -> String {
+    fn gen_subscribed_topics(&self, topics: &[SubscriberMap<SubscribedTopic>]) -> String {
         // Placeholder: produce a simple Rust fn per topic name for now
         let fns: Vec<TokenStream> = topics
             .iter()
@@ -44,7 +45,7 @@ impl InterfaceGenerator for RustGenerator {
         prettyplease::unparse(&file)
     }
 
-    fn gen_subscribed_services(&self, services: &[SubscribedService]) -> String {
+    fn gen_subscribed_services(&self, services: &[SubscriberMap<SubscribedService>]) -> String {
         let fns: Vec<TokenStream> = services
             .iter()
             .enumerate()
@@ -57,7 +58,7 @@ impl InterfaceGenerator for RustGenerator {
         tokens.to_string()
     }
 
-    fn gen_subscribed_actions(&self, actions: &[SubscribedAction]) -> String {
+    fn gen_subscribed_actions(&self, actions: &[SubscriberMap<SubscribedAction>]) -> String {
         let fns: Vec<TokenStream> = actions
             .iter()
             .enumerate()
@@ -117,25 +118,38 @@ mod tests {
     #[test]
     fn test_gen_subscribed_topics() {
         let topics = [
-            SubscribedTopic {
-                node: String::from("node_alpha"),
-                name: String::from("topic_alpha"),
-                tag: String::from("alpha"),
-                namespace: String::from("foo"),
-                callback: String::from("on_topic_alpha"),
-                optional: Some(false),
-            },
-            SubscribedTopic {
-                node: String::from("node_beta"),
-                name: String::from("topic_beta"),
-                tag: String::from("beta"),
-                namespace: String::from("bar"),
-                callback: String::from("on_topic_beta"),
-                optional: Some(true),
-            },
+            SubscriberMap::new(
+                SubscribedTopic {
+                    node: String::from("node_alpha"),
+                    name: String::from("topic_alpha"),
+                    tag: String::from("alpha"),
+                    namespace: String::from("foo"),
+                    callback: String::from("on_topic_alpha"),
+                    optional: Some(false),
+                },
+                MessageFormat::default(),
+            ),
+            SubscriberMap::new(
+                SubscribedTopic {
+                    node: String::from("node_beta"),
+                    name: String::from("topic_beta"),
+                    tag: String::from("beta"),
+                    namespace: String::from("bar"),
+                    callback: String::from("on_topic_beta"),
+                    optional: Some(true),
+                },
+                MessageFormat::default(),
+            ),
         ];
         let generator = RustGenerator::new();
         let res = generator.gen_subscribed_topics(&topics);
-        dbg!(res);
+        assert!(res.contains("use pmi::{MessagingEngineContext, Messenger};"));
+        assert!(res.contains("impl Topics"));
+        assert!(res.contains("pub async fn subscribed_topic_0()"));
+        assert!(res.contains("pub async fn subscribed_topic_1()"));
+        assert_eq!(
+            res.matches("todo!(\"await for message with PMI\")").count(),
+            topics.len()
+        );
     }
 }

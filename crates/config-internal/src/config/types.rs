@@ -406,7 +406,8 @@ pub struct NodeRuntimeConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Deployment {
-    pub name: String, // May be a node name or a git URL
+    pub name: String,
+    pub source: String,
     pub tag: String,
     pub instances: Vec<DeploymentInstance>,
 }

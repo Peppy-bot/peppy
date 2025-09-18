@@ -95,6 +95,7 @@ mod tests {
                 {
                     name: "uvc_camera",
                     tag: "0.1.0",
+                    source: "https://github.com/Peppy/uvc_camera.git",
                     instances: [
                         {
                             namespace: "/camera/front",
@@ -123,6 +124,7 @@ mod tests {
                 {
                     name: "web_video_stream",
                     tag: "0.1.0",
+                    source: "https://github.com/Peppy/web_video_stream.git",
                     instances: [
                         {
                             namespace: "/video",
@@ -135,6 +137,7 @@ mod tests {
                 },
                 {
                     name: "peppy_web",
+                    source: "https://github.com/Peppy/peppy_web.git",
                     tag: "0.1.0",
                     instances: [
                         {

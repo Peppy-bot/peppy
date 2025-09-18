@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use config::NodeConfigWatcher;
+use config::FSNodeConfigWatcher;
 
 fn find_example_projects(base_directory: &Path) -> Vec<PathBuf> {
     let mut example_project_paths = Vec::new();
@@ -49,7 +49,7 @@ fn test_example_project_parsing() {
 
     for project in projects {
         // Initialize watcher on the project directory to build the aggregated state
-        let watcher = NodeConfigWatcher::new(&project).expect("watcher init");
+        let watcher = FSNodeConfigWatcher::new(&project).expect("watcher init");
         let rx = watcher.subscribe();
         let state = rx.borrow().clone();
 
