@@ -15,4 +15,10 @@ pub enum Error {
     SubscriberServiceMessageFormatMissing(String),
     #[error("missing action message format for subscriber `{0}`")]
     SubscriberActionMessageFormatMissing(String),
+
+    // -- nodes errors
+    #[error("Cannot find the node in `{0}`")]
+    NodeNotFound(String),
+    #[error("The node name `{0}` or tag `{1}` could not be found")]
+    NoMatchingNode(String, String),
 }

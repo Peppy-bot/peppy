@@ -1,12 +1,12 @@
 use super::types::SubscriberMap;
 use config::{
-    ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
-    SubscribedService, SubscribedTopic,
+    ExposedAction, ExposedService, ExposedTopic, SubscribedAction, SubscribedService,
+    SubscribedTopic,
 };
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 
-use super::builder::InterfaceGenerator;
+use super::types::InterfaceGenerator;
 
 /// Rust-specific implementation of the interface generator.
 pub struct RustGenerator;
@@ -113,6 +113,8 @@ impl InterfaceGenerator for RustGenerator {
 
 #[cfg(test)]
 mod tests {
+    use config::MessageFormat;
+
     use super::*;
 
     #[test]

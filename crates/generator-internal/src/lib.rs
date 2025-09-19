@@ -4,4 +4,4 @@ mod generator;
 // Exposes all the generated interfaces
 pub mod interfaces;
 
-pub use generator::generate_interfaces_code;
+//pub use generator::generate_interfaces_code;

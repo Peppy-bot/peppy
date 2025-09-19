@@ -1,6 +1,6 @@
 use crate::generator::types::SubscriberMap;
 
-use super::builder::InterfaceGenerator;
+use super::types::InterfaceGenerator;
 use config::{
     ExposedAction, ExposedService, ExposedTopic, SubscribedAction, SubscribedService,
     SubscribedTopic,

@@ -25,6 +25,8 @@ pub enum ParsingError {
     BadArray(String),
     #[error("Invalid QoS type {0}")]
     InValidQoS(String),
+    #[error("Invalid deployment source: {0}")]
+    InvalidDeploymentSource(String),
 
     // -- schema conformance
     #[error("Unknown key in {0}: {1}")]
@@ -32,6 +34,20 @@ pub enum ParsingError {
 
     #[error("Deleted file {0}")]
     DeletedFile(String),
+}
+
+impl From<serde_json5::Error> for ParsingError {
+    fn from(err: serde_json5::Error) -> Self {
+        match err {
+            serde_json5::Error::Message { msg, .. } => {
+                if let Some(detail) = msg.strip_prefix("Invalid deployment source: ") {
+                    ParsingError::InvalidDeploymentSource(detail.to_string())
+                } else {
+                    ParsingError::CannotParseConfig(msg)
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Error)]

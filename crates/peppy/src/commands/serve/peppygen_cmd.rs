@@ -1,7 +1,7 @@
 use super::{ServeAsyncCommand, ServeFuture};
 use crate::{AppContext, AppEvent, Result};
 use config::{Interfaces, Language};
-use generator::generate_interfaces_code;
+//use generator::generate_interfaces_code;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -27,7 +27,8 @@ impl ServeAsyncCommand for InterfacesGenerator {
         let interfaces = Arc::clone(&self.interfaces);
         let for_language = self.for_language;
         Box::pin(async move {
-            let _gen = generate_interfaces_code(interfaces.as_ref(), &for_language);
+            todo!("Finish, invoke functions in the generator crate");
+            //let _gen = generate_interfaces_code(interfaces.as_ref(), &for_language);
             Ok(())
         })
     }

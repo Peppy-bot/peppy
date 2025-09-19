@@ -28,7 +28,8 @@
     {
       // This is an example of pulling the `uvc_camera` node from github and instanciating it with user defined parameters. In the future we might be able to pull them from nodes.peppy.bot
       name: "uvc_camera",
-      source: "https://github.com/Peppy/uvc_camera.git", // Can be a github repo, nodes.peppy.bot or "local"
+      // Can be a github repo, an http url like `https://nodes.peppy.bot/uvc_camera`, `<local>` (will look for the nodes inside the subfolders starting from the root node), `<network>` (will assume another root node on the same local network emits that node) or an IP/domain that directly points to another root node on the network
+      source: "https://github.com/Peppy/uvc_camera.git",
       tag: "0.1.0", // In that example the tag is a git tag
       instances: [
         {
