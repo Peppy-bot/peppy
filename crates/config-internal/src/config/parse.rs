@@ -22,15 +22,14 @@ impl NodeConfigParser {
     /// Takes a JSON5 content as parameter
     pub fn from_content(content: &str) -> Result<NodeConfig> {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
-        serde_json5::from_str::<NodeConfig>(content)
-            .map_err(|e| ParsingError::CannotParseConfig(e.to_string()).into())
+        serde_json5::from_str::<NodeConfig>(content).map_err(|e| ParsingError::from(e).into())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::Error;
+    use crate::{config::DeploymentSource, error::Error};
     use tempfile::NamedTempFile;
 
     #[test]
@@ -95,7 +94,7 @@ mod tests {
                 {
                     name: "uvc_camera",
                     tag: "0.1.0",
-                    source: "https://github.com/Peppy/uvc_camera.git",
+                    source: "<local>",
                     instances: [
                         {
                             namespace: "/camera/front",
@@ -177,14 +176,17 @@ mod tests {
         // Check first deployment
         assert_eq!(deployments[0].name, "uvc_camera");
         assert_eq!(deployments[0].tag, "0.1.0");
+        assert!(matches!(deployments[0].source, DeploymentSource::Local));
         assert_eq!(deployments[0].instances.len(), 2);
 
         // Check second deployment
         assert_eq!(deployments[1].name, "web_video_stream");
+        assert!(matches!(deployments[1].source, DeploymentSource::Remote(_)));
         assert_eq!(deployments[1].instances.len(), 1);
 
         // Check third deployment
         assert_eq!(deployments[2].name, "peppy_web");
+        assert!(matches!(deployments[2].source, DeploymentSource::Remote(_)));
         assert_eq!(deployments[2].instances.len(), 1);
     }
 
@@ -219,6 +221,32 @@ mod tests {
         assert!(matches!(
             result.unwrap_err(),
             Error::Parsing(ParsingError::CannotParseConfig(_))
+        ));
+    }
+
+    #[test]
+    fn test_invalid_deployment_source() {
+        let json5 = r#"{
+            manifest: {
+                name: "bad_node",
+                tag: "0.1.0",
+                language: "rust"
+            },
+            deployments: [
+                {
+                    name: "bad_deployment",
+                    tag: "0.1.0",
+                    source: "",
+                    instances: []
+                }
+            ]
+        }"#;
+
+        let result = NodeConfigParser::from_content(json5);
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::InvalidDeploymentSource(ref msg))
+                if msg == "source cannot be empty"
         ));
     }
 }

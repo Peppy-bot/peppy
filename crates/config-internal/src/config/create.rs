@@ -12,7 +12,6 @@ use std::{
 #[template(path = "root_node.json5.j2")]
 struct RootNodeTemplate<'a> {
     name: &'a str,
-    namespace: &'a str,
     log_file_name: &'a str,
 }
 
@@ -20,7 +19,6 @@ struct RootNodeTemplate<'a> {
 #[template(path = "simple_node.json5.j2")]
 struct SimpleNodeTemplate<'a> {
     name: &'a str,
-    namespace: &'a str,
     language: &'a str,
 }
 
@@ -28,7 +26,6 @@ struct SimpleNodeTemplate<'a> {
 #[template(path = "full_node.json5.j2")]
 struct FullNodeTemplate<'a> {
     name: &'a str,
-    namespace: &'a str,
     language: &'a str,
     log_file_name: &'a str,
 }
@@ -39,23 +36,15 @@ struct FullNodeTemplate<'a> {
 pub struct NodeConfigCreator {
     template_type: ConfigTemplateType,
     name: String,
-    namespace: String,
     language: Language,
 }
 
 impl NodeConfigCreator {
     /// Creates a new NodeConfigCreator for a given template type and node metadata
-    pub fn new(
-        template_type: &ConfigTemplateType,
-        node_name: &str,
-        node_namespace: Option<&str>,
-        language: &Language,
-    ) -> Self {
-        let namespace = node_namespace.unwrap_or("/").to_string();
+    pub fn new(template_type: &ConfigTemplateType, node_name: &str, language: &Language) -> Self {
         Self {
             template_type: template_type.clone(),
             name: node_name.to_string(),
-            namespace,
             language: *language,
         }
     }
@@ -68,7 +57,6 @@ impl NodeConfigCreator {
             ConfigTemplateType::RootNode => {
                 let tpl = RootNodeTemplate {
                     name: self.name.as_str(),
-                    namespace: "/",
                     log_file_name: "peppy_root.log",
                 };
                 tpl.render().map_err(|e| Error::Serialize(e.to_string()))?
@@ -77,7 +65,6 @@ impl NodeConfigCreator {
                 // Default to Rust for now; can be parameterized later
                 let tpl = SimpleNodeTemplate {
                     name: self.name.as_str(),
-                    namespace: self.namespace.as_str(),
                     language: self.language.into(),
                 };
                 tpl.render().map_err(|e| Error::Serialize(e.to_string()))?
@@ -87,7 +74,6 @@ impl NodeConfigCreator {
                 // Default to Rust for now; can be parameterized later
                 let tpl = FullNodeTemplate {
                     name: self.name.as_str(),
-                    namespace: self.namespace.as_str(),
                     language: self.language.into(),
                     log_file_name: &log_file_name,
                 };
@@ -117,12 +103,8 @@ mod tests {
     #[test]
     fn test_root_node_content_validation() {
         let node_name = "root_node";
-        let template = NodeConfigCreator::new(
-            &ConfigTemplateType::RootNode,
-            node_name,
-            None,
-            &Language::Rust,
-        );
+        let template =
+            NodeConfigCreator::new(&ConfigTemplateType::RootNode, node_name, &Language::Rust);
 
         // Write to a temporary file and read back the content
         let temp_file = NamedTempFile::new().unwrap();
@@ -211,13 +193,8 @@ mod tests {
     #[test]
     fn test_simple_node_content_validation() {
         let node_name = "a_node";
-        let namespace = "/ns";
-        let template = NodeConfigCreator::new(
-            &ConfigTemplateType::SimpleNode,
-            node_name,
-            Some(namespace),
-            &Language::Rust,
-        );
+        let template =
+            NodeConfigCreator::new(&ConfigTemplateType::SimpleNode, node_name, &Language::Rust);
 
         // Write to a temporary file and read back the content
         let temp_file = NamedTempFile::new().unwrap();
@@ -249,13 +226,8 @@ mod tests {
     #[test]
     fn test_full_node_content_validation() {
         let node_name = "a_node";
-        let namespace = "/ns";
-        let template = NodeConfigCreator::new(
-            &ConfigTemplateType::FullNode,
-            node_name,
-            Some(namespace),
-            &Language::Rust,
-        );
+        let template =
+            NodeConfigCreator::new(&ConfigTemplateType::FullNode, node_name, &Language::Rust);
 
         // Write to a temporary file and read back the content
         let temp_file = NamedTempFile::new().unwrap();

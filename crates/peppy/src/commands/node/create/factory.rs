@@ -28,14 +28,12 @@ pub trait NodeFactory {
             NodeConfigCreator::new(
                 &ConfigTemplateType::FullNode,
                 ctx.node_name.as_str(),
-                Some("/"),
                 &ctx.language,
             )
         } else {
             NodeConfigCreator::new(
                 &ConfigTemplateType::SimpleNode,
                 ctx.node_name.as_str(),
-                Some("/"),
                 &ctx.language,
             )
         };

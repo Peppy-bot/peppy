@@ -403,11 +403,57 @@ pub struct NodeRuntimeConfig {
     pub startup_type: Option<StartupType>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(try_from = "String", into = "String")]
+pub enum DeploymentSource {
+    Local,
+    Network,
+    Remote(String),
+}
+
+impl DeploymentSource {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Local => "<local>",
+            Self::Network => "<network>",
+            Self::Remote(value) => value.as_str(),
+        }
+    }
+}
+
+impl TryFrom<String> for DeploymentSource {
+    type Error = ParsingError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.is_empty() {
+            return Err(ParsingError::InvalidDeploymentSource(
+                "source cannot be empty".to_string(),
+            ));
+        }
+
+        match value.as_str() {
+            "<local>" => Ok(Self::Local),
+            "<network>" => Ok(Self::Network),
+            _ => Ok(Self::Remote(value)),
+        }
+    }
+}
+
+impl From<DeploymentSource> for String {
+    fn from(source: DeploymentSource) -> Self {
+        match source {
+            DeploymentSource::Local => "<local>".to_string(),
+            DeploymentSource::Network => "<network>".to_string(),
+            DeploymentSource::Remote(value) => value,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Deployment {
     pub name: String,
-    pub source: String,
+    pub source: DeploymentSource,
     pub tag: String,
     pub instances: Vec<DeploymentInstance>,
 }
@@ -461,6 +507,32 @@ mod tests {
         assert!(Namespace::new("").is_err()); // empty not permitted
         assert!(Namespace::new("/Robot").is_err()); // capital
         assert!(Namespace::new("/robot$cam").is_err()); // special
+    }
+
+    #[test]
+    fn deployment_source_validation() {
+        let local: DeploymentSource = serde_json5::from_str("\"<local>\"").unwrap();
+        assert_eq!(local, DeploymentSource::Local);
+
+        let network: DeploymentSource = serde_json5::from_str("\"<network>\"").unwrap();
+        assert_eq!(network, DeploymentSource::Network);
+
+        let remote: DeploymentSource =
+            serde_json5::from_str("\"https://github.com/Peppy/uvc_camera.git\"").unwrap();
+        assert!(matches!(
+            remote,
+            DeploymentSource::Remote(ref value)
+                if value == "https://github.com/Peppy/uvc_camera.git"
+        ));
+
+        let empty: Result<DeploymentSource, _> = serde_json5::from_str("\"\"");
+        let err: ParsingError = empty
+            .expect_err("deserializing an empty deployment source should fail")
+            .into();
+        assert!(matches!(
+            err,
+            ParsingError::InvalidDeploymentSource(ref msg) if msg == "source cannot be empty"
+        ));
     }
 
     #[test]
