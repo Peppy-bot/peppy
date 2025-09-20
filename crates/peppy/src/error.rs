@@ -33,6 +33,10 @@ pub enum Error {
     // -- pmi-internal
     PeppyMessagingInterface(pmi::PeppyMessagingInterfaceError),
 
+    // -- generator
+    #[from]
+    GeneratorError(generator::GeneratorError),
+
     // -- config-internal
     PeppyConfig(config::ConfigError),
 
