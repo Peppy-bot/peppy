@@ -1,34 +1,78 @@
+use std::path::PathBuf;
+
 use super::{ServeAsyncCommand, ServeFuture};
 use crate::{AppContext, AppEvent, Result};
 use config::{Interfaces, Language};
-//use generator::generate_interfaces_code;
-use std::sync::Arc;
+use generator::DeploymentMappingBuilder;
 use tokio::sync::broadcast;
 
 pub struct InterfacesGenerator {
-    interfaces: Arc<Interfaces>,
+    events: broadcast::Sender<AppEvent>,
+    root_dir: PathBuf,
+    interfaces: Interfaces,
     for_language: Language,
-    event_subscriber: broadcast::Receiver<AppEvent>,
 }
 
 impl InterfacesGenerator {
-    pub fn new(ctx: &AppContext, interfaces: &Interfaces, for_language: &Language) -> Result<Self> {
-        let event_subscriber = ctx.subscribe();
+    pub fn new(
+        app_context: &AppContext,
+        interfaces: Interfaces,
+        for_language: Language,
+    ) -> Result<Self> {
         Ok(Self {
-            event_subscriber,
-            interfaces: Arc::new(interfaces.clone()),
-            for_language: *for_language,
+            events: app_context.event_sender(),
+            root_dir: app_context.root_dir.clone(),
+            interfaces,
+            for_language,
         })
     }
 }
 
 impl ServeAsyncCommand for InterfacesGenerator {
     fn run(&self) -> ServeFuture {
-        let interfaces = Arc::clone(&self.interfaces);
-        let for_language = self.for_language;
+        let mut events = self.events.subscribe();
+        let _for_language = self.for_language;
+        let nodes_cache_dir = self.root_dir.join(".peppy").join("nodes");
+        let _interfaces = self.interfaces.clone();
+        // FIXME: Is it really what we need?
         Box::pin(async move {
-            todo!("Finish, invoke functions in the generator crate");
-            //let _gen = generate_interfaces_code(interfaces.as_ref(), &for_language);
+            loop {
+                // We will only be able to take an events mut in here...
+                match events.recv().await {
+                    Ok(AppEvent::NodeConfigChanged(state)) => {
+                        let nodes: Vec<_> = state
+                            .values()
+                            .filter_map(|entry| entry.as_ref().ok().cloned())
+                            .collect();
+
+                        let deployments: Vec<_> = nodes
+                            .iter()
+                            .flat_map(|node| {
+                                node.deployments
+                                    .as_ref()
+                                    .into_iter()
+                                    .flat_map(|items| items.iter().cloned())
+                            })
+                            .collect();
+
+                        if deployments.is_empty() {
+                            continue;
+                        }
+
+                        let _validated =
+                            DeploymentMappingBuilder::new(&nodes_cache_dir, &deployments, &nodes)
+                                .resolve_nodes()?
+                                .validate_messages()?;
+
+                        todo!("Finish, invoke functions in the generator crate");
+                        //let _gen = generate_interfaces_code(_interfaces.as_ref(), &_for_language);
+                    }
+                    Ok(AppEvent::Shutdown) => break,
+                    Ok(AppEvent::Custom { .. }) => {}
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
             Ok(())
         })
     }

@@ -54,8 +54,8 @@ impl ServeCommandBuilder {
         let generator = Box::new(
             InterfacesGenerator::new(
                 ctx,
-                &self.node_config.interfaces,
-                &self.node_config.manifest.language,
+                self.node_config.interfaces.clone(),
+                self.node_config.manifest.language,
             )
             .expect("Failed to create peppygen"),
         );
