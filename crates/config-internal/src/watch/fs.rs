@@ -17,10 +17,22 @@ pub async fn watch_files(
 ) -> Result<JoinHandle<Result<()>>> {
     let from_dir_input = from_dir.as_ref().to_path_buf();
     let from_dir_canon = std::fs::canonicalize(&from_dir_input)?;
+    let from_dir_user_abs = if from_dir_input.is_absolute() {
+        from_dir_input.clone()
+    } else {
+        std::env::current_dir()?.join(&from_dir_input)
+    };
 
     // Track existing configs at startup to suppress spurious Create events
     let mut known_configs: HashSet<PathBuf> = find_peppy_nodes_from_dir(&from_dir_canon)
         .into_iter()
+        .filter_map(|p| {
+            // Store known configs using the user path prefix to keep consistency with emitted events
+            match p.strip_prefix(&from_dir_canon) {
+                Ok(rel) => Some(from_dir_user_abs.join(rel)),
+                Err(_) => Some(p),
+            }
+        })
         .collect();
 
     let (notify_tx, mut notify_rx) = mpsc::channel(100);
@@ -43,7 +55,13 @@ pub async fn watch_files(
         let mut _watcher = watcher;
 
         while let Some(event) = notify_rx.recv().await {
-            for path in &event.paths {
+            for raw_path in &event.paths {
+                // Rebase the path from the canonical root to the user root when possible
+                let path = match raw_path.strip_prefix(&from_dir_canon) {
+                    Ok(rel) => from_dir_user_abs.join(rel),
+                    Err(_) => raw_path.clone(),
+                };
+
                 if path.file_name() != Some(std::ffi::OsStr::new(PEPPY_CONFIG_FILE)) {
                     continue;
                 }
@@ -53,7 +71,7 @@ pub async fn watch_files(
                     // File created
                     notify::EventKind::Create(_) => {
                         // Ignore create notifications for files that already existed before watching
-                        if known_configs.contains(path) {
+                        if known_configs.contains(&path) {
                             None
                         } else {
                             known_configs.insert(path.clone());
@@ -62,11 +80,11 @@ pub async fn watch_files(
                     }
                     // Rename events: treat rename-from as deleted and rename-to as created
                     notify::EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
-                        known_configs.remove(path);
+                        known_configs.remove(&path);
                         Some(NodeConfigEvent::Deleted(path.clone()))
                     }
                     notify::EventKind::Modify(ModifyKind::Name(RenameMode::To)) => {
-                        if !known_configs.contains(path) {
+                        if !known_configs.contains(&path) {
                             known_configs.insert(path.clone());
                             Some(NodeConfigEvent::Created(path.clone()))
                         } else {
@@ -79,7 +97,7 @@ pub async fn watch_files(
                         if exists {
                             Some(NodeConfigEvent::Modified(path.clone()))
                         } else {
-                            known_configs.remove(path);
+                            known_configs.remove(&path);
                             Some(NodeConfigEvent::Deleted(path.clone()))
                         }
                     }
@@ -89,13 +107,13 @@ pub async fn watch_files(
                         if exists {
                             Some(NodeConfigEvent::Modified(path.clone()))
                         } else {
-                            known_configs.remove(path);
+                            known_configs.remove(&path);
                             Some(NodeConfigEvent::Deleted(path.clone()))
                         }
                     }
                     // File removed
                     notify::EventKind::Remove(_) => {
-                        known_configs.remove(path);
+                        known_configs.remove(&path);
                         Some(NodeConfigEvent::Deleted(path.clone()))
                     }
                     _ => None,
