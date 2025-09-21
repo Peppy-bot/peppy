@@ -41,7 +41,6 @@
           node: "{any}",
           tag: "{any}", // Any tag/version will do
           name: "peppy_node_status",
-          namespace: "/", // In what ns is this topic emmiting to?
           callback: "on_node_status_received", // Auto exposed callback in code
           optional: true, // In strict mode, do not prevent this node from starting if emitters are not found
         },
@@ -50,7 +49,6 @@
         {
           node: "{any}",
           tag: "{any}", // Any tag/version will do
-          namespace: "{any}",
           name: "peppy_node_status",
           callback: "on_node_payload_received",
           optional: true, // Same optional behavior as topics

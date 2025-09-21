@@ -1,0 +1,37 @@
+// A simple node that receives commands from a brain
+{
+  manifest: {
+    name: "my_action_robot_controller",
+    tag: "0.1.0",
+    labels: [
+      "controller",
+    ],
+    language: "rust"
+  },
+  config: {
+    auto_start: false,
+    respawn: true,
+    respawn_delay: 3.0,
+  },
+  parameters: {},
+  interfaces: {
+    exposes: {
+      topics: [],
+      services: [],
+      // Belief-Desire-Intention
+      bdi: [],
+    },
+    subscribes_to: {
+      topics: [],
+      services: [],
+      actions: [],
+    },
+  },
+  resources: {
+    // This is the resource per instance
+    max_memory_mb: 256,
+  },
+  logging: {
+    min_level: "info",
+  }
+}

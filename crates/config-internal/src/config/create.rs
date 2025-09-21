@@ -134,7 +134,6 @@ mod tests {
                     node: "{any}",
                     tag: "{any}",
                     name: "peppy_node_status",
-                    namespace: "/",
                     callback: "on_root_node_discovered"
                   }
                 ],
@@ -143,7 +142,6 @@ mod tests {
                     node: "{any}",
                     tag: "{any}",
                     name: "peppy_node_status",
-                    namespace: "/",
                     callback: "on_payload_node_received"
                   }
                 ]

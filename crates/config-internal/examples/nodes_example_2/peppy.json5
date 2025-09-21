@@ -1,14 +1,37 @@
+// PeppyOS Root Node Configuration
 {
   manifest: {
-    name: "{{ name }}",
+    name: "my_action_robot",
     tag: "0.1.0",
-    language: "rust"
+    language: "rust",
+    labels: [
+      "root_node",
+      "my_action_robot"
+    ]
   },
   config: {
     auto_start: true,
     respawn: true,
     respawn_delay: 1.0
   },
+  deployments: [
+    {
+      name: "my_action_robot_brain",
+      source: "<local>",
+      tag: "0.1.0",
+      instances: [
+        {}
+      ],
+    },
+    {
+      name: "my_action_robot_controller",
+      source: "<local>",
+      tag: "0.1.0",
+      instances: [
+        {}
+      ]
+    }
+  ],
   interfaces: {
     subscribes_to: {
       topics: [
@@ -55,8 +78,7 @@
   },
   logging: {
     min_level: "info",
-    // Will be stored in `.peppy/logs/` in dev mode and `/var/log/peppy/` in production
-    file_name: "{{ log_file_name }}",
+    file_name: "peppy_root.log",
     max_file_size_mb: 100,
     format: "text"
   }

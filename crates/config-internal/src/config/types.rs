@@ -230,8 +230,6 @@ pub struct SubscribedTopic {
     #[serde(default)]
     pub tag: String,
     #[serde(default)]
-    pub namespace: String,
-    #[serde(default)]
     pub callback: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub optional: Option<bool>,
@@ -246,8 +244,6 @@ pub struct SubscribedService {
     pub name: String,
     #[serde(default)]
     pub tag: String,
-    #[serde(default)]
-    pub namespace: String,
     #[serde(default)]
     pub callback: String,
     #[serde(skip_serializing_if = "Option::is_none")]

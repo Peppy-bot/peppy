@@ -17,8 +17,7 @@
     respawn: true,
     respawn_delay: 3.0,
   },
-  // Parameters before the node starts
-  // Each item of the array represents one instance of the node being started in a particular namespace
+  // Expected parameter types to start the node
   parameters: {
     device: {
       // Can be USB IDs/serial or udev rule
