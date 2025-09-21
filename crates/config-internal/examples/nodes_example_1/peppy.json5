@@ -63,7 +63,6 @@
           node: "{any}", // Will look for any node
           tag: "{any}", // On any version/tag
           name: "peppy_node_status", // That publishes its status on that topic
-          namespace: "/", // In `/dev` or `/prod` namespace (depending where the root node is running from)
           callback: "on_root_node_discovered" // The callback that is called when a node is discovered
         }
       ],
@@ -73,7 +72,6 @@
           node: "{any}", // Will look for any node
           tag: "{any}", // On any version/tag
           name: "peppy_node_status", // That publishes its status on that topic
-          namespace: "/", // In `/dev` or `/prod` namespace (depending where the root node is running from)
           callback: "on_payload_node_received" // The callback that is called when a node sends its payload
         }
       ]

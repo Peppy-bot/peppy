@@ -10,6 +10,7 @@ The `peppy` cli is a compiled program that acts as bridge to:
     - Gather information about the running nodes
     - Communicate and pull information from other nodes in the same network
     - Watch for file system changes and create new code interfaces when those changes to `peppy.json5` are detected
+    - Add a node to its list of running nodes
 
 ![Link to the diagram](./peppy-cli.mmd)
 

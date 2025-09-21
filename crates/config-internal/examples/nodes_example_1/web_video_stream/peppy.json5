@@ -33,7 +33,6 @@
           node: "uvc_camera", // Will look for that node name
           tag: "0.1.0", // On that particular tag/version
           name: "stream", // With this topic name
-          namespace: "{any}", // In any namespace (prefixed by `/dev` or `/prod` by default)
           callback: "on_video_frame_received", // The code callback that will automatically be exposed in the Rust/Python code via auto code generation
           optional: true // In strict mode, do not prevent this node from starting there are no nodes to subscribe to
         }
