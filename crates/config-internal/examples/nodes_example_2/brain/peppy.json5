@@ -23,6 +23,39 @@
     exposes: {
       topics: [],
       services: [],
+      actions: [
+        {
+          // The brain sends signals to the controller
+          name: "move_arm",
+          goal_service: {
+            // Always using "reliable" qos
+            message_format: {
+              desired_position: [
+                "i32", // x
+                "i32", // y
+                "i32" // z
+              ]
+            }
+          },
+          feedback_topic: {
+            qos_profile: "standard", // Options: "standard", "reliable", "sensor_data"
+            message_format: {
+              // Could be any format, using payload/bytes as placeholder here
+              payload: "bytes"
+            }
+          },
+          result_service: {
+            // Always using "reliable" qos
+            message_format: {
+              final_position: [
+                "i32", // x
+                "i32", // y
+                "i32" // z
+              ]
+            }
+          }
+        }
+      ],
     },
     subscribes_to: {
       topics: [],

@@ -254,8 +254,15 @@ pub struct SubscribedService {
 #[serde(deny_unknown_fields)]
 pub struct SubscribedAction {
     #[serde(default)]
+    pub node: String,
+    #[serde(default)]
     pub name: String,
-    // For the moment, actions are undecided/unfinished
+    #[serde(default)]
+    pub tag: String,
+    #[serde(default)]
+    pub callback: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub optional: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -263,7 +270,53 @@ pub struct SubscribedAction {
 pub struct ExposedAction {
     #[serde(default)]
     pub name: String,
-    // For the moment, actions are undecided/unfinished
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_service: Option<ActionServiceEndpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback_topic: Option<ActionTopicEndpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_service: Option<ActionServiceEndpoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionServiceEndpoint {
+    #[serde(skip_serializing_if = "Option::is_none", rename = "type")]
+    pub service_type: Option<String>,
+    #[serde(default = "default_action_service_qos_profile")]
+    pub qos_profile: QoSProfile,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_format: Option<MessageFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl Default for ActionServiceEndpoint {
+    fn default() -> Self {
+        Self {
+            service_type: None,
+            qos_profile: default_action_service_qos_profile(),
+            message_format: None,
+            name: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ActionTopicEndpoint {
+    #[serde(skip_serializing_if = "Option::is_none", rename = "type")]
+    pub topic_type: Option<String>,
+    #[serde(default)]
+    pub qos_profile: QoSProfile,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_format: Option<MessageFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+fn default_action_service_qos_profile() -> QoSProfile {
+    QoSProfile::Reliable
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
