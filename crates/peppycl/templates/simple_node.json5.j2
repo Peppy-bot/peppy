@@ -2,7 +2,7 @@
   manifest: {
     name: "{{ name }}",
     tag: "0.1.0",
-    language: "rust"
+    launch_cmd: {{ launch_cmd | safe }}
   },
   logging: {
     min_level: "info",

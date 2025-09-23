@@ -4,7 +4,11 @@
   manifest: {
     name: "web_video_stream",
     tag: "0.1.0",
-    language: "python"
+    launch_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
   },
   config: {
     respawn: true,

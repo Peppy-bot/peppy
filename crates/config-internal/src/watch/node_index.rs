@@ -163,12 +163,12 @@ mod tests {
         let path = dir.join(PEPPY_CONFIG_FILE);
         let json5 = format!(
             r#"{{
-  manifest: {{
-    name: "{name}",
-    tag: "0.1.0",
-    language: "rust"
-  }}
-}}"#
+                manifest: {{
+                    name: "{name}",
+                    tag: "0.1.0",
+                    launch_cmd: ["cargo", "run", "--release"]
+                }}
+            }}"#
         );
         fs::write(&path, json5).unwrap();
         path
@@ -211,7 +211,7 @@ mod tests {
         // Invalid name (spaces and '!') should fail parsing on initial load
         fs::write(
             temp.path().join(PEPPY_CONFIG_FILE),
-            "{ manifest: { name: 'Invalid Name!', tag: '0.1.0', language: 'rust' } }",
+            "{ manifest: { name: 'Invalid Name!', tag: '0.1.0', launch_cmd: ['cargo', 'run', '--release'] } }",
         )
         .unwrap();
 

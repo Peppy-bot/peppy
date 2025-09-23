@@ -337,7 +337,8 @@ pub struct Manifest {
     pub labels: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
-    pub language: Language,
+    // Command to launch the node, e.g., ["cargo", "run", "--release"]
+    pub launch_cmd: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -399,19 +400,14 @@ pub struct NodeRuntimeConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(try_from = "String", into = "String")]
-pub enum DeploymentSource {
-    Local,
-    Network,
-    Remote(String),
-}
+pub struct DeploymentSource(String);
 
 impl DeploymentSource {
     pub fn as_str(&self) -> &str {
-        match self {
-            Self::Local => "<local>",
-            Self::Network => "<network>",
-            Self::Remote(value) => value.as_str(),
-        }
+        &self.0
+    }
+    pub fn is_local(&self) -> bool {
+        self.0.starts_with("file://")
     }
 }
 
@@ -424,22 +420,13 @@ impl TryFrom<String> for DeploymentSource {
                 "source cannot be empty".to_string(),
             ));
         }
-
-        match value.as_str() {
-            "<local>" => Ok(Self::Local),
-            "<network>" => Ok(Self::Network),
-            _ => Ok(Self::Remote(value)),
-        }
+        Ok(DeploymentSource(value))
     }
 }
 
 impl From<DeploymentSource> for String {
     fn from(source: DeploymentSource) -> Self {
-        match source {
-            DeploymentSource::Local => "<local>".to_string(),
-            DeploymentSource::Network => "<network>".to_string(),
-            DeploymentSource::Remote(value) => value,
-        }
+        source.0
     }
 }
 
@@ -497,19 +484,12 @@ mod tests {
 
     #[test]
     fn deployment_source_validation() {
-        let local: DeploymentSource = serde_json5::from_str("\"<local>\"").unwrap();
-        assert_eq!(local, DeploymentSource::Local);
-
-        let network: DeploymentSource = serde_json5::from_str("\"<network>\"").unwrap();
-        assert_eq!(network, DeploymentSource::Network);
+        let local: DeploymentSource = serde_json5::from_str("\"file:///tmp/node\"").unwrap();
+        assert!(local.is_local());
 
         let remote: DeploymentSource =
             serde_json5::from_str("\"https://github.com/Peppy/uvc_camera.git\"").unwrap();
-        assert!(matches!(
-            remote,
-            DeploymentSource::Remote(ref value)
-                if value == "https://github.com/Peppy/uvc_camera.git"
-        ));
+        assert_eq!(remote.as_str(), "https://github.com/Peppy/uvc_camera.git");
 
         let empty: Result<DeploymentSource, _> = serde_json5::from_str("\"\"");
         let err: ParsingError = empty

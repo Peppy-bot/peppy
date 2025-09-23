@@ -2,7 +2,7 @@
   manifest: {
     name: "{{ name }}",
     tag: "0.1.0",
-    language: "{{ language }}"
+    launch_cmd: {{ launch_cmd | safe }}
   },
   config: {
     respawn: true,

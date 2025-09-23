@@ -10,7 +10,11 @@
       "camera",
       "usb",
     ],
-    language: "rust"
+    launch_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
   },
   config: {
     auto_start: false, // Can be started with the `enable_camera` service

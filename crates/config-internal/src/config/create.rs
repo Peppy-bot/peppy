@@ -19,14 +19,14 @@ struct RootNodeTemplate<'a> {
 #[template(path = "simple_node.json5.j2")]
 struct SimpleNodeTemplate<'a> {
     name: &'a str,
-    language: &'a str,
+    launch_cmd: &'a str,
 }
 
 #[derive(Template)]
 #[template(path = "full_node.json5.j2")]
 struct FullNodeTemplate<'a> {
     name: &'a str,
-    language: &'a str,
+    launch_cmd: &'a str,
     log_file_name: &'a str,
 }
 
@@ -62,19 +62,19 @@ impl NodeConfigCreator {
                 tpl.render().map_err(|e| Error::Serialize(e.to_string()))?
             }
             ConfigTemplateType::SimpleNode => {
-                // Default to Rust for now; can be parameterized later
+                // Default command can be parameterized later
                 let tpl = SimpleNodeTemplate {
                     name: self.name.as_str(),
-                    language: self.language.into(),
+                    launch_cmd: "[\"cargo\", \"run\", \"--release\"]",
                 };
                 tpl.render().map_err(|e| Error::Serialize(e.to_string()))?
             }
             ConfigTemplateType::FullNode => {
                 let log_file_name = format!("{}_node.log", self.name);
-                // Default to Rust for now; can be parameterized later
+                // Default command can be parameterized later
                 let tpl = FullNodeTemplate {
                     name: self.name.as_str(),
-                    language: self.language.into(),
+                    launch_cmd: "[\"cargo\", \"run\", \"--release\"]",
                     log_file_name: &log_file_name,
                 };
                 tpl.render().map_err(|e| Error::Serialize(e.to_string()))?
@@ -120,7 +120,7 @@ mod tests {
             + node_name
             + r#"",
                 tag: "0.1.0",
-                language: "rust"
+                launch_cmd: ["cargo", "run", "--release"]
             },
             config: {
                 auto_start: true,
@@ -205,7 +205,7 @@ mod tests {
             manifest: {
                 name: "a_node",
                 tag: "0.1.0",
-                language: "rust"
+                launch_cmd: ["cargo", "run", "--release"],
             },
             logging: {
                 min_level: "info",
@@ -238,7 +238,7 @@ mod tests {
             manifest: {
                 name: "a_node",
                 tag: "0.1.0",
-                language: "rust"
+                launch_cmd: ["cargo", "run", "--release"]
             },
             config: {
                 respawn: true,

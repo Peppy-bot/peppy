@@ -7,7 +7,11 @@
     labels: [
       "brain"
     ],
-    language: "python"
+    launch_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
   },
   config: {
     auto_start: false,

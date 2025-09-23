@@ -52,12 +52,8 @@ impl ServeCommandBuilder {
     /// are outside the root_node folder and its children.
     pub fn with_peppygen(mut self, ctx: &AppContext) -> Self {
         let generator = Box::new(
-            InterfacesGenerator::new(
-                ctx,
-                self.node_config.interfaces.clone(),
-                self.node_config.manifest.language,
-            )
-            .expect("Failed to create peppygen"),
+            InterfacesGenerator::new(ctx, self.node_config.interfaces.clone())
+                .expect("Failed to create peppygen"),
         );
         self.composite_command = self.composite_command.add_async_command(generator);
         self
