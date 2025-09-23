@@ -17,7 +17,7 @@
   deployments: [
     {
       name: "my_action_robot_brain",
-      source: "<local>",
+      source: "file://tmp/my_action_robot_brain/peppy.json5",
       tag: "0.1.0",
       instances: [
         {}
@@ -25,7 +25,7 @@
     },
     {
       name: "my_action_robot_controller",
-      source: "<local>",
+      source: "file://tmp/my_action_robot_controller/peppy.json5",
       tag: "0.1.0",
       instances: [
         {}

@@ -97,7 +97,7 @@ mod tests {
         serde_json5::from_str(
             r#"{
                 name: "uvc_camera",
-                source: "<local>",
+                source: "file:///tmp/peppy_node",
                 tag: "0.1.0",
                 instances: [
                     {
