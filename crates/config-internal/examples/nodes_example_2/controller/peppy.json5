@@ -1,4 +1,4 @@
-// A simple node that receives commands from a brain
+// A simple node that receives commands from a brain and control the joints of the robot
 {
   manifest: {
     name: "my_action_robot_controller",
@@ -22,13 +22,19 @@
     exposes: {
       topics: [],
       services: [],
-      // Belief-Desire-Intention
-      bdi: [],
+      actions: [],
     },
     subscribes_to: {
       topics: [],
       services: [],
-      actions: [],
+      actions: [
+        {
+          node: "my_action_robot_brain", // Will look for that node name
+          tag: "0.1.0", // On that particular tag/version
+          name: "mechanical_connection", // With this action name
+          callback: "on_brain_command_received", // The code callback that will automatically be exposed in the Rust/Python code via auto code generation
+        }
+      ],
     },
   },
   resources: {

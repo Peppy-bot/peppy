@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use super::{ServeAsyncCommand, ServeFuture};
 use crate::{AppContext, AppEvent, Result};
-use config::{Interfaces, Language};
+use config::Interfaces;
 use generator::DeploymentMappingBuilder;
 use tokio::sync::broadcast;
 
