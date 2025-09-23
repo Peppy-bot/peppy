@@ -94,7 +94,7 @@ mod tests {
                 {
                     name: "uvc_camera",
                     tag: "0.1.0",
-                    source: "<local>",
+                    source: "file://tmp/peppy.json5",
                     instances: [
                         {
                             namespace: "/camera/front",

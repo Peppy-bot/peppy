@@ -15,7 +15,6 @@
     auto_start: true,
     respawn: true,
     respawn_delay: 2.0,
-    startup_type: "fork", // Optional: Uses "thread" by default, "fork" uses more resources but ensures that in the event of the root node crash, the current node doesn't crash along with it.
   },
   parameters: {
     http: {

@@ -395,8 +395,6 @@ pub struct NodeRuntimeConfig {
     pub respawn: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub respawn_delay: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub startup_type: Option<StartupType>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -469,14 +467,6 @@ pub struct Interfaces {
     pub exposes: Option<Exposes>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subscribes_to: Option<SubscribesTo>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum StartupType {
-    #[default]
-    Thread,
-    Fork,
 }
 
 #[cfg(test)]

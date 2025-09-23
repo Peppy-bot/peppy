@@ -5,8 +5,7 @@ use pmi::{MessagingEngineContext, Messenger, MessengerBackend};
 use std::path::PathBuf;
 
 // TODO: We actually need an `on_node_start` and `on_node_initialize(config)` instead of letting the
-// user start the node with `main()`. This way the node can be started from
-// a thread (default) or fork (Process::Command) by the `peppy` program.
+// user start the node with `main()`
 
 /// Sets up a node. If `config_file` is not provided, use current directory `peppy.json5`.
 pub async fn setup_node(config_file: Option<PathBuf>) -> Result<()> {
