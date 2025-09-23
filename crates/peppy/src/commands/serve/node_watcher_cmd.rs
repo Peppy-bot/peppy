@@ -85,7 +85,7 @@ mod tests {
   manifest: {{
     name: "{name}",
     tag: "0.1.0",
-    language: "rust"
+    launch_cmd: ["cargo", "run", "--release"]
   }}
 }}"#
         );

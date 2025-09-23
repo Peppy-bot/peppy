@@ -29,7 +29,7 @@ impl NodeConfigParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config::DeploymentSource, error::Error};
+    use crate::error::Error;
     use tempfile::NamedTempFile;
 
     #[test]
@@ -38,7 +38,7 @@ mod tests {
             manifest: {
                 name: "test_node",
                 tag: "0.1.0",
-                language: "rust",
+                launch_cmd: ["cargo", "run", "--release"],
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
@@ -53,7 +53,7 @@ mod tests {
             manifest: {
                 name: "camera_driver",
                 tag: "2.1.0",
-                language: "rust"
+                launch_cmd: ["cargo", "run", "--release"],
             },
             config: {
                 auto_start: true,
@@ -83,7 +83,7 @@ mod tests {
             manifest: {
                 name: "my_robot_1",
                 tag: "0.1.0",
-                language: "rust"
+                launch_cmd: ["cargo", "run", "--release"]
             },
             config: {
                 auto_start: true,
@@ -175,17 +175,17 @@ mod tests {
         // Check first deployment
         assert_eq!(deployments[0].name, "uvc_camera");
         assert_eq!(deployments[0].tag, "0.1.0");
-        assert!(matches!(deployments[0].source, DeploymentSource::Local));
+        assert!(deployments[0].source.as_str().starts_with("file://"));
         assert_eq!(deployments[0].instances.len(), 2);
 
         // Check second deployment
         assert_eq!(deployments[1].name, "web_video_stream");
-        assert!(matches!(deployments[1].source, DeploymentSource::Remote(_)));
+        assert!(!deployments[1].source.is_local());
         assert_eq!(deployments[1].instances.len(), 1);
 
         // Check third deployment
         assert_eq!(deployments[2].name, "peppy_web");
-        assert!(matches!(deployments[2].source, DeploymentSource::Remote(_)));
+        assert!(!deployments[2].source.is_local());
         assert_eq!(deployments[2].instances.len(), 1);
     }
 
@@ -229,7 +229,7 @@ mod tests {
             manifest: {
                 name: "bad_node",
                 tag: "0.1.0",
-                language: "rust"
+                launch_cmd: ["cargo", "run", "--release"]
             },
             deployments: [
                 {

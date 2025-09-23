@@ -3,10 +3,14 @@
   manifest: {
     name: "my_action_robot",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "root_node",
       "my_action_robot"
+    ],
+    launch_cmd: [
+      "cargo",
+      "run",
+      "--release"
     ]
   },
   config: {

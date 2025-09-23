@@ -6,7 +6,11 @@
     labels: [
       "controller",
     ],
-    language: "rust"
+    launch_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
   },
   config: {
     auto_start: false,

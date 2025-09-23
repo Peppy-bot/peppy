@@ -9,7 +9,11 @@
     // `name` can only have alphanumeric, underscore, or hyphen characters.
     name: "my_robot_1", // It's a good practice to give a unique name to the root node to avoid name conflicts with other root nodes under the same network
     tag: "0.1.0",
-    language: "rust", // "rust" or "python". The root node is always "rust"
+    launch_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ], // Launch command used by `peppy server` to run the node
     labels: [
       "root_node",
       "my_awesome_robot"

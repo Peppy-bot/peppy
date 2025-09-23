@@ -38,7 +38,7 @@ mod tests {
         assert_eq!(map.deployment().tag, deployment.tag);
 
         let node_source = map.node_source();
-        assert!(matches!(node_source.source(), DeploymentSource::Local));
+        assert!(node_source.source().is_local());
         assert_eq!(
             node_source.node().manifest.name.as_str(),
             node.manifest.name.as_str()
@@ -73,7 +73,7 @@ mod tests {
                 manifest: {
                     name: "uvc_camera",
                     tag: "0.1.0",
-                    language: "rust"
+                    launch_cmd: ["cargo", "run", "--release"]
                 }
             }"#,
         )
@@ -86,7 +86,7 @@ mod tests {
                 manifest: {
                     name: "lidar",
                     tag: "0.1.0",
-                    language: "rust"
+                    launch_cmd: ["cargo", "run", "--release"]
                 }
             }"#,
         )

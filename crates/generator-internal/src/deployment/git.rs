@@ -144,7 +144,7 @@ mod tests {
     fn sample_remote_deployment(source: &str) -> Deployment {
         Deployment {
             name: "uvc_camera".to_string(),
-            source: DeploymentSource::Remote(source.to_string()),
+            source: DeploymentSource::try_from(source.to_string()).unwrap(),
             tag: "0.1.0".to_string(),
             instances: vec![],
         }
@@ -168,7 +168,7 @@ mod tests {
                 manifest: {
                     name: "uvc_camera",
                     tag: "0.1.0",
-                    language: "rust"
+                    launch_cmd: ["cargo", "run", "--release"]
                 }
             }"#,
         )
@@ -243,7 +243,7 @@ mod tests {
         let remote = "https://nodes.peppy.bot/uvc_camera";
         let deployment = Deployment {
             name: "uvc_camera".to_string(),
-            source: DeploymentSource::Remote(remote.to_string()),
+            source: DeploymentSource::try_from(remote.to_string()).unwrap(),
             tag: "0.1.0".to_string(),
             instances: vec![],
         };

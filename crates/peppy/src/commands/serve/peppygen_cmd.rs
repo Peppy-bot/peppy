@@ -10,20 +10,14 @@ pub struct InterfacesGenerator {
     events: broadcast::Sender<AppEvent>,
     root_dir: PathBuf,
     interfaces: Interfaces,
-    for_language: Language,
 }
 
 impl InterfacesGenerator {
-    pub fn new(
-        app_context: &AppContext,
-        interfaces: Interfaces,
-        for_language: Language,
-    ) -> Result<Self> {
+    pub fn new(app_context: &AppContext, interfaces: Interfaces) -> Result<Self> {
         Ok(Self {
             events: app_context.event_sender(),
             root_dir: app_context.root_dir.clone(),
             interfaces,
-            for_language,
         })
     }
 }
@@ -31,7 +25,6 @@ impl InterfacesGenerator {
 impl ServeAsyncCommand for InterfacesGenerator {
     fn run(&self) -> ServeFuture {
         let mut events = self.events.subscribe();
-        let _for_language = self.for_language;
         let nodes_cache_dir = self.root_dir.join(".peppy").join("nodes");
         let _interfaces = self.interfaces.clone();
         // FIXME: Is it really what we need?

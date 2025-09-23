@@ -4,8 +4,9 @@ mod helpers;
 
 #[derive(Template)]
 #[template(path = "simple_node.json5.j2")]
-struct SimpleNodeTemplate {
-    name: String,
+struct SimpleNodeTemplate<'a> {
+    name: &'a str,
+    launch_cmd: &'a str,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -18,7 +19,8 @@ async fn test_setup_node_from_config_file() {
     // Render the template into a temporary directory as peppy.json5
     let tmpdir = tempfile::tempdir().expect("failed to create tempdir");
     let tmpl = SimpleNodeTemplate {
-        name: "test_node".to_string(),
+        name: "test_node",
+        launch_cmd: "cargo run --release",
     };
     let rendered = tmpl.render().expect("failed to render template");
     let config_path = tmpdir.path().join("peppy.json5");
