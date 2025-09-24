@@ -6,7 +6,7 @@ edition.workspace = true
 [dependencies]
 pmi = { path = "../pmi-internal", features = ["zenoh"] }
 config = { path = "../config-internal" }
-peppycl = { path = "../peppycl" }                        # Is itself dependant on peppycl to start the root_node
+peppylib = { path = "../peppylib" }
 generator = { path = "../generator-internal" }
 bytes = "1"
 askama = "0.14.0"

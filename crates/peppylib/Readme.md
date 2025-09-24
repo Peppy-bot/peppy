@@ -1,4 +1,4 @@
-# Peppycl Rust
+# Peppylib Rust
 
 Peppy control interface lib in Rust. Connects to a peppyOS service.
 
@@ -9,4 +9,4 @@ Before you do, don't forget to update the `Cargo.toml` manifest, notably the `ve
 
 ## Notes
 
-The `peppy` project depends on `peppycl` to start the root node but `peppycl` depends on a messaging server started by `peppy` to operate.
+The `peppy` project depends on `peppylib` to start the root node but `peppylib` depends on a messaging server started by `peppy` to operate.

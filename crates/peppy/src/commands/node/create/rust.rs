@@ -77,11 +77,11 @@ mod tests {
         // Check that main.rs exists in the src directory
         assert!(main_rs.exists(), "Expected main.rs in src directory");
 
-        // Check that Cargo.toml contains peppycl dependency
+        // Check that Cargo.toml contains peppylib dependency
         let cargo_content = fs::read_to_string(&cargo_toml).unwrap();
         assert!(
-            cargo_content.contains("peppycl"),
-            "Expected peppycl dependency in Cargo.toml"
+            cargo_content.contains("peppylib"),
+            "Expected peppylib dependency in Cargo.toml"
         );
         assert!(
             cargo_content.contains("[dependencies]"),

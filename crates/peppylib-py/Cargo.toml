@@ -1,14 +1,14 @@
 [package]
-name = "peppycl-py"
+name = "peppylib-py"
 version.workspace = true
 edition.workspace = true
 
 [lib]
-name = "_peppycl"
+name = "_peppylib"
 crate-type = ["cdylib"]
 
 [dependencies]
-peppycl = { path = "../peppycl" }
+peppylib = { path = "../peppylib" }
 pyo3 = { version = "0.26", features = ["extension-module"] }
 
 [build-dependencies]

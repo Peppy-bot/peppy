@@ -1,5 +1,5 @@
 [package]
-name = "peppycl"
+name = "peppylib"
 version.workspace = true
 edition.workspace = true
 homepage = "https://dev.peppy.bot"

@@ -1,5 +1,5 @@
 [project]
-name = "peppycl"
+name = "peppylib"
 dynamic = ["version"]
 license = { text = "Apache-2.0" }
 authors = [{ name = "GODARD Tuatini", email = "tuatini@peppy.bot" }]
@@ -22,8 +22,8 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [tool.maturin]
-module-name = "peppycl._peppycl"
+module-name = "peppylib._peppylib"
 
 [tool.maturin.version]
 provider = "file"
-path = "peppycl/_version.py"
+path = "peppylib/_version.py"

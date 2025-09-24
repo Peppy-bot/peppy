@@ -38,8 +38,8 @@ impl Drop for RouterGuard {
 }
 
 /// Starts a messaging router and returns a guard that will stop the router when dropped.
-/// `peppycl` needs the existence of a zenohd router to opperate, mostly provided by `peppy serve`.
-/// However here we do not use `peppy serve` directly because `peppycl` is itself a dependency of `peppy` to
+/// `peppylib` needs the existence of a zenohd router to opperate, mostly provided by `peppy serve`.
+/// However here we do not use `peppy serve` directly because `peppylib` is itself a dependency of `peppy` to
 /// start its own root_node.
 pub async fn start_messaging_router() -> Result<RouterGuard, pmi::PeppyMessagingInterfaceError> {
     eprintln!("Starting mock messaging router in background (tests)…");

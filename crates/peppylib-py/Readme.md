@@ -1,6 +1,6 @@
-# Peppycl python
+# Peppylib python
 
-Peppy control interface lib in Python. Connects to a peppyOS service. Builds on top of `peppycl` written in Rust.
+Peppy control interface lib in Python. Connects to a peppyOS service. Builds on top of `peppylib` written in Rust.
 
 ## How to build?
 
