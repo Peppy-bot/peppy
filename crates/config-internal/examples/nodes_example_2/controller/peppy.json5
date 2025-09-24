@@ -31,8 +31,9 @@
         {
           node: "my_action_robot_brain", // Will look for that node name
           tag: "0.1.0", // On that particular tag/version
-          name: "mechanical_connection", // With this action name
-          callback: "on_brain_command_received", // The code callback that will automatically be exposed in the Rust/Python code via auto code generation
+          name: "move_arm", // With this action name
+          feedback_callback: "on_move_arm_feedback_received",
+          results_callback: "on_result_callback_received"
         }
       ],
     },

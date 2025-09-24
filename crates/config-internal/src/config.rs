@@ -6,7 +6,7 @@ mod types;
 pub use create::NodeConfigCreator;
 pub use parse::NodeConfigParser;
 pub use types::{
-    ConfigTemplateType, Deployment, DeploymentInstance, DeploymentSource, ExposedAction,
-    ExposedService, ExposedTopic, Interfaces, MessageFormat, NodeConfig, SubscribedAction,
-    SubscribedService, SubscribedTopic, SubscribesTo,
+    CallbackName, CallbackNameError, ConfigTemplateType, Deployment, DeploymentInstance,
+    DeploymentSource, ExposedAction, ExposedService, ExposedTopic, Interfaces, MessageFormat,
+    NodeConfig, SubscribedAction, SubscribedService, SubscribedTopic, SubscribesTo,
 };
