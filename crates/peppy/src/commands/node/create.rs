@@ -2,9 +2,9 @@ mod factory;
 mod python;
 mod rust;
 
+use super::Language;
 use super::types::NodeName;
 use crate::{AppContext, Error, Result};
-use config::Language;
 use factory::{NodeContext, create_factory};
 use std::fs;
 use std::path::{Path, PathBuf};

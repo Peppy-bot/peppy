@@ -71,7 +71,6 @@ impl FromStr for NodeName {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::Language;
 
     #[test]
     fn test_node_name_validation() {
@@ -89,13 +88,5 @@ mod tests {
         assert!(NodeName::new("node name").is_err()); // contains space
         assert!(NodeName::new("node@name").is_err()); // contains invalid character
         assert!(NodeName::new("node.name").is_err()); // contains dot
-    }
-
-    #[test]
-    fn test_language_from_str() {
-        assert_eq!(Language::from_str("python").unwrap(), Language::Python);
-        assert_eq!(Language::from_str("rust").unwrap(), Language::Rust);
-        assert!(Language::from_str("javascript").is_err());
-        assert!(Language::from_str("").is_err());
     }
 }

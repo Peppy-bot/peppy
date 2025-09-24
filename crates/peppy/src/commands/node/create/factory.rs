@@ -1,8 +1,9 @@
 use super::super::types::NodeName;
+use super::Language;
 use crate::commands::node::create::{python, rust};
 use crate::{Error, Result};
 use askama::Template;
-use config::{ConfigTemplateType, Language, NodeConfigCreator};
+use config::{ConfigTemplateType, NodeConfigCreator};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -25,17 +26,9 @@ pub trait NodeFactory {
         let peppy_config_path = ctx.node_path.join("peppy.json5");
 
         let builder = if full {
-            NodeConfigCreator::new(
-                &ConfigTemplateType::FullNode,
-                ctx.node_name.as_str(),
-                &ctx.language,
-            )
+            NodeConfigCreator::new(&ConfigTemplateType::FullNode, ctx.node_name.as_str())
         } else {
-            NodeConfigCreator::new(
-                &ConfigTemplateType::SimpleNode,
-                ctx.node_name.as_str(),
-                &ctx.language,
-            )
+            NodeConfigCreator::new(&ConfigTemplateType::SimpleNode, ctx.node_name.as_str())
         };
 
         builder

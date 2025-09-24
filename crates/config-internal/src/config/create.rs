@@ -1,4 +1,3 @@
-use super::Language;
 use super::types::ConfigTemplateType;
 use crate::error::{Error, Result};
 use askama::Template;
@@ -36,16 +35,14 @@ struct FullNodeTemplate<'a> {
 pub struct NodeConfigCreator {
     template_type: ConfigTemplateType,
     name: String,
-    language: Language,
 }
 
 impl NodeConfigCreator {
     /// Creates a new NodeConfigCreator for a given template type and node metadata
-    pub fn new(template_type: &ConfigTemplateType, node_name: &str, language: &Language) -> Self {
+    pub fn new(template_type: &ConfigTemplateType, node_name: &str) -> Self {
         Self {
             template_type: template_type.clone(),
             name: node_name.to_string(),
-            language: *language,
         }
     }
 
@@ -103,8 +100,7 @@ mod tests {
     #[test]
     fn test_root_node_content_validation() {
         let node_name = "root_node";
-        let template =
-            NodeConfigCreator::new(&ConfigTemplateType::RootNode, node_name, &Language::Rust);
+        let template = NodeConfigCreator::new(&ConfigTemplateType::RootNode, node_name);
 
         // Write to a temporary file and read back the content
         let temp_file = NamedTempFile::new().unwrap();
@@ -191,8 +187,7 @@ mod tests {
     #[test]
     fn test_simple_node_content_validation() {
         let node_name = "a_node";
-        let template =
-            NodeConfigCreator::new(&ConfigTemplateType::SimpleNode, node_name, &Language::Rust);
+        let template = NodeConfigCreator::new(&ConfigTemplateType::SimpleNode, node_name);
 
         // Write to a temporary file and read back the content
         let temp_file = NamedTempFile::new().unwrap();
@@ -224,8 +219,7 @@ mod tests {
     #[test]
     fn test_full_node_content_validation() {
         let node_name = "a_node";
-        let template =
-            NodeConfigCreator::new(&ConfigTemplateType::FullNode, node_name, &Language::Rust);
+        let template = NodeConfigCreator::new(&ConfigTemplateType::FullNode, node_name);
 
         // Write to a temporary file and read back the content
         let temp_file = NamedTempFile::new().unwrap();

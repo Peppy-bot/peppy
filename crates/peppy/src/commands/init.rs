@@ -32,7 +32,7 @@ pub fn init_root_node(path: impl AsRef<Path>, name: &str) -> Result<PathBuf> {
     fs::create_dir_all(path)?;
     let peppy_config_path = path.join("peppy.json5");
 
-    NodeConfigCreator::new(&ConfigTemplateType::RootNode, name, &config::Language::Rust)
+    NodeConfigCreator::new(&ConfigTemplateType::RootNode, name)
         .write_to(&peppy_config_path)
         .map_err(Error::PeppyConfig)?;
 
