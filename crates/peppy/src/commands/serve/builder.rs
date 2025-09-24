@@ -12,21 +12,18 @@ use pmi::{MessagingEngineContext, Messenger};
 pub struct ServeCommandBuilder {
     composite_command: CompositeCommand,
     node_config: NodeConfig,
-    strict: bool, // TODO: Enable strict mode
 }
 
 impl ServeCommandBuilder {
-    pub fn new(root_config_path: PathBuf, strict: bool) -> Result<Self> {
+    pub fn new(root_config_path: PathBuf) -> Result<Self> {
         let node_config =
             NodeConfigParser::from_path(&root_config_path).map_err(crate::Error::PeppyConfig)?;
         Ok(Self {
             composite_command: CompositeCommand::default(),
             node_config,
-            strict,
         })
     }
 
-    /// The node_watcher starts from the root node and watches over the files changes in its directory and its children directories.
     /// When a change is detected on one of the peppy.json5 file, it sends a signal to the rest of the program that the configuration of
     /// a node has been updated
     pub fn with_node_watcher(mut self, ctx: &AppContext) -> Self {

@@ -35,20 +35,9 @@ enum Commands {
         #[arg(long, default_value = "zenoh")]
         engine: String,
 
-        /// Config file(s) for the selected engine. Will use a default configuration if not provided
+        /// Config file(s) for the selected messaging engine. Will use a default configuration if not provided
         #[arg(long)]
         config_path: Option<PathBuf>,
-
-        /// Is set to `false` in dev mode and `true` in prod by default.
-        /// Use `--strict` to force strict mode on, or `--not-strict` to force it off.
-        /// This flag ensures that every `subscribes_to` section of the root node and its children are mapping to the specified nodes.
-        /// If the nodes are missing, the `serve` command will stop with an error explaining the missing dependencies.
-        #[arg(long)]
-        strict: bool,
-
-        /// Explicitly disable strict mode (overrides the default from env)
-        #[arg(long = "not-strict", conflicts_with = "strict")]
-        not_strict: bool,
     },
     /// Commands related to the peppy service (running in `dev` or in systemd/launchctl)
     Service {
@@ -84,27 +73,14 @@ fn main() {
         Commands::Serve {
             engine,
             config_path,
-            strict,
-            not_strict,
         } => {
             let config_path = match config_path {
                 Some(pth) => pth,
                 None => app_ctx.root_dir.join(PEPPY_CONFIG_FILE),
             };
-            let strict = if strict {
-                true
-            } else if not_strict {
-                false
-            } else {
-                match env {
-                    AppEnv::Prod => true,
-                    AppEnv::Dev => false,
-                }
-            };
             serve::ServeCommand {
                 engine,
                 root_config_path: config_path,
-                strict,
             }
             .execute(&app_ctx)
         }

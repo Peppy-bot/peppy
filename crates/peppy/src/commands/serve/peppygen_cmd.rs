@@ -24,16 +24,16 @@ impl InterfacesGenerator {
 
 impl ServeAsyncCommand for InterfacesGenerator {
     fn run(&self) -> ServeFuture {
-        let mut events = self.events.subscribe();
+        let mut app_events = self.events.subscribe();
         let nodes_cache_dir = self.root_dir.join(".peppy").join("nodes");
         let _interfaces = self.interfaces.clone();
         // FIXME: Is it really what we need?
         Box::pin(async move {
             loop {
                 // We will only be able to take an events mut in here...
-                match events.recv().await {
-                    Ok(AppEvent::NodeConfigChanged(state)) => {
-                        let nodes: Vec<_> = state
+                match app_events.recv().await {
+                    Ok(AppEvent::NodeConfigChanged(node_config_state)) => {
+                        let nodes: Vec<_> = node_config_state
                             .values()
                             .filter_map(|entry| entry.as_ref().ok().cloned())
                             .collect();
@@ -47,6 +47,8 @@ impl ServeAsyncCommand for InterfacesGenerator {
                                     .flat_map(|items| items.iter().cloned())
                             })
                             .collect();
+
+                        // TODO: Only the root node can have deployments
 
                         if deployments.is_empty() {
                             continue;
