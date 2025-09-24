@@ -5,5 +5,4 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-# peppylib and peppygen are the only dependencies required for the root node as they are treated like regular nodes
 peppylib = { path = "../peppylib" }

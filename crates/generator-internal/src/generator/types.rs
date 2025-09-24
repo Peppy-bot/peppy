@@ -24,6 +24,10 @@ impl<T: AllowedSubscriber> SubscriberMap<T> {
             message_format,
         }
     }
+
+    pub fn subscriber(&self) -> &T {
+        &self.subscriber
+    }
 }
 
 /// Language-agnostic generator interface. Each method is pure: input -> output string.

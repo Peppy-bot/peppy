@@ -13,7 +13,13 @@ pub struct DeploymentMappingBuilder<'a> {
     nodes: &'a [NodeConfig],
 }
 
+/// Given a deployment list, finds the corresponding nodes required by
 impl<'a> DeploymentMappingBuilder<'a> {
+    /// # Arguments
+    ///
+    /// * `nodes_cache_dir` - The dir where nodes are cached (the ones that are pulled remotely or pushed with `peppy push`)
+    /// * `deployments` - The deployment list
+    /// * `nodes` - The list of all known nodes in the current instance
     pub fn new(
         nodes_cache_dir: &'a Path,
         deployments: &'a [Deployment],
@@ -26,6 +32,10 @@ impl<'a> DeploymentMappingBuilder<'a> {
         }
     }
 
+    /// # Errors
+    ///
+    /// This function will return an `error::Error` if:
+    /// - The file specified by `path` does not exist (`ErrorKind::NotFound`).
     pub fn resolve_nodes(self) -> Result<NodeResolutionStage> {
         let resolved =
             ResolvedDeploymentNodes::map(self.nodes_cache_dir, self.deployments, self.nodes)?;
