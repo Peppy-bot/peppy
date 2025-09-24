@@ -27,7 +27,7 @@ async fn test_setup_node_from_config_file() {
     fs::write(&config_path, rendered).expect("failed to write config file");
 
     // Invoke setup_node with the generated config file
-    let res = peppycl::setup_node(Some(config_path)).await;
+    let res = peppylib::setup_node(Some(config_path)).await;
     assert!(res.is_ok());
 
     todo!("Finish")

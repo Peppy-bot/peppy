@@ -67,7 +67,7 @@ mod tests {
         // Check that __init__.py exists in the package directory
         assert!(
             init_py.exists(),
-            "Expected __init__.py in peppycl directory"
+            "Expected __init__.py in peppylib directory"
         );
     }
 }

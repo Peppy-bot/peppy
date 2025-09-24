@@ -60,7 +60,7 @@ impl ServeCommandBuilder {
     }
 
     pub fn with_root_node_instance(mut self) -> Self {
-        // TODO start a peppy root node using the `peppycl` crate based on the config file present in the same folder where the `serve` command is run
+        // TODO start a peppy root node using the `peppylib` crate based on the config file present in the same folder where the `serve` command is run
         // The root_node starts after the messaging_router
         self
     }

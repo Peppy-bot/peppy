@@ -1,18 +1,18 @@
-// use peppycl;
+// use peppylib;
 // use peppygen; // peppygen exposes generated interface
 
-// #[peppycl::main]
+// #[peppylib::main]
 // fn main() -> ! {
 //     println!("Hello, world!");
 // }
 
-// use peppycl; // control center
+// use peppylib; // control center
 // use peppygen; // peppygen exposes generated interface
 
 // #[tokio::main]
 // async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //     // Setup the node
-//     let node = peppycl::setup_node().await?;
+//     let node = peppylib::setup_node().await?;
 
 //     // Create a subscription on the node for a topic, providing an async callback
 //     let subscription = node
