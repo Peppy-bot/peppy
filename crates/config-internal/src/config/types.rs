@@ -1,9 +1,12 @@
-use crate::error::Error;
 use crate::error::ParsingError;
-use core::fmt;
-use serde::{Deserialize, Serialize};
-use std::convert::TryFrom;
-use std::str::FromStr;
+use serde::{
+    Deserialize, Serialize,
+    de::{self, Deserializer},
+};
+use std::{
+    convert::TryFrom,
+    fmt::{self, Display, Formatter},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -104,6 +107,88 @@ impl From<Namespace> for String {
         v.0
     }
 }
+
+/// Validated callback name shared across languages (Rust/Python/Java-friendly).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct CallbackName(String);
+
+impl CallbackName {
+    pub fn new<S: Into<String>>(value: S) -> Result<Self, CallbackNameError> {
+        let value = value.into();
+        Self::validate(&value)?;
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn validate(value: &str) -> Result<(), CallbackNameError> {
+        let mut chars = value.chars();
+        let first = chars.next().ok_or(CallbackNameError::Empty)?;
+        if !Self::is_valid_start(first) {
+            return Err(CallbackNameError::InvalidStart(first));
+        }
+        for ch in chars {
+            if !Self::is_valid_continue(ch) {
+                return Err(CallbackNameError::InvalidChar(ch));
+            }
+        }
+        Ok(())
+    }
+
+    fn is_valid_start(ch: char) -> bool {
+        ch == '_' || ch.is_ascii_alphabetic()
+    }
+
+    fn is_valid_continue(ch: char) -> bool {
+        ch == '_' || ch.is_ascii_alphanumeric()
+    }
+}
+
+impl<'de> Deserialize<'de> for CallbackName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        CallbackName::new(raw).map_err(de::Error::custom)
+    }
+}
+
+impl Display for CallbackName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallbackNameError {
+    Empty,
+    InvalidStart(char),
+    InvalidChar(char),
+}
+
+impl Display for CallbackNameError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            CallbackNameError::Empty => write!(f, "callback name cannot be empty"),
+            CallbackNameError::InvalidStart(ch) => write!(
+                f,
+                "callback name must start with an ASCII letter or '_' but found `{}`",
+                ch.escape_default()
+            ),
+            CallbackNameError::InvalidChar(ch) => write!(
+                f,
+                "callback name may only contain ASCII letters, digits, or '_' but found `{}`",
+                ch.escape_default()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CallbackNameError {}
 
 // NodeInfo is not part of the new schema; manifest/config/instances carry this information.
 
@@ -220,7 +305,7 @@ pub struct ExposedService {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubscribedTopic {
     #[serde(default)]
@@ -229,13 +314,12 @@ pub struct SubscribedTopic {
     pub name: String,
     #[serde(default)]
     pub tag: String,
-    #[serde(default)]
-    pub callback: String,
+    pub callback: CallbackName,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub optional: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubscribedService {
     #[serde(default)]
@@ -244,13 +328,12 @@ pub struct SubscribedService {
     pub name: String,
     #[serde(default)]
     pub tag: String,
-    #[serde(default)]
-    pub callback: String,
+    pub callback: CallbackName,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub optional: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubscribedAction {
     #[serde(default)]
@@ -259,8 +342,12 @@ pub struct SubscribedAction {
     pub name: String,
     #[serde(default)]
     pub tag: String,
-    #[serde(default)]
-    pub callback: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callback: Option<CallbackName>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feedback_callback: Option<CallbackName>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub results_callback: Option<CallbackName>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub optional: Option<bool>,
 }
@@ -487,6 +574,61 @@ mod tests {
         assert!(Namespace::new("").is_err()); // empty not permitted
         assert!(Namespace::new("/Robot").is_err()); // capital
         assert!(Namespace::new("/robot$cam").is_err()); // special
+    }
+
+    #[test]
+    fn callback_name_validation() {
+        assert!(CallbackName::new("on_brain_command_received").is_ok());
+        assert!(CallbackName::new("handleEvent").is_ok());
+        assert!(CallbackName::new("_internal_handler").is_ok());
+
+        assert!(matches!(
+            CallbackName::new(""),
+            Err(CallbackNameError::Empty)
+        ));
+        assert!(matches!(
+            CallbackName::new("1bad"),
+            Err(CallbackNameError::InvalidStart('1'))
+        ));
+        assert!(matches!(
+            CallbackName::new("bad-name"),
+            Err(CallbackNameError::InvalidChar('-'))
+        ));
+        assert!(matches!(
+            CallbackName::new("bad!name"),
+            Err(CallbackNameError::InvalidChar('!'))
+        ));
+    }
+
+    #[test]
+    fn callback_name_deserialize_rejects_invalid() {
+        let parsed: CallbackName = serde_json5::from_str("\"onBrainCommand\"").unwrap();
+        assert_eq!(parsed.as_str(), "onBrainCommand");
+
+        let err: Result<CallbackName, _> = serde_json5::from_str("\"1brainCommand\"");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn subscribed_action_accepts_all_callbacks() {
+        let json = r#"{
+            node: "brain",
+            name: "move_arm",
+            tag: "0.1.0",
+            feedback_callback: "onMoveArmFeedback",
+            results_callback: "onMoveArmResult"
+        }"#;
+
+        let action: SubscribedAction = serde_json5::from_str(json).unwrap();
+        assert!(action.callback.is_none());
+        assert_eq!(
+            action.feedback_callback.as_ref().unwrap().as_str(),
+            "onMoveArmFeedback"
+        );
+        assert_eq!(
+            action.results_callback.as_ref().unwrap().as_str(),
+            "onMoveArmResult"
+        );
     }
 
     #[test]

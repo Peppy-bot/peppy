@@ -1,6 +1,6 @@
 use super::types::SubscriberMap;
 use config::{
-    ExposedAction, ExposedService, ExposedTopic, SubscribedAction, SubscribedService,
+    CallbackName, ExposedAction, ExposedService, ExposedTopic, SubscribedAction, SubscribedService,
     SubscribedTopic,
 };
 use proc_macro2::{Ident, Span, TokenStream};
@@ -125,7 +125,7 @@ mod tests {
                     node: String::from("node_alpha"),
                     name: String::from("topic_alpha"),
                     tag: String::from("alpha"),
-                    callback: String::from("on_topic_alpha"),
+                    callback: CallbackName::new("on_topic_alpha").expect("valid callback"),
                     optional: Some(false),
                 },
                 MessageFormat::default(),
@@ -135,7 +135,7 @@ mod tests {
                     node: String::from("node_beta"),
                     name: String::from("topic_beta"),
                     tag: String::from("beta"),
-                    callback: String::from("on_topic_beta"),
+                    callback: CallbackName::new("on_topic_beta").expect("valid callback"),
                     optional: Some(true),
                 },
                 MessageFormat::default(),
