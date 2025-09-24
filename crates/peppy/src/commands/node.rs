@@ -2,8 +2,8 @@ mod list;
 mod run;
 mod types;
 
-use clap::Subcommand;
-use config::Language;
+use clap::{Subcommand, ValueEnum};
+use core::fmt;
 use std::path::PathBuf;
 use tracing::info;
 
@@ -14,6 +14,22 @@ use create::NodeBuilder;
 
 pub mod create;
 pub use types::NodeName;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum Language {
+    Python,
+    #[default]
+    Rust,
+}
+
+impl fmt::Display for Language {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Language::Python => write!(f, "python"),
+            Language::Rust => write!(f, "rust"),
+        }
+    }
+}
 
 #[derive(Subcommand)]
 pub enum NodeCommands {
@@ -31,7 +47,7 @@ pub enum NodeCommands {
         #[arg(long)]
         to_dir: Option<PathBuf>,
         /// Programming language for the node, either `rust` or `python`
-        #[arg(long, default_value = "rust")]
+        #[arg(long, value_enum, default_value_t = Language::Rust)]
         lang: Language,
     },
     /// Runs a specific node

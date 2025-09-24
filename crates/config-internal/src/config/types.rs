@@ -394,52 +394,6 @@ pub struct Manifest {
     pub launch_cmd: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Language {
-    Python,
-    #[default]
-    Rust,
-}
-
-impl fmt::Display for Language {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Language::Python => write!(f, "python"),
-            Language::Rust => write!(f, "rust"),
-        }
-    }
-}
-
-impl FromStr for Language {
-    type Err = Error;
-
-    fn from_str(s: &str) -> crate::error::Result<Self> {
-        match s {
-            "python" => Ok(Language::Python),
-            "rust" => Ok(Language::Rust),
-            _ => Err(Error::UnsupportedLanguage),
-        }
-    }
-}
-
-impl TryFrom<&str> for Language {
-    type Error = Error;
-
-    fn try_from(s: &str) -> crate::error::Result<Self> {
-        s.parse()
-    }
-}
-
-impl From<Language> for &'static str {
-    fn from(lang: Language) -> Self {
-        match lang {
-            Language::Python => "python",
-            Language::Rust => "rust",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct NodeRuntimeConfig {

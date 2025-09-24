@@ -7,6 +7,6 @@ pub use create::NodeConfigCreator;
 pub use parse::NodeConfigParser;
 pub use types::{
     ConfigTemplateType, Deployment, DeploymentInstance, DeploymentSource, ExposedAction,
-    ExposedService, ExposedTopic, Interfaces, Language, MessageFormat, NodeConfig,
-    SubscribedAction, SubscribedService, SubscribedTopic, SubscribesTo,
+    ExposedService, ExposedTopic, Interfaces, MessageFormat, NodeConfig, SubscribedAction,
+    SubscribedService, SubscribedTopic, SubscribesTo,
 };
