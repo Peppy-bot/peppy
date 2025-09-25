@@ -29,6 +29,7 @@
   // - `deployments` adopts a "value specification syntax" in opposition to the "declarative syntax" present in the other config files
   // - `deployments` in the future can eventually start nodes on MCUs 
   deployments: [
+    // In this example, 2 intances of uvc_camera will be deployed, both instances will emit to a single `web_video_stream` instance
     {
       // This is an example of pulling the `uvc_camera` node from github and instanciating it with user defined parameters. In the future we might be able to pull them from nodes.peppy.bot
       name: "uvc_camera",
@@ -37,8 +38,6 @@
       tag: "0.1.0", // In that example the tag is a git tag
       instances: [
         {
-          // namespace is implicitely prefixed with `/dev` in dev environment (running outside `systemd`) and `/prod` when installed with `peppy service deploy` as well as with the root node name (so that other root nodes in the same network can easily address this one).
-          // For example, in dev, this root node and its children will be found in `/dev/camera/right`
           namespace: "/camera/right",
           parameters: {
             device: {
@@ -55,9 +54,52 @@
               encoding: "yuyv", // "rgb8", "bgr8", "yuyv", "mjpeg"
             },
           }
+        },
+        {
+          namespace: "/camera/left",
+          parameters: {
+            device: {
+              physical: "/dev/video_left",
+              sim: "mujoco:camera_left",
+              priority: "physical" // "physical" or "sim". If the physical path is not accessible, the sim path is attempted
+            },
+            video: {
+              frame_rate: 30,
+              resolution: {
+                width: 1920,
+                height: 1080,
+              },
+              encoding: "yuyv", // "rgb8", "bgr8", "yuyv", "mjpeg"
+            },
+          }
         }
       ]
-    }
+    },
+    {
+      name: "web_video_stream",
+      // If `source` is not specified, the node will be searched inside the node stack of the running `peppy` daemon
+      tag: "0.1.0",
+      instances: [
+        {
+          namespace: "/camera/stream/right",
+          parameters: {
+            http: {
+              host: "0.0.0.0",
+              port: 8083,
+              cors_enabled: false,
+              cors_origins: "*",
+              max_connections: "2000",
+              request_timeout_ms: "3000",
+            },
+            video_stream: {
+              format: "mjpeg",
+              quality: 3,
+              max_fps: 30,
+            },
+          }
+        }
+      ]
+    },
   ],
   interfaces: {
     subscribes_to: {
