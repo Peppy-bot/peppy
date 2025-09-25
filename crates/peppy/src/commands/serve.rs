@@ -59,6 +59,14 @@ pub struct Serve {
     composite_command: CompositeCommand,
 }
 
+/// The serve command is the command that runs as a daemon in systemd and maintains a "node stack" (a graph representation of nodes)
+/// It operates as follow:
+/// 1. Starts a zenohd separate process
+/// 2. Open up the `peppy.json5` on disk where it's launched (or specified with `--node-config`)
+/// 3. Look for the `deployments` key inside `peppy.json5`
+/// 4. Starting from the `peppy.json5` root configuration file, look for all the nodes in the children folders and create the initial node stack
+/// 5. If `deployments` is present, resolve the dependencies based on the initial node stack.
+/// 6. If the non-optional `deployments` cannot be resolved, the `serve` command terminates with an error.
 impl Serve {
     pub fn new(composite_command: CompositeCommand) -> Self {
         Self { composite_command }
