@@ -7,11 +7,7 @@
       "root_node",
       "my_action_robot"
     ],
-    launch_cmd: [
-      "cargo",
-      "run",
-      "--release"
-    ]
+    is_root_node: true
   },
   config: {
     auto_start: true,

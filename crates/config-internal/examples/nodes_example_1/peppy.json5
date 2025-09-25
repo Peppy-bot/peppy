@@ -1,23 +1,23 @@
 // PeppyOS Root Node Configuration
 // This is the main configuration file that defines the root node of the current machine.
-// It's run using the `peppy node serve` command. It will automatically use the `peppy.json5` file in the same path the command is run as the root configuration file and will look into child folders for other `peppy.json5` files for children nodes.
+// It's run using the `peppy serve` command. It will automatically use the `peppy.json5` file in the same path the command is run as the root configuration file and will look into child folders for other `peppy.json5` files for children nodes.
 // Any new node that is created should be added to the root_node by running the command `peppy node add <path_to_peppy.json5>`
 // There is only one root node/service per machine/OS and they automatically discover the other root nodes that are on the same network running on different computers
-// When running in production, the `peppy service deploy` command moves the current node and its children into the OS directories and installs a systemd service that runs on a different namespace on the device (so that the dev and prod environments do not get mingled together)
+// This configuration is created with `peppy init`, the `peppy serve` command cannot run without it.
 {
   manifest: {
     // `name` can only have alphanumeric, underscore, or hyphen characters.
     name: "my_robot_1", // It's a good practice to give a unique name to the root node to avoid name conflicts with other root nodes under the same network
     tag: "0.1.0",
-    launch_cmd: [
-      "cargo",
-      "run",
-      "--release"
-    ], // Launch command used by `peppy server` to run the node
     labels: [
       "root_node",
-      "my_awesome_robot"
-    ]
+      "my_robot_1"
+    ],
+    // When `is_root_node` is `true`, the following fields are fobidden:
+    // - `manifest.launch_cmd`: This command has no relevance in the root node
+    // While those fields are only allowed in the root node:
+    // - `deployments`: Defines how to start the starting node graph
+    is_root_node: true
   },
   config: {
     auto_start: true, // Always true for the root node
@@ -25,9 +25,9 @@
     // Always restart the root node if it crashes
     respawn_delay: 1.0 // In seconds. Only relevant when the node is installed as a `systemd` service with `peppy node deploy`
   },
-  // Key specific to the root node, there cannot be more than one key like this one per project
-  // `deployments` pulls those nodes from nodes.peppy.bot and store/use them in/from the .peppy directory if they are not present in the children directory relative to this configuration file.
-  // `deployments` adopts a "value specification syntax" in opposition to the "declarative syntax" present in the other config files
+  // - `deployments` pulls those nodes from nodes.peppy.bot and store/use them in/from the .peppy directory if they are not present in the children directory relative to this configuration file.
+  // - `deployments` adopts a "value specification syntax" in opposition to the "declarative syntax" present in the other config files
+  // - `deployments` in the future can eventually start nodes on MCUs 
   deployments: [
     {
       // This is an example of pulling the `uvc_camera` node from github and instanciating it with user defined parameters. In the future we might be able to pull them from nodes.peppy.bot

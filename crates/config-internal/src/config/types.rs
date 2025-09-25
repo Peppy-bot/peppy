@@ -468,6 +468,10 @@ pub enum ConfigTemplateType {
     FullNode,
 }
 
+fn bool_is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
@@ -477,8 +481,11 @@ pub struct Manifest {
     pub labels: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "bool_is_false")]
+    pub is_root_node: bool, // Root nodes orchestrate deployments instead of running a command
     // Command to launch the node, e.g., ["cargo", "run", "--release"]
-    pub launch_cmd: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_cmd: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
