@@ -1,7 +1,6 @@
 use config::ConfigError;
+use git2::Error as GitError;
 use thiserror::Error;
-
-use std::str::Utf8Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -10,14 +9,14 @@ pub enum Error {
     // -- general
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Git(#[from] GitError),
+    #[error("{0} not implemented yet")]
+    NotImplemented(&'static str),
 
-    // -- Subscriber errors
-    #[error("missing topic message format for subscriber `{0}`")]
-    SubscriberTopicMessageFormatMissing(String),
-    #[error("missing service message format for subscriber `{0}`")]
-    SubscriberServiceMessageFormatMissing(String),
-    #[error("missing action message format for subscriber `{0}`")]
-    SubscriberActionMessageFormatMissing(String),
+    // -- config-internal
+    #[error(transparent)]
+    Config(#[from] ConfigError),
 
     // -- nodes errors
     #[error("Cannot find the node in `{0}`")]

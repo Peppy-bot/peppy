@@ -1,17 +1,15 @@
 [package]
-name = "generator"
+name = "node-stack"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-pmi = { path = "../pmi-internal" }
 config = { path = "../config-internal" }
-quote = "1.0"
-proc-macro2 = "1.0"
-prettyplease = "0.2"
-syn = { version = "2.0", features = ["full"] }
+easy-tree = "0.2.0"
+git2 = "0.20"
 thiserror = "2.0"
+
 
 [dev-dependencies]
 serde_json5 = "0.2.1"

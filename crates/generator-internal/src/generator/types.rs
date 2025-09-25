@@ -3,6 +3,13 @@ use config::{
     SubscribedService, SubscribedTopic,
 };
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Language {
+    Python,
+    #[default]
+    Rust,
+}
+
 pub trait AllowedSubscriber {}
 
 impl AllowedSubscriber for SubscribedTopic {}

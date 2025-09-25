@@ -458,7 +458,7 @@ dependencies = [
  "notify",
  "notify-debouncer-mini",
  "serde",
- "serde_json5 0.2.1",
+ "serde_json5",
  "tempfile",
  "thiserror 2.0.16",
  "tokio",
@@ -995,12 +995,11 @@ name = "generator"
 version = "0.0.1"
 dependencies = [
  "config",
- "git2",
  "pmi",
  "prettyplease",
  "proc-macro2",
  "quote",
- "serde_json5 0.1.0",
+ "serde_json5",
  "syn 2.0.106",
  "tempfile",
  "thiserror 2.0.16",
@@ -1773,6 +1772,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "43794a0ace135be66a25d3ae77d41b91615fb68ae937f904090203e81f755b65"
 
 [[package]]
+name = "node-stack"
+version = "0.0.1"
+dependencies = [
+ "config",
+ "easy-tree",
+ "git2",
+ "serde_json5",
+ "tempfile",
+ "thiserror 2.0.16",
+]
+
+[[package]]
 name = "nom"
 version = "7.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2020,6 +2031,7 @@ dependencies = [
  "generator",
  "ipnet",
  "netdev",
+ "node-stack",
  "peppylib",
  "pmi",
  "rayon",
@@ -2226,7 +2238,7 @@ dependencies = [
  "json5",
  "serde",
  "serde_json",
- "serde_json5 0.2.1",
+ "serde_json5",
  "tempfile",
  "tokio",
  "tracing",
@@ -2986,17 +2998,6 @@ dependencies = [
  "ryu",
  "serde",
  "serde_core",
-]
-
-[[package]]
-name = "serde_json5"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32a6b754515e1a7bd79fc2edeaecee526fc80cb3a918607e5ca149225a3a9586"
-dependencies = [
- "pest",
- "pest_derive",
- "serde",
 ]
 
 [[package]]
