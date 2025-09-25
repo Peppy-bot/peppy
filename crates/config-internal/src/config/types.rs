@@ -537,6 +537,8 @@ pub struct Deployment {
     pub name: String,
     pub source: DeploymentSource,
     pub tag: String,
+    #[serde(default, skip_serializing_if = "bool_is_false")]
+    pub optional: bool,
     pub instances: Vec<DeploymentInstance>,
 }
 

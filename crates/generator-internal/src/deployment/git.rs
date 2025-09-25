@@ -146,6 +146,7 @@ mod tests {
             name: "uvc_camera".to_string(),
             source: DeploymentSource::try_from(source.to_string()).unwrap(),
             tag: "0.1.0".to_string(),
+            optional: false,
             instances: vec![],
         }
     }
@@ -245,6 +246,7 @@ mod tests {
             name: "uvc_camera".to_string(),
             source: DeploymentSource::try_from(remote.to_string()).unwrap(),
             tag: "0.1.0".to_string(),
+            optional: false,
             instances: vec![],
         };
 

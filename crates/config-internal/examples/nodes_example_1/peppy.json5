@@ -79,6 +79,7 @@
       name: "web_video_stream",
       // If `source` is not specified, the node will be searched inside the node stack of the running `peppy` daemon
       tag: "0.1.0",
+      optional: true, // false by default. If set to `false`, do not prevent `peppy serve` from starting if the node cannot be found in the node stack
       instances: [
         {
           namespace: "/camera/stream/right",
