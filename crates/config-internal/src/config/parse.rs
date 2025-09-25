@@ -44,6 +44,8 @@ mod tests {
         let config = NodeConfigParser::from_content(json5).unwrap();
         assert_eq!(config.manifest.name.as_str(), "test_node");
         assert_eq!(config.manifest.tag, "0.1.0");
+        assert!(!config.manifest.is_root_node);
+        assert!(config.manifest.launch_cmd.is_some());
         assert!(config.parameters.is_empty());
     }
 
@@ -71,6 +73,8 @@ mod tests {
         let config = NodeConfigParser::from_content(json5).unwrap();
         assert_eq!(config.manifest.name.as_str(), "camera_driver");
         assert_eq!(config.manifest.tag, "2.1.0");
+        assert!(!config.manifest.is_root_node);
+        assert!(config.manifest.launch_cmd.is_some());
         assert_eq!(config.config.auto_start, Some(true));
         assert_eq!(config.config.respawn, Some(true));
         assert_eq!(config.config.respawn_delay, Some(2.0));
@@ -83,7 +87,7 @@ mod tests {
             manifest: {
                 name: "my_robot_1",
                 tag: "0.1.0",
-                launch_cmd: ["cargo", "run", "--release"]
+                is_root_node: true
             },
             config: {
                 auto_start: true,
@@ -167,6 +171,8 @@ mod tests {
         let cfg = NodeConfigParser::from_content(json5).unwrap();
         assert_eq!(cfg.manifest.name.as_str(), "my_robot_1");
         assert_eq!(cfg.manifest.tag, "0.1.0");
+        assert!(cfg.manifest.is_root_node);
+        assert!(cfg.manifest.launch_cmd.is_none());
         assert_eq!(cfg.config.auto_start, Some(true));
         assert!(cfg.deployments.is_some());
         let deployments = cfg.deployments.unwrap();
