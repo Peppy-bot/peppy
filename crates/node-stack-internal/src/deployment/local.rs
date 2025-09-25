@@ -24,7 +24,7 @@ pub fn resolve_local_deployment(
 mod tests {
     use super::*;
     use crate::error::Error;
-    use config::{Deployment, DeploymentSource, NodeConfig};
+    use config::{Deployment, NodeConfig};
 
     #[test]
     fn resolve_local_deployment_success() {

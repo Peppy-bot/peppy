@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use super::{ServeAsyncCommand, ServeFuture};
 use crate::{AppContext, AppEvent, Result};
 use config::Interfaces;
-use generator::DeploymentMappingBuilder;
+use node_stack::DeploymentMappingBuilder;
 use tokio::sync::broadcast;
 
 pub struct InterfacesGenerator {

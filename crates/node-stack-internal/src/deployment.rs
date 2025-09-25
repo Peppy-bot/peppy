@@ -28,9 +28,10 @@ impl ResolvedDeploymentNodes {
     /// Ensures that every `Deployment` maps to a known node.
     ///
     /// This is ensured by doing the following:
-    /// 1. If `Deployment::source` starts with `file://`, look for the node in the provided `nodes` vector.
+    /// 1. If `Deployment::source` doesn't exist, look for the node in the node_stack
+    /// 2. If `Deployment::source` starts with `file://`, look for the node in the provided `nodes` vector.
     ///    The `name` and the version must match; otherwise return `NodeNotFound`.
-    /// 2. Otherwise, pull the node from the source (Git or `https://nodes.peppy.bot/`) or return `NodeNotFound`
+    /// 3. Otherwise, pull the node from the source (Git or `https://nodes.peppy.bot/`) or return `NodeNotFound`
     ///    if the node cannot be pulled. The `name` of the node and `tag` should match; otherwise return
     ///    `NoMatchingNode`. The pulled nodes are stored inside `<root_dir>/.peppy/nodes`.
     pub fn map(
