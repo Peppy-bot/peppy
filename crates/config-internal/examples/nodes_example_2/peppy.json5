@@ -19,19 +19,22 @@
       name: "my_action_robot_brain",
       source: "file://tmp/my_action_robot_brain/peppy.json5",
       tag: "0.1.0",
+      optional: false, // false by default
       instances: [
         {
-          namespace: "/"
+          namespace: "/",
+          parameters: {}
         }
       ],
     },
     {
       name: "my_action_robot_controller",
-      source: "file://tmp/my_action_robot_controller/peppy.json5",
+      // If `source` is not specified, the node will be searched inside the node stack of the running `peppy` daemon
       tag: "0.1.0",
       instances: [
         {
-          namespace: "/"
+          namespace: "/",
+          parameters: {}
         }
       ]
     }
