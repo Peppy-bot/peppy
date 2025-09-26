@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use super::{ServeAsyncCommand, ServeFuture};
 use crate::{AppContext, AppEvent, Result};
 use config::Interfaces;
-use node_stack::DeploymentMappingBuilder;
+//use node_stack::NodeStackBuilder;
 use tokio::sync::broadcast;
 
 pub struct InterfacesGenerator {
@@ -54,10 +54,10 @@ impl ServeAsyncCommand for InterfacesGenerator {
                             continue;
                         }
 
-                        let _validated =
-                            DeploymentMappingBuilder::new(&nodes_cache_dir, &deployments, &nodes)
-                                .resolve_nodes()?
-                                .validate_messages()?;
+                        // let _validated =
+                        //     NodeStackBuilder::new(&nodes_cache_dir, &deployments, &nodes)
+                        //         .resolve_nodes()?
+                        //         .validate_messages()?;
 
                         todo!("Finish, invoke functions in the generator crate");
                         //let _gen = generate_interfaces_code(_interfaces.as_ref(), &_for_language);

@@ -1,4 +1,61 @@
-use config::{Deployment, DeploymentSource, NodeConfig};
+use config::{Deployment, NodeConfig, NodeSource as ConfigNodeSource};
+
+pub use config::GitRemoteSpec;
+
+#[derive(Debug, Clone)]
+pub struct ResolvedNodeSource {
+    source: Option<ConfigNodeSource>,
+    node: NodeConfig,
+}
+
+impl ResolvedNodeSource {
+    pub fn new(source: Option<ConfigNodeSource>, node: NodeConfig) -> Self {
+        Self { source, node }
+    }
+
+    pub fn source(&self) -> Option<&ConfigNodeSource> {
+        self.source.as_ref()
+    }
+
+    pub fn node(&self) -> &NodeConfig {
+        &self.node
+    }
+
+    pub fn into_node(self) -> NodeConfig {
+        self.node
+    }
+
+    pub fn into_parts(self) -> (Option<ConfigNodeSource>, NodeConfig) {
+        (self.source, self.node)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeploymentMap {
+    deployment: Deployment,
+    node_source: ResolvedNodeSource,
+}
+
+impl DeploymentMap {
+    pub fn new(deployment: Deployment, node_source: ResolvedNodeSource) -> Self {
+        Self {
+            deployment,
+            node_source,
+        }
+    }
+
+    pub fn deployment(&self) -> &Deployment {
+        &self.deployment
+    }
+
+    pub fn node_source(&self) -> &ResolvedNodeSource {
+        &self.node_source
+    }
+
+    pub fn into_parts(self) -> (Deployment, ResolvedNodeSource) {
+        (self.deployment, self.node_source)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum RemoteSpec {
@@ -6,48 +63,12 @@ pub enum RemoteSpec {
     Http(String),
 }
 
-#[derive(Debug, Clone)]
-pub struct GitRemoteSpec {
-    pub repo: String,
-    pub path: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct NodeSource {
-    source: DeploymentSource,
-    node: NodeConfig,
-}
-
-impl NodeSource {
-    pub fn new(source: DeploymentSource, node: NodeConfig) -> Self {
-        Self { source, node }
-    }
-
-    pub fn source(&self) -> &DeploymentSource {
-        &self.source
-    }
-
-    pub fn node(&self) -> &NodeConfig {
-        &self.node
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct DeploymentMap {
-    deployment: Deployment,
-    node: NodeSource,
-}
-
-impl DeploymentMap {
-    pub fn new(deployment: Deployment, node: NodeSource) -> Self {
-        Self { deployment, node }
-    }
-
-    pub fn deployment(&self) -> &Deployment {
-        &self.deployment
-    }
-
-    pub fn node_source(&self) -> &NodeSource {
-        &self.node
+impl RemoteSpec {
+    pub fn from_node_source(source: Option<&ConfigNodeSource>) -> Option<Self> {
+        match source {
+            Some(ConfigNodeSource::Git(spec)) => Some(Self::Git(spec.clone())),
+            Some(ConfigNodeSource::Http(url)) => Some(Self::Http(url.clone())),
+            _ => None,
+        }
     }
 }

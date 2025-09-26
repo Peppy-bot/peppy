@@ -29,6 +29,7 @@ impl NodeConfigParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NodeSource;
     use crate::error::Error;
     use tempfile::NamedTempFile;
 
@@ -181,17 +182,17 @@ mod tests {
         // Check first deployment
         assert_eq!(deployments[0].name, "uvc_camera");
         assert_eq!(deployments[0].tag, "0.1.0");
-        assert!(deployments[0].source.as_str().starts_with("file://"));
+        assert!(matches!(deployments[0].source, Some(NodeSource::Local(_))));
         assert_eq!(deployments[0].instances.len(), 2);
 
         // Check second deployment
         assert_eq!(deployments[1].name, "web_video_stream");
-        assert!(!deployments[1].source.is_local());
+        assert!(matches!(deployments[1].source, Some(NodeSource::Git(_))));
         assert_eq!(deployments[1].instances.len(), 1);
 
         // Check third deployment
         assert_eq!(deployments[2].name, "peppy_web");
-        assert!(!deployments[2].source.is_local());
+        assert!(matches!(deployments[2].source, Some(NodeSource::Git(_))));
         assert_eq!(deployments[2].instances.len(), 1);
     }
 

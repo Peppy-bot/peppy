@@ -7,9 +7,9 @@ pub mod consts;
 // To create a new config
 pub use config::{
     CallbackName, CallbackNameError, ConfigTemplateType, Deployment, DeploymentInstance,
-    DeploymentSource, ExposedAction, ExposedService, ExposedTopic, Interfaces, MessageFormat,
-    NodeConfig, NodeConfigCreator, SubscribedAction, SubscribedService, SubscribedTopic,
-    SubscribesTo,
+    ExposedAction, ExposedService, ExposedTopic, GitRemoteSpec, Interfaces, MessageFormat,
+    NodeConfig, NodeConfigCreator, NodeSource, SubscribedAction, SubscribedService,
+    SubscribedTopic, SubscribesTo,
 };
 
 // To parse existing configs

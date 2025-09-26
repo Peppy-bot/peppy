@@ -1,7 +1,6 @@
-use super::types::{DeploymentMap, NodeSource};
-
 use config::{Deployment, NodeConfig};
 
+use super::types::{DeploymentMap, ResolvedNodeSource};
 use crate::error::{Error, Result};
 
 pub fn resolve_local_deployment(
@@ -16,7 +15,7 @@ pub fn resolve_local_deployment(
         .cloned()
         .ok_or_else(|| Error::NodeNotFound(deployment.name.clone()))?;
 
-    let node_source = NodeSource::new(deployment.source.clone(), node);
+    let node_source = ResolvedNodeSource::new(deployment.source.clone(), node);
     Ok(DeploymentMap::new(deployment.clone(), node_source))
 }
 
@@ -24,7 +23,7 @@ pub fn resolve_local_deployment(
 mod tests {
     use super::*;
     use crate::error::Error;
-    use config::{Deployment, NodeConfig};
+    use config::{Deployment, NodeConfig, NodeSource as ConfigNodeSource};
 
     #[test]
     fn resolve_local_deployment_success() {
@@ -38,7 +37,10 @@ mod tests {
         assert_eq!(map.deployment().tag, deployment.tag);
 
         let node_source = map.node_source();
-        assert!(node_source.source().is_local());
+        assert!(matches!(
+            node_source.source(),
+            Some(ConfigNodeSource::Local(_))
+        ));
         assert_eq!(
             node_source.node().manifest.name.as_str(),
             node.manifest.name.as_str()

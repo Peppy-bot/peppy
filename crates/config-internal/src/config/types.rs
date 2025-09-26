@@ -2,10 +2,12 @@ use crate::error::ParsingError;
 use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer},
+    ser::{self, Serializer},
 };
 use std::{
     convert::TryFrom,
     fmt::{self, Display, Formatter},
+    path::{Path, PathBuf},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +66,188 @@ impl TryFrom<String> for Name {
 impl From<Name> for String {
     fn from(v: Name) -> Self {
         v.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeSource {
+    Local(PathBuf),
+    Git(GitRemoteSpec),
+    Http(String),
+}
+
+impl NodeSource {
+    const FILE_SCHEME: &'static str = "file://";
+
+    pub fn is_local(&self) -> bool {
+        matches!(self, NodeSource::Local(_))
+    }
+
+    pub fn as_local_path(&self) -> Option<&Path> {
+        match self {
+            NodeSource::Local(path) => Some(path.as_path()),
+            _ => None,
+        }
+    }
+
+    pub fn git(&self) -> Option<&GitRemoteSpec> {
+        match self {
+            NodeSource::Git(spec) => Some(spec),
+            _ => None,
+        }
+    }
+
+    pub fn http(&self) -> Option<&str> {
+        match self {
+            NodeSource::Http(url) => Some(url.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn from_str(value: &str) -> Result<Self, ParsingError> {
+        Self::from_string(value.to_owned())
+    }
+
+    fn from_string(value: String) -> Result<Self, ParsingError> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(ParsingError::InvalidDeploymentSource(
+                "source cannot be empty".to_string(),
+            ));
+        }
+
+        if let Some(rest) = trimmed.strip_prefix(Self::FILE_SCHEME) {
+            if rest.is_empty() {
+                return Err(ParsingError::InvalidDeploymentSource(
+                    "file path cannot be empty".to_string(),
+                ));
+            }
+            return Ok(NodeSource::Local(PathBuf::from(rest)));
+        }
+
+        if Self::is_http_url(trimmed) && !Self::looks_like_git(trimmed) {
+            return Ok(NodeSource::Http(trimmed.to_owned()));
+        }
+
+        let spec = Self::parse_git_spec(trimmed)?;
+        Ok(NodeSource::Git(spec))
+    }
+
+    fn parse_git_spec(value: &str) -> Result<GitRemoteSpec, ParsingError> {
+        let (repo_raw, path_raw) = value
+            .split_once("::")
+            .map(|(repo, path)| (repo.trim(), Some(path.trim())))
+            .unwrap_or_else(|| (value.trim(), None));
+
+        if repo_raw.is_empty() {
+            return Err(ParsingError::InvalidDeploymentSource(
+                "git repo cannot be empty".to_string(),
+            ));
+        }
+
+        let path = path_raw
+            .filter(|segment| !segment.is_empty())
+            .map(|segment| segment.trim_start_matches('/').to_owned());
+
+        Ok(GitRemoteSpec {
+            repo: repo_raw.to_owned(),
+            path,
+        })
+    }
+
+    fn is_http_url(value: &str) -> bool {
+        value.starts_with("http://") || value.starts_with("https://")
+    }
+
+    fn looks_like_git(value: &str) -> bool {
+        value.ends_with(".git")
+            || value.contains(".git/")
+            || value.contains(".git?")
+            || value.starts_with("git@")
+            || value.starts_with("ssh://")
+            || value.starts_with("git://")
+    }
+}
+
+impl Serialize for NodeSource {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            NodeSource::Local(path) => {
+                let path_str = path
+                    .to_str()
+                    .ok_or_else(|| ser::Error::custom("local path is not valid UTF-8"))?;
+                serializer.serialize_str(&format!("{}{}", Self::FILE_SCHEME, path_str))
+            }
+            NodeSource::Git(spec) => serializer.serialize_str(&spec.as_remote()),
+            NodeSource::Http(url) => serializer.serialize_str(url),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for NodeSource {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum RawNodeSource {
+            String(String),
+            Git { git: RawGitSpec },
+        }
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawGitSpec {
+            repo: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            path: Option<String>,
+        }
+
+        match RawNodeSource::deserialize(deserializer)? {
+            RawNodeSource::String(value) => {
+                NodeSource::from_string(value).map_err(de::Error::custom)
+            }
+            RawNodeSource::Git { git } => {
+                if git.repo.trim().is_empty() {
+                    return Err(de::Error::custom(ParsingError::InvalidDeploymentSource(
+                        "git repo cannot be empty".to_string(),
+                    )));
+                }
+
+                Ok(NodeSource::Git(GitRemoteSpec {
+                    repo: git.repo,
+                    path: git.path.and_then(|segment| {
+                        let trimmed = segment.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed.trim_start_matches('/').to_owned())
+                        }
+                    }),
+                }))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitRemoteSpec {
+    pub repo: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+impl GitRemoteSpec {
+    pub fn as_remote(&self) -> String {
+        match &self.path {
+            Some(path) if !path.is_empty() => format!("{}::{}", self.repo, path),
+            _ => self.repo.clone(),
+        }
     }
 }
 
@@ -479,10 +663,9 @@ pub struct Manifest {
     pub tag: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sha256: Option<String>,
+    // Root nodes orchestrate deployments instead of running a command
     #[serde(default, skip_serializing_if = "bool_is_false")]
-    pub is_root_node: bool, // Root nodes orchestrate deployments instead of running a command
+    pub is_root_node: bool,
     // Command to launch the node, e.g., ["cargo", "run", "--release"]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_cmd: Option<Vec<String>>,
@@ -499,43 +682,12 @@ pub struct NodeRuntimeConfig {
     pub respawn_delay: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(try_from = "String", into = "String")]
-pub struct DeploymentSource(String);
-
-impl DeploymentSource {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-    pub fn is_local(&self) -> bool {
-        self.0.starts_with("file://")
-    }
-}
-
-impl TryFrom<String> for DeploymentSource {
-    type Error = ParsingError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        if value.is_empty() {
-            return Err(ParsingError::InvalidDeploymentSource(
-                "source cannot be empty".to_string(),
-            ));
-        }
-        Ok(DeploymentSource(value))
-    }
-}
-
-impl From<DeploymentSource> for String {
-    fn from(source: DeploymentSource) -> Self {
-        source.0
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Deployment {
     pub name: String,
-    pub source: DeploymentSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<NodeSource>,
     pub tag: String,
     #[serde(default, skip_serializing_if = "bool_is_false")]
     pub optional: bool,
@@ -561,6 +713,8 @@ pub struct Interfaces {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     #[test]
@@ -641,22 +795,42 @@ mod tests {
     }
 
     #[test]
-    fn deployment_source_validation() {
-        let local: DeploymentSource = serde_json5::from_str("\"file:///tmp/node\"").unwrap();
-        assert!(local.is_local());
+    fn node_source_validation() {
+        let local: NodeSource = serde_json5::from_str("\"file:///tmp/node\"").unwrap();
+        assert!(matches!(local, NodeSource::Local(ref path) if path == Path::new("/tmp/node")));
 
-        let remote: DeploymentSource =
-            serde_json5::from_str("\"https://github.com/Peppy/uvc_camera.git\"").unwrap();
-        assert_eq!(remote.as_str(), "https://github.com/Peppy/uvc_camera.git");
+        let http: NodeSource =
+            serde_json5::from_str("\"https://nodes.peppy.bot/nodes/camera\"").unwrap();
+        assert!(
+            matches!(http, NodeSource::Http(ref url) if url == "https://nodes.peppy.bot/nodes/camera")
+        );
 
-        let empty: Result<DeploymentSource, _> = serde_json5::from_str("\"\"");
-        let err: ParsingError = empty
-            .expect_err("deserializing an empty deployment source should fail")
-            .into();
+        let git: NodeSource = serde_json5::from_str(
+            "{ git: { repo: \"https://github.com/Peppy/uvc_camera.git\", path: \"configs/camera\" } }",
+        )
+        .unwrap();
         assert!(matches!(
-            err,
-            ParsingError::InvalidDeploymentSource(ref msg) if msg == "source cannot be empty"
+            git,
+            NodeSource::Git(GitRemoteSpec { repo, path })
+                if repo == "https://github.com/Peppy/uvc_camera.git" && path.as_deref() == Some("configs/camera")
         ));
+
+        let defaulted: Deployment = serde_json5::from_str(
+            r#"{
+                name: "controller",
+                tag: "0.1.0",
+                instances: [{ namespace: "/" }]
+            }"#,
+        )
+        .unwrap();
+        assert!(defaulted.source.is_none());
+
+        let empty: Result<NodeSource, _> = serde_json5::from_str("\"\"");
+        let err = empty.expect_err("deserializing an empty node source should fail");
+        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+            panic!("expected invalid deployment source error");
+        };
+        assert_eq!(msg, "source cannot be empty");
     }
 
     #[test]

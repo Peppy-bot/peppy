@@ -7,6 +7,6 @@ pub use create::NodeConfigCreator;
 pub use parse::NodeConfigParser;
 pub use types::{
     CallbackName, CallbackNameError, ConfigTemplateType, Deployment, DeploymentInstance,
-    DeploymentSource, ExposedAction, ExposedService, ExposedTopic, Interfaces, MessageFormat,
-    NodeConfig, SubscribedAction, SubscribedService, SubscribedTopic, SubscribesTo,
+    ExposedAction, ExposedService, ExposedTopic, GitRemoteSpec, Interfaces, MessageFormat,
+    NodeConfig, NodeSource, SubscribedAction, SubscribedService, SubscribedTopic, SubscribesTo,
 };
