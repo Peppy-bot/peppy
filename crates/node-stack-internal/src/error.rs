@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use config::ConfigError;
 use git2::Error as GitError;
 use thiserror::Error;
@@ -23,4 +25,6 @@ pub enum Error {
     NodeNotFound(String),
     #[error("The node name `{0}` or tag `{1}` could not be found")]
     NoMatchingNode(String, String),
+    #[error("The node found in `{0}` is not a root node")]
+    NotRootNode(PathBuf),
 }

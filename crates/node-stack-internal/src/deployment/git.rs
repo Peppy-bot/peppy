@@ -3,22 +3,19 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::types::GitRemoteSpec;
-use super::types::{DeploymentMap, NodeSource};
+use super::types::{DeploymentMap, GitRemoteSpec, ResolvedNodeSource};
 use crate::error::{Error, Result};
 use config::{Deployment, NodeConfigParser};
 use git2::{AutotagOption, FetchOptions, ObjectType, Repository};
 
-impl GitRemoteSpec {
-    fn node_config_path(&self) -> PathBuf {
-        let path = self.path.as_deref().map(Path::new);
-        match path {
-            Some(path) if path.extension().and_then(|ext| ext.to_str()) == Some("json5") => {
-                PathBuf::from(path)
-            }
-            Some(path) => path.join("peppy.json5"),
-            None => PathBuf::from("peppy.json5"),
+fn node_config_path(spec: &GitRemoteSpec) -> PathBuf {
+    let path = spec.path.as_deref().map(Path::new);
+    match path {
+        Some(path) if path.extension().and_then(|ext| ext.to_str()) == Some("json5") => {
+            PathBuf::from(path)
         }
+        Some(path) => path.join("peppy.json5"),
+        None => PathBuf::from("peppy.json5"),
     }
 }
 
@@ -116,7 +113,7 @@ pub fn resolve_remote_git(
         .tree()
         .map_err(|_| Error::NodeNotFound(deployment.name.clone()))?;
 
-    let config_path = spec.node_config_path();
+    let config_path = node_config_path(&spec);
     let content = read_blob_from_tree(&repo, &tree, &config_path)
         .map_err(|_| Error::NodeNotFound(deployment.name.clone()))?;
 
@@ -129,7 +126,7 @@ pub fn resolve_remote_git(
         ));
     }
 
-    let node_source = NodeSource::new(deployment.source.clone(), node);
+    let node_source = ResolvedNodeSource::new(deployment.source.clone(), node);
     Ok(DeploymentMap::new(deployment.clone(), node_source))
 }
 
@@ -137,14 +134,14 @@ pub fn resolve_remote_git(
 mod tests {
     use super::*;
     use crate::error::Error;
-    use config::DeploymentSource;
+    use config::NodeSource as ConfigNodeSource;
     use git2::{ObjectType, Repository, Signature};
     use tempfile::TempDir;
 
     fn sample_remote_deployment(source: &str) -> Deployment {
         Deployment {
             name: "uvc_camera".to_string(),
-            source: DeploymentSource::try_from(source.to_string()).unwrap(),
+            source: Some(ConfigNodeSource::from_str(source).unwrap()),
             tag: "0.1.0".to_string(),
             optional: false,
             instances: vec![],
@@ -244,7 +241,7 @@ mod tests {
         let remote = "https://nodes.peppy.bot/uvc_camera";
         let deployment = Deployment {
             name: "uvc_camera".to_string(),
-            source: DeploymentSource::try_from(remote.to_string()).unwrap(),
+            source: Some(ConfigNodeSource::from_str(remote).unwrap()),
             tag: "0.1.0".to_string(),
             optional: false,
             instances: vec![],
