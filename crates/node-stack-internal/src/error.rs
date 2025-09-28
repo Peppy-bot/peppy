@@ -15,6 +15,8 @@ pub enum Error {
     Git(#[from] GitError),
     #[error("{0} not implemented yet")]
     NotImplemented(&'static str),
+    #[error("{0} could not be found")]
+    FileNotFound(PathBuf),
 
     // -- config-internal
     #[error(transparent)]
@@ -27,4 +29,10 @@ pub enum Error {
     NoMatchingNode(String, String),
     #[error("The node found in `{0}` is not a root node")]
     NotRootNode(PathBuf),
+    #[error(
+        "Multiple nodes marked with `is_root_node` found in {0} and its children folders. Nodes marked as such: {1}"
+    )]
+    MultipleRootNode(PathBuf, String),
+    #[error("No root node marked with `is_root_node` found in {0}")]
+    RootNodeNotFound(PathBuf),
 }

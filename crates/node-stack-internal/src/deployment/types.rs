@@ -1,19 +1,19 @@
-use config::{Deployment, NodeConfig, NodeSource as ConfigNodeSource};
+use config::{Deployment, NodeConfig, NodeSource};
 
 pub use config::GitRemoteSpec;
 
 #[derive(Debug, Clone)]
 pub struct ResolvedNodeSource {
-    source: Option<ConfigNodeSource>,
+    source: Option<NodeSource>,
     node: NodeConfig,
 }
 
 impl ResolvedNodeSource {
-    pub fn new(source: Option<ConfigNodeSource>, node: NodeConfig) -> Self {
+    pub fn new(source: Option<NodeSource>, node: NodeConfig) -> Self {
         Self { source, node }
     }
 
-    pub fn source(&self) -> Option<&ConfigNodeSource> {
+    pub fn source(&self) -> Option<&NodeSource> {
         self.source.as_ref()
     }
 
@@ -25,7 +25,7 @@ impl ResolvedNodeSource {
         self.node
     }
 
-    pub fn into_parts(self) -> (Option<ConfigNodeSource>, NodeConfig) {
+    pub fn into_parts(self) -> (Option<NodeSource>, NodeConfig) {
         (self.source, self.node)
     }
 }
@@ -64,10 +64,10 @@ pub enum RemoteSpec {
 }
 
 impl RemoteSpec {
-    pub fn from_node_source(source: Option<&ConfigNodeSource>) -> Option<Self> {
+    pub fn from_node_source(source: Option<&NodeSource>) -> Option<Self> {
         match source {
-            Some(ConfigNodeSource::Git(spec)) => Some(Self::Git(spec.clone())),
-            Some(ConfigNodeSource::Http(url)) => Some(Self::Http(url.clone())),
+            Some(NodeSource::Git(spec)) => Some(Self::Git(spec.clone())),
+            Some(NodeSource::Http(url)) => Some(Self::Http(url.clone())),
             _ => None,
         }
     }
