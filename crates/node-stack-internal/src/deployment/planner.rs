@@ -8,23 +8,23 @@ use config::{
 // TODO: Use easy_tree::Tree to create a tree of nodes dependencies for the deployment stack
 use easy_tree::Tree;
 
-/// 1. Open up the `peppy.json5` on disk where it's launched (or specified with `--node-config`)
-/// 2. Look for the `deployments` key inside `peppy.json5`
-/// 3. Starting from the `peppy.json5` root configuration file, look for all the nodes in the children folders and create the initial node stack
-/// 4. If `deployments` is present, resolve the dependencies based on the initial node stack.
-/// 5. If the non-optional `deployments` cannot be resolved, the `serve` command terminates with an error.
+/// 1. Open up all the `peppy.json5` starting from the current dir (or specified with `--node-config`)
+/// 2. Create a tree of nodes (the node stack) that maps all the dependencies of the local nodes between each other.
+/// The field `is_root_node` determines the root node of the tree. There can only be a single `peppy.json5` with `is_root_node` defined, otherwise the program crashes
+/// 3. A "Deployment map" is created based on the `peppy.json5` containing the `is_root_node`. Each deployment maps to a node in the "node stack"
+
 pub struct LocalNodesMapper {
     nodes_cache_dir: PathBuf,
     root_node_config_file: PathBuf,
 }
 
 // Pulls deployments that are remote (git/url etc...)
-struct DeploymentsResolver {
+pub struct DeploymentsResolver {
     deployments: Vec<Deployment>,
     resolved_nodes: Vec<NodeConfig>,
 }
 
-struct DeploymentsMapper {
+pub struct DeploymentsMapper {
     deployments: Vec<Deployment>,
     local_node_configs: Vec<NodeConfig>,
 }
@@ -49,27 +49,24 @@ impl LocalNodesMapper {
 
     /// 1st step: Create the initial node stack based on the root node and its children in the same folder
     pub fn get_initial_node_stack(self) -> Result<DeploymentsMapper> {
-        let LocalNodesMapper {
-            nodes_cache_dir,
-            root_node_config_file,
-        } = self;
-
-        let root_node_config = NodeConfigParser::from_path(&root_node_config_file)?;
+        let root_node_config = NodeConfigParser::from_path(&self.root_node_config_file)?;
 
         if !root_node_config.manifest.is_root_node {
-            return Err(Error::NotRootNode(root_node_config_file.clone()));
+            return Err(Error::NotRootNode(self.root_node_config_file.clone()));
         }
 
         let deployments = root_node_config.deployments.clone().unwrap_or_default();
 
-        let root_dir = root_node_config_file
+        let root_dir = self
+            .root_node_config_file
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
 
-        let root_config_path = root_node_config_file
+        let root_config_path = self
+            .root_node_config_file
             .canonicalize()
-            .unwrap_or_else(|_| root_node_config_file.clone());
+            .unwrap_or_else(|_| self.root_node_config_file.clone());
 
         // Add the root node config first
         let mut local_node_configs = vec![root_node_config];
@@ -81,7 +78,7 @@ impl LocalNodesMapper {
             let state_snapshot = watcher.subscribe().borrow().clone();
 
             for (path, entry) in state_snapshot {
-                if path == root_config_path || path == root_node_config_file {
+                if path == root_config_path || path == self.root_node_config_file {
                     continue;
                 }
 
@@ -92,7 +89,7 @@ impl LocalNodesMapper {
         }
 
         let deployment_resolver = DeploymentsResolver::pull_deployments(
-            &nodes_cache_dir,
+            &self.nodes_cache_dir,
             deployments,
             &local_node_configs,
         )?;
@@ -196,3 +193,6 @@ impl DeploymentStack {
         Self { stack }
     }
 }
+
+#[cfg(test)]
+mod tests {}
