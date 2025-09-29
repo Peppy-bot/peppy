@@ -133,6 +133,30 @@ impl NodeSource {
         Ok(NodeSource::Git(spec))
     }
 
+    fn from_git_fields(repo: String, path: Option<String>) -> Result<Self, ParsingError> {
+        if repo.trim().is_empty() {
+            return Err(ParsingError::InvalidDeploymentSource(
+                "git repo cannot be empty".to_string(),
+            ));
+        }
+
+        Ok(NodeSource::Git(GitRemoteSpec {
+            repo,
+            path: Self::normalize_git_path(path),
+        }))
+    }
+
+    fn normalize_git_path(path: Option<String>) -> Option<String> {
+        path.and_then(|segment| {
+            let trimmed = segment.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.trim_start_matches('/').to_owned())
+            }
+        })
+    }
+
     fn parse_git_spec(value: &str) -> Result<GitRemoteSpec, ParsingError> {
         let (repo_raw, path_raw) = value
             .split_once("::")
@@ -145,9 +169,7 @@ impl NodeSource {
             ));
         }
 
-        let path = path_raw
-            .filter(|segment| !segment.is_empty())
-            .map(|segment| segment.trim_start_matches('/').to_owned());
+        let path = Self::normalize_git_path(path_raw.map(|segment| segment.to_owned()));
 
         Ok(GitRemoteSpec {
             repo: repo_raw.to_owned(),
@@ -181,7 +203,24 @@ impl Serialize for NodeSource {
                     .ok_or_else(|| ser::Error::custom("local path is not valid UTF-8"))?;
                 serializer.serialize_str(&format!("{}{}", Self::FILE_SCHEME, path_str))
             }
-            NodeSource::Git(spec) => serializer.serialize_str(&spec.as_remote()),
+            NodeSource::Git(spec) => {
+                if let Some(path) = spec.path.as_deref() {
+                    #[derive(Serialize)]
+                    struct GitSource<'a> {
+                        repo: &'a str,
+                        #[serde(skip_serializing_if = "Option::is_none")]
+                        path: Option<&'a str>,
+                    }
+
+                    let helper = GitSource {
+                        repo: &spec.repo,
+                        path: Some(path),
+                    };
+                    helper.serialize(serializer)
+                } else {
+                    serializer.serialize_str(&spec.repo)
+                }
+            }
             NodeSource::Http(url) => serializer.serialize_str(url),
         }
     }
@@ -196,6 +235,7 @@ impl<'de> Deserialize<'de> for NodeSource {
         #[serde(untagged)]
         enum RawNodeSource {
             String(String),
+            InlineGit(RawGitSpec),
             Git { git: RawGitSpec },
         }
 
@@ -211,24 +251,11 @@ impl<'de> Deserialize<'de> for NodeSource {
             RawNodeSource::String(value) => {
                 NodeSource::from_string(value).map_err(de::Error::custom)
             }
+            RawNodeSource::InlineGit(git) => {
+                NodeSource::from_git_fields(git.repo, git.path).map_err(de::Error::custom)
+            }
             RawNodeSource::Git { git } => {
-                if git.repo.trim().is_empty() {
-                    return Err(de::Error::custom(ParsingError::InvalidDeploymentSource(
-                        "git repo cannot be empty".to_string(),
-                    )));
-                }
-
-                Ok(NodeSource::Git(GitRemoteSpec {
-                    repo: git.repo,
-                    path: git.path.and_then(|segment| {
-                        let trimmed = segment.trim();
-                        if trimmed.is_empty() {
-                            None
-                        } else {
-                            Some(trimmed.trim_start_matches('/').to_owned())
-                        }
-                    }),
-                }))
+                NodeSource::from_git_fields(git.repo, git.path).map_err(de::Error::custom)
             }
         }
     }
@@ -797,23 +824,53 @@ mod tests {
     #[test]
     fn node_source_validation() {
         let local: NodeSource = serde_json5::from_str("\"file:///tmp/node\"").unwrap();
-        assert!(matches!(local, NodeSource::Local(ref path) if path == Path::new("/tmp/node")));
+        let NodeSource::Local(local_path) = local else {
+            panic!("expected local node source");
+        };
+        assert_eq!(local_path.as_path(), Path::new("/tmp/node"));
 
         let http: NodeSource =
             serde_json5::from_str("\"https://nodes.peppy.bot/nodes/camera\"").unwrap();
-        assert!(
-            matches!(http, NodeSource::Http(ref url) if url == "https://nodes.peppy.bot/nodes/camera")
-        );
+        let NodeSource::Http(http_url) = http else {
+            panic!("expected http node source");
+        };
+        assert_eq!(http_url, "https://nodes.peppy.bot/nodes/camera");
 
-        let git: NodeSource = serde_json5::from_str(
+        let git_inline: NodeSource = serde_json5::from_str(
+            "{ repo: \"https://github.com/Peppy/nodes.git\", path: \"uvc_camera\" }",
+        )
+        .unwrap();
+        let NodeSource::Git(GitRemoteSpec {
+            repo: inline_repo,
+            path: inline_path,
+        }) = git_inline
+        else {
+            panic!("expected git node source for inline format");
+        };
+        assert_eq!(inline_repo, "https://github.com/Peppy/nodes.git");
+        assert_eq!(inline_path.as_deref(), Some("uvc_camera"));
+
+        let git_full: NodeSource = serde_json5::from_str(
             "{ git: { repo: \"https://github.com/Peppy/uvc_camera.git\", path: \"configs/camera\" } }",
         )
         .unwrap();
-        assert!(matches!(
-            git,
-            NodeSource::Git(GitRemoteSpec { repo, path })
-                if repo == "https://github.com/Peppy/uvc_camera.git" && path.as_deref() == Some("configs/camera")
-        ));
+        let NodeSource::Git(GitRemoteSpec { repo, path }) = git_full else {
+            panic!("expected git node source for full format");
+        };
+        assert_eq!(repo, "https://github.com/Peppy/uvc_camera.git");
+        assert_eq!(path.as_deref(), Some("configs/camera"));
+
+        let git_string: NodeSource =
+            serde_json5::from_str("\"https://github.com/Peppy/uvc_camera.git\"").unwrap();
+        let NodeSource::Git(GitRemoteSpec {
+            repo: string_repo,
+            path: string_path,
+        }) = git_string
+        else {
+            panic!("expected git node source for string format");
+        };
+        assert_eq!(string_repo, "https://github.com/Peppy/uvc_camera.git");
+        assert!(string_path.is_none());
 
         let defaulted: Deployment = serde_json5::from_str(
             r#"{
