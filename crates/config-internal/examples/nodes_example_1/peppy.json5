@@ -34,7 +34,11 @@
       // This is an example of pulling the `uvc_camera` node from github and instanciating it with user defined parameters. In the future we might be able to pull them from nodes.peppy.bot
       name: "uvc_camera",
       // Can be a github repo, an http url like `https://nodes.peppy.bot/uvc_camera` or a filesystem uri
-      source: "https://github.com/Peppy/uvc_camera.git",
+      // Can also be a simple string "https://github.com/Peppy/uvc_camera.git". If that's the case, the root path of the repo will be used as the node
+      source: {
+        repo: "https://github.com/Peppy/nodes.git",
+        path: "uvc_camera"
+      },
       tag: "0.1.0", // In that example the tag is a git tag
       instances: [
         {

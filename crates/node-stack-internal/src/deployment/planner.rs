@@ -104,7 +104,8 @@ impl DeploymentsMapper {
         // 2. Extract the `deployments` from the root node as a Vec<Deployment>
         // 3. For each deployment, use the `DeploymentResolver::resolve_deployment`
         // Notes:
-        //  - Ensures the
+        //  - Ensures the resulting object is a Tree starting from the root_node
+        //  -
         todo!()
     }
 }
