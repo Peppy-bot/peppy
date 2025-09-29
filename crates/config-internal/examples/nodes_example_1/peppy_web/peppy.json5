@@ -13,7 +13,6 @@
       "run",
       "--release"
     ],
-    // sha256: "8e115d5f9208ef16cc49e32d88cd3efce839c9c11688c474069ba43023efdd5f" Usually only specified for nodes that are pulled from nodes.peppy.bot
   },
   config: {
     auto_start: true,

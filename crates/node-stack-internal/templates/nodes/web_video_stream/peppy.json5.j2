@@ -1,0 +1,58 @@
+{
+  manifest: {
+    name: "{{ node_name }}",
+    tag: "0.1.0",
+    launch_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
+  config: {
+    respawn: true,
+    respawn_delay: 5.0,
+  },
+  parameters: {
+    cameras_namespaces: {
+      type: "array",
+      items: "string"
+    },
+    http: {
+      host: "string",
+      port: "u16",
+      cors_enabled: "bool",
+      cors_origins: "string",
+      max_connections: "u32",
+      request_timeout_ms: "u32",
+    },
+    video_stream: {
+      format: "string",
+      quality: "u16",
+      max_fps: "u16",
+    },
+  },
+  interfaces: {
+    subscribes_to: {
+      topics: [
+        {
+          node: "uvc_camera",
+          tag: "0.1.0",
+          name: "stream",
+          callback: "on_video_frame_received",
+          optional: true
+        }
+      ],
+    },
+    exposes: {
+      topics: [],
+      services: [],
+      actions: [],
+    },
+  },
+  resources: {
+    max_memory_mb: 512,
+  },
+  logging: {
+    min_level: "info"
+  }
+}

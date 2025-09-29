@@ -1,3 +1,5 @@
 {
-  "python.terminal.activateEnvironment": false
+  "python.terminal.activateEnvironment": false,
+  "debug.inlineValues": "on",
+  "debug.allowBreakpointsEverywhere": true
 }
