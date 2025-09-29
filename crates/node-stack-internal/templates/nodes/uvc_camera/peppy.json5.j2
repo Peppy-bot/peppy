@@ -1,9 +1,7 @@
-// A simple node that emits video frames from a UVC camera
 {
   manifest: {
-    name: "uvc_camera",
+    name: "{{ node_name }}",
     tag: "0.1.0",
-    // Labels are useful if the node is published with `peppy node publish`
     labels: [
       "uvc",
       "camera",
@@ -16,17 +14,15 @@
     ]
   },
   config: {
-    auto_start: false, // Can be started with the `enable_camera` service
+    auto_start: false,
     respawn: true,
     respawn_delay: 3.0,
   },
-  // Expected parameter types to start the node
   parameters: {
     device: {
-      // Can be USB IDs/serial or udev rule
-      physical: "string", // values like `/dev/video4` or `/dev/video_front`
-      sim: "string", // values like `mujoco:camera_front` or `isaac_sim:camera_rear`
-      priority: "string" // "physical" or "sim". If the physical path is not accessible, the sim path is attempted
+      physical: "string",
+      sim: "string",
+      priority: "string"
     },
     video: {
       frame_rate: "u16",
@@ -34,14 +30,13 @@
         width: "u16",
         height: "u16",
       },
-      encoding: "string", // "rgb8", "bgr8", "yuyv", "mjpeg"
+      encoding: "string",
     },
   },
   interfaces: {
     exposes: {
       topics: [
         {
-          // One instance is going to emit on ns /camera/front/stream and another on /camera/rear/stream
           name: "stream",
           qos_profile: "sensor_data",
           message_format: {
@@ -49,7 +44,7 @@
               stamp: "time",
               frame_id: "u32",
             },
-            encoding: "string", // "rgb8", "bgr8", "yuyv", "mjpeg"
+            encoding: "string",
             width: "u32",
             height: "u32",
             image: {
@@ -62,7 +57,6 @@
       ],
       services: [
         {
-          // One instance exposes the service on ns /camera/front/enable_camera and another on /camera/rear/enable_camera
           name: "enable_camera",
           qos_profile: "critical",
           message_format: {
@@ -70,7 +64,6 @@
           }
         },
         {
-          // One instance exposes the service on ns /camera/front/get_camera_info and another on /camera/rear/get_camera_info
           name: "get_camera_info",
           qos_profile: "standard",
           message_format: {
@@ -88,7 +81,6 @@
     },
   },
   resources: {
-    // This is the resource per instance
     max_memory_mb: 256,
   },
   logging: {
