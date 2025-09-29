@@ -88,6 +88,10 @@
         {
           namespace: "/camera/stream/right",
           parameters: {
+            cameras_namespaces: [
+              "/camera/right",
+              "/camera/left"
+            ],
             http: {
               host: "0.0.0.0",
               port: 8083,

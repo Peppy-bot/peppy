@@ -1,0 +1,111 @@
+{
+  manifest: {
+    name: "{{ node_name }}",
+    tag: "0.1.0",
+    labels: [
+      "root_node",
+      "{{ node_name }}"
+    ],
+    is_root_node: true
+  },
+  config: {
+    auto_start: true,
+    respawn: true,
+    respawn_delay: 1.0
+  },
+  deployments: [
+    {
+      name: "uvc_camera",
+      source: {
+        repo: "https://github.com/Peppy/nodes.git",
+        path: "uvc_camera"
+      },
+      tag: "0.1.0",
+      instances: [
+        {
+          namespace: "/camera/right",
+          parameters: {
+            device: {
+              physical: "/dev/video_right",
+              sim: "mujoco:camera_right",
+              priority: "physical"
+            },
+            video: {
+              frame_rate: 30,
+              resolution: {
+                width: 1920,
+                height: 1080,
+              },
+              encoding: "yuyv",
+            },
+          }
+        },
+        {
+          namespace: "/camera/left",
+          parameters: {
+            device: {
+              physical: "/dev/video_left",
+              sim: "mujoco:camera_left",
+              priority: "physical"
+            },
+            video: {
+              frame_rate: 30,
+              resolution: {
+                width: 1920,
+                height: 1080,
+              },
+              encoding: "yuyv",
+            },
+          }
+        }
+      ]
+    },
+    // `web_video_stream` depends on `uvc_camera` so it should be represented in the binray tree
+    {
+      name: "web_video_stream",
+      tag: "0.1.0",
+      optional: true,
+      instances: [
+        {
+          namespace: "/camera/stream/right",
+          parameters: {
+            cameras_namespaces: [
+              "/camera/right",
+              "/camera/left"
+            ],
+            http: {
+              host: "0.0.0.0",
+              port: 8083,
+              cors_enabled: false,
+              cors_origins: "*",
+              max_connections: "2000",
+              request_timeout_ms: "3000",
+            },
+            video_stream: {
+              format: "mjpeg",
+              quality: 3,
+              max_fps: 30,
+            },
+          }
+        }
+      ]
+    },
+  ],
+  interfaces: {
+    subscribes_to: {
+      topics: []
+    },
+    exposes: {
+      topics: [],
+      services: [],
+      actions: []
+    }
+  },
+  resources: {
+    max_memory_mb: 1024
+  },
+  logging: {
+    min_level: "info",
+    format: "text"
+  }
+}
