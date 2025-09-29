@@ -53,11 +53,11 @@
             encoding: "string", // "rgb8", "bgr8", "yuyv", "mjpeg"
             width: "u32",
             height: "u32",
-            image: [
-              "u8",
-              "u8",
-              "u8"
-            ],
+            image: {
+              type: "array",
+              items: "u8",
+              length: 3
+            },
           },
         }
       ],

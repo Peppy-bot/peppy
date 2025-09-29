@@ -454,8 +454,24 @@ pub struct MessageFormat(pub std::collections::BTreeMap<String, SchemaType>);
 #[serde(untagged)]
 pub enum SchemaType {
     Type(TypeToken),
-    Array(Vec<SchemaType>),
+    Array(ArraySchema),
     Object(std::collections::BTreeMap<String, SchemaType>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ArraySchema {
+    #[serde(rename = "type")]
+    pub kind: ArrayKind,
+    pub items: Box<SchemaType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ArrayKind {
+    Array,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -898,7 +914,7 @@ mod tests {
             encoding: "string",
             width: "u32",
             height: "u32",
-            image: ["u8", "u8", "u8"]
+            image: { type: "array", items: "u8", length: 3 }
         }"#;
 
         let mf: MessageFormat = serde_json5::from_str(json5).unwrap();
@@ -935,12 +951,10 @@ mod tests {
 
         // image array of tokens
         match mf.0.get("image").unwrap() {
-            SchemaType::Array(v) => {
-                assert_eq!(v.len(), 3);
-                assert!(
-                    v.iter()
-                        .all(|e| matches!(e, SchemaType::Type(TypeToken::U8)))
-                );
+            SchemaType::Array(array) => {
+                assert_eq!(array.kind, ArrayKind::Array);
+                assert!(matches!(&*array.items, SchemaType::Type(TypeToken::U8)));
+                assert_eq!(array.length, Some(3));
             }
             _ => panic!("image should be an array"),
         }
@@ -951,5 +965,6 @@ mod tests {
         assert!(out.contains("\"u32\""));
         assert!(out.contains("\"time\""));
         assert!(out.contains("\"string\""));
+        assert!(out.contains("\"type\":\"array\""));
     }
 }

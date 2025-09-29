@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use super::types::DeploymentMap;
+use super::types::{DeploymentMap, ResolvedNodeSource};
 use super::{git::resolve_remote_git, local::resolve_local_deployment, url::resolve_remote_url};
 use crate::error::{Error, Result};
 use config::{
@@ -99,14 +99,79 @@ impl DeploymentsMapper {
     }
 
     pub fn map_deployments_to_nodes(self) -> Tree<DeploymentMap> {
-        // TODO: Based on self.node_stack do the following:
-        // 1. Extract the root node from self.node_stack
-        // 2. Extract the `deployments` from the root node as a Vec<Deployment>
-        // 3. For each deployment, use the `DeploymentResolver::resolve_deployment`
-        // Notes:
-        //  - Ensures the resulting object is a Tree starting from the root_node
-        //  -
-        todo!()
+        fn populate_tree(
+            tree: &mut Tree<DeploymentMap>,
+            parent_index: usize,
+            node: &NodeConfig,
+            resolver: &DeploymentResolver<'_>,
+            nodes_cache_dir: &Path,
+        ) {
+            let Some(deployments) = node.deployments.clone() else {
+                return;
+            };
+
+            for deployment in deployments {
+                let optional = deployment.optional;
+                let name = deployment.name.clone();
+                let tag = deployment.tag.clone();
+                match resolver.resolve_deployment(nodes_cache_dir, deployment) {
+                    Ok(map) => {
+                        let child_node = map.node_source().node().clone();
+                        let child_index = tree.add_child(parent_index, map);
+                        populate_tree(tree, child_index, &child_node, resolver, nodes_cache_dir);
+                    }
+                    Err(_err) if optional => {
+                        // Optional deployments may be skipped if they cannot be resolved.
+                    }
+                    Err(err) => {
+                        panic!(
+                            "Failed to resolve deployment {name}:{tag}: {err}",
+                            name = name,
+                            tag = tag,
+                            err = err
+                        );
+                    }
+                }
+            }
+        }
+
+        let DeploymentsMapper {
+            nodes_cache_dir,
+            node_stack,
+        } = self;
+
+        let root_node = node_stack
+            .iter()
+            .find(|node| node.manifest.is_root_node)
+            .cloned()
+            .expect("root node must exist in node stack");
+
+        let mut tree = Tree::new();
+        let root_deployment = Deployment {
+            name: root_node.manifest.name.as_str().to_owned(),
+            source: None,
+            tag: root_node.manifest.tag.clone(),
+            optional: false,
+            instances: Vec::new(),
+        };
+
+        let root_map = DeploymentMap::new(
+            root_deployment,
+            ResolvedNodeSource::new(None, root_node.clone()),
+        );
+
+        let root_index = tree.add_node(root_map);
+
+        let resolver = DeploymentResolver::new(&node_stack);
+        populate_tree(
+            &mut tree,
+            root_index,
+            &root_node,
+            &resolver,
+            nodes_cache_dir.as_path(),
+        );
+
+        tree
     }
 }
 
@@ -142,6 +207,3 @@ impl<'a> DeploymentResolver<'a> {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {}

@@ -16,6 +16,10 @@
   },
   // The input parameters of the current node
   parameters: {
+    cameras_namespaces: {
+      type: "array",
+      items: "string"
+    },
     http: {
       host: "string",
       port: "u16",
