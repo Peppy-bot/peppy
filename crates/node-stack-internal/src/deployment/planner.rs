@@ -15,53 +15,50 @@ use easy_tree::Tree;
 
 pub struct LocalNodesMapper {
     nodes_cache_dir: PathBuf,
+    root_dir: PathBuf,
     root_node_config_file: PathBuf,
 }
 
 pub struct DeploymentsMapper {
     nodes_cache_dir: PathBuf,
-    node_stack: Vec<NodeConfig>,
+    pub node_stack: Vec<NodeConfig>,
 }
 
 /// Given a deployment list, finds the corresponding nodes required by
 impl LocalNodesMapper {
     /// # Arguments
-    ///
-    /// * `nodes_cache_dir` - The dir where nodes are cached (the ones that are pulled remotely or pushed with `peppy push`)
     /// * `root_node_config` - Path to the root node config
-    pub fn new(nodes_cache_dir: impl AsRef<Path>, root_node_config: impl AsRef<Path>) -> Self {
-        Self {
-            nodes_cache_dir: PathBuf::from(nodes_cache_dir.as_ref()),
-            root_node_config_file: PathBuf::from(root_node_config.as_ref()),
-        }
-    }
+    /// * `nodes_cache_dir` - The dir where nodes are cached (the ones that are pulled remotely or pushed with `peppy push`). Provide `None` to default to `.peppy/nodes`
+    pub fn from_root_config_file(
+        root_node_config_file: impl AsRef<Path>,
+        nodes_cache_dir: Option<PathBuf>,
+    ) -> Result<Self> {
+        let root_node_config_file = PathBuf::from(root_node_config_file.as_ref());
 
-    /// 1st step: Create the initial node stack based on the root node and its children in the same folder
-    pub fn get_initial_node_stack(self) -> Result<DeploymentsMapper> {
-        let mut local_node_configs = Vec::new();
-        let root_dir = self
-            .root_node_config_file
+        let root_dir_canon = root_node_config_file
+            .canonicalize()?
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
-        if !root_dir.exists() {
-            return Err(Error::FileNotFound(self.root_node_config_file.clone()));
-        }
-        let root_dir_canon = root_dir.canonicalize().unwrap_or_else(|_| root_dir.clone());
-        let watcher = FSNodeConfigWatcher::new(&root_dir_canon)?;
-        let state_snapshot = watcher.subscribe().borrow().clone();
 
-        for entry in state_snapshot.into_values() {
-            if let Ok(node_config) = entry {
-                local_node_configs.push(node_config);
-            }
+        if !root_dir_canon.exists() {
+            return Err(Error::FileNotFound(root_node_config_file.clone()));
         }
 
+        let nodes_cache_dir_canon = match nodes_cache_dir {
+            Some(path) => std::fs::canonicalize(path)?,
+            None => root_dir_canon.clone().join(".peppy").join("nodes"),
+        };
+
+        Ok(Self {
+            nodes_cache_dir: nodes_cache_dir_canon,
+            root_dir: root_dir_canon,
+            root_node_config_file: root_node_config_file,
+        })
+    }
+
+    fn check_valid_root_node(&self, local_node_configs: &[NodeConfig]) -> Result<()> {
         let root_node_config = NodeConfigParser::from_path(&self.root_node_config_file)?;
-
-        if !root_node_config.manifest.is_root_node {
-            return Err(Error::NotRootNode(self.root_node_config_file.clone()));
-        }
 
         let root_node_names: Vec<_> = local_node_configs
             .iter()
@@ -72,16 +69,35 @@ impl LocalNodesMapper {
             })
             .collect();
 
+        if !root_node_config.manifest.is_root_node {
+            return Err(Error::NotRootNode(self.root_node_config_file.clone()));
+        }
+
         if root_node_names.len() > 1 {
             return Err(Error::MultipleRootNode(
-                root_dir_canon.clone(),
+                self.root_dir.clone(),
                 root_node_names.join(", "),
             ));
         }
 
         if root_node_names.is_empty() {
-            return Err(Error::RootNodeNotFound(root_dir_canon.clone()));
+            return Err(Error::RootNodeNotFound(self.root_dir.clone()));
         }
+        Ok(())
+    }
+
+    /// 1st step: Create the initial node stack based on the root node and its children in the same folder
+    pub fn get_local_node_stack(self) -> Result<DeploymentsMapper> {
+        let mut local_node_configs = Vec::new();
+        let watcher = FSNodeConfigWatcher::new(&self.root_dir)?;
+        let state_snapshot = watcher.subscribe().borrow().clone();
+
+        for entry in state_snapshot.into_values() {
+            if let Ok(node_config) = entry {
+                local_node_configs.push(node_config);
+            }
+        }
+        self.check_valid_root_node(&local_node_configs)?;
 
         Ok(DeploymentsMapper::new(
             self.nodes_cache_dir,
