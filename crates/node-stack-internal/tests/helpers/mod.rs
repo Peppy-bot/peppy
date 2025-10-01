@@ -10,6 +10,8 @@ use std::{
 struct RootNodeTemplate1<'a> {
     node_name: &'a str,
     uvc_camera_github_repo: &'a str,
+    // The path to the node inside the repository
+    uvc_camera_github_repo_path: &'a str,
 }
 
 #[derive(Template)]
@@ -28,6 +30,7 @@ pub fn get_root_node(to_path: impl AsRef<Path>, uvc_camera_github_repo: &str) ->
     let root_content = RootNodeTemplate1 {
         node_name: "peppy_root",
         uvc_camera_github_repo: uvc_camera_github_repo,
+        uvc_camera_github_repo_path: "nodes/uvc_camera",
     }
     .render()
     .expect("failed to render root template");

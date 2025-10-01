@@ -33,18 +33,6 @@ fn find_commit_for_tag<'repo>(
         .map_err(|_| git2::Error::from_str("tag does not point to a commit"))
 }
 
-fn sanitize_remote(remote: &str) -> String {
-    let mut out = remote
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect::<String>();
-    const MAX_LEN: usize = 64;
-    if out.len() > MAX_LEN {
-        out.truncate(MAX_LEN);
-    }
-    out
-}
-
 fn stable_hash(input: &str) -> u64 {
     // FNV-1a 64-bit
     const OFFSET: u64 = 0xcbf29ce484222325;
@@ -53,6 +41,16 @@ fn stable_hash(input: &str) -> u64 {
         let hash = hash ^ u64::from(byte);
         hash.wrapping_mul(PRIME)
     })
+}
+
+fn git_dir_name(remote: &str) -> &str {
+    let trimmed = remote.trim_end_matches(|c| matches!(c, '/' | '\\'));
+    let segment = trimmed
+        .rsplit(|c| matches!(c, '/' | '\\'))
+        .next()
+        .unwrap_or(trimmed);
+    let segment = segment.rsplit(':').next().unwrap_or(segment);
+    segment.strip_suffix(".git").unwrap_or(segment)
 }
 
 fn read_blob_from_tree(
@@ -68,9 +66,14 @@ fn read_blob_from_tree(
 }
 
 fn build_repo_cache_path(base: &Path, remote: &str) -> PathBuf {
-    let sanitized = sanitize_remote(remote);
     let hash = stable_hash(remote);
-    base.join(format!("{sanitized}-{hash:016x}"))
+    let dir = git_dir_name(remote);
+    let dir = if dir.is_empty() {
+        format!("{hash:016x}")
+    } else {
+        dir.to_owned()
+    };
+    base.join(format!("{dir}-{hash:016x}"))
 }
 
 fn fetch_repository(repo: &Repository) -> std::result::Result<(), git2::Error> {
@@ -137,6 +140,24 @@ mod tests {
     use config::NodeSource as ConfigNodeSource;
     use git2::{ObjectType, Repository, Signature};
     use tempfile::TempDir;
+
+    #[test]
+    fn repo_cache_path_uses_git_dir_name() {
+        let base = std::path::Path::new("/tmp/cache");
+        let remote = "https://github.com/org/repo.git";
+        let hash = stable_hash(remote);
+        let expected = base.join(format!("repo-{hash:016x}"));
+        assert_eq!(build_repo_cache_path(base, remote), expected);
+    }
+
+    #[test]
+    fn repo_cache_path_handles_scp_style_remote() {
+        let base = std::path::Path::new("/tmp/cache");
+        let remote = "git@github.com:example.git";
+        let hash = stable_hash(remote);
+        let expected = base.join(format!("example-{hash:016x}"));
+        assert_eq!(build_repo_cache_path(base, remote), expected);
+    }
 
     fn sample_remote_deployment(source: ConfigNodeSource) -> Deployment {
         Deployment {
