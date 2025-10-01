@@ -122,15 +122,18 @@ impl DeploymentsMapper {
             resolver: &DeploymentResolver<'_>,
             nodes_cache_dir: &Path,
         ) {
-            let Some(deployments) = node.deployments.clone() else {
+            let Some(deployments) = node.deployments.as_ref() else {
                 return;
             };
 
             for deployment in deployments {
+                let deployment = deployment.clone();
                 let optional = deployment.optional;
-                let name = deployment.name.clone();
-                let tag = deployment.tag.clone();
-                match resolver.resolve_deployment(nodes_cache_dir, deployment) {
+                let deployment_name = deployment.name.clone();
+                let deployment_tag = deployment.tag.clone();
+                let deployment_id = format!("{deployment_name}:{deployment_tag}");
+
+                match resolver.resolve_deployment(nodes_cache_dir, deployment.clone()) {
                     Ok(map) => {
                         let child_node = map.node_source().node().clone();
                         let child_index = tree.add_child(parent_index, map);
@@ -138,14 +141,15 @@ impl DeploymentsMapper {
                     }
                     Err(_err) if optional => {
                         // Optional deployments may be skipped if they cannot be resolved.
+                        continue;
                     }
                     Err(err) => {
-                        panic!(
-                            "Failed to resolve deployment {name}:{tag}: {err}",
-                            name = name,
-                            tag = tag,
-                            err = err
+                        let reason = err.to_string();
+                        let unresolved = DeploymentMap::unresolved(
+                            deployment,
+                            Error::DeploymentNotResolvable(deployment_id, reason),
                         );
+                        tree.add_child(parent_index, unresolved);
                     }
                 }
             }

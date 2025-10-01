@@ -1,6 +1,6 @@
-use config::{Deployment, NodeConfig, NodeSource};
-
+use crate::error::{Error, Result};
 pub use config::GitRemoteSpec;
+use config::{Deployment, NodeConfig, NodeSource};
 
 #[derive(Debug, Clone)]
 pub struct ResolvedNodeSource {
@@ -30,17 +30,25 @@ impl ResolvedNodeSource {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DeploymentMap {
     deployment: Deployment,
-    node_source: ResolvedNodeSource,
+    // Contains an error explaining why the deployment could be be resolved or the actual resolved node
+    node_source: Result<ResolvedNodeSource>,
 }
 
 impl DeploymentMap {
     pub fn new(deployment: Deployment, node_source: ResolvedNodeSource) -> Self {
         Self {
             deployment,
-            node_source,
+            node_source: Ok(node_source),
+        }
+    }
+
+    pub fn unresolved(deployment: Deployment, error: Error) -> Self {
+        Self {
+            deployment,
+            node_source: Err(error),
         }
     }
 
@@ -49,10 +57,23 @@ impl DeploymentMap {
     }
 
     pub fn node_source(&self) -> &ResolvedNodeSource {
-        &self.node_source
+        self.node_source
+            .as_ref()
+            .expect("deployment is unresolved; call error() to inspect failure")
     }
 
-    pub fn into_parts(self) -> (Deployment, ResolvedNodeSource) {
+    pub fn is_resolved(&self) -> bool {
+        self.node_source.is_ok()
+    }
+
+    pub fn error(&self) -> Option<&Error> {
+        match &self.node_source {
+            Ok(_) => None,
+            Err(err) => Some(err),
+        }
+    }
+
+    pub fn into_parts(self) -> (Deployment, Result<ResolvedNodeSource>) {
         (self.deployment, self.node_source)
     }
 }

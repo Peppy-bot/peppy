@@ -2,10 +2,8 @@ use askama::Template;
 use git2::{Repository, Signature};
 use std::{
     fs,
-    io::Write,
     path::{Path, PathBuf},
 };
-use tempfile::NamedTempFile;
 
 #[derive(Template)]
 #[template(path = "root_example_1/peppy.json5.j2")]
@@ -26,21 +24,20 @@ struct WebStreamVideoStreamNodeTemplate<'a> {
     node_name: &'a str,
 }
 
-pub fn get_root_node() -> PathBuf {
+pub fn get_root_node(to_path: impl AsRef<Path>, uvc_camera_github_repo: &str) -> PathBuf {
     let root_content = RootNodeTemplate1 {
         node_name: "peppy_root",
-        uvc_camera_github_repo: "https://github.com/Peppy/nodes.git",
+        uvc_camera_github_repo: uvc_camera_github_repo,
     }
     .render()
     .expect("failed to render root template");
 
-    let mut file = NamedTempFile::new().expect("failed to create temp file for root node");
-    file.write_all(root_content.as_bytes())
-        .expect("failed to write root node content");
+    let dir_path = to_path.as_ref();
+    let file_path = dir_path.join("peppy.json5");
 
-    file.into_temp_path()
-        .keep()
-        .expect("failed to persist root node file")
+    fs::write(&file_path, root_content).expect("failed to write root node content");
+
+    file_path
 }
 
 pub fn create_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
@@ -100,6 +97,14 @@ pub fn create_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     repo_path
 }
 
-pub fn setup(current_dir: impl AsRef<Path>) {
-    // TODO: Use current_dir to create a project composed of UvcCameraNodeTemplate/WebStreamVideoStreamNodeTemplate
+pub fn add_local_web_video_stream(to_path: impl AsRef<Path>) {
+    let to_path = to_path.as_ref();
+    let node_root_dir = to_path.parent().unwrap();
+    let web_content = WebStreamVideoStreamNodeTemplate {
+        node_name: "web_video_stream",
+    }
+    .render()
+    .expect("failed to render web template");
+    fs::create_dir_all(&node_root_dir).expect("failed to create parent directory");
+    fs::write(to_path, web_content).expect("failed to write web_video_stream node");
 }
