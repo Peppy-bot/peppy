@@ -35,4 +35,9 @@ pub enum Error {
     MultipleRootNode(PathBuf, String),
     #[error("No root node marked with `is_root_node` found in {0}")]
     RootNodeNotFound(PathBuf),
+
+    // -- deployment errors
+    // {0}: node_name + tag, {1}: Reason
+    #[error("Failed to resolve deployment {0}: {1}")]
+    DeploymentNotResolvable(String, String),
 }
