@@ -32,6 +32,26 @@ fn test_create_node_stack() {
     // Now take care of the deployments (git pull etc...)
     let deployment_tree = deployment_mapper.map_deployments_to_nodes();
 
+    // Now check that the tree has been properly created
+    let root_map = deployment_tree
+        .get(0)
+        .expect("deployment tree contains a root node");
+    assert_eq!(root_map.deployment().name, "peppy_root");
+
+    // FIXME: The root_node is the only tree at the root
+    let children = deployment_tree.children(0);
+    assert_eq!(children.len(), 2);
+
+    let uvc_camera_child = deployment_tree
+        .get(children[0])
+        .expect("uvc_camera deployment exists");
+    assert_eq!(uvc_camera_child.deployment().name, "uvc_camera");
+
+    // FIXME: web_video_stream depends on uvc_camera in the tree
+    let web_video_stream_child = deployment_tree
+        .get(children[1])
+        .expect("web_video_stream deployment exists");
+    assert_eq!(web_video_stream_child.deployment().name, "web_video_stream");
     dbg!(&git_repo_path);
     let _persisted_path = git_repo_temp_dir.keep();
     let _persisted_path2 = root_temp_dir.keep();
