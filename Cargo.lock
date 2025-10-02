@@ -2067,13 +2067,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "peppy-root-node"
-version = "0.0.1"
-dependencies = [
- "peppylib",
-]
-
-[[package]]
 name = "peppylib"
 version = "0.0.1"
 dependencies = [

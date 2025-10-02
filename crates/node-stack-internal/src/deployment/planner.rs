@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use super::types::{DeploymentMap, ResolvedNodeSource};
 use super::{git::resolve_remote_git, local::resolve_local_deployment, url::resolve_remote_url};
 use crate::error::{Error, Result};
-use config::{
-    Deployment, FSNodeConfigWatcher, NodeConfig, NodeConfigParser, NodeSource as ConfigNodeSource,
-};
+use config::FSNodeConfigWatcher;
+use config::node::{NodeConfig, NodeConfigParser};
+use config::peppy_config::{Deployment, DeploymentNodeSource};
 use petgraph::{
     Direction,
     stable_graph::{NodeIndex, StableDiGraph},
@@ -166,8 +166,8 @@ impl DeploymentsMapper {
             let mut key = format!("{}:{}", deployment.name, deployment.tag);
             if let Some(source) = &deployment.source {
                 let source_repr = match source {
-                    ConfigNodeSource::Local(path) => format!("local:{}", path.display()),
-                    ConfigNodeSource::Git(spec) => {
+                    DeploymentNodeSource::Local(path) => format!("local:{}", path.display()),
+                    DeploymentNodeSource::Git(spec) => {
                         let path = spec.path.as_deref().unwrap_or_default();
                         if path.is_empty() {
                             format!("git:{}", spec.repo)
@@ -175,7 +175,7 @@ impl DeploymentsMapper {
                             format!("git:{}::{}", spec.repo, path)
                         }
                     }
-                    ConfigNodeSource::Http(url) => format!("http:{}", url),
+                    DeploymentNodeSource::Http(url) => format!("http:{}", url),
                 };
                 key.push('|');
                 key.push_str(&source_repr);
@@ -240,10 +240,7 @@ impl DeploymentsMapper {
                 let map = graph
                     .node_weight(node_index)
                     .expect("node index inserted in graph");
-                (
-                    map.deployment().name.clone(),
-                    map.deployment().tag.clone(),
-                )
+                (map.deployment().name.clone(), map.deployment().tag.clone())
             };
 
             let key = (name, tag);

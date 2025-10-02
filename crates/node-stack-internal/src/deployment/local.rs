@@ -1,4 +1,5 @@
-use config::{Deployment, NodeConfig};
+use config::node::NodeConfig;
+use config::peppy_config::Deployment;
 
 use super::types::{DeploymentMap, ResolvedNodeSource};
 use crate::error::{Error, Result};
@@ -21,9 +22,10 @@ pub fn resolve_local_deployment(
 
 #[cfg(test)]
 mod tests {
+    use config::peppy_config::DeploymentNodeSource;
+
     use super::*;
     use crate::error::Error;
-    use config::{Deployment, NodeConfig, NodeSource as ConfigNodeSource};
 
     #[test]
     fn resolve_local_deployment_success() {
@@ -39,7 +41,7 @@ mod tests {
         let node_source = map.node_source();
         assert!(matches!(
             node_source.source(),
-            Some(ConfigNodeSource::Local(_))
+            Some(DeploymentNodeSource::Local(_))
         ));
         assert_eq!(
             node_source.node().manifest.name.as_str(),
