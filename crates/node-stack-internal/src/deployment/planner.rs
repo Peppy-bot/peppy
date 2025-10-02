@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::path::{Path, PathBuf};
 
 use super::types::{DeploymentMap, ResolvedNodeSource};
@@ -6,12 +7,14 @@ use crate::error::{Error, Result};
 use config::{
     Deployment, FSNodeConfigWatcher, NodeConfig, NodeConfigParser, NodeSource as ConfigNodeSource,
 };
-// TODO: Use easy_tree::Tree to create a tree of nodes dependencies for the deployment stack
-use easy_tree::Tree;
+use petgraph::{
+    Direction,
+    stable_graph::{NodeIndex, StableDiGraph},
+};
 
 /// 1. Open up all the `peppy.json5` starting from the current dir (or specified with `--node-config`) and create a tree of nodes (the node stack) that contains all the local NodeConfig.
 /// The field `is_root_node` determines the root node of the tree. There can only be a single `peppy.json5` with `is_root_node` defined, otherwise the program crashes
-/// 2. A "Deployment map" is created based on the `peppy.json5` containing the `is_root_node`. Each deployment maps to a node in the "node stack" as an `easy_tree::Tree`.
+/// 2. A "Deployment map" is created based on the `peppy.json5` containing the `is_root_node`. Each deployment maps to a node in the "node stack" as a directed graph so shared dependencies and cycles are preserved.
 
 pub struct LocalNodesMapper {
     nodes_cache_dir: PathBuf,
@@ -22,6 +25,50 @@ pub struct LocalNodesMapper {
 pub struct DeploymentsMapper {
     nodes_cache_dir: PathBuf,
     pub node_stack: Vec<NodeConfig>,
+}
+
+#[derive(Debug)]
+pub struct DeploymentGraph {
+    graph: StableDiGraph<DeploymentMap, ()>,
+    root: NodeIndex,
+}
+
+impl DeploymentGraph {
+    fn new(graph: StableDiGraph<DeploymentMap, ()>, root: NodeIndex) -> Self {
+        Self { graph, root }
+    }
+
+    pub fn len(&self) -> usize {
+        self.graph.node_count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.graph.node_count() == 0
+    }
+
+    pub fn root_index(&self) -> NodeIndex {
+        self.root
+    }
+
+    pub fn get(&self, index: NodeIndex) -> Option<&DeploymentMap> {
+        self.graph.node_weight(index)
+    }
+
+    pub fn children(&self, index: NodeIndex) -> Vec<NodeIndex> {
+        self.graph
+            .neighbors_directed(index, Direction::Outgoing)
+            .collect()
+    }
+
+    pub fn parents(&self, index: NodeIndex) -> Vec<NodeIndex> {
+        self.graph
+            .neighbors_directed(index, Direction::Incoming)
+            .collect()
+    }
+
+    pub fn indices(&self) -> Vec<NodeIndex> {
+        self.graph.node_indices().collect()
+    }
 }
 
 /// Given a deployment list, finds the corresponding nodes required by
@@ -114,13 +161,148 @@ impl DeploymentsMapper {
         }
     }
 
-    pub fn map_deployments_to_nodes(self) -> Tree<DeploymentMap> {
-        fn populate_tree(
-            tree: &mut Tree<DeploymentMap>,
-            parent_index: usize,
+    pub fn map_deployments_to_nodes(self) -> DeploymentGraph {
+        fn deployment_key(deployment: &Deployment) -> String {
+            let mut key = format!("{}:{}", deployment.name, deployment.tag);
+            if let Some(source) = &deployment.source {
+                let source_repr = match source {
+                    ConfigNodeSource::Local(path) => format!("local:{}", path.display()),
+                    ConfigNodeSource::Git(spec) => {
+                        let path = spec.path.as_deref().unwrap_or_default();
+                        if path.is_empty() {
+                            format!("git:{}", spec.repo)
+                        } else {
+                            format!("git:{}::{}", spec.repo, path)
+                        }
+                    }
+                    ConfigNodeSource::Http(url) => format!("http:{}", url),
+                };
+                key.push('|');
+                key.push_str(&source_repr);
+            }
+            key
+        }
+
+        fn ensure_edge(
+            graph: &mut StableDiGraph<DeploymentMap, ()>,
+            parent: NodeIndex,
+            child: NodeIndex,
+        ) {
+            if graph.find_edge(parent, child).is_none() {
+                graph.add_edge(parent, child, ());
+            }
+        }
+
+        fn collect_dependency_selectors(node: &NodeConfig) -> Vec<(String, String)> {
+            let mut selectors: HashSet<(String, String)> = HashSet::new();
+
+            let Some(subscribes_to) = node.interfaces.subscribes_to.as_ref() else {
+                return Vec::new();
+            };
+
+            let mut push_selector = |name: &str, tag: &str| {
+                let node_name = name.trim();
+                let tag = tag.trim();
+                if node_name.is_empty() || tag.is_empty() {
+                    return;
+                }
+                selectors.insert((node_name.to_owned(), tag.to_owned()));
+            };
+
+            if let Some(topics) = subscribes_to.topics.as_ref() {
+                for topic in topics {
+                    push_selector(&topic.node, &topic.tag);
+                }
+            }
+
+            if let Some(services) = subscribes_to.services.as_ref() {
+                for service in services {
+                    push_selector(&service.node, &service.tag);
+                }
+            }
+
+            if let Some(actions) = subscribes_to.actions.as_ref() {
+                for action in actions {
+                    push_selector(&action.node, &action.tag);
+                }
+            }
+
+            selectors.into_iter().collect()
+        }
+
+        fn register_node_index(
+            graph: &mut StableDiGraph<DeploymentMap, ()>,
+            node_index: NodeIndex,
+            nodes_by_name_tag: &mut HashMap<(String, String), Vec<NodeIndex>>,
+            pending_dependents: &mut HashMap<(String, String), Vec<NodeIndex>>,
+        ) {
+            let (name, tag) = {
+                let map = graph
+                    .node_weight(node_index)
+                    .expect("node index inserted in graph");
+                (
+                    map.deployment().name.clone(),
+                    map.deployment().tag.clone(),
+                )
+            };
+
+            let key = (name, tag);
+            let entry = nodes_by_name_tag.entry(key.clone()).or_default();
+            if !entry.iter().any(|existing| *existing == node_index) {
+                entry.push(node_index);
+            }
+
+            if let Some(waiting_dependents) = pending_dependents.remove(&key) {
+                for dependent in waiting_dependents {
+                    if dependent != node_index {
+                        ensure_edge(graph, node_index, dependent);
+                    }
+                }
+            }
+        }
+
+        fn link_interface_dependencies(
+            graph: &mut StableDiGraph<DeploymentMap, ()>,
+            dependent_index: NodeIndex,
+            nodes_by_name_tag: &mut HashMap<(String, String), Vec<NodeIndex>>,
+            pending_dependents: &mut HashMap<(String, String), Vec<NodeIndex>>,
+        ) {
+            let Some(map) = graph.node_weight(dependent_index) else {
+                return;
+            };
+
+            if !map.is_resolved() {
+                return;
+            }
+
+            let selectors = collect_dependency_selectors(map.node_source().node());
+            for (node_name, node_tag) in selectors {
+                let key = (node_name.clone(), node_tag.clone());
+                if let Some(providers) = nodes_by_name_tag.get(&key) {
+                    for provider in providers.iter().copied() {
+                        if provider != dependent_index {
+                            ensure_edge(graph, provider, dependent_index);
+                        }
+                    }
+                } else {
+                    let entry = pending_dependents.entry(key).or_default();
+                    if !entry.iter().any(|existing| *existing == dependent_index) {
+                        entry.push(dependent_index);
+                    }
+                }
+            }
+        }
+
+        fn populate_graph(
+            graph: &mut StableDiGraph<DeploymentMap, ()>,
+            parent_index: NodeIndex,
+            root_index: NodeIndex,
             node: &NodeConfig,
             resolver: &DeploymentResolver<'_>,
             nodes_cache_dir: &Path,
+            seen: &mut HashMap<String, NodeIndex>,
+            nodes_by_name_tag: &mut HashMap<(String, String), Vec<NodeIndex>>,
+            pending_dependents: &mut HashMap<(String, String), Vec<NodeIndex>>,
         ) {
             let Some(deployments) = node.deployments.as_ref() else {
                 return;
@@ -129,27 +311,87 @@ impl DeploymentsMapper {
             for deployment in deployments {
                 let deployment = deployment.clone();
                 let optional = deployment.optional;
-                let deployment_name = deployment.name.clone();
-                let deployment_tag = deployment.tag.clone();
-                let deployment_id = format!("{deployment_name}:{deployment_tag}");
+                let deployment_id = deployment_key(&deployment);
 
                 match resolver.resolve_deployment(nodes_cache_dir, deployment.clone()) {
                     Ok(map) => {
                         let child_node = map.node_source().node().clone();
-                        let child_index = tree.add_child(parent_index, map);
-                        populate_tree(tree, child_index, &child_node, resolver, nodes_cache_dir);
+                        match seen.entry(deployment_id.clone()) {
+                            Entry::Occupied(entry) => {
+                                let child_index = *entry.get();
+                                if parent_index != root_index {
+                                    ensure_edge(graph, parent_index, child_index);
+                                }
+                                link_interface_dependencies(
+                                    graph,
+                                    child_index,
+                                    nodes_by_name_tag,
+                                    pending_dependents,
+                                );
+                            }
+                            Entry::Vacant(entry) => {
+                                let child_index = graph.add_node(map);
+                                entry.insert(child_index);
+                                register_node_index(
+                                    graph,
+                                    child_index,
+                                    nodes_by_name_tag,
+                                    pending_dependents,
+                                );
+
+                                if parent_index != root_index {
+                                    ensure_edge(graph, parent_index, child_index);
+                                }
+
+                                link_interface_dependencies(
+                                    graph,
+                                    child_index,
+                                    nodes_by_name_tag,
+                                    pending_dependents,
+                                );
+
+                                if child_index != parent_index {
+                                    populate_graph(
+                                        graph,
+                                        child_index,
+                                        root_index,
+                                        &child_node,
+                                        resolver,
+                                        nodes_cache_dir,
+                                        seen,
+                                        nodes_by_name_tag,
+                                        pending_dependents,
+                                    );
+                                }
+                            }
+                        }
                     }
                     Err(_err) if optional => {
-                        // Optional deployments may be skipped if they cannot be resolved.
                         continue;
                     }
                     Err(err) => {
                         let reason = err.to_string();
                         let unresolved = DeploymentMap::unresolved(
-                            deployment,
-                            Error::DeploymentNotResolvable(deployment_id, reason),
+                            deployment.clone(),
+                            Error::DeploymentNotResolvable(deployment_id.clone(), reason),
                         );
-                        tree.add_child(parent_index, unresolved);
+                        let child_index = match seen.entry(deployment_id.clone()) {
+                            Entry::Occupied(entry) => *entry.get(),
+                            Entry::Vacant(entry) => {
+                                let index = graph.add_node(unresolved);
+                                entry.insert(index);
+                                register_node_index(
+                                    graph,
+                                    index,
+                                    nodes_by_name_tag,
+                                    pending_dependents,
+                                );
+                                index
+                            }
+                        };
+                        if parent_index != root_index {
+                            ensure_edge(graph, parent_index, child_index);
+                        }
                     }
                 }
             }
@@ -166,7 +408,6 @@ impl DeploymentsMapper {
             .cloned()
             .expect("root node must exist in node stack");
 
-        let mut tree = Tree::new();
         let root_deployment = Deployment {
             name: root_node.manifest.name.as_str().to_owned(),
             source: None,
@@ -180,18 +421,42 @@ impl DeploymentsMapper {
             ResolvedNodeSource::new(None, root_node.clone()),
         );
 
-        let root_index = tree.add_node(root_map);
+        let mut graph = StableDiGraph::new();
+        let root_index = graph.add_node(root_map);
 
         let resolver = DeploymentResolver::new(&node_stack);
-        populate_tree(
-            &mut tree,
+        let mut seen = HashMap::new();
+        let mut nodes_by_name_tag: HashMap<(String, String), Vec<NodeIndex>> = HashMap::new();
+        let mut pending_dependents: HashMap<(String, String), Vec<NodeIndex>> = HashMap::new();
+
+        register_node_index(
+            &mut graph,
+            root_index,
+            &mut nodes_by_name_tag,
+            &mut pending_dependents,
+        );
+
+        let root_key = {
+            let root_map = graph
+                .node_weight(root_index)
+                .expect("root deployment exists");
+            deployment_key(root_map.deployment())
+        };
+        seen.insert(root_key, root_index);
+
+        populate_graph(
+            &mut graph,
+            root_index,
             root_index,
             &root_node,
             &resolver,
             nodes_cache_dir.as_path(),
+            &mut seen,
+            &mut nodes_by_name_tag,
+            &mut pending_dependents,
         );
 
-        tree
+        DeploymentGraph::new(graph, root_index)
     }
 }
 
