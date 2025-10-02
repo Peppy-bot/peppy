@@ -1,6 +1,6 @@
 use crate::error::Error;
 use crate::error::Result;
-use config::NodeConfig;
+use config::node::{NodeConfig, NodeConfigParser};
 use pmi::{MessagingEngineContext, Messenger, MessengerBackend};
 use std::path::PathBuf;
 
@@ -15,7 +15,7 @@ pub async fn setup_node(config_file: Option<PathBuf>) -> Result<()> {
         None => std::env::current_dir()?.join(config::consts::PEPPY_CONFIG_FILE),
     };
 
-    let cfg = config::NodeConfigParser::from_path(&configuration_file)?;
+    let cfg = NodeConfigParser::from_path(&configuration_file)?;
     setup_node_from_config(cfg).await
 }
 

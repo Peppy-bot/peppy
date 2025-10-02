@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::super::config::NodeConfigParser;
+use super::super::node::NodeConfigParser;
 use super::discovery::find_peppy_nodes_from_dir;
 use super::events::NodeConfigEvent;
 use super::fs::watch_files;
@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use crate::{NodeConfig, consts::PEPPY_CONFIG_FILE};
+use crate::{consts::PEPPY_CONFIG_FILE, node::NodeConfig};
 
 /// Aggregated state keyed by config file path. Each entry reflects the
 /// current parse result of the corresponding `peppy.json5` file.

@@ -2,11 +2,6 @@ mod create;
 mod parse;
 mod types;
 
-// Re-export functions
-pub use create::NodeConfigCreator;
-pub use parse::NodeConfigParser;
-pub use types::{
-    CallbackName, CallbackNameError, ConfigTemplateType, Deployment, DeploymentInstance,
-    ExposedAction, ExposedService, ExposedTopic, GitRemoteSpec, Interfaces, MessageFormat,
-    NodeConfig, NodeSource, SubscribedAction, SubscribedService, SubscribedTopic, SubscribesTo,
-};
+// Defines the parsing of `peppy_config.json5` files
+pub use parse::PeppyConfigParser;
+pub use types::{Deployment, DeploymentInstance, DeploymentNodeSource, GitRemoteSpec, PeppyConfig};

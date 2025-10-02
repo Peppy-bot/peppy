@@ -3,9 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::types::{DeploymentMap, GitRemoteSpec, ResolvedNodeSource};
+use super::types::{DeploymentMap, ResolvedNodeSource};
 use crate::error::{Error, Result};
-use config::{Deployment, NodeConfigParser};
+use config::peppy_config::Deployment;
+use config::{node::NodeConfigParser, peppy_config::GitRemoteSpec};
 use git2::{AutotagOption, FetchOptions, ObjectType, Repository};
 
 fn node_config_path(spec: &GitRemoteSpec) -> PathBuf {
@@ -137,7 +138,7 @@ pub fn resolve_remote_git(
 mod tests {
     use super::*;
     use crate::error::Error;
-    use config::NodeSource as ConfigNodeSource;
+    use config::peppy_config::DeploymentNodeSource;
     use git2::{ObjectType, Repository, Signature};
     use tempfile::TempDir;
 
@@ -159,7 +160,7 @@ mod tests {
         assert_eq!(build_repo_cache_path(base, remote), expected);
     }
 
-    fn sample_remote_deployment(source: ConfigNodeSource) -> Deployment {
+    fn sample_remote_deployment(source: DeploymentNodeSource) -> Deployment {
         Deployment {
             name: "uvc_camera".to_string(),
             source: Some(source),
@@ -225,7 +226,7 @@ mod tests {
             repo: source.clone(),
             path: None,
         };
-        let deployment = sample_remote_deployment(ConfigNodeSource::Git(spec.clone()));
+        let deployment = sample_remote_deployment(DeploymentNodeSource::Git(spec.clone()));
         let cache_dir = tempfile::tempdir().expect("cache dir");
 
         let map = resolve_remote_git(cache_dir.path(), &deployment, spec)
@@ -243,7 +244,7 @@ mod tests {
             repo: remote_repo.path().to_string_lossy().to_string(),
             path: Some("nodes/uvc_camera".to_string()),
         };
-        let deployment = sample_remote_deployment(ConfigNodeSource::Git(spec.clone()));
+        let deployment = sample_remote_deployment(DeploymentNodeSource::Git(spec.clone()));
         let cache_dir = tempfile::tempdir().expect("cache dir");
 
         let map = resolve_remote_git(cache_dir.path(), &deployment, spec)
@@ -263,11 +264,11 @@ mod tests {
             path: Some("nodes/uvc_camera".to_string()),
         };
         let full_git_source = spec.as_remote();
-        let deployment_source = ConfigNodeSource::from_str(&full_git_source)
+        let deployment_source = DeploymentNodeSource::from_str(&full_git_source)
             .expect("parses <repo>::<path> git deployment source");
         let deployment = sample_remote_deployment(deployment_source);
         match deployment.source.as_ref() {
-            Some(ConfigNodeSource::Git(git_source)) => {
+            Some(DeploymentNodeSource::Git(git_source)) => {
                 assert_eq!(git_source.repo, repo_url);
                 assert_eq!(git_source.path.as_deref(), Some("nodes/uvc_camera"));
             }
@@ -286,7 +287,7 @@ mod tests {
     #[test]
     fn map_deployment_nodes_remote_http_returns_node_not_found() {
         let remote = "https://nodes.peppy.bot/uvc_camera";
-        let deployment = sample_remote_deployment(ConfigNodeSource::Http(remote.to_string()));
+        let deployment = sample_remote_deployment(DeploymentNodeSource::Http(remote.to_string()));
 
         let cache_dir = tempfile::tempdir().expect("cache dir");
 

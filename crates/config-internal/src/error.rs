@@ -11,6 +11,8 @@ pub enum ParsingError {
     CannotParseConfig(String),
     #[error("Empty content found in: {0}")]
     EmptyContent(String),
+    #[error("Invalid file name: expected {expected}, found {found}")]
+    InvalidFileName { expected: String, found: String },
 
     // -- node_config
     #[error("Invalid name: {0}")]
@@ -25,8 +27,6 @@ pub enum ParsingError {
     BadArray(String),
     #[error("Invalid QoS type {0}")]
     InValidQoS(String),
-    #[error("Invalid deployment source: {0}")]
-    InvalidDeploymentSource(String),
 
     // -- schema conformance
     #[error("Unknown key in {0}: {1}")]
@@ -34,6 +34,10 @@ pub enum ParsingError {
 
     #[error("Deleted file {0}")]
     DeletedFile(String),
+
+    // -- deployments
+    #[error("Invalid deployment source: {0}")]
+    InvalidDeploymentSource(String),
 }
 
 impl From<serde_json5::Error> for ParsingError {

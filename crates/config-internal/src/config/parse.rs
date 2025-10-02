@@ -1,14 +1,27 @@
-use super::types::NodeConfig;
+use super::types::PeppyConfig;
 use crate::error::{ParsingError, Result};
 use std::fs;
 use std::path::Path;
 
-/// Parser responsible for extracting configuration from JSON5 documents
-pub struct NodeConfigParser;
+/// Parser responsible for extracting `peppy_config.json5` documents
+pub struct PeppyConfigParser;
 
-impl NodeConfigParser {
-    pub fn from_path(file: impl AsRef<Path>) -> Result<NodeConfig> {
+const PEPPY_CONFIG_FILE_NAME: &str = "peppy_config.json5";
+
+impl PeppyConfigParser {
+    pub fn from_path(file: impl AsRef<Path>) -> Result<PeppyConfig> {
         let path = file.as_ref();
+        let file_name = path.file_name().and_then(|name| name.to_str());
+        if file_name != Some(PEPPY_CONFIG_FILE_NAME) {
+            let found = file_name
+                .map(str::to_owned)
+                .unwrap_or_else(|| path.display().to_string());
+            return Err(ParsingError::InvalidFileName {
+                expected: PEPPY_CONFIG_FILE_NAME.to_string(),
+                found,
+            }
+            .into());
+        }
         let content = fs::read_to_string(path)
             .map_err(|_| ParsingError::CannotRead(path.display().to_string()))?;
 
@@ -20,81 +33,26 @@ impl NodeConfigParser {
     }
 
     /// Takes a JSON5 content as parameter
-    pub fn from_content(content: &str) -> Result<NodeConfig> {
+    pub fn from_content(content: &str) -> Result<PeppyConfig> {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
-        serde_json5::from_str::<NodeConfig>(content).map_err(|e| ParsingError::from(e).into())
+        serde_json5::from_str::<PeppyConfig>(content).map_err(|e| ParsingError::from(e).into())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::{
+        config::DeploymentNodeSource,
+        error::{Error, ParsingError},
+        node::LogFormat,
+    };
+    use tempfile::tempdir;
+
     use super::*;
-    use crate::NodeSource;
-    use crate::error::Error;
-    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_parse_minimal_config() {
+    fn test_parse_peppy_config() {
         let json5 = r#"{
-            manifest: {
-                name: "test_node",
-                tag: "0.1.0",
-                launch_cmd: ["cargo", "run", "--release"],
-            },
-        }"#;
-        let config = NodeConfigParser::from_content(json5).unwrap();
-        assert_eq!(config.manifest.name.as_str(), "test_node");
-        assert_eq!(config.manifest.tag, "0.1.0");
-        assert!(!config.manifest.is_root_node);
-        assert!(config.manifest.launch_cmd.is_some());
-        assert!(config.parameters.is_empty());
-    }
-
-    #[test]
-    fn test_parse_complex_config() {
-        let json5 = r#"{
-            manifest: {
-                name: "camera_driver",
-                tag: "2.1.0",
-                launch_cmd: ["cargo", "run", "--release"],
-            },
-            config: {
-                auto_start: true,
-                respawn: true,
-                respawn_delay: 2.0
-            },
-            interfaces: {
-                exposes: {
-                    topics: [
-                        { name: "/camera/image_raw" }
-                    ]
-                }
-            }
-        }"#;
-        let config = NodeConfigParser::from_content(json5).unwrap();
-        assert_eq!(config.manifest.name.as_str(), "camera_driver");
-        assert_eq!(config.manifest.tag, "2.1.0");
-        assert!(!config.manifest.is_root_node);
-        assert!(config.manifest.launch_cmd.is_some());
-        assert_eq!(config.config.auto_start, Some(true));
-        assert_eq!(config.config.respawn, Some(true));
-        assert_eq!(config.config.respawn_delay, Some(2.0));
-        assert!(config.interfaces.exposes.is_some());
-    }
-
-    #[test]
-    fn test_parse_root_config() {
-        let json5 = r#"{
-            manifest: {
-                name: "my_robot_1",
-                tag: "0.1.0",
-                is_root_node: true
-            },
-            config: {
-                auto_start: true,
-                respawn: true,
-                respawn_delay: 1.0
-            },
             deployments: [
                 {
                     name: "uvc_camera",
@@ -153,28 +111,10 @@ mod tests {
                     ]
                 }
             ],
-            interfaces: {
-                subscribes_to: {
-                    topics: [
-                        {
-                            node: "{any}",
-                            tag: "{any}",
-                            name: "peppy_node_status",
-                            callback: "on_root_node_discovered"
-                        }
-                    ]
-                }
-            },
-            resources: { max_memory_mb: 1024 },
             logging: { min_level: "info" }
         }"#;
 
-        let cfg = NodeConfigParser::from_content(json5).unwrap();
-        assert_eq!(cfg.manifest.name.as_str(), "my_robot_1");
-        assert_eq!(cfg.manifest.tag, "0.1.0");
-        assert!(cfg.manifest.is_root_node);
-        assert!(cfg.manifest.launch_cmd.is_none());
-        assert_eq!(cfg.config.auto_start, Some(true));
+        let cfg = PeppyConfigParser::from_content(json5).unwrap();
         assert!(cfg.deployments.is_some());
         let deployments = cfg.deployments.unwrap();
         assert_eq!(deployments.len(), 3);
@@ -182,77 +122,65 @@ mod tests {
         // Check first deployment
         assert_eq!(deployments[0].name, "uvc_camera");
         assert_eq!(deployments[0].tag, "0.1.0");
-        assert!(matches!(deployments[0].source, Some(NodeSource::Local(_))));
+        assert!(matches!(
+            deployments[0].source,
+            Some(DeploymentNodeSource::Local(_))
+        ));
         assert_eq!(deployments[0].instances.len(), 2);
 
         // Check second deployment
         assert_eq!(deployments[1].name, "web_video_stream");
-        assert!(matches!(deployments[1].source, Some(NodeSource::Git(_))));
+        assert!(matches!(
+            deployments[1].source,
+            Some(DeploymentNodeSource::Git(_))
+        ));
         assert_eq!(deployments[1].instances.len(), 1);
 
         // Check third deployment
         assert_eq!(deployments[2].name, "peppy_web");
-        assert!(matches!(deployments[2].source, Some(NodeSource::Git(_))));
+        assert!(matches!(
+            deployments[2].source,
+            Some(DeploymentNodeSource::Git(_))
+        ));
         assert_eq!(deployments[2].instances.len(), 1);
+
+        let logging = cfg.logging.expect("expected logging section");
+        assert_eq!(logging.min_level, "info");
+        assert!(logging.file_name.is_none());
+        assert!(logging.max_file_size_mb.is_none());
+        assert_eq!(logging.format, LogFormat::Text);
     }
 
     #[test]
-    fn test_empty_file() {
-        let tmp = NamedTempFile::new().unwrap();
-        // Ensure file is empty
-        std::fs::write(tmp.path(), b"").unwrap();
-        let result = NodeConfigParser::from_path(tmp.path());
-        assert!(result.is_err());
+    fn test_from_path_rejects_wrong_file_name() {
+        let dir = tempdir().unwrap();
+        let wrong_path = dir.path().join("peppy.json5");
+        std::fs::write(&wrong_path, "{}").unwrap();
+
+        let err = PeppyConfigParser::from_path(&wrong_path).unwrap_err();
         assert!(matches!(
-            result.unwrap_err(),
-            Error::Parsing(ParsingError::EmptyContent(_))
+            err,
+            Error::Parsing(ParsingError::InvalidFileName { ref expected, ref found })
+                if expected == PEPPY_CONFIG_FILE_NAME && found == "peppy.json5"
         ));
     }
 
     #[test]
-    fn test_cannot_read_file() {
-        let result = NodeConfigParser::from_path("/path/that/does/not/exist.json5");
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            Error::Parsing(ParsingError::CannotRead(_))
-        ));
-    }
-
-    #[test]
-    fn test_cannot_parse_json5() {
-        let json5 = r#"{ manifest: [unclosed"#; // invalid JSON5
-        let result = NodeConfigParser::from_content(json5);
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            Error::Parsing(ParsingError::CannotParseConfig(_))
-        ));
-    }
-
-    #[test]
-    fn test_invalid_deployment_source() {
+    fn test_from_path_accepts_correct_file_name() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(PEPPY_CONFIG_FILE_NAME);
         let json5 = r#"{
-            manifest: {
-                name: "bad_node",
-                tag: "0.1.0",
-                launch_cmd: ["cargo", "run", "--release"]
-            },
             deployments: [
                 {
-                    name: "bad_deployment",
+                    name: "uvc_camera",
                     tag: "0.1.0",
-                    source: "",
-                    instances: []
+                    instances: [ { namespace: "/" } ]
                 }
             ]
         }"#;
+        std::fs::write(&path, json5).unwrap();
 
-        let result = NodeConfigParser::from_content(json5);
-        assert!(matches!(
-            result.unwrap_err(),
-            Error::Parsing(ParsingError::InvalidDeploymentSource(ref msg))
-                if msg == "source cannot be empty"
-        ));
+        let cfg = PeppyConfigParser::from_path(&path).unwrap();
+        assert!(cfg.deployments.is_some());
     }
 }
