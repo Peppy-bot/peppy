@@ -1,0 +1,48 @@
+// A simple node that receives commands from a brain and control the joints of the robot
+{
+  manifest: {
+    name: "{{ node_name }}",
+    tag: "0.1.0",
+    labels: [
+      "controller",
+    ],
+    launch_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
+  config: {
+    auto_start: false,
+    respawn: true,
+    respawn_delay: 3.0,
+  },
+  parameters: {},
+  interfaces: {
+    exposes: {
+      topics: [],
+      services: [],
+      actions: [],
+    },
+    subscribes_to: {
+      topics: [],
+      services: [],
+      actions: [
+        {
+          node: "{{ brain_node_name }}", // Will look for that node name
+          tag: "0.1.0", // On that particular tag/version
+          name: "move_arm", // With this action name
+          feedback_callback: "on_move_arm_feedback_received",
+          results_callback: "on_result_callback_received"
+        }
+      ],
+    },
+  },
+  resources: {
+    // This is the resource per instance
+    max_memory_mb: 256,
+  },
+  logging: {
+    min_level: "info",
+  }
+}

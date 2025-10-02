@@ -2,7 +2,7 @@
 // It sends actions to the controller to perform those actions
 {
   manifest: {
-    name: "my_action_robot_brain",
+    name: "{{ node_name }}",
     tag: "0.1.0",
     labels: [
       "brain"
@@ -59,14 +59,28 @@
       ],
     },
     subscribes_to: {
-      topics: [],
+      topics: [
+        {
+          node: "{{ uvc_camera_node_name }}",
+          tag: "0.1.0",
+          name: "stream",
+          callback: "on_video_frame_received",
+          optional: true
+        },
+        {
+          node: "{{ lidar_sensor_node_name }}",
+          tag: "0.1.1",
+          name: "stream",
+          callback: "on_video_frame_received",
+          optional: true
+        }
+      ],
       services: [],
       actions: [],
     },
   },
   resources: {
-    // This is the resource per instance
-    max_memory_mb: 256,
+    max_memory_mb: 1024,
   },
   logging: {
     min_level: "info",
