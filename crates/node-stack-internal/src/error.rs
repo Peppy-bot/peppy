@@ -27,12 +27,6 @@ pub enum Error {
     NodeNotFound(String),
     #[error("The node name `{0}` or tag `{1}` could not be found")]
     NoMatchingNode(String, String),
-    #[error("The node found in `{0}` is not a root node")]
-    NotRootNode(PathBuf),
-    #[error(
-        "Multiple nodes marked with `is_root_node` found in {0} and its children folders. Nodes marked as such: {1}"
-    )]
-    MultipleRootNode(PathBuf, String),
     #[error("No root node marked with `is_root_node` found in {0}")]
     RootNodeNotFound(PathBuf),
 

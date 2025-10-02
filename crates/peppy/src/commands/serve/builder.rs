@@ -5,22 +5,21 @@ use super::Serve;
 use super::node_watcher_cmd::NodeWatcher;
 use super::peppygen_cmd::InterfacesGenerator;
 use crate::{AppContext, Result};
-use config::NodeConfig;
-use config::NodeConfigParser;
+use config::peppy_config::{PeppyConfig, PeppyConfigParser};
 use pmi::{MessagingEngineContext, Messenger};
 
 pub struct ServeCommandBuilder {
     composite_command: CompositeCommand,
-    node_config: NodeConfig,
+    peppy_config: PeppyConfig,
 }
 
 impl ServeCommandBuilder {
-    pub fn new(root_config_path: PathBuf) -> Result<Self> {
-        let node_config =
-            NodeConfigParser::from_path(&root_config_path).map_err(crate::Error::PeppyConfig)?;
+    pub fn new(peppy_config_path: PathBuf) -> Result<Self> {
+        let peppy_config =
+            PeppyConfigParser::from_path(&peppy_config_path).map_err(crate::Error::PeppyConfig)?;
         Ok(Self {
             composite_command: CompositeCommand::default(),
-            node_config,
+            peppy_config,
         })
     }
 
@@ -48,11 +47,12 @@ impl ServeCommandBuilder {
     /// for code generation. Another process that can do this is `peppy node sync <path_to_config>` when nodes
     /// are outside the root_node folder and its children.
     pub fn with_peppygen(mut self, ctx: &AppContext) -> Self {
-        let generator = Box::new(
-            InterfacesGenerator::new(ctx, self.node_config.interfaces.clone())
-                .expect("Failed to create peppygen"),
-        );
-        self.composite_command = self.composite_command.add_async_command(generator);
+        // let generator = Box::new(
+        //     InterfacesGenerator::new(ctx, self.peppy_config.interfaces.clone())
+        //         .expect("Failed to create peppygen"),
+        // );
+        // self.composite_command = self.composite_command.add_async_command(generator);
+        todo!("Finish");
         self
     }
 

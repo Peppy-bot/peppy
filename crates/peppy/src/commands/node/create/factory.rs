@@ -3,7 +3,7 @@ use super::Language;
 use crate::commands::node::create::{python, rust};
 use crate::{Error, Result};
 use askama::Template;
-use config::{ConfigTemplateType, NodeConfigCreator};
+use config::node::{ConfigTemplateType, NodeConfigCreator};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};

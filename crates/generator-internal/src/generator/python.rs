@@ -1,7 +1,7 @@
 use crate::generator::types::SubscriberMap;
 
 use super::types::InterfaceGenerator;
-use config::{
+use config::node::{
     ExposedAction, ExposedService, ExposedTopic, SubscribedAction, SubscribedService,
     SubscribedTopic,
 };

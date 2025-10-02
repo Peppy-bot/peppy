@@ -1,5 +1,5 @@
 use super::types::SubscriberMap;
-use config::{
+use config::node::{
     ExposedAction, ExposedService, ExposedTopic, SubscribedAction, SubscribedService,
     SubscribedTopic,
 };
@@ -137,7 +137,7 @@ impl InterfaceGenerator for RustGenerator {
 
 #[cfg(test)]
 mod tests {
-    use config::{CallbackName, MessageFormat};
+    use config::node::{CallbackName, MessageFormat};
 
     use super::*;
 

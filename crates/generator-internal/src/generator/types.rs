@@ -1,4 +1,4 @@
-use config::{
+use config::node::{
     ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
     SubscribedService, SubscribedTopic,
 };
