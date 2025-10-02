@@ -35,7 +35,7 @@
     subscribes_to: {
       topics: [
         {
-          node: "uvc_camera",
+          node: "{{ uvc_camera_node_name }}",
           tag: "0.1.0",
           name: "stream",
           callback: "on_video_frame_received",

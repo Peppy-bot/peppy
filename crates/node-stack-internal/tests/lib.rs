@@ -4,14 +4,23 @@ use tempfile::TempDir;
 #[path = "./helpers/mod.rs"]
 mod helpers;
 
-// FIXME: A binary tree for `map_deployments_to_nodes` might not be the best pick
-// We can find ourselves in the following scenario with nodes:
-// A -> B -> C -> D
-// But then:
-// D -> B
-// Binary trees can only have 2 children max, we need a directed graph with petgraph
+/// Uses the following nodes:
+/// - brain
+/// - controller
+/// - lidar_sensor
+/// - uvc_camera
+/// - web_video_stream
+/// With the following dependencies:
+/// - `brain` depends on `lidar_sensor` and `uvc_camera` (`subscribes_to.topics` property)
+/// - `controller` depends on `brain` (`subscribes_to.actions` property)
+/// - `web_video_stream` depends on `uvc_camera` (`subscribes_to.topics` property)
 #[test]
 fn test_create_node_stack() {
+    let web_video_stream_node_name = "web_video_stream";
+    let brain_node_name = "brain";
+    let uvc_camera_node_name = "uvc_camera";
+    let lidar_sensor_node_name = "lidar_sensor";
+
     // Create a local git repo that host 2 different nodes (only uvc_camera will be pulled in this test)
     let git_repo_temp_dir = TempDir::new().unwrap();
     let git_repo_path = helpers::create_git_repo(&git_repo_temp_dir);
@@ -21,18 +30,35 @@ fn test_create_node_stack() {
     // Only pull uvc_camera from git
     let root_node = helpers::get_root_node(&root_temp_dir, git_repo_path.to_str().unwrap());
 
-    // Add web_video_stream to the node_stack
+    // Add web_video_stream locally to the node_stack
     helpers::add_local_web_video_stream(
         root_temp_dir
             .path()
-            .join("web_video_stream")
+            .join(web_video_stream_node_name)
             .join("peppy.json5"),
+        helpers::WebStreamVideoStreamNodeTemplate::new(
+            web_video_stream_node_name,
+            uvc_camera_node_name,
+        ),
+    );
+
+    // Add brain locally to the node_stack
+    helpers::add_local_web_video_stream(
+        root_temp_dir
+            .path()
+            .join(brain_node_name)
+            .join("peppy.json5"),
+        helpers::BrainNodeTemplate::new(
+            brain_node_name,
+            uvc_camera_node_name,
+            lidar_sensor_node_name,
+        ),
     );
 
     let mapper = LocalNodesMapper::from_root_config_file(root_node, None).unwrap();
     let deployment_mapper = mapper.get_local_node_stack().unwrap();
 
-    // Supposed to contain only the root_node and web_video_stream nodes at this stage (uvc_camera is pulled from git)
+    // Supposed to contain only `web_video_stream` and `brain` nodes at this stage (`uvc_camera`, `lidar_sensor` and `controller` are pulled from git)
     assert_eq!(deployment_mapper.node_stack.len(), 2);
 
     // Now take care of the deployments (git pull etc...)

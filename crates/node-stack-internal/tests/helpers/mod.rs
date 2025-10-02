@@ -11,21 +11,88 @@ use std::{
 #[derive(Template)]
 #[template(path = "config_example_1/peppy_config.json5.j2")]
 struct PeppyConfigTemplate1<'a> {
-    uvc_camera_github_repo: &'a str,
+    lidar_sensor_node_name: &'a str,
+    lidar_sensor_github_repo: &'a str,
     // The path to the node inside the repository
+    lidar_sensor_github_repo_path: &'a str,
+
+    uvc_camera_node_name: &'a str,
+    uvc_camera_github_repo: &'a str,
     uvc_camera_github_repo_path: &'a str,
+
+    web_video_stream_node_name: &'a str,
+
+    brain_node_name: &'a str,
+
+    controller_node_name: &'a str,
+    controller_node_github_repo: &'a str,
+    controller_node_repo_path: &'a str,
 }
 
 #[derive(Template)]
 #[template(path = "nodes/uvc_camera/peppy.json5.j2")]
-struct UvcCameraNodeTemplate<'a> {
+pub struct UvcCameraNodeTemplate<'a> {
     node_name: &'a str,
+}
+
+impl<'a> UvcCameraNodeTemplate<'a> {
+    pub fn new(node_name: &'a str) -> Self {
+        Self { node_name }
+    }
 }
 
 #[derive(Template)]
 #[template(path = "nodes/web_video_stream/peppy.json5.j2")]
-struct WebStreamVideoStreamNodeTemplate<'a> {
+pub struct WebStreamVideoStreamNodeTemplate<'a> {
     node_name: &'a str,
+    uvc_camera_node_name: &'a str,
+}
+
+impl<'a> WebStreamVideoStreamNodeTemplate<'a> {
+    pub fn new(node_name: &'a str, uvc_camera_node_name: &'a str) -> Self {
+        Self {
+            node_name,
+            uvc_camera_node_name,
+        }
+    }
+}
+
+#[derive(Template)]
+#[template(path = "nodes/brain/peppy.json5.j2")]
+pub struct BrainNodeTemplate<'a> {
+    node_name: &'a str,
+    uvc_camera_node_name: &'a str,
+    lidar_sensor_node_name: &'a str,
+}
+
+impl<'a> BrainNodeTemplate<'a> {
+    pub fn new(
+        node_name: &'a str,
+        uvc_camera_node_name: &'a str,
+        lidar_sensor_node_name: &'a str,
+    ) -> Self {
+        Self {
+            node_name,
+            uvc_camera_node_name,
+            lidar_sensor_node_name,
+        }
+    }
+}
+
+#[derive(Template)]
+#[template(path = "nodes/controller/peppy.json5.j2")]
+pub struct ControllerNodeTemplate<'a> {
+    node_name: &'a str,
+    brain_node_name: &'a str,
+}
+
+impl<'a> ControllerNodeTemplate<'a> {
+    pub fn new(node_name: &'a str, brain_node_name: &'a str) -> Self {
+        Self {
+            node_name,
+            brain_node_name,
+        }
+    }
 }
 
 pub fn get_root_node(to_path: impl AsRef<Path>, uvc_camera_github_repo: &str) -> PathBuf {
@@ -61,9 +128,19 @@ pub fn create_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     }
     .render()
     .expect("failed to render web template");
+    let brain_content = BrainNodeTemplate { node_name: "brain" }
+        .render()
+        .expect("failed to render brain template");
+    let controller_content = ControllerNodeTemplate {
+        node_name: "controller",
+    }
+    .render()
+    .expect("failed to render controller template");
 
     let uvc_path = Path::new("nodes/uvc_camera/peppy.json5");
     let web_path = Path::new("nodes/web_video_stream/peppy.json5");
+    let brain_path = Path::new("nodes/brain/peppy.json5");
+    let controller_path = Path::new("nodes/controller/peppy.json5");
 
     if let Some(parent) = uvc_path.parent() {
         fs::create_dir_all(repo_path.join(parent)).expect("failed to create uvc directories");
@@ -75,9 +152,27 @@ pub fn create_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     }
     fs::write(repo_path.join(web_path), web_content).expect("failed to write web node");
 
+    if let Some(parent) = brain_path.parent() {
+        fs::create_dir_all(repo_path.join(parent)).expect("failed to create brain directories");
+    }
+    fs::write(repo_path.join(brain_path), brain_content).expect("failed to write brain node");
+
+    if let Some(parent) = controller_path.parent() {
+        fs::create_dir_all(repo_path.join(parent))
+            .expect("failed to create controller directories");
+    }
+    fs::write(repo_path.join(controller_path), controller_content)
+        .expect("failed to write controller node");
+
     let mut index = repo.index().expect("failed to open index");
     index.add_path(uvc_path).expect("failed to add uvc node");
     index.add_path(web_path).expect("failed to add web node");
+    index
+        .add_path(brain_path)
+        .expect("failed to add brain node");
+    index
+        .add_path(controller_path)
+        .expect("failed to add controller node");
     index.write().expect("failed to write index");
 
     let tree_id = index.write_tree().expect("failed to write tree");
@@ -101,16 +196,15 @@ pub fn create_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     repo_path
 }
 
-pub fn add_local_web_video_stream(to_path: impl AsRef<Path>) {
+pub fn add_local_web_video_stream<T>(to_path: impl AsRef<Path>, template: T)
+where
+    T: Template,
+{
     let to_path = to_path.as_ref();
     let node_root_dir = to_path.parent().unwrap();
-    let web_content = WebStreamVideoStreamNodeTemplate {
-        node_name: "web_video_stream",
-    }
-    .render()
-    .expect("failed to render web template");
+    let node_content = template.render().expect("failed to render node template");
     fs::create_dir_all(&node_root_dir).expect("failed to create parent directory");
-    fs::write(to_path, web_content).expect("failed to write web_video_stream node");
+    fs::write(to_path, node_content).expect("failed to write node");
 }
 
 pub fn print_graph<F>(graph: &DeploymentGraph, label: &F)

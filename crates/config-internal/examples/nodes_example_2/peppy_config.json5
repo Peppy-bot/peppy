@@ -1,4 +1,4 @@
-// PeppyOS Root Node Configuration
+// PeppyOS Configuration
 {
   deployments: [
     {
@@ -25,47 +25,6 @@
       ]
     }
   ],
-  interfaces: {
-    subscribes_to: {
-      topics: [
-        {
-          node: "{any}",
-          tag: "{any}",
-          name: "peppy_node_status",
-          callback: "on_root_node_discovered"
-        }
-      ],
-      services: [
-        {
-          node: "{any}",
-          tag: "{any}",
-          name: "peppy_node_status",
-          callback: "on_payload_node_received"
-        }
-      ]
-    },
-    exposes: {
-      topics: [
-        {
-          name: "peppy_node_status",
-          qos_profile: "standard",
-          message_format: {
-            name: "str"
-          }
-        }
-      ],
-      services: [
-        {
-          name: "peppy_node_status",
-          qos_profile: "standard",
-          message_format: {
-            payload: "bytes"
-          }
-        }
-      ],
-      actions: []
-    }
-  },
   logging: {
     min_level: "info",
     file_name: "peppy_root.log",

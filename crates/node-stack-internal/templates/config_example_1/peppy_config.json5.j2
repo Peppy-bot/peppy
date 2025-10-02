@@ -1,7 +1,36 @@
 {
   deployments: [
     {
-      name: "uvc_camera",
+      name: "{{ lidar_sensor_node_name }}",
+      source: {
+        repo: "{{ lidar_sensor_github_repo }}",
+        path: "{{ lidar_sensor_github_repo_path }}"
+      },
+      tag: "0.1.0",
+      instances: [
+        {
+          namespace: "/lidar",
+          parameters: {
+            device: {
+              physical: "/dev/lidar1",
+              sim: "mujoco:lidar1",
+              priority: "sim"
+            },
+            lidar_point: {
+              x: 12.34, // meters, X coordinate in 3D space
+              y: -7.56, // meters, Y coordinate in 3D space
+              z: 1.23, // meters, Z coordinate in 3D space (height)
+              intensity: 0.85, // normalized intensity of return signal (0 to 1)
+              return_type: 1, // e.g. 1 = first return, 2 = last return
+              classification: 2, // e.g. 2 = ground, 5 = vegetation
+              timestamp: 1696285145999, // Unix timestamp in milliseconds
+            }
+          }
+        }
+      ]
+    },
+    {
+      name: "{{ uvc_camera_node_name }}",
       source: {
         repo: "{{ uvc_camera_github_repo }}",
         path: "{{ uvc_camera_github_repo_path }}"
@@ -46,10 +75,12 @@
         }
       ]
     },
-    // `web_video_stream` depends on `uvc_camera` so it should be represented in the binray tree
+    // `web_video_stream` depends on `uvc_camera`
     {
-      name: "web_video_stream",
+      // The test will add the web_video_stream to the local stack
+      name: "{{ web_video_stream_node_name }}",
       tag: "0.1.0",
+      // Since it's optional, if the node cannot be found, it will be ignored
       optional: true,
       instances: [
         {
@@ -73,6 +104,31 @@
               max_fps: 30,
             },
           }
+        }
+      ]
+    },
+    {
+      name: "{{ brain_node_name }}",
+      // The test will add the brain to the local stack
+      tag: "0.1.0",
+      instances: [
+        {
+          namespace: "/brain",
+          parameters: {}
+        }
+      ]
+    },
+    {
+      name: "{{ controller_node_name }}",
+      source: {
+        repo: "{{ controller_node_github_repo }}",
+        path: "{{ controller_node_repo_path }}"
+      },
+      tag: "0.1.0",
+      instances: [
+        {
+          namespace: "/controller",
+          parameters: {}
         }
       ]
     },

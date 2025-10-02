@@ -1,0 +1,90 @@
+{
+  manifest: {
+    name: "{{ node_name }}",
+    tag: "0.1.1",
+    labels: [
+      "sensor",
+      "usb",
+      "lidar"
+    ],
+    launch_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
+  config: {
+    auto_start: false,
+    respawn: true,
+    respawn_delay: 3.0,
+  },
+  parameters: {
+    device: {
+      physical: "string",
+      sim: "string",
+      priority: "string"
+    },
+    lidar_point: {
+      x: "f32",
+      y: "f32",
+      z: "f32",
+      intensity: "f32",
+      return_type: "u8", // optional, e.g. first return, last return
+      classification: "u8", // optional, type of object detected
+      timestamp: "u64", // optional, timestamp for this point
+    }
+  },
+  interfaces: {
+    exposes: {
+      topics: [
+        {
+          name: "stream",
+          qos_profile: "sensor_data",
+          message_format: {
+            header: {
+              stamp: "time",
+              frame_id: "u32",
+            },
+            encoding: "string",
+            width: "u32",
+            height: "u32",
+            image: {
+              type: "array",
+              items: "u8",
+              length: 3
+            },
+          },
+        }
+      ],
+      services: [
+        {
+          name: "enable_camera",
+          qos_profile: "critical",
+          message_format: {
+            enable: "bool",
+          }
+        },
+        {
+          name: "get_camera_info",
+          qos_profile: "standard",
+          message_format: {
+            card_type: "string",
+            size: "string",
+            interval: "string"
+          },
+        },
+      ],
+    },
+    subscribes_to: {
+      topics: [],
+      services: [],
+      actions: [],
+    },
+  },
+  resources: {
+    max_memory_mb: 256,
+  },
+  logging: {
+    min_level: "info",
+  }
+}
