@@ -6,8 +6,8 @@ edition.workspace = true
 
 [dependencies]
 config = { path = "../config-internal" }
-easy-tree = "0.2.0"
 git2 = "0.20"
+petgraph = "0.8.3"
 thiserror = "2.0"
 
 

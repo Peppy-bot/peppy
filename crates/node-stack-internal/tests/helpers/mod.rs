@@ -1,6 +1,9 @@
 use askama::Template;
 use git2::{Repository, Signature};
+use node_stack::{DeploymentGraph, DeploymentMap};
+use petgraph::stable_graph::NodeIndex;
 use std::{
+    collections::{HashSet, VecDeque},
     fs,
     path::{Path, PathBuf},
 };
@@ -110,4 +113,62 @@ pub fn add_local_web_video_stream(to_path: impl AsRef<Path>) {
     .expect("failed to render web template");
     fs::create_dir_all(&node_root_dir).expect("failed to create parent directory");
     fs::write(to_path, web_content).expect("failed to write web_video_stream node");
+}
+
+pub fn print_graph<F>(graph: &DeploymentGraph, label: &F)
+where
+    F: Fn(&DeploymentMap) -> String,
+{
+    if graph.is_empty() {
+        println!("<empty graph>");
+        return;
+    }
+
+    let format_node = |index: NodeIndex| -> String {
+        graph
+            .get(index)
+            .map(|node| format!("{} [{}]", label(node), index.index()))
+            .unwrap_or_else(|| format!("<missing node> [{}]", index.index()))
+    };
+
+    println!(
+        "graph adjacency (root = {}):",
+        format_node(graph.root_index())
+    );
+
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::new();
+    queue.push_back(graph.root_index());
+
+    println!("-> lists the outgoing edges for that node (everything it points to)");
+    println!("<- lists the incoming edges (everything that points to it).");
+    while let Some(index) = queue.pop_front() {
+        if !visited.insert(index) {
+            continue;
+        }
+
+        let node_repr = format_node(index);
+        println!("{}", node_repr);
+
+        let children = graph.children(index);
+        if children.is_empty() {
+            println!("  -> []");
+        } else {
+            let child_entries: Vec<_> = children.iter().map(|child| format_node(*child)).collect();
+            println!("  -> {}", child_entries.join(", "));
+        }
+
+        let parents = graph.parents(index);
+        if parents.is_empty() {
+            println!("  <- []");
+        } else {
+            let parent_entries: Vec<_> =
+                parents.iter().map(|parent| format_node(*parent)).collect();
+            println!("  <- {}", parent_entries.join(", "));
+        }
+
+        for child in children {
+            queue.push_back(child);
+        }
+    }
 }
