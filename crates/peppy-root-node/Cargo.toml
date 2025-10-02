@@ -1,8 +1,0 @@
-[package]
-name = "peppy-root-node"
-version.workspace = true
-authors.workspace = true
-edition.workspace = true
-
-[dependencies]
-peppylib = { path = "../peppylib" }
