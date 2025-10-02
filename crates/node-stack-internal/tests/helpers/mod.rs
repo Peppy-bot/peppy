@@ -9,9 +9,8 @@ use std::{
 };
 
 #[derive(Template)]
-#[template(path = "root_example_1/peppy.json5.j2")]
-struct RootNodeTemplate1<'a> {
-    node_name: &'a str,
+#[template(path = "config_example_1/peppy_config.json5.j2")]
+struct PeppyConfigTemplate1<'a> {
     uvc_camera_github_repo: &'a str,
     // The path to the node inside the repository
     uvc_camera_github_repo_path: &'a str,
@@ -30,8 +29,7 @@ struct WebStreamVideoStreamNodeTemplate<'a> {
 }
 
 pub fn get_root_node(to_path: impl AsRef<Path>, uvc_camera_github_repo: &str) -> PathBuf {
-    let root_content = RootNodeTemplate1 {
-        node_name: "peppy_root",
+    let root_content = PeppyConfigTemplate1 {
         uvc_camera_github_repo: uvc_camera_github_repo,
         uvc_camera_github_repo_path: "nodes/uvc_camera",
     }

@@ -5,7 +5,7 @@ use std::{
 
 use super::Command;
 use crate::{AppContext, Error, Result};
-use config::{ConfigTemplateType, NodeConfigCreator};
+use config::node::{ConfigTemplateType, NodeConfigCreator};
 use tracing::info;
 
 pub struct InitCommand {

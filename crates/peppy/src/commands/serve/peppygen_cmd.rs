@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use super::{ServeAsyncCommand, ServeFuture};
 use crate::{AppContext, AppEvent, Result};
-use config::Interfaces;
+use config::node::Interfaces;
 //use node_stack::NodeStackBuilder;
 use tokio::sync::broadcast;
 
@@ -33,26 +33,24 @@ impl ServeAsyncCommand for InterfacesGenerator {
                 // We will only be able to take an events mut in here...
                 match app_events.recv().await {
                     Ok(AppEvent::NodeConfigChanged(node_config_state)) => {
-                        let nodes: Vec<_> = node_config_state
-                            .values()
-                            .filter_map(|entry| entry.as_ref().ok().cloned())
-                            .collect();
+                        // let nodes: Vec<_> = node_config_state
+                        //     .values()
+                        //     .filter_map(|entry| entry.as_ref().ok().cloned())
+                        //     .collect();
 
-                        let deployments: Vec<_> = nodes
-                            .iter()
-                            .flat_map(|node| {
-                                node.deployments
-                                    .as_ref()
-                                    .into_iter()
-                                    .flat_map(|items| items.iter().cloned())
-                            })
-                            .collect();
+                        // let deployments: Vec<_> = nodes
+                        //     .iter()
+                        //     .flat_map(|node| {
+                        //         node.deployments
+                        //             .as_ref()
+                        //             .into_iter()
+                        //             .flat_map(|items| items.iter().cloned())
+                        //     })
+                        //     .collect();
 
-                        // TODO: Only the root node can have deployments
-
-                        if deployments.is_empty() {
-                            continue;
-                        }
+                        // if deployments.is_empty() {
+                        //     continue;
+                        // }
 
                         // let _validated =
                         //     NodeStackBuilder::new(&nodes_cache_dir, &deployments, &nodes)

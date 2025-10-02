@@ -6,8 +6,8 @@ use std::collections::HashMap;
 
 use crate::error::{Error, Result};
 use crate::generator::types::AllowedSubscriber;
-use config::{
-    DeploymentInstance, ExposedService, ExposedTopic, Interfaces, MessageFormat, SubscribedAction,
+use config::node::{
+    ExposedAction, ExposedService, ExposedTopic, Interfaces, MessageFormat, SubscribedAction,
     SubscribedService, SubscribedTopic,
 };
 use python::PythonGenerator;
@@ -21,7 +21,6 @@ use types::{InterfaceGenerator, Language, SubscriberMap};
 /// directly as this would create throwaway code that will be picked up by git
 pub fn generate_interfaces_code(
     interfaces: &Interfaces,
-    deployments: &DeploymentInstance,
     for_language: &Language,
 ) -> Result<Vec<String>> {
     let generator: Box<dyn InterfaceGenerator> = match for_language {
@@ -48,6 +47,7 @@ pub fn generate_interfaces_code(
 
     let topic_formats = build_format_index(exposed_topics);
     let service_formats = build_format_index(exposed_services);
+    let action_formats = build_action_message_format_index(exposed_actions);
 
     let subscribed_topics = interfaces
         .subscribes_to
@@ -77,7 +77,7 @@ pub fn generate_interfaces_code(
     )?;
     let mapped_actions = map_subscribers_to_messages_format(
         subscribed_actions,
-        &topic_formats,
+        &action_formats,
         Error::SubscriberActionMessageFormatMissing,
     )?;
 
@@ -150,6 +150,34 @@ fn build_format_index(exposed: &[impl ExposedWithFormat]) -> HashMap<String, Mes
         .collect()
 }
 
+fn build_action_message_format_index(actions: &[ExposedAction]) -> HashMap<String, MessageFormat> {
+    actions
+        .iter()
+        .filter_map(|action| {
+            action_message_format(action).map(|format| (action.name.clone(), format))
+        })
+        .collect()
+}
+
+fn action_message_format(action: &ExposedAction) -> Option<MessageFormat> {
+    action
+        .goal_service
+        .as_ref()
+        .and_then(|service| service.message_format.clone())
+        .or_else(|| {
+            action
+                .feedback_topic
+                .as_ref()
+                .and_then(|topic| topic.message_format.clone())
+        })
+        .or_else(|| {
+            action
+                .result_service
+                .as_ref()
+                .and_then(|service| service.message_format.clone())
+        })
+}
+
 fn map_subscribers_to_messages_format<T, F>(
     subscribers: &[T],
     formats: &HashMap<String, MessageFormat>,
@@ -175,7 +203,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use config::Interfaces;
+    use config::node::Interfaces;
 
     #[test]
     fn generate_interfaces_code_rust_success() {
