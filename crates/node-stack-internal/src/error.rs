@@ -27,8 +27,6 @@ pub enum Error {
     NodeNotFound(String),
     #[error("The node name `{0}` or tag `{1}` could not be found")]
     NoMatchingNode(String, String),
-    #[error("No root node marked with `is_root_node` found in {0}")]
-    RootNodeNotFound(PathBuf),
 
     // -- deployment errors
     // {0}: node_name + tag, {1}: Reason

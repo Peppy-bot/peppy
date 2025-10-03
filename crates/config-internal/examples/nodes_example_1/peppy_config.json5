@@ -1,7 +1,7 @@
 // PeppyOS Configuration
 // This is the main configuration file that defines the deployments on the current machine.
 // It's run using the `peppy serve set-config` command. It will automatically look into children folders for `peppy.json5` configuration files belonging to nodes.
-// Any new node that is created should be added to the root_node by running the command `peppy node add <path_to_peppy.json5>`
+// Any new node that is created should be added to the node stack by running the command `peppy node add <path_to_peppy.json5>`
 {
   // - `deployments` pulls those nodes from nodes.peppy.bot and store/use them in/from the .peppy directory if they are not present in the children directory relative to this configuration file.
   // - `deployments` adopts a "value specification syntax" in opposition to the "declarative syntax" present in the other config files

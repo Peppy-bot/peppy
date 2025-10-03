@@ -8,6 +8,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub const WEB_VIDEO_STREAM_NODE_NAME: &str = "web_video_stream";
+pub const BRAIN_NODE_NAME: &str = "brain";
+pub const CONTROLLER_NODE_NAME: &str = "controller";
+pub const UVC_CAMERA_NODE_NAME: &str = "uvc_camera";
+pub const LIDAR_SENSOR_NODE_NAME: &str = "lidar_sensor";
+
 #[derive(Template)]
 #[template(path = "config_example_1/peppy_config.json5.j2")]
 struct PeppyConfigTemplate1<'a> {
@@ -25,8 +31,6 @@ struct PeppyConfigTemplate1<'a> {
     brain_node_name: &'a str,
 
     controller_node_name: &'a str,
-    controller_node_github_repo: &'a str,
-    controller_node_repo_path: &'a str,
 }
 
 #[derive(Template)]
@@ -95,18 +99,32 @@ impl<'a> ControllerNodeTemplate<'a> {
     }
 }
 
-pub fn get_root_node(to_path: impl AsRef<Path>, uvc_camera_github_repo: &str) -> PathBuf {
+pub fn get_peppy_config(
+    to_path: impl AsRef<Path>,
+    github_repo: &str,
+    lidar_sensor_github_repo_path: &str,
+    uvc_camera_github_repo_path: &str,
+) -> PathBuf {
     let root_content = PeppyConfigTemplate1 {
-        uvc_camera_github_repo: uvc_camera_github_repo,
-        uvc_camera_github_repo_path: "nodes/uvc_camera",
+        lidar_sensor_node_name: LIDAR_SENSOR_NODE_NAME,
+        lidar_sensor_github_repo: github_repo,
+        lidar_sensor_github_repo_path: lidar_sensor_github_repo_path,
+
+        uvc_camera_node_name: UVC_CAMERA_NODE_NAME,
+        uvc_camera_github_repo: github_repo,
+        uvc_camera_github_repo_path: uvc_camera_github_repo_path,
+
+        web_video_stream_node_name: WEB_VIDEO_STREAM_NODE_NAME,
+        brain_node_name: BRAIN_NODE_NAME,
+        controller_node_name: CONTROLLER_NODE_NAME,
     }
     .render()
     .expect("failed to render root template");
 
     let dir_path = to_path.as_ref();
-    let file_path = dir_path.join("peppy.json5");
+    let file_path = dir_path.join("peppy_config.json5");
 
-    fs::write(&file_path, root_content).expect("failed to write root node content");
+    fs::write(&file_path, root_content).expect("failed to write peppy config content");
 
     file_path
 }
@@ -124,15 +142,21 @@ pub fn create_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     .render()
     .expect("failed to render uvc template");
     let web_content = WebStreamVideoStreamNodeTemplate {
-        node_name: "web_video_stream",
+        node_name: WEB_VIDEO_STREAM_NODE_NAME,
+        uvc_camera_node_name: UVC_CAMERA_NODE_NAME,
     }
     .render()
     .expect("failed to render web template");
-    let brain_content = BrainNodeTemplate { node_name: "brain" }
-        .render()
-        .expect("failed to render brain template");
+    let brain_content = BrainNodeTemplate {
+        node_name: BRAIN_NODE_NAME,
+        uvc_camera_node_name: UVC_CAMERA_NODE_NAME,
+        lidar_sensor_node_name: LIDAR_SENSOR_NODE_NAME,
+    }
+    .render()
+    .expect("failed to render brain template");
     let controller_content = ControllerNodeTemplate {
-        node_name: "controller",
+        node_name: CONTROLLER_NODE_NAME,
+        brain_node_name: BRAIN_NODE_NAME,
     }
     .render()
     .expect("failed to render controller template");

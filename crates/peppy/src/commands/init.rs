@@ -5,7 +5,7 @@ use std::{
 
 use super::Command;
 use crate::{AppContext, Error, Result};
-use config::node::{ConfigTemplateType, NodeConfigCreator};
+use config::node::NodeConfigCreator;
 use tracing::info;
 
 pub struct InitCommand {
@@ -20,23 +20,24 @@ impl Command for InitCommand {
         } else {
             ctx.root_dir.clone()
         };
-        init_root_node(&current_dir, &self.node_name)
+        init_peppy_config(&current_dir)
             .map_err(|e| crate::Error::ExecutionFailed(e.to_string()))?;
         Ok(())
     }
 }
 
-pub fn init_root_node(path: impl AsRef<Path>, name: &str) -> Result<PathBuf> {
+pub fn init_peppy_config(path: impl AsRef<Path>) -> Result<PathBuf> {
     let path = path.as_ref();
     // Create the directory if it doesn't exist
     fs::create_dir_all(path)?;
-    let peppy_config_path = path.join("peppy.json5");
+    let peppy_config_path = path.join("peppy_config.json5");
 
-    NodeConfigCreator::new(&ConfigTemplateType::RootNode, name)
+    NodeConfigCreator::peppy_config("peppyd")
+        .map_err(|e| crate::Error::ExecutionFailed(e.to_string()))?
         .write_to(&peppy_config_path)
         .map_err(Error::PeppyConfig)?;
 
-    info!("Created root node at {}", peppy_config_path.display());
+    info!("Created peppy config at {}", peppy_config_path.display());
     Ok(peppy_config_path)
 }
 
@@ -47,7 +48,7 @@ mod tests {
     // Can be run from the command line with:
     // cargo run --manifest-path <path_to_root_Cargo.toml> -- init <node_name>
     #[test]
-    fn test_init_root_node() {
+    fn test_init_peppy_config() {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -55,10 +56,10 @@ mod tests {
 
         assert!(!non_existent_path.exists());
 
-        let peppy_yaml_path = init_root_node(&non_existent_path, "root_node").unwrap();
+        let peppy_config_path = init_peppy_config(&non_existent_path).unwrap();
 
         assert!(non_existent_path.exists());
-        assert!(peppy_yaml_path.exists());
-        assert_eq!(peppy_yaml_path.file_name().unwrap(), "peppy.json5");
+        assert!(peppy_config_path.exists());
+        assert_eq!(peppy_config_path.file_name().unwrap(), "peppy.json5");
     }
 }

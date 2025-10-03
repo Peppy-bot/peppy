@@ -23,8 +23,6 @@ impl NodeWatcher {
     /// Transmit changes detected in NodeConfigWatcher to the broader AppContext. Adds cleaner separation of
     /// concerns at the cost of a little bit of overhead on messages relaying.
     async fn watch_nodes(&self) -> Result<()> {
-        // TODO: watch_nodes should also discover other root nodes on the same network
-
         let watcher = FSNodeConfigWatcher::new(&self.from_dir)
             .map_err(|err| Error::NodeWatcher(err.to_string()))?;
 

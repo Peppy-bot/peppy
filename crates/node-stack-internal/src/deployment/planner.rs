@@ -11,10 +11,6 @@ use petgraph::{
     stable_graph::{NodeIndex, StableDiGraph},
 };
 
-/// 1. Open up all the `peppy.json5` starting from the current dir (or specified with `--node-config`) and create a tree of nodes (the node stack) that contains all the local NodeConfig.
-/// The field `is_root_node` determines the root node of the tree. There can only be a single `peppy.json5` with `is_root_node` defined, otherwise the program crashes
-/// 2. A "Deployment map" is created based on the `peppy.json5` containing the `is_root_node`. Each deployment maps to a node in the "node stack" as a directed graph so shared dependencies and cycles are preserved.
-
 pub struct LocalNodesMapper {
     nodes_cache_dir: PathBuf,
     root_dir: PathBuf,
@@ -114,7 +110,7 @@ impl LocalNodesMapper {
         PeppyConfigParser::from_path(&self.peppy_config_file).map_err(Error::Config)
     }
 
-    /// 1st step: Create the initial node stack based on the root node and its children in the same folder
+    /// 1st step: Create the initial node stack based on the peppy config and its children in the same folder
     pub fn get_local_node_stack(self) -> Result<DeploymentsMapper> {
         let mut local_node_configs = Vec::new();
         let watcher = FSNodeConfigWatcher::new(&self.root_dir)?;

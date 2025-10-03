@@ -112,7 +112,6 @@ impl Command for ServeCommand {
             .with_node_watcher(ctx)
             .with_messaging_router(self.engine)
             .with_peppygen(ctx)
-            .with_root_node_instance()
             .build();
 
         if let Err(e) = executor.execute() {
