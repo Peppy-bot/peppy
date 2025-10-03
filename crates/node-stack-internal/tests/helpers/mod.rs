@@ -1,6 +1,7 @@
 use askama::Template;
 use git2::{Repository, Signature};
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -252,4 +253,40 @@ where
     let node_content = template.render().expect("failed to render node template");
     fs::create_dir_all(&node_root_dir).expect("failed to create parent directory");
     fs::write(to_path, node_content).expect("failed to write node");
+}
+
+pub fn cached_node_exists(base: &Path, node_name: &str) -> bool {
+    let target = Path::new("nodes").join(node_name).join("peppy.json5");
+
+    fn walk(dir: &Path, target: &Path) -> bool {
+        if dir.join(target).exists() {
+            return true;
+        }
+
+        match fs::read_dir(dir) {
+            Ok(entries) => entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir())
+                .any(|path| walk(&path, target)),
+            Err(_) => false,
+        }
+    }
+
+    walk(base, &target)
+}
+
+pub fn print_dependency_summary(deps: &BTreeMap<String, Vec<String>>) {
+    println!("dependency summary:");
+
+    for (node, dependencies) in deps {
+        let mut deps_sorted = dependencies.clone();
+        deps_sorted.sort();
+
+        if deps_sorted.is_empty() {
+            println!("  • `{}` has no dependencies", node);
+        } else {
+            println!("  • `{}` depends on `{}`", node, deps_sorted.join(" and "));
+        }
+    }
 }
