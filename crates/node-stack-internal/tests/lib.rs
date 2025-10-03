@@ -15,8 +15,8 @@ mod helpers;
 /// - `controller` depends on `brain` (`subscribes_to.actions` property)
 /// - `web_video_stream` depends on `uvc_camera` (`subscribes_to.topics` property)
 #[test]
-fn test_create_node_stack() {
-    // Create a local git repo that host 2 different nodes (only uvc_camera will be pulled in this test)
+fn test_create_node_stack_config_example_1() {
+    // Create a local git repo that host 2 different nodes (only uvc_camera and lidar_sensor will be pulled in this test)
     let git_repo_temp_dir = TempDir::new().unwrap();
     let git_repo_path = helpers::create_git_repo(&git_repo_temp_dir);
 
@@ -55,56 +55,164 @@ fn test_create_node_stack() {
         ),
     );
 
+    // Add controller locally to the node_stack
+    helpers::add_local_web_video_stream(
+        root_temp_dir
+            .path()
+            .join(helpers::CONTROLLER_NODE_NAME)
+            .join("peppy.json5"),
+        helpers::ControllerNodeTemplate::new(
+            helpers::CONTROLLER_NODE_NAME,
+            helpers::BRAIN_NODE_NAME,
+        ),
+    );
+
     let mapper = LocalNodesMapper::from_root_config_file(peppy_config, None).unwrap();
     let deployment_mapper = mapper.get_local_node_stack().unwrap();
 
-    // Supposed to contain only `web_video_stream` and `brain` nodes at this stage (`uvc_camera`, `lidar_sensor` and `controller` are pulled from git)
-    assert_eq!(deployment_mapper.node_stack.len(), 2);
+    // Supposed to contain the local nodes stacked in the project directory
+    assert_eq!(deployment_mapper.node_stack.len(), 3);
 
     // Now take care of the deployments (git pull etc...)
     let deployment_tree = deployment_mapper.map_deployments_to_nodes();
 
-    // Now check that the graph has been properly created
-    let root_index = deployment_tree.root_index();
-    let root_map = deployment_tree
-        .get(root_index)
-        .expect("deployment tree contains a root node");
-    assert_eq!(root_map.deployment().name, "peppy_root");
+    let nodes_cache_dir = root_temp_dir.path().join(".peppy").join("nodes");
+    assert!(
+        nodes_cache_dir.is_dir(),
+        "nodes cache dir {:?} should exist",
+        nodes_cache_dir
+    );
 
-    assert!(deployment_tree.children(root_index).is_empty());
-    assert!(deployment_tree.parents(root_index).is_empty());
+    let contains_node_config = |base: &std::path::Path, node_name: &str| {
+        let target = std::path::Path::new("nodes")
+            .join(node_name)
+            .join("peppy.json5");
 
-    let mut uvc_index = None;
-    let mut web_index = None;
+        fn search(dir: &std::path::Path, target: &std::path::Path) -> bool {
+            if dir.join(target).exists() {
+                return true;
+            }
+
+            match std::fs::read_dir(dir) {
+                Ok(entries) => entries
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| path.is_dir())
+                    .any(|path| search(&path, target)),
+                Err(_) => false,
+            }
+        }
+
+        search(base, &target)
+    };
+
+    assert!(
+        contains_node_config(&nodes_cache_dir, helpers::UVC_CAMERA_NODE_NAME),
+        "uvc_camera should be cached under {:?}",
+        nodes_cache_dir
+    );
+    assert!(
+        contains_node_config(&nodes_cache_dir, helpers::LIDAR_SENSOR_NODE_NAME),
+        "lidar_sensor should be cached under {:?}",
+        nodes_cache_dir
+    );
+    let _pth = root_temp_dir.path();
+
+    assert!(
+        deployment_tree.len() >= 5,
+        "deployment graph should contain all nodes"
+    );
+
+    let mut deps_by_name: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
 
     for index in deployment_tree.indices() {
-        let Some(map) = deployment_tree.get(index) else {
-            continue;
-        };
-        match map.deployment().name.as_str() {
-            "uvc_camera" => uvc_index = Some(index),
-            "web_video_stream" => web_index = Some(index),
-            _ => {}
-        }
+        let map = deployment_tree
+            .get(index)
+            .expect("deployment graph should return node for index");
+
+        assert!(
+            map.is_resolved(),
+            "deployment {}:{} must resolve",
+            map.deployment().name,
+            map.deployment().tag
+        );
+
+        let dependencies: Vec<String> = deployment_tree
+            .children(index)
+            .into_iter()
+            .map(|child| {
+                deployment_tree
+                    .get(child)
+                    .expect("dependency node must exist")
+                    .deployment()
+                    .name
+                    .clone()
+            })
+            .collect();
+
+        deps_by_name.insert(map.deployment().name.clone(), dependencies);
     }
 
-    let uvc_index = uvc_index.expect("uvc_camera deployment exists in the graph");
-    let web_index = web_index.expect("web_video_stream deployment exists in the graph");
+    let expected_brain = vec![
+        helpers::LIDAR_SENSOR_NODE_NAME.to_string(),
+        helpers::UVC_CAMERA_NODE_NAME.to_string(),
+    ];
+    let expected_controller = vec![helpers::BRAIN_NODE_NAME.to_string()];
+    let expected_web = vec![helpers::UVC_CAMERA_NODE_NAME.to_string()];
 
-    assert!(deployment_tree.parents(uvc_index).is_empty());
-    let uvc_children = deployment_tree.children(uvc_index);
-    assert_eq!(uvc_children.len(), 1);
-    assert_eq!(uvc_children[0], web_index);
+    let mut actual_brain = deps_by_name
+        .get(helpers::BRAIN_NODE_NAME)
+        .cloned()
+        .expect("brain node should be present");
+    let mut actual_controller = deps_by_name
+        .get(helpers::CONTROLLER_NODE_NAME)
+        .cloned()
+        .expect("controller node should be present");
+    let mut actual_web = deps_by_name
+        .get(helpers::WEB_VIDEO_STREAM_NODE_NAME)
+        .cloned()
+        .expect("web_video_stream node should be present");
 
-    let web_video_stream_child = deployment_tree
-        .get(web_index)
-        .expect("web_video_stream deployment exists");
-    assert_eq!(web_video_stream_child.deployment().name, "web_video_stream");
-    let parents = deployment_tree.parents(web_index);
-    assert_eq!(parents.len(), 1);
-    assert_eq!(parents[0], uvc_index);
+    actual_brain.sort();
+    actual_controller.sort();
+    actual_web.sort();
 
-    helpers::print_graph(&deployment_tree, &|map| map.deployment().name.clone());
-    let _persisted_path = git_repo_temp_dir.keep();
-    let _persisted_path2 = root_temp_dir.keep();
+    let mut expected_brain_sorted = expected_brain.clone();
+    let mut expected_controller_sorted = expected_controller.clone();
+    let mut expected_web_sorted = expected_web.clone();
+
+    expected_brain_sorted.sort();
+    expected_controller_sorted.sort();
+    expected_web_sorted.sort();
+
+    assert_eq!(actual_brain, expected_brain_sorted, "brain dependencies");
+    assert_eq!(
+        actual_controller, expected_controller_sorted,
+        "controller dependencies"
+    );
+    assert_eq!(
+        actual_web, expected_web_sorted,
+        "web_video_stream dependencies"
+    );
+
+    let format_dependencies = |name: &str| -> String {
+        deps_by_name
+            .get(name)
+            .map(|deps| deps.join(" and "))
+            .unwrap_or_else(|| "no dependencies".to_string())
+    };
+
+    println!(
+        "  - `brain` depends on {} (`subscribes_to.topics` property)",
+        format_dependencies(helpers::BRAIN_NODE_NAME)
+    );
+    println!(
+        "  - `controller` depends on {} (`subscribes_to.actions` property)",
+        format_dependencies(helpers::CONTROLLER_NODE_NAME)
+    );
+    println!(
+        "  - `web_video_stream` depends on {} (`subscribes_to.topics` property)",
+        format_dependencies(helpers::WEB_VIDEO_STREAM_NODE_NAME)
+    );
 }
