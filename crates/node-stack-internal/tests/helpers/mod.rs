@@ -1,9 +1,6 @@
 use askama::Template;
 use git2::{Repository, Signature};
-use node_stack::{DeploymentGraph, DeploymentMap};
-use petgraph::stable_graph::NodeIndex;
 use std::{
-    collections::{HashSet, VecDeque},
     fs,
     path::{Path, PathBuf},
 };
@@ -42,6 +39,22 @@ pub struct UvcCameraNodeTemplate<'a> {
 impl<'a> UvcCameraNodeTemplate<'a> {
     pub fn new(node_name: &'a str) -> Self {
         Self { node_name }
+    }
+}
+
+#[derive(Template)]
+#[template(path = "nodes/lidar_sensor/peppy.json5.j2")]
+pub struct LidarSensorNodeTemplate<'a> {
+    node_name: &'a str,
+    node_tag: &'a str,
+}
+
+impl<'a> LidarSensorNodeTemplate<'a> {
+    pub fn new(node_name: &'a str, node_tag: &'a str) -> Self {
+        Self {
+            node_name,
+            node_tag,
+        }
     }
 }
 
@@ -131,16 +144,17 @@ pub fn get_peppy_config(
 
 pub fn create_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     let base_path = to_path.as_ref();
-    let repo_path = base_path.join("uvc_camera_repo.git");
+    let repo_path = base_path.join("peppy_nodes_repo.git");
     fs::create_dir_all(&repo_path).expect("failed to create repo directory");
 
     let repo = Repository::init(&repo_path).expect("failed to init repository");
 
-    let uvc_content = UvcCameraNodeTemplate {
-        node_name: "uvc_camera",
-    }
-    .render()
-    .expect("failed to render uvc template");
+    let uvc_content = UvcCameraNodeTemplate::new("uvc_camera")
+        .render()
+        .expect("failed to render uvc template");
+    let lidar_content = LidarSensorNodeTemplate::new(LIDAR_SENSOR_NODE_NAME, "0.1.0")
+        .render()
+        .expect("failed to render lidar template");
     let web_content = WebStreamVideoStreamNodeTemplate {
         node_name: WEB_VIDEO_STREAM_NODE_NAME,
         uvc_camera_node_name: UVC_CAMERA_NODE_NAME,
@@ -162,6 +176,7 @@ pub fn create_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     .expect("failed to render controller template");
 
     let uvc_path = Path::new("nodes/uvc_camera/peppy.json5");
+    let lidar_path = Path::new("nodes/lidar_sensor/peppy.json5");
     let web_path = Path::new("nodes/web_video_stream/peppy.json5");
     let brain_path = Path::new("nodes/brain/peppy.json5");
     let controller_path = Path::new("nodes/controller/peppy.json5");
@@ -170,6 +185,11 @@ pub fn create_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
         fs::create_dir_all(repo_path.join(parent)).expect("failed to create uvc directories");
     }
     fs::write(repo_path.join(uvc_path), uvc_content).expect("failed to write uvc node");
+
+    if let Some(parent) = lidar_path.parent() {
+        fs::create_dir_all(repo_path.join(parent)).expect("failed to create lidar directories");
+    }
+    fs::write(repo_path.join(lidar_path), lidar_content).expect("failed to write lidar node");
 
     if let Some(parent) = web_path.parent() {
         fs::create_dir_all(repo_path.join(parent)).expect("failed to create web directories");
@@ -190,6 +210,9 @@ pub fn create_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
 
     let mut index = repo.index().expect("failed to open index");
     index.add_path(uvc_path).expect("failed to add uvc node");
+    index
+        .add_path(lidar_path)
+        .expect("failed to add lidar node");
     index.add_path(web_path).expect("failed to add web node");
     index
         .add_path(brain_path)
@@ -229,62 +252,4 @@ where
     let node_content = template.render().expect("failed to render node template");
     fs::create_dir_all(&node_root_dir).expect("failed to create parent directory");
     fs::write(to_path, node_content).expect("failed to write node");
-}
-
-pub fn print_graph<F>(graph: &DeploymentGraph, label: &F)
-where
-    F: Fn(&DeploymentMap) -> String,
-{
-    if graph.is_empty() {
-        println!("<empty graph>");
-        return;
-    }
-
-    let format_node = |index: NodeIndex| -> String {
-        graph
-            .get(index)
-            .map(|node| format!("{} [{}]", label(node), index.index()))
-            .unwrap_or_else(|| format!("<missing node> [{}]", index.index()))
-    };
-
-    println!(
-        "graph adjacency (root = {}):",
-        format_node(graph.root_index())
-    );
-
-    let mut visited = HashSet::new();
-    let mut queue = VecDeque::new();
-    queue.push_back(graph.root_index());
-
-    println!("-> lists the outgoing edges for that node (everything it points to)");
-    println!("<- lists the incoming edges (everything that points to it).");
-    while let Some(index) = queue.pop_front() {
-        if !visited.insert(index) {
-            continue;
-        }
-
-        let node_repr = format_node(index);
-        println!("{}", node_repr);
-
-        let children = graph.children(index);
-        if children.is_empty() {
-            println!("  -> []");
-        } else {
-            let child_entries: Vec<_> = children.iter().map(|child| format_node(*child)).collect();
-            println!("  -> {}", child_entries.join(", "));
-        }
-
-        let parents = graph.parents(index);
-        if parents.is_empty() {
-            println!("  <- []");
-        } else {
-            let parent_entries: Vec<_> =
-                parents.iter().map(|parent| format_node(*parent)).collect();
-            println!("  <- {}", parent_entries.join(", "));
-        }
-
-        for child in children {
-            queue.push_back(child);
-        }
-    }
 }

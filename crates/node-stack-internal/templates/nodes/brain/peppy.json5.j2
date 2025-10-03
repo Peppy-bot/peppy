@@ -31,11 +31,11 @@
             // Always using "reliable" qos
             message_format: {
               arm_id: "u16",
-              desired_position: [
-                "i32", // x
-                "i32", // y
-                "i32" // z
-              ]
+              desired_position: {
+                type: "array",
+                items: "i32",
+                length: 3
+              }
             }
           },
           feedback_topic: {
@@ -48,11 +48,11 @@
           result_service: {
             // Always using "reliable" qos
             message_format: {
-              final_position: [
-                "i32", // x
-                "i32", // y
-                "i32" // z
-              ]
+              final_position: {
+                type: "array",
+                items: "i32",
+                length: 3
+              }
             }
           }
         }
