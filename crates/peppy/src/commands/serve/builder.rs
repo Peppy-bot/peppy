@@ -45,7 +45,7 @@ impl ServeCommandBuilder {
     /// When the node_watcher detects a change, peppygen generates the new interfaces for the clients to use.
     /// peppygen does not depend on `node_watcher`, it's only one of the components that can receive a signal
     /// for code generation. Another process that can do this is `peppy node sync <path_to_config>` when nodes
-    /// are outside the root_node folder and its children.
+    /// are outside the peppy config root folder and its children.
     pub fn with_peppygen(mut self, ctx: &AppContext) -> Self {
         // let generator = Box::new(
         //     InterfacesGenerator::new(ctx, self.peppy_config.interfaces.clone())
@@ -53,12 +53,6 @@ impl ServeCommandBuilder {
         // );
         // self.composite_command = self.composite_command.add_async_command(generator);
         todo!("Finish");
-        self
-    }
-
-    pub fn with_root_node_instance(mut self) -> Self {
-        // TODO start a peppy root node using the `peppylib` crate based on the config file present in the same folder where the `serve` command is run
-        // The root_node starts after the messaging_router
         self
     }
 

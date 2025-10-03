@@ -178,8 +178,8 @@ mod tests {
     fn test_initial_state_loads_all_configs() {
         let temp = TempDir::new().unwrap();
 
-        // root config
-        let root = write_config(temp.path(), "root_node", "/root");
+        // config 1
+        let base = write_config(temp.path(), "base_node", "/base");
 
         // nested config
         let nested_dir = temp.path().join("nested");
@@ -191,11 +191,11 @@ mod tests {
         let state = rx.borrow().clone();
 
         assert_eq!(state.len(), 2);
-        assert!(state.contains_key(&root));
+        assert!(state.contains_key(&base));
         assert!(state.contains_key(&nested));
         assert_eq!(
-            state[&root].as_ref().unwrap().manifest.name.as_str(),
-            "root_node"
+            state[&base].as_ref().unwrap().manifest.name.as_str(),
+            "base_node"
         );
         assert_eq!(
             state[&nested].as_ref().unwrap().manifest.name.as_str(),

@@ -411,15 +411,6 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
-/// Supported template types
-#[derive(Debug, Clone, Default)]
-pub enum ConfigTemplateType {
-    RootNode,
-    #[default]
-    SimpleNode,
-    FullNode,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {

@@ -23,9 +23,9 @@ The following sub commands are available as part of the `peppy` cli:
     - `sync`: Must be run in a folder where `peppy.json5` is present. It interrogate the node stack and check the current node from which the command is run to determine if the node depends on other nodes, it then generates interface code (in Python or Rust) based on the `subscribes_to` and `exposes` definition of the `peppy.json5`. If the current node has a `subscribes_to` and the subscribed node is not present in the node stack, the generated interface raises a warning saying the expected node message format could not be found.
     - `list`: preview of the node stack and where the `peppy.json5` are located.
   
-### The peppy root node
+### The `peppy_config.json5` file
 
-The peppy root node is a node that is unique (there can be no more than a single instance of a root node per machine) and its role is to compile all the nodes present on the same machine together such that all the nodes run as separate processes. Another run mode `thread` is available, but if a node with that mode is added to PeppyOS, the root node will force a restart of the entire node stack.
+The peppy config file is unique and its role is to define things such as deployment and logging.
 
 ### The `peppy.json5` configuration files
 

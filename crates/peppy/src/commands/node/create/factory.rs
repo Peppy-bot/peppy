@@ -3,7 +3,7 @@ use super::Language;
 use crate::commands::node::create::{python, rust};
 use crate::{Error, Result};
 use askama::Template;
-use config::node::{ConfigTemplateType, NodeConfigCreator};
+use config::node::NodeConfigCreator;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -26,12 +26,13 @@ pub trait NodeFactory {
         let peppy_config_path = ctx.node_path.join("peppy.json5");
 
         let builder = if full {
-            NodeConfigCreator::new(&ConfigTemplateType::FullNode, ctx.node_name.as_str())
+            NodeConfigCreator::full_node(ctx.node_name.as_str())
         } else {
-            NodeConfigCreator::new(&ConfigTemplateType::SimpleNode, ctx.node_name.as_str())
+            NodeConfigCreator::simple_node(ctx.node_name.as_str())
         };
 
         builder
+            .map_err(Error::PeppyConfig)?
             .write_to(&peppy_config_path)
             .map_err(Error::PeppyConfig)?;
 

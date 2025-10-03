@@ -16,29 +16,29 @@ mod helpers;
 /// - `web_video_stream` depends on `uvc_camera` (`subscribes_to.topics` property)
 #[test]
 fn test_create_node_stack() {
-    let web_video_stream_node_name = "web_video_stream";
-    let brain_node_name = "brain";
-    let uvc_camera_node_name = "uvc_camera";
-    let lidar_sensor_node_name = "lidar_sensor";
-
     // Create a local git repo that host 2 different nodes (only uvc_camera will be pulled in this test)
     let git_repo_temp_dir = TempDir::new().unwrap();
     let git_repo_path = helpers::create_git_repo(&git_repo_temp_dir);
 
-    // The directory in which the root_node lives will contain a `.peppy/nodes` folder where cached nodes will be pulled from a local git repo
+    // The directory in which the peppy config lives will contain a `.peppy/nodes` folder where cached nodes will be pulled from a local git repo
     let root_temp_dir = TempDir::new().unwrap();
-    // Only pull uvc_camera from git
-    let root_node = helpers::get_root_node(&root_temp_dir, git_repo_path.to_str().unwrap());
+    // Only pull uvc_camera and lidar_sensor from git
+    let peppy_config = helpers::get_peppy_config(
+        &root_temp_dir,
+        git_repo_path.to_str().unwrap(),
+        format!("nodes/{}", helpers::LIDAR_SENSOR_NODE_NAME).as_str(),
+        format!("nodes/{}", helpers::UVC_CAMERA_NODE_NAME).as_str(),
+    );
 
     // Add web_video_stream locally to the node_stack
     helpers::add_local_web_video_stream(
         root_temp_dir
             .path()
-            .join(web_video_stream_node_name)
+            .join(helpers::WEB_VIDEO_STREAM_NODE_NAME)
             .join("peppy.json5"),
         helpers::WebStreamVideoStreamNodeTemplate::new(
-            web_video_stream_node_name,
-            uvc_camera_node_name,
+            helpers::WEB_VIDEO_STREAM_NODE_NAME,
+            helpers::UVC_CAMERA_NODE_NAME,
         ),
     );
 
@@ -46,16 +46,16 @@ fn test_create_node_stack() {
     helpers::add_local_web_video_stream(
         root_temp_dir
             .path()
-            .join(brain_node_name)
+            .join(helpers::BRAIN_NODE_NAME)
             .join("peppy.json5"),
         helpers::BrainNodeTemplate::new(
-            brain_node_name,
-            uvc_camera_node_name,
-            lidar_sensor_node_name,
+            helpers::BRAIN_NODE_NAME,
+            helpers::UVC_CAMERA_NODE_NAME,
+            helpers::LIDAR_SENSOR_NODE_NAME,
         ),
     );
 
-    let mapper = LocalNodesMapper::from_root_config_file(root_node, None).unwrap();
+    let mapper = LocalNodesMapper::from_root_config_file(peppy_config, None).unwrap();
     let deployment_mapper = mapper.get_local_node_stack().unwrap();
 
     // Supposed to contain only `web_video_stream` and `brain` nodes at this stage (`uvc_camera`, `lidar_sensor` and `controller` are pulled from git)

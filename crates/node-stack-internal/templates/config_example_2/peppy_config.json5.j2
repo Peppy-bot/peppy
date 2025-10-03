@@ -1,0 +1,38 @@
+// In this example, the lidar sensor uses tag 0.1.1, which is not available on Github
+{
+  deployments: [
+    {
+      name: "{{ lidar_sensor_node_name }}",
+      source: {
+        repo: "{{ lidar_sensor_github_repo }}",
+        path: "{{ lidar_sensor_github_repo_path }}"
+      },
+      tag: "0.1.1",
+      instances: [
+        {
+          namespace: "/lidar",
+          parameters: {
+            device: {
+              physical: "/dev/lidar1",
+              sim: "mujoco:lidar1",
+              priority: "sim"
+            },
+            lidar_point: {
+              x: 12.34, // meters, X coordinate in 3D space
+              y: -7.56, // meters, Y coordinate in 3D space
+              z: 1.23, // meters, Z coordinate in 3D space (height)
+              intensity: 0.85, // normalized intensity of return signal (0 to 1)
+              return_type: 1, // e.g. 1 = first return, 2 = last return
+              classification: 2, // e.g. 2 = ground, 5 = vegetation
+              timestamp: 1696285145999, // Unix timestamp in milliseconds
+            }
+          }
+        }
+      ]
+    },
+  ],
+  logging: {
+    min_level: "info",
+    format: "text"
+  }
+}

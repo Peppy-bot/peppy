@@ -109,7 +109,7 @@
     },
     {
       name: "{{ brain_node_name }}",
-      // The test will add the brain to the local stack
+      // The test will add the brain_node to the local stack
       tag: "0.1.0",
       instances: [
         {
@@ -120,10 +120,7 @@
     },
     {
       name: "{{ controller_node_name }}",
-      source: {
-        repo: "{{ controller_node_github_repo }}",
-        path: "{{ controller_node_repo_path }}"
-      },
+      // The test will add the controller_node to the local stack
       tag: "0.1.0",
       instances: [
         {
