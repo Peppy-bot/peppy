@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use node_stack::LocalNodesMapper;
+use node_stack::LocalNodeStackBuilder;
 use tempfile::TempDir;
 
 #[path = "./helpers/mod.rs"]
@@ -63,14 +63,14 @@ fn test_create_node_stack_config_example_1() {
         ),
     );
 
-    let mapper = LocalNodesMapper::from_root_config_file(peppy_config, None).unwrap();
-    let deployment_mapper = mapper.get_local_node_stack().unwrap();
+    let mapper = LocalNodeStackBuilder::from_root_config_file(peppy_config, None).unwrap();
+    let planner = mapper.build().unwrap();
 
     // Supposed to contain the local nodes stacked in the project directory
-    assert_eq!(deployment_mapper.node_stack.len(), 3);
+    assert_eq!(planner.node_stack().len(), 3);
 
     // Now take care of the deployments (git pull etc...)
-    let deployment_tree = deployment_mapper.map_deployments_to_nodes();
+    let deployment_tree = planner.map_deployments_to_nodes();
 
     let nodes_cache_dir = root.join(".peppy").join("nodes");
     assert!(

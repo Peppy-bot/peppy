@@ -25,13 +25,7 @@ pub struct Deployment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<DeploymentNodeSource>,
     pub tag: String,
-    #[serde(default, skip_serializing_if = "bool_is_false")]
-    pub optional: bool,
     pub instances: Vec<DeploymentInstance>,
-}
-
-fn bool_is_false(value: &bool) -> bool {
-    !*value
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

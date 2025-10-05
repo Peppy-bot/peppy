@@ -165,7 +165,6 @@ mod tests {
             name: "uvc_camera".to_string(),
             source: Some(source),
             tag: "0.1.0".to_string(),
-            optional: false,
             instances: vec![],
         }
     }
