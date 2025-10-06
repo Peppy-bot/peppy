@@ -17,6 +17,16 @@ pub enum Error {
     NotImplemented(&'static str),
     #[error("{0} could not be found")]
     FileNotFound(PathBuf),
+    #[error("Failed to download bundle `{url}`: {reason}")]
+    HttpDownload { url: String, reason: String },
+    #[error("Failed to extract bundle `{url}`: {reason}")]
+    BundleExtraction { url: String, reason: String },
+    #[error("Checksum mismatch for bundle `{0}`")]
+    ChecksumMismatch(String),
+    #[error("Unsupported checksum algorithm `{0}`")]
+    UnsupportedChecksum(String),
+    #[error("Invalid checksum `{0}`: {1}")]
+    InvalidChecksum(String, String),
 
     // -- config-internal
     #[error(transparent)]

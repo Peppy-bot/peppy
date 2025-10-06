@@ -42,7 +42,7 @@ pub struct DeploymentInstance {
 pub enum DeploymentNodeSource {
     Local(PathBuf),
     Git(GitRemoteSpec),
-    Http(String),
+    Http(HttpRemoteSpec),
 }
 
 impl DeploymentNodeSource {
@@ -66,9 +66,9 @@ impl DeploymentNodeSource {
         }
     }
 
-    pub fn http(&self) -> Option<&str> {
+    pub fn http(&self) -> Option<&HttpRemoteSpec> {
         match self {
-            DeploymentNodeSource::Http(url) => Some(url.as_str()),
+            DeploymentNodeSource::Http(spec) => Some(spec),
             _ => None,
         }
     }
@@ -95,7 +95,8 @@ impl DeploymentNodeSource {
         }
 
         if Self::is_http_url(trimmed) && !Self::looks_like_git(trimmed) {
-            return Ok(DeploymentNodeSource::Http(trimmed.to_owned()));
+            let spec = HttpRemoteSpec::new(trimmed.to_owned(), None)?;
+            return Ok(DeploymentNodeSource::Http(spec));
         }
 
         let spec = Self::parse_git_spec(trimmed)?;
@@ -190,7 +191,13 @@ impl Serialize for DeploymentNodeSource {
                     serializer.serialize_str(&spec.repo)
                 }
             }
-            DeploymentNodeSource::Http(url) => serializer.serialize_str(url),
+            DeploymentNodeSource::Http(spec) => {
+                if spec.checksum.is_none() {
+                    serializer.serialize_str(&spec.bundle_url)
+                } else {
+                    spec.serialize(serializer)
+                }
+            }
         }
     }
 }
@@ -206,6 +213,7 @@ impl<'de> Deserialize<'de> for DeploymentNodeSource {
             String(String),
             InlineGit(RawGitSpec),
             Git { git: RawGitSpec },
+            Http(RawHttpSpec),
         }
 
         #[derive(Deserialize)]
@@ -214,6 +222,14 @@ impl<'de> Deserialize<'de> for DeploymentNodeSource {
             repo: String,
             #[serde(default, skip_serializing_if = "Option::is_none")]
             path: Option<String>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawHttpSpec {
+            bundle_url: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            checksum: Option<String>,
         }
 
         match RawNodeSource::deserialize(deserializer)? {
@@ -226,7 +242,40 @@ impl<'de> Deserialize<'de> for DeploymentNodeSource {
             RawNodeSource::Git { git } => {
                 DeploymentNodeSource::from_git_fields(git.repo, git.path).map_err(de::Error::custom)
             }
+            RawNodeSource::Http(http) => HttpRemoteSpec::new(http.bundle_url, http.checksum)
+                .map(DeploymentNodeSource::Http)
+                .map_err(de::Error::custom),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HttpRemoteSpec {
+    pub bundle_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
+}
+
+impl HttpRemoteSpec {
+    pub fn new(bundle_url: String, checksum: Option<String>) -> Result<Self, ParsingError> {
+        let trimmed = bundle_url.trim();
+        if trimmed.is_empty() {
+            return Err(ParsingError::InvalidDeploymentSource(
+                "http bundle url cannot be empty".to_string(),
+            ));
+        }
+
+        if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+            return Err(ParsingError::InvalidDeploymentSource(
+                "http bundle url must start with http:// or https://".to_string(),
+            ));
+        }
+
+        Ok(Self {
+            bundle_url: trimmed.to_owned(),
+            checksum,
+        })
     }
 }
 
@@ -312,11 +361,28 @@ mod tests {
         assert_eq!(local_path.as_path(), Path::new("/tmp/node"));
 
         let http: DeploymentNodeSource =
-            serde_json5::from_str("\"https://nodes.peppy.bot/nodes/camera\"").unwrap();
-        let DeploymentNodeSource::Http(http_url) = http else {
+            serde_json5::from_str("\"https://nodes.peppy.bot/nodes/camera.tar.zst\"").unwrap();
+        let DeploymentNodeSource::Http(http_spec) = http else {
             panic!("expected http node source");
         };
-        assert_eq!(http_url, "https://nodes.peppy.bot/nodes/camera");
+        assert_eq!(
+            http_spec.bundle_url,
+            "https://nodes.peppy.bot/nodes/camera.tar.zst"
+        );
+        assert!(http_spec.checksum.is_none());
+
+        let http_with_checksum: DeploymentNodeSource = serde_json5::from_str(
+            "{ bundle_url: \"https://nodes.peppy.bot/nodes/camera.tar.zst\", checksum: \"sha256:deadbeef\" }",
+        )
+        .unwrap();
+        let DeploymentNodeSource::Http(http_spec) = http_with_checksum else {
+            panic!("expected http node source with checksum");
+        };
+        assert_eq!(
+            http_spec.bundle_url,
+            "https://nodes.peppy.bot/nodes/camera.tar.zst"
+        );
+        assert_eq!(http_spec.checksum.as_deref(), Some("sha256:deadbeef"));
 
         let git_inline: DeploymentNodeSource = serde_json5::from_str(
             "{ repo: \"https://github.com/Peppy/nodes.git\", path: \"uvc_camera\" }",
@@ -370,5 +436,26 @@ mod tests {
             panic!("expected invalid deployment source error");
         };
         assert_eq!(msg, "source cannot be empty");
+    }
+
+    #[test]
+    fn http_source_with_checksum_round_trip() {
+        let json = "{ bundle_url: \"https://example.com/nodes/uvc_camera.tar.zst\", checksum: \"sha256:0011aa\" }";
+        let source: DeploymentNodeSource =
+            serde_json5::from_str(json).expect("parse http source with checksum");
+
+        let DeploymentNodeSource::Http(spec) = &source else {
+            panic!("expected http deployment source");
+        };
+        assert_eq!(
+            spec.bundle_url,
+            "https://example.com/nodes/uvc_camera.tar.zst"
+        );
+        assert_eq!(spec.checksum.as_deref(), Some("sha256:0011aa"));
+
+        let serialized = serde_json5::to_string(&source).expect("serialize http deployment source");
+        let round_trip: DeploymentNodeSource =
+            serde_json5::from_str(&serialized).expect("re-parse serialized http deployment source");
+        assert_eq!(round_trip, source);
     }
 }
