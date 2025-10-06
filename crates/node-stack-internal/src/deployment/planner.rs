@@ -475,9 +475,17 @@ mod tests {
     use crate::deployment::types::ResolvedNodeSource;
     use config::{
         node::{NodeConfig, NodeConfigParser},
-        peppy_config::{Deployment, DeploymentNodeSource, GitRemoteSpec, PeppyConfig},
+        peppy_config::{
+            Deployment, DeploymentNodeSource, GitRemoteSpec, HttpRemoteSpec, PeppyConfig,
+        },
     };
-    use std::{collections::HashMap, fs, path::PathBuf};
+    use httptest::{Expectation, Server, matchers::request, responders::status_code};
+    use std::{
+        collections::HashMap,
+        fs,
+        io::Write,
+        path::{Path, PathBuf},
+    };
     use tempfile::tempdir;
 
     struct StaticResolver {
@@ -583,6 +591,209 @@ mod tests {
         fs::create_dir_all(path.parent().expect("dir")).expect("create config directory");
         fs::write(&path, content).expect("write config");
         path
+    }
+
+    fn create_http_bundle(temp_dir: &Path, bundle_name: &str, manifest_content: &str) -> Vec<u8> {
+        let manifest_path = temp_dir.join("peppy.json5");
+        fs::write(&manifest_path, manifest_content).expect("write manifest");
+
+        let mut tar_data = Vec::new();
+        {
+            let mut tar_builder = tar::Builder::new(&mut tar_data);
+            tar_builder
+                .append_path_with_name(&manifest_path, "peppy.json5")
+                .expect("append manifest");
+            tar_builder.finish().expect("finish tar");
+        }
+
+        let bundle_path = temp_dir.join(bundle_name);
+        let bundle_file = fs::File::create(&bundle_path).expect("create bundle");
+        let mut encoder = zstd::Encoder::new(bundle_file, 0).expect("create zstd encoder");
+        encoder
+            .write_all(&tar_data)
+            .expect("write compressed bundle");
+        encoder.finish().expect("finish encoder");
+
+        fs::read(&bundle_path).expect("read bundle")
+    }
+
+    #[test]
+    fn http_bundle_is_downloaded_and_resolved() {
+        let temp_dir = tempdir().expect("temp dir");
+        let server = Server::run();
+
+        let manifest_content = r#"{
+            manifest: { name: "uvc_camera", tag: "1.2.3" }
+        }"#;
+        let bundle_bytes =
+            create_http_bundle(temp_dir.path(), "uvc_camera.tar.zst", manifest_content);
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/bundles/uvc_camera.tar.zst"))
+                .respond_with(status_code(200).body(bundle_bytes)),
+        );
+
+        let url = server.url("/bundles/uvc_camera.tar.zst");
+        let http_spec =
+            HttpRemoteSpec::new(url.to_string(), None).expect("valid http deployment spec");
+
+        let deployments = vec![deployment(
+            "uvc_camera",
+            "1.2.3",
+            Some(DeploymentNodeSource::Http(http_spec)),
+            false,
+        )];
+
+        let config = PeppyConfig {
+            deployments: Some(deployments),
+            logging: None,
+        };
+        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+
+        let builder =
+            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let planner = builder.build_with_nodes(Vec::new()).expect("planner");
+
+        let graph = planner.map_deployments_to_nodes();
+
+        assert_eq!(
+            graph.len(),
+            1,
+            "http deployment should resolve to single node"
+        );
+        let root = graph.root_index();
+        let node_map = graph.get(root).expect("root node map");
+        assert!(node_map.is_resolved(), "http deployment should be resolved");
+        assert_eq!(node_map.deployment().name, "uvc_camera");
+        assert_eq!(node_map.node_source().node().manifest.tag, "1.2.3");
+        assert_eq!(
+            node_map.node_source().node().manifest.name.as_str(),
+            "uvc_camera"
+        );
+    }
+
+    #[test]
+    fn http_bundle_is_downloaded_and_name_not_resolved() {
+        let temp_dir = tempdir().expect("temp dir");
+        let server = Server::run();
+
+        let manifest_content = r#"{
+            manifest: { name: "uvc_camera_wrong", tag: "1.2.3" }
+        }"#;
+        let bundle_bytes =
+            create_http_bundle(temp_dir.path(), "uvc_camera.tar.zst", manifest_content);
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/bundles/uvc_camera.tar.zst"))
+                .respond_with(status_code(200).body(bundle_bytes)),
+        );
+
+        let url = server.url("/bundles/uvc_camera.tar.zst");
+        let http_spec =
+            HttpRemoteSpec::new(url.to_string(), None).expect("valid http deployment spec");
+
+        let deployments = vec![deployment(
+            "uvc_camera",
+            "1.2.3",
+            Some(DeploymentNodeSource::Http(http_spec)),
+            false,
+        )];
+
+        let config = PeppyConfig {
+            deployments: Some(deployments),
+            logging: None,
+        };
+        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+
+        let builder =
+            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let planner = builder.build_with_nodes(Vec::new()).expect("planner");
+
+        let graph = planner.map_deployments_to_nodes();
+
+        assert_eq!(
+            graph.len(),
+            1,
+            "http deployment should be tracked even when unresolved"
+        );
+        let root = graph.root_index();
+        let node_map = graph.get(root).expect("root node map");
+        assert!(
+            !node_map.is_resolved(),
+            "manifest name mismatch should fail resolution"
+        );
+        let error = node_map
+            .error()
+            .expect("unresolved deployment should carry error");
+        match error {
+            Error::DeploymentNotResolvable(identifier, reason) => {
+                assert_eq!(identifier, "uvc_camera:1.2.3");
+                assert!(
+                    reason.contains("node name"),
+                    "unexpected error reason: {reason}"
+                );
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn http_bundle_is_downloaded_and_tag_not_resolved() {
+        let temp_dir = tempdir().expect("temp dir");
+        let server = Server::run();
+
+        let manifest_content = r#"{
+            manifest: { name: "uvc_camera", tag: "9.9.9" }
+        }"#;
+        let bundle_bytes =
+            create_http_bundle(temp_dir.path(), "uvc_camera.tar.zst", manifest_content);
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/bundles/uvc_camera.tar.zst"))
+                .respond_with(status_code(200).body(bundle_bytes)),
+        );
+
+        let url = server.url("/bundles/uvc_camera.tar.zst");
+        let http_spec =
+            HttpRemoteSpec::new(url.to_string(), None).expect("valid http deployment spec");
+
+        let deployments = vec![deployment(
+            "uvc_camera",
+            "1.2.3",
+            Some(DeploymentNodeSource::Http(http_spec)),
+            false,
+        )];
+
+        let config = PeppyConfig {
+            deployments: Some(deployments),
+            logging: None,
+        };
+        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+
+        let builder =
+            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let planner = builder.build_with_nodes(Vec::new()).expect("planner");
+
+        let graph = planner.map_deployments_to_nodes();
+
+        assert_eq!(
+            graph.len(),
+            1,
+            "http deployment should be tracked even when unresolved"
+        );
+        let root = graph.root_index();
+        let node_map = graph.get(root).expect("root node map");
+        assert!(
+            !node_map.is_resolved(),
+            "manifest tag mismatch should fail resolution"
+        );
+        let error = node_map
+            .error()
+            .expect("unresolved deployment should carry error");
+        match error {
+            Error::DeploymentNotResolvable(identifier, reason) => {
+                assert_eq!(identifier, "uvc_camera:1.2.3");
+                assert!(reason.contains("tag"), "unexpected error reason: {reason}");
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
     }
 
     #[test]
