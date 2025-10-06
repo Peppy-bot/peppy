@@ -272,8 +272,22 @@ impl DeploymentPlanner {
         let mut node_indices: HashMap<(String, String), NodeIndex> = HashMap::new();
         let mut dependencies_to_link: Vec<(NodeIndex, Vec<DependencyRef>)> = Vec::new();
         let mut root: Option<NodeIndex> = None;
+        let mut optional_deployments: HashSet<(String, String)> = HashSet::new();
+        let mut optional_unresolved: HashMap<(String, String), NodeEntry> = HashMap::new();
 
         for entry in nodes {
+            let key = entry.key.clone();
+            let is_optional = entry.map.deployment().optional;
+
+            if is_optional {
+                optional_deployments.insert(key.clone());
+            }
+
+            if is_optional && !entry.map.is_resolved() {
+                optional_unresolved.insert(key, entry);
+                continue;
+            }
+
             let NodeEntry {
                 key,
                 map,
@@ -289,15 +303,56 @@ impl DeploymentPlanner {
             dependencies_to_link.push((index, dependencies));
         }
 
+        let mut required_optional_keys: HashSet<(String, String)> = HashSet::new();
+        for (index, dependencies) in &dependencies_to_link {
+            let dependant_optional = graph
+                .node_weight(*index)
+                .map(|map| map.deployment().optional)
+                .unwrap_or(false);
+
+            if dependant_optional {
+                continue;
+            }
+
+            for dependency in dependencies {
+                if optional_deployments.contains(&dependency.key) {
+                    required_optional_keys.insert(dependency.key.clone());
+                }
+            }
+        }
+
+        for key in required_optional_keys {
+            if let Some(entry) = optional_unresolved.remove(&key) {
+                let NodeEntry {
+                    key,
+                    map,
+                    dependencies,
+                } = entry;
+
+                let index = graph.add_node(map);
+                node_indices.insert(key, index);
+                dependencies_to_link.push((index, dependencies));
+            }
+        }
+
         let mut inserted_edges: HashSet<(NodeIndex, NodeIndex)> = HashSet::new();
 
         for (from_index, dependencies) in dependencies_to_link {
+            let dependant_optional = graph
+                .node_weight(from_index)
+                .map(|map| map.deployment().optional)
+                .unwrap_or(false);
+
             for dependency in dependencies {
                 if let Some(&to_index) = node_indices.get(&dependency.key) {
                     if from_index != to_index && inserted_edges.insert((from_index, to_index)) {
                         graph.add_edge(from_index, to_index, ());
                     }
-                } else if !dependency.optional {
+                } else if optional_deployments.contains(&dependency.key) {
+                    if dependant_optional {
+                        continue;
+                    }
+
                     let (dep_name, dep_tag) = dependency.key.clone();
                     let identifier = format!("{}:{}", dep_name, dep_tag);
                     let error = Error::DeploymentNotResolvable(
@@ -308,6 +363,32 @@ impl DeploymentPlanner {
                         name: dep_name.clone(),
                         source: None,
                         tag: dep_tag.clone(),
+                        optional: true,
+                        instances: Vec::new(),
+                    };
+
+                    let map = DeploymentMap::unresolved(unresolved_deployment, error);
+                    let missing_index = *node_indices
+                        .entry((dep_name, dep_tag))
+                        .or_insert_with(|| graph.add_node(map));
+
+                    if from_index != missing_index
+                        && inserted_edges.insert((from_index, missing_index))
+                    {
+                        graph.add_edge(from_index, missing_index, ());
+                    }
+                } else {
+                    let (dep_name, dep_tag) = dependency.key.clone();
+                    let identifier = format!("{}:{}", dep_name, dep_tag);
+                    let error = Error::DeploymentNotResolvable(
+                        identifier.clone(),
+                        "dependency declared but missing from peppy_config".to_string(),
+                    );
+                    let unresolved_deployment = Deployment {
+                        name: dep_name.clone(),
+                        source: None,
+                        tag: dep_tag.clone(),
+                        optional: false,
                         instances: Vec::new(),
                     };
 
@@ -340,48 +421,39 @@ impl DeploymentPlanner {
             return Vec::new();
         };
 
-        let mut dependencies: HashMap<(String, String), bool> = HashMap::new();
+        let mut dependencies: HashSet<(String, String)> = HashSet::new();
 
-        let mut register_dependency = |name: &str, tag: &str, optional: Option<bool>| {
+        let mut register_dependency = |name: &str, tag: &str| {
             let name = name.trim();
             let tag = tag.trim();
             if name.is_empty() || tag.is_empty() {
                 return;
             }
 
-            let key = (name.to_string(), tag.to_string());
-            let is_optional = optional.unwrap_or(false);
-            dependencies
-                .entry(key)
-                .and_modify(|existing| {
-                    if !is_optional {
-                        *existing = false;
-                    }
-                })
-                .or_insert(is_optional);
+            dependencies.insert((name.to_string(), tag.to_string()));
         };
 
         if let Some(topics) = subscriptions.topics.as_ref() {
             for topic in topics {
-                register_dependency(&topic.node, &topic.tag, topic.optional);
+                register_dependency(&topic.node, &topic.tag);
             }
         }
 
         if let Some(services) = subscriptions.services.as_ref() {
             for service in services {
-                register_dependency(&service.node, &service.tag, service.optional);
+                register_dependency(&service.node, &service.tag);
             }
         }
 
         if let Some(actions) = subscriptions.actions.as_ref() {
             for action in actions {
-                register_dependency(&action.node, &action.tag, action.optional);
+                register_dependency(&action.node, &action.tag);
             }
         }
 
         dependencies
             .into_iter()
-            .map(|(key, optional)| DependencyRef { key, optional })
+            .map(|key| DependencyRef { key })
             .collect()
     }
 }
@@ -395,7 +467,6 @@ struct NodeEntry {
 #[derive(Clone)]
 struct DependencyRef {
     key: (String, String),
-    optional: bool,
 }
 
 #[cfg(test)]
@@ -410,15 +481,18 @@ mod tests {
     use tempfile::tempdir;
 
     struct StaticResolver {
-        nodes: HashMap<String, NodeConfig>,
+        nodes: HashMap<(String, String), NodeConfig>,
     }
 
     impl StaticResolver {
         fn new(nodes: Vec<NodeConfig>) -> Self {
             let mut map = HashMap::new();
             for node in nodes {
-                let name = node.manifest.name.as_str().to_owned();
-                map.insert(name, node);
+                let key = (
+                    node.manifest.name.as_str().to_owned(),
+                    node.manifest.tag.clone(),
+                );
+                map.insert(key, node);
             }
             Self { nodes: map }
         }
@@ -433,7 +507,7 @@ mod tests {
         ) -> Result<DeploymentMap> {
             let node = self
                 .nodes
-                .get(&deployment.name)
+                .get(&(deployment.name.clone(), deployment.tag.clone()))
                 .cloned()
                 .ok_or_else(|| Error::NodeNotFound(deployment.name.clone()))?;
 
@@ -444,7 +518,7 @@ mod tests {
         }
     }
 
-    fn node_config(name: &str, tag: &str, deps: &[(&str, &str, bool)]) -> NodeConfig {
+    fn node_config(name: &str, tag: &str, deps: &[(&str, &str)]) -> NodeConfig {
         let content = if deps.is_empty() {
             format!(
                 r#"{{
@@ -456,10 +530,9 @@ mod tests {
         } else {
             let topics = deps
                 .iter()
-                .map(|(dep_name, dep_tag, optional)| {
+                .map(|(dep_name, dep_tag)| {
                     format!(
-                        "{{ node: \"{dep_name}\", name: \"{dep_name}_topic\", tag: \"{dep_tag}\", callback: \"on_{dep_name}_topic\", optional: {} }}",
-                        optional
+                        "{{ node: \"{dep_name}\", name: \"{dep_name}_topic\", tag: \"{dep_tag}\", callback: \"on_{dep_name}_topic\" }}"
                     )
                 })
                 .collect::<Vec<_>>()
@@ -483,11 +556,17 @@ mod tests {
         NodeConfigParser::from_content(&content).expect("parse node config")
     }
 
-    fn deployment(name: &str, tag: &str, source: Option<DeploymentNodeSource>) -> Deployment {
+    fn deployment(
+        name: &str,
+        tag: &str,
+        source: Option<DeploymentNodeSource>,
+        optional: bool,
+    ) -> Deployment {
         Deployment {
             name: name.to_string(),
             source,
             tag: tag.to_string(),
+            optional,
             instances: Vec::new(),
         }
     }
@@ -507,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn build_with_nodes_uses_injected_nodes() {
+    fn uses_provided_node_stack() {
         let temp_dir = tempdir().expect("temp dir");
         let config_path =
             write_config(temp_dir.path().join("peppy_config.json5"), minimal_config());
@@ -546,8 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn planner_with_stub_resolver_builds_graph_and_skips_optional_missing_dependencies() {
-        todo!("Double check, where do we actually want the `optional` field to be available?");
+    fn optional_dependency_missing_is_unresolved() {
         let temp_dir = tempdir().expect("temp dir");
 
         let deployments = vec![
@@ -555,6 +633,7 @@ mod tests {
                 "alpha",
                 "1.0.0",
                 Some(DeploymentNodeSource::Local(PathBuf::from("./alpha"))),
+                false,
             ),
             deployment(
                 "beta",
@@ -563,6 +642,7 @@ mod tests {
                     repo: "https://example.com/repo.git".to_string(),
                     path: None,
                 })),
+                true,
             ),
         ];
 
@@ -572,16 +652,10 @@ mod tests {
         };
         let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
 
-        // Depends on gamma 2.0.0, which doesn't exist (and is optional)
-        let alpha_node = node_config(
-            "alpha",
-            "1.0.0",
-            &[("beta", "1.0.0", false), ("gamma", "2.0.0", true)],
-        );
-        let beta_node = node_config("beta", "1.0.0", &[]);
+        let alpha_node = node_config("alpha", "1.0.0", &[("beta", "1.0.0")]);
 
         let loader_nodes = vec![alpha_node.clone()];
-        let resolver = StaticResolver::new(vec![alpha_node, beta_node]);
+        let resolver = StaticResolver::new(vec![alpha_node]);
 
         let builder =
             LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
@@ -595,7 +669,72 @@ mod tests {
         assert_eq!(
             graph.len(),
             2,
-            "optional dependency should be ignored when missing"
+            "missing optional deployment should still surface as unresolved when required",
+        );
+
+        let root = graph.root_index();
+        let deployment_map = graph.get(root).expect("root node");
+        assert_eq!(deployment_map.deployment().name, "alpha");
+        assert!(deployment_map.is_resolved());
+
+        let beta_map = graph
+            .children(root)
+            .into_iter()
+            .filter_map(|idx| graph.get(idx))
+            .find(|map| map.deployment().name == "beta")
+            .expect("beta dependency should be present even when optional");
+
+        assert!(!beta_map.is_resolved());
+        let error = beta_map
+            .error()
+            .expect("beta should carry resolution error");
+        assert!(matches!(error, Error::DeploymentNotResolvable(_, _)));
+    }
+
+    #[test]
+    fn optional_dependency_with_wrong_tag_is_unresolved() {
+        let temp_dir = tempdir().expect("temp dir");
+
+        let deployments = vec![
+            deployment(
+                "alpha",
+                "1.0.0",
+                Some(DeploymentNodeSource::Local(PathBuf::from("./alpha"))),
+                false,
+            ),
+            deployment(
+                "beta",
+                "2.0.0", // The deployment exists on disk, but the tag does not
+                Some(DeploymentNodeSource::Local(PathBuf::from("./beta"))),
+                true,
+            ),
+        ];
+
+        let config = PeppyConfig {
+            deployments: Some(deployments.clone()),
+            logging: None,
+        };
+        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+
+        let alpha_node = node_config("alpha", "1.0.0", &[("beta", "2.0.0")]);
+        let beta_node = node_config("beta", "1.0.0", &[]);
+
+        let loader_nodes = vec![alpha_node.clone(), beta_node.clone()];
+        let resolver = StaticResolver::new(vec![alpha_node, beta_node]);
+
+        let builder =
+            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let planner = builder
+            .build_with_nodes(loader_nodes)
+            .expect("planner")
+            .with_resolver(resolver);
+
+        let graph = planner.map_deployments_to_nodes();
+
+        assert_eq!(
+            graph.len(),
+            2,
+            "optional deployment with mismatched tag should surface as unresolved",
         );
 
         let root = graph.root_index();
@@ -603,30 +742,193 @@ mod tests {
         assert_eq!(root_map.deployment().name, "alpha");
         assert!(root_map.is_resolved());
 
-        let child_names: Vec<_> = graph
+        let beta_map = graph
             .children(root)
             .into_iter()
-            .map(|idx| {
-                graph
-                    .get(idx)
-                    .expect("child node")
-                    .deployment()
-                    .name
-                    .clone()
-            })
-            .collect();
+            .filter_map(|idx| graph.get(idx))
+            .find(|map| map.deployment().name == "beta")
+            .expect("beta dependency should be present even when unresolved");
 
-        assert_eq!(child_names, vec!["beta".to_string()]);
+        assert!(!beta_map.is_resolved());
+        let error: &Error = beta_map
+            .error()
+            .expect("beta should carry resolution error");
+        assert!(matches!(error, Error::DeploymentNotResolvable(_, _)));
     }
 
     #[test]
-    fn planner_inserts_unresolved_nodes_for_missing_required_dependencies() {
+    fn required_optional_dependency_surfaces_error() {
+        let temp_dir = tempdir().expect("temp dir");
+
+        let deployments = vec![
+            deployment(
+                "alpha",
+                "1.0.0",
+                Some(DeploymentNodeSource::Local(PathBuf::from("./alpha"))),
+                true, // Alpha cannot be optional here since beta depends on it and it itself non-optional
+            ),
+            deployment(
+                "beta",
+                "2.0.0",
+                Some(DeploymentNodeSource::Local(PathBuf::from("./beta"))),
+                false,
+            ),
+        ];
+
+        let config = PeppyConfig {
+            deployments: Some(deployments.clone()),
+            logging: None,
+        };
+        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+
+        let beta_node = node_config("beta", "2.0.0", &[("alpha", "1.0.0")]);
+
+        let loader_nodes = vec![beta_node.clone()];
+        let resolver = StaticResolver::new(vec![beta_node]);
+
+        let builder =
+            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let planner = builder
+            .build_with_nodes(loader_nodes)
+            .expect("planner")
+            .with_resolver(resolver);
+
+        let graph = planner.map_deployments_to_nodes();
+
+        assert_eq!(
+            graph.len(),
+            2,
+            "optional dependency should surface as unresolved when required by a non-optional deployment",
+        );
+
+        let root = graph.root_index();
+        let root_map = graph.get(root).expect("root node");
+        assert_eq!(root_map.deployment().name, "beta");
+        assert!(root_map.is_resolved());
+
+        let alpha_map = graph
+            .children(root)
+            .into_iter()
+            .filter_map(|idx| graph.get(idx))
+            .find(|map| map.deployment().name == "alpha")
+            .expect("alpha dependency should be present as unresolved");
+
+        assert!(!alpha_map.is_resolved());
+        let error = alpha_map
+            .error()
+            .expect("alpha should carry resolution error");
+
+        assert!(matches!(error, Error::DeploymentNotResolvable(_, _)));
+    }
+
+    #[test]
+    fn unresolved_deployments_remain_in_graph() {
+        let temp_dir = tempdir().expect("temp dir");
+
+        let deployments = vec![
+            deployment(
+                "alpha",
+                "1.0.0",
+                Some(DeploymentNodeSource::Local(PathBuf::from("./alpha"))),
+                true, // Alpha cannot be optional here since beta depends on it and is itself non-optional
+            ),
+            deployment(
+                "beta",
+                "2.0.0",
+                Some(DeploymentNodeSource::Local(PathBuf::from("./beta"))),
+                false,
+            ),
+            deployment(
+                "gamma",
+                "3.0.0", // This version does not exist
+                Some(DeploymentNodeSource::Local(PathBuf::from("./beta"))),
+                false,
+            ),
+        ];
+
+        let config = PeppyConfig {
+            deployments: Some(deployments.clone()),
+            logging: None,
+        };
+        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+
+        let beta_node = node_config("beta", "2.0.0", &[("alpha", "1.0.0")]);
+
+        let loader_nodes = vec![beta_node.clone()];
+        let resolver = StaticResolver::new(vec![beta_node]);
+
+        let builder =
+            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let planner = builder
+            .build_with_nodes(loader_nodes)
+            .expect("planner")
+            .with_resolver(resolver);
+
+        let graph = planner.map_deployments_to_nodes();
+
+        assert_eq!(
+            graph.len(),
+            3,
+            "entire deployment list should be represented"
+        );
+
+        let unresolved: Vec<_> = graph
+            .indices()
+            .into_iter()
+            .filter_map(|idx| graph.get(idx))
+            .filter(|map| !map.is_resolved())
+            .collect();
+
+        let mut unresolved_names: Vec<_> = unresolved
+            .iter()
+            .map(|map| map.deployment().name.clone())
+            .collect();
+        unresolved_names.sort();
+        assert_eq!(
+            unresolved_names.len(),
+            2,
+            "only two deployments should contain errors"
+        );
+
+        assert_eq!(
+            unresolved_names,
+            vec!["alpha".to_string(), "gamma".to_string()]
+        );
+
+        let unresolved_errors: Vec<_> = unresolved
+            .iter()
+            .map(|map| {
+                map.error()
+                    .expect("unresolved deployment should carry error")
+            })
+            .collect();
+
+        assert!(
+            unresolved_errors
+                .iter()
+                .all(|error| matches!(error, Error::DeploymentNotResolvable(_, _))),
+            "unexpected unresolved deployment error kind",
+        );
+
+        let beta_map = graph
+            .indices()
+            .into_iter()
+            .filter_map(|idx| graph.get(idx))
+            .find(|map| map.deployment().name == "beta")
+            .expect("beta deployment should be present");
+
+        assert!(beta_map.is_resolved());
+    }
+
+    #[test]
+    fn missing_dependency_becomes_unresolved_node() {
         let temp_dir = tempdir().expect("temp dir");
 
         let deployments = vec![deployment(
             "alpha",
             "1.0.0",
             Some(DeploymentNodeSource::Local(PathBuf::from("./alpha"))),
+            false,
         )];
 
         let config = PeppyConfig {
@@ -635,7 +937,7 @@ mod tests {
         };
         let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
 
-        let alpha_node = node_config("alpha", "1.0.0", &[("delta", "1.0.0", false)]);
+        let alpha_node = node_config("alpha", "1.0.0", &[("delta", "1.0.0")]);
         let loader_nodes = vec![alpha_node.clone()];
         let resolver = StaticResolver::new(vec![alpha_node]);
 

@@ -267,8 +267,6 @@ pub struct SubscribedTopic {
     #[serde(default)]
     pub tag: String,
     pub callback: CallbackName,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub optional: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -281,8 +279,6 @@ pub struct SubscribedService {
     #[serde(default)]
     pub tag: String,
     pub callback: CallbackName,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub optional: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,8 +296,6 @@ pub struct SubscribedAction {
     pub feedback_callback: Option<CallbackName>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub results_callback: Option<CallbackName>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub optional: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

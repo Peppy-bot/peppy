@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use config::node::NodeConfig;
-use config::peppy_config::{Deployment, DeploymentNodeSource, GitRemoteSpec};
+use config::peppy_config::{Deployment, DeploymentNodeSource};
 
 #[derive(Debug, Clone)]
 pub struct ResolvedNodeSource {
@@ -75,21 +75,5 @@ impl DeploymentMap {
 
     pub fn into_parts(self) -> (Deployment, Result<ResolvedNodeSource>) {
         (self.deployment, self.node_source)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum RemoteSpec {
-    Git(GitRemoteSpec),
-    Http(String),
-}
-
-impl RemoteSpec {
-    pub fn from_node_source(source: Option<&DeploymentNodeSource>) -> Option<Self> {
-        match source {
-            Some(DeploymentNodeSource::Git(spec)) => Some(Self::Git(spec.clone())),
-            Some(DeploymentNodeSource::Http(url)) => Some(Self::Http(url.clone())),
-            _ => None,
-        }
     }
 }
