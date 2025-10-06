@@ -13,6 +13,7 @@ zstd = "0.13.3"
 tar = "0.4"
 sha2 = "0.10"
 ureq = { version = "2.10", features = ["tls", "gzip"] }
+httptest = "0.16.3"
 
 
 [dev-dependencies]
