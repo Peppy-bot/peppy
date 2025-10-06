@@ -3,8 +3,7 @@ mod error;
 
 pub use error::Error as NodeStackError;
 
-// Class that creates a map from the `deployments` to the actual nodes expected inputs/output messages
+// Provide the public entry points required to build and inspect node deployments
 pub use deployment::{
-    DefaultDeploymentResolver, DeploymentGraph, DeploymentMap, DeploymentPlanner,
-    DeploymentSourceResolver, LocalNodeStackBuilder,
+    DeploymentGraph, DeploymentMap, DeploymentPlanner, LocalNodeStackBuilder,
 };

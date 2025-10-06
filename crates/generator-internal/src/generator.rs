@@ -239,7 +239,6 @@ mod tests {
                             name: "stream",
                             namespace: "/",
                             callback: "on_handle_video_frame",
-                            optional: false,
                         }
                     ],
                 },
@@ -286,7 +285,6 @@ mod tests {
                             name: "orphan_topic",
                             namespace: "/",
                             callback: "on_handle_video_frame",
-                            optional: false,
                         }
                     ],
                 },

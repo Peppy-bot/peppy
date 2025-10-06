@@ -153,7 +153,6 @@ mod tests {
                     name: String::from("topic_alpha"),
                     tag: String::from("alpha"),
                     callback: CallbackName::new("on_topic_alpha").expect("valid callback"),
-                    optional: Some(false),
                 },
                 MessageFormat::default(),
             ),
@@ -163,7 +162,6 @@ mod tests {
                     name: String::from("topic_beta"),
                     tag: String::from("beta"),
                     callback: CallbackName::new("on_topic_beta").expect("valid callback"),
-                    optional: Some(true),
                 },
                 MessageFormat::default(),
             ),
@@ -224,7 +222,6 @@ mod tests {
                 name: "move_leg",
                 tag: "0.1.0",
                 results_callback: "on_move_leg_result",
-                optional: true,
             }
         ]"#;
 

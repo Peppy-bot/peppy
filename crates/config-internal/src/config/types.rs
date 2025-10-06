@@ -25,6 +25,8 @@ pub struct Deployment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<DeploymentNodeSource>,
     pub tag: String,
+    #[serde(default)]
+    pub optional: bool,
     pub instances: Vec<DeploymentInstance>,
 }
 
