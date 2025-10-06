@@ -42,4 +42,12 @@ pub enum Error {
     // {0}: node_name + tag, {1}: Reason
     #[error("Failed to resolve deployment {0}: {1}")]
     DeploymentNotResolvable(String, String),
+    #[error(
+        "The deployment `{deployment}` contains wrong input parameters. Expected parameters: {expected:?}. Unexpected parameters: {unexpected:?}"
+    )]
+    WrongInputParameters {
+        deployment: String,
+        expected: Vec<String>,
+        unexpected: Vec<String>,
+    },
 }

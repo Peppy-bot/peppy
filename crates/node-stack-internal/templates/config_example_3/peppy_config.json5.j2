@@ -1,13 +1,13 @@
-// In this example, the lidar sensor uses tag 2.0.0, which is not available on Github
+// In this example, the lidar sensor exists in the given url but the `peppy.json5` inside the archive points to a different tag
 {
   deployments: [
     {
       name: "{{ lidar_sensor_node_name }}",
       source: {
-        repo: "{{ lidar_sensor_github_repo }}",
-        path: "{{ lidar_sensor_github_repo_path }}"
+        bundle_url: "{{ lidar_sensor_url }}",
+        checksum: "{{ lidar_sensor_sha256 }}"
       },
-      tag: "2.0.0",
+      tag: "0.1.0",
       instances: [
         {
           namespace: "/lidar",
