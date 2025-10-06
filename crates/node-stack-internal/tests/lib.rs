@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use node_stack::LocalNodeStackBuilder;
+use httptest::{Expectation, Server, matchers::request, responders::status_code};
+use node_stack::{LocalNodeStackBuilder, NodeStackError};
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 #[path = "./helpers/mod.rs"]
@@ -26,11 +28,23 @@ fn test_create_node_stack_config_example_1() {
     let root_temp_dir = TempDir::new().unwrap();
     let root = root_temp_dir.path();
     // Only pull uvc_camera and lidar_sensor from git
-    let peppy_config = helpers::get_peppy_config(
+    let git_repo_path = git_repo_path.to_str().unwrap().to_owned();
+    let lidar_remote = format!("nodes/{}", helpers::LIDAR_SENSOR_NODE_NAME);
+    let uvc_remote = format!("nodes/{}", helpers::UVC_CAMERA_NODE_NAME);
+
+    let peppy_config = helpers::render_peppy_config_template(
         &root_temp_dir,
-        git_repo_path.to_str().unwrap(),
-        format!("nodes/{}", helpers::LIDAR_SENSOR_NODE_NAME).as_str(),
-        format!("nodes/{}", helpers::UVC_CAMERA_NODE_NAME).as_str(),
+        helpers::PeppyConfigTemplateExample1 {
+            lidar_sensor_node_name: helpers::LIDAR_SENSOR_NODE_NAME,
+            lidar_sensor_github_repo: &git_repo_path,
+            lidar_sensor_github_repo_path: lidar_remote.as_str(),
+            uvc_camera_node_name: helpers::UVC_CAMERA_NODE_NAME,
+            uvc_camera_github_repo: &git_repo_path,
+            uvc_camera_github_repo_path: uvc_remote.as_str(),
+            web_video_stream_node_name: helpers::WEB_VIDEO_STREAM_NODE_NAME,
+            brain_node_name: helpers::BRAIN_NODE_NAME,
+            controller_node_name: helpers::CONTROLLER_NODE_NAME,
+        },
     );
 
     let node_path = |name: &str| root.join(name).join("peppy.json5");
@@ -158,4 +172,274 @@ fn test_create_node_stack_config_example_1() {
     );
 
     helpers::print_dependency_summary(&deps_by_name);
+}
+
+/// Uses the example where only the lidar_sensor is deployed with a tag
+/// that does not exist in the remote repository cache. The deployment
+/// resolution must therefore fail.
+#[test]
+fn test_create_node_stack_config_example_2() {
+    let git_repo_temp_dir = TempDir::new().unwrap();
+    let git_repo_path = helpers::create_git_repo(&git_repo_temp_dir);
+
+    let root_temp_dir = TempDir::new().unwrap();
+    let root = root_temp_dir.path();
+
+    let lidar_remote_path = format!("nodes/{}", helpers::LIDAR_SENSOR_NODE_NAME);
+    let git_repo_path = git_repo_path.to_str().unwrap().to_owned();
+    let peppy_config = helpers::render_peppy_config_template(
+        &root_temp_dir,
+        helpers::PeppyConfigTemplateExample2 {
+            lidar_sensor_node_name: helpers::LIDAR_SENSOR_NODE_NAME,
+            lidar_sensor_github_repo: &git_repo_path,
+            lidar_sensor_github_repo_path: lidar_remote_path.as_str(),
+        },
+    );
+
+    let mapper = LocalNodeStackBuilder::from_root_config_file(peppy_config, None).unwrap();
+    let planner = mapper.build().unwrap();
+
+    assert!(
+        planner.node_stack().is_empty(),
+        "example 2 config should not include local nodes"
+    );
+
+    let graph = planner.map_deployments_to_nodes();
+    assert_eq!(
+        graph.len(),
+        1,
+        "only the lidar deployment should be present"
+    );
+
+    let root_index = graph.root_index();
+    let lidar_deployment = graph
+        .get(root_index)
+        .expect("deployment graph should contain the lidar node");
+
+    assert!(
+        !lidar_deployment.is_resolved(),
+        "lidar deployment should fail to resolve when tag is missing"
+    );
+
+    let error = lidar_deployment
+        .error()
+        .expect("deployment must report the resolution failure");
+
+    let NodeStackError::DeploymentNotResolvable(deployment, reason) = error else {
+        panic!("unexpected error type: {error:?}");
+    };
+
+    let expected = format!(
+        "{}:{}",
+        helpers::LIDAR_SENSOR_NODE_NAME,
+        lidar_deployment.deployment().tag
+    );
+    assert_eq!(deployment, &expected);
+    assert!(
+        reason.contains("Cannot find the node"),
+        "expected missing node reason, got: {}",
+        reason
+    );
+
+    let nodes_cache_dir = root.join(".peppy").join("nodes");
+    assert!(
+        nodes_cache_dir.is_dir(),
+        "nodes cache dir {:?} should be created even on failure",
+        nodes_cache_dir
+    );
+}
+
+/// Uses the example where the lidar bundle is reachable but the manifest inside
+/// advertises a different tag than the one requested in the deployment.
+#[test]
+fn test_create_node_stack_config_example_3() {
+    const BUNDLE_PATH: &str = "/bundles/lidar_sensor.tar.zst";
+
+    let server = Server::run();
+
+    let build_bundle = |manifest: &str| -> Vec<u8> {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manifest_path = temp_dir.path().join("peppy.json5");
+        std::fs::write(&manifest_path, manifest).expect("write manifest");
+
+        let mut tar_data = Vec::new();
+        {
+            let mut tar_builder = tar::Builder::new(&mut tar_data);
+            tar_builder
+                .append_path_with_name(&manifest_path, "peppy.json5")
+                .expect("append manifest to tar");
+            tar_builder.finish().expect("finish tar");
+        }
+
+        let cursor = std::io::Cursor::new(tar_data);
+        zstd::stream::encode_all(cursor, 0).expect("compress bundle")
+    };
+
+    let manifest_content = format!(
+        "{{\n            manifest: {{ name: \"{}\", tag: \"9.9.9\" }}\n        }}",
+        helpers::LIDAR_SENSOR_NODE_NAME
+    );
+    let bundle_bytes = build_bundle(manifest_content.as_str());
+
+    let mut hasher = Sha256::new();
+    hasher.update(&bundle_bytes);
+    let checksum = format!("sha256:{:x}", hasher.finalize());
+
+    server.expect(
+        Expectation::matching(request::method_path("GET", BUNDLE_PATH))
+            .respond_with(status_code(200).body(bundle_bytes.clone())),
+    );
+
+    let root_temp_dir = TempDir::new().unwrap();
+    let root = root_temp_dir.path();
+
+    let bundle_url = server.url(BUNDLE_PATH).to_string();
+    let peppy_config = helpers::render_peppy_config_template(
+        &root_temp_dir,
+        helpers::PeppyConfigTemplateExample3 {
+            lidar_sensor_node_name: helpers::LIDAR_SENSOR_NODE_NAME,
+            lidar_sensor_url: bundle_url.as_str(),
+            lidar_sensor_sha256: checksum.as_str(),
+        },
+    );
+
+    let mapper = LocalNodeStackBuilder::from_root_config_file(peppy_config, None).unwrap();
+    let planner = mapper.build().unwrap();
+
+    assert!(
+        planner.node_stack().is_empty(),
+        "example 3 config should not include local nodes"
+    );
+
+    let graph = planner.map_deployments_to_nodes();
+    assert_eq!(
+        graph.len(),
+        1,
+        "only the lidar deployment should be present"
+    );
+
+    let root_index = graph.root_index();
+    let lidar_deployment = graph
+        .get(root_index)
+        .expect("deployment graph should contain the lidar node");
+
+    assert!(
+        !lidar_deployment.is_resolved(),
+        "lidar deployment should fail to resolve when manifest tag differs"
+    );
+
+    let error = lidar_deployment
+        .error()
+        .expect("deployment must report the resolution failure");
+
+    let NodeStackError::DeploymentNotResolvable(identifier, reason) = error else {
+        panic!("unexpected error type: {error:?}");
+    };
+
+    let expected_identifier = format!(
+        "{}:{}",
+        helpers::LIDAR_SENSOR_NODE_NAME,
+        lidar_deployment.deployment().tag
+    );
+    assert_eq!(identifier, &expected_identifier);
+    assert!(
+        reason.contains(helpers::LIDAR_SENSOR_NODE_NAME),
+        "error reason should mention lidar sensor, got: {}",
+        reason
+    );
+    assert!(
+        reason.contains(lidar_deployment.deployment().tag.as_str()),
+        "error reason should mention expected tag, got: {}",
+        reason
+    );
+
+    let nodes_cache_dir = root.join(".peppy").join("nodes");
+    assert!(
+        nodes_cache_dir.is_dir(),
+        "nodes cache dir {:?} should be created even on failure",
+        nodes_cache_dir
+    );
+}
+
+/// Uses the example where lidar parameters reference fields unsupported by the
+/// node manifest. The deployment should surface a `WrongInputParameters` error.
+#[test]
+fn test_create_node_stack_config_example_4() {
+    let git_repo_temp_dir = TempDir::new().unwrap();
+    let git_repo_path = helpers::create_git_repo(&git_repo_temp_dir);
+
+    let root_temp_dir = TempDir::new().unwrap();
+    let root = root_temp_dir.path();
+
+    let lidar_remote_path = format!("nodes/{}", helpers::LIDAR_SENSOR_NODE_NAME);
+    let git_repo_path = git_repo_path.to_str().unwrap().to_owned();
+    let peppy_config = helpers::render_peppy_config_template(
+        &root_temp_dir,
+        helpers::PeppyConfigTemplateExample4 {
+            lidar_sensor_node_name: helpers::LIDAR_SENSOR_NODE_NAME,
+            lidar_sensor_github_repo: &git_repo_path,
+            lidar_sensor_github_repo_path: lidar_remote_path.as_str(),
+        },
+    );
+
+    let mapper = LocalNodeStackBuilder::from_root_config_file(peppy_config, None).unwrap();
+    let planner = mapper.build().unwrap();
+
+    assert!(
+        planner.node_stack().is_empty(),
+        "example 4 config should not include local nodes"
+    );
+
+    let graph = planner.map_deployments_to_nodes();
+    assert_eq!(
+        graph.len(),
+        1,
+        "only the lidar deployment should be present"
+    );
+
+    let root_index = graph.root_index();
+    let lidar_deployment = graph
+        .get(root_index)
+        .expect("deployment graph should contain the lidar node");
+
+    assert!(
+        !lidar_deployment.is_resolved(),
+        "lidar deployment should fail to resolve when parameters mismatch"
+    );
+
+    let error = lidar_deployment
+        .error()
+        .expect("deployment must report the parameter validation failure");
+
+    let NodeStackError::WrongInputParameters {
+        deployment,
+        expected,
+        unexpected,
+    } = error
+    else {
+        panic!("unexpected error type: {error:?}");
+    };
+
+    let expected_identifier = format!(
+        "{}:{}",
+        helpers::LIDAR_SENSOR_NODE_NAME,
+        lidar_deployment.deployment().tag
+    );
+    assert_eq!(deployment, &expected_identifier);
+
+    assert!(
+        unexpected.iter().any(|param| param == "lidar_point.fps"),
+        "unexpected parameters should flag lidar_point.fps"
+    );
+    assert!(
+        expected.iter().any(|param| param == "lidar_point.x"),
+        "expected parameters should include lidar_point.x"
+    );
+
+    let nodes_cache_dir = root.join(".peppy").join("nodes");
+    assert!(
+        nodes_cache_dir.is_dir(),
+        "nodes cache dir {:?} should be created even on failure",
+        nodes_cache_dir
+    );
 }

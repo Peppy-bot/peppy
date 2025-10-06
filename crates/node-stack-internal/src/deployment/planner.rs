@@ -1,9 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use super::types::DeploymentMap;
 use super::{git::resolve_remote_git, local::resolve_local_deployment, url::resolve_remote_url};
 use crate::error::{Error, Result};
+use config::AnyType;
 use config::FSNodeConfigWatcher;
 use config::node::NodeConfig;
 use config::peppy_config::{Deployment, DeploymentNodeSource, PeppyConfig, PeppyConfigParser};
@@ -222,23 +223,38 @@ impl DeploymentPlanner {
                 .resolve(&self.nodes_cache_dir, &deployment, &self.node_stack)
             {
                 Ok(map) => {
-                    let dependencies = Self::collect_dependencies(&map);
+                    if map.is_resolved() {
+                        if let Err(err) = Self::validate_instance_parameters(
+                            map.deployment(),
+                            map.node_source().node(),
+                        ) {
+                            let deployment = map.deployment().clone();
+                            let key = (deployment.name.clone(), deployment.tag.clone());
+                            let map = DeploymentMap::unresolved(deployment, err);
+                            entries.push(NodeEntry {
+                                key,
+                                map,
+                                dependencies: Vec::new(),
+                            });
+                            continue;
+                        }
 
-                    if map.is_resolved()
-                        && !matches!(
+                        if !matches!(
                             map.node_source().source(),
                             Some(DeploymentNodeSource::Local(_))
-                        )
-                    {
-                        let node = map.node_source().node().clone();
-                        let already_present = self.node_stack.iter().any(|existing| {
-                            existing.manifest.name == node.manifest.name
-                                && existing.manifest.tag == node.manifest.tag
-                        });
-                        if !already_present {
-                            self.node_stack.push(node);
+                        ) {
+                            let node = map.node_source().node().clone();
+                            let already_present = self.node_stack.iter().any(|existing| {
+                                existing.manifest.name == node.manifest.name
+                                    && existing.manifest.tag == node.manifest.tag
+                            });
+                            if !already_present {
+                                self.node_stack.push(node);
+                            }
                         }
                     }
+
+                    let dependencies = Self::collect_dependencies(&map);
 
                     let key = (map.deployment().name.clone(), map.deployment().tag.clone());
 
@@ -455,6 +471,59 @@ impl DeploymentPlanner {
             .into_iter()
             .map(|key| DependencyRef { key })
             .collect()
+    }
+
+    fn validate_instance_parameters(
+        deployment: &Deployment,
+        node: &NodeConfig,
+    ) -> std::result::Result<(), Error> {
+        let expected = Self::parameter_leaf_paths(&node.parameters);
+        if expected.is_empty() {
+            return Ok(());
+        }
+
+        let mut unexpected: BTreeSet<String> = BTreeSet::new();
+
+        for instance in &deployment.instances {
+            let actual = Self::parameter_leaf_paths(&instance.parameters);
+            for value in actual.difference(&expected) {
+                unexpected.insert(value.clone());
+            }
+        }
+
+        if unexpected.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::WrongInputParameters {
+                deployment: format!("{}:{}", deployment.name, deployment.tag),
+                expected: expected.into_iter().collect(),
+                unexpected: unexpected.into_iter().collect(),
+            })
+        }
+    }
+
+    fn parameter_leaf_paths(
+        parameters: &std::collections::BTreeMap<String, AnyType>,
+    ) -> BTreeSet<String> {
+        let mut acc = BTreeSet::new();
+        for (key, value) in parameters {
+            Self::collect_parameter_paths(value, key.clone(), &mut acc);
+        }
+        acc
+    }
+
+    fn collect_parameter_paths(value: &AnyType, current: String, acc: &mut BTreeSet<String>) {
+        match value {
+            AnyType::Object(map) if !map.is_empty() => {
+                for (child_key, child_value) in map {
+                    let next = format!("{current}.{child_key}");
+                    Self::collect_parameter_paths(child_value, next, acc);
+                }
+            }
+            _ => {
+                acc.insert(current);
+            }
+        }
     }
 }
 
