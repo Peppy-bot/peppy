@@ -138,7 +138,7 @@ pub fn resolve_remote_git(
 mod tests {
     use super::*;
     use crate::error::Error;
-    use config::peppy_config::DeploymentNodeSource;
+    use config::peppy_config::{DeploymentNodeSource, HttpRemoteSpec};
     use git2::{ObjectType, Repository, Signature};
     use tempfile::TempDir;
 
@@ -286,8 +286,10 @@ mod tests {
 
     #[test]
     fn map_deployment_nodes_remote_http_returns_node_not_found() {
-        let remote = "https://nodes.peppy.bot/uvc_camera";
-        let deployment = sample_remote_deployment(DeploymentNodeSource::Http(remote.to_string()));
+        let remote = "https://nodes.peppy.bot/uvc_camera.tar.zst";
+        let http_spec =
+            HttpRemoteSpec::new(remote.to_string(), None).expect("valid http deployment spec");
+        let deployment = sample_remote_deployment(DeploymentNodeSource::Http(http_spec));
 
         let cache_dir = tempfile::tempdir().expect("cache dir");
 

@@ -9,6 +9,10 @@ config = { path = "../config-internal" }
 git2 = "0.20"
 petgraph = "0.8.3"
 thiserror = "2.0"
+zstd = "0.13.3"
+tar = "0.4"
+sha2 = "0.10"
+ureq = { version = "2.10", features = ["tls", "gzip"] }
 
 
 [dev-dependencies]

@@ -38,8 +38,8 @@ impl DeploymentSourceResolver for DefaultDeploymentResolver {
             Some(DeploymentNodeSource::Git(spec)) => {
                 resolve_remote_git(nodes_cache_dir, deployment, spec.clone())
             }
-            Some(DeploymentNodeSource::Http(url)) => {
-                resolve_remote_url(nodes_cache_dir, deployment, url.clone())
+            Some(DeploymentNodeSource::Http(spec)) => {
+                resolve_remote_url(nodes_cache_dir, deployment, spec.clone())
             }
             None => resolve_local_deployment(deployment, node_stack),
         }
