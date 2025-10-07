@@ -45,11 +45,8 @@ fn stable_hash(input: &str) -> u64 {
 }
 
 fn git_dir_name(remote: &str) -> &str {
-    let trimmed = remote.trim_end_matches(|c| matches!(c, '/' | '\\'));
-    let segment = trimmed
-        .rsplit(|c| matches!(c, '/' | '\\'))
-        .next()
-        .unwrap_or(trimmed);
+    let trimmed = remote.trim_end_matches(['/', '\\']);
+    let segment = trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed);
     let segment = segment.rsplit(':').next().unwrap_or(segment);
     segment.strip_suffix(".git").unwrap_or(segment)
 }
@@ -264,7 +261,8 @@ mod tests {
             path: Some("nodes/uvc_camera".to_string()),
         };
         let full_git_source = spec.as_remote();
-        let deployment_source = DeploymentNodeSource::from_str(&full_git_source)
+        let deployment_source = full_git_source
+            .parse::<DeploymentNodeSource>()
             .expect("parses <repo>::<path> git deployment source");
         let deployment = sample_remote_deployment(deployment_source);
         match deployment.source.as_ref() {

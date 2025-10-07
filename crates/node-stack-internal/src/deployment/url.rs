@@ -138,8 +138,8 @@ fn download_bundle(url: &str, destination: &Path, checksum: Option<&str>) -> Res
     let mut buffer = [0u8; 8 * 1024];
     let mut sha256 = parsed_checksum
         .as_ref()
-        .and_then(|checksum| match checksum.algorithm {
-            ChecksumAlgorithm::Sha256 => Some(Sha256::new()),
+        .map(|checksum| match checksum.algorithm {
+            ChecksumAlgorithm::Sha256 => Sha256::new(),
         });
 
     loop {
@@ -233,13 +233,13 @@ fn decode_hex(input: &str) -> std::result::Result<Vec<u8>, String> {
     if bytes.is_empty() {
         return Err("checksum value cannot be empty".to_string());
     }
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return Err("checksum value must have an even length".to_string());
     }
 
     let mut output = Vec::with_capacity(bytes.len() / 2);
-    let mut iter = bytes.chunks_exact(2);
-    while let Some(chunk) = iter.next() {
+    let iter = bytes.chunks_exact(2);
+    for chunk in iter {
         let high = decode_hex_digit(chunk[0])?;
         let low = decode_hex_digit(chunk[1])?;
         output.push((high << 4) | low);
@@ -302,7 +302,7 @@ fn bundle_file_name(bundle_url: &str) -> String {
         .filter(|segment| !segment.is_empty())
         .unwrap_or("bundle.zst");
     segment
-        .split(|c| matches!(c, '?' | '#'))
+        .split(['?', '#'])
         .next()
         .filter(|segment| !segment.is_empty())
         .unwrap_or("bundle.zst")

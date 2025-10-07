@@ -7,6 +7,7 @@ use serde::{
 use std::{
     convert::TryFrom,
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,10 +72,6 @@ impl DeploymentNodeSource {
             DeploymentNodeSource::Http(spec) => Some(spec),
             _ => None,
         }
-    }
-
-    pub fn from_str(value: &str) -> Result<Self, ParsingError> {
-        Self::from_string(value.to_owned())
     }
 
     fn from_string(value: String) -> Result<Self, ParsingError> {
@@ -158,6 +155,14 @@ impl DeploymentNodeSource {
             || value.starts_with("git@")
             || value.starts_with("ssh://")
             || value.starts_with("git://")
+    }
+}
+
+impl FromStr for DeploymentNodeSource {
+    type Err = ParsingError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::from_string(value.to_owned())
     }
 }
 
