@@ -365,6 +365,7 @@ fn test_create_node_stack_config_example_3() {
 /// node manifest. The deployment should surface a `WrongInputParameters` error.
 #[test]
 fn test_create_node_stack_config_example_4() {
+    todo!("double check");
     let git_repo_temp_dir = TempDir::new().unwrap();
     let git_repo_path = helpers::create_git_repo(&git_repo_temp_dir);
 
