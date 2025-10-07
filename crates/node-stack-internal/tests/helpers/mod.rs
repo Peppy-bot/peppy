@@ -260,7 +260,7 @@ where
     let to_path = to_path.as_ref();
     let node_root_dir = to_path.parent().unwrap();
     let node_content = template.render().expect("failed to render node template");
-    fs::create_dir_all(&node_root_dir).expect("failed to create parent directory");
+    fs::create_dir_all(node_root_dir).expect("failed to create parent directory");
     fs::write(to_path, node_content).expect("failed to write node");
 }
 

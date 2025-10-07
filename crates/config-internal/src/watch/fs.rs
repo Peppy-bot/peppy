@@ -26,11 +26,11 @@ pub async fn watch_files(
     // Track existing configs at startup to suppress spurious Create events
     let mut known_configs: HashSet<PathBuf> = find_peppy_nodes_from_dir(&from_dir_canon)
         .into_iter()
-        .filter_map(|p| {
+        .map(|p| {
             // Store known configs using the user path prefix to keep consistency with emitted events
             match p.strip_prefix(&from_dir_canon) {
-                Ok(rel) => Some(from_dir_user_abs.join(rel)),
-                Err(_) => Some(p),
+                Ok(rel) => from_dir_user_abs.join(rel),
+                Err(_) => p,
             }
         })
         .collect();

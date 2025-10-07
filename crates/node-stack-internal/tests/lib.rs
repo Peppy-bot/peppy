@@ -14,6 +14,7 @@ mod helpers;
 /// - lidar_sensor
 /// - uvc_camera
 /// - web_video_stream
+///
 /// With the following dependencies:
 /// - `brain` depends on `lidar_sensor` and `uvc_camera` (`subscribes_to.topics` property)
 /// - `controller` depends on `brain` (`subscribes_to.actions` property)
@@ -365,7 +366,6 @@ fn test_create_node_stack_config_example_3() {
 /// node manifest. The deployment should surface a `WrongInputParameters` error.
 #[test]
 fn test_create_node_stack_config_example_4() {
-    todo!("double check");
     let git_repo_temp_dir = TempDir::new().unwrap();
     let git_repo_path = helpers::create_git_repo(&git_repo_temp_dir);
 
@@ -428,13 +428,33 @@ fn test_create_node_stack_config_example_4() {
     );
     assert_eq!(deployment, &expected_identifier);
 
-    assert!(
-        unexpected.iter().any(|param| param == "lidar_point.fps"),
-        "unexpected parameters should flag lidar_point.fps"
+    let expected_parameters: BTreeSet<String> = [
+        "device.physical",
+        "device.priority",
+        "device.sim",
+        "lidar_point.classification",
+        "lidar_point.intensity",
+        "lidar_point.return_type",
+        "lidar_point.timestamp",
+        "lidar_point.x",
+        "lidar_point.y",
+        "lidar_point.z",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let actual_expected: BTreeSet<String> = expected.iter().cloned().collect();
+    assert_eq!(
+        actual_expected, expected_parameters,
+        "expected parameters should list all manifest fields"
     );
-    assert!(
-        expected.iter().any(|param| param == "lidar_point.x"),
-        "expected parameters should include lidar_point.x"
+
+    let actual_unexpected: BTreeSet<String> = unexpected.iter().cloned().collect();
+    let unexpected_parameters: BTreeSet<String> =
+        [String::from("lidar_point.fps")].into_iter().collect();
+    assert_eq!(
+        actual_unexpected, unexpected_parameters,
+        "unexpected parameters should only include lidar_point.fps"
     );
 
     let nodes_cache_dir = root.join(".peppy").join("nodes");

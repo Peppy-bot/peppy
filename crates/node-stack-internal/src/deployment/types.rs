@@ -67,9 +67,6 @@ impl DeploymentMap {
     }
 
     pub fn error(&self) -> Option<&Error> {
-        match &self.node_source {
-            Ok(_) => None,
-            Err(err) => Some(err),
-        }
+        self.node_source.as_ref().err()
     }
 }

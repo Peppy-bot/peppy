@@ -152,10 +152,8 @@ impl LocalNodeStackBuilder {
         let state_snapshot = watcher.subscribe().borrow().clone();
 
         let mut local_node_configs = Vec::new();
-        for entry in state_snapshot.into_values() {
-            if let Ok(node_config) = entry {
-                local_node_configs.push(node_config);
-            }
+        for node_config in state_snapshot.into_values().flatten() {
+            local_node_configs.push(node_config);
         }
 
         Ok(local_node_configs)
@@ -194,7 +192,7 @@ impl DeploymentPlanner {
             peppy_config,
             nodes_cache_dir: nodes_cache_dir.as_ref().to_owned(),
             node_stack,
-            resolver: Box::new(DefaultDeploymentResolver::default()),
+            resolver: Box::new(DefaultDeploymentResolver),
         }
     }
 
