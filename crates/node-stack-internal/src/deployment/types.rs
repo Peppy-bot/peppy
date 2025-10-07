@@ -72,8 +72,4 @@ impl DeploymentMap {
             Err(err) => Some(err),
         }
     }
-
-    pub fn into_parts(self) -> (Deployment, Result<ResolvedNodeSource>) {
-        (self.deployment, self.node_source)
-    }
 }

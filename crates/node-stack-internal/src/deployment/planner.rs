@@ -548,6 +548,7 @@ mod tests {
             Deployment, DeploymentNodeSource, GitRemoteSpec, HttpRemoteSpec, PeppyConfig,
         },
     };
+    use git2::{ObjectType, Repository, Signature};
     use httptest::{Expectation, Server, matchers::request, responders::status_code};
     use std::{
         collections::HashMap,
@@ -555,7 +556,7 @@ mod tests {
         io::Write,
         path::{Path, PathBuf},
     };
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
 
     struct StaticResolver {
         nodes: HashMap<(String, String), NodeConfig>,
@@ -684,6 +685,126 @@ mod tests {
         encoder.finish().expect("finish encoder");
 
         fs::read(&bundle_path).expect("read bundle")
+    }
+
+    fn create_git_repository(manifest_content: &str, tag: &str) -> TempDir {
+        let remote_dir = tempdir().expect("remote temp dir");
+        let repo = Repository::init(remote_dir.path()).expect("init git repo");
+
+        let file_path = remote_dir.path().join("peppy.json5");
+        fs::write(&file_path, manifest_content).expect("write manifest");
+
+        let rel_path = file_path
+            .strip_prefix(remote_dir.path())
+            .expect("relative manifest path");
+
+        let mut index = repo.index().expect("repository index");
+        index.add_path(rel_path).expect("add manifest to index");
+        index.write().expect("write index");
+
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let signature = Signature::now("Peppy", "peppy@example.com").expect("signature");
+        let commit_id = repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "initial commit",
+                &tree,
+                &[],
+            )
+            .expect("create commit");
+
+        let commit = repo
+            .find_object(commit_id, Some(ObjectType::Commit))
+            .expect("find commit object");
+        repo.tag(tag, &commit, &signature, "tag", false)
+            .expect("create tag");
+
+        remote_dir
+    }
+
+    fn push_git_commit(repo_path: &Path, files: &[(&str, &str)], message: &str) -> git2::Oid {
+        let repo = Repository::open(repo_path).expect("open git repo");
+
+        for (relative_path, contents) in files {
+            let full_path = repo_path.join(relative_path);
+            if let Some(parent) = Path::new(relative_path).parent() {
+                fs::create_dir_all(repo_path.join(parent)).expect("create directories for file");
+            }
+            fs::write(&full_path, contents).expect("write file contents");
+        }
+
+        let mut index = repo.index().expect("repo index");
+        for (relative_path, _) in files {
+            index
+                .add_path(Path::new(relative_path))
+                .expect("add file to index");
+        }
+        index.write().expect("write index");
+
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let signature = Signature::now("Peppy", "peppy@example.com").expect("signature");
+
+        let parents: Vec<git2::Commit> = repo
+            .head()
+            .ok()
+            .and_then(|head| head.target())
+            .and_then(|oid| repo.find_commit(oid).ok())
+            .into_iter()
+            .collect();
+        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            message,
+            &tree,
+            &parent_refs,
+        )
+        .expect("create commit")
+    }
+
+    #[test]
+    fn uses_provided_node_stack() {
+        let temp_dir = tempdir().expect("temp dir");
+        let config_path =
+            write_config(temp_dir.path().join("peppy_config.json5"), minimal_config());
+
+        let expected_nodes = vec![node_config("alpha", "1.0.0", &[])];
+
+        let builder =
+            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let planner = builder
+            .build_with_nodes(expected_nodes.clone())
+            .expect("planner");
+
+        let stack = planner.node_stack();
+        assert_eq!(stack.len(), expected_nodes.len());
+
+        // Vec<(String, String)> = Vec<(node_name, node_tag)>
+        let actual_manifests: Vec<(String, String)> = stack
+            .iter()
+            .map(|node| {
+                (
+                    node.manifest.name.as_str().to_owned(),
+                    node.manifest.tag.clone(),
+                )
+            })
+            .collect();
+        let expected_manifests: Vec<(String, String)> = expected_nodes
+            .iter()
+            .map(|node| {
+                (
+                    node.manifest.name.as_str().to_owned(),
+                    node.manifest.tag.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(actual_manifests, expected_manifests);
     }
 
     #[test]
@@ -866,42 +987,263 @@ mod tests {
     }
 
     #[test]
-    fn uses_provided_node_stack() {
+    fn git_repo_is_cloned_and_resolved() {
         let temp_dir = tempdir().expect("temp dir");
-        let config_path =
-            write_config(temp_dir.path().join("peppy_config.json5"), minimal_config());
+        let manifest_content = r#"{
+            manifest: { name: "uvc_camera", tag: "1.2.3" }
+        }"#;
+        let remote = create_git_repository(manifest_content, "1.2.3");
 
-        let expected_nodes = vec![node_config("alpha", "1.0.0", &[])];
+        let spec = GitRemoteSpec {
+            repo: remote.path().to_string_lossy().to_string(),
+            path: None,
+        };
+
+        let deployments = vec![deployment(
+            "uvc_camera",
+            "1.2.3",
+            Some(DeploymentNodeSource::Git(spec)),
+            false,
+        )];
+
+        let config = PeppyConfig {
+            deployments: Some(deployments),
+            logging: None,
+        };
+        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
 
         let builder =
             LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
-        let planner = builder
-            .build_with_nodes(expected_nodes.clone())
-            .expect("planner");
+        let planner = builder.build_with_nodes(Vec::new()).expect("planner");
 
-        let stack = planner.node_stack();
-        assert_eq!(stack.len(), expected_nodes.len());
+        let graph = planner.map_deployments_to_nodes();
 
-        // Vec<(String, String)> = Vec<(node_name, node_tag)>
-        let actual_manifests: Vec<(String, String)> = stack
-            .iter()
-            .map(|node| {
-                (
-                    node.manifest.name.as_str().to_owned(),
-                    node.manifest.tag.clone(),
-                )
-            })
-            .collect();
-        let expected_manifests: Vec<(String, String)> = expected_nodes
-            .iter()
-            .map(|node| {
-                (
-                    node.manifest.name.as_str().to_owned(),
-                    node.manifest.tag.clone(),
-                )
-            })
-            .collect();
-        assert_eq!(actual_manifests, expected_manifests);
+        assert_eq!(
+            graph.len(),
+            1,
+            "git deployment should resolve to single node"
+        );
+
+        let root = graph.root_index();
+        let node_map = graph.get(root).expect("root node map");
+        assert!(node_map.is_resolved(), "git deployment should be resolved");
+        assert_eq!(node_map.deployment().name, "uvc_camera");
+        assert_eq!(node_map.node_source().node().manifest.tag, "1.2.3");
+        assert_eq!(
+            node_map.node_source().node().manifest.name.as_str(),
+            "uvc_camera"
+        );
+    }
+
+    #[test]
+    fn git_repo_is_cloned_and_name_not_resolved() {
+        let temp_dir = tempdir().expect("temp dir");
+        let manifest_content = r#"{
+            manifest: { name: "uvc_camera_wrong", tag: "1.2.3" }
+        }"#;
+        let remote = create_git_repository(manifest_content, "1.2.3");
+
+        let spec = GitRemoteSpec {
+            repo: remote.path().to_string_lossy().to_string(),
+            path: None,
+        };
+
+        let deployments = vec![deployment(
+            "uvc_camera",
+            "1.2.3",
+            Some(DeploymentNodeSource::Git(spec)),
+            false,
+        )];
+
+        let config = PeppyConfig {
+            deployments: Some(deployments),
+            logging: None,
+        };
+        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+
+        let builder =
+            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let planner = builder.build_with_nodes(Vec::new()).expect("planner");
+
+        let graph = planner.map_deployments_to_nodes();
+
+        assert_eq!(
+            graph.len(),
+            1,
+            "git deployment should be tracked even when unresolved"
+        );
+        let root = graph.root_index();
+        let node_map = graph.get(root).expect("root node map");
+        assert!(
+            !node_map.is_resolved(),
+            "manifest name mismatch should fail resolution"
+        );
+        let error = node_map
+            .error()
+            .expect("unresolved deployment should carry error");
+        match error {
+            Error::DeploymentNotResolvable(identifier, reason) => {
+                assert_eq!(identifier, "uvc_camera:1.2.3");
+                assert!(
+                    reason.contains("node name"),
+                    "unexpected error reason: {reason}"
+                );
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn git_repo_is_cloned_and_tag_not_resolved() {
+        let temp_dir = tempdir().expect("temp dir");
+        let manifest_content = r#"{
+            manifest: { name: "uvc_camera", tag: "9.9.9" }
+        }"#;
+        let remote = create_git_repository(manifest_content, "1.2.3");
+
+        let spec = GitRemoteSpec {
+            repo: remote.path().to_string_lossy().to_string(),
+            path: None,
+        };
+
+        let deployments = vec![deployment(
+            "uvc_camera",
+            "1.2.3",
+            Some(DeploymentNodeSource::Git(spec)),
+            false,
+        )];
+
+        let config = PeppyConfig {
+            deployments: Some(deployments),
+            logging: None,
+        };
+        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+
+        let builder =
+            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let planner = builder.build_with_nodes(Vec::new()).expect("planner");
+
+        let graph = planner.map_deployments_to_nodes();
+
+        assert_eq!(
+            graph.len(),
+            1,
+            "git deployment should be tracked even when unresolved"
+        );
+        let root = graph.root_index();
+        let node_map = graph.get(root).expect("root node map");
+        assert!(
+            !node_map.is_resolved(),
+            "manifest tag mismatch should fail resolution"
+        );
+        let error = node_map
+            .error()
+            .expect("unresolved deployment should carry error");
+        match error {
+            Error::DeploymentNotResolvable(identifier, reason) => {
+                assert_eq!(identifier, "uvc_camera:1.2.3");
+                assert!(reason.contains("tag"), "unexpected error reason: {reason}");
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn git_repo_is_cloned_and_same_tag_updates_code() {
+        let temp_dir = tempdir().expect("temp dir");
+        let manifest_v1 = r#"{
+            manifest: { name: "uvc_camera", tag: "1.0.0", launch_cmd: ["run_v1"] }
+        }"#;
+        let remote = create_git_repository(manifest_v1, "1.0.0");
+
+        let spec = GitRemoteSpec {
+            repo: remote.path().to_string_lossy().to_string(),
+            path: None,
+        };
+
+        let deployments = vec![deployment(
+            "uvc_camera",
+            "1.0.0",
+            Some(DeploymentNodeSource::Git(spec.clone())),
+            false,
+        )];
+
+        let config = PeppyConfig {
+            deployments: Some(deployments),
+            logging: None,
+        };
+        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+
+        let builder =
+            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let planner = builder.build_with_nodes(Vec::new()).expect("planner");
+
+        let graph = planner.map_deployments_to_nodes();
+
+        assert_eq!(
+            graph.len(),
+            1,
+            "git deployment should resolve to single node on first fetch"
+        );
+
+        let root = graph.root_index();
+        let node_map = graph.get(root).expect("root node map");
+        assert!(node_map.is_resolved(), "git deployment should resolve");
+        let launch_cmd_v1 = node_map
+            .node_source()
+            .node()
+            .manifest
+            .launch_cmd
+            .clone()
+            .expect("launch command present");
+        assert_eq!(launch_cmd_v1, vec!["run_v1".to_string()]);
+
+        // Update the remote repository keeping the same tag but new contents.
+        let manifest_v2 = r#"{
+            manifest: { name: "uvc_camera", tag: "1.0.0", launch_cmd: ["run_v2"] }
+        }"#;
+
+        let commit_id = push_git_commit(
+            remote.path(),
+            &[("peppy.json5", manifest_v2)],
+            "update manifest",
+        );
+
+        let repo = Repository::open(remote.path()).expect("open remote repo");
+        let signature = Signature::now("Peppy", "peppy@example.com").expect("signature");
+
+        let commit = repo
+            .find_object(commit_id, Some(ObjectType::Commit))
+            .expect("find updated commit");
+        repo.tag("1.0.0", &commit, &signature, "tag", true)
+            .expect("retag commit");
+
+        let builder =
+            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let planner = builder.build_with_nodes(Vec::new()).expect("planner");
+
+        let graph = planner.map_deployments_to_nodes();
+        assert_eq!(
+            graph.len(),
+            1,
+            "git deployment should resolve to single node on subsequent fetch"
+        );
+        let root = graph.root_index();
+        let node_map = graph.get(root).expect("root node map");
+        assert!(
+            node_map.is_resolved(),
+            "git deployment should still resolve"
+        );
+        let launch_cmd_v2 = node_map
+            .node_source()
+            .node()
+            .manifest
+            .launch_cmd
+            .clone()
+            .expect("launch command present after update");
+
+        assert_eq!(launch_cmd_v2, vec!["run_v2".to_string()]);
+        assert_ne!(launch_cmd_v1, launch_cmd_v2);
     }
 
     #[test]
