@@ -257,6 +257,19 @@ pub struct ExposedService {
     pub name: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ExposedAction {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_service: Option<ActionServiceEndpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback_topic: Option<ActionTopicEndpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_service: Option<ActionServiceEndpoint>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubscribedTopic {
@@ -296,19 +309,6 @@ pub struct SubscribedAction {
     pub feedback_callback: Option<CallbackName>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub results_callback: Option<CallbackName>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct ExposedAction {
-    #[serde(default)]
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub goal_service: Option<ActionServiceEndpoint>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub feedback_topic: Option<ActionTopicEndpoint>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result_service: Option<ActionServiceEndpoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

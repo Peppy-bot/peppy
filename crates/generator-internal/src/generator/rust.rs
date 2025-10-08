@@ -1,12 +1,10 @@
-use super::types::SubscriberMap;
+use super::types::InterfaceBackend;
 use config::node::{
-    ExposedAction, ExposedService, ExposedTopic, SubscribedAction, SubscribedService,
-    SubscribedTopic,
+    ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
+    SubscribedService, SubscribedTopic,
 };
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
-
-use super::types::InterfaceGenerator;
 
 /// Rust-specific implementation of the interface generator.
 pub struct RustGenerator;
@@ -17,225 +15,354 @@ impl RustGenerator {
     }
 }
 
-impl InterfaceGenerator for RustGenerator {
-    fn gen_subscribed_topics(&self, topics: &[SubscriberMap<SubscribedTopic>]) -> String {
-        // Placeholder: produce a simple Rust fn per topic name for now
-        let fns: Vec<TokenStream> = topics
-            .iter()
-            .map(|topic| {
-                let callback = topic.subscriber().callback.as_str();
-                let fn_name = Ident::new(callback, Span::call_site());
-                quote! {
-                    pub async fn #fn_name() {
-                        todo!("await for message with PMI")
-                    }
-                }
-            })
-            .collect();
+impl InterfaceBackend for RustGenerator {
+    fn exposed_topic(&self, topic: &ExposedTopic) -> String {
+        let fn_name = prefixed_ident(
+            "exposed_topic",
+            topic
+                .name
+                .as_deref()
+                .filter(|name| !name.trim().is_empty())
+                .or_else(|| non_empty_str(&topic.topic_type)),
+            "topic",
+        );
         let tokens: TokenStream = quote! {
-            use pmi::{MessagingEngineContext, Messenger};
-
             impl Topics {
+                pub fn #fn_name() {
+                    todo!("publish PMI topic")
+                }
+            }
+        };
+        tokens.to_string()
+    }
+
+    fn exposed_service(&self, service: &ExposedService) -> String {
+        let fn_name = prefixed_ident(
+            "exposed_service",
+            service
+                .name
+                .as_deref()
+                .filter(|name| !name.trim().is_empty())
+                .or_else(|| non_empty_str(&service.service_type)),
+            "service",
+        );
+        let tokens: TokenStream = quote! {
+            impl Services {
+                pub fn #fn_name() {
+                    todo!("expose PMI service")
+                }
+            }
+        };
+        tokens.to_string()
+    }
+
+    fn exposed_action(&self, action: &ExposedAction) -> String {
+        let fn_name = prefixed_ident("exposed_action", non_empty_str(&action.name), "action");
+        let tokens: TokenStream = quote! {
+            impl Actions {
+                pub fn #fn_name() {
+                    todo!("expose PMI action")
+                }
+            }
+        };
+        tokens.to_string()
+    }
+
+    fn subscribed_topic(
+        &self,
+        topic: &SubscribedTopic,
+        arguments: Option<&MessageFormat>,
+    ) -> String {
+        let fn_name = Ident::new(topic.callback.as_str(), Span::call_site());
+        let tokens: TokenStream = quote! {
+            impl Topics {
+                pub async fn #fn_name() {
+                    todo!("await for message with PMI")
+                }
+            }
+        };
+        tokens.to_string()
+    }
+
+    fn subscribed_service(
+        &self,
+        service: &SubscribedService,
+        arguments: Option<&MessageFormat>,
+    ) -> String {
+        let fn_name = Ident::new(service.callback.as_str(), Span::call_site());
+        let tokens: TokenStream = quote! {
+            impl Services {
+                pub async fn #fn_name() {
+                    todo!("await for service response with PMI")
+                }
+            }
+        };
+        tokens.to_string()
+    }
+
+    fn subscribed_action(
+        &self,
+        action: &SubscribedAction,
+        arguments: Option<&MessageFormat>,
+    ) -> String {
+        let mut fns: Vec<TokenStream> = Vec::new();
+
+        if let Some(callback) = action.callback.as_ref() {
+            let fn_name = Ident::new(callback.as_str(), Span::call_site());
+            fns.push(quote! {
+                pub async fn #fn_name() {
+                    todo!("await for action goal with PMI")
+                }
+            });
+        }
+
+        if let Some(callback) = action.feedback_callback.as_ref() {
+            let fn_name = Ident::new(callback.as_str(), Span::call_site());
+            fns.push(quote! {
+                pub async fn #fn_name() {
+                    todo!("await for action feedback with PMI")
+                }
+            });
+        }
+
+        if let Some(callback) = action.results_callback.as_ref() {
+            let fn_name = Ident::new(callback.as_str(), Span::call_site());
+            fns.push(quote! {
+                pub async fn #fn_name() {
+                    todo!("await for action result with PMI")
+                }
+            });
+        }
+
+        if fns.is_empty() {
+            return String::new();
+        }
+
+        let tokens: TokenStream = quote! {
+            impl Actions {
                 #( #fns )*
             }
         };
-        let file =
-            syn::parse2::<syn::File>(tokens).expect("failed to parse generated subscribed topics");
-
-        prettyplease::unparse(&file)
-    }
-
-    fn gen_subscribed_services(&self, services: &[SubscriberMap<SubscribedService>]) -> String {
-        let fns: Vec<TokenStream> = services
-            .iter()
-            .map(|service| {
-                let callback = service.subscriber().callback.as_str();
-                let fn_name = Ident::new(callback, Span::call_site());
-                quote! {
-                    pub async fn #fn_name() {
-                        todo!("await for service response with PMI")
-                    }
-                }
-            })
-            .collect();
-        let tokens: TokenStream = quote! { #( #fns )* };
-        tokens.to_string()
-    }
-
-    fn gen_subscribed_actions(&self, actions: &[SubscriberMap<SubscribedAction>]) -> String {
-        let mut fns: Vec<TokenStream> = Vec::new();
-        for action in actions.iter() {
-            let subscriber = action.subscriber();
-            if let Some(callback) = subscriber.callback.as_ref() {
-                let fn_name = Ident::new(callback.as_str(), Span::call_site());
-                fns.push(quote! {
-                    pub async fn #fn_name() {
-                        todo!("await for action goal with PMI")
-                    }
-                });
-            }
-            if let Some(callback) = subscriber.feedback_callback.as_ref() {
-                let fn_name = Ident::new(callback.as_str(), Span::call_site());
-                fns.push(quote! {
-                    pub async fn #fn_name() {
-                        todo!("await for action feedback with PMI")
-                    }
-                });
-            }
-            if let Some(callback) = subscriber.results_callback.as_ref() {
-                let fn_name = Ident::new(callback.as_str(), Span::call_site());
-                fns.push(quote! {
-                    pub async fn #fn_name() {
-                        todo!("await for action result with PMI")
-                    }
-                });
-            }
-        }
-        let tokens: TokenStream = quote! { #( #fns )* };
-        tokens.to_string()
-    }
-
-    fn gen_exposed_topics(&self, topics: &[ExposedTopic]) -> String {
-        let fns: Vec<TokenStream> = topics
-            .iter()
-            .enumerate()
-            .map(|(i, _t)| {
-                let fn_name = Ident::new(&format!("exposed_topic_{}", i), Span::call_site());
-                quote! { pub fn #fn_name() {} }
-            })
-            .collect();
-        let tokens: TokenStream = quote! { #( #fns )* };
-        tokens.to_string()
-    }
-
-    fn gen_exposed_services(&self, services: &[ExposedService]) -> String {
-        let fns: Vec<TokenStream> = services
-            .iter()
-            .enumerate()
-            .map(|(i, _s)| {
-                let fn_name = Ident::new(&format!("exposed_service_{}", i), Span::call_site());
-                quote! { pub fn #fn_name() {} }
-            })
-            .collect();
-        let tokens: TokenStream = quote! { #( #fns )* };
-        tokens.to_string()
-    }
-
-    fn gen_exposed_actions(&self, actions: &[ExposedAction]) -> String {
-        let fns: Vec<TokenStream> = actions
-            .iter()
-            .enumerate()
-            .map(|(i, _a)| {
-                let fn_name = Ident::new(&format!("exposed_action_{}", i), Span::call_site());
-                quote! { pub fn #fn_name() {} }
-            })
-            .collect();
-        let tokens: TokenStream = quote! { #( #fns )* };
         tokens.to_string()
     }
 }
 
+fn non_empty_str(value: &str) -> Option<&str> {
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn prefixed_ident(prefix: &str, candidate: Option<&str>, fallback: &str) -> Ident {
+    let fallback_component = match sanitize_component(fallback) {
+        component if component.is_empty() => "item".to_string(),
+        component => component,
+    };
+
+    let maybe_component = candidate.and_then(|value| {
+        let sanitized = sanitize_component(value);
+        if sanitized.is_empty() {
+            None
+        } else {
+            Some(sanitized)
+        }
+    });
+
+    let component = maybe_component
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| fallback_component.clone());
+
+    let name = if prefix.is_empty() {
+        component
+    } else {
+        format!("{prefix}_{component}")
+    };
+
+    Ident::new(&name, Span::call_site())
+}
+
+fn sanitize_component(raw: &str) -> String {
+    let mut out = String::new();
+    let mut last_was_underscore = false;
+
+    for ch in raw.chars() {
+        let lower = ch.to_ascii_lowercase();
+        if lower.is_ascii_alphanumeric() {
+            out.push(lower);
+            last_was_underscore = false;
+        } else if !out.is_empty() && !last_was_underscore {
+            out.push('_');
+            last_was_underscore = true;
+        } else if out.is_empty() {
+            last_was_underscore = true;
+        }
+    }
+
+    while out.ends_with('_') {
+        out.pop();
+    }
+
+    if out.is_empty() {
+        return String::new();
+    }
+
+    if matches!(out.chars().next(), Some(c) if c.is_ascii_digit()) {
+        out.insert(0, '_');
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use config::node::{CallbackName, MessageFormat};
-
     use super::*;
+    use config::node::{
+        CallbackName, MessageFormat, SubscribedAction, SubscribedService, SubscribedTopic,
+    };
+
+    macro_rules! assert_rendered {
+        ($cond:expr, $rendered:expr, $($arg:tt)+) => {
+            if !$cond {
+                eprintln!("rendered output:\n{}", $rendered);
+                panic!($($arg)+);
+            }
+        };
+    }
+
+    fn callback(name: &str) -> CallbackName {
+        CallbackName::new(name).expect("valid callback")
+    }
+
+    fn dummy_format() -> MessageFormat {
+        MessageFormat::default()
+    }
 
     #[test]
-    fn test_gen_subscribed_topics() {
-        todo!(
-            "The subscribed actions should map to an exposes_to action that exposes the types required for the creation of the callback functions"
-        );
-        let topics = [
-            SubscriberMap::new(
-                SubscribedTopic {
-                    node: String::from("node_alpha"),
-                    name: String::from("topic_alpha"),
-                    tag: String::from("alpha"),
-                    callback: CallbackName::new("on_topic_alpha").expect("valid callback"),
-                },
-                MessageFormat::default(),
-            ),
-            SubscriberMap::new(
-                SubscribedTopic {
-                    node: String::from("node_beta"),
-                    name: String::from("topic_beta"),
-                    tag: String::from("beta"),
-                    callback: CallbackName::new("on_topic_beta").expect("valid callback"),
-                },
-                MessageFormat::default(),
-            ),
-        ];
+    fn subscribed_topic_uses_callback_identifier() {
+        let topic = SubscribedTopic {
+            node: String::from("vision"),
+            name: String::from("camera_feed"),
+            tag: String::from("0.1.0"),
+            callback: callback("on_camera_feed"),
+        };
         let generator = RustGenerator::new();
-        let res = generator.gen_subscribed_topics(&topics);
-        assert!(res.contains("use pmi::{MessagingEngineContext, Messenger};"));
-        assert!(res.contains("impl Topics"));
-        assert!(res.contains("pub async fn on_topic_alpha("));
-        assert!(res.contains("pub async fn on_topic_beta("));
-        assert!(!res.contains("subscribed_topic_"));
+        let rendered = generator.subscribed_topic(&topic, Some(&dummy_format()));
+
+        assert_rendered!(
+            rendered.contains("impl Topics"),
+            &rendered,
+            "expected impl block for Topics",
+        );
+        assert_rendered!(
+            rendered.contains("pub async fn on_camera_feed"),
+            &rendered,
+            "expected callback function"
+        );
+        assert_rendered!(
+            rendered.contains("await for message with PMI"),
+            &rendered,
+            "expected todo message"
+        );
+        assert_rendered!(
+            !rendered.contains("subscribed_topic_"),
+            &rendered,
+            "callback name should not use prefix fallback"
+        );
+    }
+
+    #[test]
+    fn subscribed_service_uses_callback_identifier() {
+        let service = SubscribedService {
+            node: String::from("planner"),
+            name: String::from("compute_route"),
+            tag: String::from("0.7.1"),
+            callback: callback("on_compute_route"),
+        };
+        let generator = RustGenerator::new();
+        let rendered = generator.subscribed_service(&service, Some(&dummy_format()));
+
+        assert_rendered!(
+            rendered.contains("impl Services"),
+            &rendered,
+            "expected impl block for Services"
+        );
+        assert_rendered!(
+            rendered.contains("pub async fn on_compute_route"),
+            &rendered,
+            "expected callback function"
+        );
+        assert_rendered!(
+            rendered.contains("await for service response with PMI"),
+            &rendered,
+            "expected todo message"
+        );
+    }
+
+    #[test]
+    fn subscribed_action_emits_all_callbacks() {
+        let action = SubscribedAction {
+            node: String::from("brain"),
+            name: String::from("move_arm"),
+            tag: String::from("0.1.0"),
+            callback: Some(callback("on_move_arm_goal")),
+            feedback_callback: Some(callback("on_move_arm_feedback")),
+            results_callback: Some(callback("on_move_arm_result")),
+        };
+        let generator = RustGenerator::new();
+        let rendered = generator.subscribed_action(&action, Some(&dummy_format()));
+
+        assert_rendered!(
+            rendered.contains("impl Actions"),
+            &rendered,
+            "expected impl block for Actions"
+        );
+        for expected in [
+            "pub async fn on_move_arm_goal",
+            "pub async fn on_move_arm_feedback",
+            "pub async fn on_move_arm_result",
+        ] {
+            assert_rendered!(
+                rendered.contains(expected),
+                &rendered,
+                "expected `{expected}` in rendered"
+            );
+        }
+        assert_rendered!(
+            rendered.matches("await for action").count() == 3,
+            &rendered,
+            "expected todo message for each callback"
+        );
+    }
+
+    #[test]
+    fn subscribed_action_without_callbacks_returns_empty_string() {
+        let action = SubscribedAction {
+            node: String::from("brain"),
+            name: String::from("idle"),
+            tag: String::from("0.1.0"),
+            callback: None,
+            feedback_callback: None,
+            results_callback: None,
+        };
+        let generator = RustGenerator::new();
+
         assert_eq!(
-            res.matches("todo!(\"await for message with PMI\")").count(),
-            topics.len()
+            generator.subscribed_action(&action, Some(&dummy_format())),
+            ""
         );
     }
 
     #[test]
-    fn test_gen_subscribed_services() {
-        todo!(
-            "The subscribed actions should map to an exposes_to action that exposes the types required for the creation of the callback functions"
-        );
-        let services_json = r#"[
-            {
-                node: "node_alpha",
-                name: "service_alpha",
-                tag: "alpha",
-                callback: "on_service_alpha"
-            }
-        ]"#;
+    fn prefixed_ident_sanitizes_candidate_and_fallback() {
+        let candidate = prefixed_ident("exposed_topic", Some(" My-Topic "), "topic");
+        assert_eq!(candidate.to_string(), "exposed_topic_my_topic");
 
-        let service_values: Vec<SubscribedService> = serde_json5::from_str(services_json).unwrap();
-        let services: Vec<_> = service_values
-            .into_iter()
-            .map(|service| SubscriberMap::new(service, MessageFormat::default()))
-            .collect();
-        let generator = RustGenerator::new();
-        let res = generator.gen_subscribed_services(&services);
-        assert!(res.contains("pub async fn on_service_alpha"));
-        assert!(res.contains("await for service response with PMI"));
-    }
+        let fallback = prefixed_ident("exposed_service", None, "@@@");
+        assert_eq!(fallback.to_string(), "exposed_service_item");
 
-    #[test]
-    fn test_gen_subscribed_actions() {
-        todo!(
-            "The subscribed actions should map to an exposes_to action that exposes the types required for the creation of the callback functions"
-        );
-        let actions_json = r#"[
-            {
-                node: "brain",
-                name: "move_arm",
-                tag: "0.1.0",
-                callback: "on_move_arm_goal",
-                feedback_callback: "on_move_arm_feedback",
-            },
-            {
-                node: "brain",
-                name: "move_leg",
-                tag: "0.1.0",
-                results_callback: "on_move_leg_result",
-            }
-        ]"#;
-
-        let action_values: Vec<SubscribedAction> = serde_json5::from_str(actions_json).unwrap();
-        let actions: Vec<_> = action_values
-            .into_iter()
-            .map(|action| SubscriberMap::new(action, MessageFormat::default()))
-            .collect();
-        let generator = RustGenerator::new();
-        let res = generator.gen_subscribed_actions(&actions);
-        assert!(res.contains("pub async fn on_move_arm_goal"));
-        assert!(res.contains("pub async fn on_move_arm_feedback"));
-        assert!(res.contains("pub async fn on_move_leg_result"));
-        assert!(!res.contains("subscribed_action_"));
-        assert_eq!(res.matches("await for action").count(), 3);
+        let starts_with_digit = prefixed_ident("", Some("42meaning"), "unused");
+        assert_eq!(starts_with_digit.to_string(), "_42meaning");
     }
 }
