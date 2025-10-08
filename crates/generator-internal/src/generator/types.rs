@@ -1,3 +1,5 @@
+use super::python;
+use super::rust;
 use config::node::{
     ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
     SubscribedService, SubscribedTopic,
@@ -10,42 +12,88 @@ pub enum Language {
     Rust,
 }
 
-pub trait AllowedSubscriber {}
-
-impl AllowedSubscriber for SubscribedTopic {}
-impl AllowedSubscriber for SubscribedService {}
-impl AllowedSubscriber for SubscribedAction {}
-
-// A subscribed topic has a name but the type of messages the subscriber subscribes to is determined
-// by actually finding the associated node that emit this message. The following struct exists to map
-// a subscriber to its associated emitter
-pub struct SubscriberMap<T: AllowedSubscriber> {
-    subscriber: T,
-    message_format: MessageFormat,
+/// Describes a concrete subscriber/exposer interface that a deployment requires.
+#[derive(Debug, Clone)]
+pub enum InterfaceVariant {
+    ExposedTopic(ExposedTopic),
+    ExposedService(ExposedService),
+    ExposedAction(ExposedAction),
+    SubscribedTopic(SubscribedTopic),
+    SubscribedService(SubscribedService),
+    SubscribedAction(SubscribedAction),
 }
 
-impl<T: AllowedSubscriber> SubscriberMap<T> {
-    pub fn new(subscriber: T, message_format: MessageFormat) -> Self {
+/// Maps a deployment interface to the message format required to bind it.
+#[derive(Debug, Clone)]
+pub struct DeploymentInterface {
+    interface: InterfaceVariant,
+    message_format: Option<MessageFormat>,
+}
+
+impl DeploymentInterface {
+    pub fn new(interface: InterfaceVariant, message_format: Option<MessageFormat>) -> Self {
         Self {
-            subscriber,
+            interface,
             message_format,
         }
     }
 
-    pub fn subscriber(&self) -> &T {
-        &self.subscriber
+    pub fn interface(&self) -> &InterfaceVariant {
+        &self.interface
+    }
+
+    pub fn into_interface(self) -> InterfaceVariant {
+        self.interface
+    }
+
+    pub fn message_format(&self) -> Option<&MessageFormat> {
+        self.message_format.as_ref()
+    }
+
+    pub fn into_message_format(self) -> Option<MessageFormat> {
+        self.message_format
     }
 }
 
-/// Language-agnostic generator interface. Each method is pure: input -> output string.
-pub trait InterfaceGenerator {
-    // Subscribes to
-    fn gen_subscribed_topics(&self, topics: &[SubscriberMap<SubscribedTopic>]) -> String;
-    fn gen_subscribed_services(&self, services: &[SubscriberMap<SubscribedService>]) -> String;
-    fn gen_subscribed_actions(&self, actions: &[SubscriberMap<SubscribedAction>]) -> String;
+pub trait DeploymentInterfaceGenerator {
+    fn gen_interface(&self, iface: &DeploymentInterface, fmt: Option<&MessageFormat>) -> String;
+}
 
-    // Exposes
-    fn gen_exposed_topics(&self, topics: &[ExposedTopic]) -> String;
-    fn gen_exposed_services(&self, services: &[ExposedService]) -> String;
-    fn gen_exposed_actions(&self, actions: &[ExposedAction]) -> String;
+pub trait InterfaceBackend {
+    fn exposed_topic(&self, topic: &ExposedTopic) -> String;
+    fn exposed_service(&self, service: &ExposedService) -> String;
+    fn exposed_action(&self, action: &ExposedAction) -> String;
+    fn subscribed_topic(
+        &self,
+        topic: &SubscribedTopic,
+        arguments: Option<&MessageFormat>,
+    ) -> String;
+    fn subscribed_service(
+        &self,
+        service: &SubscribedService,
+        arguments: Option<&MessageFormat>,
+    ) -> String;
+    fn subscribed_action(
+        &self,
+        action: &SubscribedAction,
+        arguments: Option<&MessageFormat>,
+    ) -> String;
+}
+
+impl DeploymentInterface {
+    pub fn render_with<B: InterfaceBackend + ?Sized>(&self, backend: &B) -> String {
+        let arguments = self.message_format();
+        match self.interface() {
+            InterfaceVariant::ExposedTopic(topic) => backend.exposed_topic(topic),
+            InterfaceVariant::ExposedService(service) => backend.exposed_service(service),
+            InterfaceVariant::ExposedAction(action) => backend.exposed_action(action),
+            InterfaceVariant::SubscribedTopic(topic) => backend.subscribed_topic(topic, arguments),
+            InterfaceVariant::SubscribedService(service) => {
+                backend.subscribed_service(service, arguments)
+            }
+            InterfaceVariant::SubscribedAction(action) => {
+                backend.subscribed_action(action, arguments)
+            }
+        }
+    }
 }

@@ -4,6 +4,7 @@
 // Any new node that is created should be added to the node stack by running the command `peppy node add <path_to_peppy.json5>`
 {
   // TODO: Allow the use of plugins. Compared to forks, plugins run in a separate thread, removing IPC overhead. Plugins are useful for things like a ROS2 bridge.
+  // TODO: Zenohd pseudo-configuration could also live here
   // - `deployments` pulls those nodes from nodes.peppy.bot and store/use them in/from the .peppy directory if they are not present in the children directory relative to this configuration file.
   // - `deployments` adopts a "value specification syntax" in opposition to the "declarative syntax" present in the other config files
   // - `deployments` in the future can eventually start nodes on MCUs 

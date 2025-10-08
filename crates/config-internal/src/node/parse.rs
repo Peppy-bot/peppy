@@ -29,7 +29,7 @@ impl NodeConfigParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::Error;
+    use crate::{config::PeppyConfigParser, error::Error};
     use tempfile::NamedTempFile;
 
     #[test]
@@ -116,26 +116,22 @@ mod tests {
     #[test]
     fn test_invalid_deployment_source() {
         let json5 = r#"{
-            manifest: {
-                name: "bad_node",
-                tag: "0.1.0",
-                launch_cmd: ["cargo", "run", "--release"]
-            },
             deployments: [
                 {
                     name: "bad_deployment",
                     tag: "0.1.0",
                     source: "",
-                    instances: []
+                    instances: [
+                        { namespace: "/" }
+                    ]
                 }
             ]
         }"#;
 
-        let result = NodeConfigParser::from_content(json5);
-        assert!(matches!(
-            result.unwrap_err(),
-            Error::Parsing(ParsingError::InvalidDeploymentSource(ref msg))
-                if msg == "source cannot be empty"
-        ));
+        let result = PeppyConfigParser::from_content(json5);
+        let Error::Parsing(ParsingError::InvalidDeploymentSource(msg)) = result.unwrap_err() else {
+            panic!("expected InvalidDeploymentSource error");
+        };
+        assert_eq!(msg, "source cannot be empty");
     }
 }
