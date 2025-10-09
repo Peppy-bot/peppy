@@ -1,10 +1,11 @@
 use super::types::{InterfaceArtifact, InterfaceBackend, InterfaceKind};
 use config::node::{
-    ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
-    SubscribedService, SubscribedTopic,
+    ExposedAction, ExposedService, ExposedTopic, MessageFormat, SchemaType, SubscribedAction,
+    SubscribedService, SubscribedTopic, TypeToken,
 };
-use proc_macro2::{Ident, Span, TokenStream};
+use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
+use syn::{File, parse2};
 
 /// Rust-specific implementation of the interface generator.
 pub struct RustGenerator {
@@ -31,17 +32,51 @@ impl RustGenerator {
 
 impl InterfaceBackend for RustGenerator {
     fn add_exposed_topic(&mut self, topic: &ExposedTopic) {
-        let fn_name = prefixed_ident("exposed_topic", non_empty_str(topic.name.as_str()), "topic");
+        let fn_name = prefixed_ident("", non_empty_str(topic.name.as_str()), "topic");
+        let fn_name_str = fn_name.to_string();
+        let async_fn_name = Ident::new(&(fn_name_str.clone() + "_async"), Span::call_site());
+
+        let struct_prefix = to_camel_case(&fn_name_str);
+
+        let mut context = GenerationContext::default();
+        let params =
+            collect_function_params(topic.message_format.as_ref(), &struct_prefix, &mut context);
+        let struct_tokens = context.into_tokens();
+
+        let param_tokens: Vec<TokenStream> = params
+            .iter()
+            .map(|param| {
+                let ident = &param.ident;
+                let ty = &param.ty;
+                quote!(#ident: #ty)
+            })
+            .collect();
+
+        let suppress_unused = unused_params_stmt(&params);
+        let suppress_unused_async = suppress_unused.clone();
+
         let tokens: TokenStream = quote! {
+            #( #struct_tokens )*
+
             impl Topics {
-                pub fn #fn_name() {
-                    todo!("publish PMI topic")
+                pub fn #fn_name(#(#param_tokens),*) {
+                    #suppress_unused
+                    todo!("publish PMI topic synchronously");
+                }
+
+                pub async fn #async_fn_name(#(#param_tokens),*) {
+                    #suppress_unused_async
+                    todo!("publish PMI topic asynchronously");
                 }
             }
         };
+        let rendered = parse2::<File>(tokens.clone())
+            .map(|file| prettyplease::unparse(&file))
+            .unwrap_or_else(|_| tokens.to_string());
+
         self.push_section(InterfaceArtifact::from_kind(
             InterfaceKind::ExposedTopic,
-            tokens.to_string(),
+            rendered,
         ));
     }
 
@@ -240,12 +275,206 @@ fn sanitize_component(raw: &str) -> String {
     out
 }
 
+struct FunctionParam {
+    ident: Ident,
+    ty: TokenStream,
+}
+
+#[derive(Default)]
+struct GenerationContext {
+    structs: Vec<StructDefinition>,
+}
+
+impl GenerationContext {
+    fn add_struct(&mut self, ident: Ident, fields: Vec<(Ident, TokenStream)>) {
+        if let Some(existing) = self.structs.iter_mut().find(|def| def.ident == ident) {
+            *existing = StructDefinition { ident, fields };
+        } else {
+            self.structs.push(StructDefinition { ident, fields });
+        }
+    }
+
+    fn into_tokens(self) -> Vec<TokenStream> {
+        self.structs
+            .into_iter()
+            .map(StructDefinition::into_tokens)
+            .collect()
+    }
+}
+
+struct StructDefinition {
+    ident: Ident,
+    fields: Vec<(Ident, TokenStream)>,
+}
+
+impl StructDefinition {
+    fn into_tokens(self) -> TokenStream {
+        let ident = self.ident;
+        let field_tokens: Vec<TokenStream> = self
+            .fields
+            .into_iter()
+            .map(|(field_ident, ty)| {
+                let name = field_ident;
+                let field_ty = ty;
+                quote!(pub #name: #field_ty)
+            })
+            .collect();
+
+        if field_tokens.is_empty() {
+            quote! {
+                #[derive(Debug, Clone)]
+                pub struct #ident {}
+            }
+        } else {
+            quote! {
+                #[derive(Debug, Clone)]
+                pub struct #ident {
+                    #( #field_tokens ),*
+                }
+            }
+        }
+    }
+}
+
+fn collect_function_params(
+    format: Option<&MessageFormat>,
+    struct_prefix: &str,
+    context: &mut GenerationContext,
+) -> Vec<FunctionParam> {
+    let mut params = Vec::new();
+
+    if let Some(format) = format {
+        for (index, (name, schema)) in format.0.iter().enumerate() {
+            let ident = sanitized_ident(name, "param", index);
+            let hint = format!("{struct_prefix}{}", to_camel_case(name));
+            let ty = rust_type_from_schema(schema, context, &hint);
+            params.push(FunctionParam { ident, ty });
+        }
+    }
+
+    params
+}
+
+fn unused_params_stmt(params: &[FunctionParam]) -> TokenStream {
+    if params.is_empty() {
+        TokenStream::new()
+    } else {
+        let refs: Vec<TokenStream> = params
+            .iter()
+            .map(|param| {
+                let ident = &param.ident;
+                quote!(&#ident)
+            })
+            .collect();
+        quote! {
+            let _ = (#(#refs),*);
+        }
+    }
+}
+
+fn rust_type_from_schema(
+    schema: &SchemaType,
+    context: &mut GenerationContext,
+    type_hint: &str,
+) -> TokenStream {
+    match schema {
+        SchemaType::Type(token) => rust_type_for_token(token),
+        SchemaType::Array(array) => {
+            let element_hint = format!("{type_hint}Item");
+            let element_ty = rust_type_from_schema(&array.items, context, &element_hint);
+            if let Some(length) = array.length {
+                let literal = Literal::usize_unsuffixed(length);
+                quote!([#element_ty; #literal])
+            } else {
+                quote!(Vec<#element_ty>)
+            }
+        }
+        SchemaType::Object(map) => {
+            let struct_name = if type_hint.is_empty() {
+                "GeneratedType".to_string()
+            } else {
+                type_hint.to_string()
+            };
+
+            let struct_ident = Ident::new(&struct_name, Span::call_site());
+            let return_ident = struct_ident.clone();
+
+            let mut fields = Vec::new();
+            for (index, (field_name, field_schema)) in map.iter().enumerate() {
+                let field_ident = sanitized_ident(field_name, "field", index);
+                let nested_hint = format!("{struct_name}{}", to_camel_case(field_name));
+                let field_ty = rust_type_from_schema(field_schema, context, &nested_hint);
+                fields.push((field_ident, field_ty));
+            }
+
+            context.add_struct(struct_ident, fields);
+            quote!(#return_ident)
+        }
+    }
+}
+
+fn rust_type_for_token(token: &TypeToken) -> TokenStream {
+    match token {
+        TypeToken::Bool => quote!(bool),
+        TypeToken::String => quote!(String),
+        TypeToken::Bytes => quote!(Vec<u8>),
+        TypeToken::Time => quote!(std::time::SystemTime),
+        TypeToken::U8 => quote!(u8),
+        TypeToken::U16 => quote!(u16),
+        TypeToken::U32 => quote!(u32),
+        TypeToken::U64 => quote!(u64),
+        TypeToken::I8 => quote!(i8),
+        TypeToken::I16 => quote!(i16),
+        TypeToken::I32 => quote!(i32),
+        TypeToken::I64 => quote!(i64),
+        TypeToken::F32 => quote!(f32),
+        TypeToken::F64 => quote!(f64),
+    }
+}
+
+fn sanitized_ident(raw: &str, fallback_prefix: &str, fallback_index: usize) -> Ident {
+    let sanitized = sanitize_component(raw);
+    let name = if sanitized.is_empty() {
+        format!("{fallback_prefix}_{fallback_index}")
+    } else {
+        sanitized
+    };
+    Ident::new(&name, Span::call_site())
+}
+
+fn to_camel_case(raw: &str) -> String {
+    let sanitized = sanitize_component(raw);
+    let mut out = String::new();
+
+    for segment in sanitized.split('_').filter(|segment| !segment.is_empty()) {
+        let mut chars = segment.chars();
+        if let Some(first) = chars.next() {
+            out.push(first.to_ascii_uppercase());
+            out.push_str(chars.as_str());
+        }
+    }
+
+    if out.is_empty() {
+        out.push_str("Item");
+    }
+
+    if !out
+        .chars()
+        .next()
+        .map(|ch| ch.is_ascii_alphabetic())
+        .unwrap_or(true)
+    {
+        out.insert(0, 'T');
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use config::node::CallbackName;
     use config::node::ExposedTopic;
-    use config::node::{CallbackName, SubscribedAction, SubscribedService, SubscribedTopic};
-    use config::peppy_config::Deployment;
 
     macro_rules! assert_rendered {
         ($cond:expr, $rendered:expr, $($arg:tt)+) => {
@@ -274,80 +503,92 @@ mod tests {
         artifacts.into_iter().next().expect("artifact is present")
     }
 
-    // Example of an exposed topic:
-    // {
-    //   name: "stream",
-    //   qos_profile: "sensor_data",
-    //   message_format: {
-    //     header: {
-    //       stamp: "time",
-    //       frame_id: "u32",
-    //     },
-    //     encoding: "string", // "rgb8", "bgr8", "yuyv", "mjpeg"
-    //     width: "u32",
-    //     height: "u32",
-    //     image: {
-    //       type: "array",
-    //       items: "u8",
-    //       length: 3
-    //     },
-    //   },
-    // }
+    // `RustGenerator::add_exposed_topic` should generate Rust code, a sync and async version, it uses `ExposedTopic::message_format` to determine the input parameters of the sync and async functions that need to be generated.
+    // For example, the user of the Rust generated code should be able to call:
+    // ```
+    // peppygen::topics::uvc_camera::push_frame(header, encoding, width, height, image);
+    // ```
+    // when the exposed topic look like this:
+    // ```
+    //         {
+    //             name: "push_frame", // The name of the topic inside the `uvc_camera` node
+    //             qos_profile: "sensor_data",
+    //             message_format: {
+    //                 header: {
+    //                     stamp: "time",
+    //                     frame_id: "u32",
+    //                 },
+    //                 encoding: "string",
+    //                 width: "u32",
+    //                 height: "u32",
+    //                 image: {
+    //                     type: "array",
+    //                     items: "u8",
+    //                     length: 3,
+    //                 },
+    //             },
+    //         }
+    // ```
     #[test]
     fn exposed_topic_gen_calling_code() {
-        let deployment = r#"
+        let topic = r#"
         {
-          name: "uvc_camera",
-          instances: [
-            {
-              namespace: "/camera/right",
-              parameters: {
-                device: {
-                  physical: "/dev/video_right",
-                  sim: "mujoco:camera_right",
-                  priority: "physical"
+            name: "push_frame", // The name of the topic inside the `uvc_camera` node
+            qos_profile: "sensor_data",
+            message_format: {
+                header: {
+                    stamp: "time",
+                    frame_id: "u32",
                 },
-                video: {
-                  frame_rate: 30,
-                  resolution: {
-                    width: 1920,
-                    height: 1080,
-                  },
-                  encoding: "yuyv",
+                encoding: "string",
+                width: "u32",
+                height: "u32",
+                image: {
+                    type: "array",
+                    items: "u8",
+                    length: 3,
                 },
-              }
-            }
-          ]
+            },
         }
         "#;
-
-        let topic = r#"
-            {
-                name: "uvc_camera",
-                qos_profile: "sensor_data",
-                message_format: {
-                    header: {
-                        stamp: "time",
-                        frame_id: "u32",
-                    },
-                    encoding: "string",
-                    width: "u32",
-                    height: "u32",
-                    image: {
-                        type: "array",
-                        items: "u8",
-                        length: 3,
-                    },
-                },
-            }
-        "#;
-        //let deployment: Deployment = serde_json5::from_str(deployment).unwrap();
         let topic: ExposedTopic = serde_json5::from_str(topic).unwrap();
 
-        let generator = RustGenerator::new();
-        let artifacts = generator.into_artifacts();
-        println!("{:#?}", topic);
-        todo!("Finish")
+        let mut generator = RustGenerator::new();
+        generator.add_exposed_topic(&topic);
+        let artifacts: Vec<String> = generator
+            .into_artifacts()
+            .into_iter()
+            .map(|artifact| artifact.code_output)
+            .collect();
+        let rendered = single_artifact(artifacts);
+
+        println!("generated topic code:\n{rendered}");
+
+        assert_rendered!(
+            rendered.contains("pub fn push_frame("),
+            &rendered,
+            "expected sync function"
+        );
+        assert_rendered!(
+            rendered.contains("pub async fn push_frame_async("),
+            &rendered,
+            "expected async function"
+        );
+        assert_rendered!(
+            rendered.contains("header: PushFrameHeader"),
+            &rendered,
+            "expected structured header argument"
+        );
+        assert_rendered!(
+            rendered.contains("image: [u8; 3]"),
+            &rendered,
+            "expected fixed-size array argument"
+        );
+        assert_rendered!(
+            rendered.contains("pub struct PushFrameHeader"),
+            &rendered,
+            "expected generated struct for nested object"
+        );
     }
 
     // #[test]

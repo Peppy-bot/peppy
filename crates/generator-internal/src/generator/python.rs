@@ -32,9 +32,7 @@ impl InterfaceBackend for PythonGenerator {
         let name = prefixed_name("exposed_topic", non_empty_str(topic.name.as_str()), "topic");
         self.push_section(InterfaceArtifact::from_kind(
             InterfaceKind::ExposedTopic,
-            format!(
-                "def {name}():\n    raise NotImplementedError(\"publish PMI topic\")\n"
-            ),
+            format!("def {name}():\n    raise NotImplementedError(\"publish PMI topic\")\n"),
         ));
     }
 
@@ -46,9 +44,7 @@ impl InterfaceBackend for PythonGenerator {
         );
         self.push_section(InterfaceArtifact::from_kind(
             InterfaceKind::ExposedService,
-            format!(
-                "def {name}():\n    raise NotImplementedError(\"expose PMI service\")\n"
-            ),
+            format!("def {name}():\n    raise NotImplementedError(\"expose PMI service\")\n"),
         ));
     }
 
@@ -56,9 +52,7 @@ impl InterfaceBackend for PythonGenerator {
         let name = prefixed_name("exposed_action", non_empty_str(&action.name), "action");
         self.push_section(InterfaceArtifact::from_kind(
             InterfaceKind::ExposedAction,
-            format!(
-                "def {name}():\n    raise NotImplementedError(\"expose PMI action\")\n"
-            ),
+            format!("def {name}():\n    raise NotImplementedError(\"expose PMI action\")\n"),
         ));
     }
 
