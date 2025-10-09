@@ -79,8 +79,14 @@ impl DeploymentInterface {
     }
 }
 
-pub trait DeploymentInterfaceGenerator {
-    fn gen_interface(&self, iface: &DeploymentInterface, fmt: Option<&MessageFormat>) -> String;
+pub enum RustBuildSystem {
+    Cargo,
+}
+
+pub enum PythonBuildSystem {
+    Poetry,
+    Uv,
+    Pixi,
 }
 
 /// Collects deployment interfaces and produces generated artifacts when finalized.
