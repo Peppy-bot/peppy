@@ -1,77 +1,100 @@
-use super::types::InterfaceBackend;
+use super::types::{InterfaceArtifact, InterfaceBackend, InterfaceKind};
 use config::node::{
     ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
     SubscribedService, SubscribedTopic,
 };
 
 /// Python-specific implementation of the interface generator.
-pub struct PythonGenerator;
+pub struct PythonGenerator {
+    sections: Vec<InterfaceArtifact>,
+}
 
 impl PythonGenerator {
     pub fn new() -> Self {
-        Self
+        Self {
+            sections: Vec::new(),
+        }
+    }
+
+    fn push_section(&mut self, section: InterfaceArtifact) {
+        if !section.code_output.is_empty() {
+            self.sections.push(section);
+        }
+    }
+
+    pub fn into_artifacts(self) -> Vec<InterfaceArtifact> {
+        self.sections
     }
 }
 
 impl InterfaceBackend for PythonGenerator {
-    fn exposed_topic(&self, topic: &ExposedTopic) -> String {
-        let name = prefixed_name(
-            "exposed_topic",
-            topic
-                .name
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-                .or_else(|| non_empty_str(&topic.topic_type)),
-            "topic",
-        );
-        format!("def {name}():\n    raise NotImplementedError(\"publish PMI topic\")\n")
+    fn add_exposed_topic(&mut self, topic: &ExposedTopic) {
+        let name = prefixed_name("exposed_topic", non_empty_str(topic.name.as_str()), "topic");
+        self.push_section(InterfaceArtifact::from_kind(
+            InterfaceKind::ExposedTopic,
+            format!(
+                "def {name}():\n    raise NotImplementedError(\"publish PMI topic\")\n"
+            ),
+        ));
     }
 
-    fn exposed_service(&self, service: &ExposedService) -> String {
+    fn add_exposed_service(&mut self, service: &ExposedService) {
         let name = prefixed_name(
             "exposed_service",
-            service
-                .name
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-                .or_else(|| non_empty_str(&service.service_type)),
+            service.name.as_ref().and_then(|value| non_empty_str(value)),
             "service",
         );
-        format!("def {name}():\n    raise NotImplementedError(\"expose PMI service\")\n")
+        self.push_section(InterfaceArtifact::from_kind(
+            InterfaceKind::ExposedService,
+            format!(
+                "def {name}():\n    raise NotImplementedError(\"expose PMI service\")\n"
+            ),
+        ));
     }
 
-    fn exposed_action(&self, action: &ExposedAction) -> String {
+    fn add_exposed_action(&mut self, action: &ExposedAction) {
         let name = prefixed_name("exposed_action", non_empty_str(&action.name), "action");
-        format!("def {name}():\n    raise NotImplementedError(\"expose PMI action\")\n")
+        self.push_section(InterfaceArtifact::from_kind(
+            InterfaceKind::ExposedAction,
+            format!(
+                "def {name}():\n    raise NotImplementedError(\"expose PMI action\")\n"
+            ),
+        ));
     }
 
-    fn subscribed_topic(
-        &self,
+    fn add_subscribed_topic(
+        &mut self,
         topic: &SubscribedTopic,
-        arguments: Option<&MessageFormat>,
-    ) -> String {
-        format!(
-            "async def {}():\n    raise NotImplementedError(\"await for message with PMI\")\n",
-            topic.callback.as_str()
-        )
+        _arguments: Option<&MessageFormat>,
+    ) {
+        self.push_section(InterfaceArtifact::from_kind(
+            InterfaceKind::SubscribedTopic,
+            format!(
+                "async def {}():\n    raise NotImplementedError(\"await for message with PMI\")\n",
+                topic.callback.as_str()
+            ),
+        ));
     }
 
-    fn subscribed_service(
-        &self,
+    fn add_subscribed_service(
+        &mut self,
         service: &SubscribedService,
-        arguments: Option<&MessageFormat>,
-    ) -> String {
-        format!(
-            "async def {}():\n    raise NotImplementedError(\"await for service response with PMI\")\n",
-            service.callback.as_str()
-        )
+        _arguments: Option<&MessageFormat>,
+    ) {
+        self.push_section(InterfaceArtifact::from_kind(
+            InterfaceKind::SubscribedService,
+            format!(
+                "async def {}():\n    raise NotImplementedError(\"await for service response with PMI\")\n",
+                service.callback.as_str()
+            ),
+        ));
     }
 
-    fn subscribed_action(
-        &self,
+    fn add_subscribed_action(
+        &mut self,
         action: &SubscribedAction,
-        arguments: Option<&MessageFormat>,
-    ) -> String {
+        _arguments: Option<&MessageFormat>,
+    ) {
         let mut sections = Vec::new();
 
         if let Some(callback) = action.callback.as_ref() {
@@ -95,7 +118,15 @@ impl InterfaceBackend for PythonGenerator {
             ));
         }
 
-        sections.join("\n")
+        self.push_section(InterfaceArtifact::from_kind(
+            InterfaceKind::SubscribedAction,
+            sections.join("\n"),
+        ));
+    }
+
+    fn finish(self: Box<Self>) -> Vec<InterfaceArtifact> {
+        let inner = *self;
+        inner.into_artifacts()
     }
 }
 

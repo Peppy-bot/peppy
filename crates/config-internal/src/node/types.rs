@@ -234,21 +234,17 @@ pub enum QoSProfile {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ExposedTopic {
-    #[serde(default, rename = "type")]
-    pub topic_type: String,
+    #[serde(default)]
+    pub name: String,
     #[serde(default)]
     pub qos_profile: QoSProfile,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_format: Option<MessageFormat>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ExposedService {
-    #[serde(default, rename = "type")]
-    pub service_type: String,
     #[serde(default)]
     pub qos_profile: QoSProfile,
     #[serde(skip_serializing_if = "Option::is_none")]

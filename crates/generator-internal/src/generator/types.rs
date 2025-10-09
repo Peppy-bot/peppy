@@ -1,5 +1,3 @@
-use super::python;
-use super::rust;
 use config::node::{
     ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
     SubscribedService, SubscribedTopic,
@@ -10,6 +8,16 @@ pub enum Language {
     Python,
     #[default]
     Rust,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterfaceKind {
+    ExposedTopic,
+    ExposedService,
+    ExposedAction,
+    SubscribedTopic,
+    SubscribedService,
+    SubscribedAction,
 }
 
 /// Describes a concrete subscriber/exposer interface that a deployment requires.
@@ -28,6 +36,22 @@ pub enum InterfaceVariant {
 pub struct DeploymentInterface {
     interface: InterfaceVariant,
     message_format: Option<MessageFormat>,
+}
+
+pub struct InterfaceArtifact {
+    pub kind: InterfaceKind,
+    pub interface: Option<InterfaceVariant>,
+    pub code_output: String,
+}
+
+impl InterfaceArtifact {
+    pub fn from_kind(kind: InterfaceKind, code_output: String) -> Self {
+        Self {
+            kind,
+            interface: None,
+            code_output,
+        }
+    }
 }
 
 impl DeploymentInterface {
@@ -59,40 +83,41 @@ pub trait DeploymentInterfaceGenerator {
     fn gen_interface(&self, iface: &DeploymentInterface, fmt: Option<&MessageFormat>) -> String;
 }
 
+/// Collects deployment interfaces and produces generated artifacts when finalized.
 pub trait InterfaceBackend {
-    fn exposed_topic(&self, topic: &ExposedTopic) -> String;
-    fn exposed_service(&self, service: &ExposedService) -> String;
-    fn exposed_action(&self, action: &ExposedAction) -> String;
-    fn subscribed_topic(
-        &self,
-        topic: &SubscribedTopic,
-        arguments: Option<&MessageFormat>,
-    ) -> String;
-    fn subscribed_service(
-        &self,
+    fn add_exposed_topic(&mut self, topic: &ExposedTopic);
+    fn add_exposed_service(&mut self, service: &ExposedService);
+    fn add_exposed_action(&mut self, action: &ExposedAction);
+    fn add_subscribed_topic(&mut self, topic: &SubscribedTopic, arguments: Option<&MessageFormat>);
+    fn add_subscribed_service(
+        &mut self,
         service: &SubscribedService,
         arguments: Option<&MessageFormat>,
-    ) -> String;
-    fn subscribed_action(
-        &self,
+    );
+    fn add_subscribed_action(
+        &mut self,
         action: &SubscribedAction,
         arguments: Option<&MessageFormat>,
-    ) -> String;
+    );
+    /// Finalizes the builder, yielding all generated artifacts.
+    fn finish(self: Box<Self>) -> Vec<InterfaceArtifact>;
 }
 
 impl DeploymentInterface {
-    pub fn render_with<B: InterfaceBackend + ?Sized>(&self, backend: &B) -> String {
+    pub fn register_with<B: InterfaceBackend + ?Sized>(&self, backend: &mut B) {
         let arguments = self.message_format();
         match self.interface() {
-            InterfaceVariant::ExposedTopic(topic) => backend.exposed_topic(topic),
-            InterfaceVariant::ExposedService(service) => backend.exposed_service(service),
-            InterfaceVariant::ExposedAction(action) => backend.exposed_action(action),
-            InterfaceVariant::SubscribedTopic(topic) => backend.subscribed_topic(topic, arguments),
+            InterfaceVariant::ExposedTopic(topic) => backend.add_exposed_topic(topic),
+            InterfaceVariant::ExposedService(service) => backend.add_exposed_service(service),
+            InterfaceVariant::ExposedAction(action) => backend.add_exposed_action(action),
+            InterfaceVariant::SubscribedTopic(topic) => {
+                backend.add_subscribed_topic(topic, arguments)
+            }
             InterfaceVariant::SubscribedService(service) => {
-                backend.subscribed_service(service, arguments)
+                backend.add_subscribed_service(service, arguments)
             }
             InterfaceVariant::SubscribedAction(action) => {
-                backend.subscribed_action(action, arguments)
+                backend.add_subscribed_action(action, arguments)
             }
         }
     }

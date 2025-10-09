@@ -5,7 +5,7 @@ pub mod types;
 use crate::error::{Error, Result};
 use python::PythonGenerator;
 use rust::RustGenerator;
-use types::DeploymentInterface;
+use types::{DeploymentInterface, InterfaceArtifact};
 use types::{InterfaceBackend, InterfaceVariant, Language};
 
 /// Entry point for staged interface code generation.
@@ -40,18 +40,20 @@ impl InterfaceGenerator {
     }
 
     /// Generates code for every registered interface.
-    pub fn build(self) -> Result<Vec<String>> {
-        self.generate()
+    pub fn build(self) -> Result<Vec<InterfaceArtifact>> {
+        let generated_interfaces = self.generate();
+
+        // TODO now generate the actual lib (structure like Cargo.toml etc...)
+        generated_interfaces
     }
 
-    fn generate(self) -> Result<Vec<String>> {
-        let backend = Self::backend_for_language(self.language);
-        let mut generated = Vec::with_capacity(self.interfaces.len());
+    fn generate(self) -> Result<Vec<InterfaceArtifact>> {
+        let mut backend = Self::backend_for_language(self.language);
         for iface in &self.interfaces {
             Self::ensure_subscriber_message_format(iface)?;
-            generated.push(iface.render_with(backend.as_ref()));
+            iface.register_with(backend.as_mut());
         }
-        Ok(generated)
+        Ok(backend.finish())
     }
 
     fn backend_for_language(lang: Language) -> Box<dyn InterfaceBackend> {
