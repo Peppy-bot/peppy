@@ -58,47 +58,19 @@ impl DeploymentInterface {
     pub fn into_interface(self) -> InterfaceVariant {
         self.interface
     }
-
-    // pub fn message_format(&self) -> Option<&MessageFormat> {
-    //     match self.interface() {
-    //         InterfaceVariant::SubscribedTopic(_, format)
-    //         | InterfaceVariant::SubscribedService(_, format) => Some(format),
-    //         _ => None,
-    //     }
-    // }
-
-    // pub fn into_message_format(self) -> Option<MessageFormat> {
-    //     match self.interface {
-    //         InterfaceVariant::SubscribedTopic(_, format)
-    //         | InterfaceVariant::SubscribedService(_, format) => Some(format),
-    //         _ => None,
-    //     }
-    // }
-
-    // pub fn action_messages(&self) -> Option<&SubscribedActionMessage> {
-    //     match self.interface() {
-    //         InterfaceVariant::SubscribedAction(_, messages) => Some(messages),
-    //         _ => None,
-    //     }
-    // }
-
-    // pub fn into_action_messages(self) -> Option<SubscribedActionMessage> {
-    //     match self.interface {
-    //         InterfaceVariant::SubscribedAction(_, messages) => Some(messages),
-    //         _ => None,
-    //     }
-    // }
 }
 
 pub struct InterfaceArtifact {
+    pub node_name: String,
     pub kind: InterfaceKind,
     pub interface: Option<InterfaceVariant>,
     pub code_output: String,
 }
 
 impl InterfaceArtifact {
-    pub fn from_kind(kind: InterfaceKind, code_output: String) -> Self {
+    pub fn from_kind(node_name: &str, kind: InterfaceKind, code_output: String) -> Self {
         Self {
+            node_name: node_name.to_string(),
             kind,
             interface: None,
             code_output,

@@ -1,13 +1,13 @@
+use super::templates;
 use super::types::{InterfaceArtifact, InterfaceBackend, InterfaceKind, SubscribedActionMessage};
-use crate::error::{Error, Result};
-use askama::Template;
+use crate::error::Result;
 use config::node::{
     ExposedAction, ExposedService, ExposedTopic, MessageFormat, SchemaType, SubscribedAction,
     SubscribedService, SubscribedTopic, TypeToken,
 };
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
-use std::{fs, path::Path};
+use std::path::Path;
 use syn::{File, parse2};
 
 /// Rust-specific implementation of the interface generator.
@@ -64,17 +64,14 @@ impl InterfaceBackend for RustGenerator {
         let rendered = render_tokens(tokens);
 
         self.push_section(InterfaceArtifact::from_kind(
+            &topic.name,
             InterfaceKind::ExposedTopic,
             rendered,
         ));
     }
 
     fn add_exposed_service(&mut self, service: &ExposedService) {
-        let fn_name = prefixed_ident(
-            "",
-            service.name.as_ref().and_then(|name| non_empty_str(name)),
-            "service",
-        );
+        let fn_name = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
         let fn_name_str = fn_name.to_string();
         let async_fn_name = Ident::new(&(fn_name_str.clone() + "_async"), Span::call_site());
 
@@ -112,6 +109,7 @@ impl InterfaceBackend for RustGenerator {
         };
         let rendered = render_tokens(tokens);
         self.push_section(InterfaceArtifact::from_kind(
+            &service.name,
             InterfaceKind::ExposedService,
             rendered,
         ));
@@ -208,6 +206,7 @@ impl InterfaceBackend for RustGenerator {
         };
         let rendered = render_tokens(tokens);
         self.push_section(InterfaceArtifact::from_kind(
+            &action.name,
             InterfaceKind::ExposedAction,
             rendered,
         ));
@@ -231,6 +230,7 @@ impl InterfaceBackend for RustGenerator {
         };
         let rendered = render_tokens(tokens);
         self.push_section(InterfaceArtifact::from_kind(
+            &topic.name,
             InterfaceKind::SubscribedTopic,
             rendered,
         ));
@@ -258,6 +258,7 @@ impl InterfaceBackend for RustGenerator {
         };
         let rendered = render_tokens(tokens);
         self.push_section(InterfaceArtifact::from_kind(
+            &service.name,
             InterfaceKind::SubscribedService,
             rendered,
         ));
@@ -310,93 +311,17 @@ impl InterfaceBackend for RustGenerator {
         };
         let rendered = render_tokens(tokens);
         self.push_section(InterfaceArtifact::from_kind(
+            &action.name,
             InterfaceKind::SubscribedAction,
             rendered,
         ));
     }
 
     fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
-        let artifacts = self.into_artifacts();
-        generate_lib_structure(to_path)?;
-        // TODO: add the generated artifacts in the correct modules:
-        // - peppygen::topics::<node_name>::<topic_name>(<topic_parameters>)
-        // peppygen::topics::uvc_camera::push_frame(header, encoding, width, height, image);
+        let artifacts = self.sections;
+        templates::generate_lib_structure(&to_path)?;
+        templates::add_artifacts_to_lib(&to_path, artifacts)?;
         Ok(())
-    }
-}
-
-fn generate_lib_structure(to_path: impl AsRef<Path>) -> Result<()> {
-    let templates_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
-    let template_root = templates_dir.join("peppygen/rust");
-    let to_path = to_path.as_ref();
-
-    fs::create_dir_all(to_path)?;
-
-    copy_templates(&templates_dir, &template_root, to_path)
-}
-
-fn copy_templates(root: &Path, from: &Path, to: &Path) -> Result<()> {
-    for entry in fs::read_dir(from)? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let path = entry.path();
-        let destination = to.join(entry.file_name());
-
-        if file_type.is_dir() {
-            fs::create_dir_all(&destination)?;
-            copy_templates(root, &path, &destination)?;
-        } else if file_type.is_file() {
-            let ext = path.extension().and_then(|ext| ext.to_str());
-            if ext == Some(".gitkeep") {
-                continue;
-            } else if ext == Some("j2") {
-                let rendered = render_template(root, &path)?;
-                let destination = destination.with_extension("");
-
-                if let Some(parent) = destination.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-
-                fs::write(&destination, rendered)?;
-                continue;
-            }
-
-            if let Some(parent) = destination.parent() {
-                fs::create_dir_all(parent)?;
-            }
-
-            fs::copy(&path, &destination)?;
-        }
-    }
-
-    Ok(())
-}
-
-#[derive(Template)]
-#[template(path = "peppygen/rust/Cargo.toml.j2")]
-struct PeppyConfigTemplate<'a> {
-    peppylib_version: &'a str,
-}
-
-impl<'a> PeppyConfigTemplate<'a> {
-    pub const TEMPLATE_PATH: &'static str = "peppygen/rust/Cargo.toml.j2";
-}
-
-fn render_template(root: &Path, template_path: &Path) -> Result<String> {
-    let relative = template_path
-        .strip_prefix(root)
-        .unwrap_or(template_path)
-        .to_string_lossy()
-        .into_owned();
-
-    match relative.as_str() {
-        PeppyConfigTemplate::TEMPLATE_PATH => {
-            let tpl = PeppyConfigTemplate {
-                peppylib_version: env!("CARGO_PKG_VERSION"),
-            };
-            Ok(tpl.render()?)
-        }
-        _ => Err(Error::UnknownTemplate(relative)),
     }
 }
 
@@ -1167,6 +1092,60 @@ mod tests {
         assert!(
             temp_dir.path().join("Cargo.toml").exists(),
             "Expected Cargo.toml to be generated in the temporary crate directory"
+        );
+
+        let output = Command::new("cargo")
+            .arg("build")
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("failed to invoke cargo build on generated crate");
+        let status = output.status;
+
+        assert!(
+            status.success(),
+            "cargo build failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+            status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn create_lib_with_exposed_topic_artifact() {
+        let temp_dir = TempDir::new().unwrap();
+        let topic = r#"
+        {
+            name: "push_frame", // The name of the topic inside the `uvc_camera` node
+            qos_profile: "sensor_data",
+            message_format: {
+                header: {
+                    stamp: "time",
+                    frame_id: "u32",
+                },
+                encoding: "string",
+                width: "u32",
+                height: "u32",
+                image: {
+                    type: "array",
+                    items: "u8",
+                    length: 3,
+                },
+            },
+        }
+        "#;
+        let topic: ExposedTopic = serde_json5::from_str(topic).unwrap();
+
+        let mut generator = RustGenerator::new();
+        generator.add_exposed_topic(&topic);
+        generator.build(&temp_dir).unwrap();
+
+        assert!(
+            temp_dir.path().join("Cargo.toml").exists(),
+            "Expected Cargo.toml to be generated in the temporary crate directory"
+        );
+
+        todo!(
+            "Check that the artifact is present in peppygen::topics::<node_name>::<topic_name>(<topic_parameters>)"
         );
 
         let output = Command::new("cargo")
