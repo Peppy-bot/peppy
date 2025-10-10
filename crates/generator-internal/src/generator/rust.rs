@@ -1,10 +1,12 @@
-use super::types::{InterfaceArtifact, InterfaceBackend, InterfaceKind};
+use super::types::{InterfaceArtifact, InterfaceBackend, InterfaceKind, SubscribedActionMessage};
+use crate::error::Result;
 use config::node::{
     ExposedAction, ExposedService, ExposedTopic, MessageFormat, SchemaType, SubscribedAction,
     SubscribedService, SubscribedTopic, TypeToken,
 };
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
+use std::path::Path;
 use syn::{File, parse2};
 
 /// Rust-specific implementation of the interface generator.
@@ -22,15 +24,15 @@ impl RustGenerator {
     pub fn into_artifacts(self) -> Vec<InterfaceArtifact> {
         self.sections
     }
+}
 
+impl InterfaceBackend for RustGenerator {
     fn push_section(&mut self, section: InterfaceArtifact) {
         if !section.code_output.is_empty() {
             self.sections.push(section);
         }
     }
-}
 
-impl InterfaceBackend for RustGenerator {
     fn add_exposed_topic(&mut self, topic: &ExposedTopic) {
         let fn_name = prefixed_ident("", non_empty_str(topic.name.as_str()), "topic");
         let fn_name_str = fn_name.to_string();
@@ -43,36 +45,22 @@ impl InterfaceBackend for RustGenerator {
             collect_function_params(topic.message_format.as_ref(), &struct_prefix, &mut context);
         let struct_tokens = context.into_tokens();
 
-        let param_tokens: Vec<TokenStream> = params
-            .iter()
-            .map(|param| {
-                let ident = &param.ident;
-                let ty = &param.ty;
-                quote!(#ident: #ty)
-            })
-            .collect();
-
-        let suppress_unused = unused_params_stmt(&params);
-        let suppress_unused_async = suppress_unused.clone();
+        let function_tokens = build_sync_async_functions(
+            &fn_name,
+            &async_fn_name,
+            &params,
+            "publish PMI topic synchronously",
+            "publish PMI topic asynchronously",
+        );
 
         let tokens: TokenStream = quote! {
             #( #struct_tokens )*
 
             impl Topics {
-                pub fn #fn_name(#(#param_tokens),*) {
-                    #suppress_unused
-                    todo!("publish PMI topic synchronously");
-                }
-
-                pub async fn #async_fn_name(#(#param_tokens),*) {
-                    #suppress_unused_async
-                    todo!("publish PMI topic asynchronously");
-                }
+                #function_tokens
             }
         };
-        let rendered = parse2::<File>(tokens.clone())
-            .map(|file| prettyplease::unparse(&file))
-            .unwrap_or_else(|_| tokens.to_string());
+        let rendered = render_tokens(tokens);
 
         self.push_section(InterfaceArtifact::from_kind(
             InterfaceKind::ExposedTopic,
@@ -82,128 +70,232 @@ impl InterfaceBackend for RustGenerator {
 
     fn add_exposed_service(&mut self, service: &ExposedService) {
         let fn_name = prefixed_ident(
-            "exposed_service",
+            "",
             service.name.as_ref().and_then(|name| non_empty_str(name)),
             "service",
         );
+        let fn_name_str = fn_name.to_string();
+        let async_fn_name = Ident::new(&(fn_name_str.clone() + "_async"), Span::call_site());
+
+        let struct_prefix = to_camel_case(&fn_name_str);
+
+        let mut context = GenerationContext::default();
+        let params = collect_function_params(
+            service.message_format.as_ref(),
+            &struct_prefix,
+            &mut context,
+        );
+        let struct_tokens = context.into_tokens();
+
+        let function_tokens = build_sync_async_functions(
+            &fn_name,
+            &async_fn_name,
+            &params,
+            "call zenoh lib and send message service synchronously",
+            "call zenoh lib and send message service asynchronously",
+        );
+
         let tokens: TokenStream = quote! {
+            #( #struct_tokens )*
+
             impl Services {
-                pub fn #fn_name() {
-                    todo!("expose PMI service")
-                }
+                #function_tokens
             }
         };
+        let rendered = render_tokens(tokens);
         self.push_section(InterfaceArtifact::from_kind(
             InterfaceKind::ExposedService,
-            tokens.to_string(),
+            rendered,
         ));
     }
 
     fn add_exposed_action(&mut self, action: &ExposedAction) {
-        let fn_name = prefixed_ident("exposed_action", non_empty_str(&action.name), "action");
+        let base_ident = prefixed_ident("", non_empty_str(&action.name), "action");
+        let base_name = base_ident.to_string();
+
+        let mut context = GenerationContext::default();
+        let mut function_blocks: Vec<TokenStream> = Vec::new();
+
+        if let Some(goal) = action.goal_service.as_ref() {
+            let fn_name = Ident::new(&(base_name.clone() + "_goal"), Span::call_site());
+            let async_fn_name = Ident::new(&(fn_name.to_string() + "_async"), Span::call_site());
+            let struct_prefix = format!("{}Goal", to_camel_case(&base_name));
+            let params =
+                collect_function_params(goal.message_format.as_ref(), &struct_prefix, &mut context);
+
+            function_blocks.push(build_sync_async_functions(
+                &fn_name,
+                &async_fn_name,
+                &params,
+                "call zenoh lib and send message action goal synchronously",
+                "call zenoh lib and send message action goal asynchronously",
+            ));
+        }
+
+        if let Some(feedback) = action.feedback_topic.as_ref() {
+            let fn_name = Ident::new(&(base_name.clone() + "_feedback"), Span::call_site());
+            let async_fn_name = Ident::new(&(fn_name.to_string() + "_async"), Span::call_site());
+            let struct_prefix = format!("{}Feedback", to_camel_case(&base_name));
+            let params = collect_function_params(
+                feedback.message_format.as_ref(),
+                &struct_prefix,
+                &mut context,
+            );
+
+            function_blocks.push(build_sync_async_functions(
+                &fn_name,
+                &async_fn_name,
+                &params,
+                "publish PMI action feedback synchronously",
+                "publish PMI action feedback asynchronously",
+            ));
+        }
+
+        if let Some(result) = action.result_service.as_ref() {
+            let fn_name = Ident::new(&(base_name.clone() + "_result"), Span::call_site());
+            let async_fn_name = Ident::new(&(fn_name.to_string() + "_async"), Span::call_site());
+            let struct_prefix = format!("{}Result", to_camel_case(&base_name));
+            let params = collect_function_params(
+                result.message_format.as_ref(),
+                &struct_prefix,
+                &mut context,
+            );
+
+            function_blocks.push(build_sync_async_functions(
+                &fn_name,
+                &async_fn_name,
+                &params,
+                "call zenoh lib and send message action result synchronously",
+                "call zenoh lib and send message action result asynchronously",
+            ));
+        }
+
+        if function_blocks.is_empty() {
+            return;
+        }
+
+        let struct_tokens = context.into_tokens();
+
         let tokens: TokenStream = quote! {
+            #( #struct_tokens )*
+
             impl Actions {
-                pub fn #fn_name() {
-                    todo!("expose PMI action")
-                }
+                #( #function_blocks )*
             }
         };
+        let rendered = render_tokens(tokens);
         self.push_section(InterfaceArtifact::from_kind(
             InterfaceKind::ExposedAction,
-            tokens.to_string(),
+            rendered,
         ));
     }
 
-    fn add_subscribed_topic(
-        &mut self,
-        topic: &SubscribedTopic,
-        _arguments: Option<&MessageFormat>,
-    ) {
+    fn add_subscribed_topic(&mut self, topic: &SubscribedTopic, arguments: Option<&MessageFormat>) {
         let fn_name = Ident::new(topic.callback.as_str(), Span::call_site());
+        let (struct_tokens, function_token) = build_async_returning_function(
+            &fn_name,
+            arguments,
+            "Arguments",
+            "await for message with PMI",
+        );
+
         let tokens: TokenStream = quote! {
+            #( #struct_tokens )*
+
             impl Topics {
-                pub async fn #fn_name() {
-                    todo!("await for message with PMI")
-                }
+                #function_token
             }
         };
+        let rendered = render_tokens(tokens);
         self.push_section(InterfaceArtifact::from_kind(
             InterfaceKind::SubscribedTopic,
-            tokens.to_string(),
+            rendered,
         ));
     }
 
     fn add_subscribed_service(
         &mut self,
         service: &SubscribedService,
-        _arguments: Option<&MessageFormat>,
+        arguments: Option<&MessageFormat>,
     ) {
         let fn_name = Ident::new(service.callback.as_str(), Span::call_site());
+        let (struct_tokens, function_token) = build_async_returning_function(
+            &fn_name,
+            arguments,
+            "Arguments",
+            "await for service response with PMI",
+        );
+
         let tokens: TokenStream = quote! {
+            #( #struct_tokens )*
+
             impl Services {
-                pub async fn #fn_name() {
-                    todo!("await for service response with PMI")
-                }
+                #function_token
             }
         };
+        let rendered = render_tokens(tokens);
         self.push_section(InterfaceArtifact::from_kind(
             InterfaceKind::SubscribedService,
-            tokens.to_string(),
+            rendered,
         ));
     }
 
     fn add_subscribed_action(
         &mut self,
         action: &SubscribedAction,
-        _arguments: Option<&MessageFormat>,
+        messages: Option<&SubscribedActionMessage>,
     ) {
-        let mut fns: Vec<TokenStream> = Vec::new();
-
-        if let Some(callback) = action.callback.as_ref() {
-            let fn_name = Ident::new(callback.as_str(), Span::call_site());
-            fns.push(quote! {
-                pub async fn #fn_name() {
-                    todo!("await for action goal with PMI")
-                }
-            });
-        }
+        let mut struct_blocks: Vec<TokenStream> = Vec::new();
+        let mut function_blocks: Vec<TokenStream> = Vec::new();
 
         if let Some(callback) = action.feedback_callback.as_ref() {
             let fn_name = Ident::new(callback.as_str(), Span::call_site());
-            fns.push(quote! {
-                pub async fn #fn_name() {
-                    todo!("await for action feedback with PMI")
-                }
-            });
+            let feedback_format = messages.map(|msg| &msg.feedback);
+            let (struct_tokens, function_token) = build_async_returning_function(
+                &fn_name,
+                feedback_format,
+                "Arguments",
+                "await for action feedback with PMI",
+            );
+            struct_blocks.extend(struct_tokens);
+            function_blocks.push(function_token);
         }
 
         if let Some(callback) = action.results_callback.as_ref() {
             let fn_name = Ident::new(callback.as_str(), Span::call_site());
-            fns.push(quote! {
-                pub async fn #fn_name() {
-                    todo!("await for action result with PMI")
-                }
-            });
+            let result_format = messages.map(|msg| &msg.result);
+            let (struct_tokens, function_token) = build_async_returning_function(
+                &fn_name,
+                result_format,
+                "Arguments",
+                "await for action result with PMI",
+            );
+            struct_blocks.extend(struct_tokens);
+            function_blocks.push(function_token);
         }
 
-        if fns.is_empty() {
+        if function_blocks.is_empty() {
             return;
         }
 
         let tokens: TokenStream = quote! {
+            #( #struct_blocks )*
+
             impl Actions {
-                #( #fns )*
+                #( #function_blocks )*
             }
         };
+        let rendered = render_tokens(tokens);
         self.push_section(InterfaceArtifact::from_kind(
             InterfaceKind::SubscribedAction,
-            tokens.to_string(),
+            rendered,
         ));
     }
 
-    fn finish(self: Box<Self>) -> Vec<InterfaceArtifact> {
-        let inner = *self;
-        inner.into_artifacts()
+    fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
+        let artifacts = self.into_artifacts();
+        // TODO: Finish, use the artifacts to generate the project structure present in templates/
+        Ok(())
     }
 }
 
@@ -372,6 +464,84 @@ fn unused_params_stmt(params: &[FunctionParam]) -> TokenStream {
     }
 }
 
+fn render_tokens(tokens: TokenStream) -> String {
+    parse2::<File>(tokens.clone())
+        .map(|file| prettyplease::unparse(&file))
+        .unwrap_or_else(|_| tokens.to_string())
+}
+
+fn build_sync_async_functions(
+    fn_name: &Ident,
+    async_fn_name: &Ident,
+    params: &[FunctionParam],
+    sync_todo: &str,
+    async_todo: &str,
+) -> TokenStream {
+    let param_tokens: Vec<TokenStream> = params
+        .iter()
+        .map(|param| {
+            let ident = &param.ident;
+            let ty = &param.ty;
+            quote!(#ident: #ty)
+        })
+        .collect();
+    let async_param_tokens = param_tokens.clone();
+
+    let suppress_unused = unused_params_stmt(params);
+    let suppress_unused_async = suppress_unused.clone();
+
+    let sync_msg = Literal::string(sync_todo);
+    let async_msg = Literal::string(async_todo);
+
+    quote! {
+        pub fn #fn_name(#(#param_tokens),*) {
+            #suppress_unused
+            todo!(#sync_msg);
+        }
+
+        pub async fn #async_fn_name(#(#async_param_tokens),*) {
+            #suppress_unused_async
+            todo!(#async_msg);
+        }
+    }
+}
+
+fn build_async_returning_function(
+    fn_name: &Ident,
+    arguments: Option<&MessageFormat>,
+    struct_suffix: &str,
+    todo_msg: &str,
+) -> (Vec<TokenStream>, TokenStream) {
+    let fn_name_str = fn_name.to_string();
+    let struct_prefix = to_camel_case(&fn_name_str);
+    let mut context = GenerationContext::default();
+    let params = collect_function_params(arguments, &struct_prefix, &mut context);
+
+    let struct_name = if struct_suffix.is_empty() {
+        struct_prefix
+    } else {
+        format!("{struct_prefix}{struct_suffix}")
+    };
+    let struct_ident = Ident::new(&struct_name, Span::call_site());
+
+    let fields: Vec<(Ident, TokenStream)> = params
+        .iter()
+        .map(|param| (param.ident.clone(), param.ty.clone()))
+        .collect();
+    context.add_struct(struct_ident.clone(), fields);
+
+    let struct_tokens = context.into_tokens();
+    let todo_literal = Literal::string(todo_msg);
+
+    let function_token = quote! {
+        pub async fn #fn_name() -> #struct_ident {
+            todo!(#todo_literal);
+        }
+    };
+
+    (struct_tokens, function_token)
+}
+
 fn rust_type_from_schema(
     schema: &SchemaType,
     context: &mut GenerationContext,
@@ -473,8 +643,10 @@ fn to_camel_case(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::node::CallbackName;
-    use config::node::ExposedTopic;
+    use config::node::{
+        ExposedAction, ExposedService, ExposedTopic, SubscribedAction, SubscribedService,
+        SubscribedTopic,
+    };
 
     macro_rules! assert_rendered {
         ($cond:expr, $rendered:expr, $($arg:tt)+) => {
@@ -483,14 +655,6 @@ mod tests {
                 panic!($($arg)+);
             }
         };
-    }
-
-    fn callback(name: &str) -> CallbackName {
-        CallbackName::new(name).expect("valid callback")
-    }
-
-    fn dummy_format() -> MessageFormat {
-        MessageFormat::default()
     }
 
     fn single_artifact(artifacts: Vec<String>) -> String {
@@ -503,32 +667,8 @@ mod tests {
         artifacts.into_iter().next().expect("artifact is present")
     }
 
-    // `RustGenerator::add_exposed_topic` should generate Rust code, a sync and async version, it uses `ExposedTopic::message_format` to determine the input parameters of the sync and async functions that need to be generated.
-    // For example, the user of the Rust generated code should be able to call:
-    // ```
+    // The user of the lib would use it like this:
     // peppygen::topics::uvc_camera::push_frame(header, encoding, width, height, image);
-    // ```
-    // when the exposed topic look like this:
-    // ```
-    //         {
-    //             name: "push_frame", // The name of the topic inside the `uvc_camera` node
-    //             qos_profile: "sensor_data",
-    //             message_format: {
-    //                 header: {
-    //                     stamp: "time",
-    //                     frame_id: "u32",
-    //                 },
-    //                 encoding: "string",
-    //                 width: "u32",
-    //                 height: "u32",
-    //                 image: {
-    //                     type: "array",
-    //                     items: "u8",
-    //                     length: 3,
-    //                 },
-    //             },
-    //         }
-    // ```
     #[test]
     fn exposed_topic_gen_calling_code() {
         let topic = r#"
@@ -591,134 +731,321 @@ mod tests {
         );
     }
 
-    // #[test]
-    // fn subscribed_topic_uses_callback_identifier() {
-    //     let topic = SubscribedTopic {
-    //         node: String::from("vision"),
-    //         name: String::from("camera_feed"),
-    //         tag: String::from("0.1.0"),
-    //         callback: callback("on_camera_feed"),
-    //     };
-    //     let mut generator = RustGenerator::new();
-    //     generator.add_subscribed_topic(&topic, Some(&dummy_format()));
-    //     let rendered = single_artifact(generator.into_artifacts());
+    #[test]
+    fn exposed_service_gen_calling_code() {
+        let service = r#"
+        {
+            name: "enable_camera",
+            qos_profile: "critical",
+            message_format: {
+                enable: "bool"
+            }
+        }
+        "#;
+        let service: ExposedService = serde_json5::from_str(service).unwrap();
 
-    //     assert_rendered!(
-    //         rendered.contains("impl Topics"),
-    //         &rendered,
-    //         "expected impl block for Topics",
-    //     );
-    //     assert_rendered!(
-    //         rendered.contains("pub async fn on_camera_feed"),
-    //         &rendered,
-    //         "expected callback function"
-    //     );
-    //     assert_rendered!(
-    //         rendered.contains("await for message with PMI"),
-    //         &rendered,
-    //         "expected todo message"
-    //     );
-    //     assert_rendered!(
-    //         !rendered.contains("subscribed_topic_"),
-    //         &rendered,
-    //         "callback name should not use prefix fallback"
-    //     );
-    // }
+        let mut generator = RustGenerator::new();
+        generator.add_exposed_service(&service);
+        let artifacts: Vec<String> = generator
+            .into_artifacts()
+            .into_iter()
+            .map(|artifact| artifact.code_output)
+            .collect();
+        let rendered = single_artifact(artifacts);
 
-    // #[test]
-    // fn subscribed_service_uses_callback_identifier() {
-    //     let service = SubscribedService {
-    //         node: String::from("planner"),
-    //         name: String::from("compute_route"),
-    //         tag: String::from("0.7.1"),
-    //         callback: callback("on_compute_route"),
-    //     };
-    //     let mut generator = RustGenerator::new();
-    //     generator.add_subscribed_service(&service, Some(&dummy_format()));
-    //     let rendered = single_artifact(generator.into_artifacts());
+        println!("generated service code:\n{rendered}");
 
-    //     assert_rendered!(
-    //         rendered.contains("impl Services"),
-    //         &rendered,
-    //         "expected impl block for Services"
-    //     );
-    //     assert_rendered!(
-    //         rendered.contains("pub async fn on_compute_route"),
-    //         &rendered,
-    //         "expected callback function"
-    //     );
-    //     assert_rendered!(
-    //         rendered.contains("await for service response with PMI"),
-    //         &rendered,
-    //         "expected todo message"
-    //     );
-    // }
+        assert_rendered!(
+            rendered.contains("pub fn enable_camera("),
+            &rendered,
+            "expected sync service function"
+        );
+        assert_rendered!(
+            rendered.contains("pub async fn enable_camera_async("),
+            &rendered,
+            "expected async service function"
+        );
+        assert_rendered!(
+            rendered.contains("enable: bool"),
+            &rendered,
+            "expected bool argument"
+        );
+    }
 
-    // #[test]
-    // fn subscribed_action_emits_all_callbacks() {
-    //     let action = SubscribedAction {
-    //         node: String::from("brain"),
-    //         name: String::from("move_arm"),
-    //         tag: String::from("0.1.0"),
-    //         callback: Some(callback("on_move_arm_goal")),
-    //         feedback_callback: Some(callback("on_move_arm_feedback")),
-    //         results_callback: Some(callback("on_move_arm_result")),
-    //     };
-    //     let mut generator = RustGenerator::new();
-    //     generator.add_subscribed_action(&action, Some(&dummy_format()));
-    //     let rendered = single_artifact(generator.into_artifacts());
+    #[test]
+    fn exposed_action_gen_calling_code() {
+        let action = r#"
+        {
+            name: "move_arm",
+            goal_service: {
+                message_format: {
+                    arm_id: "u16",
+                    desired_position: {
+                        type: "array",
+                        items: "i32",
+                        length: 3
+                    }
+                }
+            },
+            feedback_topic: {
+                message_format: {
+                    payload: "bytes"
+                }
+            },
+            result_service: {
+                message_format: {
+                    final_position: {
+                        type: "array",
+                        items: "i32",
+                        length: 3
+                    }
+                }
+            }
+        }
+        "#;
+        let action: ExposedAction = serde_json5::from_str(action).unwrap();
 
-    //     assert_rendered!(
-    //         rendered.contains("impl Actions"),
-    //         &rendered,
-    //         "expected impl block for Actions"
-    //     );
-    //     for expected in [
-    //         "pub async fn on_move_arm_goal",
-    //         "pub async fn on_move_arm_feedback",
-    //         "pub async fn on_move_arm_result",
-    //     ] {
-    //         assert_rendered!(
-    //             rendered.contains(expected),
-    //             &rendered,
-    //             "expected `{expected}` in rendered"
-    //         );
-    //     }
-    //     assert_rendered!(
-    //         rendered.matches("await for action").count() == 3,
-    //         &rendered,
-    //         "expected todo message for each callback"
-    //     );
-    // }
+        let mut generator = RustGenerator::new();
+        generator.add_exposed_action(&action);
+        let artifacts: Vec<String> = generator
+            .into_artifacts()
+            .into_iter()
+            .map(|artifact| artifact.code_output)
+            .collect();
+        let rendered = single_artifact(artifacts);
 
-    // #[test]
-    // fn subscribed_action_without_callbacks_returns_empty_string() {
-    //     let action = SubscribedAction {
-    //         node: String::from("brain"),
-    //         name: String::from("idle"),
-    //         tag: String::from("0.1.0"),
-    //         callback: None,
-    //         feedback_callback: None,
-    //         results_callback: None,
-    //     };
-    //     let mut generator = RustGenerator::new();
-    //     generator.add_subscribed_action(&action, Some(&dummy_format()));
+        println!("generated action code:\n{rendered}");
 
-    //     assert!(
-    //         generator.into_artifacts().is_empty(),
-    //         "expected no generated artifacts when callbacks are absent"
-    //     );
-    // }
+        for expected in [
+            "pub fn move_arm_goal(",
+            "pub async fn move_arm_goal_async(",
+            "pub fn move_arm_feedback(",
+            "pub async fn move_arm_feedback_async(",
+            "pub fn move_arm_result(",
+            "pub async fn move_arm_result_async(",
+        ] {
+            assert_rendered!(
+                rendered.contains(expected),
+                &rendered,
+                "expected `{expected}` in rendered"
+            );
+        }
 
-    // #[test]
-    // fn prefixed_ident_sanitizes_candidate_and_fallback() {
-    //     let candidate = prefixed_ident("exposed_topic", Some(" My-Topic "), "topic");
-    //     assert_eq!(candidate.to_string(), "exposed_topic_my_topic");
+        assert_rendered!(
+            rendered.contains("arm_id: u16"),
+            &rendered,
+            "expected goal argument"
+        );
+        assert_rendered!(
+            rendered.contains("desired_position: [i32; 3]"),
+            &rendered,
+            "expected goal array argument"
+        );
+        assert_rendered!(
+            rendered.contains("payload: Vec<u8>"),
+            &rendered,
+            "expected feedback payload argument"
+        );
+        assert_rendered!(
+            rendered.contains("final_position: [i32; 3]"),
+            &rendered,
+            "expected result array argument"
+        );
+    }
 
-    //     let fallback = prefixed_ident("exposed_service", None, "@@@");
-    //     assert_eq!(fallback.to_string(), "exposed_service_item");
+    #[test]
+    fn subscribed_topic_returns_arguments() {
+        let topic = r#"
+        {
+            node: "uvc_camera",
+            name: "stream",
+            tag: "0.1.0",
+            callback: "on_video_frame_received"
+        }
+        "#;
+        let topic: SubscribedTopic = serde_json5::from_str(topic).unwrap();
+        let format = r#"
+        {
+            header: {
+                stamp: "time",
+                frame_id: "u32"
+            },
+            encoding: "string",
+            width: "u32",
+            height: "u32",
+            image: {
+                type: "array",
+                items: "u8",
+                length: 3
+            }
+        }
+        "#;
+        let format: MessageFormat = serde_json5::from_str(format).unwrap();
 
-    //     let starts_with_digit = prefixed_ident("", Some("42meaning"), "unused");
-    //     assert_eq!(starts_with_digit.to_string(), "_42meaning");
-    // }
+        let mut generator = RustGenerator::new();
+        generator.add_subscribed_topic(&topic, Some(&format));
+        let artifacts: Vec<String> = generator
+            .into_artifacts()
+            .into_iter()
+            .map(|artifact| artifact.code_output)
+            .collect();
+        let rendered = single_artifact(artifacts);
+
+        println!("generated subscribed topic code:\n{rendered}");
+
+        assert_rendered!(
+            rendered.contains(
+                "pub async fn on_video_frame_received() -> OnVideoFrameReceivedArguments"
+            ),
+            &rendered,
+            "expected async subscriber function with return type"
+        );
+        assert_rendered!(
+            rendered.contains("pub struct OnVideoFrameReceivedArguments"),
+            &rendered,
+            "expected return struct definition"
+        );
+        assert_rendered!(
+            rendered.contains("pub struct OnVideoFrameReceivedHeader"),
+            &rendered,
+            "expected nested struct definition"
+        );
+        assert_rendered!(
+            rendered.contains("image: [u8; 3]"),
+            &rendered,
+            "expected array element type"
+        );
+    }
+
+    #[test]
+    fn subscribed_service_returns_arguments() {
+        let service = r#"
+        {
+            node: "uvc_camera",
+            name: "get_camera_info",
+            tag: "0.1.0",
+            callback: "on_get_camera_info"
+        }
+        "#;
+        let service: SubscribedService = serde_json5::from_str(service).unwrap();
+        let format = r#"
+        {
+            card_type: "string",
+            size: "string",
+            interval: "string"
+        }
+        "#;
+        let format: MessageFormat = serde_json5::from_str(format).unwrap();
+
+        let mut generator = RustGenerator::new();
+        generator.add_subscribed_service(&service, Some(&format));
+        let artifacts: Vec<String> = generator
+            .into_artifacts()
+            .into_iter()
+            .map(|artifact| artifact.code_output)
+            .collect();
+        let rendered = single_artifact(artifacts);
+
+        println!("generated subscribed service code:\n{rendered}");
+
+        assert_rendered!(
+            rendered.contains("pub async fn on_get_camera_info() -> OnGetCameraInfoArguments"),
+            &rendered,
+            "expected async service subscriber"
+        );
+        assert_rendered!(
+            rendered.contains("pub struct OnGetCameraInfoArguments"),
+            &rendered,
+            "expected return struct"
+        );
+        assert_rendered!(
+            rendered.contains("card_type: String"),
+            &rendered,
+            "expected field mapping"
+        );
+    }
+
+    #[test]
+    fn subscribed_action_returns_arguments() {
+        let action = r#"
+        {
+            node: "brain",
+            name: "move_arm",
+            tag: "0.1.0",
+            feedback_callback: "on_move_arm_feedback",
+            results_callback: "on_move_arm_result"
+        }
+        "#;
+        let action: SubscribedAction = serde_json5::from_str(action).unwrap();
+        let goal_format: MessageFormat = serde_json5::from_str(
+            r#"{
+            arm_id: "u16",
+            desired_position: {
+                type: "array",
+                items: "i32",
+                length: 3
+            }
+        }"#,
+        )
+        .unwrap();
+        let feedback_format: MessageFormat =
+            serde_json5::from_str(r#"{ payload: "bytes" }"#).unwrap();
+        let result_format: MessageFormat = serde_json5::from_str(
+            r#"{
+            final_position: {
+                type: "array",
+                items: "i32",
+                length: 3
+            }
+        }"#,
+        )
+        .unwrap();
+        let format = SubscribedActionMessage {
+            goal: goal_format,
+            feedback: feedback_format,
+            result: result_format,
+        };
+
+        let mut generator = RustGenerator::new();
+        generator.add_subscribed_action(&action, Some(&format));
+        let artifacts: Vec<String> = generator
+            .into_artifacts()
+            .into_iter()
+            .map(|artifact| artifact.code_output)
+            .collect();
+        let rendered = single_artifact(artifacts);
+
+        println!("generated subscribed action code:\n{rendered}");
+
+        assert!(
+            !rendered.contains("pub async fn on_move_arm_goal()"),
+            "unexpected goal callback generated:\n{rendered}"
+        );
+
+        for expected in [
+            "pub async fn on_move_arm_feedback() -> OnMoveArmFeedbackArguments",
+            "pub async fn on_move_arm_result() -> OnMoveArmResultArguments",
+        ] {
+            assert_rendered!(
+                rendered.contains(expected),
+                &rendered,
+                "expected `{expected}` in rendered"
+            );
+        }
+
+        assert_rendered!(
+            rendered.contains("payload: Vec<u8>"),
+            &rendered,
+            "expected feedback payload"
+        );
+        assert_rendered!(
+            rendered.contains("final_position: [i32; 3]"),
+            &rendered,
+            "expected result array"
+        );
+        assert!(
+            !rendered.contains("arm_id: u16"),
+            "goal fields should not appear in feedback or result structs:\n{rendered}"
+        );
+    }
 }
