@@ -1,12 +1,13 @@
 use super::types::{InterfaceArtifact, InterfaceBackend, InterfaceKind, SubscribedActionMessage};
-use crate::error::Result;
+use crate::error::{Error, Result};
+use askama::Template;
 use config::node::{
     ExposedAction, ExposedService, ExposedTopic, MessageFormat, SchemaType, SubscribedAction,
     SubscribedService, SubscribedTopic, TypeToken,
 };
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
-use std::path::Path;
+use std::{fs, path::Path};
 use syn::{File, parse2};
 
 /// Rust-specific implementation of the interface generator.
@@ -45,13 +46,13 @@ impl InterfaceBackend for RustGenerator {
             collect_function_params(topic.message_format.as_ref(), &struct_prefix, &mut context);
         let struct_tokens = context.into_tokens();
 
-        let function_tokens = build_sync_async_functions(
-            &fn_name,
-            &async_fn_name,
-            &params,
-            "publish PMI topic synchronously",
-            "publish PMI topic asynchronously",
-        );
+        let sync_fn = build_sync_function(&fn_name, &params, "publish PMI topic synchronously");
+        let async_fn =
+            build_async_function(&async_fn_name, &params, "publish PMI topic asynchronously");
+        let function_tokens = quote! {
+            #sync_fn
+            #async_fn
+        };
 
         let tokens: TokenStream = quote! {
             #( #struct_tokens )*
@@ -87,13 +88,20 @@ impl InterfaceBackend for RustGenerator {
         );
         let struct_tokens = context.into_tokens();
 
-        let function_tokens = build_sync_async_functions(
+        let sync_fn = build_sync_function(
             &fn_name,
+            &params,
+            "call peppylib and send message service synchronously",
+        );
+        let async_fn = build_async_function(
             &async_fn_name,
             &params,
-            "call zenoh lib and send message service synchronously",
-            "call zenoh lib and send message service asynchronously",
+            "call peppylib and send message service asynchronously",
         );
+        let function_tokens = quote! {
+            #sync_fn
+            #async_fn
+        };
 
         let tokens: TokenStream = quote! {
             #( #struct_tokens )*
@@ -123,13 +131,18 @@ impl InterfaceBackend for RustGenerator {
             let params =
                 collect_function_params(goal.message_format.as_ref(), &struct_prefix, &mut context);
 
-            function_blocks.push(build_sync_async_functions(
+            let sync_fn = build_sync_function(
                 &fn_name,
+                &params,
+                "call peppylib and send message action goal synchronously",
+            );
+            let async_fn = build_async_function(
                 &async_fn_name,
                 &params,
-                "call zenoh lib and send message action goal synchronously",
-                "call zenoh lib and send message action goal asynchronously",
-            ));
+                "call peppylib and send message action goal asynchronously",
+            );
+            function_blocks.push(sync_fn);
+            function_blocks.push(async_fn);
         }
 
         if let Some(feedback) = action.feedback_topic.as_ref() {
@@ -142,13 +155,18 @@ impl InterfaceBackend for RustGenerator {
                 &mut context,
             );
 
-            function_blocks.push(build_sync_async_functions(
+            let sync_fn = build_sync_function(
                 &fn_name,
-                &async_fn_name,
                 &params,
                 "publish PMI action feedback synchronously",
+            );
+            let async_fn = build_async_function(
+                &async_fn_name,
+                &params,
                 "publish PMI action feedback asynchronously",
-            ));
+            );
+            function_blocks.push(sync_fn);
+            function_blocks.push(async_fn);
         }
 
         if let Some(result) = action.result_service.as_ref() {
@@ -161,13 +179,18 @@ impl InterfaceBackend for RustGenerator {
                 &mut context,
             );
 
-            function_blocks.push(build_sync_async_functions(
+            let sync_fn = build_sync_function(
                 &fn_name,
+                &params,
+                "call peppylib and send message action result synchronously",
+            );
+            let async_fn = build_async_function(
                 &async_fn_name,
                 &params,
-                "call zenoh lib and send message action result synchronously",
-                "call zenoh lib and send message action result asynchronously",
-            ));
+                "call peppylib and send message action result asynchronously",
+            );
+            function_blocks.push(sync_fn);
+            function_blocks.push(async_fn);
         }
 
         if function_blocks.is_empty() {
@@ -294,8 +317,86 @@ impl InterfaceBackend for RustGenerator {
 
     fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
         let artifacts = self.into_artifacts();
-        // TODO: Finish, use the artifacts to generate the project structure present in templates/
+        generate_lib_structure(to_path)?;
+        // TODO: add the generated artifacts in the correct modules:
+        // - peppygen::topics::<node_name>::<topic_name>(<topic_parameters>)
+        // peppygen::topics::uvc_camera::push_frame(header, encoding, width, height, image);
         Ok(())
+    }
+}
+
+fn generate_lib_structure(to_path: impl AsRef<Path>) -> Result<()> {
+    let templates_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
+    let template_root = templates_dir.join("peppygen/rust");
+    let to_path = to_path.as_ref();
+
+    fs::create_dir_all(to_path)?;
+
+    copy_templates(&templates_dir, &template_root, to_path)
+}
+
+fn copy_templates(root: &Path, from: &Path, to: &Path) -> Result<()> {
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let path = entry.path();
+        let destination = to.join(entry.file_name());
+
+        if file_type.is_dir() {
+            fs::create_dir_all(&destination)?;
+            copy_templates(root, &path, &destination)?;
+        } else if file_type.is_file() {
+            let ext = path.extension().and_then(|ext| ext.to_str());
+            if ext == Some(".gitkeep") {
+                continue;
+            } else if ext == Some("j2") {
+                let rendered = render_template(root, &path)?;
+                let destination = destination.with_extension("");
+
+                if let Some(parent) = destination.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+
+                fs::write(&destination, rendered)?;
+                continue;
+            }
+
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            fs::copy(&path, &destination)?;
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Template)]
+#[template(path = "peppygen/rust/Cargo.toml.j2")]
+struct PeppyConfigTemplate<'a> {
+    peppylib_version: &'a str,
+}
+
+impl<'a> PeppyConfigTemplate<'a> {
+    pub const TEMPLATE_PATH: &'static str = "peppygen/rust/Cargo.toml.j2";
+}
+
+fn render_template(root: &Path, template_path: &Path) -> Result<String> {
+    let relative = template_path
+        .strip_prefix(root)
+        .unwrap_or(template_path)
+        .to_string_lossy()
+        .into_owned();
+
+    match relative.as_str() {
+        PeppyConfigTemplate::TEMPLATE_PATH => {
+            let tpl = PeppyConfigTemplate {
+                peppylib_version: env!("CARGO_PKG_VERSION"),
+            };
+            Ok(tpl.render()?)
+        }
+        _ => Err(Error::UnknownTemplate(relative)),
     }
 }
 
@@ -470,13 +571,7 @@ fn render_tokens(tokens: TokenStream) -> String {
         .unwrap_or_else(|_| tokens.to_string())
 }
 
-fn build_sync_async_functions(
-    fn_name: &Ident,
-    async_fn_name: &Ident,
-    params: &[FunctionParam],
-    sync_todo: &str,
-    async_todo: &str,
-) -> TokenStream {
+fn build_sync_function(fn_name: &Ident, params: &[FunctionParam], todo_msg: &str) -> TokenStream {
     let param_tokens: Vec<TokenStream> = params
         .iter()
         .map(|param| {
@@ -485,23 +580,35 @@ fn build_sync_async_functions(
             quote!(#ident: #ty)
         })
         .collect();
-    let async_param_tokens = param_tokens.clone();
 
     let suppress_unused = unused_params_stmt(params);
-    let suppress_unused_async = suppress_unused.clone();
-
-    let sync_msg = Literal::string(sync_todo);
-    let async_msg = Literal::string(async_todo);
+    let msg = Literal::string(todo_msg);
 
     quote! {
         pub fn #fn_name(#(#param_tokens),*) {
             #suppress_unused
-            todo!(#sync_msg);
+            todo!(#msg);
         }
+    }
+}
 
-        pub async fn #async_fn_name(#(#async_param_tokens),*) {
-            #suppress_unused_async
-            todo!(#async_msg);
+fn build_async_function(fn_name: &Ident, params: &[FunctionParam], todo_msg: &str) -> TokenStream {
+    let param_tokens: Vec<TokenStream> = params
+        .iter()
+        .map(|param| {
+            let ident = &param.ident;
+            let ty = &param.ty;
+            quote!(#ident: #ty)
+        })
+        .collect();
+
+    let suppress_unused = unused_params_stmt(params);
+    let msg = Literal::string(todo_msg);
+
+    quote! {
+        pub async fn #fn_name(#(#param_tokens),*) {
+            #suppress_unused
+            todo!(#msg);
         }
     }
 }
@@ -647,6 +754,8 @@ mod tests {
         ExposedAction, ExposedService, ExposedTopic, SubscribedAction, SubscribedService,
         SubscribedTopic,
     };
+    use std::process::Command;
+    use tempfile::TempDir;
 
     macro_rules! assert_rendered {
         ($cond:expr, $rendered:expr, $($arg:tt)+) => {
@@ -1046,6 +1155,33 @@ mod tests {
         assert!(
             !rendered.contains("arm_id: u16"),
             "goal fields should not appear in feedback or result structs:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn create_lib_basic_structure() {
+        let temp_dir = TempDir::new().unwrap();
+        let generator = RustGenerator::new();
+        generator.build(&temp_dir).unwrap();
+
+        assert!(
+            temp_dir.path().join("Cargo.toml").exists(),
+            "Expected Cargo.toml to be generated in the temporary crate directory"
+        );
+
+        let output = Command::new("cargo")
+            .arg("build")
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("failed to invoke cargo build on generated crate");
+        let status = output.status;
+
+        assert!(
+            status.success(),
+            "cargo build failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+            status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }

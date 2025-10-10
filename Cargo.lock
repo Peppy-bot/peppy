@@ -1054,6 +1054,7 @@ dependencies = [
 name = "generator"
 version = "0.0.1"
 dependencies = [
+ "askama",
  "config",
  "pmi",
  "prettyplease",

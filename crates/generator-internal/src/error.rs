@@ -7,6 +7,10 @@ pub enum Error {
     // -- general
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Template(#[from] askama::Error),
+    #[error("unknown template `{0}`")]
+    UnknownTemplate(String),
 
     // -- Subscriber errors
     #[error("missing topic message format for subscriber `{0}`")]
