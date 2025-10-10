@@ -249,8 +249,8 @@ pub struct ExposedService {
     pub qos_profile: QoSProfile,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_format: Option<MessageFormat>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+    #[serde(default)]
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
