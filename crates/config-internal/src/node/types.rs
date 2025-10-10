@@ -300,8 +300,6 @@ pub struct SubscribedAction {
     #[serde(default)]
     pub tag: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub callback: Option<CallbackName>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub feedback_callback: Option<CallbackName>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub results_callback: Option<CallbackName>,
@@ -492,7 +490,6 @@ mod tests {
         }"#;
 
         let action: SubscribedAction = serde_json5::from_str(json).unwrap();
-        assert!(action.callback.is_none());
         assert_eq!(
             action.feedback_callback.as_ref().unwrap().as_str(),
             "onMoveArmFeedback"

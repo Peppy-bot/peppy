@@ -1,8 +1,10 @@
-use super::types::{InterfaceArtifact, InterfaceBackend, InterfaceKind};
+use super::types::{InterfaceArtifact, InterfaceBackend, InterfaceKind, SubscribedActionMessage};
+use crate::error::Result;
 use config::node::{
     ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
     SubscribedService, SubscribedTopic,
 };
+use std::path::Path;
 
 /// Python-specific implementation of the interface generator.
 pub struct PythonGenerator {
@@ -28,6 +30,10 @@ impl PythonGenerator {
 }
 
 impl InterfaceBackend for PythonGenerator {
+    fn push_section(&mut self, section: InterfaceArtifact) {
+        PythonGenerator::push_section(self, section);
+    }
+
     fn add_exposed_topic(&mut self, topic: &ExposedTopic) {
         let name = prefixed_name("exposed_topic", non_empty_str(topic.name.as_str()), "topic");
         self.push_section(InterfaceArtifact::from_kind(
@@ -87,16 +93,9 @@ impl InterfaceBackend for PythonGenerator {
     fn add_subscribed_action(
         &mut self,
         action: &SubscribedAction,
-        _arguments: Option<&MessageFormat>,
+        _arguments: Option<&SubscribedActionMessage>,
     ) {
         let mut sections = Vec::new();
-
-        if let Some(callback) = action.callback.as_ref() {
-            sections.push(format!(
-                "async def {}():\n    raise NotImplementedError(\"await for action goal with PMI\")\n",
-                callback.as_str()
-            ));
-        }
 
         if let Some(callback) = action.feedback_callback.as_ref() {
             sections.push(format!(
@@ -117,10 +116,11 @@ impl InterfaceBackend for PythonGenerator {
             sections.join("\n"),
         ));
     }
-
-    fn finish(self: Box<Self>) -> Vec<InterfaceArtifact> {
-        let inner = *self;
-        inner.into_artifacts()
+    fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
+        let _ = to_path;
+        let _artifacts = self.into_artifacts();
+        // TODO: implement Python project scaffold generation.
+        Ok(())
     }
 }
 

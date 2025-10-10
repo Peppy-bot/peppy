@@ -1,6 +1,6 @@
 use config::node::Interfaces;
 use config::peppy_config::PeppyConfig;
-use generator::InterfaceGenerator;
+use generator::generate_lib_for_language;
 
 #[test]
 fn generate_interfaces_code_rust_success() {

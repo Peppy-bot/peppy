@@ -5,5 +5,5 @@ mod generator;
 pub use error::Error as GeneratorError;
 pub mod interfaces;
 
-pub use generator::InterfaceGenerator;
+pub use generator::generate_lib_for_language;
 pub use generator::types::{DeploymentInterface, Language};
