@@ -1,6 +1,6 @@
+mod common;
 mod python;
 mod rust;
-mod templates;
 pub mod types;
 
 use crate::error::Result;
