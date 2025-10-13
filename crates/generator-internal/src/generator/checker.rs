@@ -24,45 +24,6 @@ pub fn generate_node_config_fingerprint(
     Ok(())
 }
 
-/// Checks if the generated functions signature maps to the node config passed in parameters
-/// This function is called from within the peppygen lib and the check is made at runtime, not by the `generator-internal` crate
-pub fn check_node_config_up_to_date(
-    node_config: impl AsRef<Path>,
-    generated_crate: impl AsRef<Path>,
-) {
-    let node_config = node_config.as_ref();
-    let generated_crate = generated_crate.as_ref();
-    let fingerprint_path = generated_crate.join(NODE_CONFIG_FINGERPRINT_FILE);
-
-    let config_bytes = fs::read(node_config).unwrap_or_else(|err| {
-        panic!(
-            "Failed to read node config `{}`: {err}",
-            node_config.display()
-        )
-    });
-
-    let expected_fingerprint = fs::read_to_string(&fingerprint_path).unwrap_or_else(|err| {
-        panic!(
-            "Generated crate `{}` is missing fingerprint file `{}`: {err}. \
-             Regenerate the bindings to keep them in sync with `{}`.",
-            generated_crate.display(),
-            fingerprint_path.display(),
-            node_config.display()
-        )
-    });
-
-    let expected_fingerprint = expected_fingerprint.trim();
-    let actual_fingerprint = fingerprint_for_bytes(&config_bytes);
-
-    if expected_fingerprint != actual_fingerprint {
-        // TODO: Update the message with the actual `peppy` command to run
-        panic!(
-            "The peppy.config file is out of sync with its generated code. \
-             Regenerate the bindings to ensure signatures stay in sync."
-        );
-    }
-}
-
 fn fingerprint_for_bytes(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -76,81 +37,8 @@ fn fingerprint_for_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, panic::AssertUnwindSafe};
+    use std::fs;
     use tempfile::TempDir;
-
-    #[test]
-    fn passes_when_fingerprints_match() {
-        let tmp = TempDir::new().expect("failed to create temp dir");
-        let config_path = tmp.path().join("peppy.json5");
-        let generated_crate = prepare_generated_crate(&tmp);
-        let fingerprint_file = generated_crate.join(NODE_CONFIG_FINGERPRINT_FILE);
-
-        let config_contents =
-            r#"{ schema_version: 1, manifest: { name: "camera", tag: "0.1.0" } }"#;
-        fs::write(&config_path, config_contents).expect("failed to write config");
-
-        let fingerprint = fingerprint_for_bytes(config_contents.as_bytes());
-        fs::write(&fingerprint_file, format!("{fingerprint}\n"))
-            .expect("failed to write fingerprint file");
-
-        check_node_config_up_to_date(&config_path, &generated_crate);
-    }
-
-    #[test]
-    fn panics_when_fingerprint_is_missing() {
-        let tmp = TempDir::new().expect("failed to create temp dir");
-        let config_path = tmp.path().join("peppy.json5");
-        let generated_crate = prepare_generated_crate(&tmp);
-        fs::write(&config_path, "{}").expect("failed to write config");
-
-        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            check_node_config_up_to_date(&config_path, &generated_crate);
-        }));
-
-        let panic_message = extract_panic_message(result.expect_err("expected panic"));
-        assert!(
-            panic_message.contains("missing fingerprint file"),
-            "unexpected panic message: {panic_message}"
-        );
-        assert!(
-            panic_message.contains(NODE_CONFIG_FINGERPRINT_FILE),
-            "panic should mention fingerprint file path: {panic_message}"
-        );
-    }
-
-    #[test]
-    fn panics_when_fingerprint_differs() {
-        let tmp = TempDir::new().expect("failed to create temp dir");
-        let config_path = tmp.path().join("peppy.json5");
-        let generated_crate = prepare_generated_crate(&tmp);
-        let fingerprint_file = generated_crate.join(NODE_CONFIG_FINGERPRINT_FILE);
-
-        let original_config =
-            r#"{ schema_version: 1, manifest: { name: "camera", tag: "0.1.0" } }"#;
-        fs::write(&config_path, original_config).expect("failed to write config");
-
-        let fingerprint = fingerprint_for_bytes(original_config.as_bytes());
-        fs::write(&fingerprint_file, format!("{fingerprint}\n"))
-            .expect("failed to write fingerprint file");
-
-        let updated_config = r#"{ schema_version: 1, manifest: { name: "camera", tag: "0.2.0" } }"#;
-        fs::write(&config_path, updated_config).expect("failed to overwrite config");
-
-        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            check_node_config_up_to_date(&config_path, &generated_crate);
-        }));
-
-        let panic_message = extract_panic_message(result.expect_err("expected panic"));
-        assert!(
-            panic_message.contains("peppy.config file is out of sync"),
-            "unexpected panic message: {panic_message}"
-        );
-        assert!(
-            panic_message.contains("Regenerate the bindings"),
-            "panic should mention regeneration hint: {panic_message}"
-        );
-    }
 
     #[test]
     fn generate_node_config_fingerprint_writes_expected_digest() {
@@ -198,16 +86,6 @@ mod tests {
             written.trim(),
             fingerprint_for_bytes(config_contents.as_bytes())
         );
-    }
-
-    fn extract_panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
-        match payload.downcast::<String>() {
-            Ok(msg) => *msg,
-            Err(payload) => match payload.downcast::<&'static str>() {
-                Ok(msg) => msg.to_string(),
-                Err(_) => "<non-string panic payload>".to_string(),
-            },
-        }
     }
 
     fn prepare_generated_crate(tmp: &TempDir) -> std::path::PathBuf {

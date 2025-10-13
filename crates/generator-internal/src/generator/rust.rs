@@ -328,15 +328,12 @@ impl LanguageGenerator for RustGenerator {
 
     fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
         let artifacts = self.sections;
-        common::add_peppylib_dependency(&to_path)?;
-        common::add_init_function(&to_path)?;
+        common::add_peppylib_dependencies(&to_path)?;
         common::add_artifacts_to_lib(&to_path, artifacts)?;
-        // Lastly generate the codegen fingerprint
         let crate_root = to_path.as_ref();
         let node_config_path = crate_root.join(PEPPY_NODE_CONFIG_FILE);
-        if node_config_path.exists() {
-            checker::generate_node_config_fingerprint(&node_config_path, crate_root)?;
-        }
+        // Lastly generate the codegen fingerprint based on the peppy.json5 config file
+        checker::generate_node_config_fingerprint(&node_config_path, crate_root)?;
         Ok(())
     }
 }
