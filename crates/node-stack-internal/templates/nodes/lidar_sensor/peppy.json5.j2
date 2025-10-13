@@ -23,36 +23,25 @@
       physical: "string",
       sim: "string",
       priority: "string"
-    },
-    lidar_point: {
-      x: "f32",
-      y: "f32",
-      z: "f32",
-      intensity: "f32",
-      return_type: "u8", // optional, e.g. first return, last return
-      classification: "u8", // optional, type of object detected
-      timestamp: "u64", // optional, timestamp for this point
     }
   },
   interfaces: {
     exposes: {
       topics: [
         {
-          name: "stream",
+          name: "push_lidar_object",
           qos_profile: "sensor_data",
           message_format: {
             header: {
               stamp: "time",
               frame_id: "u32",
             },
-            encoding: "string",
-            width: "u32",
-            height: "u32",
-            image: {
-              type: "array",
-              items: "u8",
-              length: 3
-            },
+            x: "f32",
+            y: "f32",
+            z: "f32",
+            intensity: "f32",
+            return_type: "u8", // e.g. first return, last return
+            classification: "u8", // type of object detected
           },
         }
       ],

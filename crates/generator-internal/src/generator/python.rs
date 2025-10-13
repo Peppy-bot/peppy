@@ -1,4 +1,4 @@
-use super::types::{InterfaceArtifact, InterfaceBackend, InterfaceKind, SubscribedActionMessage};
+use super::types::{InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage};
 use crate::error::Result;
 use config::node::{
     ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
@@ -29,7 +29,7 @@ impl PythonGenerator {
     }
 }
 
-impl InterfaceBackend for PythonGenerator {
+impl LanguageGenerator for PythonGenerator {
     fn push_section(&mut self, section: InterfaceArtifact) {
         PythonGenerator::push_section(self, section);
     }
@@ -37,6 +37,7 @@ impl InterfaceBackend for PythonGenerator {
     fn add_exposed_topic(&mut self, topic: &ExposedTopic) {
         let name = prefixed_name("exposed_topic", non_empty_str(topic.name.as_str()), "topic");
         self.push_section(InterfaceArtifact::from_kind(
+            &topic.name,
             InterfaceKind::ExposedTopic,
             format!("def {name}():\n    raise NotImplementedError(\"publish PMI topic\")\n"),
         ));
@@ -45,10 +46,11 @@ impl InterfaceBackend for PythonGenerator {
     fn add_exposed_service(&mut self, service: &ExposedService) {
         let name = prefixed_name(
             "exposed_service",
-            service.name.as_ref().and_then(|value| non_empty_str(value)),
+            non_empty_str(service.name.as_str()),
             "service",
         );
         self.push_section(InterfaceArtifact::from_kind(
+            &service.name,
             InterfaceKind::ExposedService,
             format!("def {name}():\n    raise NotImplementedError(\"expose PMI service\")\n"),
         ));
@@ -57,6 +59,7 @@ impl InterfaceBackend for PythonGenerator {
     fn add_exposed_action(&mut self, action: &ExposedAction) {
         let name = prefixed_name("exposed_action", non_empty_str(&action.name), "action");
         self.push_section(InterfaceArtifact::from_kind(
+            &action.name,
             InterfaceKind::ExposedAction,
             format!("def {name}():\n    raise NotImplementedError(\"expose PMI action\")\n"),
         ));
@@ -68,6 +71,7 @@ impl InterfaceBackend for PythonGenerator {
         _arguments: Option<&MessageFormat>,
     ) {
         self.push_section(InterfaceArtifact::from_kind(
+            &topic.name,
             InterfaceKind::SubscribedTopic,
             format!(
                 "async def {}():\n    raise NotImplementedError(\"await for message with PMI\")\n",
@@ -82,6 +86,7 @@ impl InterfaceBackend for PythonGenerator {
         _arguments: Option<&MessageFormat>,
     ) {
         self.push_section(InterfaceArtifact::from_kind(
+            &service.name,
             InterfaceKind::SubscribedService,
             format!(
                 "async def {}():\n    raise NotImplementedError(\"await for service response with PMI\")\n",
@@ -112,6 +117,7 @@ impl InterfaceBackend for PythonGenerator {
         }
 
         self.push_section(InterfaceArtifact::from_kind(
+            &action.name,
             InterfaceKind::SubscribedAction,
             sections.join("\n"),
         ));

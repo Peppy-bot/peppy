@@ -79,7 +79,7 @@ impl InterfaceArtifact {
 }
 
 /// Collects deployment interfaces and produces generated artifacts when finalized.
-pub trait InterfaceBackend {
+pub trait LanguageGenerator {
     fn push_section(&mut self, section: InterfaceArtifact);
     fn add_exposed_topic(&mut self, topic: &ExposedTopic);
     fn add_exposed_service(&mut self, service: &ExposedService);
@@ -100,7 +100,7 @@ pub trait InterfaceBackend {
 }
 
 impl DeploymentInterface {
-    pub fn register_with<B: InterfaceBackend + ?Sized>(&self, backend: &mut B) {
+    pub fn register_with<B: LanguageGenerator + ?Sized>(&self, backend: &mut B) {
         match self.interface() {
             InterfaceVariant::ExposedTopic(topic) => backend.add_exposed_topic(topic),
             InterfaceVariant::ExposedService(service) => backend.add_exposed_service(service),

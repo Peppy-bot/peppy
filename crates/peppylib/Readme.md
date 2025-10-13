@@ -1,6 +1,7 @@
 # Peppylib Rust
 
 Peppy control interface lib in Rust. Connects to a peppyOS service.
+It works on top of PMI (Peppy Messaging Interface) and provides a structure for topics/services/actions messages.
 
 ## How to publish?
 
