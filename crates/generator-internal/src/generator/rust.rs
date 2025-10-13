@@ -324,6 +324,7 @@ impl LanguageGenerator for RustGenerator {
 
     fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
         let artifacts = self.sections;
+        templates::add_init_function(&to_path)?;
         templates::generate_lib_structure(&to_path)?;
         templates::add_artifacts_to_lib(&to_path, artifacts)?;
         Ok(())
@@ -1457,28 +1458,33 @@ mod tests {
         {
             name: "move_arm",
             goal_service: {
-                message_format: {
-                    arm_id: "u16",
-                    desired_position: {
-                        type: "array",
-                        items: "i32",
-                        length: 3
-                    }
+              message_format: {
+                arm_id: "u16",
+                  desired_position: {
+                    type: "array",
+                    items: "i32",
+                    length: 3
+                  }
                 }
             },
             feedback_topic: {
-                message_format: {
-                    payload: "bytes"
+              qos_profile: "sensor_data",
+              message_format: {
+                new_position: {
+                  type: "array",
+                  items: "i32",
+                  length: 3
                 }
+              }
             },
             result_service: {
-                message_format: {
-                    final_position: {
-                        type: "array",
-                        items: "i32",
-                        length: 3
-                    }
+              message_format: {
+                final_position: {
+                  type: "array",
+                  items: "i32",
+                    length: 3
                 }
+              }
             }
         }
         "#;
