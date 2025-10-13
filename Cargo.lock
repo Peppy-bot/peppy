@@ -1061,6 +1061,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "serde_json5",
+ "sha2",
  "syn 2.0.106",
  "tempfile",
  "thiserror 2.0.17",

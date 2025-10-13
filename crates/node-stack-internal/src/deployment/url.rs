@@ -1,5 +1,6 @@
 use super::types::{DeploymentMap, ResolvedNodeSource};
 use crate::error::{Error, Result};
+use config::consts::PEPPY_NODE_CONFIG_FILE;
 use config::{
     node::{NodeConfig, NodeConfigParser},
     peppy_config::{Deployment, HttpRemoteSpec},
@@ -14,7 +15,6 @@ use tar::Archive;
 use ureq::Error as HttpError;
 use zstd::stream::read::Decoder;
 
-const MANIFEST_FILE: &str = "peppy.json5";
 const CHECKSUM_FILE: &str = ".checksum";
 
 pub fn resolve_remote_url(
@@ -81,11 +81,11 @@ fn load_manifest(cache_dir: &Path, deployment: &Deployment) -> Result<NodeConfig
 }
 
 fn load_manifest_inner(dir: &Path, deployment: &Deployment) -> Result<NodeConfig> {
-    let manifest_path = dir.join(MANIFEST_FILE);
+    let manifest_path = dir.join(PEPPY_NODE_CONFIG_FILE);
     if !manifest_path.is_file() {
         return Err(Error::BundleExtraction {
             url: manifest_path.display().to_string(),
-            reason: format!("{MANIFEST_FILE} is missing from bundle"),
+            reason: format!("{PEPPY_NODE_CONFIG_FILE} is missing from bundle"),
         });
     }
 
@@ -102,7 +102,7 @@ fn load_manifest_inner(dir: &Path, deployment: &Deployment) -> Result<NodeConfig
 }
 
 fn should_refresh(cache_dir: &Path, expected_checksum: Option<&str>) -> bool {
-    let manifest_path = cache_dir.join(MANIFEST_FILE);
+    let manifest_path = cache_dir.join(PEPPY_NODE_CONFIG_FILE);
     if !manifest_path.is_file() {
         return true;
     }
@@ -165,7 +165,7 @@ fn download_bundle(url: &str, destination: &Path, checksum: Option<&str>) -> Res
                 let computed = sha256
                     .expect("sha256 checksum state should exist")
                     .finalize();
-                if computed.as_slice() != checksum.expected.as_slice() {
+                if AsRef::<[u8]>::as_ref(&computed) != checksum.expected.as_slice() {
                     return Err(Error::ChecksumMismatch(url.to_string()));
                 }
             }

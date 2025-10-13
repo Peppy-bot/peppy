@@ -69,7 +69,7 @@ impl ServeAsyncCommand for NodeWatcher {
 mod tests {
     use super::*;
     use crate::context;
-    use config::consts::PEPPY_CONFIG_FILE;
+    use config::consts::PEPPY_NODE_CONFIG_FILE;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
@@ -77,7 +77,7 @@ mod tests {
     use tokio::time::timeout;
 
     fn write_config(dir: &Path, name: &str) -> PathBuf {
-        let path = dir.join(PEPPY_CONFIG_FILE);
+        let path = dir.join(PEPPY_NODE_CONFIG_FILE);
         let json5 = format!(
             r#"{{
   schema_version: 1,
