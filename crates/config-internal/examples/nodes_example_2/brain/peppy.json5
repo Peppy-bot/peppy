@@ -1,6 +1,7 @@
 // A simple node that has an AI and acts as the brain of the robot
 // It sends actions to the controller to perform those actions
 {
+  schema_version: 1,
   manifest: {
     name: "my_action_robot_brain",
     tag: "0.1.0",

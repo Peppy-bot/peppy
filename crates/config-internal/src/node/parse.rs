@@ -35,6 +35,7 @@ mod tests {
     #[test]
     fn test_parse_minimal_config() {
         let json5 = r#"{
+            schema_version: 1,
             manifest: {
                 name: "test_node",
                 tag: "0.1.0",
@@ -51,6 +52,7 @@ mod tests {
     #[test]
     fn test_parse_complex_config() {
         let json5 = r#"{
+            schema_version: 1,
             manifest: {
                 name: "camera_driver",
                 tag: "2.1.0",

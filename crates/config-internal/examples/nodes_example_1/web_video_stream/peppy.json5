@@ -1,6 +1,7 @@
 // PeppyOS REST API Service Node Configuration
 // This node provides a REST API interface for system interaction
 {
+  schema_version: 1,
   manifest: {
     name: "web_video_stream",
     tag: "0.1.0",

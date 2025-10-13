@@ -74,6 +74,7 @@ mod tests {
     fn sample_node_camera() -> NodeConfig {
         serde_json5::from_str(
             r#"{
+                schema_version: 1,
                 manifest: {
                     name: "uvc_camera",
                     tag: "0.1.0",
@@ -87,6 +88,7 @@ mod tests {
     fn sample_node_lidar() -> NodeConfig {
         serde_json5::from_str(
             r#"{
+                schema_version: 1,
                 manifest: {
                     name: "lidar",
                     tag: "0.1.0",

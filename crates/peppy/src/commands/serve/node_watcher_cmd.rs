@@ -80,6 +80,7 @@ mod tests {
         let path = dir.join(PEPPY_CONFIG_FILE);
         let json5 = format!(
             r#"{{
+  schema_version: 1,
   manifest: {{
     name: "{name}",
     tag: "0.1.0",

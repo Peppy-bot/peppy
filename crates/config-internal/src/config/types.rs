@@ -10,6 +10,11 @@ use std::{
     str::FromStr,
 };
 
+/// Version identifier embedded in node `peppy.json5` manifests.
+/// Using a simple alias keeps serialization straightforward while making the intent explicit.
+pub type SchemaVersion = u16;
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PeppyConfig {
