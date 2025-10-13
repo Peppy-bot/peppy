@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use tracing::error;
 
 use config::consts::AppEnv;
-use peppy::{AppContext, Command, PEPPY_CONFIG_FILE, init, node, serve, service};
+use peppy::{AppContext, Command, PEPPY_NODE_CONFIG_FILE, init, node, serve, service};
 
 #[derive(Parser)]
 #[command(name = "peppy")]
@@ -76,7 +76,7 @@ fn main() {
         } => {
             let config_path = match config_path {
                 Some(pth) => pth,
-                None => app_ctx.root_dir.join(PEPPY_CONFIG_FILE),
+                None => app_ctx.root_dir.join(PEPPY_NODE_CONFIG_FILE),
             };
             serve::ServeCommand {
                 engine,

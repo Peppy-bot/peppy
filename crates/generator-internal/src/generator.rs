@@ -1,3 +1,4 @@
+mod checker;
 mod common;
 mod python;
 mod rust;

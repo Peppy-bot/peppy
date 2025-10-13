@@ -12,7 +12,7 @@ pub async fn setup_node(config_file: Option<PathBuf>) -> Result<()> {
     // Use provided config file, otherwise default to ./peppy.json5
     let configuration_file = match config_file {
         Some(path) => path,
-        None => std::env::current_dir()?.join(config::consts::PEPPY_CONFIG_FILE),
+        None => std::env::current_dir()?.join(config::consts::PEPPY_NODE_CONFIG_FILE),
     };
 
     let cfg = NodeConfigParser::from_path(&configuration_file)?;

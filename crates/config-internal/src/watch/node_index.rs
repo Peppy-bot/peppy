@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use crate::{consts::PEPPY_CONFIG_FILE, node::NodeConfig};
+use crate::{consts::PEPPY_NODE_CONFIG_FILE, node::NodeConfig};
 
 /// Aggregated state keyed by config file path. Each entry reflects the
 /// current parse result of the corresponding `peppy.json5` file.
@@ -129,7 +129,7 @@ impl FSNodeConfigWatcher {
         info!(
             "Found {} initial {} files in {:?}",
             config_files.len(),
-            PEPPY_CONFIG_FILE,
+            PEPPY_NODE_CONFIG_FILE,
             from_dir
         );
         let mut state: NodeIndexState = HashMap::new();
@@ -153,14 +153,14 @@ impl FSNodeConfigWatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consts::PEPPY_CONFIG_FILE;
+    use crate::consts::PEPPY_NODE_CONFIG_FILE;
     use std::fs;
     use std::time::Duration;
     use tempfile::TempDir;
     use tokio::time::timeout;
 
     fn write_config(dir: &Path, name: &str, _namespace: &str) -> PathBuf {
-        let path = dir.join(PEPPY_CONFIG_FILE);
+        let path = dir.join(PEPPY_NODE_CONFIG_FILE);
         let json5 = format!(
             r#"{{
                 schema_version: 1,
@@ -211,7 +211,7 @@ mod tests {
 
         // Invalid name (spaces and '!') should fail parsing on initial load
         fs::write(
-            temp.path().join(PEPPY_CONFIG_FILE),
+            temp.path().join(PEPPY_NODE_CONFIG_FILE),
             "{ schema_version: 1, manifest: { name: 'Invalid Name!', tag: '0.1.0', launch_cmd: ['cargo', 'run', '--release'] } }",
         )
         .unwrap();

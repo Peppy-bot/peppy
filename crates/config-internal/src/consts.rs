@@ -1,4 +1,4 @@
-pub const PEPPY_CONFIG_FILE: &str = "peppy.json5";
+pub const PEPPY_NODE_CONFIG_FILE: &str = "peppy.json5";
 
 // Application runtime environment (dev/prod) tracked internally.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

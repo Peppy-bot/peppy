@@ -1,9 +1,13 @@
+use super::checker;
 use super::common;
 use super::types::{InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage};
 use crate::error::Result;
-use config::node::{
-    ExposedAction, ExposedService, ExposedTopic, MessageFormat, SchemaType, SubscribedAction,
-    SubscribedService, SubscribedTopic, TypeToken,
+use config::{
+    consts::PEPPY_NODE_CONFIG_FILE,
+    node::{
+        ExposedAction, ExposedService, ExposedTopic, MessageFormat, SchemaType, SubscribedAction,
+        SubscribedService, SubscribedTopic, TypeToken,
+    },
 };
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
@@ -327,6 +331,12 @@ impl LanguageGenerator for RustGenerator {
         common::add_peppylib_dependency(&to_path)?;
         common::add_init_function(&to_path)?;
         common::add_artifacts_to_lib(&to_path, artifacts)?;
+        // Lastly generate the codegen fingerprint
+        let crate_root = to_path.as_ref();
+        let node_config_path = crate_root.join(PEPPY_NODE_CONFIG_FILE);
+        if node_config_path.exists() {
+            checker::generate_node_config_fingerprint(&node_config_path, crate_root)?;
+        }
         Ok(())
     }
 }
@@ -1119,6 +1129,7 @@ mod tests {
     #[test]
     fn compile_peppygen_with_multiple_artifacts() {
         let temp_dir = TempDir::new().unwrap();
+        //write_stub_node_config(&temp_dir);
         let topic = r#"
         {
             name: "push_frame", // The name of the topic inside the `uvc_camera` node
