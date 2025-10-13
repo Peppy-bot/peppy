@@ -34,7 +34,7 @@ struct WorkspacePackageMetadata {
     authors: Vec<String>,
 }
 
-pub fn add_peppylib_dependency(to_path: impl AsRef<Path>) -> Result<()> {
+pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>) -> Result<()> {
     const PEPPYLIB_DIR: &str = "peppylib";
     const PMI_INTERNAL_DIR: &str = "pmi-internal";
     const CONFIG_INTERNAL_DIR: &str = "config-internal";
@@ -74,15 +74,6 @@ pub fn add_artifacts_to_lib(
     }
 
     write_lib_rs(&src_dir)?;
-    Ok(())
-}
-
-/// Adds a `init_node` function to the generated lib that calls `check_node_config_up_to_date` and `peppylib::setup_node`.
-/// The `init_node` calls `check_node_config_up_to_date` before anything else to ensure that the `peppy.json5` file maps to the generated functions.
-/// If the mapping is incorrect, raise an `OutdatedNode` error with an explicit message.
-/// If the mapping is correct, go on to call `peppylib::setup_node`
-pub fn add_init_function(lib_path: impl AsRef<Path>) -> Result<()> {
-    // TODO: Finish
     Ok(())
 }
 
