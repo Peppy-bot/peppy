@@ -41,8 +41,11 @@
           feedback_topic: {
             qos_profile: "standard", // Options: "standard", "reliable", "sensor_data"
             message_format: {
-              // Could be any format, using payload/bytes as placeholder here
-              payload: "bytes"
+              new_position: {
+                type: "array",
+                items: "i32",
+                length: 3
+              }
             }
           },
           result_service: {

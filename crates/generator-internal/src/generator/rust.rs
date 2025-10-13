@@ -1381,5 +1381,329 @@ mod tests {
         );
     }
 
-    // TODO: Create tests similar to create_lib_with_exposed_topic_artifact but with services/actions and a combination of the 3
+    #[test]
+    fn create_lib_with_exposed_service_artifact() {
+        let temp_dir = TempDir::new().unwrap();
+        let service = r#"
+        {
+          name: "enable_camera",
+          qos_profile: "critical",
+          message_format: {
+            enable: "bool"
+          }
+        }
+        "#;
+        let service: ExposedService = serde_json5::from_str(service).unwrap();
+
+        let mut generator = RustGenerator::new();
+        generator.add_exposed_service(&service);
+        generator.build(&temp_dir).unwrap();
+
+        assert!(
+            temp_dir.path().join("Cargo.toml").exists(),
+            "Expected Cargo.toml to be generated in the temporary crate directory"
+        );
+
+        let lib_rs = temp_dir.path().join("src/lib.rs");
+        assert!(
+            lib_rs.exists(),
+            "Expected lib.rs to exist so `peppygen::services` is reachable"
+        );
+        let lib_contents =
+            std::fs::read_to_string(&lib_rs).expect("failed to read generated lib.rs");
+        assert!(
+            lib_contents.contains("pub mod services;"),
+            "Expected generated lib.rs to re-export the `services` module, got:\n{}",
+            lib_contents
+        );
+
+        let services_mod = temp_dir.path().join("src/services.rs");
+        assert!(
+            services_mod.exists(),
+            "Expected services module file to exist so `peppygen::services::<module>` resolves"
+        );
+        let services_contents =
+            std::fs::read_to_string(&services_mod).expect("failed to read services module");
+        assert!(
+            services_contents.contains("pub mod enable_camera;"),
+            "Expected services module to expose generated `enable_camera` module, got:\n{}",
+            services_contents
+        );
+
+        let enable_module = temp_dir.path().join("src/services/enable_camera.rs");
+        assert!(
+            enable_module.exists(),
+            "Expected generated service module at {:?}",
+            enable_module
+        );
+        let enable_contents =
+            std::fs::read_to_string(&enable_module).expect("failed to read enable_camera module");
+        assert!(
+            enable_contents.contains("pub fn enable_camera("),
+            "Expected generated module to expose sync service function, got:\n{}",
+            enable_contents
+        );
+        assert!(
+            enable_contents.contains("pub async fn enable_camera_async("),
+            "Expected generated module to expose async service function, got:\n{}",
+            enable_contents
+        );
+    }
+
+    #[test]
+    fn create_lib_with_exposed_action_artifact() {
+        let temp_dir = TempDir::new().unwrap();
+        let action = r#"
+        {
+            name: "move_arm",
+            goal_service: {
+                message_format: {
+                    arm_id: "u16",
+                    desired_position: {
+                        type: "array",
+                        items: "i32",
+                        length: 3
+                    }
+                }
+            },
+            feedback_topic: {
+                message_format: {
+                    payload: "bytes"
+                }
+            },
+            result_service: {
+                message_format: {
+                    final_position: {
+                        type: "array",
+                        items: "i32",
+                        length: 3
+                    }
+                }
+            }
+        }
+        "#;
+        let action: ExposedAction = serde_json5::from_str(action).unwrap();
+
+        let mut generator = RustGenerator::new();
+        generator.add_exposed_action(&action);
+        generator.build(&temp_dir).unwrap();
+
+        assert!(
+            temp_dir.path().join("Cargo.toml").exists(),
+            "Expected Cargo.toml to be generated in the temporary crate directory"
+        );
+
+        let lib_rs = temp_dir.path().join("src/lib.rs");
+        assert!(
+            lib_rs.exists(),
+            "Expected lib.rs to exist so `peppygen::actions` is reachable"
+        );
+        let lib_contents =
+            std::fs::read_to_string(&lib_rs).expect("failed to read generated lib.rs");
+        assert!(
+            lib_contents.contains("pub mod actions;"),
+            "Expected generated lib.rs to re-export the `actions` module, got:\n{}",
+            lib_contents
+        );
+
+        let actions_mod = temp_dir.path().join("src/actions.rs");
+        assert!(
+            actions_mod.exists(),
+            "Expected actions module file to exist so `peppygen::actions::<module>` resolves"
+        );
+        let actions_contents =
+            std::fs::read_to_string(&actions_mod).expect("failed to read actions module");
+        assert!(
+            actions_contents.contains("pub mod move_arm;"),
+            "Expected actions module to expose generated `move_arm` module, got:\n{}",
+            actions_contents
+        );
+
+        let move_arm_module = temp_dir.path().join("src/actions/move_arm.rs");
+        assert!(
+            move_arm_module.exists(),
+            "Expected generated action module at {:?}",
+            move_arm_module
+        );
+        let move_arm_contents =
+            std::fs::read_to_string(&move_arm_module).expect("failed to read move_arm module");
+        for expected in [
+            "pub fn move_arm_goal(",
+            "pub async fn move_arm_goal_async(",
+            "pub fn move_arm_feedback(",
+            "pub async fn move_arm_feedback_async(",
+            "pub fn move_arm_result(",
+            "pub async fn move_arm_result_async(",
+        ] {
+            assert!(
+                move_arm_contents.contains(expected),
+                "Expected generated action module to expose `{expected}`, got:\n{}",
+                move_arm_contents
+            );
+        }
+    }
+
+    #[test]
+    fn create_lib_with_exposed_topic_service_and_action_artifacts() {
+        let temp_dir = TempDir::new().unwrap();
+        let topic = r#"
+        {
+            name: "push_frame",
+            qos_profile: "sensor_data",
+            message_format: {
+                header: {
+                    stamp: "time",
+                    frame_id: "u32"
+                },
+                encoding: "string",
+                width: "u32",
+                height: "u32",
+                image: {
+                    type: "array",
+                    items: "u8",
+                    length: 3
+                }
+            }
+        }
+        "#;
+        let service = r#"
+        {
+          name: "enable_camera",
+          qos_profile: "critical",
+          message_format: {
+            enable: "bool"
+          }
+        }
+        "#;
+        let action = r#"
+        {
+            name: "move_arm",
+            goal_service: {
+                message_format: {
+                    arm_id: "u16",
+                    desired_position: {
+                        type: "array",
+                        items: "i32",
+                        length: 3
+                    }
+                }
+            },
+            feedback_topic: {
+                message_format: {
+                    payload: "bytes"
+                }
+            },
+            result_service: {
+                message_format: {
+                    final_position: {
+                        type: "array",
+                        items: "i32",
+                        length: 3
+                    }
+                }
+            }
+        }
+        "#;
+        let topic: ExposedTopic = serde_json5::from_str(topic).unwrap();
+        let service: ExposedService = serde_json5::from_str(service).unwrap();
+        let action: ExposedAction = serde_json5::from_str(action).unwrap();
+
+        let mut generator = RustGenerator::new();
+        generator.add_exposed_topic(&topic);
+        generator.add_exposed_service(&service);
+        generator.add_exposed_action(&action);
+        generator.build(&temp_dir).unwrap();
+
+        let lib_rs = temp_dir.path().join("src/lib.rs");
+        assert!(
+            lib_rs.exists(),
+            "Expected lib.rs to exist so the generated crate exposes its modules"
+        );
+        let lib_contents =
+            std::fs::read_to_string(&lib_rs).expect("failed to read generated lib.rs");
+        for module in ["topics", "services", "actions"] {
+            assert!(
+                lib_contents.contains(&format!("pub mod {module};")),
+                "Expected lib.rs to re-export `{module}` module, got:\n{}",
+                lib_contents
+            );
+        }
+
+        let topics_mod = temp_dir.path().join("src/topics.rs");
+        let services_mod = temp_dir.path().join("src/services.rs");
+        let actions_mod = temp_dir.path().join("src/actions.rs");
+        assert!(topics_mod.exists(), "Expected topics module file to exist");
+        assert!(
+            services_mod.exists(),
+            "Expected services module file to exist"
+        );
+        assert!(
+            actions_mod.exists(),
+            "Expected actions module file to exist"
+        );
+
+        let topics_contents =
+            std::fs::read_to_string(&topics_mod).expect("failed to read topics module");
+        assert!(
+            topics_contents.contains("pub mod push_frame;"),
+            "Expected topics module to expose generated `push_frame` module, got:\n{}",
+            topics_contents
+        );
+
+        let services_contents =
+            std::fs::read_to_string(&services_mod).expect("failed to read services module");
+        assert!(
+            services_contents.contains("pub mod enable_camera;"),
+            "Expected services module to expose generated `enable_camera` module, got:\n{}",
+            services_contents
+        );
+
+        let actions_contents =
+            std::fs::read_to_string(&actions_mod).expect("failed to read actions module");
+        assert!(
+            actions_contents.contains("pub mod move_arm;"),
+            "Expected actions module to expose generated `move_arm` module, got:\n{}",
+            actions_contents
+        );
+
+        let push_frame_module = temp_dir.path().join("src/topics/push_frame.rs");
+        let enable_module = temp_dir.path().join("src/services/enable_camera.rs");
+        let move_arm_module = temp_dir.path().join("src/actions/move_arm.rs");
+        assert!(
+            push_frame_module.exists(),
+            "Expected generated topic module to exist"
+        );
+        assert!(
+            enable_module.exists(),
+            "Expected generated service module to exist"
+        );
+        assert!(
+            move_arm_module.exists(),
+            "Expected generated action module to exist"
+        );
+
+        let push_frame_contents =
+            std::fs::read_to_string(&push_frame_module).expect("failed to read push_frame module");
+        assert!(
+            push_frame_contents.contains("pub async fn push_frame_async("),
+            "Expected combined generation to produce async topic function, got:\n{}",
+            push_frame_contents
+        );
+
+        let enable_contents =
+            std::fs::read_to_string(&enable_module).expect("failed to read enable_camera module");
+        assert!(
+            enable_contents.contains("pub fn enable_camera("),
+            "Expected combined generation to produce service function, got:\n{}",
+            enable_contents
+        );
+
+        let move_arm_contents =
+            std::fs::read_to_string(&move_arm_module).expect("failed to read move_arm module");
+        assert!(
+            move_arm_contents.contains("pub async fn move_arm_result_async("),
+            "Expected combined generation to produce action result async function, got:\n{}",
+            move_arm_contents
+        );
+    }
 }
