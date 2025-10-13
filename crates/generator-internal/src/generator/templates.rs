@@ -55,6 +55,12 @@ pub fn add_artifacts_to_lib(
     Ok(())
 }
 
+/// This function adds the initial connection to peppyd (through peppylib) and check that the peppy.json5 config file is up to date with its generated functions
+pub fn add_init_function(lib_path: impl AsRef<Path>) -> Result<()> {
+    // TODO: Finish
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ModuleCategory {
     Topics,
