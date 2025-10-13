@@ -106,6 +106,7 @@ mod tests {
 
         // JSON5 ground truth with human-friendly syntax
         let expected_json5 = r#"{
+            schema_version: 1,
             manifest: {
                 name: "a_node",
                 tag: "0.1.0",
@@ -138,6 +139,7 @@ mod tests {
 
         // JSON5 ground truth with human-friendly syntax
         let expected_json5 = r#"{
+            schema_version: 1,
             manifest: {
                 name: "a_node",
                 tag: "0.1.0",

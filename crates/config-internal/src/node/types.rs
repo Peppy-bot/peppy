@@ -1,4 +1,4 @@
-use crate::{common::NodeParameters, error::ParsingError};
+use crate::{common::NodeParameters, config::SchemaVersion, error::ParsingError};
 use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer},
@@ -11,6 +11,7 @@ use std::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
+    pub schema_version: SchemaVersion,
     pub manifest: Manifest,
     #[serde(default)]
     pub config: NodeRuntimeConfig,

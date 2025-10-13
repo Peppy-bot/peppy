@@ -277,7 +277,7 @@ fn test_create_node_stack_config_example_3() {
     };
 
     let manifest_content = format!(
-        "{{\n            manifest: {{ name: \"{}\", tag: \"9.9.9\" }}\n        }}",
+        "{{\n            schema_version: 1,\n            manifest: {{ name: \"{}\", tag: \"9.9.9\" }}\n        }}",
         helpers::LIDAR_SENSOR_NODE_NAME
     );
     let bundle_bytes = build_bundle(manifest_content.as_str());

@@ -598,6 +598,7 @@ mod tests {
         let content = if deps.is_empty() {
             format!(
                 r#"{{
+                    schema_version: 1,
                     manifest: {{ name: "{name}", tag: "{tag}" }}
                 }}"#,
                 name = name,
@@ -616,6 +617,7 @@ mod tests {
 
             format!(
                 r#"{{
+                    schema_version: 1,
                     manifest: {{ name: "{name}", tag: "{tag}" }},
                     interfaces: {{
                         subscribes_to: {{
@@ -811,6 +813,7 @@ mod tests {
         let server = Server::run();
 
         let manifest_content = r#"{
+            schema_version: 1,
             manifest: { name: "uvc_camera", tag: "1.2.3" }
         }"#;
         let bundle_bytes =
@@ -865,6 +868,7 @@ mod tests {
         let server = Server::run();
 
         let manifest_content = r#"{
+            schema_version: 1,
             manifest: { name: "uvc_camera_wrong", tag: "1.2.3" }
         }"#;
         let bundle_bytes =
@@ -929,6 +933,7 @@ mod tests {
         let server = Server::run();
 
         let manifest_content = r#"{
+            schema_version: 1,
             manifest: { name: "uvc_camera", tag: "9.9.9" }
         }"#;
         let bundle_bytes =
@@ -988,6 +993,7 @@ mod tests {
     fn git_repo_is_cloned_and_resolved() {
         let temp_dir = tempdir().expect("temp dir");
         let manifest_content = r#"{
+            schema_version: 1,
             manifest: { name: "uvc_camera", tag: "1.2.3" }
         }"#;
         let remote = create_git_repository(manifest_content, "1.2.3");
@@ -1037,6 +1043,7 @@ mod tests {
     fn git_repo_is_cloned_and_name_not_resolved() {
         let temp_dir = tempdir().expect("temp dir");
         let manifest_content = r#"{
+            schema_version: 1,
             manifest: { name: "uvc_camera_wrong", tag: "1.2.3" }
         }"#;
         let remote = create_git_repository(manifest_content, "1.2.3");
@@ -1095,6 +1102,7 @@ mod tests {
     fn git_repo_is_cloned_and_tag_not_resolved() {
         let temp_dir = tempdir().expect("temp dir");
         let manifest_content = r#"{
+            schema_version: 1,
             manifest: { name: "uvc_camera", tag: "9.9.9" }
         }"#;
         let remote = create_git_repository(manifest_content, "1.2.3");
@@ -1150,6 +1158,7 @@ mod tests {
     fn git_repo_is_cloned_and_same_tag_updates_code() {
         let temp_dir = tempdir().expect("temp dir");
         let manifest_v1 = r#"{
+            schema_version: 1,
             manifest: { name: "uvc_camera", tag: "1.0.0", launch_cmd: ["run_v1"] }
         }"#;
         let remote = create_git_repository(manifest_v1, "1.0.0");
@@ -1198,6 +1207,7 @@ mod tests {
 
         // Update the remote repository keeping the same tag but new contents.
         let manifest_v2 = r#"{
+            schema_version: 1,
             manifest: { name: "uvc_camera", tag: "1.0.0", launch_cmd: ["run_v2"] }
         }"#;
 
