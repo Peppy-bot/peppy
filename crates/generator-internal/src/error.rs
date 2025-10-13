@@ -25,4 +25,10 @@ pub enum Error {
     NodeNotFound(String),
     #[error("The node name `{0}` or tag `{1}` could not be found")]
     NoMatchingNode(String, String),
+    #[error("failed to parse generated node module for `{node}`")]
+    NodeModuleParseError {
+        node: String,
+        #[source]
+        source: syn::Error,
+    },
 }

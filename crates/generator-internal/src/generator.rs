@@ -7,7 +7,7 @@ use crate::error::Result;
 use python::PythonGenerator;
 use rust::RustGenerator;
 use std::path::Path;
-use types::{DeploymentInterface, InterfaceBackend, Language};
+use types::{DeploymentInterface, Language, LanguageGenerator};
 
 /// Generate an interface library for the given language into the provided directory.
 pub fn generate_lib_for_language(
@@ -29,7 +29,7 @@ fn generate_with_backend<B>(
     output_dir: &Path,
 ) -> Result<()>
 where
-    B: InterfaceBackend,
+    B: LanguageGenerator,
 {
     for interface in interfaces {
         interface.register_with(&mut backend);
