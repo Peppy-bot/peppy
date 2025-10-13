@@ -1,4 +1,4 @@
-use super::templates;
+use super::common;
 use super::types::{InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage};
 use crate::error::Result;
 use config::node::{
@@ -324,9 +324,9 @@ impl LanguageGenerator for RustGenerator {
 
     fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
         let artifacts = self.sections;
-        templates::add_init_function(&to_path)?;
-        templates::generate_lib_structure(&to_path)?;
-        templates::add_artifacts_to_lib(&to_path, artifacts)?;
+        common::add_peppylib_dependency(&to_path)?;
+        common::add_init_function(&to_path)?;
+        common::add_artifacts_to_lib(&to_path, artifacts)?;
         Ok(())
     }
 }
