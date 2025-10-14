@@ -73,7 +73,6 @@ pub fn add_artifacts_to_lib(
         write_category_modules(&category_dir, &category_file, nodes, category)?;
     }
 
-    write_lib_rs(&src_dir)?;
     Ok(())
 }
 
@@ -150,19 +149,6 @@ fn prepare_category_dir(src_dir: &Path, category: ModuleCategory) -> Result<Path
 
 fn category_module_path(src_dir: &Path, category: ModuleCategory) -> PathBuf {
     src_dir.join(format!("{}.rs", category.struct_name().to_lowercase()))
-}
-
-fn write_lib_rs(src_dir: &Path) -> Result<()> {
-    let lib_rs_path = src_dir.join("lib.rs");
-    let mut content = String::new();
-    for category in ModuleCategory::ALL {
-        content.push_str(&format!(
-            "pub mod {};\n",
-            category.struct_name().to_lowercase()
-        ));
-    }
-    fs::write(lib_rs_path, content)?;
-    Ok(())
 }
 
 fn write_category_modules(

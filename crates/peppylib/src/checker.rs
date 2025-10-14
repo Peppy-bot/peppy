@@ -35,6 +35,7 @@ pub fn check_node_config_up_to_date(
     if expected_fingerprint != actual_fingerprint {
         panic!(
             "The peppy.config file is out of sync with its generated code. \
+             Expected fingerprint = {expected_fingerprint}, actual = {actual_fingerprint}. \
              Regenerate the bindings to ensure signatures stay in sync."
         );
     }
