@@ -492,6 +492,11 @@ fn collect_function_params(
 fn unused_params_stmt(params: &[FunctionParam]) -> TokenStream {
     if params.is_empty() {
         TokenStream::new()
+    } else if params.len() == 1 {
+        let ident = &params[0].ident;
+        quote! {
+            let _ = &#ident;
+        }
     } else {
         let refs: Vec<TokenStream> = params
             .iter()

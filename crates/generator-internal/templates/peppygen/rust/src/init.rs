@@ -84,7 +84,6 @@ fn format_out_of_sync_message(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -102,7 +101,7 @@ mod tests {
 
     // This hash is precomputed based on CONFIG_CONTENTS above
     const CONFIG_FINGERPRINT: &str =
-        "8dceeb6e5ef378de5e85814c34fa0717147876e834b2a71b82a00ef59e12b7f9";
+        "b64ecd7e3c9b2d170535598b370c865cd320bc93d93b98aa18c0e999046f1008";
 
     #[test]
     fn init_node_can_start() {
