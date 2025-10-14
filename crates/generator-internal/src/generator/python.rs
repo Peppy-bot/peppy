@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod tests;
+
 use super::types::{InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage};
 use crate::error::Result;
 use config::node::{
