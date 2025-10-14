@@ -53,7 +53,7 @@ pub fn init_node_blocking() -> InitNodeResult<()> {
 
 fn ensure_config_is_in_sync(config_path: &Path, crate_root: &Path) -> InitNodeResult<()> {
     match panic::catch_unwind(AssertUnwindSafe(|| {
-        crate::checker::check_node_config_up_to_date(config_path, crate_root);
+        peppylib::checker::check_node_config_up_to_date(config_path, crate_root);
     })) {
         Ok(()) => Ok(()),
         Err(payload) => Err(InitNodeError::OutOfSyncNode {
@@ -80,4 +80,96 @@ fn format_out_of_sync_message(
         crate_root.display(),
         config_path.display()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
+
+    const CONFIG_CONTENTS: &str = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "test_node",
+            tag: "0.1.0",
+            launch_cmd: ["cargo", "run", "--release"],
+        },
+    }
+    "#;
+
+    // This hash is precomputed based on CONFIG_CONTENTS above
+    const CONFIG_FINGERPRINT: &str =
+        "8dceeb6e5ef378de5e85814c34fa0717147876e834b2a71b82a00ef59e12b7f9";
+
+    #[test]
+    fn init_node_can_start() {
+        let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let _fixture = NodeConfigFixture::install(&crate_root, CONFIG_CONTENTS, CONFIG_FINGERPRINT);
+
+        let runtime = tokio::runtime::Runtime::new().expect("failed to build runtime for test");
+        runtime
+            .block_on(super::init_node())
+            .expect("init_node should succeed with valid config");
+    }
+
+    struct NodeConfigFixture {
+        config_path: PathBuf,
+        fingerprint_path: PathBuf,
+        fingerprint_dir: PathBuf,
+        original_config: Option<Vec<u8>>,
+        original_fingerprint: Option<Vec<u8>>,
+        had_fingerprint_dir: bool,
+    }
+
+    impl NodeConfigFixture {
+        fn install(crate_root: &Path, config_contents: &str, fingerprint: &str) -> Self {
+            let config_path = crate_root.join(super::NODE_CONFIG_FILE);
+            let fingerprint_dir = crate_root.join(".peppygen");
+            let fingerprint_path = fingerprint_dir.join("node_config.sha256");
+
+            let original_config = fs::read(&config_path).ok();
+            let original_fingerprint = fs::read(&fingerprint_path).ok();
+            let had_fingerprint_dir = fingerprint_dir.exists();
+
+            fs::create_dir_all(&fingerprint_dir)
+                .expect("failed to create .peppygen directory for test");
+
+            fs::write(&config_path, config_contents)
+                .expect("failed to write config fixture for init_node test");
+            fs::write(&fingerprint_path, format!("{fingerprint}\n"))
+                .expect("failed to write fingerprint fixture for init_node test");
+
+            Self {
+                config_path,
+                fingerprint_path,
+                fingerprint_dir,
+                original_config,
+                original_fingerprint,
+                had_fingerprint_dir,
+            }
+        }
+    }
+
+    impl Drop for NodeConfigFixture {
+        fn drop(&mut self) {
+            if let Some(bytes) = self.original_config.as_ref() {
+                let _ = fs::write(&self.config_path, bytes);
+            } else {
+                let _ = fs::remove_file(&self.config_path);
+            }
+
+            if let Some(bytes) = self.original_fingerprint.as_ref() {
+                let _ = fs::write(&self.fingerprint_path, bytes);
+            } else {
+                let _ = fs::remove_file(&self.fingerprint_path);
+            }
+
+            if !self.had_fingerprint_dir {
+                let _ = fs::remove_dir(&self.fingerprint_dir);
+            }
+        }
+    }
 }
