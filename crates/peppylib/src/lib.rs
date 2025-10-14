@@ -1,3 +1,4 @@
+pub mod checker;
 mod error;
 mod node;
 
