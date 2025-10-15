@@ -10,7 +10,7 @@ struct TestAsyncCommand {
 }
 
 impl ServeAsyncCommand for TestAsyncCommand {
-    fn run(&self) -> ServeFuture {
+    fn run(self: Box<Self>) -> ServeFuture {
         let should_succeed = self.should_succeed;
         Box::pin(async move {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -55,7 +55,7 @@ fn test_serve_command_with_graceful_shutdown() {
     }
 
     impl ServeAsyncCommand for LongRunningCommand {
-        fn run(&self) -> ServeFuture {
+        fn run(self: Box<Self>) -> ServeFuture {
             let running = self.running.clone();
             let shutdown_called = self.shutdown_called.clone();
 

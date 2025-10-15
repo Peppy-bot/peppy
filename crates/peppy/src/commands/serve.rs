@@ -21,7 +21,7 @@ pub trait ServeSyncCommand: Send + Sync {
 pub type ServeFuture = Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>;
 
 pub trait ServeAsyncCommand: Send + Sync {
-    fn run(&self) -> ServeFuture;
+    fn run(self: Box<Self>) -> ServeFuture;
 }
 
 #[derive(Default)]
@@ -42,12 +42,12 @@ impl CompositeCommand {
     }
 
     pub fn execute(self) -> Result<Vec<ServeFuture>> {
-        for command in &self.commands {
+        for command in self.commands {
             command.execute()?;
         }
 
         let mut futures: Vec<ServeFuture> = Vec::new();
-        for async_command in &self.async_commands {
+        for async_command in self.async_commands {
             futures.push(async_command.run());
         }
 

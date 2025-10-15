@@ -1,29 +1,12 @@
 use super::{ServeAsyncCommand, ServeFuture};
 use crate::Error;
-use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter, ZenohAdapter};
+use pmi::{Messenger, MessengerBackend};
 use tracing::info;
 
 impl ServeAsyncCommand for Messenger {
-    fn run(&self) -> ServeFuture {
-        // Create a new adapter instance to move into the async block
-        // Since we only have &self, we need to recreate the adapter
-        let adapter = match &self.adapter {
-            MessengerAdapter::Mock(_) => {
-                // For Mock, create a new default instance since it uses Arc for shared state
-                MessengerAdapter::Mock(MockAdapter::default())
-            }
-            MessengerAdapter::Zenoh(_) => {
-                // For Zenoh, create a new adapter with default (None) config
-                // This will use the default zenohd configuration
-                MessengerAdapter::Zenoh(
-                    ZenohAdapter::from_zenohd_config(None::<&std::path::Path>)
-                        .expect("Failed to create Zenoh adapter"),
-                )
-            }
-        };
-
+    fn run(self: Box<Self>) -> ServeFuture {
         Box::pin(async move {
-            let mut messenger = Messenger::new(adapter);
+            let mut messenger = *self;
 
             // Starts the zenoh router
             info!("Starting the messaging router...");
