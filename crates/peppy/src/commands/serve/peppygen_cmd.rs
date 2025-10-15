@@ -23,7 +23,7 @@ impl InterfacesGenerator {
 }
 
 impl ServeAsyncCommand for InterfacesGenerator {
-    fn run(&self) -> ServeFuture {
+    fn run(self: Box<Self>) -> ServeFuture {
         let mut app_events = self.events.subscribe();
         let nodes_cache_dir = self.root_dir.join(".peppy").join("nodes");
         let _interfaces = self.interfaces.clone();

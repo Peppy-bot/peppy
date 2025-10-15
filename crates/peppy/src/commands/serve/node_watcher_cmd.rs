@@ -59,9 +59,8 @@ impl NodeWatcher {
 }
 
 impl ServeAsyncCommand for NodeWatcher {
-    fn run(&self) -> ServeFuture {
-        let this = self.clone();
-        Box::pin(async move { this.watch_nodes().await })
+    fn run(self: Box<Self>) -> ServeFuture {
+        Box::pin(async move { self.watch_nodes().await })
     }
 }
 
@@ -100,7 +99,7 @@ mod tests {
         let ctx = AppContext::new(context::DEFAULT_CHANNEL_CAPACITY, temp.path());
         let mut events = ctx.subscribe();
         let watcher = NodeWatcher::new(&ctx);
-        let watcher_handle = tokio::spawn(watcher.run());
+        let watcher_handle = tokio::spawn(Box::new(watcher).run());
 
         let event = timeout(Duration::from_secs(2), events.recv())
             .await
@@ -130,7 +129,7 @@ mod tests {
         let ctx = AppContext::new(context::DEFAULT_CHANNEL_CAPACITY, temp.path());
         let mut events = ctx.subscribe();
         let watcher = NodeWatcher::new(&ctx);
-        let watcher_handle = tokio::spawn(watcher.run());
+        let watcher_handle = tokio::spawn(Box::new(watcher).run());
 
         // Consume initial state
         timeout(Duration::from_secs(2), events.recv())
