@@ -4,14 +4,14 @@ mod adapters;
 
 mod encoding;
 mod error;
-mod messaging_types;
+mod types;
 #[cfg(feature = "zenoh")]
 mod zenohd;
 
 // Exports for users of the lib
 pub use encoding::{Encoder, EncodingBackend, EncodingFormat};
 pub use error::Error as PeppyMessagingInterfaceError;
-pub use messaging_types::{
+pub use types::{
     Message, Messenger, MessengerAdapter, MessengerBackend, PublisherQoS, SubscriberQoS,
     Subscription,
 };

@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::messaging_types::{PublisherQoS, SubscriberQoS};
+use crate::types::{PublisherQoS, SubscriberQoS};
 use crate::{Message, MessengerBackend, Subscription};
 use crate::{ZenohNetProtocol, zenohd};
 use askama::Template;
@@ -27,7 +27,7 @@ pub struct ZenohClientConfig {
 pub struct ZenohAdapter {
     zenohd: Option<zenohd::ZenohdFacade>,
 
-    // TODO: client_config must turn into `session` once `start_session` is called
+    // TODO: client_config must turn into `session` once `start_session` is called, find the right design pattern
     client_config: ZenohClientConfig,
     session: Option<Arc<zenoh::Session>>,
 
@@ -35,8 +35,9 @@ pub struct ZenohAdapter {
 }
 
 impl ZenohAdapter {
-    pub fn from_zenohd_config(zenohd_config_path: impl AsRef<Path>) -> Result<Self> {
-        let facade = zenohd::ZenohdFacade::new(Some(zenohd_config_path.as_ref().to_path_buf()))?;
+    /// If `zenohd_config_path` is `None`, a default configuration file will be used or `ZENOHD_CONFIG` env var if set
+    pub fn from_zenohd_config(zenohd_config_path: Option<impl AsRef<Path>>) -> Result<Self> {
+        let facade = zenohd::ZenohdFacade::new(zenohd_config_path)?;
         // Create a client config that connects to the router
         // Extract the endpoint from the router's listen config
         let client_config = ZenohAdapter::derive_client_config_from_zenohd(&facade);

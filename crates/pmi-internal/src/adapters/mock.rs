@@ -1,7 +1,5 @@
 use super::super::error::{Error, Result};
-use super::super::messaging_types::{
-    Message, MessengerBackend, PublisherQoS, SubscriberQoS, Subscription,
-};
+use super::super::types::{Message, MessengerBackend, PublisherQoS, SubscriberQoS, Subscription};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -132,7 +130,7 @@ impl MessengerBackend for MockAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::messaging_types::{MessengerAdapter, PublisherQoS, SubscriberQoS};
+    use crate::types::{MessengerAdapter, PublisherQoS, SubscriberQoS};
     use crate::{Message, Messenger, MessengerBackend};
 
     fn create_test_messenger() -> Messenger {
