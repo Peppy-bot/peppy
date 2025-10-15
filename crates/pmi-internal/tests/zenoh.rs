@@ -35,7 +35,7 @@ mod zenoh_tests {
         );
 
         fs::write(&zenohd_config_path, config_content).unwrap();
-        let adapter = ZenohAdapter::from_zenohd_config(&zenohd_config_path).unwrap();
+        let adapter = ZenohAdapter::from_zenohd_config(Some(zenohd_config_path.clone())).unwrap();
         let messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
         (messenger, temp_dir, zenohd_config_path)
     }

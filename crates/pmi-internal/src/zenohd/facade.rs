@@ -64,7 +64,7 @@ pub struct ZenohdFacade {
 
 impl ZenohdFacade {
     /// Creates a new ZenohdFacade instance with a working directory
-    pub fn new(zenohd_config_path: Option<PathBuf>) -> Result<Self> {
+    pub fn new(zenohd_config_path: Option<impl AsRef<Path>>) -> Result<Self> {
         let zenohd_path = ZenohdFacade::get_zenohd_binary();
         let zenohd_config_path = ZenohdFacade::get_zenohd_config_path(zenohd_config_path);
         let zenoh_endpoint = ZenohdFacade::get_endpoint_from_config(&zenohd_config_path)?;
@@ -80,10 +80,10 @@ impl ZenohdFacade {
         option_env!("ZENOHD_BINARY_PATH").map(|path| path.to_string())
     }
 
-    fn get_zenohd_config_path(zenohd_config_path: Option<PathBuf>) -> PathBuf {
+    fn get_zenohd_config_path(zenohd_config_path: Option<impl AsRef<Path>>) -> PathBuf {
         match zenohd_config_path {
-            Some(cfg) => cfg,
-            None => match env::var("ZENOH_CONFIG") {
+            Some(cfg) => cfg.as_ref().to_path_buf(),
+            None => match env::var("ZENOHD_CONFIG") {
                 Ok(zenohd_config_path) => PathBuf::from(zenohd_config_path),
                 Err(_) => {
                     let config_content = Self::render_default_config();
@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn test_zenohd_facade_creation_default_config() {
-        let facade = ZenohdFacade::new(None);
+        let facade = ZenohdFacade::new(None::<&Path>);
         assert!(facade.is_ok());
     }
 
@@ -364,7 +364,7 @@ mod tests {
 
     #[test]
     fn test_stop_router_multiple_times() {
-        let mut facade = ZenohdFacade::new(None).expect("Failed to create facade");
+        let mut facade = ZenohdFacade::new(None::<&Path>).expect("Failed to create facade");
 
         // First stop should succeed (no process to stop)
         assert!(facade.stop_router().is_ok());

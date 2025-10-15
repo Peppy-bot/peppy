@@ -1,6 +1,5 @@
+use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use super::CompositeCommand;
 use super::Serve;
@@ -40,7 +39,9 @@ impl ServeCommandBuilder {
     pub fn with_messaging_router(mut self, engine: String) -> Self {
         let engine = engine.to_lowercase();
         let adapter = match engine.as_str() {
-            "zenoh" => MessengerAdapter::Zenoh(ZenohAdapter::default()),
+            "zenoh" => {
+                MessengerAdapter::Zenoh(ZenohAdapter::from_zenohd_config(None::<&Path>).unwrap())
+            }
             "mock" => MessengerAdapter::Mock(MockAdapter::default()),
             other => {
                 warn!(target: "peppy::serve", "Unsupported messaging engine '{}', using mock", other);
