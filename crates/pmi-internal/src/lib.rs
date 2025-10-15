@@ -12,12 +12,14 @@ mod zenohd;
 pub use encoding::{Encoder, EncodingBackend, EncodingFormat};
 pub use error::Error as PeppyMessagingInterfaceError;
 pub use messaging_types::{
-    Engine, Message, MessagingEngineContext, Messenger, MessengerBackend, PublisherQoS,
-    SubscriberQoS, Subscription,
+    Message, Messenger, MessengerAdapter, MessengerBackend, PublisherQoS, SubscriberQoS,
+    Subscription,
 };
+
+pub use adapters::mock::MockAdapter;
 
 // Zenoh specific exports (only when feature is enabled)
 #[cfg(feature = "zenoh")]
-pub use adapters::zenoh::ZenohClientConfigTemplate;
+pub use adapters::zenoh::{ZenohAdapter, ZenohClientConfigTemplate};
 #[cfg(feature = "zenoh")]
 pub use zenohd::facade::{ZenohNetProtocol, ZenohRouterConfigTemplate};

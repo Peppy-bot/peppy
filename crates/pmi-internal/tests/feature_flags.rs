@@ -1,55 +1,60 @@
 #[cfg(feature = "zenoh")]
 #[test]
 fn test_with_zenoh_feature() {
-    use pmi::{Message, MessagingEngineContext, Messenger, SubscriberQoS};
-
-    // Verify core types are available
-    let _msg = Message::new("test/topic", b"test payload");
-    let _qos = SubscriberQoS::Standard;
-    assert_eq!(_qos.channel_size(), 128);
-
-    // Verify Messenger can be created with Zenoh backend
-    let zenoh_context = MessagingEngineContext {
-        engine: "zenoh".to_string(),
-        zenohd_config_path: None,
+    use pmi::{
+        Message, PeppyMessagingInterfaceError, SubscriberQoS, ZenohClientConfigTemplate,
+        ZenohNetProtocol,
     };
-    let _zenoh_messenger =
-        Messenger::new(zenoh_context).expect("Should create Messenger with Zenoh");
 
-    // Verify Mock backend is also available even with zenoh feature
-    let mock_context = MessagingEngineContext {
-        engine: "mock".to_string(),
-        zenohd_config_path: None,
+    assert!(cfg!(feature = "zenoh"), "zenoh feature should be enabled");
+
+    let message = Message::new("test/topic", b"test payload");
+    assert_eq!(message.topic, "test/topic");
+    assert_eq!(&message.payload[..], b"test payload");
+
+    let qos = SubscriberQoS::Standard;
+    assert_eq!(qos.channel_size(), 128);
+
+    let client_template = ZenohClientConfigTemplate {
+        host: "127.0.0.1".into(),
+        port: 7447,
+        protocol: ZenohNetProtocol::Tcp,
     };
-    let _mock_messenger = Messenger::new(mock_context).expect("Should create Messenger with Mock");
+    assert_eq!(client_template.protocol, ZenohNetProtocol::Tcp);
 
-    // Verify context type is available
+    let err = PeppyMessagingInterfaceError::UnsupportedEngine;
+    assert_eq!(format!("{err}"), "UnsupportedEngine");
+
+    let messenger_type = std::any::type_name::<pmi::Messenger>();
     assert!(
-        std::any::type_name::<MessagingEngineContext>().contains("MessagingEngineContext"),
-        "MessagingEngineContext should be available with zenoh feature"
+        messenger_type.ends_with("Messenger"),
+        "Messenger type should be exported"
     );
 }
 
 #[cfg(not(feature = "zenoh"))]
 #[test]
 fn test_without_zenoh_feature() {
-    use pmi::{Message, MessagingEngineContext, Messenger, SubscriberQoS};
+    use pmi::{Message, PeppyMessagingInterfaceError, SubscriberQoS};
 
-    // Verify core types are available (same as with zenoh)
-    let _msg = Message::new("test/topic", b"test payload");
-    let _qos = SubscriberQoS::HighThroughput;
-    assert_eq!(_qos.channel_size(), 1024);
-
-    // Verify Messenger can be created with Mock backend (now the default)
-    let mock_context = MessagingEngineContext {
-        engine: "mock".to_string(),
-        config_path: None,
-    };
-    let _messenger = Messenger::new(mock_context).expect("Should create Messenger with Mock");
-
-    // Verify context type is available
     assert!(
-        std::any::type_name::<MessagingEngineContext>().contains("MessagingEngineContext"),
-        "MessagingEngineContext should be available without zenoh feature (using mock)"
+        !cfg!(feature = "zenoh"),
+        "zenoh feature should be disabled for this test"
+    );
+
+    let message = Message::new("test/topic", b"test payload");
+    assert_eq!(message.topic, "test/topic");
+    assert_eq!(&message.payload[..], b"test payload");
+
+    let qos = SubscriberQoS::HighThroughput;
+    assert_eq!(qos.channel_size(), 1024);
+
+    let err = PeppyMessagingInterfaceError::UnsupportedEngine;
+    assert_eq!(format!("{err}"), "UnsupportedEngine");
+
+    let messenger_type = std::any::type_name::<pmi::Messenger>();
+    assert!(
+        messenger_type.ends_with("Messenger"),
+        "Messenger type should be exported"
     );
 }

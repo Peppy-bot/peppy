@@ -1,4 +1,4 @@
-use pmi::{MessagingEngineContext, Messenger, MessengerBackend};
+use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
 
@@ -44,7 +44,8 @@ pub async fn start_messaging_router() -> Result<RouterGuard, pmi::PeppyMessaging
 
     // Always use mock engine in tests; no external binaries or configs
     let tempdir = TempDir::new().expect("failed to create tempdir for test state");
-    let mut messenger = Messenger::new(MessagingEngineContext::new("mock".into(), None))?;
+    let adapter = MockAdapter::default();
+    let mut messenger = Messenger::new(MessengerAdapter::Mock(adapter));
     messenger.start_router().await?;
     eprintln!("mock messaging router started for tests.");
 

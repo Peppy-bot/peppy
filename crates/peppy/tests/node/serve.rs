@@ -131,11 +131,13 @@ fn test_serve_command_with_graceful_shutdown() {
 
 #[test]
 fn test_messenger_mock_command_with_shutdown() {
-    use pmi::{MessagingEngineContext, Messenger};
+    use pmi::Messenger;
+    use pmi::MockAdapter;
 
     // Create a mock messenger context
-    let context = MessagingEngineContext::new("mock".to_string(), None);
-    let messenger = Messenger::new(context).expect("Should create mock messenger");
+    //let context = MessagingEngineContext::new("mock".to_string(), None);
+    let adapter = MockAdapter::default();
+    let messenger = Messenger::new(pmi::MessengerAdapter::Mock(adapter));
 
     let composite = CompositeCommand::default().add_async_command(Box::new(messenger));
 

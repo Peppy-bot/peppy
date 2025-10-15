@@ -1,12 +1,17 @@
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use super::CompositeCommand;
 use super::Serve;
 use super::node_watcher_cmd::NodeWatcher;
-use super::peppygen_cmd::InterfacesGenerator;
 use crate::{AppContext, Result};
 use config::peppy_config::{PeppyConfig, PeppyConfigParser};
-use pmi::{MessagingEngineContext, Messenger};
+use pmi::Messenger;
+use pmi::MessengerAdapter;
+use pmi::MockAdapter;
+use pmi::ZenohAdapter;
+use tracing::warn;
 
 pub struct ServeCommandBuilder {
     composite_command: CompositeCommand,
@@ -33,11 +38,17 @@ impl ServeCommandBuilder {
 
     /// The messaging router (Zenoh/MQTT etc...) is reponsible for message passing between the nodes and between the nodes and the peppy program
     pub fn with_messaging_router(mut self, engine: String) -> Self {
-        // Uses the default pubsub config or the one defined in env vars (`ZENOH_CONFIG` for zenoh)
-        let context = MessagingEngineContext::new(engine, None);
-        let messenger = Box::new(
-            Messenger::new(context).expect("Failed to create messenger with given context"),
-        );
+        let engine = engine.to_lowercase();
+        let adapter = match engine.as_str() {
+            "zenoh" => MessengerAdapter::Zenoh(ZenohAdapter::default()),
+            "mock" => MessengerAdapter::Mock(MockAdapter::default()),
+            other => {
+                warn!(target: "peppy::serve", "Unsupported messaging engine '{}', using mock", other);
+                MessengerAdapter::Mock(MockAdapter::default())
+            }
+        };
+        let messenger = Box::new(Messenger::new(adapter));
+
         self.composite_command = self.composite_command.add_async_command(messenger);
         self
     }

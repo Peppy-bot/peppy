@@ -131,13 +131,13 @@ impl MessengerBackend for MockAdapter {
 // Those tests purpose is to test the behaviour of a real messaging system and check if they map to the behaviour of the mock
 #[cfg(test)]
 mod tests {
-    use crate::messaging_types::MessagingEngineContext;
-    use crate::messaging_types::{PublisherQoS, SubscriberQoS};
+    use super::*;
+    use crate::messaging_types::{MessengerAdapter, PublisherQoS, SubscriberQoS};
     use crate::{Message, Messenger, MessengerBackend};
 
     fn create_test_messenger() -> Messenger {
-        let context = MessagingEngineContext::new("mock".to_string(), None);
-        Messenger::new(context).unwrap()
+        let adapter = MockAdapter::default();
+        Messenger::new(MessengerAdapter::Mock(adapter))
     }
 
     #[tokio::test]
