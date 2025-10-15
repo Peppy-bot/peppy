@@ -6,22 +6,23 @@ edition.workspace = true
 
 [dependencies]
 config = { path = "../config-internal" }
-askama = "0.14.0"
+askama = "0.14"
 bytes = "1"
 json5 = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_json5 = "0.2"
 tokio = { version = "1.47.0", features = ["sync", "rt"] }
 tracing = "0.1.41"
 derive_more = { version = "2", features = ["from"] }
-capnp = "0.21.4" # ROS 2 uses CDR (Common Data Representation) for message serialization/deserialization
+capnp = "0.21" # ROS 2 uses CDR (Common Data Representation) for message serialization/deserialization
 tempfile = "3"
 
 # Optional deps
-zenoh = { version = "1.5.0", optional = true }
+zenoh = { version = "1.5", optional = true }
 
 [dev-dependencies]
-tokio = { version = "1.47.0", features = ["sync", "rt", "macros", "time", "test-util"] }
+tokio = { version = "1.47", features = ["sync", "rt", "macros", "time", "test-util"] }
 serde_json5 = "0.2"
 
 [features]

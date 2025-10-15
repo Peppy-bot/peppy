@@ -1,9 +1,10 @@
 #[cfg(feature = "zenoh")]
 mod zenoh_tests {
-    use std::{fs, net::TcpListener};
-
-    use pmi::MessagingEngineContext;
-    use pmi::{Message, Messenger, MessengerBackend, PublisherQoS, SubscriberQoS};
+    use pmi::{
+        Message, Messenger, MessengerAdapter, MessengerBackend, PublisherQoS, SubscriberQoS,
+        ZenohAdapter,
+    };
+    use std::{fs, net::TcpListener, path::PathBuf};
 
     fn pick_free_tcp_port() -> Option<u16> {
         (0..10).find_map(|_| {
@@ -17,7 +18,7 @@ mod zenoh_tests {
     }
 
     /// Helper function to create a configured messenger with a unique port
-    async fn create_test_messenger() -> (Messenger, tempfile::TempDir) {
+    async fn create_test_messenger() -> (Messenger, tempfile::TempDir, PathBuf) {
         let port = pick_free_tcp_port().unwrap();
 
         let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
@@ -34,22 +35,17 @@ mod zenoh_tests {
         );
 
         fs::write(&zenohd_config_path, config_content).unwrap();
-        let context = MessagingEngineContext::new("zenoh".to_string(), Some(zenohd_config_path));
-        let messenger = Messenger::new(context).unwrap();
-        (messenger, temp_dir)
+        let adapter = ZenohAdapter::from_zenohd_config(&zenohd_config_path).unwrap();
+        let messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
+        (messenger, temp_dir, zenohd_config_path)
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_session_fails_with_wrong_router_port() {
-        let (mut messenger, _temp_dir) = create_test_messenger().await;
+        let (mut messenger, _temp_dir, zenohd_config_path) = create_test_messenger().await;
 
-        let config_path = messenger
-            .context
-            .zenohd_config_path
-            .clone()
-            .expect("Zenoh config path should be present");
-
-        let config_str = fs::read_to_string(&config_path).expect("Failed to read config file");
+        let config_str =
+            fs::read_to_string(&zenohd_config_path).expect("Failed to read config file");
         let parsed_config: serde_json::Value =
             serde_json5::from_str(&config_str).expect("Failed to parse config");
         let original_endpoint = parsed_config["listen"]["endpoints"]["router"][0]
@@ -80,7 +76,7 @@ mod zenoh_tests {
                     }}
                 }}"#
         );
-        fs::write(&config_path, updated_config).expect("Failed to overwrite config");
+        fs::write(&zenohd_config_path, updated_config).expect("Failed to overwrite config");
 
         messenger
             .start_router()
@@ -124,7 +120,7 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_publish_before_start_session_fails() {
-        let (mut messenger, _temp_dir) = create_test_messenger().await;
+        let (mut messenger, _temp_dir, _) = create_test_messenger().await;
 
         // Start the router but not the session
         messenger
@@ -146,7 +142,7 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_basic_publish_subscribe() {
-        let (mut messenger, _temp_dir) = create_test_messenger().await;
+        let (mut messenger, _temp_dir, _) = create_test_messenger().await;
 
         messenger
             .start_router()
@@ -181,7 +177,7 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_multiple_topics() {
-        let (mut messenger, _temp_dir) = create_test_messenger().await;
+        let (mut messenger, _temp_dir, _) = create_test_messenger().await;
 
         messenger
             .start_router()
@@ -230,7 +226,7 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_multiple_messages_same_topic() {
-        let (mut messenger, _temp_dir) = create_test_messenger().await;
+        let (mut messenger, _temp_dir, _) = create_test_messenger().await;
 
         messenger
             .start_router()
@@ -280,7 +276,7 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_late_subscription() {
-        let (mut messenger, _temp_dir) = create_test_messenger().await;
+        let (mut messenger, _temp_dir, _) = create_test_messenger().await;
 
         messenger
             .start_router()

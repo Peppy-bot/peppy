@@ -1,28 +1,10 @@
-use std::fmt;
 use std::future::Future;
-use std::path::PathBuf;
 
 use super::adapters::mock::MockAdapter;
-use super::error::{Error, Result};
+use super::error::Result;
 
 #[cfg(feature = "zenoh")]
 use super::adapters::zenoh::ZenohAdapter;
-
-#[derive(Clone)]
-pub struct MessagingEngineContext {
-    pub engine: String,
-    // Specific to Zenoh
-    pub zenohd_config_path: Option<PathBuf>,
-}
-
-impl MessagingEngineContext {
-    pub fn new(engine: String, zenohd_config_path: Option<PathBuf>) -> Self {
-        Self {
-            engine,
-            zenohd_config_path,
-        }
-    }
-}
 
 /// QoS settings for publishing messages
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,62 +126,23 @@ impl Message {
     }
 }
 
-/// Lists the different messaging backends
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Engine {
+/// Dispatches the Messenger calls to the appropriate backend without using the heap
+#[allow(clippy::large_enum_variant)]
+pub enum MessengerAdapter {
     #[cfg(feature = "zenoh")]
-    Zenoh,
-    Mock,
-}
-
-impl fmt::Display for Engine {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            #[cfg(feature = "zenoh")]
-            Engine::Zenoh => write!(f, "zenoh"),
-            Engine::Mock => write!(f, "mock"),
-        }
-    }
-}
-
-impl Engine {
-    pub fn from_context(context: &MessagingEngineContext) -> Result<Self> {
-        match context.engine.as_str() {
-            #[cfg(feature = "zenoh")]
-            "zenoh" => Ok(Engine::Zenoh),
-            "mock" => Ok(Engine::Mock),
-            _ => Err(Error::UnsupportedEngine),
-        }
-    }
+    Zenoh(ZenohAdapter),
+    Mock(MockAdapter),
 }
 
 /// Main messaging implementation
 pub struct Messenger {
-    adapter: MessengerAdapter,
-    pub context: MessagingEngineContext,
+    pub adapter: MessengerAdapter,
 }
 
 impl Messenger {
-    pub fn new(context: MessagingEngineContext) -> Result<Self> {
-        let engine = Engine::from_context(&context)?;
-        let adapter = match engine {
-            #[cfg(feature = "zenoh")]
-            Engine::Zenoh => {
-                MessengerAdapter::Zenoh(ZenohAdapter::new(context.zenohd_config_path.clone())?)
-            }
-            Engine::Mock => MessengerAdapter::Mock(MockAdapter::default()),
-        };
-        Ok(Self { adapter, context })
+    pub fn new(adapter: MessengerAdapter) -> Self {
+        Self { adapter }
     }
-}
-
-/// Dispatches the Messenger calls to the appropriate backend without using the heap
-#[allow(clippy::large_enum_variant)]
-enum MessengerAdapter {
-    #[cfg(feature = "zenoh")]
-    Zenoh(ZenohAdapter),
-    Mock(MockAdapter),
 }
 
 macro_rules! dispatch {
@@ -235,35 +178,5 @@ impl MessengerBackend for Messenger {
 
     async fn stop_router(&mut self) -> Result<()> {
         dispatch!(&mut self.adapter, stop_router)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_mock_engine() {
-        // Test that mock engine is allowed in test mode
-        let context = MessagingEngineContext::new("mock".to_string(), None);
-        let result = Engine::from_context(&context);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Engine::Mock);
-
-        // Test that any other engine is rejected
-        let context = MessagingEngineContext::new("rabbitmq".to_string(), None);
-        let result = Engine::from_context(&context);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::UnsupportedEngine));
-    }
-
-    #[cfg(feature = "zenoh")]
-    #[test]
-    fn test_zenoh_engine() {
-        // Test that zenoh engine is accepted with config
-        let context = MessagingEngineContext::new("zenoh".to_string(), None);
-        let result = Engine::from_context(&context);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Engine::Zenoh {});
     }
 }
