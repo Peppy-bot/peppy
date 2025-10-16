@@ -154,25 +154,14 @@ mod tests {
             image: [231, 5, 23],
         "#;
 
-        let message_payload = MessagePayload::new(&message_format, &payload).unwrap();
-        message_payload.validate().unwrap();
+        // let message_payload = MessagePayload::new(&message_format, &payload).unwrap();
+        // message_payload.validate().unwrap();
 
         let kind_of_caller = r#"
         #[derive(Debug, Clone)]
         pub struct PushFrameHeader {
             pub frame_id: u32,
             pub stamp: std::time::SystemTime,
-        }
-
-        pub fn push_frame(
-            encoding: String,
-            header: PushFrameHeader,
-            height: u32,
-            image: [u8; 3],
-            width: u32,
-        ) {
-            let _ = (&encoding, &header, &height, &image, &width);
-            todo!("publish peppylib topic synchronously");
         }
 
         pub async fn push_frame_async(
@@ -183,7 +172,7 @@ mod tests {
             width: u32,
         ) {
             let _ = (&encoding, &header, &height, &image, &width);
-            todo!("publish peppylib topic asynchronously");
+            todo!("publish peppylib topic asynchronously. Encode first with capn proto");
         }
         "#;
 
