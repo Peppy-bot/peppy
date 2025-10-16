@@ -1,6 +1,35 @@
+use crate::error::{Error, Result};
+use bytes::Bytes;
+use config::node::{MessageFormat, QoSProfile, SchemaType, TypeToken};
 use pmi::{Message, Messenger, MessengerAdapter, MessengerBackend, PublisherQoS, ZenohAdapter};
+use serde_json::{self, Value as JsonValue};
 
-struct PeppyMessenger {
+pub struct MessagePayload {
+    message_format: MessageFormat,
+    payload: Bytes,
+}
+
+impl MessagePayload {
+    // TODO: Maybe the payload should be a protobuf format or something?
+    // TODO: Seems like a function like `pub fn push_frame(encoding: String, header: PushFrameHeader, height: u32, image: [u8; 3], width: u32,)`
+    // should be encoded by the generator to a ProtoBuf format or something and then passed as a payload here
+    pub fn new(message_format: &str, payload: Bytes) -> Result<Self> {
+        let message_format: MessageFormat = serde_json5::from_str(message_format)?;
+        Ok(Self {
+            message_format,
+            payload: payload,
+        })
+    }
+
+    /// Validates the payload based on the `message_format`. Do not use on every message as it would
+    /// increase latency
+    pub fn validate(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// This struct represent one deployment instance messaging
+pub struct PeppyMessenger {
     messenger: Messenger,
 }
 
@@ -13,25 +42,46 @@ impl PeppyMessenger {
             .start_session()
             .await
             .expect("Failed to start session");
+
         Self { messenger }
     }
 
-    pub fn send_topic_message(&mut self, topic_name: &str, namespace: &str) {
-        let msg = Message::new("test/topic", b"Hello World");
-        self.messenger.publish(msg, PublisherQoS::Standard);
+    fn map_node_qos_to_publisher_qos(qos: QoSProfile) -> PublisherQoS {
+        match qos {
+            QoSProfile::Standard => PublisherQoS::Standard,
+            QoSProfile::Reliable => PublisherQoS::Important,
+            QoSProfile::SensorData => PublisherQoS::BestEffort,
+            QoSProfile::Critical => PublisherQoS::Critical,
+        }
+    }
+
+    pub async fn send_topic_message(
+        &mut self,
+        node_name: &str,
+        namespace: &str,
+        topic_name: &str,
+        qos: QoSProfile,
+        payload: Bytes,
+    ) -> Result<()> {
+        let full_ns = format!("{}/{}/{}", node_name, namespace, topic_name);
+        let msg = Message::new(&full_ns, &payload);
+
+        let publisher_qos = PeppyMessenger::map_node_qos_to_publisher_qos(qos);
+
+        self.messenger
+            .publish(msg, publisher_qos)
+            .await
+            .map_err(Error::PeppyMessagingInterface)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use pmi::{
-        Message, Messenger, MessengerAdapter, MessengerBackend, PublisherQoS, SubscriberQoS,
-        ZenohAdapter,
-    };
-    use std::{fs, net::TcpListener, path::Path};
-    use tempfile::TempDir;
+    use config::node::{MessageFormat, QoSProfile};
+    use pmi::{Messenger, MessengerAdapter, MessengerBackend, ZenohAdapter};
+    use std::{fs, net::TcpListener};
 
-    use crate::messaging::PeppyMessenger;
+    use crate::messaging::{MessagePayload, PeppyMessenger};
 
     fn pick_free_tcp_port() -> Option<u16> {
         (0..10).find_map(|_| {
@@ -53,12 +103,12 @@ mod tests {
 
         let config_content = format!(
             r#"{{
-                    "listen": {{
-                        "endpoints": {{
-                            "router": ["tcp/127.0.0.1:{port}"]
-                        }}
-                    }}
-                }}"#
+                  "listen": {{
+                  "endpoints": {{
+                      "router": ["tcp/127.0.0.1:{port}"]
+                  }}
+                }}
+            }}"#
         );
 
         fs::write(&zenohd_config_path, config_content).unwrap();
@@ -74,8 +124,74 @@ mod tests {
     async fn test_basic_publish_subscribe() {
         start_zenohd_process().await;
 
+        let ns = "/camera/rear";
+        let node_name = "uvc_camera";
+        let topic_name = "video_frame";
+        let qos = QoSProfile::SensorData;
+
+        let message_format = r#"
+            header: {
+              stamp: "time",
+              frame_id: "u32",
+            },
+            encoding: "string", // "rgb8", "bgr8", "yuyv", "mjpeg"
+            width: "u32",
+            height: "u32",
+            image: {
+              type: "array",
+              items: "u8",
+              length: 3
+            },
+        "#;
+        let payload = r#"
+            header: {
+              stamp: "1760596713",
+              frame_id: 1,
+            },
+            encoding: "yuyv",
+            width: 1920,
+            height: 1080,
+            image: [231, 5, 23],
+        "#;
+
+        let message_payload = MessagePayload::new(&message_format, &payload).unwrap();
+        message_payload.validate().unwrap();
+
+        let kind_of_caller = r#"
+        #[derive(Debug, Clone)]
+        pub struct PushFrameHeader {
+            pub frame_id: u32,
+            pub stamp: std::time::SystemTime,
+        }
+
+        pub fn push_frame(
+            encoding: String,
+            header: PushFrameHeader,
+            height: u32,
+            image: [u8; 3],
+            width: u32,
+        ) {
+            let _ = (&encoding, &header, &height, &image, &width);
+            todo!("publish peppylib topic synchronously");
+        }
+
+        pub async fn push_frame_async(
+            encoding: String,
+            header: PushFrameHeader,
+            height: u32,
+            image: [u8; 3],
+            width: u32,
+        ) {
+            let _ = (&encoding, &header, &height, &image, &width);
+            todo!("publish peppylib topic asynchronously");
+        }
+        "#;
+
         let sender_messenger = PeppyMessenger::new().await;
         let receiver_messenger = PeppyMessenger::new().await;
+
+        //sender_messenger.send_topic_message(node_name, ns, topic_name, qos, message_payload);
+
         // TODO: Use PeppyMessage
         // messenger
         //     .start_session()

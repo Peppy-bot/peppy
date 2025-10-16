@@ -12,6 +12,10 @@ pub enum Error {
     #[error(transparent)]
     Config(#[from] config::ConfigError),
 
+    // -- serde
+    #[error(transparent)]
+    SerdeJson5(#[from] serde_json5::Error),
+
     // -- pmi-internal
     #[error(transparent)]
     PeppyMessagingInterface(#[from] pmi::PeppyMessagingInterfaceError),
