@@ -342,6 +342,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "capnpc"
+version = "0.21.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6da96dcb0a0e0c526daf42bac55e1550f18ad973df9ef9ba75204f332c80ad16"
+dependencies = [
+ "capnp",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -472,6 +481,8 @@ name = "config"
 version = "0.0.1"
 dependencies = [
  "askama",
+ "capnp",
+ "capnpc",
  "notify",
  "notify-debouncer-mini",
  "serde",
