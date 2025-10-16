@@ -23,7 +23,7 @@ pub enum Error {
     MatchingListenerError(String),
     UnsupportedEngine,
     ZenohdError(String),
-    RouterConfigurationNotFound,
+    ZenohDConfigurationNotFound,
 
     // Encoding
     UnsupportedEncoding(String),

@@ -42,7 +42,6 @@
     exposes: {
       topics: [
         {
-          // One instance is going to emit on ns /camera/front/stream and another on /camera/rear/stream
           name: "stream",
           qos_profile: "sensor_data",
           message_format: {

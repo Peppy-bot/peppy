@@ -168,6 +168,7 @@ impl ZenohAdapter {
 
 impl Default for ZenohAdapter {
     /// Uses the default pubsub config or the one defined in `ZENOH_CONFIG`
+    /// The `default()` function does not build for zenohd
     fn default() -> Self {
         if let Ok(config_path) = env::var("ZENOH_CONFIG") {
             let config_path = PathBuf::from(config_path);
@@ -176,7 +177,11 @@ impl Default for ZenohAdapter {
             }
         }
 
-        ZenohAdapter::from_host_port(ZenohNetProtocol::default(), "127.0.0.1", 7447)
+        ZenohAdapter::from_host_port(
+            ZenohNetProtocol::default(),
+            "127.0.0.1",
+            config::consts::DEFAULT_ZENOH_PORT,
+        )
     }
 }
 
@@ -319,7 +324,7 @@ impl MessengerBackend for ZenohAdapter {
         let zenohd = self
             .zenohd
             .as_mut()
-            .ok_or(Error::RouterConfigurationNotFound)?;
+            .ok_or(Error::ZenohDConfigurationNotFound)?;
         zenohd.start_router()?;
         Ok(())
     }
@@ -328,7 +333,7 @@ impl MessengerBackend for ZenohAdapter {
         let zenohd = self
             .zenohd
             .as_mut()
-            .ok_or(Error::RouterConfigurationNotFound)?;
+            .ok_or(Error::ZenohDConfigurationNotFound)?;
         zenohd.stop_router()?;
         Ok(())
     }

@@ -67,7 +67,7 @@ fn build_messenger(
         "zenoh" => {
             let zenoh_config_path = std::env::var_os("ZENOH_CONFIG")
                 .map(PathBuf::from)
-                .ok_or(pmi::PeppyMessagingInterfaceError::RouterConfigurationNotFound)?;
+                .ok_or(pmi::PeppyMessagingInterfaceError::ZenohDConfigurationNotFound)?;
             let adapter = ZenohAdapter::from_zenohd_config(Some(&zenoh_config_path))?;
             Ok(Messenger::new(MessengerAdapter::Zenoh(adapter)))
         }
