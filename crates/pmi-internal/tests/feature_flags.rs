@@ -17,7 +17,7 @@ fn test_with_zenoh_feature() {
 
     let client_template = ZenohClientConfigTemplate {
         host: "127.0.0.1".into(),
-        port: 7447,
+        port: config::consts::DEFAULT_ZENOH_PORT,
         protocol: ZenohNetProtocol::Tcp,
     };
     assert_eq!(client_template.protocol, ZenohNetProtocol::Tcp);

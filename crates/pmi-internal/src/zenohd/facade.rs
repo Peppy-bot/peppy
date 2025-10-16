@@ -40,7 +40,7 @@ impl Default for ZenohRouterConfigTemplate {
     fn default() -> Self {
         Self {
             host: "0.0.0.0".to_string(),
-            port: 7447,
+            port: config::consts::DEFAULT_ZENOH_PORT,
             protocol: ZenohNetProtocol::default(),
         }
     }
@@ -264,7 +264,7 @@ mod tests {
 
         // Store the expected host and port in separate variables
         let expected_host = "127.0.0.1";
-        let expected_port = 7447;
+        let expected_port = config::consts::DEFAULT_ZENOH_PORT;
         let expected_protocol = "tcp";
 
         // Write config directly in the test, inspired by the template

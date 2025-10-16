@@ -20,9 +20,10 @@
         path: "uvc_camera"
       },
       tag: "0.1.0", // In that example the tag is a git tag
+      // One instance is going to emit on ns /camera/front/stream and another on /camera/rear/stream
       instances: [
         {
-          namespace: "/camera/right",
+          namespace: "/camera/front",
           parameters: {
             device: {
               physical: "/dev/video_right",
@@ -40,7 +41,7 @@
           }
         },
         {
-          namespace: "/camera/left",
+          namespace: "/camera/rear",
           parameters: {
             device: {
               physical: "/dev/video_left",
