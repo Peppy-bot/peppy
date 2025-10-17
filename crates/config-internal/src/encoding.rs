@@ -187,9 +187,9 @@ impl CapnpSchemaGenerator {
                     nested: std::mem::take(&mut item_resolution.nested),
                 }
             }
-            SchemaType::Object(map) => {
+            SchemaType::Object(object) => {
                 let struct_name = self.nested_struct_name(parent_struct, field_name);
-                let nested = self.render_struct(&struct_name, map, depth);
+                let nested = self.render_struct(&struct_name, &object.fields, depth);
 
                 TypeResolution {
                     type_name: struct_name,
@@ -316,9 +316,9 @@ fn compute_schema_id(fields: &std::collections::BTreeMap<String, SchemaType>) ->
                     hash = hash_usize(hash, len, prime);
                 }
             }
-            SchemaType::Object(map) => {
+            SchemaType::Object(object) => {
                 hash = update(hash, b"object", prime);
-                hash = hash_fields(hash, map, prime);
+                hash = hash_fields(hash, &object.fields, prime);
             }
         }
         hash

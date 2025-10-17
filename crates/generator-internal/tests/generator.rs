@@ -63,6 +63,7 @@ fn generate_interfaces_code_rust_success() {
                     qos_profile: "sensor_data",
                     message_format: {
                         header: {
+                            type: "object",
                             stamp: "time",
                             frame_id: "u32",
                         },
@@ -110,6 +111,7 @@ fn generate_interfaces_code_rust_missing_topic_format() {
                     qos_profile: "sensor_data",
                     message_format: {
                         header: {
+                            type: "object",
                             stamp: "time",
                             frame_id: "u32",
                         },
