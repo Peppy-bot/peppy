@@ -202,7 +202,7 @@ pub enum ArrayKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ObjectSchema {
-    #[serde(rename = "type", default = "default_object_kind")]
+    #[serde(rename = "type")]
     pub kind: ObjectKind,
     #[serde(default, flatten)]
     pub fields: std::collections::BTreeMap<String, SchemaType>,
@@ -212,10 +212,6 @@ pub struct ObjectSchema {
 #[serde(rename_all = "lowercase")]
 pub enum ObjectKind {
     Object,
-}
-
-fn default_object_kind() -> ObjectKind {
-    ObjectKind::Object
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -572,7 +568,7 @@ mod tests {
                 assert_eq!(array.length, Some(3));
             }
             _ => panic!("image should be an array"),
-        }
+    }
 
         // Round-trip: ensure tokens serialize back to canonical strings
         let out = serde_json5::to_string(&mf).unwrap();
@@ -581,5 +577,25 @@ mod tests {
         assert!(out.contains("\"time\""));
         assert!(out.contains("\"string\""));
         assert!(out.contains("\"type\":\"array\""));
+    }
+
+    #[test]
+    fn object_schema_requires_type_field() {
+        let json5 = r#"{
+            header: { stamp: "time", frame_id: "u32" }
+        }"#;
+
+        let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
+        assert!(parsed.is_err(), "object without type should fail parsing");
+    }
+
+    #[test]
+    fn array_schema_requires_type_field() {
+        let json5 = r#"{
+            image: { items: "u8", length: 3 }
+        }"#;
+
+        let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
+        assert!(parsed.is_err(), "array without type should fail parsing");
     }
 }
