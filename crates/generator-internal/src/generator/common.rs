@@ -1,3 +1,5 @@
+mod encoding;
+
 use crate::{
     error::{Error, Result},
     generator::types::{InterfaceArtifact, InterfaceKind},

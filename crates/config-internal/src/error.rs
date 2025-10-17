@@ -59,6 +59,8 @@ pub enum Error {
     // -- general
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error("Capnp error: {0}")]
+    Capnp(#[from] capnp::Error),
 
     // -- Parsing error
     #[error(transparent)]
@@ -77,4 +79,6 @@ pub enum Error {
     // -- Askama
     #[error("Askama error: {0}")]
     AskamaError(String),
+    #[error("Encoding error: {0}")]
+    Encoding(String),
 }

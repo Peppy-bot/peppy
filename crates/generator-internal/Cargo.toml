@@ -15,6 +15,7 @@ thiserror = "2.0"
 askama = "0.14.0"
 toml = "0.9"
 sha2 = "0.10"
+capnp = "0.21.6"
 
 [dev-dependencies]
 serde_json5 = "0.2.1"
