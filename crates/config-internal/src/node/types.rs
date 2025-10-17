@@ -1,7 +1,7 @@
 use crate::{common::NodeParameters, config::SchemaVersion, error::ParsingError};
 use serde::{
     Deserialize, Serialize,
-    de::{self, Deserializer},
+    de::{self, Deserializer, MapAccess, Visitor},
 };
 use std::{
     convert::TryFrom,
@@ -189,6 +189,7 @@ pub enum SchemaType {
 pub struct ArraySchema {
     #[serde(rename = "type")]
     pub kind: ArrayKind,
+    #[serde(deserialize_with = "deserialize_array_items")]
     pub items: Box<SchemaType>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub length: Option<usize>,
@@ -200,7 +201,7 @@ pub enum ArrayKind {
     Array,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ObjectSchema {
     #[serde(rename = "type")]
     pub kind: ObjectKind,
@@ -212,6 +213,77 @@ pub struct ObjectSchema {
 #[serde(rename_all = "lowercase")]
 pub enum ObjectKind {
     Object,
+}
+
+fn deserialize_array_items<'de, D>(deserializer: D) -> Result<Box<SchemaType>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let schema = SchemaType::deserialize(deserializer)?;
+    match schema {
+        SchemaType::Type(_) => Ok(Box::new(schema)),
+        SchemaType::Array(_) | SchemaType::Object(_) => Err(de::Error::custom(
+            "nested arrays or objects are not supported inside array schemas",
+        )),
+    }
+}
+
+impl<'de> Deserialize<'de> for ObjectSchema {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(ObjectSchemaVisitor)
+    }
+}
+
+struct ObjectSchemaVisitor;
+
+impl<'de> Visitor<'de> for ObjectSchemaVisitor {
+    type Value = ObjectSchema;
+
+    fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an object schema definition with a type and primitive fields")
+    }
+
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'de>,
+    {
+        let mut kind: Option<ObjectKind> = None;
+        let mut fields = std::collections::BTreeMap::<String, SchemaType>::new();
+
+        while let Some(key) = map.next_key::<String>()? {
+            if key == "type" {
+                if kind.is_some() {
+                    return Err(de::Error::duplicate_field("type"));
+                }
+                let value: ObjectKind = map.next_value()?;
+                kind = Some(value);
+            } else {
+                let value: SchemaType = map.next_value()?;
+                match value {
+                    SchemaType::Type(_) => {
+                        if fields.insert(key.clone(), value).is_some() {
+                            return Err(de::Error::custom(format!(
+                                "duplicate object field `{}`",
+                                key
+                            )));
+                        }
+                    }
+                    SchemaType::Array(_) | SchemaType::Object(_) => {
+                        return Err(de::Error::custom(format!(
+                            "nested arrays or objects are not supported for field `{}`",
+                            key
+                        )));
+                    }
+                }
+            }
+        }
+
+        let kind = kind.ok_or_else(|| de::Error::missing_field("type"))?;
+        Ok(ObjectSchema { kind, fields })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -597,5 +669,51 @@ mod tests {
 
         let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
         assert!(parsed.is_err(), "array without type should fail parsing");
+    }
+
+    #[test]
+    fn object_schema_rejects_nested_array() {
+        let json5 = r#"{
+            header: {
+                type: "object",
+                nested: { type: "array", items: "u8" }
+            }
+        }"#;
+
+        let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
+        assert!(parsed.is_err(), "object fields cannot contain arrays");
+    }
+
+    #[test]
+    fn object_schema_rejects_nested_object() {
+        let json5 = r#"{
+            header: {
+                type: "object",
+                nested: { type: "object", field: "u8" }
+            }
+        }"#;
+
+        let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
+        assert!(parsed.is_err(), "object fields cannot contain objects");
+    }
+
+    #[test]
+    fn array_schema_rejects_nested_object() {
+        let json5 = r#"{
+            image: { type: "array", items: { type: "object", field: "u8" } }
+        }"#;
+
+        let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
+        assert!(parsed.is_err(), "array items cannot contain objects");
+    }
+
+    #[test]
+    fn array_schema_rejects_nested_array() {
+        let json5 = r#"{
+            image: { type: "array", items: { type: "array", items: "u8" } }
+        }"#;
+
+        let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
+        assert!(parsed.is_err(), "array items cannot contain arrays");
     }
 }
