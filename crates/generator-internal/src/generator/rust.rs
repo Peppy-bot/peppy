@@ -612,7 +612,7 @@ fn rust_type_from_schema(
                 quote!(Vec<#element_ty>)
             }
         }
-        SchemaType::Object(map) => {
+        SchemaType::Object(object) => {
             let struct_name = if type_hint.is_empty() {
                 "GeneratedType".to_string()
             } else {
@@ -623,7 +623,7 @@ fn rust_type_from_schema(
             let return_ident = struct_ident.clone();
 
             let mut fields = Vec::new();
-            for (index, (field_name, field_schema)) in map.iter().enumerate() {
+            for (index, (field_name, field_schema)) in object.fields.iter().enumerate() {
                 let field_ident = sanitized_ident(field_name, "field", index);
                 let nested_hint = format!("{struct_name}{}", to_camel_case(field_name));
                 let field_ty = rust_type_from_schema(field_schema, context, &nested_hint);

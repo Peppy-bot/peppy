@@ -181,7 +181,7 @@ pub struct MessageFormat(pub std::collections::BTreeMap<String, SchemaType>);
 pub enum SchemaType {
     Type(TypeToken),
     Array(ArraySchema),
-    Object(std::collections::BTreeMap<String, SchemaType>),
+    Object(ObjectSchema),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -198,6 +198,24 @@ pub struct ArraySchema {
 #[serde(rename_all = "lowercase")]
 pub enum ArrayKind {
     Array,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ObjectSchema {
+    #[serde(rename = "type", default = "default_object_kind")]
+    pub kind: ObjectKind,
+    #[serde(default, flatten)]
+    pub fields: std::collections::BTreeMap<String, SchemaType>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ObjectKind {
+    Object,
+}
+
+fn default_object_kind() -> ObjectKind {
+    ObjectKind::Object
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -505,7 +523,7 @@ mod tests {
     fn type_tokens_in_message_format() {
         // A snippet similar to the camera stream message_format
         let json5 = r#"{
-            header: { stamp: "time", frame_id: "u32" },
+            header: { type: "object", stamp: "time", frame_id: "u32" },
             encoding: "string",
             width: "u32",
             height: "u32",
@@ -516,7 +534,9 @@ mod tests {
 
         // header.stamp
         match mf.0.get("header").unwrap() {
-            SchemaType::Object(map) => {
+            SchemaType::Object(object) => {
+                assert_eq!(object.kind, ObjectKind::Object);
+                let map = &object.fields;
                 assert!(matches!(
                     map.get("stamp"),
                     Some(SchemaType::Type(TypeToken::Time))

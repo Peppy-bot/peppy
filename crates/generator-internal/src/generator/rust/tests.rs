@@ -35,18 +35,19 @@ const EXPOSED_TOPIC_EXAMPLE: &str = r#"
             name: "push_frame",
             qos_profile: "sensor_data",
             message_format: {
-                header: {
-                    stamp: "time",
-                    frame_id: "u32"
-                },
-                encoding: "string",
-                width: "u32",
-                height: "u32",
-                image: {
-                    type: "array",
-                    items: "u8",
-                    length: 3
-                }
+              header: {
+                type: "object",
+                stamp: "time",
+                frame_id: "u32"
+              },
+            encoding: "string",
+              width: "u32",
+              height: "u32",
+              image: {
+                type: "array",
+                items: "u8",
+                length: 3
+              }
             }
         }
     "#;
@@ -98,6 +99,7 @@ const SUBSCRIBED_TOPIC_EXAMPLE: &str = r#"
 const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
         {
             header: {
+                type: "object",
                 stamp: "time",
                 frame_id: "u32"
             },
@@ -217,6 +219,51 @@ fn single_artifact(artifacts: Vec<String>) -> String {
         artifacts.len()
     );
     artifacts.into_iter().next().expect("artifact is present")
+}
+
+#[test]
+pub fn extract_field_types_from_generated_rust() {
+    // TODO: Change the return type of this function to return a HashMap of <field_name, rust_type>
+    // TODO: The types below are turned into Rust types with the help of the capnp lib
+    // The var below contains an example of the goal of this function:
+    let _kind_of_caller = r#"
+        #[derive(Debug, Clone)]
+        pub struct PushFrameHeader {
+            pub frame_id: u32,
+            pub stamp: std::time::SystemTime,
+        }
+
+        // The type of those parameters has been extracted from `schema_file`
+        pub async fn push_frame_async(
+            encoding: String,
+            header: PushFrameHeader, // Header is a type present in the `schema_file` rust module
+            height: u32,
+            width: u32,
+            image: [u8; 3], // This is an example of a type that will be "lost" with a capnp schema file as capnp turns this array into a `Data` type without a fixed lenght
+        ) {
+            // Create a message builder
+            let mut message = capnp::message::Builder::new_default();
+            let mut img_msg = message.init_root::<image_message::Builder>();
+
+            // Set some fields
+            img_msg.set_width(width);
+            img_msg.set_height(height);
+            img_msg.set_encoding(encoding);
+
+            // Populate the header struct to ensure nested structs can be set
+            let mut header = img_msg.reborrow().init_header();
+            header.set_frame_id(header.frame_id);
+            let mut stamp = header.reborrow().init_stamp();
+            stamp.set_sec(header.stamp); // Somehow set the time stamp
+
+            let reader = message.into_reader();
+            let mut buf = Vec::new();
+            capnp::serialize::write_message(&mut buf, &reader)?;
+
+            let bytes = to_bytes(message)?;
+            transport.send(&bytes).await?;
+        }
+        "#;
 }
 
 /// Generates the peppygen lib and runs the tests inside of it, including clippy
@@ -411,6 +458,7 @@ fn subscribed_topic_returns_arguments() {
     let format = r#"
         {
             header: {
+                type: "object",
                 stamp: "time",
                 frame_id: "u32"
             },
@@ -689,6 +737,7 @@ fn create_lib_with_exposed_double_topic_artifact() {
             qos_profile: "sensor_data",
             message_format: {
                 header: {
+                  type: "object",
                   stamp: "time",
                   frame_id: "u32",
                 },

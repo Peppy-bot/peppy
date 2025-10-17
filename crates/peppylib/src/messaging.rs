@@ -131,6 +131,7 @@ mod tests {
 
         let message_format = r#"
             header: {
+              type: "object",
               stamp: "time",
               frame_id: "u32",
             },
@@ -145,6 +146,7 @@ mod tests {
         "#;
         let payload = r#"
             header: {
+              type: "object",
               stamp: "1760596713",
               frame_id: 1,
             },
