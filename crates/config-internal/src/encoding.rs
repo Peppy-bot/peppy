@@ -1,38 +1,46 @@
 #[cfg(test)]
 mod frame_capnp;
 
-use std::fmt::Write;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
-use crate::node::{MessageFormat, SchemaType, TypeToken};
+use crate::error::{Error, Result};
+use capnp::message::ReaderOptions;
+use capnp::schema_capnp::{field, node, type_};
+use capnp::serialize;
+use capnpc::codegen::GeneratorContext;
+use capnpc::codegen_types::{Leaf, RustTypeInfo};
+use tempfile::tempdir;
+
+use crate::node::{ArraySchema, MessageFormat, SchemaType, TypeToken};
+
+fn bundled_capnp_executable() -> Result<PathBuf> {
+    let binary_name = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => "capnp_linux_x86_64",
+        ("macos", "aarch64") => "capnp_macos_aarch64",
+        (os, arch) => {
+            return Err(Error::Encoding(format!(
+                "unsupported platform: {os}-{arch}"
+            )));
+        }
+    };
+
+    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tools")
+        .join(binary_name))
+}
 
 /// The output_dir should point to the `src` of a Rust crate. A new `capnp` module will be
 /// created at the root of this directory with all the `capnp` files.
-pub fn compile_capnp(capnp_files: &[impl AsRef<Path>], output_dir: impl AsRef<Path>) {
+pub fn compile_capnp(capnp_files: &[impl AsRef<Path>], output_dir: impl AsRef<Path>) -> Result<()> {
     let output_dir = output_dir.as_ref().to_path_buf();
 
     // Create capnp subdirectory
     let capnp_output_dir = output_dir.join("capnp");
-    std::fs::create_dir_all(&capnp_output_dir).expect("Failed to create capnp output directory");
-
-    let capnp_executable = {
-        let binary_name = match std::env::consts::OS {
-            "linux" if std::env::consts::ARCH == "x86_64" => "capnp_linux_x86_64",
-            "macos" if std::env::consts::ARCH == "aarch64" => "capnp_macos_aarch64",
-            _ => panic!(
-                "unsupported platform: {}-{}",
-                std::env::consts::OS,
-                std::env::consts::ARCH
-            ),
-        };
-
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tools")
-            .join(binary_name)
-    };
+    std::fs::create_dir_all(&capnp_output_dir)?;
 
     let mut command = capnpc::CompilerCommand::new();
-    command.capnp_executable(capnp_executable);
+    command.capnp_executable(bundled_capnp_executable()?);
     command.output_path(&capnp_output_dir);
 
     // Set the default parent module to "capnp" so generated code references
@@ -54,7 +62,7 @@ pub fn compile_capnp(capnp_files: &[impl AsRef<Path>], output_dir: impl AsRef<Pa
         command.file(capnp_file.as_ref());
     }
 
-    command.run().expect("capnp schema compilation failed");
+    command.run()?;
 
     // Create capnp.rs module file that exports all generated modules
     let module_exports: Vec<String> = capnp_files
@@ -69,7 +77,8 @@ pub fn compile_capnp(capnp_files: &[impl AsRef<Path>], output_dir: impl AsRef<Pa
 
     let capnp_rs_path = output_dir.join("capnp.rs");
     let capnp_rs_content = module_exports.join("\n") + "\n";
-    std::fs::write(&capnp_rs_path, capnp_rs_content).expect("Failed to write capnp.rs module file");
+    std::fs::write(&capnp_rs_path, capnp_rs_content)?;
+    Ok(())
 }
 
 /// Given a textual type descriptor from a node message format, return the corresponding Cap'n Proto type.
@@ -93,21 +102,30 @@ pub fn map_node_type_to_capnp_proto(node_type: &str) -> String {
     }
 }
 
-pub fn map_message_format_to_capnpn_proto(message_format: MessageFormat) -> String {
+/// Given a message_format, create the resulting capnp file as well as a mapping between the arguments and their associated Rust types
+pub fn map_message_format_to_capnpn_proto(
+    message_format: MessageFormat,
+) -> Result<(String, HashMap<String, String>)> {
     let mut generator = CapnpSchemaGenerator::default();
     let mut schema = String::new();
-    let schema_id = compute_schema_id(&message_format.0).max(1);
+    let mut schema_id = compute_schema_id(&message_format.0);
+    if schema_id == 0 {
+        schema_id = 1;
+    }
+    schema_id |= 1; // ensure odd
+    schema_id |= 1 << 63; // high bit set per capnp id recommendations
 
-    writeln!(&mut schema, "@0x{schema_id:016x};").expect("writing schema id should not fail");
+    schema.push_str(&format!("@0x{schema_id:016x};\n"));
     schema.push('\n');
-    schema.push_str(&generator.render_struct("Message", &message_format.0, 0));
+    schema.push_str(&generator.render_struct("Message", &message_format.0, 0)?);
 
     if generator.timestamp_struct_needed {
         schema.push('\n');
         schema.push_str("struct Timestamp {\n  sec @0 :Int64;\n  nsec @1 :UInt32;\n}\n");
     }
 
-    schema
+    let type_mapping = compute_rust_type_mapping(&schema, &message_format)?;
+    Ok((schema, type_mapping))
 }
 
 #[derive(Default)]
@@ -121,11 +139,10 @@ impl CapnpSchemaGenerator {
         struct_name: &str,
         fields: &std::collections::BTreeMap<String, SchemaType>,
         depth: usize,
-    ) -> String {
+    ) -> Result<String> {
         let indent = "  ".repeat(depth);
         let mut buffer = String::new();
-        writeln!(&mut buffer, "{indent}struct {struct_name} {{")
-            .expect("writing struct header should not fail");
+        buffer.push_str(&format!("{indent}struct {struct_name} {{\n"));
 
         let mut nested_defs = Vec::new();
 
@@ -133,13 +150,11 @@ impl CapnpSchemaGenerator {
             let sanitized_field = sanitize_field_name(field_name);
             let field_indent = "  ".repeat(depth + 1);
             let TypeResolution { type_name, nested } =
-                self.resolve_type(struct_name, &sanitized_field, schema_type, depth + 1);
+                self.resolve_type(struct_name, &sanitized_field, schema_type, depth + 1)?;
 
-            writeln!(
-                &mut buffer,
-                "{field_indent}{sanitized_field} @{index} :{type_name};"
-            )
-            .expect("writing field should not fail");
+            buffer.push_str(&format!(
+                "{field_indent}{sanitized_field} @{index} :{type_name};\n"
+            ));
 
             nested_defs.extend(nested);
         }
@@ -151,8 +166,8 @@ impl CapnpSchemaGenerator {
             }
         }
 
-        writeln!(&mut buffer, "{indent}}}").expect("writing struct closing brace should not fail");
-        buffer
+        buffer.push_str(&format!("{indent}}}\n"));
+        Ok(buffer)
     }
 
     fn resolve_type(
@@ -161,18 +176,18 @@ impl CapnpSchemaGenerator {
         field_name: &str,
         schema: &SchemaType,
         depth: usize,
-    ) -> TypeResolution {
+    ) -> Result<TypeResolution> {
         match schema {
-            SchemaType::Type(token) => TypeResolution {
+            SchemaType::Type(token) => Ok(TypeResolution {
                 type_name: self.capnp_type_for_token(token).to_string(),
                 nested: Vec::new(),
-            },
+            }),
             SchemaType::Array(array) => {
                 if matches!(array.items.as_ref(), SchemaType::Type(TypeToken::U8)) {
-                    return TypeResolution {
+                    return Ok(TypeResolution {
                         type_name: "Data".to_string(),
                         nested: Vec::new(),
-                    };
+                    });
                 }
 
                 let mut item_resolution = self.resolve_type(
@@ -180,21 +195,22 @@ impl CapnpSchemaGenerator {
                     &format!("{field_name}_item"),
                     array.items.as_ref(),
                     depth,
-                );
+                )?;
+                let nested = std::mem::take(&mut item_resolution.nested);
 
-                TypeResolution {
+                Ok(TypeResolution {
                     type_name: format!("List({})", item_resolution.type_name),
-                    nested: std::mem::take(&mut item_resolution.nested),
-                }
+                    nested,
+                })
             }
             SchemaType::Object(object) => {
                 let struct_name = self.nested_struct_name(parent_struct, field_name);
-                let nested = self.render_struct(&struct_name, &object.fields, depth);
+                let nested = self.render_struct(&struct_name, &object.fields, depth)?;
 
-                TypeResolution {
-                    type_name: struct_name,
+                Ok(TypeResolution {
+                    type_name: struct_name.clone(),
                     nested: vec![nested],
-                }
+                })
             }
         }
     }
@@ -241,30 +257,26 @@ struct TypeResolution {
 }
 
 fn sanitize_field_name(input: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-
-    for (idx, ch) in input.chars().enumerate() {
-        let replacement = match ch {
-            'a'..='z' | '0'..='9' => Some(ch),
-            'A'..='Z' => Some(ch.to_ascii_lowercase()),
-            '_' => Some('_'),
-            _ => None,
-        };
-
-        if let Some(char) = replacement {
-            if idx == 0 && char.is_ascii_digit() {
-                output.push('_');
-            }
-            output.push(char);
-        } else {
-            output.push('_');
-        }
+    let mut output = to_pascal_case(input);
+    if output.is_empty() {
+        output.push_str("Field");
     }
 
-    if output.is_empty() {
+    let mut chars = output.chars();
+    let mut camel = String::with_capacity(output.len());
+    if let Some(first) = chars.next() {
+        camel.push(first.to_ascii_lowercase());
+        camel.extend(chars);
+    }
+
+    if camel.chars().next().map_or(false, |ch| ch.is_ascii_digit()) {
+        camel.insert(0, '_');
+    }
+
+    if camel.is_empty() {
         "_field".to_string()
     } else {
-        output
+        camel
     }
 }
 
@@ -307,7 +319,8 @@ fn compute_schema_id(fields: &std::collections::BTreeMap<String, SchemaType>) ->
         match schema {
             SchemaType::Type(token) => {
                 hash = update(hash, b"type", prime);
-                hash = update(hash, capnp_token_discriminant(token).as_bytes(), prime);
+                let (capnp_discriminant, _) = type_token_strings(token);
+                hash = update(hash, capnp_discriminant.as_bytes(), prime);
             }
             SchemaType::Array(array) => {
                 hash = update(hash, b"array", prime);
@@ -339,27 +352,257 @@ fn compute_schema_id(fields: &std::collections::BTreeMap<String, SchemaType>) ->
     hash_fields(FNV_OFFSET, fields, FNV_PRIME)
 }
 
-fn capnp_token_discriminant(token: &TypeToken) -> &'static str {
+/// Returns both the canonical Cap'n Proto discriminant string and the Rust-facing type string
+/// for a given `TypeToken`. The first element is used when hashing schema identifiers, while the
+/// second drives the Rust type mapping overrides.
+fn type_token_strings(token: &TypeToken) -> (&'static str, &'static str) {
     match token {
-        TypeToken::Bool => "bool",
-        TypeToken::String => "string",
-        TypeToken::Bytes => "bytes",
-        TypeToken::Time => "timestamp",
-        TypeToken::U8 => "u8",
-        TypeToken::U16 => "u16",
-        TypeToken::U32 => "u32",
-        TypeToken::U64 => "u64",
-        TypeToken::I8 => "i8",
-        TypeToken::I16 => "i16",
-        TypeToken::I32 => "i32",
-        TypeToken::I64 => "i64",
-        TypeToken::F32 => "f32",
-        TypeToken::F64 => "f64",
+        TypeToken::Bool => ("bool", "bool"),
+        TypeToken::String => ("string", "String"),
+        TypeToken::Bytes => ("bytes", "Vec<u8>"),
+        TypeToken::Time => ("timestamp", "std::time::SystemTime"),
+        TypeToken::U8 => ("u8", "u8"),
+        TypeToken::U16 => ("u16", "u16"),
+        TypeToken::U32 => ("u32", "u32"),
+        TypeToken::U64 => ("u64", "u64"),
+        TypeToken::I8 => ("i8", "i8"),
+        TypeToken::I16 => ("i16", "i16"),
+        TypeToken::I32 => ("i32", "i32"),
+        TypeToken::I64 => ("i64", "i64"),
+        TypeToken::F32 => ("f32", "f32"),
+        TypeToken::F64 => ("f64", "f64"),
     }
 }
 
-// TODO 1: Convert the json5 types representation to a capn proto file
-// TODO 2: Compile that file to a rust
+fn compute_rust_type_mapping(
+    schema: &str,
+    format: &MessageFormat,
+) -> Result<HashMap<String, String>> {
+    let temp_dir = tempdir()?;
+    let schema_path = temp_dir.path().join("message.capnp");
+    std::fs::write(&schema_path, schema)?;
+    let request_path = temp_dir.path().join("code_generator_request.bin");
+
+    let mut command = capnpc::CompilerCommand::new();
+    command
+        .capnp_executable(bundled_capnp_executable()?)
+        .file(&schema_path)
+        .output_path(temp_dir.path())
+        .raw_code_generator_request_path(&request_path);
+
+    command.run()?;
+
+    let mut request_file = std::fs::File::open(&request_path)?;
+    let message = serialize::read_message(&mut request_file, ReaderOptions::new())?;
+    let ctx = GeneratorContext::new(&message)?;
+
+    let root_struct_id = find_root_struct_id(&ctx)?;
+    let mut mapping = HashMap::new();
+    let mut visited = HashSet::new();
+    collect_struct_fields(&ctx, root_struct_id, "", &mut mapping, &mut visited)?;
+
+    fn array_schema_to_rust_string(array: &ArraySchema) -> Option<String> {
+        match array.items.as_ref() {
+            SchemaType::Type(token) => {
+                let (_, rust_type) = type_token_strings(token);
+                let rendered = match array.length {
+                    Some(length) => format!("[{rust_type}; {length}]"),
+                    None => format!("[{rust_type}]"),
+                };
+                Some(rendered)
+            }
+            SchemaType::Array(_) | SchemaType::Object(_) => None,
+        }
+    }
+
+    fn override_array_types(
+        current_key: &str,
+        schema: &SchemaType,
+        mapping: &mut HashMap<String, String>,
+    ) {
+        match schema {
+            SchemaType::Array(array) => {
+                if let Some(rendered) = array_schema_to_rust_string(array) {
+                    if let Some(entry) = mapping.get_mut(current_key) {
+                        *entry = rendered;
+                    }
+                }
+            }
+            SchemaType::Object(object) => {
+                for (field_name, field_schema) in &object.fields {
+                    let sanitized = sanitize_field_name(field_name);
+                    let next_key = if current_key.is_empty() {
+                        sanitized
+                    } else {
+                        format!("{current_key}.{sanitized}")
+                    };
+                    override_array_types(&next_key, field_schema, mapping);
+                }
+            }
+            SchemaType::Type(_) => {}
+        }
+    }
+
+    for (field_name, schema) in &format.0 {
+        let sanitized = sanitize_field_name(field_name);
+        override_array_types(&sanitized, schema, &mut mapping);
+    }
+
+    Ok(mapping)
+}
+
+fn find_root_struct_id(ctx: &GeneratorContext<'_>) -> Result<u64> {
+    let requested_files = ctx.request.get_requested_files()?;
+    if requested_files.len() == 0 {
+        return Err(Error::Encoding(
+            "capnp request did not include any files".to_string(),
+        ));
+    }
+
+    let file_id = requested_files.get(0).get_id();
+
+    for (id, node_reader) in &ctx.node_map {
+        if node_reader.get_scope_id() != file_id {
+            continue;
+        }
+
+        if let Ok(node::Struct(_)) = node_reader.which() {
+            let display_name = node_reader
+                .get_display_name()?
+                .to_str()
+                .map_err(|err| Error::Encoding(err.to_string()))?;
+            let simple_name = display_name
+                .rsplit(|ch| ch == ':' || ch == '.')
+                .next()
+                .unwrap_or(display_name);
+            if simple_name == "Message" {
+                return Ok(*id);
+            }
+        }
+    }
+
+    Err(Error::Encoding(
+        "capnp request missing root Message struct".to_string(),
+    ))
+}
+
+fn collect_struct_fields(
+    ctx: &GeneratorContext<'_>,
+    struct_id: u64,
+    prefix: &str,
+    mapping: &mut HashMap<String, String>,
+    visited: &mut HashSet<u64>,
+) -> Result<()> {
+    if !visited.insert(struct_id) {
+        return Ok(());
+    }
+
+    let node_reader = ctx.node_map.get(&struct_id).ok_or_else(|| {
+        Error::Encoding(format!(
+            "capnp request missing node definition for struct id {struct_id:#x}"
+        ))
+    })?;
+
+    let struct_reader = match node_reader
+        .which()
+        .map_err(|err| Error::Encoding(format!("failed to inspect node {struct_id:#x}: {err}")))?
+    {
+        node::Struct(struct_reader) => struct_reader,
+        _ => {
+            return Err(Error::Encoding(format!(
+                "node {struct_id:#x} is not a struct"
+            )));
+        }
+    };
+
+    for field in struct_reader.get_fields()? {
+        let name = field
+            .get_name()?
+            .to_string()
+            .map_err(|err| Error::Encoding(format!("invalid field name encoding: {err}")))?;
+        let key = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}.{name}")
+        };
+
+        let field_type = match field
+            .which()
+            .map_err(|err| Error::Encoding(format!("failed to inspect field `{key}`: {err}")))?
+        {
+            field::Slot(slot) => slot.get_type()?,
+            field::Group(_) => {
+                return Err(Error::Encoding(format!(
+                    "group fields are not supported for field `{key}`"
+                )));
+            }
+        };
+        let rust_type = field_type
+            .type_string(ctx, Leaf::Reader("'a"))
+            .map_err(|err| {
+                Error::Encoding(format!("failed to render type for field `{key}`: {err}"))
+            })?;
+        mapping.insert(key.clone(), rust_type);
+
+        match field_type
+            .which()
+            .map_err(|err| Error::Encoding(format!("failed to classify field `{key}`: {err}")))?
+        {
+            type_::Struct(struct_type) => {
+                collect_struct_fields(ctx, struct_type.get_type_id(), &key, mapping, visited)?;
+            }
+            type_::List(list_reader) => {
+                collect_list_type(ctx, &key, list_reader, mapping, visited)?;
+            }
+            _ => {}
+        }
+    }
+
+    visited.remove(&struct_id);
+    Ok(())
+}
+
+fn collect_list_type(
+    ctx: &GeneratorContext<'_>,
+    prefix: &str,
+    list_reader: type_::list::Reader<'_>,
+    mapping: &mut HashMap<String, String>,
+    visited: &mut HashSet<u64>,
+) -> Result<()> {
+    let element_type = list_reader.get_element_type()?;
+    let element_key = format!("{prefix}[]");
+
+    let element_rust_type = element_type
+        .type_string(ctx, Leaf::Reader("'a"))
+        .map_err(|err| {
+            Error::Encoding(format!(
+                "failed to render list element type for `{element_key}`: {err}"
+            ))
+        })?;
+    mapping.insert(element_key.clone(), element_rust_type);
+
+    match element_type.which().map_err(|err| {
+        Error::Encoding(format!(
+            "failed to classify list element `{element_key}`: {err}"
+        ))
+    })? {
+        type_::Struct(struct_type) => {
+            collect_struct_fields(
+                ctx,
+                struct_type.get_type_id(),
+                &element_key,
+                mapping,
+                visited,
+            )?;
+        }
+        type_::List(nested) => {
+            collect_list_type(ctx, &element_key, nested, mapping, visited)?;
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -390,7 +633,61 @@ mod tests {
         )
         .expect("valid format");
 
-        let schema = map_message_format_to_capnpn_proto(msg_format);
+        let (schema, type_map) =
+            map_message_format_to_capnpn_proto(msg_format).expect("schema generation succeeds");
+
+        assert_eq!(type_map.len(), 9, "expected entries for nested fields");
+        assert!(
+            type_map
+                .get("encoding")
+                .expect("encoding entry missing")
+                .ends_with("text::Reader<'a>"),
+            "encoding should map to a capnp text reader",
+        );
+        assert_eq!(
+            type_map.get("width"),
+            Some(&"u32".to_string()),
+            "width should map to u32"
+        );
+        assert_eq!(
+            type_map.get("height"),
+            Some(&"u32".to_string()),
+            "height should map to u32"
+        );
+        assert_eq!(
+            type_map.get("image"),
+            Some(&"[u8; 3]".to_string()),
+            "image should map to a fixed-size array"
+        );
+        assert!(
+            type_map
+                .get("header")
+                .expect("header entry missing")
+                .ends_with("header::Reader<'a>"),
+            "header should resolve to the generated header reader type"
+        );
+        assert_eq!(
+            type_map.get("header.frameId"),
+            Some(&"u32".to_string()),
+            "header.frameId should map to u32"
+        );
+        assert!(
+            type_map
+                .get("header.stamp")
+                .expect("header.stamp entry missing")
+                .ends_with("timestamp::Reader<'a>"),
+            "header.stamp should map to the generated timestamp reader type"
+        );
+        assert_eq!(
+            type_map.get("header.stamp.sec"),
+            Some(&"i64".to_string()),
+            "header.stamp.sec should map to i64"
+        );
+        assert_eq!(
+            type_map.get("header.stamp.nsec"),
+            Some(&"u32".to_string()),
+            "header.stamp.nsec should map to u32"
+        );
 
         assert!(
             schema.starts_with("@0x"),
@@ -404,7 +701,7 @@ mod tests {
             "  image @3 :Data;",
             "  width @4 :UInt32;",
             "  struct Header {",
-            "    frame_id @0 :UInt32;",
+            "    frameId @0 :UInt32;",
             "    stamp @1 :Timestamp;",
             "struct Timestamp {",
             "  sec @0 :Int64;",
@@ -415,6 +712,55 @@ mod tests {
                 "schema missing expected segment {expected:?}.\nSchema:\n{schema}"
             );
         }
+    }
+
+    #[test]
+    fn test_map_message_format_to_capnpn_proto_variable_array() {
+        let msg_format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+              image: {
+                type: "array",
+                items: "u8"
+              }
+            }
+            "#,
+        )
+        .expect("valid format");
+
+        let (_schema, type_map) =
+            map_message_format_to_capnpn_proto(msg_format).expect("schema generation succeeds");
+
+        assert_eq!(
+            type_map.get("image"),
+            Some(&"[u8]".to_string()),
+            "image should map to a dynamically sized array"
+        );
+    }
+
+    #[test]
+    fn test_map_message_format_to_capnpn_proto_string_array() {
+        let msg_format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+              labels: {
+                type: "array",
+                items: "string",
+                length: 3
+              }
+            }
+            "#,
+        )
+        .expect("valid format");
+
+        let (_schema, type_map) =
+            map_message_format_to_capnpn_proto(msg_format).expect("schema generation succeeds");
+
+        assert_eq!(
+            type_map.get("labels"),
+            Some(&"[String; 3]".to_string()),
+            "labels should map to a fixed-size array of Strings"
+        );
     }
 
     #[test]
@@ -432,7 +778,7 @@ mod tests {
             schema_path
         );
 
-        compile_capnp(&[schema_path], output_dir);
+        compile_capnp(&[schema_path], output_dir).expect("capnp compilation succeeds");
 
         let expected_output = output_dir.join("capnp").join("frame_capnp.rs");
         assert!(
@@ -557,13 +903,5 @@ mod tests {
                 ("image".to_string(), "Data".to_string()),
             ]
         );
-    }
-
-    #[test]
-    fn test_extract_field_types_from_generated_rust() {
-        let schema_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("schemas")
-            .join("frame.capnp");
-        // TODO: test extract_field_types_from_generated_rust
     }
 }

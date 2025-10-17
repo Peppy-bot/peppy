@@ -640,7 +640,7 @@ mod tests {
                 assert_eq!(array.length, Some(3));
             }
             _ => panic!("image should be an array"),
-    }
+        }
 
         // Round-trip: ensure tokens serialize back to canonical strings
         let out = serde_json5::to_string(&mf).unwrap();

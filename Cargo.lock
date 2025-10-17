@@ -1066,6 +1066,7 @@ name = "generator"
 version = "0.0.1"
 dependencies = [
  "askama",
+ "capnp",
  "config",
  "pmi",
  "prettyplease",
