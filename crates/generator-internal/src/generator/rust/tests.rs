@@ -221,50 +221,6 @@ fn single_artifact(artifacts: Vec<String>) -> String {
     artifacts.into_iter().next().expect("artifact is present")
 }
 
-#[test]
-pub fn extract_field_types_from_generated_rust() {
-    // This is an example of the final representation of the Rust generated code the lib should output
-    let _kind_of_caller = r#"
-        #[derive(Debug, Clone)]
-        pub struct PushFrameHeader {
-            pub frame_id: u32,
-            pub stamp: std::time::SystemTime,
-        }
-
-        // The type of those parameters has been extracted from `schema_file`
-        pub async fn push_frame_async(
-            encoding: String,
-            header: PushFrameHeader, // Header is a type present in the `schema_file` rust module
-            height: u32,
-            width: u32,
-            image: [u8; 3], // This is an example of a type that will be "lost" with a capnp schema file as capnp turns this array into a `Data` type without a fixed lenght
-        ) {
-            // Create a message builder
-            let mut message = capnp::message::Builder::new_default();
-            let mut img_msg = message.init_root::<image_message::Builder>();
-
-            // Set some fields
-            img_msg.set_width(width);
-            img_msg.set_height(height);
-            img_msg.set_encoding(encoding);
-
-            // Populate the header struct to ensure nested structs can be set
-            let mut header = img_msg.reborrow().init_header();
-            header.set_frame_id(header.frame_id);
-            let mut stamp = header.reborrow().init_stamp();
-            stamp.set_sec(header.stamp); // Somehow set the time stamp
-
-            let reader = message.into_reader();
-            let mut buf = Vec::new();
-            capnp::serialize::write_message(&mut buf, &reader)?;
-
-            let bytes = to_bytes(message)?;
-            transport.send(&bytes).await?;
-        }
-        "#;
-    todo!("Finish!")
-}
-
 /// Generates the peppygen lib and runs the tests inside of it, including clippy
 #[test]
 fn generate_lib_and_run_tests() {
@@ -274,9 +230,9 @@ fn generate_lib_and_run_tests() {
     let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
 
     let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
-    generator.add_exposed_service(&service);
-    generator.add_exposed_topic(&topic);
-    generator.add_exposed_action(&action);
+    generator.add_exposed_service(&service).unwrap();
+    generator.add_exposed_topic(&topic).unwrap();
+    generator.add_exposed_action(&action).unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator.build(&output_dir).unwrap();
     fs::remove_file(output_config).unwrap();
@@ -322,7 +278,7 @@ fn exposed_topic_gen_calling_code() {
     let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new();
-    generator.add_exposed_topic(&topic);
+    generator.add_exposed_topic(&topic).unwrap();
     let artifacts: Vec<String> = generator
         .into_artifacts()
         .into_iter()
@@ -338,9 +294,49 @@ fn exposed_topic_gen_calling_code() {
         "expected sync function"
     );
     assert_rendered!(
+        rendered.contains("-> ::capnp::Result<Vec<u8>>"),
+        &rendered,
+        "expected capnp result type for sync function"
+    );
+    assert_rendered!(
         rendered.contains("pub async fn push_frame_async("),
         &rendered,
         "expected async function"
+    );
+    assert_rendered!(
+        rendered.contains("let mut message = ::capnp::message::Builder::new_default();"),
+        &rendered,
+        "expected capnp message builder"
+    );
+    assert_rendered!(
+        rendered.contains("crate::capnp::push_frame_message_capnp::push_frame_message::Builder"),
+        &rendered,
+        "expected capnp root initialization"
+    );
+    assert_rendered!(
+        rendered.contains("root.set_encoding(encoding.as_str());"),
+        &rendered,
+        "expected encoding setter"
+    );
+    assert_rendered!(
+        rendered.contains("root.set_image(image.as_ref());"),
+        &rendered,
+        "expected fixed-size array setter"
+    );
+    assert_rendered!(
+        rendered.contains("root.reborrow().init_header();"),
+        &rendered,
+        "expected nested header initialization"
+    );
+    assert_rendered!(
+        rendered.contains("duration_since(::std::time::UNIX_EPOCH)"),
+        &rendered,
+        "expected timestamp conversion logic"
+    );
+    assert_rendered!(
+        rendered.contains("::capnp::serialize::write_message"),
+        &rendered,
+        "expected serialization call"
     );
     assert_rendered!(
         rendered.contains("header: PushFrameHeader"),
@@ -364,7 +360,7 @@ fn exposed_service_gen_calling_code() {
     let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new();
-    generator.add_exposed_service(&service);
+    generator.add_exposed_service(&service).unwrap();
     let artifacts: Vec<String> = generator
         .into_artifacts()
         .into_iter()
@@ -380,9 +376,29 @@ fn exposed_service_gen_calling_code() {
         "expected sync service function"
     );
     assert_rendered!(
+        rendered.contains("-> ::capnp::Result<Vec<u8>>"),
+        &rendered,
+        "expected capnp result type for service function"
+    );
+    assert_rendered!(
         rendered.contains("pub async fn enable_camera_async("),
         &rendered,
         "expected async service function"
+    );
+    assert_rendered!(
+        rendered.contains("::capnp::message::Builder::new_default"),
+        &rendered,
+        "expected capnp builder usage"
+    );
+    assert_rendered!(
+        rendered.contains("enable_camera_message_capnp::enable_camera_message::Builder"),
+        &rendered,
+        "expected service-specific schema builder"
+    );
+    assert_rendered!(
+        rendered.contains("::capnp::serialize::write_message"),
+        &rendered,
+        "expected serialization call"
     );
     assert_rendered!(
         rendered.contains("enable: bool"),
@@ -396,7 +412,7 @@ fn exposed_action_gen_calling_code() {
     let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new();
-    generator.add_exposed_action(&action);
+    generator.add_exposed_action(&action).unwrap();
     let artifacts: Vec<String> = generator
         .into_artifacts()
         .into_iter()
@@ -420,6 +436,39 @@ fn exposed_action_gen_calling_code() {
             "expected `{expected}` in rendered"
         );
     }
+
+    for expected in [
+        "-> ::capnp::Result<Vec<u8>>",
+        "::capnp::message::Builder::new_default",
+        "::capnp::serialize::write_message",
+    ] {
+        assert_rendered!(
+            rendered.contains(expected),
+            &rendered,
+            "expected `{expected}` in capnp-based action code"
+        );
+    }
+
+    assert_rendered!(
+        rendered.contains("move_arm_goal_message_capnp::move_arm_goal_message::Builder"),
+        &rendered,
+        "expected goal schema builder"
+    );
+    assert_rendered!(
+        rendered.contains("init_desired_position"),
+        &rendered,
+        "expected list initialization for desired position"
+    );
+    assert_rendered!(
+        rendered.contains("init_new_position"),
+        &rendered,
+        "expected list initialization for feedback"
+    );
+    assert_rendered!(
+        rendered.contains("init_final_position"),
+        &rendered,
+        "expected list initialization for result"
+    );
 
     assert_rendered!(
         rendered.contains("arm_id: u16"),
@@ -474,7 +523,9 @@ fn subscribed_topic_returns_arguments() {
     let format: MessageFormat = serde_json5::from_str(format).unwrap();
 
     let mut generator = RustGenerator::new();
-    generator.add_subscribed_topic(&topic, Some(&format));
+    generator
+        .add_subscribed_topic(&topic, Some(&format))
+        .unwrap();
     let artifacts: Vec<String> = generator
         .into_artifacts()
         .into_iter()
@@ -528,7 +579,9 @@ fn subscribed_service_returns_arguments() {
     let format: MessageFormat = serde_json5::from_str(format).unwrap();
 
     let mut generator = RustGenerator::new();
-    generator.add_subscribed_service(&service, Some(&format));
+    generator
+        .add_subscribed_service(&service, Some(&format))
+        .unwrap();
     let artifacts: Vec<String> = generator
         .into_artifacts()
         .into_iter()
@@ -577,7 +630,9 @@ fn subscribed_action_returns_arguments() {
     };
 
     let mut generator = RustGenerator::new();
-    generator.add_subscribed_action(&action, Some(&format));
+    generator
+        .add_subscribed_action(&action, Some(&format))
+        .unwrap();
     let artifacts: Vec<String> = generator
         .into_artifacts()
         .into_iter()
@@ -668,7 +723,7 @@ fn create_lib_with_exposed_topic_artifact() {
     let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
 
     let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
-    generator.add_exposed_topic(&topic);
+    generator.add_exposed_topic(&topic).unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator.build(&output_dir).unwrap();
     fs::remove_file(output_config).unwrap();
@@ -753,8 +808,8 @@ fn create_lib_with_exposed_double_topic_artifact() {
     let topic2: ExposedTopic = serde_json5::from_str(topic2).unwrap();
 
     let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
-    generator.add_exposed_topic(&topic);
-    generator.add_exposed_topic(&topic2);
+    generator.add_exposed_topic(&topic).unwrap();
+    generator.add_exposed_topic(&topic2).unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator.build(&output_dir).unwrap();
     fs::remove_file(output_config).unwrap();
@@ -839,7 +894,7 @@ fn create_lib_with_exposed_action_artifact() {
     let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
 
     let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
-    generator.add_exposed_action(&action);
+    generator.add_exposed_action(&action).unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator.build(&output_dir).unwrap();
     fs::remove_file(output_config).unwrap();
@@ -925,12 +980,18 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
     };
 
     let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
-    generator.add_exposed_topic(&topic);
-    generator.add_exposed_service(&service);
-    generator.add_exposed_action(&action);
-    generator.add_subscribed_topic(&subscribed_topic, Some(&subscribed_topic_format));
-    generator.add_subscribed_service(&subscribed_service, Some(&subscribed_service_format));
-    generator.add_subscribed_action(&subscribed_action, Some(&subscribed_action_messages));
+    generator.add_exposed_topic(&topic).unwrap();
+    generator.add_exposed_service(&service).unwrap();
+    generator.add_exposed_action(&action).unwrap();
+    generator
+        .add_subscribed_topic(&subscribed_topic, Some(&subscribed_topic_format))
+        .unwrap();
+    generator
+        .add_subscribed_service(&subscribed_service, Some(&subscribed_service_format))
+        .unwrap();
+    generator
+        .add_subscribed_action(&subscribed_action, Some(&subscribed_action_messages))
+        .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator.build(&output_dir).unwrap();
     fs::remove_file(output_config).unwrap();

@@ -18,22 +18,6 @@ use tempfile::tempdir;
 
 use crate::node::{ArraySchema, MessageFormat, SchemaType, TypeToken};
 
-fn bundled_capnp_executable() -> Result<PathBuf> {
-    let binary_name = match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => "capnp_linux_x86_64",
-        ("macos", "aarch64") => "capnp_macos_aarch64",
-        (os, arch) => {
-            return Err(Error::Encoding(format!(
-                "unsupported platform: {os}-{arch}"
-            )));
-        }
-    };
-
-    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tools")
-        .join(binary_name))
-}
-
 /// The output_dir should point to the `src` of a Rust crate. A new `capnp` module will be
 /// created at the root of this directory with all the `capnp` files.
 pub fn compile_capnp(capnp_files: &[impl AsRef<Path>], output_dir: impl AsRef<Path>) -> Result<()> {
@@ -235,6 +219,22 @@ impl CapnpSchemaGenerator {
             TypeToken::F64 => "Float64",
         }
     }
+}
+
+fn bundled_capnp_executable() -> Result<PathBuf> {
+    let binary_name = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => "capnp_linux_x86_64",
+        ("macos", "aarch64") => "capnp_macos_aarch64",
+        (os, arch) => {
+            return Err(Error::Encoding(format!(
+                "unsupported platform: {os}-{arch}"
+            )));
+        }
+    };
+
+    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tools")
+        .join(binary_name))
 }
 
 struct TypeResolution {

@@ -10,6 +10,7 @@ fn generate_interfaces_code_rust_success() {
             {
             name: 'uvc_camera',
             tag: '0.1.0',
+            namespace: "/",
             instances: [
                 {
                   namespace: '/camera/right',
@@ -85,7 +86,6 @@ fn generate_interfaces_code_rust_success() {
                     node: "uvc_camera",
                     tag: "0.1.0",
                     name: "stream",
-                    namespace: "/",
                     callback: "on_handle_video_frame",
                 }
             ],
@@ -133,7 +133,6 @@ fn generate_interfaces_code_rust_missing_topic_format() {
                     node: "uvc_camera",
                     tag: "0.1.0",
                     name: "orphan_topic",
-                    namespace: "/",
                     callback: "on_handle_video_frame",
                 }
             ],

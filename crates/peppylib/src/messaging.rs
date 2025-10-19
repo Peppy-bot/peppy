@@ -63,6 +63,7 @@ impl PeppyMessenger {
         qos: QoSProfile,
         payload: Bytes,
     ) -> Result<()> {
+        // TODO: Do we really need node_name?
         let full_ns = format!("{}/{}/{}", node_name, namespace, topic_name);
         let msg = Message::new(&full_ns, &payload);
 
