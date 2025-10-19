@@ -15,6 +15,7 @@ use config::{
 };
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
+use std::collections::HashMap;
 use std::path::Path;
 use syn::{File, parse2};
 
@@ -53,7 +54,7 @@ impl LanguageGenerator for RustGenerator {
 
         let mut context = GenerationContext::default();
         let params =
-            collect_function_params(topic.message_format.as_ref(), &struct_prefix, &mut context);
+            collect_function_params(topic.message_format.as_ref(), &struct_prefix, &mut context)?;
         let struct_tokens = context.into_tokens();
 
         let sync_fn =
@@ -97,7 +98,7 @@ impl LanguageGenerator for RustGenerator {
             service.message_format.as_ref(),
             &struct_prefix,
             &mut context,
-        );
+        )?;
         let struct_tokens = context.into_tokens();
 
         let sync_fn = build_sync_function(
@@ -142,8 +143,11 @@ impl LanguageGenerator for RustGenerator {
             let fn_name = Ident::new(&(base_name.clone() + "_goal"), Span::call_site());
             let async_fn_name = Ident::new(&(fn_name.to_string() + "_async"), Span::call_site());
             let struct_prefix = format!("{}Goal", to_camel_case(&base_name));
-            let params =
-                collect_function_params(goal.message_format.as_ref(), &struct_prefix, &mut context);
+            let params = collect_function_params(
+                goal.message_format.as_ref(),
+                &struct_prefix,
+                &mut context,
+            )?;
 
             let sync_fn = build_sync_function(
                 &fn_name,
@@ -167,7 +171,7 @@ impl LanguageGenerator for RustGenerator {
                 feedback.message_format.as_ref(),
                 &struct_prefix,
                 &mut context,
-            );
+            )?;
 
             let sync_fn = build_sync_function(
                 &fn_name,
@@ -191,7 +195,7 @@ impl LanguageGenerator for RustGenerator {
                 result.message_format.as_ref(),
                 &struct_prefix,
                 &mut context,
-            );
+            )?;
 
             let sync_fn = build_sync_function(
                 &fn_name,
@@ -208,7 +212,7 @@ impl LanguageGenerator for RustGenerator {
         }
 
         if function_blocks.is_empty() {
-            return;
+            return Ok(());
         }
 
         let struct_tokens = context.into_tokens();
@@ -240,7 +244,7 @@ impl LanguageGenerator for RustGenerator {
             arguments,
             "Arguments",
             "await for message with PMI",
-        );
+        )?;
 
         let tokens: TokenStream = quote! {
             #( #struct_tokens )*
@@ -269,7 +273,7 @@ impl LanguageGenerator for RustGenerator {
             arguments,
             "Arguments",
             "await for service response with PMI",
-        );
+        )?;
 
         let tokens: TokenStream = quote! {
             #( #struct_tokens )*
@@ -303,7 +307,7 @@ impl LanguageGenerator for RustGenerator {
                 feedback_format,
                 "Arguments",
                 "await for action feedback with PMI",
-            );
+            )?;
             struct_blocks.extend(struct_tokens);
             function_blocks.push(function_token);
         }
@@ -316,13 +320,13 @@ impl LanguageGenerator for RustGenerator {
                 result_format,
                 "Arguments",
                 "await for action result with PMI",
-            );
+            )?;
             struct_blocks.extend(struct_tokens);
             function_blocks.push(function_token);
         }
 
         if function_blocks.is_empty() {
-            return;
+            return Ok(());
         }
 
         let tokens: TokenStream = quote! {
@@ -481,20 +485,143 @@ fn collect_function_params(
     format: Option<&MessageFormat>,
     struct_prefix: &str,
     context: &mut GenerationContext,
-) -> Vec<FunctionParam> {
-    let mut params = Vec::new();
-    // TODO: Use `map_message_format_to_capnpn_proto(topic.message_format.as_ref())?` to determine the parameters types and `quote!` to build the functions
+) -> Result<Vec<FunctionParam>> {
+    let Some(format) = format else {
+        return Ok(Vec::new());
+    };
 
-    // if let Some(format) = format {
-    //     for (index, (name, schema)) in format.0.iter().enumerate() {
-    //         let ident = sanitized_ident(name, "param", index);
-    //         let hint = format!("{struct_prefix}{}", to_camel_case(name));
-    //         let ty = rust_type_from_schema(schema, context, &hint);
-    //         params.push(FunctionParam { ident, ty });
-    //     }
-    // }
+    let (_, capnp_params) = map_message_format_to_capnpn_proto(format.clone()).map_err(|err| {
+        crate::error::Error::from(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            err.to_string(),
+        ))
+    })?;
 
-    // params
+    let mut schema_lookup: HashMap<String, (&String, &SchemaType)> =
+        HashMap::with_capacity(format.0.len());
+    for (name, schema) in &format.0 {
+        schema_lookup.insert(sanitize_capnp_field_name(name), (name, schema));
+    }
+
+    let mut params = Vec::with_capacity(capnp_params.len());
+    for param in capnp_params {
+        let key = param.ident.to_string();
+        let (original_name, schema) = schema_lookup
+            .get(&key)
+            .unwrap_or_else(|| panic!("missing schema entry for field `{key}`"));
+
+        let ident = Ident::new(&sanitize_component(original_name), Span::call_site());
+        let ty = schema_type_to_tokens(schema, struct_prefix, original_name, context);
+
+        params.push(FunctionParam::new(ident, ty));
+    }
+
+    Ok(params)
+}
+
+fn schema_type_to_tokens(
+    schema: &SchemaType,
+    struct_prefix: &str,
+    field_name: &str,
+    context: &mut GenerationContext,
+) -> TokenStream {
+    match schema {
+        SchemaType::Type(token) => primitive_type_token(token),
+        SchemaType::Array(array) => {
+            let item_ty = match array.items.as_ref() {
+                SchemaType::Type(token) => primitive_type_token(token),
+                other => panic!(
+                    "unsupported nested schema type {:?} in array `{field_name}`",
+                    other
+                ),
+            };
+
+            if let Some(length) = array.length {
+                let len_lit = Literal::usize_unsuffixed(length);
+                quote!([#item_ty; #len_lit])
+            } else {
+                quote!(Vec<#item_ty>)
+            }
+        }
+        SchemaType::Object(object) => {
+            let struct_name = format!("{struct_prefix}{}", to_camel_case(field_name));
+            let struct_ident = Ident::new(&struct_name, Span::call_site());
+
+            let mut fields = Vec::with_capacity(object.fields.len());
+            for (nested_name, nested_schema) in &object.fields {
+                let field_ident =
+                    Ident::new(&sanitize_component(nested_name.as_str()), Span::call_site());
+                let field_ty =
+                    schema_type_to_tokens(nested_schema, &struct_name, nested_name, context);
+                fields.push((field_ident, field_ty));
+            }
+
+            context.add_struct(struct_ident.clone(), fields);
+            quote!(#struct_ident)
+        }
+    }
+}
+
+fn primitive_type_token(token: &TypeToken) -> TokenStream {
+    match token {
+        TypeToken::Bool => quote!(bool),
+        TypeToken::String => quote!(String),
+        TypeToken::Bytes => quote!(Vec<u8>),
+        TypeToken::Time => quote!(std::time::SystemTime),
+        TypeToken::U8 => quote!(u8),
+        TypeToken::U16 => quote!(u16),
+        TypeToken::U32 => quote!(u32),
+        TypeToken::U64 => quote!(u64),
+        TypeToken::I8 => quote!(i8),
+        TypeToken::I16 => quote!(i16),
+        TypeToken::I32 => quote!(i32),
+        TypeToken::I64 => quote!(i64),
+        TypeToken::F32 => quote!(f32),
+        TypeToken::F64 => quote!(f64),
+    }
+}
+
+fn sanitize_capnp_field_name(input: &str) -> String {
+    fn to_pascal_case(input: &str) -> String {
+        let mut result = String::new();
+
+        for segment in input
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|s| !s.is_empty())
+        {
+            let mut chars = segment.chars();
+            if let Some(first) = chars.next() {
+                result.push(first.to_ascii_uppercase());
+                for ch in chars {
+                    result.push(ch.to_ascii_lowercase());
+                }
+            }
+        }
+
+        result
+    }
+
+    let mut output = to_pascal_case(input);
+    if output.is_empty() {
+        output.push_str("Field");
+    }
+
+    let mut chars = output.chars();
+    let mut camel = String::with_capacity(output.len());
+    if let Some(first) = chars.next() {
+        camel.push(first.to_ascii_lowercase());
+        camel.extend(chars);
+    }
+
+    if camel.chars().next().map_or(false, |ch| ch.is_ascii_digit()) {
+        camel.insert(0, '_');
+    }
+
+    if camel.is_empty() {
+        "_field".to_string()
+    } else {
+        camel
+    }
 }
 
 fn unused_params_stmt(params: &[FunctionParam]) -> TokenStream {
@@ -572,11 +699,11 @@ fn build_async_returning_function(
     arguments: Option<&MessageFormat>,
     struct_suffix: &str,
     todo_msg: &str,
-) -> (Vec<TokenStream>, TokenStream) {
+) -> Result<(Vec<TokenStream>, TokenStream)> {
     let fn_name_str = fn_name.to_string();
     let struct_prefix = to_camel_case(&fn_name_str);
     let mut context = GenerationContext::default();
-    let params = collect_function_params(arguments, &struct_prefix, &mut context);
+    let params = collect_function_params(arguments, &struct_prefix, &mut context)?;
 
     let struct_name = if struct_suffix.is_empty() {
         struct_prefix
@@ -600,77 +727,7 @@ fn build_async_returning_function(
         }
     };
 
-    (struct_tokens, function_token)
-}
-
-fn rust_type_from_schema(
-    schema: &SchemaType,
-    context: &mut GenerationContext,
-    type_hint: &str,
-) -> TokenStream {
-    match schema {
-        SchemaType::Type(token) => rust_type_for_token(token),
-        SchemaType::Array(array) => {
-            let element_hint = format!("{type_hint}Item");
-            let element_ty = rust_type_from_schema(&array.items, context, &element_hint);
-            if let Some(length) = array.length {
-                let literal = Literal::usize_unsuffixed(length);
-                quote!([#element_ty; #literal])
-            } else {
-                quote!(Vec<#element_ty>)
-            }
-        }
-        SchemaType::Object(object) => {
-            let struct_name = if type_hint.is_empty() {
-                "GeneratedType".to_string()
-            } else {
-                type_hint.to_string()
-            };
-
-            let struct_ident = Ident::new(&struct_name, Span::call_site());
-            let return_ident = struct_ident.clone();
-
-            let mut fields = Vec::new();
-            for (index, (field_name, field_schema)) in object.fields.iter().enumerate() {
-                let field_ident = sanitized_ident(field_name, "field", index);
-                let nested_hint = format!("{struct_name}{}", to_camel_case(field_name));
-                let field_ty = rust_type_from_schema(field_schema, context, &nested_hint);
-                fields.push((field_ident, field_ty));
-            }
-
-            context.add_struct(struct_ident, fields);
-            quote!(#return_ident)
-        }
-    }
-}
-
-fn rust_type_for_token(token: &TypeToken) -> TokenStream {
-    match token {
-        TypeToken::Bool => quote!(bool),
-        TypeToken::String => quote!(String),
-        TypeToken::Bytes => quote!(Vec<u8>),
-        TypeToken::Time => quote!(std::time::SystemTime),
-        TypeToken::U8 => quote!(u8),
-        TypeToken::U16 => quote!(u16),
-        TypeToken::U32 => quote!(u32),
-        TypeToken::U64 => quote!(u64),
-        TypeToken::I8 => quote!(i8),
-        TypeToken::I16 => quote!(i16),
-        TypeToken::I32 => quote!(i32),
-        TypeToken::I64 => quote!(i64),
-        TypeToken::F32 => quote!(f32),
-        TypeToken::F64 => quote!(f64),
-    }
-}
-
-fn sanitized_ident(raw: &str, fallback_prefix: &str, fallback_index: usize) -> Ident {
-    let sanitized = sanitize_component(raw);
-    let name = if sanitized.is_empty() {
-        format!("{fallback_prefix}_{fallback_index}")
-    } else {
-        sanitized
-    };
-    Ident::new(&name, Span::call_site())
+    Ok((struct_tokens, function_token))
 }
 
 fn to_camel_case(raw: &str) -> String {

@@ -223,9 +223,7 @@ fn single_artifact(artifacts: Vec<String>) -> String {
 
 #[test]
 pub fn extract_field_types_from_generated_rust() {
-    // TODO: Change the return type of this function to return a HashMap of <field_name, rust_type>
-    // TODO: The types below are turned into Rust types with the help of the capnp lib
-    // The var below contains an example of the goal of this function:
+    // This is an example of the final representation of the Rust generated code the lib should output
     let _kind_of_caller = r#"
         #[derive(Debug, Clone)]
         pub struct PushFrameHeader {
