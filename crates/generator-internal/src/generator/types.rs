@@ -80,7 +80,7 @@ impl InterfaceArtifact {
 
 /// Collects deployment interfaces and produces generated artifacts when finalized.
 pub trait LanguageGenerator {
-    fn push_section(&mut self, section: InterfaceArtifact) -> Result<()>;
+    fn push_section(&mut self, section: InterfaceArtifact);
     fn add_exposed_topic(&mut self, topic: &ExposedTopic) -> Result<()>;
     fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()>;
     fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()>;

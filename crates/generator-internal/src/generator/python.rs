@@ -33,9 +33,8 @@ impl PythonGenerator {
 }
 
 impl LanguageGenerator for PythonGenerator {
-    fn push_section(&mut self, section: InterfaceArtifact) -> Result<()> {
+    fn push_section(&mut self, section: InterfaceArtifact) {
         PythonGenerator::push_section(self, section);
-        Ok(())
     }
 
     fn add_exposed_topic(&mut self, topic: &ExposedTopic) -> Result<()> {
