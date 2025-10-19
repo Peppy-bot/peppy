@@ -86,6 +86,8 @@ pub fn compile_capnp(capnp_files: &[impl AsRef<Path>], output_dir: impl AsRef<Pa
 }
 
 /// Given a message_format, create the resulting capnp file as well as a mapping between the arguments and their associated Rust types
+/// This function return both the protobuf scheme as well as the Vec<FunctionParam> from the same function to ensure type parity between the two
+/// types (capnp types & Rust types)
 pub fn map_message_format_to_capnpn_proto(
     message_format: MessageFormat,
 ) -> Result<(String, Vec<FunctionParam>)> {
