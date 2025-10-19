@@ -5,6 +5,7 @@ use super::checker;
 use super::common;
 use super::types::{InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage};
 use crate::error::Result;
+use config::encoding::{FunctionParam, map_message_format_to_capnpn_proto};
 use config::{
     consts::PEPPY_NODE_CONFIG_FILE,
     node::{
@@ -36,13 +37,14 @@ impl RustGenerator {
 }
 
 impl LanguageGenerator for RustGenerator {
-    fn push_section(&mut self, section: InterfaceArtifact) {
+    fn push_section(&mut self, section: InterfaceArtifact) -> Result<()> {
         if !section.code_output.is_empty() {
             self.sections.push(section);
         }
+        Ok(())
     }
 
-    fn add_exposed_topic(&mut self, topic: &ExposedTopic) {
+    fn add_exposed_topic(&mut self, topic: &ExposedTopic) -> Result<()> {
         let fn_name = prefixed_ident("", non_empty_str(topic.name.as_str()), "topic");
         let fn_name_str = fn_name.to_string();
         let async_fn_name = Ident::new(&(fn_name_str.clone() + "_async"), Span::call_site());
@@ -80,9 +82,10 @@ impl LanguageGenerator for RustGenerator {
             InterfaceKind::ExposedTopic,
             rendered,
         ));
+        Ok(())
     }
 
-    fn add_exposed_service(&mut self, service: &ExposedService) {
+    fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()> {
         let fn_name = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
         let fn_name_str = fn_name.to_string();
         let async_fn_name = Ident::new(&(fn_name_str.clone() + "_async"), Span::call_site());
@@ -125,9 +128,10 @@ impl LanguageGenerator for RustGenerator {
             InterfaceKind::ExposedService,
             rendered,
         ));
+        Ok(())
     }
 
-    fn add_exposed_action(&mut self, action: &ExposedAction) {
+    fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()> {
         let base_ident = prefixed_ident("", non_empty_str(&action.name), "action");
         let base_name = base_ident.to_string();
 
@@ -222,9 +226,14 @@ impl LanguageGenerator for RustGenerator {
             InterfaceKind::ExposedAction,
             rendered,
         ));
+        Ok(())
     }
 
-    fn add_subscribed_topic(&mut self, topic: &SubscribedTopic, arguments: Option<&MessageFormat>) {
+    fn add_subscribed_topic(
+        &mut self,
+        topic: &SubscribedTopic,
+        arguments: Option<&MessageFormat>,
+    ) -> Result<()> {
         let fn_name = Ident::new(topic.callback.as_str(), Span::call_site());
         let (struct_tokens, function_token) = build_async_returning_function(
             &fn_name,
@@ -246,13 +255,14 @@ impl LanguageGenerator for RustGenerator {
             InterfaceKind::SubscribedTopic,
             rendered,
         ));
+        Ok(())
     }
 
     fn add_subscribed_service(
         &mut self,
         service: &SubscribedService,
         arguments: Option<&MessageFormat>,
-    ) {
+    ) -> Result<()> {
         let fn_name = Ident::new(service.callback.as_str(), Span::call_site());
         let (struct_tokens, function_token) = build_async_returning_function(
             &fn_name,
@@ -274,13 +284,14 @@ impl LanguageGenerator for RustGenerator {
             InterfaceKind::SubscribedService,
             rendered,
         ));
+        Ok(())
     }
 
     fn add_subscribed_action(
         &mut self,
         action: &SubscribedAction,
         messages: Option<&SubscribedActionMessage>,
-    ) {
+    ) -> Result<()> {
         let mut struct_blocks: Vec<TokenStream> = Vec::new();
         let mut function_blocks: Vec<TokenStream> = Vec::new();
 
@@ -327,6 +338,7 @@ impl LanguageGenerator for RustGenerator {
             InterfaceKind::SubscribedAction,
             rendered,
         ));
+        Ok(())
     }
 
     fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
@@ -409,11 +421,6 @@ fn sanitize_component(raw: &str) -> String {
     out
 }
 
-struct FunctionParam {
-    ident: Ident,
-    ty: TokenStream,
-}
-
 #[derive(Default)]
 struct GenerationContext {
     structs: Vec<StructDefinition>,
@@ -476,17 +483,18 @@ fn collect_function_params(
     context: &mut GenerationContext,
 ) -> Vec<FunctionParam> {
     let mut params = Vec::new();
+    // TODO: Use `map_message_format_to_capnpn_proto(topic.message_format.as_ref())?` to determine the parameters types and `quote!` to build the functions
 
-    if let Some(format) = format {
-        for (index, (name, schema)) in format.0.iter().enumerate() {
-            let ident = sanitized_ident(name, "param", index);
-            let hint = format!("{struct_prefix}{}", to_camel_case(name));
-            let ty = rust_type_from_schema(schema, context, &hint);
-            params.push(FunctionParam { ident, ty });
-        }
-    }
+    // if let Some(format) = format {
+    //     for (index, (name, schema)) in format.0.iter().enumerate() {
+    //         let ident = sanitized_ident(name, "param", index);
+    //         let hint = format!("{struct_prefix}{}", to_camel_case(name));
+    //         let ty = rust_type_from_schema(schema, context, &hint);
+    //         params.push(FunctionParam { ident, ty });
+    //     }
+    // }
 
-    params
+    // params
 }
 
 fn unused_params_stmt(params: &[FunctionParam]) -> TokenStream {
