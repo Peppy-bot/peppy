@@ -38,11 +38,10 @@ impl RustGenerator {
 }
 
 impl LanguageGenerator for RustGenerator {
-    fn push_section(&mut self, section: InterfaceArtifact) -> Result<()> {
+    fn push_section(&mut self, section: InterfaceArtifact) {
         if !section.code_output.is_empty() {
             self.sections.push(section);
         }
-        Ok(())
     }
 
     fn add_exposed_topic(&mut self, topic: &ExposedTopic) -> Result<()> {
