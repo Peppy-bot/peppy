@@ -485,6 +485,7 @@ dependencies = [
  "capnpc",
  "notify",
  "notify-debouncer-mini",
+ "proc-macro2",
  "serde",
  "serde_json5",
  "tempfile",

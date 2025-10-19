@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod frame_capnp;
+pub mod types;
 
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+pub use types::FunctionParam;
 
 use crate::error::{Error, Result};
 use capnp::message::ReaderOptions;
@@ -10,6 +10,10 @@ use capnp::schema_capnp::{field, node, type_};
 use capnp::serialize;
 use capnpc::codegen::GeneratorContext;
 use capnpc::codegen_types::{Leaf, RustTypeInfo};
+use proc_macro2::{Ident, Span, TokenStream};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use tempfile::tempdir;
 
 use crate::node::{ArraySchema, MessageFormat, SchemaType, TypeToken};
@@ -81,31 +85,10 @@ pub fn compile_capnp(capnp_files: &[impl AsRef<Path>], output_dir: impl AsRef<Pa
     Ok(())
 }
 
-/// Given a textual type descriptor from a node message format, return the corresponding Cap'n Proto type.
-pub fn map_node_type_to_capnp_proto(node_type: &str) -> String {
-    match node_type.to_ascii_lowercase().as_str() {
-        "bool" => "Bool".to_string(),
-        "string" | "str" => "Text".to_string(),
-        "bytes" => "Data".to_string(),
-        "time" => "Timestamp".to_string(),
-        "u8" => "UInt8".to_string(),
-        "u16" => "UInt16".to_string(),
-        "u32" => "UInt32".to_string(),
-        "u64" => "UInt64".to_string(),
-        "i8" => "Int8".to_string(),
-        "i16" => "Int16".to_string(),
-        "i32" => "Int32".to_string(),
-        "i64" => "Int64".to_string(),
-        "f32" => "Float32".to_string(),
-        "f64" => "Float64".to_string(),
-        other => other.to_string(),
-    }
-}
-
 /// Given a message_format, create the resulting capnp file as well as a mapping between the arguments and their associated Rust types
 pub fn map_message_format_to_capnpn_proto(
     message_format: MessageFormat,
-) -> Result<(String, HashMap<String, String>)> {
+) -> Result<(String, Vec<FunctionParam>)> {
     let mut generator = CapnpSchemaGenerator::default();
     let mut schema = String::new();
     let mut schema_id = compute_schema_id(&message_format.0);
@@ -125,7 +108,8 @@ pub fn map_message_format_to_capnpn_proto(
     }
 
     let type_mapping = compute_rust_type_mapping(&schema, &message_format)?;
-    Ok((schema, type_mapping))
+    let params = build_function_params(&message_format, &type_mapping)?;
+    Ok((schema, params))
 }
 
 #[derive(Default)]
@@ -350,6 +334,33 @@ fn compute_schema_id(fields: &std::collections::BTreeMap<String, SchemaType>) ->
     }
 
     hash_fields(FNV_OFFSET, fields, FNV_PRIME)
+}
+
+fn build_function_params(
+    format: &MessageFormat,
+    mapping: &HashMap<String, String>,
+) -> Result<Vec<FunctionParam>> {
+    let mut params = Vec::with_capacity(format.0.len());
+
+    for field_name in format.0.keys() {
+        let sanitized = sanitize_field_name(field_name);
+        let type_string = mapping.get(&sanitized).ok_or_else(|| {
+            Error::Encoding(format!(
+                "missing type mapping for field `{sanitized}` while building function parameters"
+            ))
+        })?;
+
+        let ident = Ident::new(&sanitized, Span::call_site());
+        let ty = TokenStream::from_str(type_string).map_err(|err| {
+            Error::Encoding(format!(
+                "failed to parse rust type `{type_string}` for field `{sanitized}`: {err}"
+            ))
+        })?;
+
+        params.push(FunctionParam::new(ident, ty));
+    }
+
+    Ok(params)
 }
 
 /// Returns both the canonical Cap'n Proto discriminant string and the Rust-facing type string
@@ -609,6 +620,26 @@ mod tests {
     use super::*;
     use crate::encoding::frame_capnp::image_message;
     use crate::node::MessageFormat;
+    use proc_macro2::TokenStream;
+
+    fn canonicalize_tokens(tokens: &TokenStream) -> String {
+        tokens
+            .to_string()
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect()
+    }
+
+    fn canonicalize_literal(value: &str) -> String {
+        value.chars().filter(|ch| !ch.is_whitespace()).collect()
+    }
+
+    fn params_to_map(params: &[FunctionParam]) -> std::collections::HashMap<String, String> {
+        params
+            .iter()
+            .map(|param| (param.ident().to_string(), canonicalize_tokens(param.ty())))
+            .collect()
+    }
 
     #[test]
     fn test_map_message_format_to_capnpn_proto() {
@@ -633,59 +664,73 @@ mod tests {
         )
         .expect("valid format");
 
-        let (schema, type_map) =
-            map_message_format_to_capnpn_proto(msg_format).expect("schema generation succeeds");
+        let (schema, params) = map_message_format_to_capnpn_proto(msg_format.clone())
+            .expect("schema generation succeeds");
 
-        assert_eq!(type_map.len(), 9, "expected entries for nested fields");
+        assert_eq!(params.len(), 5, "expected entries for top-level fields");
+
+        let param_map = params_to_map(&params);
         assert!(
-            type_map
+            param_map
                 .get("encoding")
                 .expect("encoding entry missing")
                 .ends_with("text::Reader<'a>"),
             "encoding should map to a capnp text reader",
         );
         assert_eq!(
-            type_map.get("width"),
-            Some(&"u32".to_string()),
+            param_map.get("width"),
+            Some(&canonicalize_literal("u32")),
             "width should map to u32"
         );
         assert_eq!(
-            type_map.get("height"),
-            Some(&"u32".to_string()),
+            param_map.get("height"),
+            Some(&canonicalize_literal("u32")),
             "height should map to u32"
         );
         assert_eq!(
-            type_map.get("image"),
-            Some(&"[u8; 3]".to_string()),
+            param_map.get("image"),
+            Some(&canonicalize_literal("[u8; 3]")),
             "image should map to a fixed-size array"
         );
         assert!(
-            type_map
+            param_map
                 .get("header")
                 .expect("header entry missing")
                 .ends_with("header::Reader<'a>"),
             "header should resolve to the generated header reader type"
         );
+
+        let canonical_type_map = compute_rust_type_mapping(&schema, &msg_format)
+            .expect("type mapping generation succeeds")
+            .into_iter()
+            .map(|(key, value)| (key, canonicalize_literal(&value)))
+            .collect::<std::collections::HashMap<_, _>>();
+
         assert_eq!(
-            type_map.get("header.frameId"),
-            Some(&"u32".to_string()),
+            canonical_type_map.len(),
+            9,
+            "expected entries for nested fields"
+        );
+        assert_eq!(
+            canonical_type_map.get("header.frameId"),
+            Some(&canonicalize_literal("u32")),
             "header.frameId should map to u32"
         );
         assert!(
-            type_map
+            canonical_type_map
                 .get("header.stamp")
                 .expect("header.stamp entry missing")
                 .ends_with("timestamp::Reader<'a>"),
             "header.stamp should map to the generated timestamp reader type"
         );
         assert_eq!(
-            type_map.get("header.stamp.sec"),
-            Some(&"i64".to_string()),
+            canonical_type_map.get("header.stamp.sec"),
+            Some(&canonicalize_literal("i64")),
             "header.stamp.sec should map to i64"
         );
         assert_eq!(
-            type_map.get("header.stamp.nsec"),
-            Some(&"u32".to_string()),
+            canonical_type_map.get("header.stamp.nsec"),
+            Some(&canonicalize_literal("u32")),
             "header.stamp.nsec should map to u32"
         );
 
@@ -728,12 +773,13 @@ mod tests {
         )
         .expect("valid format");
 
-        let (_schema, type_map) =
+        let (_schema, params) =
             map_message_format_to_capnpn_proto(msg_format).expect("schema generation succeeds");
 
+        let param_map = params_to_map(&params);
         assert_eq!(
-            type_map.get("image"),
-            Some(&"[u8]".to_string()),
+            param_map.get("image"),
+            Some(&canonicalize_literal("[u8]")),
             "image should map to a dynamically sized array"
         );
     }
@@ -753,12 +799,13 @@ mod tests {
         )
         .expect("valid format");
 
-        let (_schema, type_map) =
+        let (_schema, params) =
             map_message_format_to_capnpn_proto(msg_format).expect("schema generation succeeds");
 
+        let param_map = params_to_map(&params);
         assert_eq!(
-            type_map.get("labels"),
-            Some(&"[String; 3]".to_string()),
+            param_map.get("labels"),
+            Some(&canonicalize_literal("[String; 3]")),
             "labels should map to a fixed-size array of Strings"
         );
     }

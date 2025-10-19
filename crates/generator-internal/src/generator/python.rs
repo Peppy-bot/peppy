@@ -33,20 +33,22 @@ impl PythonGenerator {
 }
 
 impl LanguageGenerator for PythonGenerator {
-    fn push_section(&mut self, section: InterfaceArtifact) {
+    fn push_section(&mut self, section: InterfaceArtifact) -> Result<()> {
         PythonGenerator::push_section(self, section);
+        Ok(())
     }
 
-    fn add_exposed_topic(&mut self, topic: &ExposedTopic) {
+    fn add_exposed_topic(&mut self, topic: &ExposedTopic) -> Result<()> {
         let name = prefixed_name("exposed_topic", non_empty_str(topic.name.as_str()), "topic");
         self.push_section(InterfaceArtifact::from_kind(
             &topic.name,
             InterfaceKind::ExposedTopic,
             format!("def {name}():\n    raise NotImplementedError(\"publish PMI topic\")\n"),
         ));
+        Ok(())
     }
 
-    fn add_exposed_service(&mut self, service: &ExposedService) {
+    fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()> {
         let name = prefixed_name(
             "exposed_service",
             non_empty_str(service.name.as_str()),
@@ -57,22 +59,24 @@ impl LanguageGenerator for PythonGenerator {
             InterfaceKind::ExposedService,
             format!("def {name}():\n    raise NotImplementedError(\"expose PMI service\")\n"),
         ));
+        Ok(())
     }
 
-    fn add_exposed_action(&mut self, action: &ExposedAction) {
+    fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()> {
         let name = prefixed_name("exposed_action", non_empty_str(&action.name), "action");
         self.push_section(InterfaceArtifact::from_kind(
             &action.name,
             InterfaceKind::ExposedAction,
             format!("def {name}():\n    raise NotImplementedError(\"expose PMI action\")\n"),
         ));
+        Ok(())
     }
 
     fn add_subscribed_topic(
         &mut self,
         topic: &SubscribedTopic,
         _arguments: Option<&MessageFormat>,
-    ) {
+    ) -> Result<()> {
         self.push_section(InterfaceArtifact::from_kind(
             &topic.name,
             InterfaceKind::SubscribedTopic,
@@ -81,13 +85,14 @@ impl LanguageGenerator for PythonGenerator {
                 topic.callback.as_str()
             ),
         ));
+        Ok(())
     }
 
     fn add_subscribed_service(
         &mut self,
         service: &SubscribedService,
         _arguments: Option<&MessageFormat>,
-    ) {
+    ) -> Result<()> {
         self.push_section(InterfaceArtifact::from_kind(
             &service.name,
             InterfaceKind::SubscribedService,
@@ -96,13 +101,14 @@ impl LanguageGenerator for PythonGenerator {
                 service.callback.as_str()
             ),
         ));
+        Ok(())
     }
 
     fn add_subscribed_action(
         &mut self,
         action: &SubscribedAction,
         _arguments: Option<&SubscribedActionMessage>,
-    ) {
+    ) -> Result<()> {
         let mut sections = Vec::new();
 
         if let Some(callback) = action.feedback_callback.as_ref() {
@@ -124,6 +130,7 @@ impl LanguageGenerator for PythonGenerator {
             InterfaceKind::SubscribedAction,
             sections.join("\n"),
         ));
+        Ok(())
     }
     fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
         let _ = to_path;
