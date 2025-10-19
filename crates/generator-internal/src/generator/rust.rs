@@ -4,8 +4,9 @@ mod tests;
 use super::checker;
 use super::common;
 use super::types::{InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage};
+use crate::error::Error;
 use crate::error::Result;
-use config::encoding::{FunctionParam, map_message_format_to_capnpn_proto};
+use config::encoding::{FunctionParam, compile_capnp, map_message_format_to_capnpn_proto};
 use config::{
     consts::PEPPY_NODE_CONFIG_FILE,
     node::{
@@ -15,19 +16,22 @@ use config::{
 };
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::fs;
 use std::path::Path;
 use syn::{File, parse2};
 
 /// Rust-specific implementation of the interface generator.
 pub struct RustGenerator {
     sections: Vec<InterfaceArtifact>,
+    schemas: HashMap<String, CapnpSchema>,
 }
 
 impl RustGenerator {
     pub fn new() -> Self {
         Self {
             sections: Vec::new(),
+            schemas: HashMap::new(),
         }
     }
 
@@ -35,6 +39,96 @@ impl RustGenerator {
     pub fn into_artifacts(self) -> Vec<InterfaceArtifact> {
         self.sections
     }
+
+    fn register_schema(
+        &mut self,
+        schema_key: &str,
+        struct_prefix: &str,
+        format: &MessageFormat,
+    ) -> Result<SchemaInfo> {
+        let (schema_source, _) =
+            map_message_format_to_capnpn_proto(format.clone()).map_err(Error::MessageEncoding)?;
+
+        let key_component = sanitize_component(schema_key);
+        let base_name = if key_component.is_empty() {
+            "message".to_string()
+        } else {
+            key_component
+        };
+
+        let file_stem = if base_name.ends_with("_message") {
+            base_name
+        } else {
+            format!("{base_name}_message")
+        };
+
+        let struct_name = format!("{struct_prefix}Message");
+        let schema = schema_source.replacen("struct Message", &format!("struct {struct_name}"), 1);
+
+        self.schemas
+            .entry(file_stem.clone())
+            .and_modify(|existing| {
+                existing.schema = schema.clone();
+            })
+            .or_insert_with(|| CapnpSchema::new(file_stem.clone(), struct_name.clone(), schema));
+
+        Ok(SchemaInfo { file_stem })
+    }
+
+    fn prepare_message_encoding(
+        &mut self,
+        schema_key: &str,
+        struct_prefix: &str,
+        format: Option<&MessageFormat>,
+        params: &[FunctionParam],
+    ) -> Result<Option<MessageEncodingSpec>> {
+        let Some(format) = format else {
+            return Ok(None);
+        };
+
+        let schema_info = self.register_schema(schema_key, struct_prefix, format)?;
+        let builder_ident = Ident::new("root", Span::call_site());
+        let assignments = generate_assignments_for_format(&builder_ident, format, params);
+
+        Ok(Some(MessageEncodingSpec {
+            builder_type: schema_info.builder_type_tokens(),
+            assignments,
+        }))
+    }
+}
+
+#[derive(Clone)]
+struct CapnpSchema {
+    file_stem: String,
+    _struct_name: String,
+    schema: String,
+}
+
+impl CapnpSchema {
+    fn new(file_stem: String, struct_name: String, schema: String) -> Self {
+        Self {
+            file_stem,
+            _struct_name: struct_name,
+            schema,
+        }
+    }
+}
+
+struct SchemaInfo {
+    file_stem: String,
+}
+
+impl SchemaInfo {
+    fn builder_type_tokens(&self) -> TokenStream {
+        let module_ident = Ident::new(&format!("{}_capnp", self.file_stem), Span::call_site());
+        let struct_module_ident = Ident::new(&self.file_stem, Span::call_site());
+        quote!(crate::capnp::#module_ident::#struct_module_ident::Builder)
+    }
+}
+
+struct MessageEncodingSpec {
+    builder_type: TokenStream,
+    assignments: Vec<TokenStream>,
 }
 
 impl LanguageGenerator for RustGenerator {
@@ -54,15 +148,17 @@ impl LanguageGenerator for RustGenerator {
         let mut context = GenerationContext::default();
         let params =
             collect_function_params(topic.message_format.as_ref(), &struct_prefix, &mut context)?;
+        let encoding = self.prepare_message_encoding(
+            &fn_name_str,
+            &struct_prefix,
+            topic.message_format.as_ref(),
+            &params,
+        )?;
         let struct_tokens = context.into_tokens();
 
-        let sync_fn =
-            build_sync_function(&fn_name, &params, "publish peppylib topic synchronously");
-        let async_fn = build_async_function(
-            &async_fn_name,
-            &params,
-            "publish peppylib topic asynchronously",
-        );
+        let sync_fn = build_sync_function(&fn_name, &async_fn_name, &params, &fn_name_str);
+        let async_fn =
+            build_async_function(&async_fn_name, &params, encoding.as_ref(), &fn_name_str);
         let function_tokens = quote! {
             #sync_fn
             #async_fn
@@ -98,18 +194,17 @@ impl LanguageGenerator for RustGenerator {
             &struct_prefix,
             &mut context,
         )?;
+        let encoding = self.prepare_message_encoding(
+            &fn_name_str,
+            &struct_prefix,
+            service.message_format.as_ref(),
+            &params,
+        )?;
         let struct_tokens = context.into_tokens();
 
-        let sync_fn = build_sync_function(
-            &fn_name,
-            &params,
-            "call peppylib and send message service synchronously",
-        );
-        let async_fn = build_async_function(
-            &async_fn_name,
-            &params,
-            "call peppylib and send message service asynchronously",
-        );
+        let sync_fn = build_sync_function(&fn_name, &async_fn_name, &params, &fn_name_str);
+        let async_fn =
+            build_async_function(&async_fn_name, &params, encoding.as_ref(), &fn_name_str);
         let function_tokens = quote! {
             #sync_fn
             #async_fn
@@ -147,17 +242,17 @@ impl LanguageGenerator for RustGenerator {
                 &struct_prefix,
                 &mut context,
             )?;
+            let fn_key = fn_name.to_string();
+            let encoding = self.prepare_message_encoding(
+                &fn_key,
+                &struct_prefix,
+                goal.message_format.as_ref(),
+                &params,
+            )?;
 
-            let sync_fn = build_sync_function(
-                &fn_name,
-                &params,
-                "call peppylib and send message action goal synchronously",
-            );
-            let async_fn = build_async_function(
-                &async_fn_name,
-                &params,
-                "call peppylib and send message action goal asynchronously",
-            );
+            let sync_fn = build_sync_function(&fn_name, &async_fn_name, &params, &fn_key);
+            let async_fn =
+                build_async_function(&async_fn_name, &params, encoding.as_ref(), &fn_key);
             function_blocks.push(sync_fn);
             function_blocks.push(async_fn);
         }
@@ -171,17 +266,17 @@ impl LanguageGenerator for RustGenerator {
                 &struct_prefix,
                 &mut context,
             )?;
+            let fn_key = fn_name.to_string();
+            let encoding = self.prepare_message_encoding(
+                &fn_key,
+                &struct_prefix,
+                feedback.message_format.as_ref(),
+                &params,
+            )?;
 
-            let sync_fn = build_sync_function(
-                &fn_name,
-                &params,
-                "publish PMI action feedback synchronously",
-            );
-            let async_fn = build_async_function(
-                &async_fn_name,
-                &params,
-                "publish PMI action feedback asynchronously",
-            );
+            let sync_fn = build_sync_function(&fn_name, &async_fn_name, &params, &fn_key);
+            let async_fn =
+                build_async_function(&async_fn_name, &params, encoding.as_ref(), &fn_key);
             function_blocks.push(sync_fn);
             function_blocks.push(async_fn);
         }
@@ -195,17 +290,17 @@ impl LanguageGenerator for RustGenerator {
                 &struct_prefix,
                 &mut context,
             )?;
+            let fn_key = fn_name.to_string();
+            let encoding = self.prepare_message_encoding(
+                &fn_key,
+                &struct_prefix,
+                result.message_format.as_ref(),
+                &params,
+            )?;
 
-            let sync_fn = build_sync_function(
-                &fn_name,
-                &params,
-                "call peppylib and send message action result synchronously",
-            );
-            let async_fn = build_async_function(
-                &async_fn_name,
-                &params,
-                "call peppylib and send message action result asynchronously",
-            );
+            let sync_fn = build_sync_function(&fn_name, &async_fn_name, &params, &fn_key);
+            let async_fn =
+                build_async_function(&async_fn_name, &params, encoding.as_ref(), &fn_key);
             function_blocks.push(sync_fn);
             function_blocks.push(async_fn);
         }
@@ -345,9 +440,10 @@ impl LanguageGenerator for RustGenerator {
     }
 
     fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
-        let artifacts = self.sections;
         common::add_peppylib_dependencies(&to_path)?;
-        common::add_artifacts_to_lib(&to_path, artifacts)?;
+        // TODO: The resulting .capnp generated by add_exposed_topic/add_exposed_service etc.. should be reused and compiled in the function below instead of regenerating them from scratch
+        write_capnp_schemas(&self.schemas, to_path.as_ref())?;
+        common::add_artifacts_to_lib(&to_path, self.sections)?;
         let crate_root = to_path.as_ref();
         let node_config_path = crate_root.join(PEPPY_NODE_CONFIG_FILE);
         // Lastly generate the codegen fingerprint based on the peppy.json5 config file
@@ -651,28 +747,261 @@ fn render_tokens(tokens: TokenStream) -> String {
         .unwrap_or_else(|_| tokens.to_string())
 }
 
-fn build_sync_function(fn_name: &Ident, params: &[FunctionParam], todo_msg: &str) -> TokenStream {
-    let param_tokens: Vec<TokenStream> = params
-        .iter()
-        .map(|param| {
-            let ident = &param.ident;
-            let ty = &param.ty;
-            quote!(#ident: #ty)
-        })
-        .collect();
+fn write_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, crate_root: &Path) -> Result<()> {
+    let src_dir = crate_root.join("src");
+    if schemas.is_empty() {
+        let capnp_rs = src_dir.join("capnp.rs");
+        if !capnp_rs.exists() {
+            fs::write(capnp_rs, "// No Cap'n Proto schemas generated.\n")?;
+        }
+        return Ok(());
+    }
 
-    let suppress_unused = unused_params_stmt(params);
-    let msg = Literal::string(todo_msg);
+    let mut entries: Vec<&CapnpSchema> = schemas.values().collect();
+    entries.sort_by(|a, b| a.file_stem.cmp(&b.file_stem));
+
+    let capnp_dir = src_dir.join("capnp");
+    fs::create_dir_all(&capnp_dir)?;
+
+    let mut schema_paths = Vec::with_capacity(entries.len());
+    for schema in entries {
+        let file_path = capnp_dir.join(format!("{}.capnp", schema.file_stem));
+        fs::write(&file_path, &schema.schema)?;
+        schema_paths.push(file_path);
+    }
+
+    compile_capnp(&schema_paths, &src_dir).map_err(Error::MessageEncoding)?;
+    Ok(())
+}
+
+fn generate_assignments_for_format(
+    builder_ident: &Ident,
+    format: &MessageFormat,
+    params: &[FunctionParam],
+) -> Vec<TokenStream> {
+    let mut param_lookup: HashMap<String, Ident> = HashMap::new();
+    for param in params {
+        param_lookup.insert(param.ident.to_string(), param.ident.clone());
+    }
+
+    let mut assignments = Vec::with_capacity(format.0.len());
+    let mut name_gen = NameGenerator::new();
+    let builder_expr = quote!(#builder_ident);
+
+    for (field_name, schema) in &format.0 {
+        let sanitized = sanitize_component(field_name);
+        let param_ident = param_lookup
+            .get(&sanitized)
+            .unwrap_or_else(|| panic!("missing parameter for field `{field_name}`"))
+            .clone();
+        let value_expr = quote!(#param_ident);
+        assignments.push(generate_field_assignment(
+            &builder_expr,
+            field_name,
+            schema,
+            &value_expr,
+            &mut name_gen,
+        ));
+    }
+
+    assignments
+}
+
+fn generate_field_assignment(
+    builder_expr: &TokenStream,
+    field_name: &str,
+    schema: &SchemaType,
+    value_expr: &TokenStream,
+    names: &mut NameGenerator,
+) -> TokenStream {
+    let method_component = sanitize_component(field_name);
+    let set_method = Ident::new(&format!("set_{method_component}"), Span::call_site());
+    let init_method = Ident::new(&format!("init_{method_component}"), Span::call_site());
+
+    match schema {
+        SchemaType::Type(token) => match token {
+            TypeToken::Bool
+            | TypeToken::U8
+            | TypeToken::U16
+            | TypeToken::U32
+            | TypeToken::U64
+            | TypeToken::I8
+            | TypeToken::I16
+            | TypeToken::I32
+            | TypeToken::I64
+            | TypeToken::F32
+            | TypeToken::F64 => {
+                quote!(#builder_expr.#set_method(#value_expr);)
+            }
+            TypeToken::String => {
+                quote!(#builder_expr.#set_method(#value_expr.as_str());)
+            }
+            TypeToken::Bytes => {
+                quote!(#builder_expr.#set_method(#value_expr.as_ref());)
+            }
+            TypeToken::Time => {
+                generate_time_assignment(builder_expr, &init_method, value_expr, names)
+            }
+        },
+        SchemaType::Array(array) => match array.items.as_ref() {
+            SchemaType::Type(TypeToken::U8) => {
+                quote!(#builder_expr.#set_method(#value_expr.as_ref());)
+            }
+            SchemaType::Type(token) => generate_list_assignment(
+                builder_expr,
+                &init_method,
+                value_expr,
+                array.length,
+                token,
+                names,
+            ),
+            other => panic!(
+                "unsupported nested schema type {:?} in array `{field_name}`",
+                other
+            ),
+        },
+        SchemaType::Object(object) => generate_object_assignment(
+            builder_expr,
+            &init_method,
+            value_expr,
+            &object.fields,
+            names,
+        ),
+    }
+}
+
+fn generate_time_assignment(
+    builder_expr: &TokenStream,
+    init_method: &Ident,
+    value_expr: &TokenStream,
+    names: &mut NameGenerator,
+) -> TokenStream {
+    let seconds_ident = names.next("seconds");
+    let nanos_ident = names.next("nanos");
+    let builder_ident = names.next("timestamp_builder");
 
     quote! {
-        pub fn #fn_name(#(#param_tokens),*) {
-            #suppress_unused
-            todo!(#msg);
+        let (#seconds_ident, #nanos_ident) = match #value_expr.duration_since(::std::time::UNIX_EPOCH) {
+            Ok(duration) => (duration.as_secs() as i64, duration.subsec_nanos()),
+            Err(err) => {
+                let duration = err.duration();
+                let secs = duration.as_secs() as i64;
+                let nanos = duration.subsec_nanos();
+                if nanos == 0 {
+                    (-secs, 0)
+                } else {
+                    (-secs - 1, 1_000_000_000u32 - nanos)
+                }
+            }
+        };
+        let mut #builder_ident = #builder_expr.reborrow().#init_method();
+        #builder_ident.set_sec(#seconds_ident);
+        #builder_ident.set_nsec(#nanos_ident);
+    }
+}
+
+fn generate_list_assignment(
+    builder_expr: &TokenStream,
+    init_method: &Ident,
+    value_expr: &TokenStream,
+    length: Option<usize>,
+    token: &TypeToken,
+    names: &mut NameGenerator,
+) -> TokenStream {
+    let list_ident = names.next("list");
+    let idx_ident = names.next("idx");
+    let element_ident = names.next("value");
+
+    let length_expr = match length {
+        Some(len) => {
+            let len_lit = Literal::u32_unsuffixed(len as u32);
+            quote!(#len_lit)
+        }
+        None => quote!((#value_expr).len() as u32),
+    };
+
+    let element_setter = match token {
+        TypeToken::String => quote!(#list_ident.set(#idx_ident as u32, #element_ident.as_str());),
+        TypeToken::Bytes => quote!(#list_ident.set(#idx_ident as u32, #element_ident.as_ref());),
+        TypeToken::Bool
+        | TypeToken::U8
+        | TypeToken::U16
+        | TypeToken::U32
+        | TypeToken::U64
+        | TypeToken::I8
+        | TypeToken::I16
+        | TypeToken::I32
+        | TypeToken::I64
+        | TypeToken::F32
+        | TypeToken::F64 => quote!(#list_ident.set(#idx_ident as u32, *#element_ident);),
+        TypeToken::Time => panic!("time arrays are not supported"),
+    };
+
+    quote! {
+        let mut #list_ident = #builder_expr.reborrow().#init_method(#length_expr);
+        for (#idx_ident, #element_ident) in (#value_expr).iter().enumerate() {
+            #element_setter
         }
     }
 }
 
-fn build_async_function(fn_name: &Ident, params: &[FunctionParam], todo_msg: &str) -> TokenStream {
+fn generate_object_assignment(
+    builder_expr: &TokenStream,
+    init_method: &Ident,
+    value_expr: &TokenStream,
+    fields: &BTreeMap<String, SchemaType>,
+    names: &mut NameGenerator,
+) -> TokenStream {
+    let builder_ident = names.next("builder");
+    let mut nested = Vec::with_capacity(fields.len());
+
+    for (nested_name, nested_schema) in fields {
+        let nested_ident = Ident::new(&sanitize_component(nested_name.as_str()), Span::call_site());
+        let nested_value_expr = quote!(#value_expr.#nested_ident);
+        nested.push(generate_field_assignment(
+            &quote!(#builder_ident),
+            nested_name,
+            nested_schema,
+            &nested_value_expr,
+            names,
+        ));
+    }
+
+    quote! {
+        let mut #builder_ident = #builder_expr.reborrow().#init_method();
+        #(#nested)*
+    }
+}
+
+#[derive(Default)]
+struct NameGenerator {
+    counter: usize,
+}
+
+impl NameGenerator {
+    fn new() -> Self {
+        Self { counter: 0 }
+    }
+
+    fn next(&mut self, hint: &str) -> Ident {
+        let sanitized = sanitize_component(hint);
+        let suffix = self.counter;
+        self.counter += 1;
+        let base = if sanitized.is_empty() {
+            "tmp".to_string()
+        } else {
+            sanitized
+        };
+        Ident::new(&format!("{base}_{suffix}"), Span::call_site())
+    }
+}
+
+fn build_sync_function(
+    fn_name: &Ident,
+    async_fn_name: &Ident,
+    params: &[FunctionParam],
+    label: &str,
+) -> TokenStream {
     let param_tokens: Vec<TokenStream> = params
         .iter()
         .map(|param| {
@@ -682,13 +1011,86 @@ fn build_async_function(fn_name: &Ident, params: &[FunctionParam], todo_msg: &st
         })
         .collect();
 
-    let suppress_unused = unused_params_stmt(params);
-    let msg = Literal::string(todo_msg);
+    let async_args: Vec<TokenStream> = params
+        .iter()
+        .map(|param| {
+            let ident = &param.ident;
+            quote!(#ident)
+        })
+        .collect();
+
+    let label_literal = Literal::string(label);
 
     quote! {
-        pub async fn #fn_name(#(#param_tokens),*) {
-            #suppress_unused
-            todo!(#msg);
+        pub fn #fn_name(#(#param_tokens),*) -> capnp::Result<Vec<u8>> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|err| capnp::Error::failed(format!(
+                    "failed to build runtime for `{}`: {err}",
+                    #label_literal
+                )))?;
+            runtime.block_on(#async_fn_name(#(#async_args),*))
+        }
+    }
+}
+
+fn build_async_function(
+    fn_name: &Ident,
+    params: &[FunctionParam],
+    encoding: Option<&MessageEncodingSpec>,
+    label: &str,
+) -> TokenStream {
+    let param_tokens: Vec<TokenStream> = params
+        .iter()
+        .map(|param| {
+            let ident = &param.ident;
+            let ty = &param.ty;
+            quote!(#ident: #ty)
+        })
+        .collect();
+
+    match encoding {
+        Some(spec) => {
+            let builder_type = &spec.builder_type;
+            let assignments = &spec.assignments;
+            let root_ident = Ident::new("root", Span::call_site());
+
+            quote! {
+                pub async fn #fn_name(#(#param_tokens),*) -> peppylib::PeppyResult<()> {
+                    let mut message = capnp::message::Builder::new_default();
+                    {
+                        let mut #root_ident = message.init_root::<#builder_type>();
+                        #(#assignments)*
+                    }
+                    let mut buffer = Vec::new();
+                    capnp::serialize::write_message(&mut buffer, &message)?;
+
+                    let message_payload = to_bytes(message)?;
+                    let _messenger = peppylib::PeppyMessenger::new().await;
+
+                    let _node_name = "temporary_node_name";
+                    let _ns = "temporary_namespace";
+                    let _topic_name = "temporary_topic";
+
+                    // TODO: send_topic_message only applies to topics, `send_service_message` for services and `send_action_message` for actions
+                    // messenger.send_topic_message(node_name, ns, topic_name, qos, message_payload)?;
+                    Ok(())
+                }
+            }
+        }
+        None => {
+            let suppress_unused = unused_params_stmt(params);
+            let msg = Literal::string(&format!(
+                "message format for `{label}` is not available in the generator"
+            ));
+
+            quote! {
+                pub async fn #fn_name(#(#param_tokens),*) -> capnp::Result<Vec<u8>> {
+                    #suppress_unused
+                    todo!(#msg);
+                }
+            }
         }
     }
 }

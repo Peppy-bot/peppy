@@ -1,3 +1,4 @@
+use config::ConfigError;
 use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -31,4 +32,6 @@ pub enum Error {
         #[source]
         source: syn::Error,
     },
+    #[error("Failed encoding `{0}`")]
+    MessageEncoding(ConfigError),
 }

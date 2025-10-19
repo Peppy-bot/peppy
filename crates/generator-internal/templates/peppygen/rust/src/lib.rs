@@ -1,5 +1,6 @@
 mod init;
 
+pub mod capnp;
 pub mod actions;
 pub mod services;
 pub mod topics;
