@@ -69,33 +69,223 @@ pub fn compile_capnp(capnp_files: &[impl AsRef<Path>], output_dir: impl AsRef<Pa
     Ok(())
 }
 
-/// Given a message_format, create the resulting capnp file as well as a mapping between the arguments and their associated Rust types
-/// This function return both the protobuf scheme as well as the Vec<FunctionParam> from the same function to ensure type parity between the two
-/// types (capnp types & Rust types)
-pub fn map_message_format_to_capnpn_proto(
+/// This struct helps tuning a MessageFormat into a capnp proto and its associated Rust types
+pub struct MessageFormatMapper {
     message_format: MessageFormat,
-) -> Result<(String, Vec<FunctionParam>)> {
-    let mut generator = CapnpSchemaGenerator::default();
-    let mut schema = String::new();
-    let mut schema_id = compute_schema_id(&message_format.0);
-    if schema_id == 0 {
-        schema_id = 1;
+}
+
+impl MessageFormatMapper {
+    pub fn new(message_format: MessageFormat) -> Self {
+        Self { message_format }
     }
-    schema_id |= 1; // ensure odd
-    schema_id |= 1 << 63; // high bit set per capnp id recommendations
 
-    schema.push_str(&format!("@0x{schema_id:016x};\n"));
-    schema.push('\n');
-    schema.push_str(&generator.render_struct("Message", &message_format.0, 0)?);
+    pub fn map_message_format_to_capnpn(&self) -> Result<CapnpSchemaArtifacts> {
+        let mut generator = CapnpSchemaGenerator::default();
+        let mut schema = String::new();
+        let mut schema_id = MessageFormatMapper::compute_schema_id(&self.message_format.0);
+        if schema_id == 0 {
+            schema_id = 1;
+        }
+        schema_id |= 1; // ensure odd
+        schema_id |= 1 << 63; // high bit set per capnp id recommendations
 
-    if generator.timestamp_struct_needed {
+        schema.push_str(&format!("@0x{schema_id:016x};\n"));
         schema.push('\n');
-        schema.push_str("struct Timestamp {\n  sec @0 :Int64;\n  nsec @1 :UInt32;\n}\n");
+        schema.push_str(&generator.render_struct("Message", &self.message_format.0, 0)?);
+
+        if generator.timestamp_struct_needed {
+            schema.push('\n');
+            schema.push_str("struct Timestamp {\n  sec @0 :Int64;\n  nsec @1 :UInt32;\n}\n");
+        }
+
+        let type_mapping = self.compute_rust_type_mapping(&schema)?;
+        //let params = build_function_params(&self.message_format, &type_mapping)?;
+        //Ok((schema, params))
+        Ok(CapnpSchemaArtifacts::new(
+            self.message_format.clone(),
+            schema,
+            type_mapping,
+        ))
     }
 
-    let type_mapping = compute_rust_type_mapping(&schema, &message_format)?;
-    let params = build_function_params(&message_format, &type_mapping)?;
-    Ok((schema, params))
+    fn compute_rust_type_mapping(&self, schema: &str) -> Result<HashMap<String, String>> {
+        let temp_dir = tempdir()?;
+        let schema_path = temp_dir.path().join("message.capnp");
+        std::fs::write(&schema_path, schema)?;
+        let request_path = temp_dir.path().join("code_generator_request.bin");
+
+        let mut command = capnpc::CompilerCommand::new();
+        command
+            .capnp_executable(bundled_capnp_executable()?)
+            .file(&schema_path)
+            .output_path(temp_dir.path())
+            .raw_code_generator_request_path(&request_path);
+
+        command.run()?;
+
+        let mut request_file = std::fs::File::open(&request_path)?;
+        let message = serialize::read_message(&mut request_file, ReaderOptions::new())?;
+        let ctx = GeneratorContext::new(&message)?;
+
+        let root_struct_id = find_root_struct_id(&ctx)?;
+        let mut mapping = HashMap::new();
+        let mut visited = HashSet::new();
+        collect_struct_fields(&ctx, root_struct_id, "", &mut mapping, &mut visited)?;
+
+        fn array_schema_to_rust_string(array: &ArraySchema) -> Option<String> {
+            match array.items.as_ref() {
+                SchemaType::Type(token) => {
+                    let (_, rust_type) = type_token_strings(token);
+                    let rendered = match array.length {
+                        Some(length) => format!("[{rust_type}; {length}]"),
+                        None => format!("[{rust_type}]"),
+                    };
+                    Some(rendered)
+                }
+                SchemaType::Array(_) | SchemaType::Object(_) => None,
+            }
+        }
+
+        fn override_array_types(
+            current_key: &str,
+            schema: &SchemaType,
+            mapping: &mut HashMap<String, String>,
+        ) {
+            match schema {
+                SchemaType::Array(array) => {
+                    if let Some(rendered) = array_schema_to_rust_string(array) {
+                        if let Some(entry) = mapping.get_mut(current_key) {
+                            *entry = rendered;
+                        }
+                    }
+                }
+                SchemaType::Object(object) => {
+                    for (field_name, field_schema) in &object.fields {
+                        let sanitized = sanitize_field_name(field_name);
+                        let next_key = if current_key.is_empty() {
+                            sanitized
+                        } else {
+                            format!("{current_key}.{sanitized}")
+                        };
+                        override_array_types(&next_key, field_schema, mapping);
+                    }
+                }
+                SchemaType::Type(_) => {}
+            }
+        }
+
+        for (field_name, schema) in &self.message_format.0 {
+            let sanitized = sanitize_field_name(field_name);
+            override_array_types(&sanitized, schema, &mut mapping);
+        }
+
+        Ok(mapping)
+    }
+
+    fn compute_schema_id(fields: &std::collections::BTreeMap<String, SchemaType>) -> u64 {
+        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+        const FNV_PRIME: u64 = 0x100000001b3;
+
+        fn update(mut hash: u64, bytes: &[u8], prime: u64) -> u64 {
+            for byte in bytes {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(prime);
+            }
+            hash
+        }
+
+        fn hash_usize(hash: u64, value: usize, prime: u64) -> u64 {
+            update(hash, &(value as u64).to_le_bytes(), prime)
+        }
+
+        fn hash_schema(mut hash: u64, schema: &SchemaType, prime: u64) -> u64 {
+            match schema {
+                SchemaType::Type(token) => {
+                    hash = update(hash, b"type", prime);
+                    let (capnp_discriminant, _) = type_token_strings(token);
+                    hash = update(hash, capnp_discriminant.as_bytes(), prime);
+                }
+                SchemaType::Array(array) => {
+                    hash = update(hash, b"array", prime);
+                    hash = hash_schema(hash, array.items.as_ref(), prime);
+                    if let Some(len) = array.length {
+                        hash = hash_usize(hash, len, prime);
+                    }
+                }
+                SchemaType::Object(object) => {
+                    hash = update(hash, b"object", prime);
+                    hash = hash_fields(hash, &object.fields, prime);
+                }
+            }
+            hash
+        }
+
+        fn hash_fields(
+            mut hash: u64,
+            fields: &std::collections::BTreeMap<String, SchemaType>,
+            prime: u64,
+        ) -> u64 {
+            for (key, value) in fields {
+                hash = update(hash, key.as_bytes(), prime);
+                hash = hash_schema(hash, value, prime);
+            }
+            hash
+        }
+
+        hash_fields(FNV_OFFSET, fields, FNV_PRIME)
+    }
+}
+
+pub struct CapnpSchemaArtifacts {
+    message_format: MessageFormat,
+    schema: String,
+    type_mapping: HashMap<String, String>,
+}
+
+impl CapnpSchemaArtifacts {
+    fn new(
+        message_format: MessageFormat,
+        schema: String,
+        type_mapping: HashMap<String, String>,
+    ) -> Self {
+        Self {
+            message_format,
+            schema,
+            type_mapping,
+        }
+    }
+
+    pub fn build_function_params(&self) -> Result<Vec<FunctionParam>> {
+        let mut params = Vec::with_capacity(self.message_format.0.len());
+
+        for field_name in self.message_format.0.keys() {
+            let sanitized = sanitize_field_name(field_name);
+            let type_string = self.type_mapping.get(&sanitized).ok_or_else(|| {
+            Error::Encoding(format!(
+                "missing type mapping for field `{sanitized}` while building function parameters"
+            ))
+        })?;
+
+            let ident = Ident::new(&sanitized, Span::call_site());
+            let ty = TokenStream::from_str(type_string).map_err(|err| {
+                Error::Encoding(format!(
+                    "failed to parse rust type `{type_string}` for field `{sanitized}`: {err}"
+                ))
+            })?;
+
+            params.push(FunctionParam::new(ident, ty));
+        }
+
+        Ok(params)
+    }
+
+    pub fn encoding_schema(&self) -> &str {
+        &self.schema
+    }
+
+    pub fn type_mapping(&self) -> &HashMap<String, String> {
+        &self.type_mapping
+    }
 }
 
 #[derive(Default)]
@@ -285,86 +475,6 @@ fn to_pascal_case(input: &str) -> String {
     result
 }
 
-fn compute_schema_id(fields: &std::collections::BTreeMap<String, SchemaType>) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
-
-    fn update(mut hash: u64, bytes: &[u8], prime: u64) -> u64 {
-        for byte in bytes {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(prime);
-        }
-        hash
-    }
-
-    fn hash_usize(hash: u64, value: usize, prime: u64) -> u64 {
-        update(hash, &(value as u64).to_le_bytes(), prime)
-    }
-
-    fn hash_schema(mut hash: u64, schema: &SchemaType, prime: u64) -> u64 {
-        match schema {
-            SchemaType::Type(token) => {
-                hash = update(hash, b"type", prime);
-                let (capnp_discriminant, _) = type_token_strings(token);
-                hash = update(hash, capnp_discriminant.as_bytes(), prime);
-            }
-            SchemaType::Array(array) => {
-                hash = update(hash, b"array", prime);
-                hash = hash_schema(hash, array.items.as_ref(), prime);
-                if let Some(len) = array.length {
-                    hash = hash_usize(hash, len, prime);
-                }
-            }
-            SchemaType::Object(object) => {
-                hash = update(hash, b"object", prime);
-                hash = hash_fields(hash, &object.fields, prime);
-            }
-        }
-        hash
-    }
-
-    fn hash_fields(
-        mut hash: u64,
-        fields: &std::collections::BTreeMap<String, SchemaType>,
-        prime: u64,
-    ) -> u64 {
-        for (key, value) in fields {
-            hash = update(hash, key.as_bytes(), prime);
-            hash = hash_schema(hash, value, prime);
-        }
-        hash
-    }
-
-    hash_fields(FNV_OFFSET, fields, FNV_PRIME)
-}
-
-fn build_function_params(
-    format: &MessageFormat,
-    mapping: &HashMap<String, String>,
-) -> Result<Vec<FunctionParam>> {
-    let mut params = Vec::with_capacity(format.0.len());
-
-    for field_name in format.0.keys() {
-        let sanitized = sanitize_field_name(field_name);
-        let type_string = mapping.get(&sanitized).ok_or_else(|| {
-            Error::Encoding(format!(
-                "missing type mapping for field `{sanitized}` while building function parameters"
-            ))
-        })?;
-
-        let ident = Ident::new(&sanitized, Span::call_site());
-        let ty = TokenStream::from_str(type_string).map_err(|err| {
-            Error::Encoding(format!(
-                "failed to parse rust type `{type_string}` for field `{sanitized}`: {err}"
-            ))
-        })?;
-
-        params.push(FunctionParam::new(ident, ty));
-    }
-
-    Ok(params)
-}
-
 /// Returns both the canonical Cap'n Proto discriminant string and the Rust-facing type string
 /// for a given `TypeToken`. The first element is used when hashing schema identifiers, while the
 /// second drives the Rust type mapping overrides.
@@ -385,83 +495,6 @@ fn type_token_strings(token: &TypeToken) -> (&'static str, &'static str) {
         TypeToken::F32 => ("f32", "f32"),
         TypeToken::F64 => ("f64", "f64"),
     }
-}
-
-fn compute_rust_type_mapping(
-    schema: &str,
-    format: &MessageFormat,
-) -> Result<HashMap<String, String>> {
-    let temp_dir = tempdir()?;
-    let schema_path = temp_dir.path().join("message.capnp");
-    std::fs::write(&schema_path, schema)?;
-    let request_path = temp_dir.path().join("code_generator_request.bin");
-
-    let mut command = capnpc::CompilerCommand::new();
-    command
-        .capnp_executable(bundled_capnp_executable()?)
-        .file(&schema_path)
-        .output_path(temp_dir.path())
-        .raw_code_generator_request_path(&request_path);
-
-    command.run()?;
-
-    let mut request_file = std::fs::File::open(&request_path)?;
-    let message = serialize::read_message(&mut request_file, ReaderOptions::new())?;
-    let ctx = GeneratorContext::new(&message)?;
-
-    let root_struct_id = find_root_struct_id(&ctx)?;
-    let mut mapping = HashMap::new();
-    let mut visited = HashSet::new();
-    collect_struct_fields(&ctx, root_struct_id, "", &mut mapping, &mut visited)?;
-
-    fn array_schema_to_rust_string(array: &ArraySchema) -> Option<String> {
-        match array.items.as_ref() {
-            SchemaType::Type(token) => {
-                let (_, rust_type) = type_token_strings(token);
-                let rendered = match array.length {
-                    Some(length) => format!("[{rust_type}; {length}]"),
-                    None => format!("[{rust_type}]"),
-                };
-                Some(rendered)
-            }
-            SchemaType::Array(_) | SchemaType::Object(_) => None,
-        }
-    }
-
-    fn override_array_types(
-        current_key: &str,
-        schema: &SchemaType,
-        mapping: &mut HashMap<String, String>,
-    ) {
-        match schema {
-            SchemaType::Array(array) => {
-                if let Some(rendered) = array_schema_to_rust_string(array) {
-                    if let Some(entry) = mapping.get_mut(current_key) {
-                        *entry = rendered;
-                    }
-                }
-            }
-            SchemaType::Object(object) => {
-                for (field_name, field_schema) in &object.fields {
-                    let sanitized = sanitize_field_name(field_name);
-                    let next_key = if current_key.is_empty() {
-                        sanitized
-                    } else {
-                        format!("{current_key}.{sanitized}")
-                    };
-                    override_array_types(&next_key, field_schema, mapping);
-                }
-            }
-            SchemaType::Type(_) => {}
-        }
-    }
-
-    for (field_name, schema) in &format.0 {
-        let sanitized = sanitize_field_name(field_name);
-        override_array_types(&sanitized, schema, &mut mapping);
-    }
-
-    Ok(mapping)
 }
 
 fn find_root_struct_id(ctx: &GeneratorContext<'_>) -> Result<u64> {
@@ -666,8 +699,14 @@ mod tests {
         )
         .expect("valid format");
 
-        let (schema, params) = map_message_format_to_capnpn_proto(msg_format.clone())
-            .expect("schema generation succeeds");
+        let format_mapper = MessageFormatMapper::new(msg_format.clone());
+        let artifacts = format_mapper
+            .map_message_format_to_capnpn()
+            .expect("artifacts generation succeeds");
+        let schema = artifacts.encoding_schema();
+        let params = artifacts
+            .build_function_params()
+            .expect("params generation succeeds");
 
         assert_eq!(params.len(), 5, "expected entries for top-level fields");
 
@@ -702,10 +741,10 @@ mod tests {
             "header should resolve to the generated header reader type"
         );
 
-        let canonical_type_map = compute_rust_type_mapping(&schema, &msg_format)
-            .expect("type mapping generation succeeds")
-            .into_iter()
-            .map(|(key, value)| (key, canonicalize_literal(&value)))
+        let canonical_type_map = artifacts
+            .type_mapping()
+            .iter()
+            .map(|(key, value)| (key.clone(), canonicalize_literal(value)))
             .collect::<std::collections::HashMap<_, _>>();
 
         assert_eq!(
@@ -775,8 +814,12 @@ mod tests {
         )
         .expect("valid format");
 
-        let (_schema, params) =
-            map_message_format_to_capnpn_proto(msg_format).expect("schema generation succeeds");
+        let artifacts = MessageFormatMapper::new(msg_format)
+            .map_message_format_to_capnpn()
+            .expect("artifacts generation succeeds");
+        let params = artifacts
+            .build_function_params()
+            .expect("params generation succeeds");
 
         let param_map = params_to_map(&params);
         assert_eq!(
@@ -801,8 +844,12 @@ mod tests {
         )
         .expect("valid format");
 
-        let (_schema, params) =
-            map_message_format_to_capnpn_proto(msg_format).expect("schema generation succeeds");
+        let artifacts = MessageFormatMapper::new(msg_format)
+            .map_message_format_to_capnpn()
+            .expect("artifacts generation succeeds");
+        let params = artifacts
+            .build_function_params()
+            .expect("params generation succeeds");
 
         let param_map = params_to_map(&params);
         assert_eq!(
