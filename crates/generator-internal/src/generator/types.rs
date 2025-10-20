@@ -121,3 +121,32 @@ impl DeploymentInterface {
         }
     }
 }
+
+#[derive(Clone)]
+pub struct CapnpSchema {
+    file_stem: String,
+    struct_name: String,
+    schema: String,
+}
+
+impl CapnpSchema {
+    pub fn new(file_stem: String, struct_name: String, schema: String) -> Self {
+        Self {
+            file_stem,
+            struct_name,
+            schema,
+        }
+    }
+
+    pub fn file_stem(&self) -> &str {
+        &self.file_stem
+    }
+
+    pub fn struct_name(&self) -> &str {
+        &self.struct_name
+    }
+
+    pub fn schema(&self) -> &str {
+        &self.schema
+    }
+}

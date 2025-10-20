@@ -3,10 +3,12 @@ mod tests;
 
 use super::checker;
 use super::common;
-use super::types::{InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage};
+use super::types::{
+    CapnpSchema, InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage,
+};
 use crate::error::Error;
 use crate::error::Result;
-use config::encoding::{FunctionParam, MessageFormatMapper, compile_capnp};
+use config::encoding::{CapnpSchemaArtifacts, FunctionParam, MessageFormatMapper};
 use config::{
     consts::PEPPY_NODE_CONFIG_FILE,
     node::{
@@ -17,7 +19,6 @@ use config::{
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 use std::collections::{BTreeMap, HashMap};
-use std::fs;
 use std::path::Path;
 use syn::{File, parse2};
 
@@ -44,11 +45,8 @@ impl RustGenerator {
         &mut self,
         schema_key: &str,
         struct_prefix: &str,
-        format: &MessageFormat,
+        artifacts: &CapnpSchemaArtifacts,
     ) -> Result<SchemaInfo> {
-        let artifacts = MessageFormatMapper::new(format.clone())
-            .map_message_format_to_capnpn()
-            .map_err(Error::MessageEncoding)?;
         let schema_source = artifacts.encoding_schema();
 
         let key_component = sanitize_component(schema_key);
@@ -67,12 +65,8 @@ impl RustGenerator {
         let struct_name = format!("{struct_prefix}Message");
         let schema = schema_source.replacen("struct Message", &format!("struct {struct_name}"), 1);
 
-        self.schemas
-            .entry(file_stem.clone())
-            .and_modify(|existing| {
-                existing.schema = schema.clone();
-            })
-            .or_insert_with(|| CapnpSchema::new(file_stem.clone(), struct_name.clone(), schema));
+        let capnp_schema = CapnpSchema::new(file_stem.clone(), struct_name, schema);
+        self.schemas.insert(file_stem.clone(), capnp_schema);
 
         Ok(SchemaInfo { file_stem })
     }
@@ -81,38 +75,22 @@ impl RustGenerator {
         &mut self,
         schema_key: &str,
         struct_prefix: &str,
-        format: Option<&MessageFormat>,
+        artifacts: Option<&CapnpSchemaArtifacts>,
         params: &[FunctionParam],
     ) -> Result<Option<MessageEncodingSpec>> {
-        let Some(format) = format else {
+        let Some(artifacts) = artifacts else {
             return Ok(None);
         };
 
-        let schema_info = self.register_schema(schema_key, struct_prefix, format)?;
+        let schema_info = self.register_schema(schema_key, struct_prefix, artifacts)?;
         let builder_ident = Ident::new("root", Span::call_site());
-        let assignments = generate_assignments_for_format(&builder_ident, format, params);
+        let assignments =
+            generate_assignments_for_format(&builder_ident, artifacts.message_format(), params);
 
         Ok(Some(MessageEncodingSpec {
             builder_type: schema_info.builder_type_tokens(),
             assignments,
         }))
-    }
-}
-
-#[derive(Clone)]
-struct CapnpSchema {
-    file_stem: String,
-    _struct_name: String,
-    schema: String,
-}
-
-impl CapnpSchema {
-    fn new(file_stem: String, struct_name: String, schema: String) -> Self {
-        Self {
-            file_stem,
-            _struct_name: struct_name,
-            schema,
-        }
     }
 }
 
@@ -148,12 +126,13 @@ impl LanguageGenerator for RustGenerator {
         let struct_prefix = to_camel_case(&fn_name_str);
 
         let mut context = GenerationContext::default();
+        let format_artifacts = map_message_format(topic.message_format.as_ref())?;
         let params =
-            collect_function_params(topic.message_format.as_ref(), &struct_prefix, &mut context)?;
+            collect_function_params(format_artifacts.as_ref(), &struct_prefix, &mut context)?;
         let encoding = self.prepare_message_encoding(
             &fn_name_str,
             &struct_prefix,
-            topic.message_format.as_ref(),
+            format_artifacts.as_ref(),
             &params,
         )?;
         let struct_tokens = context.into_tokens();
@@ -191,15 +170,13 @@ impl LanguageGenerator for RustGenerator {
         let struct_prefix = to_camel_case(&fn_name_str);
 
         let mut context = GenerationContext::default();
-        let params = collect_function_params(
-            service.message_format.as_ref(),
-            &struct_prefix,
-            &mut context,
-        )?;
+        let format_artifacts = map_message_format(service.message_format.as_ref())?;
+        let params =
+            collect_function_params(format_artifacts.as_ref(), &struct_prefix, &mut context)?;
         let encoding = self.prepare_message_encoding(
             &fn_name_str,
             &struct_prefix,
-            service.message_format.as_ref(),
+            format_artifacts.as_ref(),
             &params,
         )?;
         let struct_tokens = context.into_tokens();
@@ -239,16 +216,14 @@ impl LanguageGenerator for RustGenerator {
             let fn_name = Ident::new(&(base_name.clone() + "_goal"), Span::call_site());
             let async_fn_name = Ident::new(&(fn_name.to_string() + "_async"), Span::call_site());
             let struct_prefix = format!("{}Goal", to_camel_case(&base_name));
-            let params = collect_function_params(
-                goal.message_format.as_ref(),
-                &struct_prefix,
-                &mut context,
-            )?;
+            let format_artifacts = map_message_format(goal.message_format.as_ref())?;
+            let params =
+                collect_function_params(format_artifacts.as_ref(), &struct_prefix, &mut context)?;
             let fn_key = fn_name.to_string();
             let encoding = self.prepare_message_encoding(
                 &fn_key,
                 &struct_prefix,
-                goal.message_format.as_ref(),
+                format_artifacts.as_ref(),
                 &params,
             )?;
 
@@ -263,16 +238,14 @@ impl LanguageGenerator for RustGenerator {
             let fn_name = Ident::new(&(base_name.clone() + "_feedback"), Span::call_site());
             let async_fn_name = Ident::new(&(fn_name.to_string() + "_async"), Span::call_site());
             let struct_prefix = format!("{}Feedback", to_camel_case(&base_name));
-            let params = collect_function_params(
-                feedback.message_format.as_ref(),
-                &struct_prefix,
-                &mut context,
-            )?;
+            let format_artifacts = map_message_format(feedback.message_format.as_ref())?;
+            let params =
+                collect_function_params(format_artifacts.as_ref(), &struct_prefix, &mut context)?;
             let fn_key = fn_name.to_string();
             let encoding = self.prepare_message_encoding(
                 &fn_key,
                 &struct_prefix,
-                feedback.message_format.as_ref(),
+                format_artifacts.as_ref(),
                 &params,
             )?;
 
@@ -287,16 +260,14 @@ impl LanguageGenerator for RustGenerator {
             let fn_name = Ident::new(&(base_name.clone() + "_result"), Span::call_site());
             let async_fn_name = Ident::new(&(fn_name.to_string() + "_async"), Span::call_site());
             let struct_prefix = format!("{}Result", to_camel_case(&base_name));
-            let params = collect_function_params(
-                result.message_format.as_ref(),
-                &struct_prefix,
-                &mut context,
-            )?;
+            let format_artifacts = map_message_format(result.message_format.as_ref())?;
+            let params =
+                collect_function_params(format_artifacts.as_ref(), &struct_prefix, &mut context)?;
             let fn_key = fn_name.to_string();
             let encoding = self.prepare_message_encoding(
                 &fn_key,
                 &struct_prefix,
-                result.message_format.as_ref(),
+                format_artifacts.as_ref(),
                 &params,
             )?;
 
@@ -443,9 +414,11 @@ impl LanguageGenerator for RustGenerator {
 
     fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
         let e = to_path.as_ref().to_path_buf().as_path();
+        // First create the basic structure of the project
         common::add_peppylib_dependencies(&to_path)?;
-        // TODO: The resulting .capnp generated by add_exposed_topic/add_exposed_service etc... during the call to `collect_function_params` (and subsequently `MessageFormatMapper::map_message_format_to_capnpn_proto`) should be reused and compiled in the function below instead of regenerating them from scratch
-        write_capnp_schemas(&self.schemas, to_path.as_ref())?;
+        // Write the schema files to the project
+        common::write_capnp_schemas(&self.schemas, to_path.as_ref())?;
+        // Add the content to the Rust files
         common::add_artifacts_to_lib(&to_path, self.sections)?;
         let crate_root = to_path.as_ref();
         let node_config_path = crate_root.join(PEPPY_NODE_CONFIG_FILE);
@@ -579,18 +552,26 @@ impl StructDefinition {
     }
 }
 
+fn map_message_format(format: Option<&MessageFormat>) -> Result<Option<CapnpSchemaArtifacts>> {
+    match format {
+        Some(format) => MessageFormatMapper::new(format.clone())
+            .map_message_format_to_capnpn()
+            .map(Some)
+            .map_err(Error::MessageEncoding),
+        None => Ok(None),
+    }
+}
+
 fn collect_function_params(
-    format: Option<&MessageFormat>,
+    artifacts: Option<&CapnpSchemaArtifacts>,
     struct_prefix: &str,
     context: &mut GenerationContext,
 ) -> Result<Vec<FunctionParam>> {
-    let Some(format) = format else {
+    let Some(artifacts) = artifacts else {
         return Ok(Vec::new());
     };
 
-    let artifacts = MessageFormatMapper::new(format.clone())
-        .map_message_format_to_capnpn()
-        .map_err(Error::MessageEncoding)?;
+    let format = artifacts.message_format();
     let capnp_params = artifacts
         .build_function_params()
         .map_err(Error::MessageEncoding)?;
@@ -748,33 +729,6 @@ fn render_tokens(tokens: TokenStream) -> String {
     parse2::<File>(tokens.clone())
         .map(|file| prettyplease::unparse(&file))
         .unwrap_or_else(|_| tokens.to_string())
-}
-
-fn write_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, crate_root: &Path) -> Result<()> {
-    let src_dir = crate_root.join("src");
-    if schemas.is_empty() {
-        let capnp_rs = src_dir.join("capnp.rs");
-        if !capnp_rs.exists() {
-            fs::write(capnp_rs, "// No Cap'n Proto schemas generated.\n")?;
-        }
-        return Ok(());
-    }
-
-    let mut entries: Vec<&CapnpSchema> = schemas.values().collect();
-    entries.sort_by(|a, b| a.file_stem.cmp(&b.file_stem));
-
-    let capnp_dir = src_dir.join("capnp");
-    fs::create_dir_all(&capnp_dir)?;
-
-    let mut schema_paths = Vec::with_capacity(entries.len());
-    for schema in entries {
-        let file_path = capnp_dir.join(format!("{}.capnp", schema.file_stem));
-        fs::write(&file_path, &schema.schema)?;
-        schema_paths.push(file_path);
-    }
-
-    compile_capnp(&schema_paths, &src_dir).map_err(Error::MessageEncoding)?;
-    Ok(())
 }
 
 fn generate_assignments_for_format(
@@ -1107,7 +1061,8 @@ fn build_async_returning_function(
     let fn_name_str = fn_name.to_string();
     let struct_prefix = to_camel_case(&fn_name_str);
     let mut context = GenerationContext::default();
-    let params = collect_function_params(arguments, &struct_prefix, &mut context)?;
+    let format_artifacts = map_message_format(arguments)?;
+    let params = collect_function_params(format_artifacts.as_ref(), &struct_prefix, &mut context)?;
 
     let struct_name = if struct_suffix.is_empty() {
         struct_prefix
