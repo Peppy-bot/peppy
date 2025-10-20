@@ -286,6 +286,10 @@ impl CapnpSchemaArtifacts {
     pub fn type_mapping(&self) -> &HashMap<String, String> {
         &self.type_mapping
     }
+
+    pub fn message_format(&self) -> &MessageFormat {
+        &self.message_format
+    }
 }
 
 #[derive(Default)]

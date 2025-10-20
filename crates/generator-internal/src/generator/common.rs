@@ -1,8 +1,10 @@
+use super::types::CapnpSchema;
 use crate::{
     error::{Error, Result},
     generator::types::{InterfaceArtifact, InterfaceKind},
 };
 use askama::Template;
+use config::encoding::compile_capnp;
 use proc_macro2::Span;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -622,4 +624,34 @@ fn render_template(root: &Path, template_path: &Path, peppylib_path: &str) -> Re
         }
         _ => Err(Error::UnknownTemplate(relative)),
     }
+}
+
+pub fn write_capnp_schemas(
+    schemas: &HashMap<String, CapnpSchema>,
+    crate_root: &Path,
+) -> Result<()> {
+    let src_dir = crate_root.join("src");
+    if schemas.is_empty() {
+        let capnp_rs = src_dir.join("capnp.rs");
+        if !capnp_rs.exists() {
+            fs::write(capnp_rs, "// No Cap'n Proto schemas generated.\n")?;
+        }
+        return Ok(());
+    }
+
+    let mut entries: Vec<&CapnpSchema> = schemas.values().collect();
+    entries.sort_by(|a, b| a.file_stem().cmp(b.file_stem()));
+
+    let capnp_dir = src_dir.join("capnp");
+    fs::create_dir_all(&capnp_dir)?;
+
+    let mut schema_paths = Vec::with_capacity(entries.len());
+    for schema in entries {
+        let file_path = capnp_dir.join(format!("{}.capnp", schema.file_stem()));
+        fs::write(&file_path, schema.schema())?;
+        schema_paths.push(file_path);
+    }
+
+    compile_capnp(&schema_paths, &src_dir).map_err(Error::MessageEncoding)?;
+    Ok(())
 }
