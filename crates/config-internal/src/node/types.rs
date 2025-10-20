@@ -332,8 +332,6 @@ pub struct ExposedTopic {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ExposedService {
-    #[serde(default)]
-    pub qos_profile: QoSProfile,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_format: Option<MessageFormat>,
     #[serde(default)]

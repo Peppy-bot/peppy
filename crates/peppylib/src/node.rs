@@ -7,7 +7,7 @@ use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::path::PathBuf;
 
 // TODO: We actually need an `on_node_start` and `on_node_initialize(config)` instead of letting the
-// user start the node with `main()`
+// user start the node with `main()`. Probably something to do in peppygen
 
 /// Sets up a node. If `config_file` is not provided, use current directory `peppy.json5`.
 pub async fn setup_node(config_file: Option<PathBuf>) -> Result<()> {
@@ -37,6 +37,8 @@ pub async fn setup_node_from_config(node_config: NodeConfig) -> Result<()> {
         "initializing peppy node from configuration"
     );
 
+    // TODO: Check the node fingerprint (`config::consts::NODE_CONFIG_FINGERPRINT_FILE`)
+
     let mut last_err: Option<pmi::PeppyMessagingInterfaceError> = None;
     for engine in engines {
         match build_messenger(engine) {
@@ -56,9 +58,6 @@ pub async fn setup_node_from_config(node_config: NodeConfig) -> Result<()> {
     )))
 }
 
-#[cfg(test)]
-mod tests {}
-
 fn build_messenger(
     engine: &str,
 ) -> core::result::Result<Messenger, pmi::PeppyMessagingInterfaceError> {
@@ -77,3 +76,6 @@ fn build_messenger(
         _ => Err(pmi::PeppyMessagingInterfaceError::UnsupportedEngine),
     }
 }
+
+#[cfg(test)]
+mod tests {}

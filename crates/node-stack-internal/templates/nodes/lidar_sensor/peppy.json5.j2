@@ -50,14 +50,12 @@
       services: [
         {
           name: "enable_camera",
-          qos_profile: "critical",
           message_format: {
             enable: "bool",
           }
         },
         {
           name: "get_camera_info",
-          qos_profile: "standard",
           message_format: {
             card_type: "string",
             size: "string",
