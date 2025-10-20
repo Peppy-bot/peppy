@@ -33,7 +33,7 @@ where
     B: LanguageGenerator,
 {
     for interface in interfaces {
-        interface.register_with(&mut backend);
+        interface.register_with(&mut backend)?;
     }
     backend.build(output_dir)
 }

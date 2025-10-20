@@ -65,7 +65,7 @@ impl RustGenerator {
         let struct_name = format!("{struct_prefix}Message");
         let schema = schema_source.replacen("struct Message", &format!("struct {struct_name}"), 1);
 
-        let capnp_schema = CapnpSchema::new(file_stem.clone(), struct_name, schema);
+        let capnp_schema = CapnpSchema::new(file_stem.clone(), schema);
         self.schemas.insert(file_stem.clone(), capnp_schema);
 
         Ok(SchemaInfo { file_stem })
@@ -413,7 +413,6 @@ impl LanguageGenerator for RustGenerator {
     }
 
     fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
-        let e = to_path.as_ref().to_path_buf().as_path();
         // First create the basic structure of the project
         common::add_peppylib_dependencies(&to_path)?;
         // Write the schema files to the project
