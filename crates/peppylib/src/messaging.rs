@@ -2,14 +2,17 @@ use crate::error::{Error, Result};
 use bytes::Bytes;
 use config::node::QoSProfile;
 use pmi::{
-    Message, Messenger, MessengerAdapter, MessengerBackend, PublisherQoS, SubscriberQoS,
-    Subscription, ZenohAdapter, ZenohNetProtocol,
+    Message, Messenger, MessengerAdapter, MessengerBackend, PeppyMessagingInterfaceError,
+    PublisherQoS, SubscriberQoS, Subscription, ZenohAdapter, ZenohNetProtocol,
 };
+use std::{future::Future, sync::Arc};
+use tokio::{sync::Mutex, task::JoinHandle};
+use tracing::error;
 
 /// This struct represent one deployment instance messaging
 pub struct PeppyMessenger {
     node_name: String,
-    messenger: Messenger,
+    messenger: Arc<Mutex<Messenger>>,
 }
 
 impl PeppyMessenger {
@@ -17,7 +20,7 @@ impl PeppyMessenger {
         let adapter = ZenohAdapter::default();
         Self {
             node_name: String::from(node_name),
-            messenger: PeppyMessenger::new_session(adapter).await,
+            messenger: Arc::new(Mutex::new(PeppyMessenger::new_session(adapter).await)),
         }
     }
 
@@ -25,7 +28,7 @@ impl PeppyMessenger {
         let adapter = ZenohAdapter::from_host_port(ZenohNetProtocol::Tcp, host, port);
         Self {
             node_name: String::from(node_name),
-            messenger: PeppyMessenger::new_session(adapter).await,
+            messenger: Arc::new(Mutex::new(PeppyMessenger::new_session(adapter).await)),
         }
     }
 
@@ -55,8 +58,12 @@ impl PeppyMessenger {
         }
     }
 
-    pub fn build_topic_path(node_name: &str, namespace: &str, topic_name: &str) -> String {
-        [node_name, namespace, topic_name]
+    pub fn build_full_namespace(
+        node_name: &str,
+        namespace: &str,
+        message_type_name: &str,
+    ) -> String {
+        [node_name, namespace, message_type_name]
             .into_iter()
             .flat_map(|part| part.split('/'))
             .filter(|segment| !segment.is_empty())
@@ -64,38 +71,131 @@ impl PeppyMessenger {
             .join("/")
     }
 
-    pub async fn send_topic_message(
-        &mut self,
-        namespace: &str,
-        topic_name: &str,
-        qos: QoSProfile,
-        payload: Bytes,
-    ) -> Result<()> {
-        let full_ns = Self::build_topic_path(&self.node_name, namespace, topic_name);
-        let msg = Message::new(&full_ns, &payload);
-
-        let publisher_qos = PeppyMessenger::map_node_qos_to_publisher_qos(qos);
-
-        self.messenger
-            .publish(msg, publisher_qos)
-            .await
-            .map_err(Error::PeppyMessagingInterface)
-    }
-
     pub async fn receive_topic_msg(
         &self,
         from_node_name: &str,
         namespace: &str,
         topic_name: &str,
-        qos: QoSProfile,
     ) -> Result<Subscription> {
-        let topic_path = Self::build_topic_path(from_node_name, namespace, topic_name);
+        let qos = QoSProfile::Reliable; // Always the same QoSProfile for services
+        let topic_path = Self::build_full_namespace(from_node_name, namespace, topic_name);
         let subscriber_qos = Self::map_node_qos_to_subscriber_qos(qos);
 
-        self.messenger
-            .subscribe(&topic_path, subscriber_qos)
+        let subscription = {
+            let messenger = self.messenger.lock().await;
+            messenger.subscribe(&topic_path, subscriber_qos).await
+        }
+        .map_err(Error::PeppyMessagingInterface)?;
+
+        Ok(subscription)
+    }
+
+    pub async fn emit_topic_message(
+        &self,
+        namespace: &str,
+        topic_name: &str,
+        qos: QoSProfile,
+        payload: Bytes,
+    ) -> Result<()> {
+        let full_ns = Self::build_full_namespace(&self.node_name, namespace, topic_name);
+        let msg = Message::new(&full_ns, &payload);
+
+        let publisher_qos = PeppyMessenger::map_node_qos_to_publisher_qos(qos);
+
+        let mut messenger = self.messenger.lock().await;
+        messenger
+            .publish(msg, publisher_qos)
             .await
             .map_err(Error::PeppyMessagingInterface)
+    }
+
+    pub async fn start_service<F, Fut>(
+        &self,
+        namespace: &str,
+        service_name: &str,
+        handler: F,
+    ) -> Result<JoinHandle<Result<()>>>
+    where
+        F: Fn(Message) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Bytes>> + Send + 'static,
+    {
+        let service_root = Self::build_full_namespace(&self.node_name, namespace, service_name);
+        let request_topic = format!("{service_root}/request");
+        let response_topic = format!("{service_root}/response");
+
+        let subscription = {
+            let messenger = self.messenger.lock().await;
+            messenger
+                .subscribe(&request_topic, SubscriberQoS::Standard)
+                .await
+        }
+        .map_err(Error::PeppyMessagingInterface)?;
+
+        let messenger = Arc::clone(&self.messenger);
+        let handler = Arc::new(handler);
+
+        let task: JoinHandle<Result<()>> = tokio::spawn(async move {
+            let mut subscription = subscription;
+            while let Some(request) = subscription.rx.recv().await {
+                match handler(request).await {
+                    Ok(payload) => {
+                        let message = Message::new(&response_topic, payload.as_ref());
+                        let mut messenger = messenger.lock().await;
+                        messenger
+                            .publish(message, PublisherQoS::Standard)
+                            .await
+                            .map_err(Error::PeppyMessagingInterface)?;
+                    }
+                    Err(err) => {
+                        error!(?err, "service handler returned error");
+                    }
+                }
+            }
+            Ok(())
+        });
+
+        Ok(task)
+    }
+
+    pub async fn poll_service(
+        &self,
+        from_node_name: &str,
+        namespace: &str,
+        service_name: &str,
+        request_payload: Bytes,
+    ) -> Result<Bytes> {
+        let service_root =
+            PeppyMessenger::build_full_namespace(from_node_name, namespace, service_name);
+        let request_topic = format!("{service_root}/request");
+        let response_topic = format!("{service_root}/response");
+
+        let response_subscription = {
+            let messenger = self.messenger.lock().await;
+            messenger
+                .subscribe(&response_topic, SubscriberQoS::Standard)
+                .await
+        }
+        .map_err(Error::PeppyMessagingInterface)?;
+
+        {
+            let mut messenger = self.messenger.lock().await;
+            messenger
+                .publish(
+                    Message::new(&request_topic, request_payload.as_ref()),
+                    PublisherQoS::Standard,
+                )
+                .await
+                .map_err(Error::PeppyMessagingInterface)?;
+        }
+
+        let mut response_subscription = response_subscription;
+        let response = response_subscription.rx.recv().await.ok_or_else(|| {
+            Error::PeppyMessagingInterface(PeppyMessagingInterfaceError::BackendError(
+                "service response channel closed".to_string(),
+            ))
+        })?;
+
+        Ok(response.payload)
     }
 }
 
@@ -103,7 +203,7 @@ impl PeppyMessenger {
 mod tests {
     use bytes::Bytes;
     use config::node::QoSProfile;
-    use pmi::{Messenger, MessengerAdapter, MessengerBackend, ZenohAdapter};
+    use pmi::{Message, Messenger, MessengerAdapter, MessengerBackend, ZenohAdapter};
     use std::{fs, net::TcpListener};
     use tempfile::TempDir;
 
@@ -150,7 +250,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn test_basic_publish_subscribe() {
+    async fn topic_publish_subscribe() {
         let (mut router_messenger, _, host, port) = start_zenohd_process().await;
 
         // Those attributes are found in the message definition `exposes`
@@ -164,16 +264,16 @@ mod tests {
 
         let payload = Bytes::from_static(b"A message");
 
-        let mut sender_messenger = PeppyMessenger::from_host_port(&sender_node, &host, port).await;
+        let sender_messenger = PeppyMessenger::from_host_port(&sender_node, &host, port).await;
         let receiver_messenger = PeppyMessenger::from_host_port(&receiver_node, &host, port).await;
 
         let mut subscription = receiver_messenger
-            .receive_topic_msg(&sender_node, ns, topic_name, qos.clone())
+            .receive_topic_msg(&sender_node, ns, topic_name)
             .await
             .expect("Should subscribe to the topic");
 
         sender_messenger
-            .send_topic_message(ns, topic_name, qos, payload.clone())
+            .emit_topic_message(ns, topic_name, qos, payload.clone())
             .await
             .expect("Should send the payload");
 
@@ -183,7 +283,7 @@ mod tests {
             .await
             .expect("Should receive the published message");
 
-        let expected_topic = PeppyMessenger::build_topic_path(&sender_node, ns, topic_name);
+        let expected_topic = PeppyMessenger::build_full_namespace(&sender_node, ns, topic_name);
         assert_eq!(received.topic, expected_topic);
         assert_eq!(received.payload, payload);
 
@@ -195,8 +295,68 @@ mod tests {
 
     #[test]
     fn build_topic_path_removes_redundant_separators() {
-        let path =
-            super::PeppyMessenger::build_topic_path("uvc_camera", "/camera/rear/", "/video_frame");
+        let path = super::PeppyMessenger::build_full_namespace(
+            "uvc_camera",
+            "/camera/rear/",
+            "/video_frame",
+        );
         assert_eq!(path, "uvc_camera/camera/rear/video_frame");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn service_communication() {
+        let (mut router_messenger, _, host, port) = start_zenohd_process().await;
+
+        let service_node = "uvc_camera";
+        let caller_node = "vision_pipeline";
+        let service_name = "enable_camera";
+        let namespace = "/camera/rear";
+
+        let service_messenger = PeppyMessenger::from_host_port(service_node, &host, port).await;
+        let caller_messenger = PeppyMessenger::from_host_port(caller_node, &host, port).await;
+
+        let service_root =
+            PeppyMessenger::build_full_namespace(service_node, namespace, service_name);
+        let expected_request_topic = format!("{service_root}/request");
+        let request_payload = Bytes::from_static(b"enable=true");
+        let response_payload = Bytes::from_static(b"ack");
+
+        let service_handle = service_messenger
+            .start_service(namespace, service_name, {
+                let expected_request_topic = expected_request_topic.clone();
+                let request_payload = request_payload.clone();
+                let response_payload = response_payload.clone();
+                move |message: Message| {
+                    let expected_request_topic = expected_request_topic.clone();
+                    let request_payload = request_payload.clone();
+                    let response_payload = response_payload.clone();
+                    async move {
+                        assert_eq!(message.topic, expected_request_topic);
+                        assert_eq!(message.payload, request_payload);
+                        Ok(response_payload)
+                    }
+                }
+            })
+            .await
+            .expect("service should start");
+
+        let response = caller_messenger
+            .poll_service(
+                service_node,
+                namespace,
+                service_name,
+                request_payload.clone(),
+            )
+            .await
+            .expect("caller should receive response");
+
+        assert_eq!(response, response_payload);
+
+        service_handle.abort();
+
+        router_messenger
+            .stop_router()
+            .await
+            .expect("Failed to shutdown router");
     }
 }

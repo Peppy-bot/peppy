@@ -65,7 +65,6 @@
         {
           // One instance exposes the service on ns /camera/front/enable_camera and another on /camera/rear/enable_camera
           name: "enable_camera",
-          qos_profile: "critical",
           message_format: {
             enable: "bool",
           }
@@ -73,7 +72,6 @@
         {
           // One instance exposes the service on ns /camera/front/get_camera_info and another on /camera/rear/get_camera_info
           name: "get_camera_info",
-          qos_profile: "standard",
           message_format: {
             card_type: "string",
             size: "string",
