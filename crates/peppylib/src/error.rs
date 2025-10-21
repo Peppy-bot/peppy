@@ -29,12 +29,12 @@ pub enum Error {
         namespace: String,
         service_name: String,
     },
-    // #[error(
-    //     "service '{service_name}' in namespace '{namespace}' on node '{service_node}' has timed out"
-    // )]
-    // ServiceTimeout {
-    //     service_node: String,
-    //     namespace: String,
-    //     service_name: String,
-    // },
+    #[error(
+        "service '{service_name}' in namespace '{namespace}' on node '{service_node}' has timed out"
+    )]
+    ServiceTimeout {
+        service_node: String,
+        namespace: String,
+        service_name: String,
+    },
 }
