@@ -66,16 +66,14 @@ fn test_create_node_stack_config_example_1() {
             helpers::BRAIN_NODE_NAME,
             helpers::UVC_CAMERA_NODE_NAME,
             helpers::LIDAR_SENSOR_NODE_NAME,
+            helpers::CONTROLLER_NODE_NAME,
         ),
     );
 
     // Add controller locally to the node_stack
     helpers::add_local_web_video_stream(
         node_path(helpers::CONTROLLER_NODE_NAME),
-        helpers::ControllerNodeTemplate::new(
-            helpers::CONTROLLER_NODE_NAME,
-            helpers::BRAIN_NODE_NAME,
-        ),
+        helpers::ControllerNodeTemplate::new(helpers::CONTROLLER_NODE_NAME),
     );
 
     let mapper = LocalNodeStackBuilder::from_root_config_file(peppy_config, None).unwrap();

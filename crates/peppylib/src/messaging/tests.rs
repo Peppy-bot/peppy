@@ -47,11 +47,11 @@ async fn try_start_zenohd_instance(
 
     let config_content = format!(
         r#"{{
-                  "listen": {{
-                  "endpoints": {{
-                      "router": ["tcp/{host}:{port}"]
-                  }}
+              "listen": {{
+                "endpoints": {{
+                  "router": ["tcp/{host}:{port}"]
                 }}
+              }}
             }}"#
     );
 
@@ -494,6 +494,13 @@ async fn service_communication_fails_timeout() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn action_communication() {
+    let (mut router_messenger, _, host, port) = start_zenohd_process().await;
+
+    let action_node = "robot_brain";
+    let action_name = "move_arm";
+    let namespace = "/camera";
+    let caller_node = "controller";
+
     // Here is an example of an action object:
     // {
     // // The brain sends signals to the controller

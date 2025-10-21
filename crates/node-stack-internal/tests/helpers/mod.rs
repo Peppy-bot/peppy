@@ -120,6 +120,7 @@ pub struct BrainNodeTemplate<'a> {
     node_name: &'a str,
     uvc_camera_node_name: &'a str,
     lidar_sensor_node_name: &'a str,
+    controller_node_name: &'a str,
 }
 
 impl<'a> BrainNodeTemplate<'a> {
@@ -127,11 +128,13 @@ impl<'a> BrainNodeTemplate<'a> {
         node_name: &'a str,
         uvc_camera_node_name: &'a str,
         lidar_sensor_node_name: &'a str,
+        controller_node_name: &'a str,
     ) -> Self {
         Self {
             node_name,
             uvc_camera_node_name,
             lidar_sensor_node_name,
+            controller_node_name,
         }
     }
 }
@@ -140,15 +143,11 @@ impl<'a> BrainNodeTemplate<'a> {
 #[template(path = "nodes/controller/peppy.json5.j2")]
 pub struct ControllerNodeTemplate<'a> {
     node_name: &'a str,
-    brain_node_name: &'a str,
 }
 
 impl<'a> ControllerNodeTemplate<'a> {
-    pub fn new(node_name: &'a str, brain_node_name: &'a str) -> Self {
-        Self {
-            node_name,
-            brain_node_name,
-        }
+    pub fn new(node_name: &'a str) -> Self {
+        Self { node_name }
     }
 }
 
@@ -175,12 +174,12 @@ pub fn create_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
         node_name: BRAIN_NODE_NAME,
         uvc_camera_node_name: UVC_CAMERA_NODE_NAME,
         lidar_sensor_node_name: LIDAR_SENSOR_NODE_NAME,
+        controller_node_name: CONTROLLER_NODE_NAME,
     }
     .render()
     .expect("failed to render brain template");
     let controller_content = ControllerNodeTemplate {
         node_name: CONTROLLER_NODE_NAME,
-        brain_node_name: BRAIN_NODE_NAME,
     }
     .render()
     .expect("failed to render controller template");
