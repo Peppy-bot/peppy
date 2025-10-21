@@ -93,6 +93,27 @@ impl ServiceRequest {
     }
 }
 
+pub struct TopicPublisher {
+    messenger: Arc<Mutex<Messenger>>,
+    topic: String,
+    qos: PublisherQoS,
+}
+
+impl TopicPublisher {
+    pub fn topic(&self) -> &str {
+        &self.topic
+    }
+
+    pub async fn publish(&self, payload: Bytes) -> Result<()> {
+        let message = Message::new(&self.topic, payload.as_ref());
+        let mut messenger = self.messenger.lock().await;
+        messenger
+            .publish(message, self.qos)
+            .await
+            .map_err(Error::PeppyMessagingInterface)
+    }
+}
+
 impl PeppyMessenger {
     pub async fn new(node_name: &str) -> Self {
         let adapter = ZenohAdapter::default();
@@ -172,8 +193,8 @@ impl PeppyMessenger {
         from_node_name: &str,
         namespace: &str,
         topic_name: &str,
+        qos: QoSProfile,
     ) -> Result<Subscription> {
-        let qos = QoSProfile::Reliable; // Always the same QoSProfile for services
         let topic_path = Self::build_full_namespace(from_node_name, namespace, topic_name);
         let subscriber_qos = Self::map_node_qos_to_subscriber_qos(qos);
 
@@ -211,6 +232,10 @@ impl PeppyMessenger {
         service_name: &str,
     ) -> Result<ServiceEndpoint> {
         let service_root = Self::build_full_namespace(&self.node_name, namespace, service_name);
+        self.create_service_endpoint(service_root).await
+    }
+
+    async fn create_service_endpoint(&self, service_root: String) -> Result<ServiceEndpoint> {
         let request_topic_base = format!("{service_root}/request");
         let request_topic_prefix = format!("{request_topic_base}/");
         let request_subscription_topic = format!("{request_topic_base}/**");
@@ -284,17 +309,27 @@ impl PeppyMessenger {
         Ok(response.payload)
     }
 
-    // pub async fn expose_action<F, Fut>(
-    //     &self,
-    //     namespace: &str,
-    //     action_name: &str,
-    //     handler: F,
-    // ) -> Result<JoinHandle<Result<()>>>
-    // where
-    //     F: Fn(Message) -> Fut + Send + Sync + 'static,
-    //     Fut: Future<Output = Result<Bytes>> + Send + 'static,
-    // {
-    //     // TODO finish
-    //     Ok(Bytes::new())
-    // }
+    /// Returns Result<(goal_service, feedback_topic, result_service)>
+    pub async fn expose_action(
+        &self,
+        namespace: &str,
+        service_name: &str,
+    ) -> Result<(ServiceEndpoint, TopicPublisher, ServiceEndpoint)> {
+        let action_root = Self::build_full_namespace(&self.node_name, namespace, service_name);
+
+        let goal_service_root = format!("{action_root}/goal");
+        let result_service_root = format!("{action_root}/result");
+        let feedback_topic = format!("{action_root}/feedback");
+
+        let goal_service = self.create_service_endpoint(goal_service_root).await?;
+        let result_service = self.create_service_endpoint(result_service_root).await?;
+
+        let feedback_publisher = TopicPublisher {
+            messenger: Arc::clone(&self.messenger),
+            topic: feedback_topic,
+            qos: PublisherQoS::Standard,
+        };
+
+        Ok((goal_service, feedback_publisher, result_service))
+    }
 }
