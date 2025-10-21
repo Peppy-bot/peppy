@@ -24,48 +24,20 @@
     exposes: {
       topics: [],
       services: [],
-      actions: [
-        {
-          // The brain sends signals to the controller
-          name: "move_arm",
-          goal_service: {
-            // Always using "reliable" qos
-            message_format: {
-              arm_id: "u16",
-              desired_position: {
-                type: "array",
-                items: "i32",
-                length: 3
-              }
-            }
-          },
-          feedback_topic: {
-            qos_profile: "standard", // Options: "standard", "reliable", "sensor_data"
-            message_format: {
-              current_position: {
-                type: "array",
-                items: "i32",
-                length: 3
-              }
-            }
-          },
-          result_service: {
-            // Always using "reliable" qos
-            message_format: {
-              final_position: {
-                type: "array",
-                items: "i32",
-                length: 3
-              }
-            }
-          }
-        }
-      ],
+      actions: [],
     },
     subscribes_to: {
       topics: [],
       services: [],
-      actions: [],
+      actions: [
+        {
+          node: "my_action_robot_controller", // Will look for that node name
+          tag: "0.1.0", // On that particular tag/version
+          name: "move_right_arm", // With this action name
+          feedback_callback: "on_move_arm_feedback_received",
+          results_callback: "on_result_callback_received"
+        }
+      ],
     },
   },
   resources: {
