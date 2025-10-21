@@ -10,13 +10,11 @@ use pmi::{
 };
 use sha2::{Digest, Sha256};
 use std::{
-    future::Future,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     sync::Mutex,
-    task::JoinHandle,
     time::{Duration, timeout},
 };
 use tracing::error;
@@ -25,6 +23,74 @@ use tracing::error;
 pub struct PeppyMessenger {
     node_name: String,
     messenger: Arc<Mutex<Messenger>>,
+}
+
+pub struct ServiceEndpoint {
+    messenger: Arc<Mutex<Messenger>>,
+    subscription: Subscription,
+    request_topic_base: String,
+    request_topic_prefix: String,
+    response_topic_base: String,
+}
+
+impl ServiceEndpoint {
+    pub async fn next_request(&mut self) -> Option<ServiceRequest> {
+        while let Some(request) = self.subscription.rx.recv().await {
+            let Message { topic, payload } = request;
+
+            if !topic.starts_with(&self.request_topic_prefix) {
+                error!(%topic, "service received request on unexpected topic");
+                continue;
+            }
+
+            let request_id = topic
+                .strip_prefix(&self.request_topic_prefix)
+                .and_then(|rest| rest.split('/').next())
+                .filter(|segment| !segment.is_empty())
+                .map(str::to_string);
+
+            let response_topic = request_id
+                .as_ref()
+                .map(|id| format!("{}/{}", self.response_topic_base, id))
+                .unwrap_or_else(|| self.response_topic_base.clone());
+
+            let message = Message {
+                topic: self.request_topic_base.clone(),
+                payload,
+            };
+
+            return Some(ServiceRequest {
+                message,
+                request_id,
+                response_topic,
+                messenger: Arc::clone(&self.messenger),
+            });
+        }
+
+        None
+    }
+}
+
+pub struct ServiceRequest {
+    pub message: Message,
+    request_id: Option<String>,
+    response_topic: String,
+    messenger: Arc<Mutex<Messenger>>,
+}
+
+impl ServiceRequest {
+    pub fn request_id(&self) -> Option<&str> {
+        self.request_id.as_deref()
+    }
+
+    pub async fn respond(self, payload: Bytes) -> Result<()> {
+        let response = Message::new(&self.response_topic, payload.as_ref());
+        let mut messenger = self.messenger.lock().await;
+        messenger
+            .publish(response, PublisherQoS::Standard)
+            .await
+            .map_err(Error::PeppyMessagingInterface)
+    }
 }
 
 impl PeppyMessenger {
@@ -139,18 +205,14 @@ impl PeppyMessenger {
             .map_err(Error::PeppyMessagingInterface)
     }
 
-    pub async fn start_service<F, Fut>(
+    pub async fn expose_service(
         &self,
         namespace: &str,
         service_name: &str,
-        handler: F,
-    ) -> Result<JoinHandle<Result<()>>>
-    where
-        F: Fn(Message) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<Bytes>> + Send + 'static,
-    {
+    ) -> Result<ServiceEndpoint> {
         let service_root = Self::build_full_namespace(&self.node_name, namespace, service_name);
         let request_topic_base = format!("{service_root}/request");
+        let request_topic_prefix = format!("{request_topic_base}/");
         let request_subscription_topic = format!("{request_topic_base}/**");
         let response_topic_base = format!("{service_root}/response");
 
@@ -162,50 +224,13 @@ impl PeppyMessenger {
         }
         .map_err(Error::PeppyMessagingInterface)?;
 
-        let messenger = Arc::clone(&self.messenger);
-        let handler = Arc::new(handler);
-
-        let task: JoinHandle<Result<()>> = tokio::spawn(async move {
-            let mut subscription = subscription;
-            let request_topic_prefix = format!("{request_topic_base}/");
-
-            while let Some(request) = subscription.rx.recv().await {
-                let Message { topic, payload } = request;
-
-                let request_id = topic
-                    .strip_prefix(&request_topic_prefix)
-                    .and_then(|rest| rest.split('/').next())
-                    .filter(|segment| !segment.is_empty())
-                    .map(|segment| segment.to_string());
-
-                let handler_request = Message {
-                    topic: request_topic_base.clone(),
-                    payload,
-                };
-
-                let response_topic = request_id
-                    .as_ref()
-                    .map(|id| format!("{response_topic_base}/{id}"))
-                    .unwrap_or_else(|| response_topic_base.clone());
-
-                match handler(handler_request).await {
-                    Ok(payload) => {
-                        let message = Message::new(&response_topic, payload.as_ref());
-                        let mut messenger = messenger.lock().await;
-                        messenger
-                            .publish(message, PublisherQoS::Standard)
-                            .await
-                            .map_err(Error::PeppyMessagingInterface)?;
-                    }
-                    Err(err) => {
-                        error!(?err, "service handler returned error");
-                    }
-                }
-            }
-            Ok(())
-        });
-
-        Ok(task)
+        Ok(ServiceEndpoint {
+            messenger: Arc::clone(&self.messenger),
+            subscription,
+            request_topic_base,
+            request_topic_prefix,
+            response_topic_base,
+        })
     }
 
     pub async fn poll_service(
@@ -245,7 +270,7 @@ impl PeppyMessenger {
 
         let response = timeout(response_timeout, response_subscription.rx.recv())
             .await
-            .map_err(|_| Error::ServiceUnreachable {
+            .map_err(|_| Error::ServiceTimeout {
                 service_node: from_node_name.to_string(),
                 namespace: namespace.to_string(),
                 service_name: service_name.to_string(),
@@ -258,4 +283,18 @@ impl PeppyMessenger {
 
         Ok(response.payload)
     }
+
+    // pub async fn expose_action<F, Fut>(
+    //     &self,
+    //     namespace: &str,
+    //     action_name: &str,
+    //     handler: F,
+    // ) -> Result<JoinHandle<Result<()>>>
+    // where
+    //     F: Fn(Message) -> Fut + Send + Sync + 'static,
+    //     Fut: Future<Output = Result<Bytes>> + Send + 'static,
+    // {
+    //     // TODO finish
+    //     Ok(Bytes::new())
+    // }
 }

@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use config::node::QoSProfile;
-use pmi::{Message, Messenger, MessengerAdapter, MessengerBackend, ZenohAdapter};
+use pmi::{Messenger, MessengerAdapter, MessengerBackend, ZenohAdapter};
 use std::{
     fs,
     net::TcpListener,
@@ -123,24 +123,35 @@ async fn service_communication() {
     let response_payload = Bytes::from_static(b"ack");
 
     let call_count = Arc::new(AtomicUsize::new(0));
-    let service_handle = service_messenger
-        .start_service(namespace, service_name, {
-            let expected_request_topic = expected_request_topic.clone();
-            let request_payload = request_payload.clone();
-            let response_payload = response_payload.clone();
-            let call_count = call_count.clone();
-
-            move |message: Message| {
-                assert_eq!(message.topic, expected_request_topic);
-                assert_eq!(message.payload, request_payload);
-                call_count.fetch_add(1, Ordering::SeqCst);
-                let response_payload = response_payload.clone();
-
-                async move { Ok(response_payload) }
-            }
-        })
+    let service = service_messenger
+        .expose_service(namespace, service_name)
         .await
         .expect("service should start");
+
+    let service_handle = {
+        let expected_request_topic = expected_request_topic.clone();
+        let request_payload = request_payload.clone();
+        let response_payload = response_payload.clone();
+        let call_count = Arc::clone(&call_count);
+
+        tokio::spawn(async move {
+            let mut service = service;
+
+            let request = service
+                .next_request()
+                .await
+                .expect("service should receive exactly one request");
+            assert_eq!(request.message.topic, expected_request_topic);
+            assert_eq!(request.message.payload, request_payload);
+            call_count.fetch_add(1, Ordering::SeqCst);
+            request
+                .respond(response_payload)
+                .await
+                .expect("service should send response");
+
+            Ok::<(), Error>(())
+        })
+    };
 
     let response = caller_messenger
         .poll_service(
@@ -162,7 +173,10 @@ async fn service_communication() {
         "service callback should have been called exactly once"
     );
 
-    service_handle.abort();
+    service_handle
+        .await
+        .expect("service task panicked")
+        .expect("service task returned error");
 
     router_messenger
         .stop_router()
@@ -190,23 +204,37 @@ async fn single_service_communication_multiple_polls() {
         .collect();
     let call_count = Arc::new(AtomicUsize::new(0));
 
-    let service_handle = service_messenger
-        .start_service(namespace, service_name, {
-            let expected_request_topic = expected_request_topic.clone();
-            let call_count = Arc::clone(&call_count);
-            move |message: Message| {
-                assert_eq!(message.topic, expected_request_topic);
-                call_count.fetch_add(1, Ordering::SeqCst);
-                let response_payload = message.payload.clone();
-
-                async move {
-                    tokio::task::yield_now().await;
-                    Ok(response_payload)
-                }
-            }
-        })
+    let service = service_messenger
+        .expose_service(namespace, service_name)
         .await
         .expect("service should start");
+
+    let service_handle: tokio::task::JoinHandle<Result<(), Error>> = {
+        let expected_request_topic = expected_request_topic.clone();
+        let call_count = Arc::clone(&call_count);
+        let expected_requests = concurrent_requests;
+
+        tokio::spawn(async move {
+            let mut service = service;
+
+            for _ in 0..expected_requests {
+                let request = service
+                    .next_request()
+                    .await
+                    .expect("service should receive expected number of requests");
+                assert_eq!(request.message.topic, expected_request_topic);
+                call_count.fetch_add(1, Ordering::SeqCst);
+                let response_payload = request.message.payload.clone();
+
+                request
+                    .respond(response_payload)
+                    .await
+                    .expect("service should send response");
+            }
+
+            Ok(())
+        })
+    };
 
     let caller_messenger = Arc::new(caller_messenger);
 
@@ -237,13 +265,16 @@ async fn single_service_communication_multiple_polls() {
         );
     }
 
+    service_handle
+        .await
+        .expect("service task panicked")
+        .expect("service task returned error");
+
     let expected_count = call_count.load(Ordering::SeqCst);
     assert_eq!(
         expected_count, concurrent_requests,
         "service should have been called {concurrent_requests} times"
     );
-
-    service_handle.abort();
 
     router_messenger
         .stop_router()
@@ -274,7 +305,7 @@ async fn service_communication_fails_not_started() {
         .expect_err("service call should fail when service is not started");
 
     match err {
-        Error::ServiceUnreachable {
+        Error::ServiceTimeout {
             service_node: err_service_node,
             namespace: err_namespace,
             service_name: err_service_name,
@@ -317,25 +348,38 @@ async fn service_communication_fails_timeout() {
     let caller_success_timeout = Duration::from_millis(500);
     let caller_timeout = Duration::from_millis(50);
 
-    let service_handle = service_messenger
-        .start_service(namespace, service_name, {
-            let expected_request_topic = expected_request_topic.clone();
-            let response_payload = response_payload.clone();
-            let call_count = Arc::clone(&call_count);
-
-            move |message: Message| {
-                assert_eq!(message.topic, expected_request_topic);
-                call_count.fetch_add(1, Ordering::SeqCst);
-                let response_payload = response_payload.clone();
-
-                async move {
-                    tokio::time::sleep(response_delay).await;
-                    Ok(response_payload)
-                }
-            }
-        })
+    let service = service_messenger
+        .expose_service(namespace, service_name)
         .await
         .expect("service should start");
+
+    let service_handle = {
+        let expected_request_topic = expected_request_topic.clone();
+        let response_payload = response_payload.clone();
+        let call_count = Arc::clone(&call_count);
+        let response_delay = response_delay;
+        let expected_requests = 2;
+
+        tokio::spawn(async move {
+            let mut service = service;
+
+            for _ in 0..expected_requests {
+                let request = service
+                    .next_request()
+                    .await
+                    .expect("service should receive expected number of requests");
+                assert_eq!(request.message.topic, expected_request_topic);
+                call_count.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(response_delay).await;
+                request
+                    .respond(response_payload.clone())
+                    .await
+                    .expect("service should send response");
+            }
+
+            Ok::<(), Error>(())
+        })
+    };
 
     let success_response = caller_messenger
         .poll_service(
@@ -366,7 +410,7 @@ async fn service_communication_fails_timeout() {
         .expect_err("service call should fail when response exceeds timeout");
 
     match err {
-        Error::ServiceUnreachable {
+        Error::ServiceTimeout {
             service_node: err_service_node,
             namespace: err_namespace,
             service_name: err_service_name,
@@ -381,16 +425,22 @@ async fn service_communication_fails_timeout() {
         ),
     }
 
+    service_handle
+        .await
+        .expect("service task panicked")
+        .expect("service task returned error");
+
     assert_eq!(
         call_count.load(Ordering::SeqCst),
         2,
         "service should have processed both requests"
     );
 
-    service_handle.abort();
-
     router_messenger
         .stop_router()
         .await
         .expect("Failed to shutdown router");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn action_communication() {}
