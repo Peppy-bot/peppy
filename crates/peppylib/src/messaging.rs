@@ -5,7 +5,12 @@ use pmi::{
     Message, Messenger, MessengerAdapter, MessengerBackend, PeppyMessagingInterfaceError,
     PublisherQoS, SubscriberQoS, Subscription, ZenohAdapter, ZenohNetProtocol,
 };
-use std::{future::Future, sync::Arc};
+use sha2::{Digest, Sha256};
+use std::{
+    future::Future,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tokio::{sync::Mutex, task::JoinHandle};
 use tracing::error;
 
@@ -56,6 +61,24 @@ impl PeppyMessenger {
             QoSProfile::SensorData => SubscriberQoS::HighThroughput,
             _ => SubscriberQoS::Standard,
         }
+    }
+
+    /// Generates a unique request ID using SHA256 hash of node name + timestamp + thread ID
+    /// This ensures each service call has a unique correlation ID
+    fn generate_request_id(node_name: &str) -> String {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let thread_id = std::thread::current().id();
+
+        let mut hasher = Sha256::new();
+        hasher.update(node_name.as_bytes());
+        hasher.update(timestamp.to_le_bytes());
+        hasher.update(format!("{:?}", thread_id).as_bytes());
+
+        let result = hasher.finalize();
+        format!("{:x}", result)[..16].to_string() // Use first 16 hex chars for compactness
     }
 
     pub fn build_full_namespace(
@@ -120,13 +143,14 @@ impl PeppyMessenger {
         Fut: Future<Output = Result<Bytes>> + Send + 'static,
     {
         let service_root = Self::build_full_namespace(&self.node_name, namespace, service_name);
-        let request_topic = format!("{service_root}/request");
-        let response_topic = format!("{service_root}/response");
+        let request_topic_base = format!("{service_root}/request");
+        let request_subscription_topic = format!("{request_topic_base}/**");
+        let response_topic_base = format!("{service_root}/response");
 
         let subscription = {
             let messenger = self.messenger.lock().await;
             messenger
-                .subscribe(&request_topic, SubscriberQoS::Standard)
+                .subscribe(&request_subscription_topic, SubscriberQoS::Standard)
                 .await
         }
         .map_err(Error::PeppyMessagingInterface)?;
@@ -136,8 +160,28 @@ impl PeppyMessenger {
 
         let task: JoinHandle<Result<()>> = tokio::spawn(async move {
             let mut subscription = subscription;
+            let request_topic_prefix = format!("{request_topic_base}/");
+
             while let Some(request) = subscription.rx.recv().await {
-                match handler(request).await {
+                let Message { topic, payload } = request;
+
+                let request_id = topic
+                    .strip_prefix(&request_topic_prefix)
+                    .and_then(|rest| rest.split('/').next())
+                    .filter(|segment| !segment.is_empty())
+                    .map(|segment| segment.to_string());
+
+                let handler_request = Message {
+                    topic: request_topic_base.clone(),
+                    payload,
+                };
+
+                let response_topic = request_id
+                    .as_ref()
+                    .map(|id| format!("{response_topic_base}/{id}"))
+                    .unwrap_or_else(|| response_topic_base.clone());
+
+                match handler(handler_request).await {
                     Ok(payload) => {
                         let message = Message::new(&response_topic, payload.as_ref());
                         let mut messenger = messenger.lock().await;
@@ -166,10 +210,13 @@ impl PeppyMessenger {
     ) -> Result<Bytes> {
         let service_root =
             PeppyMessenger::build_full_namespace(from_node_name, namespace, service_name);
-        let request_topic = format!("{service_root}/request");
-        let response_topic = format!("{service_root}/response");
 
-        let response_subscription = {
+        let request_id = Self::generate_request_id(&self.node_name);
+
+        let request_topic = format!("{service_root}/request/{request_id}");
+        let response_topic = format!("{service_root}/response/{request_id}");
+
+        let mut response_subscription = {
             let messenger = self.messenger.lock().await;
             messenger
                 .subscribe(&response_topic, SubscriberQoS::Standard)
@@ -188,7 +235,6 @@ impl PeppyMessenger {
                 .map_err(Error::PeppyMessagingInterface)?;
         }
 
-        let mut response_subscription = response_subscription;
         let response = response_subscription.rx.recv().await.ok_or_else(|| {
             Error::PeppyMessagingInterface(PeppyMessagingInterfaceError::BackendError(
                 "service response channel closed".to_string(),
@@ -204,7 +250,14 @@ mod tests {
     use bytes::Bytes;
     use config::node::QoSProfile;
     use pmi::{Message, Messenger, MessengerAdapter, MessengerBackend, ZenohAdapter};
-    use std::{fs, net::TcpListener};
+    use std::{
+        fs,
+        net::TcpListener,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
     use tempfile::TempDir;
 
     use crate::messaging::PeppyMessenger;
@@ -310,7 +363,7 @@ mod tests {
         let service_node = "uvc_camera";
         let caller_node = "vision_pipeline";
         let service_name = "enable_camera";
-        let namespace = "/camera/rear";
+        let namespace = "/camera";
 
         let service_messenger = PeppyMessenger::from_host_port(service_node, &host, port).await;
         let caller_messenger = PeppyMessenger::from_host_port(caller_node, &host, port).await;
@@ -321,20 +374,21 @@ mod tests {
         let request_payload = Bytes::from_static(b"enable=true");
         let response_payload = Bytes::from_static(b"ack");
 
+        let call_count = Arc::new(AtomicUsize::new(0));
         let service_handle = service_messenger
             .start_service(namespace, service_name, {
                 let expected_request_topic = expected_request_topic.clone();
                 let request_payload = request_payload.clone();
                 let response_payload = response_payload.clone();
+                let call_count = call_count.clone();
+
                 move |message: Message| {
-                    let expected_request_topic = expected_request_topic.clone();
-                    let request_payload = request_payload.clone();
+                    assert_eq!(message.topic, expected_request_topic);
+                    assert_eq!(message.payload, request_payload);
+                    call_count.fetch_add(1, Ordering::SeqCst);
                     let response_payload = response_payload.clone();
-                    async move {
-                        assert_eq!(message.topic, expected_request_topic);
-                        assert_eq!(message.payload, request_payload);
-                        Ok(response_payload)
-                    }
+
+                    async move { Ok(response_payload) }
                 }
             })
             .await
@@ -352,11 +406,105 @@ mod tests {
 
         assert_eq!(response, response_payload);
 
+        // Ensure the service callback was called exactly once
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "service callback should have been called exactly once"
+        );
+
         service_handle.abort();
 
         router_messenger
             .stop_router()
             .await
             .expect("Failed to shutdown router");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn single_service_communication_multiple_polls() {
+        let (mut router_messenger, _, host, port) = start_zenohd_process().await;
+
+        let service_node = "uvc_camera";
+        let caller_node = "vision_pipeline";
+        let service_name = "enable_camera";
+        let namespace = "/camera";
+
+        let service_messenger = PeppyMessenger::from_host_port(service_node, &host, port).await;
+        let caller_messenger = PeppyMessenger::from_host_port(caller_node, &host, port).await;
+
+        let service_root =
+            PeppyMessenger::build_full_namespace(service_node, namespace, service_name);
+        let expected_request_topic = format!("{service_root}/request");
+        let concurrent_requests = 25;
+        let request_payloads: Vec<Bytes> = (0..concurrent_requests)
+            .map(|i| Bytes::from(format!("enable=true;request={i}").into_bytes()))
+            .collect();
+        let call_count = Arc::new(AtomicUsize::new(0));
+
+        let service_handle = service_messenger
+            .start_service(namespace, service_name, {
+                let expected_request_topic = expected_request_topic.clone();
+                let call_count = Arc::clone(&call_count);
+                move |message: Message| {
+                    assert_eq!(message.topic, expected_request_topic);
+                    call_count.fetch_add(1, Ordering::SeqCst);
+                    let response_payload = message.payload.clone();
+
+                    async move {
+                        tokio::task::yield_now().await;
+                        Ok(response_payload)
+                    }
+                }
+            })
+            .await
+            .expect("service should start");
+
+        let caller_messenger = Arc::new(caller_messenger);
+
+        let mut handles = Vec::with_capacity(concurrent_requests);
+        for request_payload in request_payloads.iter().cloned() {
+            let caller_messenger = Arc::clone(&caller_messenger);
+            let poll_service = tokio::spawn(async move {
+                let response = caller_messenger
+                    .poll_service(
+                        service_node,
+                        namespace,
+                        service_name,
+                        request_payload.clone(),
+                    )
+                    .await
+                    .expect("caller should receive response");
+                (request_payload, response)
+            });
+            handles.push(poll_service);
+        }
+
+        for handle in handles {
+            let (request_payload, response) =
+                handle.await.expect("poll_service task should not panic");
+            assert_eq!(
+                response, request_payload,
+                "response should match the originating request payload"
+            );
+        }
+
+        let expected_count = call_count.load(Ordering::SeqCst);
+        assert_eq!(
+            expected_count, concurrent_requests,
+            "service should have been called {concurrent_requests} times"
+        );
+
+        service_handle.abort();
+
+        router_messenger
+            .stop_router()
+            .await
+            .expect("Failed to shutdown router");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn service_communication_fails() {
+        // TODO: Fails if the service is not yet started with a ServiceUnreachable error
     }
 }
