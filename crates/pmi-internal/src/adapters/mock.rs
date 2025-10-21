@@ -61,17 +61,21 @@ impl MessengerBackend for MockAdapter {
                 .push(message.clone());
         }
 
-        // Send to all subscribers of this topic
+        // Send to all matching subscribers (supports simple prefix wildcard ending with "/**")
         let senders = {
             let subscriptions = self.subscriptions.lock().unwrap();
-            subscriptions.get(&message.topic).cloned()
+            let mut matched = Vec::new();
+            for (pattern, senders) in subscriptions.iter() {
+                if Self::topic_matches(pattern, &message.topic) {
+                    matched.extend(senders.iter().cloned());
+                }
+            }
+            matched
         };
 
-        if let Some(senders) = senders {
-            for sender in senders {
-                // Ignore send errors (subscriber might have dropped)
-                let _ = sender.send(message.clone()).await;
-            }
+        for sender in senders {
+            // Ignore send errors (subscriber might have dropped)
+            let _ = sender.send(message.clone()).await;
         }
 
         Ok(())
@@ -98,13 +102,17 @@ impl MessengerBackend for MockAdapter {
         // Send any existing messages for this topic
         let existing_messages = {
             let messages = self.messages.lock().unwrap();
-            messages.get(topic).cloned()
+            let mut matched = Vec::new();
+            for (msg_topic, msgs) in messages.iter() {
+                if Self::topic_matches(topic, msg_topic) {
+                    matched.extend(msgs.iter().cloned());
+                }
+            }
+            matched
         };
 
-        if let Some(existing_messages) = existing_messages {
-            for msg in existing_messages {
-                let _ = tx.send(msg).await;
-            }
+        for msg in existing_messages {
+            let _ = tx.send(msg).await;
         }
 
         // Create a dummy task that does nothing, just to get an abort handle
@@ -123,6 +131,24 @@ impl MessengerBackend for MockAdapter {
     async fn stop_router(&mut self) -> Result<()> {
         self.is_router_started = false;
         Ok(())
+    }
+}
+
+impl MockAdapter {
+    fn topic_matches(pattern: &str, topic: &str) -> bool {
+        if let Some(prefix) = pattern.strip_suffix("/**") {
+            if prefix.is_empty() {
+                return true;
+            }
+            if topic == prefix {
+                return true;
+            }
+            topic.starts_with(prefix)
+                && topic.len() > prefix.len()
+                && topic.as_bytes()[prefix.len()] == b'/'
+        } else {
+            pattern == topic
+        }
     }
 }
 
