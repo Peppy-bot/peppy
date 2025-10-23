@@ -3,12 +3,14 @@ use config::node::QoSProfile;
 use pmi::{
     Messenger, MessengerAdapter, MessengerBackend, PeppyMessagingInterfaceError, ZenohAdapter,
 };
+use rand::{seq::SliceRandom, thread_rng};
+use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::time::Duration;
 use tempfile::TempDir;
-use tokio::time::sleep;
+use tokio::{sync::oneshot, time::sleep};
 
 use crate::error::Error;
 use crate::messaging::PeppyMessenger;
@@ -65,6 +67,7 @@ async fn try_start_zenohd_instance(
 }
 
 /// Helper function start a zenoh router before each test (done by peppyd in the real world)
+/// We'd rather start a real local zenoh router than use a mocked instance that can blow up in the real world
 async fn start_zenohd_process() -> (Messenger, TempDir, String, u16) {
     const MAX_START_ATTEMPTS: usize = 32;
     let host = "127.0.0.1";
@@ -130,6 +133,84 @@ async fn topic_publish_subscribe() {
     let expected_topic = PeppyMessenger::build_full_namespace(&sender_node_name, ns, topic_name);
     assert_eq!(received.topic, expected_topic);
     assert_eq!(received.payload, payload);
+
+    router_messenger
+        .stop_router()
+        .await
+        .expect("Failed to shutdown router");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn service_handle_request_processes_multiple_messages() {
+    let (mut router_messenger, _, host, port) = start_zenohd_process().await;
+
+    let service_node = "uvc_camera";
+    let service_name = "enable_camera";
+    let namespace = "/camera";
+    let expected_requests = 5;
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+    let service_handle = {
+        let call_count = Arc::clone(&call_count);
+        let host = host.clone();
+        tokio::spawn(async move {
+            let service_expose_node = PeppyMessenger::from_host_port(service_node, &host, port)
+                .await
+                .expect("failed to create service messenger");
+
+            let mut service = service_expose_node
+                .expose_service(namespace, service_name)
+                .await
+                .expect("service should start");
+
+            tokio::select! {
+                result = service.handle_requests(|request| {
+                    let call_count = Arc::clone(&call_count);
+                    async move {
+                        call_count.fetch_add(1, Ordering::SeqCst);
+                        Ok(request.message.payload.clone())
+                    }
+                }) => result,
+                _ = shutdown_rx => Ok(()),
+            }
+        })
+    };
+
+    {
+        let caller_node = PeppyMessenger::from_host_port("vision_pipeline", &host, port)
+            .await
+            .expect("failed to create caller messenger");
+
+        for i in 0..expected_requests {
+            let request_payload = Bytes::from(format!("enable=true;request={i}").into_bytes());
+            let response = caller_node
+                .poll_service(
+                    service_node,
+                    namespace,
+                    service_name,
+                    request_payload.clone(),
+                    Duration::from_secs(1),
+                )
+                .await
+                .expect("caller should receive response");
+            assert_eq!(
+                response, request_payload,
+                "response should match the originating request payload"
+            );
+        }
+    }
+
+    let _ = shutdown_tx.send(());
+
+    let service_result = service_handle.await.expect("service task panicked");
+    service_result.expect("service task returned error");
+
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        expected_requests,
+        "service should process all requests"
+    );
 
     router_messenger
         .stop_router()
@@ -241,7 +322,7 @@ async fn service_communication() {
 
 /// Ensures a unique request returns its unique response
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn single_service_communication_multiple_polls() {
+async fn single_service_communication_multiple_polls_and_callers() {
     let (mut router_messenger, _, host, port) = start_zenohd_process().await;
 
     let service_node = "uvc_camera";
@@ -250,7 +331,10 @@ async fn single_service_communication_multiple_polls() {
 
     let service_root = PeppyMessenger::build_full_namespace(service_node, namespace, service_name);
     let expected_request_topic = format!("{service_root}/request");
-    let concurrent_requests = 25;
+    // TODO: That many callers saturate Zenohd
+    let caller_count = 500;
+    let requests_per_caller = 5;
+    let total_requests = caller_count * requests_per_caller;
     let call_count = Arc::new(AtomicUsize::new(0));
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
@@ -266,7 +350,7 @@ async fn single_service_communication_multiple_polls() {
 
         let expected_request_topic = expected_request_topic.clone();
         let call_count = Arc::clone(&call_count);
-        let expected_requests = concurrent_requests;
+        let expected_requests = total_requests;
 
         tokio::spawn(async move {
             let mut service = service;
@@ -297,41 +381,94 @@ async fn single_service_communication_multiple_polls() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        let request_payloads: Vec<Bytes> = (0..concurrent_requests)
-            .map(|i| Bytes::from(format!("enable=true;request={i}").into_bytes()))
-            .collect();
-        let caller_node = Arc::new(
-            PeppyMessenger::from_host_port("vision_pipeline", &host, port)
-                .await
-                .expect("failed to create caller messenger"),
-        );
-        let mut handles = Vec::with_capacity(concurrent_requests);
-        for request_payload in request_payloads.iter().cloned() {
-            let caller_messenger = Arc::clone(&caller_node);
+        let mut expected_payloads = HashMap::with_capacity(total_requests);
+        let mut caller_requests = Vec::with_capacity(caller_count);
+
+        for caller_idx in 0..caller_count {
+            let caller_name = format!("vision_pipeline_{caller_idx}");
+            let mut requests = Vec::with_capacity(requests_per_caller);
+            for request_idx in 0..requests_per_caller {
+                let payload =
+                    Bytes::from(format!("caller={caller_name};request={request_idx}").into_bytes());
+                expected_payloads.insert((caller_name.clone(), request_idx), payload.clone());
+                requests.push((request_idx, payload));
+            }
+            caller_requests.push((caller_name, requests));
+        }
+
+        let mut rng = thread_rng();
+        caller_requests.shuffle(&mut rng);
+
+        let mut handles = Vec::with_capacity(caller_count);
+        for (caller_node_name, mut requests) in caller_requests {
+            requests.shuffle(&mut rng);
+            let host = host.clone();
             let poll_service = tokio::spawn(async move {
-                let response = caller_messenger
-                    .poll_service(
-                        service_node,
-                        namespace,
-                        service_name,
+                let caller_messenger =
+                    PeppyMessenger::from_host_port(&caller_node_name, &host, port)
+                        .await
+                        .expect("failed to create caller messenger");
+
+                let mut caller_results = Vec::with_capacity(requests.len());
+                for (request_idx, request_payload) in requests {
+                    let response = caller_messenger
+                        .poll_service(
+                            service_node,
+                            namespace,
+                            service_name,
+                            request_payload.clone(),
+                            Duration::from_secs(1),
+                        )
+                        .await
+                        .expect("caller should receive response");
+
+                    caller_results.push((
+                        caller_node_name.clone(),
+                        request_idx,
                         request_payload.clone(),
-                        Duration::from_secs(1),
-                    )
-                    .await
-                    .expect("caller should receive response");
-                (request_payload, response)
+                        response,
+                    ));
+                }
+
+                caller_results
             });
             handles.push(poll_service);
         }
 
+        let mut results = Vec::with_capacity(total_requests);
         for handle in handles {
-            let (request_payload, response) =
-                handle.await.expect("poll_service task should not panic");
+            let mut caller_results = handle.await.expect("poll_service task should not panic");
+            results.append(&mut caller_results);
+        }
+
+        let mut verification_indices: Vec<usize> = (0..results.len()).collect();
+        let original_indices = verification_indices.clone();
+        let mut rng = thread_rng();
+        verification_indices.shuffle(&mut rng);
+        if verification_indices == original_indices {
+            verification_indices.rotate_left(1);
+        }
+
+        for index in verification_indices {
+            let (caller_node_name, request_idx, request_payload, response) = &results[index];
+            let expected_payload = expected_payloads
+                .remove(&(caller_node_name.clone(), *request_idx))
+                .expect("expected payload should exist for caller/request pair");
+
             assert_eq!(
-                response, request_payload,
-                "response should match the originating request payload"
+                request_payload, &expected_payload,
+                "stored request payload should match expected value for `{caller_node_name}` request {request_idx}"
+            );
+            assert_eq!(
+                response, &expected_payload,
+                "response for `{caller_node_name}` request {request_idx} should match the originating request payload"
             );
         }
+
+        assert!(
+            expected_payloads.is_empty(),
+            "all expected caller/request pairs should have been validated"
+        );
     };
 
     service_handle
@@ -341,8 +478,8 @@ async fn single_service_communication_multiple_polls() {
 
     let expected_count = call_count.load(Ordering::SeqCst);
     assert_eq!(
-        expected_count, concurrent_requests,
-        "service should have been called {concurrent_requests} times"
+        expected_count, total_requests,
+        "service should have been called {total_requests} times"
     );
 
     router_messenger
@@ -676,6 +813,106 @@ async fn action_communication() {
         .await
         .expect("action handler task panicked")
         .expect("action handler returned error");
+
+    router_messenger
+        .stop_router()
+        .await
+        .expect("Failed to shutdown router");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn single_action_communication_multiple_polls() {
+    let (mut router_messenger, _, host, port) = start_zenohd_process().await;
+
+    let action_node = "controller_node";
+    let action_name = "move_right_arm";
+    let namespace = "/control";
+    let caller_node = "the_brain";
+
+    let goal_payload = Bytes::from_static(b"arm=right;pos=1,2,3");
+    let goal_response_payload = Bytes::from_static(b"accepted");
+    let feedback_payload = Bytes::from_static(b"progress=50");
+    let result_payload = Bytes::from_static(b"done");
+    let result_request_payload = Bytes::from_static(b"goal=right_arm");
+
+    let goal_payload_server = goal_payload.clone();
+    let goal_response_payload_server = goal_response_payload.clone();
+    let feedback_payload_server = feedback_payload.clone();
+    let result_payload_server = result_payload.clone();
+    let result_request_payload_server = result_request_payload.clone();
+
+    // Launch a background task that plays the role of the action server.
+    let server_task = {
+        let action_messenger = PeppyMessenger::from_host_port(action_node, &host, port)
+            .await
+            .expect("failed to create action messenger");
+
+        tokio::spawn(async move {
+            let mut action = action_messenger
+                .expose_action(namespace, action_name)
+                .await
+                .expect("action should start");
+
+            let action_root =
+                PeppyMessenger::build_full_namespace(action_node, namespace, action_name);
+            let expected_goal_topic = format!("{action_root}/goal/request");
+            let expected_result_topic = format!("{action_root}/result/request");
+
+            // Wait for the client to send a goal request
+            let handled_goal = action
+                .goal_service
+                .handle_next_request(move |request| {
+                    let expected_goal_topic = expected_goal_topic.clone();
+                    let expected_goal_payload = goal_payload_server.clone();
+                    let expected_goal_response_payload = goal_response_payload_server.clone();
+                    async move {
+                        assert_eq!(request.message.topic, expected_goal_topic);
+                        assert_eq!(request.message.payload, expected_goal_payload);
+                        Ok(expected_goal_response_payload)
+                    }
+                })
+                .await
+                .expect("action should receive goal request");
+
+            assert!(
+                handled_goal,
+                "goal subscription closed before handling request"
+            );
+
+            action
+                .feedback_publisher
+                .publish(feedback_payload_server.clone())
+                .await
+                .expect("action should publish feedback");
+
+            // Give the client time to attach to the result service before answering.
+            sleep(Duration::from_millis(20)).await;
+
+            let handled_result = action
+                .result_service
+                .handle_next_request(move |request| {
+                    let expected_topic = expected_result_topic.clone();
+                    let expected_payload = result_request_payload_server.clone();
+                    let response_payload = result_payload_server.clone();
+                    async move {
+                        assert_eq!(request.message.topic, expected_topic);
+                        assert_eq!(request.message.payload, expected_payload);
+                        Ok(response_payload)
+                    }
+                })
+                .await
+                .expect("action should receive result request");
+
+            assert!(
+                handled_result,
+                "result subscription closed before handling request"
+            );
+
+            Ok::<(), Error>(())
+        })
+    };
+
+    // TODO: Implement multiple clients that connect to the same action and check that the goal/feedback/result that each client get back maps to the original caller in such a way that the messages are not intertwined across the multiple callers
 
     router_messenger
         .stop_router()

@@ -40,50 +40,79 @@ impl ServiceEndpoint {
         F: FnOnce(ServiceRequestContext) -> Fut,
         Fut: std::future::Future<Output = Result<Bytes>>,
     {
+        let mut handler = Some(handler);
+
         while let Some(request) = self.subscription.rx.recv().await {
-            let Message { topic, payload } = request;
-
-            if !topic.starts_with(&self.request_topic_prefix) {
-                error!(%topic, "service received request on unexpected topic");
-                continue;
+            if let Some((context, response_topic)) = self.build_request_context(request) {
+                let handler = handler
+                    .take()
+                    .expect("service handler invoked more than once in handle_next_request");
+                let response_payload = handler(context).await?;
+                self.publish_response(response_topic, response_payload)
+                    .await?;
+                return Ok(true);
             }
-
-            let request_id = topic
-                .strip_prefix(&self.request_topic_prefix)
-                .and_then(|rest| rest.split('/').next())
-                .filter(|segment| !segment.is_empty())
-                .map(str::to_string);
-
-            let response_topic = request_id
-                .as_ref()
-                .map(|id| format!("{}/{}", self.response_topic_base, id))
-                .unwrap_or_else(|| self.response_topic_base.clone());
-
-            let message = Message {
-                topic: self.request_topic_base.clone(),
-                payload,
-            };
-
-            let context = ServiceRequestContext {
-                message,
-                request_id,
-            };
-
-            let response_payload = handler(context).await?;
-            let response = Message {
-                topic: response_topic,
-                payload: response_payload,
-            };
-            let mut messenger = self.messenger.lock().await;
-            messenger
-                .publish(response, PublisherQoS::Standard)
-                .await
-                .map_err(Error::PeppyMessagingInterface)?;
-
-            return Ok(true);
         }
 
         Ok(false)
+    }
+
+    /// Handles requests until the subscription stream ends.
+    pub async fn handle_requests<F, Fut>(&mut self, mut handler: F) -> Result<()>
+    where
+        F: FnMut(ServiceRequestContext) -> Fut,
+        Fut: std::future::Future<Output = Result<Bytes>>,
+    {
+        while let Some(request) = self.subscription.rx.recv().await {
+            if let Some((context, response_topic)) = self.build_request_context(request) {
+                let response_payload = handler(context).await?;
+                self.publish_response(response_topic, response_payload)
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn build_request_context(&self, request: Message) -> Option<(ServiceRequestContext, String)> {
+        let Message { topic, payload } = request;
+
+        if !topic.starts_with(&self.request_topic_prefix) {
+            error!(%topic, "service received request on unexpected topic");
+            return None;
+        }
+
+        let request_id = topic
+            .strip_prefix(&self.request_topic_prefix)
+            .and_then(|rest| rest.split('/').next())
+            .filter(|segment| !segment.is_empty())
+            .map(str::to_string);
+
+        let response_topic = request_id
+            .as_ref()
+            .map(|id| format!("{}/{}", self.response_topic_base, id))
+            .unwrap_or_else(|| self.response_topic_base.clone());
+
+        let message = Message {
+            topic: self.request_topic_base.clone(),
+            payload,
+        };
+
+        let context = ServiceRequestContext {
+            message,
+            request_id,
+        };
+
+        Some((context, response_topic))
+    }
+
+    async fn publish_response(&self, topic: String, payload: Bytes) -> Result<()> {
+        let response = Message { topic, payload };
+        let mut messenger = self.messenger.lock().await;
+        messenger
+            .publish(response, PublisherQoS::Standard)
+            .await
+            .map_err(Error::PeppyMessagingInterface)
     }
 }
 
