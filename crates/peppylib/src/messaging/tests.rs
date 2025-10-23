@@ -141,6 +141,76 @@ async fn topic_publish_subscribe() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn topic_publish_5000hz_messages() {
+    let (mut router_messenger, _, host, port) = start_zenohd_process().await;
+
+    // Those attributes are found in the message definition `exposes`
+    let sender_node_name = "uvc_camera";
+    let receiver_node = "vision_pipeline";
+    let topic_name = "video_frame";
+    let qos = QoSProfile::SensorData;
+
+    // Those properties are found in the `deployments` array
+    let ns = "/camera/rear";
+
+    let sender_node = PeppyMessenger::from_host_port(&sender_node_name, &host, port)
+        .await
+        .expect("failed to create sender messenger");
+    let receiver_node = PeppyMessenger::from_host_port(&receiver_node, &host, port)
+        .await
+        .expect("failed to create receiver messenger");
+
+    let mut subscription = receiver_node
+        .receive_topic_msg(&sender_node_name, ns, topic_name, qos.clone())
+        .await
+        .expect("Should subscribe to the topic");
+
+    let expected_topic = PeppyMessenger::build_full_namespace(&sender_node_name, ns, topic_name);
+    let message_count = 5000;
+    let mut message_ids: Vec<u32> = (0..message_count as u32).collect();
+    message_ids.shuffle(&mut thread_rng());
+
+    for &message_id in &message_ids {
+        let payload = Bytes::from(message_id.to_le_bytes().to_vec());
+        sender_node
+            .emit_topic_message(ns, topic_name, qos.clone(), payload)
+            .await
+            .expect("Should send the payload");
+        sleep(Duration::from_millis(1)).await;
+    }
+
+    for expected_id in &message_ids {
+        let message = tokio::time::timeout(Duration::from_secs(2), subscription.rx.recv())
+            .await
+            .expect("Timed out waiting for a message")
+            .expect("Subscription closed before receiving all messages");
+
+        assert_eq!(message.topic, expected_topic);
+
+        let payload = message.payload.as_ref();
+        assert_eq!(
+            payload.len(),
+            std::mem::size_of::<u32>(),
+            "Payload should encode the message index"
+        );
+
+        let mut id_bytes = [0u8; std::mem::size_of::<u32>()];
+        id_bytes.copy_from_slice(payload);
+        let received_id = u32::from_le_bytes(id_bytes);
+
+        assert_eq!(
+            received_id, *expected_id,
+            "Messages should arrive in the same order they were sent"
+        );
+    }
+
+    router_messenger
+        .stop_router()
+        .await
+        .expect("Failed to shutdown router");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn service_handle_request_processes_multiple_messages() {
     let (mut router_messenger, _, host, port) = start_zenohd_process().await;
 
