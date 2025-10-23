@@ -34,7 +34,12 @@ pub struct ServiceEndpoint {
 }
 
 impl ServiceEndpoint {
-    pub async fn next_request(&mut self) -> Option<ServiceRequest> {
+    /// We need to use a callback system here to force the service to send back a response
+    pub async fn handle_next_request<F, Fut>(&mut self, handler: F) -> Result<bool>
+    where
+        F: FnOnce(ServiceRequestContext) -> Fut,
+        Fut: std::future::Future<Output = Result<Bytes>>,
+    {
         while let Some(request) = self.subscription.rx.recv().await {
             let Message { topic, payload } = request;
 
@@ -59,37 +64,34 @@ impl ServiceEndpoint {
                 payload,
             };
 
-            return Some(ServiceRequest {
+            let context = ServiceRequestContext {
                 message,
                 request_id,
-                response_topic,
-                messenger: Arc::clone(&self.messenger),
-            });
+            };
+
+            let response_payload = handler(context).await?;
+            let response = Message::new(&response_topic, response_payload.as_ref());
+            let mut messenger = self.messenger.lock().await;
+            messenger
+                .publish(response, PublisherQoS::Standard)
+                .await
+                .map_err(Error::PeppyMessagingInterface)?;
+
+            return Ok(true);
         }
 
-        None
+        Ok(false)
     }
 }
 
-pub struct ServiceRequest {
+pub struct ServiceRequestContext {
     pub message: Message,
     request_id: Option<String>,
-    response_topic: String,
-    messenger: Arc<Mutex<Messenger>>,
 }
 
-impl ServiceRequest {
+impl ServiceRequestContext {
     pub fn request_id(&self) -> Option<&str> {
         self.request_id.as_deref()
-    }
-
-    pub async fn respond(self, payload: Bytes) -> Result<()> {
-        let response = Message::new(&self.response_topic, payload.as_ref());
-        let mut messenger = self.messenger.lock().await;
-        messenger
-            .publish(response, PublisherQoS::Standard)
-            .await
-            .map_err(Error::PeppyMessagingInterface)
     }
 }
 
@@ -114,31 +116,59 @@ impl TopicPublisher {
     }
 }
 
+pub struct ActionGoalHandle {
+    server_node: String,
+    namespace: String,
+    action_name: String,
+    goal_response: Bytes,
+    feedback: Subscription,
+}
+
+impl ActionGoalHandle {
+    pub fn goal_response(&self) -> &Bytes {
+        &self.goal_response
+    }
+
+    pub fn feedback_mut(&mut self) -> &mut Subscription {
+        &mut self.feedback
+    }
+}
+
+// https://docs.ros.org/en/foxy/_images/Action-SingleActionClient.gif
+pub struct ActionCreation {
+    pub goal_service: ServiceEndpoint,
+    pub cancel_service: ServiceEndpoint,
+    pub feedback_publisher: TopicPublisher,
+    pub result_service: ServiceEndpoint,
+}
+
 impl PeppyMessenger {
-    pub async fn new(node_name: &str) -> Self {
+    pub async fn new(node_name: &str) -> Result<Self> {
         let adapter = ZenohAdapter::default();
-        Self {
+        let messenger = PeppyMessenger::new_session(adapter).await?;
+        Ok(Self {
             node_name: String::from(node_name),
-            messenger: Arc::new(Mutex::new(PeppyMessenger::new_session(adapter).await)),
-        }
+            messenger: Arc::new(Mutex::new(messenger)),
+        })
     }
 
-    pub async fn from_host_port(node_name: &str, host: &str, port: u16) -> Self {
+    pub async fn from_host_port(node_name: &str, host: &str, port: u16) -> Result<Self> {
         let adapter = ZenohAdapter::from_host_port(ZenohNetProtocol::Tcp, host, port);
-        Self {
+        let messenger = PeppyMessenger::new_session(adapter).await?;
+        Ok(Self {
             node_name: String::from(node_name),
-            messenger: Arc::new(Mutex::new(PeppyMessenger::new_session(adapter).await)),
-        }
+            messenger: Arc::new(Mutex::new(messenger)),
+        })
     }
 
-    async fn new_session(adapter: ZenohAdapter) -> Messenger {
+    async fn new_session(adapter: ZenohAdapter) -> Result<Messenger> {
         let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
         messenger
             .start_session()
             .await
-            .expect("Failed to start session");
+            .map_err(Error::PeppyMessagingInterface)?;
 
-        messenger
+        Ok(messenger)
     }
 
     fn map_node_qos_to_publisher_qos(qos: QoSProfile) -> PublisherQoS {
@@ -309,19 +339,20 @@ impl PeppyMessenger {
         Ok(response.payload)
     }
 
-    /// Returns Result<(goal_service, feedback_topic, result_service)>
     pub async fn expose_action(
         &self,
         namespace: &str,
         service_name: &str,
-    ) -> Result<(ServiceEndpoint, TopicPublisher, ServiceEndpoint)> {
+    ) -> Result<ActionCreation> {
         let action_root = Self::build_full_namespace(&self.node_name, namespace, service_name);
 
         let goal_service_root = format!("{action_root}/goal");
+        let cancel_service_root = format!("{action_root}/cancel");
         let result_service_root = format!("{action_root}/result");
         let feedback_topic = format!("{action_root}/feedback");
 
         let goal_service = self.create_service_endpoint(goal_service_root).await?;
+        let cancel_service = self.create_service_endpoint(cancel_service_root).await?;
         let result_service = self.create_service_endpoint(result_service_root).await?;
 
         let feedback_publisher = TopicPublisher {
@@ -330,6 +361,72 @@ impl PeppyMessenger {
             qos: PublisherQoS::Standard,
         };
 
-        Ok((goal_service, feedback_publisher, result_service))
+        Ok(ActionCreation {
+            goal_service,
+            cancel_service,
+            feedback_publisher,
+            result_service,
+        })
+    }
+
+    pub async fn send_action_goal(
+        &self,
+        server_node: &str,
+        namespace: &str,
+        action_name: &str,
+        goal_payload: Bytes,
+        feedback_qos: QoSProfile,
+        goal_timeout: Duration,
+    ) -> Result<ActionGoalHandle> {
+        let feedback_topic = format!("{action_name}/feedback");
+        let goal_service_name = format!("{action_name}/goal");
+
+        let feedback_subscription = self
+            .receive_topic_msg(server_node, namespace, &feedback_topic, feedback_qos)
+            .await?;
+
+        let goal_response = self
+            .poll_service(
+                server_node,
+                namespace,
+                &goal_service_name,
+                goal_payload,
+                goal_timeout,
+            )
+            .await?;
+
+        Ok(ActionGoalHandle {
+            server_node: server_node.to_string(),
+            namespace: namespace.to_string(),
+            action_name: action_name.to_string(),
+            goal_response,
+            feedback: feedback_subscription,
+        })
+    }
+
+    pub async fn poll_action_result(
+        &self,
+        handle: &ActionGoalHandle,
+        result_request_payload: Bytes,
+        result_timeout: Duration,
+    ) -> Result<Bytes> {
+        let result_service_name = format!("{}/result", handle.action_name);
+
+        self.poll_service(
+            &handle.server_node,
+            &handle.namespace,
+            &result_service_name,
+            result_request_payload,
+            result_timeout,
+        )
+        .await
+        .map_err(|err| match err {
+            Error::ServiceTimeout { .. } => Error::ActionResultTimeout {
+                action_node: handle.server_node.clone(),
+                namespace: handle.namespace.clone(),
+                action_name: handle.action_name.clone(),
+            },
+            other => other,
+        })
     }
 }
