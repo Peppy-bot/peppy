@@ -70,7 +70,10 @@ impl ServiceEndpoint {
             };
 
             let response_payload = handler(context).await?;
-            let response = Message::new(&response_topic, response_payload.as_ref());
+            let response = Message {
+                topic: response_topic,
+                payload: response_payload,
+            };
             let mut messenger = self.messenger.lock().await;
             messenger
                 .publish(response, PublisherQoS::Standard)
@@ -107,7 +110,10 @@ impl TopicPublisher {
     }
 
     pub async fn publish(&self, payload: Bytes) -> Result<()> {
-        let message = Message::new(&self.topic, payload.as_ref());
+        let message = Message {
+            topic: self.topic.clone(),
+            payload,
+        };
         let mut messenger = self.messenger.lock().await;
         messenger
             .publish(message, self.qos)
@@ -245,7 +251,10 @@ impl PeppyMessenger {
         payload: Bytes,
     ) -> Result<()> {
         let full_ns = Self::build_full_namespace(&self.node_name, namespace, topic_name);
-        let msg = Message::new(&full_ns, &payload);
+        let msg = Message {
+            topic: full_ns,
+            payload,
+        };
 
         let publisher_qos = PeppyMessenger::map_node_qos_to_publisher_qos(qos);
 
@@ -316,7 +325,10 @@ impl PeppyMessenger {
             let mut messenger = self.messenger.lock().await;
             messenger
                 .publish(
-                    Message::new(&request_topic, request_payload.as_ref()),
+                    Message {
+                        topic: request_topic,
+                        payload: request_payload,
+                    },
                     PublisherQoS::Standard,
                 )
                 .await
