@@ -37,4 +37,12 @@ pub enum Error {
         namespace: String,
         service_name: String,
     },
+    #[error(
+        "action '{action_name}' in namespace '{namespace}' on node '{action_node}' has timed out waiting for result"
+    )]
+    ActionResultTimeout {
+        action_node: String,
+        namespace: String,
+        action_name: String,
+    },
 }
