@@ -158,7 +158,7 @@ async fn topic_publish_500hz_messages() {
     let sender_node_name = "uvc_camera";
     let receiver_node = "vision_pipeline";
     let topic_name = "video_frame";
-    let qos = QoSProfile::SensorData;
+    let qos = QoSProfile::Reliable;
 
     // Those properties are found in the `deployments` array
     let ns = "/camera/rear";
@@ -973,31 +973,63 @@ async fn single_action_communication_multiple_polls() {
     let action_node = "controller_node";
     let action_name = "move_right_arm";
     let namespace = "/control";
-    let _caller_node = "the_brain";
+    let caller_prefix = "the_brain";
 
-    let goal_payload = Bytes::from_static(b"arm=right;pos=1,2,3");
-    let goal_response_payload = Bytes::from_static(b"accepted");
-    let feedback_payload = Bytes::from_static(b"progress=50");
-    let result_payload = Bytes::from_static(b"done");
-    let result_request_payload = Bytes::from_static(b"goal=right_arm");
+    #[derive(Clone)]
+    struct ClientCase {
+        client_id: String,
+        goal_payload: Bytes,
+        goal_response_payload: Bytes,
+        feedback_payload: Bytes,
+        result_request_payload: Bytes,
+        result_response_payload: Bytes,
+    }
 
-    let goal_payload_server = goal_payload.clone();
-    let goal_response_payload_server = goal_response_payload.clone();
-    let feedback_payload_server = feedback_payload.clone();
-    let result_payload_server = result_payload.clone();
-    let result_request_payload_server = result_request_payload.clone();
+    let client_count = 8;
+    let mut client_cases = Vec::with_capacity(client_count);
+
+    for idx in 0..client_count {
+        let client_id = format!("{caller_prefix}_{idx}");
+        let goal_payload =
+            Bytes::from(format!("client={client_id};goal_request={idx}").into_bytes());
+        let goal_response_payload =
+            Bytes::from(format!("client={client_id};goal_response=accepted").into_bytes());
+        let feedback_payload =
+            Bytes::from(format!("client={client_id};feedback=progress-{idx}").into_bytes());
+        let result_request_payload =
+            Bytes::from(format!("client={client_id};result_request={idx}").into_bytes());
+        let result_response_payload =
+            Bytes::from(format!("client={client_id};result=done").into_bytes());
+
+        client_cases.push(ClientCase {
+            client_id,
+            goal_payload,
+            goal_response_payload,
+            feedback_payload,
+            result_request_payload,
+            result_response_payload,
+        });
+    }
+
+    let case_lookup: HashMap<String, ClientCase> = client_cases
+        .iter()
+        .map(|case| (case.client_id.clone(), case.clone()))
+        .collect();
+    let case_lookup = Arc::new(case_lookup);
 
     let (action_ready_tx, action_ready_rx) = oneshot::channel();
 
     // Launch a background task that plays the role of the action server.
-    let _server_task = {
+    let server_task = {
         let action_messenger = PeppyMessenger::from_host_port(action_node, &host, port)
             .await
             .expect("failed to create action messenger");
         let action_ready_tx = Some(action_ready_tx);
+        let case_lookup = Arc::clone(&case_lookup);
+        let client_count = client_cases.len();
 
         tokio::spawn(async move {
-            let mut action = action_messenger
+            let action = action_messenger
                 .expose_action(namespace, action_name)
                 .await
                 .expect("action should start");
@@ -1006,60 +1038,121 @@ async fn single_action_communication_multiple_polls() {
                 PeppyMessenger::build_full_namespace(action_node, namespace, action_name);
             let expected_goal_topic = format!("{action_root}/goal/request");
             let expected_result_topic = format!("{action_root}/result/request");
+            let crate::messaging::ActionCreation {
+                mut goal_service,
+                cancel_service: _,
+                feedback_publisher,
+                mut result_service,
+            } = action;
+            let feedback_publisher = Arc::new(feedback_publisher);
 
             if let Some(tx) = action_ready_tx {
                 let _ = tx.send(());
             }
 
-            // Wait for the client to send a goal request
-            let handled_goal = action
-                .goal_service
-                .handle_next_request(move |request| {
-                    let expected_goal_topic = expected_goal_topic.clone();
-                    let expected_goal_payload = goal_payload_server.clone();
-                    let expected_goal_response_payload = goal_response_payload_server.clone();
-                    async move {
-                        assert_eq!(request.message.topic, expected_goal_topic);
-                        assert_eq!(request.message.payload, expected_goal_payload);
-                        Ok(expected_goal_response_payload)
-                    }
-                })
-                .await
-                .expect("action should receive goal request");
+            let mut goal_handlers = Vec::with_capacity(client_count);
+            for _ in 0..client_count {
+                let expected_goal_topic = expected_goal_topic.clone();
+                let case_lookup = Arc::clone(&case_lookup);
+                let feedback_publisher = Arc::clone(&feedback_publisher);
 
-            assert!(
-                handled_goal,
-                "goal subscription closed before handling request"
-            );
+                let handler = goal_service
+                    .spawn_next_request_handler(move |request| {
+                        let expected_goal_topic = expected_goal_topic.clone();
+                        let case_lookup = Arc::clone(&case_lookup);
+                        let feedback_publisher = Arc::clone(&feedback_publisher);
 
-            action
-                .feedback_publisher
-                .publish(feedback_payload_server.clone())
-                .await
-                .expect("action should publish feedback");
+                        async move {
+                            assert_eq!(request.message.topic, expected_goal_topic);
 
-            // Give the client time to attach to the result service before answering.
-            sleep(Duration::from_millis(20)).await;
+                            let payload = request.message.payload.clone();
+                            let payload_str = std::str::from_utf8(&payload)
+                                .expect("goal payload should be valid UTF-8");
 
-            let handled_result = action
-                .result_service
-                .handle_next_request(move |request| {
-                    let expected_topic = expected_result_topic.clone();
-                    let expected_payload = result_request_payload_server.clone();
-                    let response_payload = result_payload_server.clone();
-                    async move {
-                        assert_eq!(request.message.topic, expected_topic);
-                        assert_eq!(request.message.payload, expected_payload);
-                        Ok(response_payload)
-                    }
-                })
-                .await
-                .expect("action should receive result request");
+                            let client_id = payload_str
+                                .split(';')
+                                .find_map(|part| part.strip_prefix("client="))
+                                .expect("goal payload should contain client identifier")
+                                .to_string();
 
-            assert!(
-                handled_result,
-                "result subscription closed before handling request"
-            );
+                            let case = case_lookup.get(&client_id).unwrap_or_else(|| {
+                                panic!("goal handler received unexpected client id `{client_id}`")
+                            });
+
+                            assert_eq!(
+                                payload, case.goal_payload,
+                                "goal payload for `{client_id}` should match expected value"
+                            );
+
+                            feedback_publisher
+                                .publish(case.feedback_payload.clone())
+                                .await?;
+
+                            Ok(case.goal_response_payload.clone())
+                        }
+                    })
+                    .await
+                    .expect("action should spawn goal handler")
+                    .expect("goal subscription closed before handling request");
+
+                goal_handlers.push(handler);
+            }
+
+            for handler in goal_handlers {
+                handler
+                    .await
+                    .expect("goal handler task panicked")
+                    .expect("goal handler returned error");
+            }
+
+            let mut result_handlers = Vec::with_capacity(client_count);
+            for _ in 0..client_count {
+                let expected_result_topic = expected_result_topic.clone();
+                let case_lookup = Arc::clone(&case_lookup);
+
+                let handler = result_service
+                    .spawn_next_request_handler(move |request| {
+                        let expected_result_topic = expected_result_topic.clone();
+                        let case_lookup = Arc::clone(&case_lookup);
+
+                        async move {
+                            assert_eq!(request.message.topic, expected_result_topic);
+
+                            let payload = request.message.payload.clone();
+                            let payload_str = std::str::from_utf8(&payload)
+                                .expect("result payload should be valid UTF-8");
+
+                            let client_id = payload_str
+                                .split(';')
+                                .find_map(|part| part.strip_prefix("client="))
+                                .expect("result payload should contain client identifier")
+                                .to_string();
+
+                            let case = case_lookup.get(&client_id).unwrap_or_else(|| {
+                                panic!("result handler received unexpected client id `{client_id}`")
+                            });
+
+                            assert_eq!(
+                                payload, case.result_request_payload,
+                                "result request payload for `{client_id}` should match expected value"
+                            );
+
+                            Ok(case.result_response_payload.clone())
+                        }
+                    })
+                    .await
+                    .expect("action should spawn result handler")
+                    .expect("result subscription closed before handling request");
+
+                result_handlers.push(handler);
+            }
+
+            for handler in result_handlers {
+                handler
+                    .await
+                    .expect("result handler task panicked")
+                    .expect("result handler returned error");
+            }
 
             Ok::<(), Error>(())
         })
@@ -1070,7 +1163,99 @@ async fn single_action_communication_multiple_polls() {
         .expect("action server should signal readiness");
     sleep(Duration::from_millis(20)).await;
 
-    // TODO: Implement multiple clients that connect to the same action and check that the goal/feedback/result that each client get back maps to the original caller in such a way that the messages are not intertwined across the multiple callers
+    let expected_feedback_topic = PeppyMessenger::build_full_namespace(
+        action_node,
+        namespace,
+        &format!("{action_name}/feedback"),
+    );
+
+    let mut shuffled_cases = client_cases.clone();
+    let mut rng = thread_rng();
+    shuffled_cases.shuffle(&mut rng);
+
+    let mut client_handles = Vec::with_capacity(client_count);
+    for case in shuffled_cases {
+        let host = host.clone();
+        let expected_feedback_topic = expected_feedback_topic.clone();
+        let feedback_search_limit = client_count;
+
+        let handle = tokio::spawn(async move {
+            let caller_messenger = PeppyMessenger::from_host_port(&case.client_id, &host, port)
+                .await
+                .expect("failed to create caller messenger");
+
+            let mut goal_handle = caller_messenger
+                .send_action_goal(
+                    action_node,
+                    namespace,
+                    action_name,
+                    case.goal_payload.clone(),
+                    QoSProfile::Standard,
+                    Duration::from_millis(1000),
+                )
+                .await
+                .expect("caller should send goal");
+
+            assert_eq!(
+                goal_handle.goal_response(),
+                &case.goal_response_payload,
+                "goal response should match expected payload for `{}`",
+                case.client_id
+            );
+
+            let mut feedback_matched = false;
+            for _ in 0..feedback_search_limit {
+                let feedback_message = goal_handle
+                    .feedback_mut()
+                    .rx
+                    .recv()
+                    .await
+                    .expect("caller should receive feedback message");
+
+                assert_eq!(
+                    feedback_message.topic, expected_feedback_topic,
+                    "feedback should be published on the expected topic"
+                );
+
+                if feedback_message.payload == case.feedback_payload {
+                    feedback_matched = true;
+                    break;
+                }
+            }
+
+            assert!(
+                feedback_matched,
+                "caller `{}` should observe its corresponding feedback payload",
+                case.client_id
+            );
+
+            let result_response = caller_messenger
+                .poll_action_result(
+                    &goal_handle,
+                    case.result_request_payload.clone(),
+                    Duration::from_millis(1000),
+                )
+                .await
+                .expect("caller should receive result response");
+
+            assert_eq!(
+                result_response, case.result_response_payload,
+                "result response should match expected payload for `{}`",
+                case.client_id
+            );
+        });
+
+        client_handles.push(handle);
+    }
+
+    for handle in client_handles {
+        handle.await.expect("caller task should not panic");
+    }
+
+    server_task
+        .await
+        .expect("action handler task panicked")
+        .expect("action handler returned error");
 
     router_messenger
         .stop_router()
