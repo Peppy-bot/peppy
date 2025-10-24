@@ -92,6 +92,59 @@ async fn start_zenohd_process() -> (Messenger, TempDir, String, u16) {
     unreachable!("zenoh router start retry loop exhausted unexpectedly")
 }
 
+const SHORT_PROPAGATION_DELAY: Duration = Duration::from_millis(20);
+const SUBSCRIPTION_PROPAGATION_DELAY: Duration = Duration::from_millis(50);
+
+struct TestRouterContext {
+    router: Messenger,
+    _temp_dir: TempDir,
+    host: String,
+    port: u16,
+}
+
+impl TestRouterContext {
+    async fn start() -> Self {
+        let (router, temp_dir, host, port) = start_zenohd_process().await;
+        Self {
+            router,
+            _temp_dir: temp_dir,
+            host,
+            port,
+        }
+    }
+
+    fn host(&self) -> &str {
+        &self.host
+    }
+
+    fn port(&self) -> u16 {
+        self.port
+    }
+
+    fn connection_target(&self) -> (String, u16) {
+        (self.host.clone(), self.port)
+    }
+
+    async fn messenger(&self, node_name: &str) -> PeppyMessenger {
+        connect_messenger(node_name, self.host(), self.port()).await
+    }
+
+    async fn shutdown(mut self) {
+        self.router
+            .stop_router()
+            .await
+            .expect("Failed to shutdown router");
+    }
+}
+
+async fn connect_messenger(node_name: &str, host: &str, port: u16) -> PeppyMessenger {
+    PeppyMessenger::from_host_port(node_name, host, port)
+        .await
+        .unwrap_or_else(|error| {
+            panic!("failed to create messenger for node `{node_name}`: {error:?}")
+        })
+}
+
 #[test]
 fn build_topic_path_removes_redundant_separators() {
     let path =
@@ -101,7 +154,7 @@ fn build_topic_path_removes_redundant_separators() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn topic_publish_subscribe() {
-    let (mut router_messenger, _, host, port) = start_zenohd_process().await;
+    let router = TestRouterContext::start().await;
 
     // Those attributes are found in the message definition `exposes`
     let sender_node_name = "uvc_camera";
@@ -114,12 +167,8 @@ async fn topic_publish_subscribe() {
 
     let payload = Bytes::from_static(b"A message");
 
-    let sender_node = PeppyMessenger::from_host_port(&sender_node_name, &host, port)
-        .await
-        .expect("failed to create sender messenger");
-    let receiver_node = PeppyMessenger::from_host_port(&receiver_node, &host, port)
-        .await
-        .expect("failed to create receiver messenger");
+    let sender_node = router.messenger(sender_node_name).await;
+    let receiver_node = router.messenger(receiver_node).await;
 
     let mut subscription = receiver_node
         .receive_topic_msg(&sender_node_name, ns, topic_name, qos.clone())
@@ -127,7 +176,7 @@ async fn topic_publish_subscribe() {
         .expect("Should subscribe to the topic");
 
     // Allow subscription to settle before flooding messages.
-    sleep(Duration::from_millis(50)).await;
+    sleep(SUBSCRIPTION_PROPAGATION_DELAY).await;
 
     sender_node
         .emit_topic_message(ns, topic_name, qos, payload.clone())
@@ -144,15 +193,12 @@ async fn topic_publish_subscribe() {
     assert_eq!(received.topic, expected_topic);
     assert_eq!(received.payload, payload);
 
-    router_messenger
-        .stop_router()
-        .await
-        .expect("Failed to shutdown router");
+    router.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn topic_publish_500hz_messages() {
-    let (mut router_messenger, _, host, port) = start_zenohd_process().await;
+    let router = TestRouterContext::start().await;
 
     // Those attributes are found in the message definition `exposes`
     let sender_node_name = "uvc_camera";
@@ -163,12 +209,8 @@ async fn topic_publish_500hz_messages() {
     // Those properties are found in the `deployments` array
     let ns = "/camera/rear";
 
-    let sender_node = PeppyMessenger::from_host_port(&sender_node_name, &host, port)
-        .await
-        .expect("failed to create sender messenger");
-    let receiver_node = PeppyMessenger::from_host_port(&receiver_node, &host, port)
-        .await
-        .expect("failed to create receiver messenger");
+    let sender_node = router.messenger(sender_node_name).await;
+    let receiver_node = router.messenger(receiver_node).await;
 
     let mut subscription = receiver_node
         .receive_topic_msg(&sender_node_name, ns, topic_name, qos.clone())
@@ -228,15 +270,13 @@ async fn topic_publish_500hz_messages() {
         "should receive every published message exactly once"
     );
 
-    router_messenger
-        .stop_router()
-        .await
-        .expect("Failed to shutdown router");
+    router.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn service_handle_request_processes_multiple_messages() {
-    let (mut router_messenger, _, host, port) = start_zenohd_process().await;
+    let router = TestRouterContext::start().await;
+    let (host, port) = router.connection_target();
 
     let service_node = "uvc_camera";
     let service_name = "enable_camera";
@@ -251,9 +291,7 @@ async fn service_handle_request_processes_multiple_messages() {
         let host = host.clone();
         let service_ready_tx = Some(service_ready_tx);
         tokio::spawn(async move {
-            let service_expose_node = PeppyMessenger::from_host_port(service_node, &host, port)
-                .await
-                .expect("failed to create service messenger");
+            let service_expose_node = connect_messenger(service_node, &host, port).await;
 
             let mut service = service_expose_node
                 .expose_service(namespace, service_name)
@@ -280,12 +318,10 @@ async fn service_handle_request_processes_multiple_messages() {
     service_ready_rx
         .await
         .expect("service should signal readiness");
-    sleep(Duration::from_millis(20)).await;
+    sleep(SHORT_PROPAGATION_DELAY).await;
 
     {
-        let caller_node = PeppyMessenger::from_host_port("vision_pipeline", &host, port)
-            .await
-            .expect("failed to create caller messenger");
+        let caller_node = router.messenger("vision_pipeline").await;
 
         for i in 0..expected_requests {
             let request_payload = Bytes::from(format!("enable=true;request={i}").into_bytes());
@@ -317,15 +353,12 @@ async fn service_handle_request_processes_multiple_messages() {
         "service should process all requests"
     );
 
-    router_messenger
-        .stop_router()
-        .await
-        .expect("Failed to shutdown router");
+    router.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn service_communication() {
-    let (mut router_messenger, _, host, port) = start_zenohd_process().await;
+    let router = TestRouterContext::start().await;
 
     let service_node = "uvc_camera";
     let caller_node_name = "vision_pipeline";
@@ -340,9 +373,7 @@ async fn service_communication() {
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
 
     let service_handle = {
-        let service_expose_node = PeppyMessenger::from_host_port(service_node, &host, port)
-            .await
-            .expect("failed to create service messenger");
+        let service_expose_node = router.messenger(service_node).await;
 
         let service_root =
             PeppyMessenger::build_full_namespace(service_node, namespace, service_name);
@@ -393,10 +424,8 @@ async fn service_communication() {
         service_ready_rx
             .await
             .expect("service should signal readiness");
-        sleep(Duration::from_millis(20)).await;
-        let caller_messenger = PeppyMessenger::from_host_port(caller_node_name, &host, port)
-            .await
-            .expect("failed to create caller messenger");
+        sleep(SHORT_PROPAGATION_DELAY).await;
+        let caller_messenger = router.messenger(caller_node_name).await;
         let response = caller_messenger
             .poll_service(
                 service_node,
@@ -423,16 +452,14 @@ async fn service_communication() {
         .expect("service task panicked")
         .expect("service task returned error");
 
-    router_messenger
-        .stop_router()
-        .await
-        .expect("Failed to shutdown router");
+    router.shutdown().await;
 }
 
 /// Ensures a unique request returns its unique response
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn single_service_communication_multiple_polls_and_callers() {
-    let (mut router_messenger, _, host, port) = start_zenohd_process().await;
+    let router = TestRouterContext::start().await;
+    let (host, port) = router.connection_target();
 
     let service_node = "uvc_camera";
     let service_name = "enable_camera";
@@ -450,9 +477,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_handle: tokio::task::JoinHandle<Result<(), Error>> = {
-        let service_expose_node = PeppyMessenger::from_host_port(service_node, &host, port)
-            .await
-            .expect("failed to create service messenger");
+        let service_expose_node = router.messenger(service_node).await;
 
         let service = service_expose_node
             .expose_service(namespace, service_name)
@@ -506,7 +531,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
         service_ready_rx
             .await
             .expect("service should signal readiness");
-        sleep(Duration::from_millis(20)).await;
+        sleep(SHORT_PROPAGATION_DELAY).await;
         let mut expected_payloads = HashMap::with_capacity(total_requests);
         let mut caller_requests = Vec::with_capacity(caller_count);
 
@@ -530,10 +555,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
             requests.shuffle(&mut rng);
             let host = host.clone();
             let poll_service = tokio::spawn(async move {
-                let caller_messenger =
-                    PeppyMessenger::from_host_port(&caller_node_name, &host, port)
-                        .await
-                        .expect("failed to create caller messenger");
+                let caller_messenger = connect_messenger(&caller_node_name, &host, port).await;
 
                 let mut caller_results = Vec::with_capacity(requests.len());
                 for (request_idx, request_payload) in requests {
@@ -608,15 +630,12 @@ async fn single_service_communication_multiple_polls_and_callers() {
         "service should have been called {total_requests} times"
     );
 
-    router_messenger
-        .stop_router()
-        .await
-        .expect("Failed to shutdown router");
+    router.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn service_communication_fails_not_started() {
-    let (mut router_messenger, _, host, port) = start_zenohd_process().await;
+    let router = TestRouterContext::start().await;
 
     let service_node = "uvc_camera";
     let caller_node_name = "vision_pipeline";
@@ -625,9 +644,7 @@ async fn service_communication_fails_not_started() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     let err = {
-        let caller_node = PeppyMessenger::from_host_port(caller_node_name, &host, port)
-            .await
-            .expect("failed to create caller messenger");
+        let caller_node = router.messenger(caller_node_name).await;
 
         caller_node
             .poll_service(
@@ -657,15 +674,12 @@ async fn service_communication_fails_not_started() {
         ),
     }
 
-    router_messenger
-        .stop_router()
-        .await
-        .expect("Failed to shutdown router");
+    router.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn service_communication_fails_timeout() {
-    let (mut router_messenger, _, host, port) = start_zenohd_process().await;
+    let router = TestRouterContext::start().await;
 
     let service_node = "uvc_camera";
     let caller_node = "vision_pipeline";
@@ -686,9 +700,7 @@ async fn service_communication_fails_timeout() {
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
 
     let service_handle = {
-        let service_expose_node = PeppyMessenger::from_host_port(service_node, &host, port)
-            .await
-            .expect("failed to create service messenger");
+        let service_expose_node = router.messenger(service_node).await;
         let service = service_expose_node
             .expose_service(namespace, service_name)
             .await
@@ -739,10 +751,8 @@ async fn service_communication_fails_timeout() {
         service_ready_rx
             .await
             .expect("service should signal readiness");
-        sleep(Duration::from_millis(20)).await;
-        let caller_node = PeppyMessenger::from_host_port(caller_node, &host, port)
-            .await
-            .expect("failed to create caller messenger");
+        sleep(SHORT_PROPAGATION_DELAY).await;
+        let caller_node = router.messenger(caller_node).await;
 
         let success_response = caller_node
             .poll_service(
@@ -800,15 +810,12 @@ async fn service_communication_fails_timeout() {
         "service should have processed both requests"
     );
 
-    router_messenger
-        .stop_router()
-        .await
-        .expect("Failed to shutdown router");
+    router.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn action_communication() {
-    let (mut router_messenger, _, host, port) = start_zenohd_process().await;
+    let router = TestRouterContext::start().await;
 
     let action_node = "controller_node";
     let action_name = "move_right_arm";
@@ -831,9 +838,7 @@ async fn action_communication() {
     let (action_ready_tx, action_ready_rx) = oneshot::channel();
 
     let server_task = {
-        let action_messenger = PeppyMessenger::from_host_port(action_node, &host, port)
-            .await
-            .expect("failed to create action messenger");
+        let action_messenger = router.messenger(action_node).await;
 
         tokio::spawn(async move {
             let mut action = action_messenger
@@ -876,7 +881,7 @@ async fn action_communication() {
                 .expect("action should publish feedback");
 
             // Give the client time to attach to the result service before answering.
-            sleep(Duration::from_millis(20)).await;
+            sleep(SHORT_PROPAGATION_DELAY).await;
 
             let handled_result = action
                 .result_service
@@ -905,11 +910,9 @@ async fn action_communication() {
     action_ready_rx
         .await
         .expect("action server should signal readiness");
-    sleep(Duration::from_millis(20)).await;
+    sleep(SHORT_PROPAGATION_DELAY).await;
 
-    let caller_node = PeppyMessenger::from_host_port(caller_node, &host, port)
-        .await
-        .expect("failed to create caller messenger");
+    let caller_node = router.messenger(caller_node).await;
 
     // Client sends the goal and obtains the handle carrying goal response + feedback sub.
     let mut goal_handle = caller_node
@@ -960,15 +963,13 @@ async fn action_communication() {
         .expect("action handler task panicked")
         .expect("action handler returned error");
 
-    router_messenger
-        .stop_router()
-        .await
-        .expect("Failed to shutdown router");
+    router.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn single_action_communication_multiple_polls() {
-    let (mut router_messenger, _, host, port) = start_zenohd_process().await;
+    let router = TestRouterContext::start().await;
+    let (host, port) = router.connection_target();
 
     let action_node = "controller_node";
     let action_name = "move_right_arm";
@@ -1021,9 +1022,7 @@ async fn single_action_communication_multiple_polls() {
 
     // Launch a background task that plays the role of the action server.
     let server_task = {
-        let action_messenger = PeppyMessenger::from_host_port(action_node, &host, port)
-            .await
-            .expect("failed to create action messenger");
+        let action_messenger = router.messenger(action_node).await;
         let action_ready_tx = Some(action_ready_tx);
         let case_lookup = Arc::clone(&case_lookup);
         let client_count = client_cases.len();
@@ -1161,7 +1160,7 @@ async fn single_action_communication_multiple_polls() {
     action_ready_rx
         .await
         .expect("action server should signal readiness");
-    sleep(Duration::from_millis(20)).await;
+    sleep(SHORT_PROPAGATION_DELAY).await;
 
     let expected_feedback_topic = PeppyMessenger::build_full_namespace(
         action_node,
@@ -1180,9 +1179,7 @@ async fn single_action_communication_multiple_polls() {
         let feedback_search_limit = client_count;
 
         let handle = tokio::spawn(async move {
-            let caller_messenger = PeppyMessenger::from_host_port(&case.client_id, &host, port)
-                .await
-                .expect("failed to create caller messenger");
+            let caller_messenger = connect_messenger(&case.client_id, &host, port).await;
 
             let mut goal_handle = caller_messenger
                 .send_action_goal(
@@ -1257,15 +1254,12 @@ async fn single_action_communication_multiple_polls() {
         .expect("action handler task panicked")
         .expect("action handler returned error");
 
-    router_messenger
-        .stop_router()
-        .await
-        .expect("Failed to shutdown router");
+    router.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn action_communication_goal_cancelled() {
-    let (mut router_messenger, _, host, port) = start_zenohd_process().await;
+    let router = TestRouterContext::start().await;
 
     let action_node = "controller_node";
     let action_name = "move_right_arm";
@@ -1288,9 +1282,7 @@ async fn action_communication_goal_cancelled() {
     let (action_ready_tx, action_ready_rx) = oneshot::channel();
 
     let server_task = {
-        let action_messenger = PeppyMessenger::from_host_port(action_node, &host, port)
-            .await
-            .expect("failed to create action messenger");
+        let action_messenger = router.messenger(action_node).await;
         let action_ready_tx = Some(action_ready_tx);
 
         tokio::spawn(async move {
@@ -1388,11 +1380,9 @@ async fn action_communication_goal_cancelled() {
     action_ready_rx
         .await
         .expect("action server should signal readiness");
-    sleep(Duration::from_millis(20)).await;
+    sleep(SHORT_PROPAGATION_DELAY).await;
 
-    let caller_node = PeppyMessenger::from_host_port(caller_node_name, &host, port)
-        .await
-        .expect("failed to create caller messenger");
+    let caller_node = router.messenger(caller_node_name).await;
 
     let mut goal_handle = caller_node
         .send_action_goal(
@@ -1499,8 +1489,5 @@ async fn action_communication_goal_cancelled() {
         .expect("action handler task panicked")
         .expect("action handler returned error");
 
-    router_messenger
-        .stop_router()
-        .await
-        .expect("Failed to shutdown router");
+    router.shutdown().await;
 }
