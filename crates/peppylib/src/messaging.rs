@@ -11,10 +11,12 @@ use pmi::{
 use sha2::{Digest, Sha256};
 use std::{
     sync::Arc,
+    sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     sync::Mutex,
+    task::JoinHandle,
     time::{Duration, timeout},
 };
 use tracing::error;
@@ -40,21 +42,14 @@ impl ServiceEndpoint {
         F: FnOnce(ServiceRequestContext) -> Fut,
         Fut: std::future::Future<Output = Result<Bytes>>,
     {
-        let mut handler = Some(handler);
-
-        while let Some(request) = self.subscription.rx.recv().await {
-            if let Some((context, response_topic)) = self.build_request_context(request) {
-                let handler = handler
-                    .take()
-                    .expect("service handler invoked more than once in handle_next_request");
-                let response_payload = handler(context).await?;
-                self.publish_response(response_topic, response_payload)
-                    .await?;
-                return Ok(true);
-            }
+        if let Some((context, response_topic)) = self.next_request().await? {
+            let response_payload = handler(context).await?;
+            self.publish_response(response_topic, response_payload)
+                .await?;
+            Ok(true)
+        } else {
+            Ok(false)
         }
-
-        Ok(false)
     }
 
     /// Handles requests until the subscription stream ends.
@@ -63,15 +58,54 @@ impl ServiceEndpoint {
         F: FnMut(ServiceRequestContext) -> Fut,
         Fut: std::future::Future<Output = Result<Bytes>>,
     {
-        while let Some(request) = self.subscription.rx.recv().await {
-            if let Some((context, response_topic)) = self.build_request_context(request) {
-                let response_payload = handler(context).await?;
-                self.publish_response(response_topic, response_payload)
-                    .await?;
-            }
+        loop {
+            let Some((context, response_topic)) = self.next_request().await? else {
+                break;
+            };
+            let response_payload = handler(context).await?;
+            self.publish_response(response_topic, response_payload)
+                .await?;
         }
 
         Ok(())
+    }
+
+    /// Spawns the handler on its own task so multiple requests can progress concurrently.
+    /// Returns `Ok(None)` when the subscription closes before yielding a request.
+    pub async fn spawn_next_request_handler<F, Fut>(
+        &mut self,
+        handler: F,
+    ) -> Result<Option<JoinHandle<Result<()>>>>
+    where
+        F: FnOnce(ServiceRequestContext) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<Bytes>> + Send + 'static,
+    {
+        let Some((context, response_topic)) = self.next_request().await? else {
+            return Ok(None);
+        };
+
+        let messenger = Arc::clone(&self.messenger);
+        let task = tokio::spawn(async move {
+            let response_payload = handler(context).await?;
+            ServiceEndpoint::publish_response_with_messenger(
+                messenger,
+                response_topic,
+                response_payload,
+            )
+            .await
+        });
+
+        Ok(Some(task))
+    }
+
+    async fn next_request(&mut self) -> Result<Option<(ServiceRequestContext, String)>> {
+        while let Some(request) = self.subscription.rx.recv().await {
+            if let Some((context, response_topic)) = self.build_request_context(request) {
+                return Ok(Some((context, response_topic)));
+            }
+        }
+
+        Ok(None)
     }
 
     fn build_request_context(&self, request: Message) -> Option<(ServiceRequestContext, String)> {
@@ -107,8 +141,16 @@ impl ServiceEndpoint {
     }
 
     async fn publish_response(&self, topic: String, payload: Bytes) -> Result<()> {
+        Self::publish_response_with_messenger(Arc::clone(&self.messenger), topic, payload).await
+    }
+
+    async fn publish_response_with_messenger(
+        messenger: Arc<Mutex<Messenger>>,
+        topic: String,
+        payload: Bytes,
+    ) -> Result<()> {
         let response = Message { topic, payload };
-        let mut messenger = self.messenger.lock().await;
+        let mut messenger = messenger.lock().await;
         messenger
             .publish(response, PublisherQoS::Standard)
             .await
