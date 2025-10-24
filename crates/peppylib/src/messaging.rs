@@ -11,7 +11,6 @@ use pmi::{
 use sha2::{Digest, Sha256};
 use std::{
     sync::Arc,
-    sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::{
