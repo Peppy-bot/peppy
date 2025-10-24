@@ -1077,3 +1077,245 @@ async fn single_action_communication_multiple_polls() {
         .await
         .expect("Failed to shutdown router");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn action_communication_goal_cancelled() {
+    let (mut router_messenger, _, host, port) = start_zenohd_process().await;
+
+    let action_node = "controller_node";
+    let action_name = "move_right_arm";
+    let namespace = "/control";
+    let caller_node_name = "the_brain";
+
+    let goal_payload = Bytes::from_static(b"arm=right;pos=1,2,3");
+    let goal_response_payload = Bytes::from_static(b"accepted");
+    let feedback_payload = Bytes::from_static(b"progress=50");
+    let result_request_payload = Bytes::from_static(b"goal=right_arm");
+    let cancel_payload = Bytes::from_static(b"cancel_goal=right_arm");
+    let cancel_response_payload = Bytes::from_static(b"cancelled");
+
+    let goal_payload_server = goal_payload.clone();
+    let goal_response_payload_server = goal_response_payload.clone();
+    let feedback_payload_server = feedback_payload.clone();
+    let cancel_payload_server = cancel_payload.clone();
+    let cancel_response_payload_server = cancel_response_payload.clone();
+
+    let (action_ready_tx, action_ready_rx) = oneshot::channel();
+
+    let server_task = {
+        let action_messenger = PeppyMessenger::from_host_port(action_node, &host, port)
+            .await
+            .expect("failed to create action messenger");
+        let action_ready_tx = Some(action_ready_tx);
+
+        tokio::spawn(async move {
+            let action = action_messenger
+                .expose_action(namespace, action_name)
+                .await
+                .expect("action should start");
+
+            let crate::messaging::ActionCreation {
+                mut goal_service,
+                mut cancel_service,
+                feedback_publisher,
+                ..
+            } = action;
+
+            let action_root =
+                PeppyMessenger::build_full_namespace(action_node, namespace, action_name);
+            let expected_goal_topic = format!("{action_root}/goal/request");
+            let expected_cancel_topic = format!("{action_root}/cancel/request");
+
+            if let Some(tx) = action_ready_tx {
+                let _ = tx.send(());
+            }
+
+            let handled_goal = goal_service
+                .handle_next_request(move |request| {
+                    let expected_goal_topic = expected_goal_topic.clone();
+                    let expected_goal_payload = goal_payload_server.clone();
+                    let expected_goal_response_payload = goal_response_payload_server.clone();
+                    async move {
+                        assert_eq!(request.message.topic, expected_goal_topic);
+                        assert_eq!(request.message.payload, expected_goal_payload);
+                        Ok(expected_goal_response_payload)
+                    }
+                })
+                .await
+                .expect("action should receive goal request");
+
+            assert!(
+                handled_goal,
+                "goal subscription closed before handling request"
+            );
+
+            let stop_feedback = Arc::new(tokio::sync::Notify::new());
+            let feedback_task = {
+                let stop_feedback = Arc::clone(&stop_feedback);
+                let feedback_publisher = feedback_publisher;
+                let feedback_payload = feedback_payload_server.clone();
+                tokio::spawn(async move {
+                    let mut ticker = tokio::time::interval(Duration::from_millis(50));
+                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    let stop_notified = stop_feedback.notified();
+                    tokio::pin!(stop_notified);
+                    loop {
+                        tokio::select! {
+                            _ = stop_notified.as_mut() => break,
+                            _ = ticker.tick() => {
+                                feedback_publisher
+                                    .publish(feedback_payload.clone())
+                                    .await?;
+                            }
+                        }
+                    }
+                    Ok::<(), Error>(())
+                })
+            };
+
+            let handled_cancel = cancel_service
+                .handle_next_request(move |request| {
+                    let expected_topic = expected_cancel_topic.clone();
+                    let expected_payload = cancel_payload_server.clone();
+                    let response_payload = cancel_response_payload_server.clone();
+                    async move {
+                        assert_eq!(request.message.topic, expected_topic);
+                        assert_eq!(request.message.payload, expected_payload);
+                        Ok(response_payload)
+                    }
+                })
+                .await
+                .expect("action should receive cancel request");
+
+            assert!(
+                handled_cancel,
+                "cancel subscription closed before handling request"
+            );
+
+            stop_feedback.notify_waiters();
+
+            feedback_task.await.expect("feedback loop task panicked")?;
+
+            Ok::<(), Error>(())
+        })
+    };
+
+    action_ready_rx
+        .await
+        .expect("action server should signal readiness");
+    sleep(Duration::from_millis(20)).await;
+
+    let caller_node = PeppyMessenger::from_host_port(caller_node_name, &host, port)
+        .await
+        .expect("failed to create caller messenger");
+
+    let mut goal_handle = caller_node
+        .send_action_goal(
+            action_node,
+            namespace,
+            action_name,
+            goal_payload,
+            QoSProfile::Standard,
+            Duration::from_millis(1000),
+        )
+        .await
+        .expect("caller should send goal");
+
+    assert_eq!(goal_handle.goal_response(), &goal_response_payload);
+
+    let expected_feedback_topic = PeppyMessenger::build_full_namespace(
+        action_node,
+        namespace,
+        &format!("{action_name}/feedback"),
+    );
+
+    let first_feedback = goal_handle
+        .feedback_mut()
+        .rx
+        .recv()
+        .await
+        .expect("caller should receive initial feedback");
+
+    assert_eq!(first_feedback.topic, expected_feedback_topic);
+    assert_eq!(first_feedback.payload, feedback_payload);
+
+    let second_feedback = tokio::time::timeout(
+        Duration::from_millis(200),
+        goal_handle.feedback_mut().rx.recv(),
+    )
+    .await
+    .expect("feedback stream should continue delivering updates before cancellation")
+    .expect("feedback stream closed unexpectedly before cancellation");
+
+    assert_eq!(second_feedback.topic, expected_feedback_topic);
+    assert_eq!(second_feedback.payload, feedback_payload);
+
+    let cancel_response = caller_node
+        .poll_service(
+            action_node,
+            namespace,
+            &format!("{action_name}/cancel"),
+            cancel_payload,
+            Duration::from_millis(500),
+        )
+        .await
+        .expect("caller should receive cancel acknowledgement");
+
+    assert_eq!(cancel_response, cancel_response_payload);
+
+    while let Ok(message) = goal_handle.feedback_mut().rx.try_recv() {
+        assert_eq!(
+            message.topic, expected_feedback_topic,
+            "feedback from unexpected topic while draining"
+        );
+    }
+
+    match tokio::time::timeout(
+        Duration::from_millis(200),
+        goal_handle.feedback_mut().rx.recv(),
+    )
+    .await
+    {
+        Err(_) => {}
+        Ok(None) => {}
+        Ok(Some(message)) => panic!(
+            "expected no feedback after cancellation, received topic '{}' with payload {:?}",
+            message.topic, message.payload
+        ),
+    }
+
+    let err = caller_node
+        .poll_action_result(
+            &goal_handle,
+            result_request_payload,
+            Duration::from_millis(200),
+        )
+        .await
+        .expect_err("action result should time out after cancellation");
+
+    match err {
+        Error::ActionResultTimeout {
+            action_node: err_action_node,
+            namespace: err_namespace,
+            action_name: err_action_name,
+        } => {
+            assert_eq!(err_action_node, action_node);
+            assert_eq!(err_namespace, namespace);
+            assert_eq!(err_action_name, action_name);
+        }
+        other => panic!(
+            "expected ActionResultTimeout error after cancellation, received: {:?}",
+            other
+        ),
+    }
+
+    server_task
+        .await
+        .expect("action handler task panicked")
+        .expect("action handler returned error");
+
+    router_messenger
+        .stop_router()
+        .await
+        .expect("Failed to shutdown router");
+}
