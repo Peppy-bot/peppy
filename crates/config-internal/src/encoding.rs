@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod frame_capnp;
 pub mod types;
+pub mod facade;
 
 pub use types::FunctionParam;
 
@@ -12,61 +13,23 @@ use capnpc::codegen::GeneratorContext;
 use capnpc::codegen_types::{Leaf, RustTypeInfo};
 use proc_macro2::{Ident, Span, TokenStream};
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::str::FromStr;
 use tempfile::tempdir;
 
 use crate::node::{ArraySchema, MessageFormat, SchemaType, TypeToken};
+use facade::CapnpFacade;
 
 /// The output_dir should point to the `src` of a Rust crate. A new `capnp` module will be
 /// created at the root of this directory with all the `capnp` files.
-pub fn compile_capnp(capnp_files: &[impl AsRef<Path>], output_dir: impl AsRef<Path>) -> Result<()> {
-    let output_dir = output_dir.as_ref().to_path_buf();
-
-    // Create capnp subdirectory
-    let capnp_output_dir = output_dir.join("capnp");
-    std::fs::create_dir_all(&capnp_output_dir)?;
-
-    let mut command = capnpc::CompilerCommand::new();
-    command.capnp_executable(bundled_capnp_executable()?);
-    command.output_path(&capnp_output_dir);
-
-    // Set the default parent module to "capnp" so generated code references
-    // crate::capnp::module_name instead of crate::module_name
-    command.default_parent_module(vec!["capnp".to_string()]);
-
-    // Determine common src_prefix if all files share a parent directory
-    let common_parent = capnp_files
-        .first()
-        .and_then(|f| f.as_ref().parent())
-        .filter(|p| !p.as_os_str().is_empty());
-
-    if let Some(parent) = common_parent {
-        command.src_prefix(parent);
-    }
-
-    // Add all files to the command
-    for capnp_file in capnp_files {
-        command.file(capnp_file.as_ref());
-    }
-
-    command.run()?;
-
-    // Create capnp.rs module file that exports all generated modules
-    let module_exports: Vec<String> = capnp_files
-        .iter()
-        .filter_map(|file| {
-            let path = file.as_ref();
-            path.file_stem()
-                .and_then(|s| s.to_str())
-                .map(|name| format!("pub mod {}_capnp;", name))
-        })
-        .collect();
-
-    let capnp_rs_path = output_dir.join("capnp.rs");
-    let capnp_rs_content = module_exports.join("\n") + "\n";
-    std::fs::write(&capnp_rs_path, capnp_rs_content)?;
-    Ok(())
+pub fn compile_capnp<P, O>(capnp_files: &[P], output_dir: O) -> Result<()>
+where
+    P: AsRef<Path>,
+    O: AsRef<Path>,
+{
+    CapnpFacade::new()?.compile_files(capnp_files, output_dir)
 }
 
 /// This struct helps tuning a MessageFormat into a capnp proto and its associated Rust types
@@ -114,9 +77,10 @@ impl MessageFormatMapper {
         std::fs::write(&schema_path, schema)?;
         let request_path = temp_dir.path().join("code_generator_request.bin");
 
+        let capnp = CapnpFacade::new()?;
         let mut command = capnpc::CompilerCommand::new();
         command
-            .capnp_executable(bundled_capnp_executable()?)
+            .capnp_executable(capnp.binary_path())
             .file(&schema_path)
             .output_path(temp_dir.path())
             .raw_code_generator_request_path(&request_path);
@@ -413,22 +377,6 @@ impl CapnpSchemaGenerator {
             TypeToken::F64 => "Float64",
         }
     }
-}
-
-fn bundled_capnp_executable() -> Result<PathBuf> {
-    let binary_name = match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => "capnp_linux_x86_64",
-        ("macos", "aarch64") => "capnp_macos_aarch64",
-        (os, arch) => {
-            return Err(Error::Encoding(format!(
-                "unsupported platform: {os}-{arch}"
-            )));
-        }
-    };
-
-    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tools")
-        .join(binary_name))
 }
 
 struct TypeResolution {
@@ -865,7 +813,7 @@ mod tests {
 
     #[test]
     fn test_compile_capnp_schema() {
-        let schema_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        let schema_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("schemas")
             .join("frame.capnp");
 
