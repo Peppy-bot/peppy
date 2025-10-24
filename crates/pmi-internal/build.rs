@@ -5,7 +5,7 @@ mod zenoh_build {
     use std::process::Command;
 
     // Version tags for external binaries (should match Cargo.toml dependencies where applicable)
-    const ZENOH_VERSION: &str = "1.5.0";
+    const ZENOH_VERSION: &str = "1.6.2";
 
     fn get_temp_cache_dir(cache_suffix: &str) -> PathBuf {
         let temp_dir = env::temp_dir();
