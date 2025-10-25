@@ -45,4 +45,12 @@ pub enum Error {
         namespace: String,
         action_name: String,
     },
+    #[error(
+        "action '{action_name}' in namespace '{namespace}' on node '{action_node}' is unreachable for result"
+    )]
+    ActionResultUnreachable {
+        action_node: String,
+        namespace: String,
+        action_name: String,
+    },
 }

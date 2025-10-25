@@ -396,7 +396,7 @@ impl PeppyMessenger {
             messenger
                 .publish(
                     Message {
-                        topic: request_topic,
+                        topic: request_topic.clone(),
                         payload: request_payload,
                     },
                     PublisherQoS::Standard,
@@ -405,18 +405,37 @@ impl PeppyMessenger {
                 .map_err(Error::PeppyMessagingInterface)?;
         }
 
-        let response = timeout(response_timeout, response_subscription.rx.recv())
-            .await
-            .map_err(|_| Error::ServiceTimeout {
-                service_node: from_node_name.to_string(),
-                namespace: namespace.to_string(),
-                service_name: service_name.to_string(),
-            })?
-            .ok_or_else(|| {
-                Error::PeppyMessagingInterface(PeppyMessagingInterfaceError::BackendError(
-                    "service response channel closed".to_string(),
-                ))
-            })?;
+        let response = match timeout(response_timeout, response_subscription.rx.recv()).await {
+            Ok(Some(message)) => message,
+            Ok(None) => {
+                return Err(Error::PeppyMessagingInterface(
+                    PeppyMessagingInterfaceError::BackendError(
+                        "service response channel closed".to_string(),
+                    ),
+                ));
+            }
+            Err(_) => {
+                let has_matching_subscribers = {
+                    let messenger = self.messenger.lock().await;
+                    messenger.has_matching_subscribers(&request_topic).await
+                }
+                .map_err(Error::PeppyMessagingInterface)?;
+
+                if has_matching_subscribers {
+                    return Err(Error::ServiceTimeout {
+                        service_node: from_node_name.to_string(),
+                        namespace: namespace.to_string(),
+                        service_name: service_name.to_string(),
+                    });
+                } else {
+                    return Err(Error::ServiceUnreachable {
+                        service_node: from_node_name.to_string(),
+                        namespace: namespace.to_string(),
+                        service_name: service_name.to_string(),
+                    });
+                }
+            }
+        };
 
         Ok(response.payload)
     }
@@ -486,6 +505,23 @@ impl PeppyMessenger {
         })
     }
 
+    pub async fn cancel_action_goal(
+        &self,
+        handle: &ActionGoalHandle,
+        cancel_timeout: Duration,
+    ) -> Result<Bytes> {
+        let cancel_service_name = format!("{}/cancel", handle.action_name);
+
+        self.poll_service(
+            &handle.server_node,
+            &handle.namespace,
+            &cancel_service_name,
+            Bytes::new(),
+            cancel_timeout,
+        )
+        .await
+    }
+
     pub async fn poll_action_result(
         &self,
         handle: &ActionGoalHandle,
@@ -504,6 +540,11 @@ impl PeppyMessenger {
         .await
         .map_err(|err| match err {
             Error::ServiceTimeout { .. } => Error::ActionResultTimeout {
+                action_node: handle.server_node.clone(),
+                namespace: handle.namespace.clone(),
+                action_name: handle.action_name.clone(),
+            },
+            Error::ServiceUnreachable { .. } => Error::ActionResultUnreachable {
                 action_node: handle.server_node.clone(),
                 namespace: handle.namespace.clone(),
                 action_name: handle.action_name.clone(),
