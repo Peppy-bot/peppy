@@ -123,6 +123,20 @@ impl MessengerBackend for MockAdapter {
         Ok(Subscription::new(rx, abort_handle))
     }
 
+    async fn has_matching_subscribers(&self, topic: &str) -> Result<bool> {
+        if !self.is_session_connected {
+            return Err(Error::MessagingSessionError(
+                "Session not initialized".to_string(),
+            ));
+        }
+
+        let subscriptions = self.subscriptions.lock().unwrap();
+        let has_match = subscriptions.iter().any(|(pattern, senders)| {
+            Self::topic_matches(pattern, topic) && senders.iter().any(|sender| !sender.is_closed())
+        });
+        Ok(has_match)
+    }
+
     async fn start_router(&mut self) -> Result<()> {
         self.is_router_started = true;
         Ok(())

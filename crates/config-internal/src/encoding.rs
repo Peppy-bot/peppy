@@ -1,7 +1,7 @@
+pub mod facade;
 #[cfg(test)]
 mod frame_capnp;
 pub mod types;
-pub mod facade;
 
 pub use types::FunctionParam;
 

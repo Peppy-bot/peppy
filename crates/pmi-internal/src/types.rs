@@ -78,6 +78,9 @@ pub trait MessengerBackend {
         qos: SubscriberQoS,
     ) -> impl Future<Output = Result<Subscription>> + Send; // async equivalent for trait
 
+    /// Returns whether there are active subscribers matching the provided topic.
+    fn has_matching_subscribers(&self, topic: &str) -> impl Future<Output = Result<bool>> + Send;
+
     /// Starts the router in background and immediately return for engines that uses a router.
     /// The router should only be started if the lib is intended to connect nodes together
     fn start_router(&mut self) -> impl Future<Output = Result<()>> + Send;
@@ -166,6 +169,10 @@ impl MessengerBackend for Messenger {
 
     async fn subscribe(&self, topic: &str, qos: SubscriberQoS) -> Result<Subscription> {
         dispatch!(&self.adapter, subscribe, topic, qos)
+    }
+
+    async fn has_matching_subscribers(&self, topic: &str) -> Result<bool> {
+        dispatch!(&self.adapter, has_matching_subscribers, topic)
     }
 
     async fn stop_session(self) -> Result<()> {

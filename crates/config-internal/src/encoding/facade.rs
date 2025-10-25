@@ -77,11 +77,7 @@ impl CapnpFacade {
         P: AsRef<Path>,
         O: AsRef<Path>,
     {
-        Self::compile_with_executable(
-            capnp_files,
-            output_dir.as_ref(),
-            self.binary_path(),
-        )
+        Self::compile_with_executable(capnp_files, output_dir.as_ref(), self.binary_path())
     }
 
     fn compile_with_executable<P>(
@@ -114,9 +110,9 @@ impl CapnpFacade {
             command.file(capnp_file.as_ref());
         }
 
-        command.run().map_err(|err| {
-            Error::Encoding(format!("failed to run capnp compiler: {err}"))
-        })?;
+        command
+            .run()
+            .map_err(|err| Error::Encoding(format!("failed to run capnp compiler: {err}")))?;
 
         let module_exports: Vec<String> = capnp_files
             .iter()
@@ -175,11 +171,7 @@ impl CapnpFacade {
             .join("tools")
             .join(binary_name);
 
-        if path.exists() {
-            Some(path)
-        } else {
-            None
-        }
+        if path.exists() { Some(path) } else { None }
     }
 }
 
