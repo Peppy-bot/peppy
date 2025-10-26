@@ -187,9 +187,9 @@ impl ZenohdFacade {
         // Check if the process is still running
         match child.try_wait() {
             Ok(Some(status)) => {
-                let output = child
-                    .wait_with_output()
-                    .map_err(|e| Error::BackendError(format!("Failed to capture zenohd output: {}", e)))?;
+                let output = child.wait_with_output().map_err(|e| {
+                    Error::BackendError(format!("Failed to capture zenohd output: {}", e))
+                })?;
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 return Err(Error::BackendError(format!(
                     "zenohd exited unexpectedly with status: {}{}",
