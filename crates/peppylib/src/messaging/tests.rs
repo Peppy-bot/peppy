@@ -10,13 +10,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::time::Duration;
 use tempfile::TempDir;
-use tokio::{sync::oneshot, time::sleep};
+use tokio::sync::oneshot;
 
 use crate::error::Error;
 use crate::messaging::PeppyMessenger;
 
-const PORT_START: u16 = 30_000;
-const PORT_END: u16 = 60_000;
+const PORT_START: u16 = 40_000;
+const PORT_END: u16 = 65_000;
 static NEXT_PORT: AtomicU32 = AtomicU32::new(PORT_START as u32);
 
 fn allocate_candidate_port() -> u16 {
@@ -91,9 +91,6 @@ async fn start_zenohd_process() -> (Messenger, TempDir, String, u16) {
 
     unreachable!("zenoh router start retry loop exhausted unexpectedly")
 }
-
-const SHORT_PROPAGATION_DELAY: Duration = Duration::from_millis(20);
-const SUBSCRIPTION_PROPAGATION_DELAY: Duration = Duration::from_millis(50);
 
 #[derive(Clone)]
 struct ActionClientCase {
@@ -252,9 +249,6 @@ async fn topic_publish_reliable_5000hz_messages() {
     let message_count = 5000;
     let mut message_ids: Vec<u32> = (0..message_count as u32).collect();
     message_ids.shuffle(&mut thread_rng());
-
-    // Allow subscription to settle before flooding messages.
-    sleep(SUBSCRIPTION_PROPAGATION_DELAY).await;
 
     for &message_id in &message_ids {
         let payload = Bytes::from(message_id.to_le_bytes().to_vec());
@@ -904,9 +898,6 @@ async fn action_communication() {
                 .await
                 .expect("action should publish feedback");
 
-            // Give the client time to attach to the result service before answering.
-            sleep(SHORT_PROPAGATION_DELAY).await;
-
             let handled_result = action
                 .result_service
                 .handle_next_request(move |request| {
@@ -947,7 +938,7 @@ async fn action_communication() {
                 namespace,
                 action_name,
                 goal_payload,
-                QoSProfile::Standard,
+                QoSProfile::Reliable,
                 Duration::from_millis(1000),
             )
             .await
@@ -1116,7 +1107,6 @@ async fn action_communication_goal_cancelled() {
     action_ready_rx
         .await
         .expect("action server should signal readiness");
-    sleep(SHORT_PROPAGATION_DELAY).await;
 
     let caller_node = router.messenger(caller_node_name).await;
 
@@ -1126,7 +1116,7 @@ async fn action_communication_goal_cancelled() {
             namespace,
             action_name,
             goal_payload,
-            QoSProfile::Standard,
+            QoSProfile::Reliable,
             Duration::from_millis(1000),
         )
         .await
@@ -1411,7 +1401,7 @@ async fn single_action_communication_multiple_polls() {
                     namespace,
                     action_name,
                     case.goal.clone(),
-                    QoSProfile::Standard,
+                    QoSProfile::Reliable,
                     Duration::from_millis(1000),
                 )
                 .await
