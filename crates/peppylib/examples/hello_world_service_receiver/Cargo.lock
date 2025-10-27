@@ -900,9 +900,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "hello_world_topic_receiver"
+name = "hello_world_service_receiver"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "chrono",
  "config",
  "peppylib",

@@ -224,7 +224,7 @@ async fn topic_publish_subscribe() {
     let receiver_node = router.topic_messenger(receiver_node).await;
 
     let mut subscription = receiver_node
-        .expose(&sender_node_name, ns, topic_name, qos.clone())
+        .subscribe(&sender_node_name, ns, topic_name, qos.clone())
         .await
         .expect("Should subscribe to the topic");
 
@@ -264,7 +264,7 @@ async fn topic_publish_reliable_5000hz_messages() {
     let receiver_node = router.topic_messenger(receiver_node).await;
 
     let mut subscription = receiver_node
-        .expose(&sender_node_name, ns, topic_name, qos.clone())
+        .subscribe(&sender_node_name, ns, topic_name, qos.clone())
         .await
         .expect("Should subscribe to the topic");
 
@@ -342,7 +342,7 @@ async fn service_communication() {
     let service_handle = {
         let service_expose_node = router.service_messenger(service_node).await;
         let mut service = service_expose_node
-            .expose(namespace, service_name)
+            .listen(namespace, service_name)
             .await
             .expect("service should start");
 
@@ -480,7 +480,7 @@ async fn service_communication_fails_timeout() {
 
         let service_expose_node = router.service_messenger(service_node).await;
         let mut service = service_expose_node
-            .expose(namespace, service_name)
+            .listen(namespace, service_name)
             .await
             .expect("service should start");
 
@@ -612,7 +612,7 @@ async fn service_handle_request_processes_multiple_messages() {
             let service_expose_node = connect_service_messenger(service_node, &host, port).await;
 
             let mut service = service_expose_node
-                .expose(namespace, service_name)
+                .listen(namespace, service_name)
                 .await
                 .expect("service should start");
 
@@ -697,7 +697,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
         let service_expose_node = router.service_messenger(service_node).await;
 
         let mut service = service_expose_node
-            .expose(namespace, service_name)
+            .listen(namespace, service_name)
             .await
             .expect("service should start");
 
@@ -876,7 +876,7 @@ async fn action_communication() {
 
         tokio::spawn(async move {
             let mut action = action_messenger
-                .expose(namespace, action_name)
+                .listen(namespace, action_name)
                 .await
                 .expect("action should start");
 
@@ -1024,7 +1024,7 @@ async fn action_communication_goal_cancelled() {
 
         tokio::spawn(async move {
             let action = action_messenger
-                .expose(namespace, action_name)
+                .listen(namespace, action_name)
                 .await
                 .expect("action should start");
 
@@ -1246,7 +1246,7 @@ async fn single_action_communication_multiple_polls() {
 
         tokio::spawn(async move {
             let action = action_messenger
-                .expose(namespace, action_name)
+                .listen(namespace, action_name)
                 .await
                 .expect("action should start");
 

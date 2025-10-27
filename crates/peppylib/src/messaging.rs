@@ -284,7 +284,7 @@ impl TopicMessenger {
         Ok(Self { handle })
     }
 
-    pub async fn expose(
+    pub async fn subscribe(
         &self,
         from_node_name: &str,
         namespace: &str,
@@ -320,7 +320,7 @@ impl ServiceMessenger {
         Ok(Self { handle })
     }
 
-    pub async fn expose(&self, namespace: &str, service_name: &str) -> Result<ServiceEndpoint> {
+    pub async fn listen(&self, namespace: &str, service_name: &str) -> Result<ServiceEndpoint> {
         self.handle.expose_service(namespace, service_name).await
     }
 
@@ -355,7 +355,7 @@ impl ActionMessenger {
         Ok(Self { handle })
     }
 
-    pub async fn expose(&self, namespace: &str, action_name: &str) -> Result<ActionCreation> {
+    pub async fn listen(&self, namespace: &str, action_name: &str) -> Result<ActionCreation> {
         self.handle.expose_action(namespace, action_name).await
     }
 
