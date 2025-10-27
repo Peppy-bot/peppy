@@ -30,7 +30,7 @@ async fn main() {
 
     println!("Sending payload...");
     sender_node
-        .emit_topic_message(ns, topic_name, qos, payload)
+        .emit(ns, topic_name, qos, payload)
         .await
         .expect("Should send the payload");
     println!("Payload sent");

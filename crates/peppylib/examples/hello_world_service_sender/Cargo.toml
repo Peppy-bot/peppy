@@ -1,5 +1,5 @@
 [package]
-name = "hello_world_topic_receiver"
+name = "hello_world_topic_sender"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,6 +7,6 @@ edition = "2024"
 peppylib = { path = "../.." }
 config = { path = "../../../config-internal" }
 tokio = { version = "1.47.0", features = ["rt-multi-thread", "macros"] }
-chrono = { version = "0.4" }
+bytes = "1.10.1"
 
 [workspace]
