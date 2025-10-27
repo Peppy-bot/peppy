@@ -1,0 +1,14 @@
+[package]
+name = "hello_world_action_receiver"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+peppylib = { path = "../.." }
+config = { path = "../../../config-internal" }
+tokio = { version = "1.47.0", features = ["rt-multi-thread", "macros"] }
+chrono = { version = "0.4" }
+bytes = "1"
+colored = "3"
+
+[workspace]
