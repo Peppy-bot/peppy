@@ -13,7 +13,7 @@ use tempfile::TempDir;
 use tokio::sync::oneshot;
 
 use crate::error::Error;
-use crate::messaging::PeppyMessenger;
+use crate::messaging::{ActionMessenger, ServiceMessenger, TopicMessenger};
 
 const PORT_START: u16 = 40_000;
 const PORT_END: u16 = 65_000;
@@ -155,8 +155,16 @@ impl TestRouterContext {
         (self.host.clone(), self.port)
     }
 
-    async fn messenger(&self, node_name: &str) -> PeppyMessenger {
-        connect_messenger(node_name, self.host(), self.port()).await
+    async fn topic_messenger(&self, node_name: &str) -> TopicMessenger {
+        connect_topic_messenger(node_name, self.host(), self.port()).await
+    }
+
+    async fn service_messenger(&self, node_name: &str) -> ServiceMessenger {
+        connect_service_messenger(node_name, self.host(), self.port()).await
+    }
+
+    async fn action_messenger(&self, node_name: &str) -> ActionMessenger {
+        connect_action_messenger(node_name, self.host(), self.port()).await
     }
 
     async fn shutdown(mut self) {
@@ -167,18 +175,33 @@ impl TestRouterContext {
     }
 }
 
-async fn connect_messenger(node_name: &str, host: &str, port: u16) -> PeppyMessenger {
-    PeppyMessenger::from_host_port(node_name, host, port)
+async fn connect_topic_messenger(node_name: &str, host: &str, port: u16) -> TopicMessenger {
+    TopicMessenger::from_host_port(node_name, host, port)
         .await
         .unwrap_or_else(|error| {
-            panic!("failed to create messenger for node `{node_name}`: {error:?}")
+            panic!("failed to create topic messenger for node `{node_name}`: {error:?}")
+        })
+}
+
+async fn connect_service_messenger(node_name: &str, host: &str, port: u16) -> ServiceMessenger {
+    ServiceMessenger::from_host_port(node_name, host, port)
+        .await
+        .unwrap_or_else(|error| {
+            panic!("failed to create service messenger for node `{node_name}`: {error:?}")
+        })
+}
+
+async fn connect_action_messenger(node_name: &str, host: &str, port: u16) -> ActionMessenger {
+    ActionMessenger::from_host_port(node_name, host, port)
+        .await
+        .unwrap_or_else(|error| {
+            panic!("failed to create action messenger for node `{node_name}`: {error:?}")
         })
 }
 
 #[test]
 fn build_topic_path_removes_redundant_separators() {
-    let path =
-        super::PeppyMessenger::build_full_namespace("uvc_camera", "/camera/rear/", "/video_frame");
+    let path = super::build_full_namespace("uvc_camera", "/camera/rear/", "/video_frame");
     assert_eq!(path, "uvc_camera/camera/rear/video_frame");
 }
 
@@ -197,16 +220,16 @@ async fn topic_publish_subscribe() {
 
     let payload = Bytes::from_static(b"A message");
 
-    let sender_node = router.messenger(sender_node_name).await;
-    let receiver_node = router.messenger(receiver_node).await;
+    let sender_node = router.topic_messenger(sender_node_name).await;
+    let receiver_node = router.topic_messenger(receiver_node).await;
 
     let mut subscription = receiver_node
-        .receive_topic_msg(&sender_node_name, ns, topic_name, qos.clone())
+        .expose(&sender_node_name, ns, topic_name, qos.clone())
         .await
         .expect("Should subscribe to the topic");
 
     sender_node
-        .emit_topic_message(ns, topic_name, qos, payload.clone())
+        .emit(ns, topic_name, qos, payload.clone())
         .await
         .expect("Should send the payload");
 
@@ -216,7 +239,7 @@ async fn topic_publish_subscribe() {
         .await
         .expect("Should receive the published message");
 
-    let expected_topic = PeppyMessenger::build_full_namespace(&sender_node_name, ns, topic_name);
+    let expected_topic = super::build_full_namespace(&sender_node_name, ns, topic_name);
     assert_eq!(received.topic, expected_topic);
     assert_eq!(received.payload, payload);
 
@@ -237,15 +260,15 @@ async fn topic_publish_reliable_5000hz_messages() {
     // Those properties are found in the `deployments` array
     let ns = "/camera/rear";
 
-    let sender_node = router.messenger(sender_node_name).await;
-    let receiver_node = router.messenger(receiver_node).await;
+    let sender_node = router.topic_messenger(sender_node_name).await;
+    let receiver_node = router.topic_messenger(receiver_node).await;
 
     let mut subscription = receiver_node
-        .receive_topic_msg(&sender_node_name, ns, topic_name, qos.clone())
+        .expose(&sender_node_name, ns, topic_name, qos.clone())
         .await
         .expect("Should subscribe to the topic");
 
-    let expected_topic = PeppyMessenger::build_full_namespace(&sender_node_name, ns, topic_name);
+    let expected_topic = super::build_full_namespace(&sender_node_name, ns, topic_name);
     let message_count = 5000;
     let mut message_ids: Vec<u32> = (0..message_count as u32).collect();
     message_ids.shuffle(&mut thread_rng());
@@ -253,7 +276,7 @@ async fn topic_publish_reliable_5000hz_messages() {
     for &message_id in &message_ids {
         let payload = Bytes::from(message_id.to_le_bytes().to_vec());
         sender_node
-            .emit_topic_message(ns, topic_name, qos.clone(), payload)
+            .emit(ns, topic_name, qos.clone(), payload)
             .await
             .expect("Should send the payload");
     }
@@ -317,14 +340,13 @@ async fn service_communication() {
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_handle = {
-        let service_expose_node = router.messenger(service_node).await;
+        let service_expose_node = router.service_messenger(service_node).await;
         let mut service = service_expose_node
-            .expose_service(namespace, service_name)
+            .expose(namespace, service_name)
             .await
             .expect("service should start");
 
-        let service_root =
-            PeppyMessenger::build_full_namespace(service_node, namespace, service_name);
+        let service_root = super::build_full_namespace(service_node, namespace, service_name);
         let expected_request_topic = format!("{service_root}/request");
 
         let request_payload = request_payload.clone();
@@ -362,9 +384,9 @@ async fn service_communication() {
         service_ready_rx
             .await
             .expect("service should signal readiness");
-        let caller_messenger = router.messenger(caller_node_name).await;
+        let caller_messenger = router.service_messenger(caller_node_name).await;
         let response = caller_messenger
-            .poll_service(
+            .poll(
                 service_node,
                 namespace,
                 service_name,
@@ -403,10 +425,10 @@ async fn service_communication_fails_not_started() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     let err = {
-        let caller_node = router.messenger(caller_node_name).await;
+        let caller_node = router.service_messenger(caller_node_name).await;
 
         caller_node
-            .poll_service(
+            .poll(
                 service_node,
                 namespace,
                 service_name,
@@ -452,14 +474,13 @@ async fn service_communication_fails_timeout() {
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_handle = {
-        let service_root =
-            PeppyMessenger::build_full_namespace(service_node, namespace, service_name);
+        let service_root = super::build_full_namespace(service_node, namespace, service_name);
         let expected_request_topic = format!("{service_root}/request");
         let response_delay = Duration::from_millis(200);
 
-        let service_expose_node = router.messenger(service_node).await;
-        let service = service_expose_node
-            .expose_service(namespace, service_name)
+        let service_expose_node = router.service_messenger(service_node).await;
+        let mut service = service_expose_node
+            .expose(namespace, service_name)
             .await
             .expect("service should start");
 
@@ -468,14 +489,9 @@ async fn service_communication_fails_timeout() {
         let call_count = Arc::clone(&call_count);
         let response_delay = response_delay;
         let expected_requests = 2;
-        let service_ready_tx = Some(service_ready_tx);
 
         tokio::spawn(async move {
-            let mut service = service;
-
-            if let Some(tx) = service_ready_tx {
-                let _ = tx.send(());
-            }
+            service_ready_tx.send(()).unwrap();
 
             for _ in 0..expected_requests {
                 let expected_request_topic = expected_request_topic.clone();
@@ -513,10 +529,10 @@ async fn service_communication_fails_timeout() {
         let caller_success_timeout = Duration::from_millis(500);
         let caller_failure_timeout = Duration::from_millis(50);
 
-        let caller_node = router.messenger(caller_node).await;
+        let caller_node = router.service_messenger(caller_node).await;
 
         let success_response = caller_node
-            .poll_service(
+            .poll(
                 service_node,
                 namespace,
                 service_name,
@@ -533,7 +549,7 @@ async fn service_communication_fails_timeout() {
         );
 
         caller_node
-            .poll_service(
+            .poll(
                 service_node,
                 namespace,
                 service_name,
@@ -593,10 +609,10 @@ async fn service_handle_request_processes_multiple_messages() {
         let host = host.clone();
         let service_ready_tx = Some(service_ready_tx);
         tokio::spawn(async move {
-            let service_expose_node = connect_messenger(service_node, &host, port).await;
+            let service_expose_node = connect_service_messenger(service_node, &host, port).await;
 
             let mut service = service_expose_node
-                .expose_service(namespace, service_name)
+                .expose(namespace, service_name)
                 .await
                 .expect("service should start");
 
@@ -623,12 +639,12 @@ async fn service_handle_request_processes_multiple_messages() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        let caller_node = router.messenger("vision_pipeline").await;
+        let caller_node = router.service_messenger("vision_pipeline").await;
 
         for i in 0..expected_requests {
             let request_payload = Bytes::from(format!("enable=true;request={i}").into_bytes());
             let response = caller_node
-                .poll_service(
+                .poll(
                     service_node,
                     namespace,
                     service_name,
@@ -678,15 +694,14 @@ async fn single_service_communication_multiple_polls_and_callers() {
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_handle: tokio::task::JoinHandle<Result<(), Error>> = {
-        let service_expose_node = router.messenger(service_node).await;
+        let service_expose_node = router.service_messenger(service_node).await;
 
         let mut service = service_expose_node
-            .expose_service(namespace, service_name)
+            .expose(namespace, service_name)
             .await
             .expect("service should start");
 
-        let service_root =
-            PeppyMessenger::build_full_namespace(service_node, namespace, service_name);
+        let service_root = super::build_full_namespace(service_node, namespace, service_name);
 
         let expected_request_topic = format!("{service_root}/request");
         let expected_request_topic = expected_request_topic.clone();
@@ -754,12 +769,13 @@ async fn single_service_communication_multiple_polls_and_callers() {
             requests.shuffle(&mut rng);
             let host = host.clone();
             let poll_service = tokio::spawn(async move {
-                let caller_messenger = connect_messenger(&caller_node_name, &host, port).await;
+                let caller_messenger =
+                    connect_service_messenger(&caller_node_name, &host, port).await;
 
                 let mut caller_results = Vec::with_capacity(requests.len());
                 for (request_idx, request_payload) in requests {
                     let response = caller_messenger
-                        .poll_service(
+                        .poll(
                             service_node,
                             namespace,
                             service_name,
@@ -856,16 +872,15 @@ async fn action_communication() {
         let result_payload_server = result_payload.clone();
         let result_request_payload_server = result_request_payload.clone();
 
-        let action_messenger = router.messenger(action_node).await;
+        let action_messenger = router.action_messenger(action_node).await;
 
         tokio::spawn(async move {
             let mut action = action_messenger
-                .expose_action(namespace, action_name)
+                .expose(namespace, action_name)
                 .await
                 .expect("action should start");
 
-            let action_root =
-                PeppyMessenger::build_full_namespace(action_node, namespace, action_name);
+            let action_root = super::build_full_namespace(action_node, namespace, action_name);
             let expected_goal_topic = format!("{action_root}/goal/request");
             let expected_result_topic = format!("{action_root}/result/request");
 
@@ -929,11 +944,11 @@ async fn action_communication() {
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
         let caller_node = "the_brain";
-        let caller_node = router.messenger(caller_node).await;
+        let caller_node = router.action_messenger(caller_node).await;
 
         // Client sends the goal and obtains the handle carrying goal response + feedback sub.
         let mut goal_handle = caller_node
-            .send_action_goal(
+            .send_goal(
                 action_node,
                 namespace,
                 action_name,
@@ -946,11 +961,8 @@ async fn action_communication() {
 
         assert_eq!(goal_handle.goal_response(), &goal_response_payload);
 
-        let expected_feedback_topic = PeppyMessenger::build_full_namespace(
-            action_node,
-            namespace,
-            &format!("{action_name}/feedback"),
-        );
+        let expected_feedback_topic =
+            super::build_full_namespace(action_node, namespace, &format!("{action_name}/feedback"));
 
         // Consume one feedback update from the action server.
         let feedback_message = goal_handle
@@ -965,7 +977,7 @@ async fn action_communication() {
 
         // Finally, request the result using the same handle and ensure the server replies.
         let result_response = caller_node
-            .poll_action_result(
+            .poll_result(
                 &goal_handle,
                 result_request_payload,
                 Duration::from_millis(500),
@@ -1007,12 +1019,12 @@ async fn action_communication_goal_cancelled() {
         let feedback_payload_server = feedback_payload.clone();
         let cancel_response_payload_server = cancel_response_payload.clone();
 
-        let action_messenger = router.messenger(action_node).await;
+        let action_messenger = router.action_messenger(action_node).await;
         let action_ready_tx = Some(action_ready_tx);
 
         tokio::spawn(async move {
             let action = action_messenger
-                .expose_action(namespace, action_name)
+                .expose(namespace, action_name)
                 .await
                 .expect("action should start");
 
@@ -1023,8 +1035,7 @@ async fn action_communication_goal_cancelled() {
                 ..
             } = action;
 
-            let action_root =
-                PeppyMessenger::build_full_namespace(action_node, namespace, action_name);
+            let action_root = super::build_full_namespace(action_node, namespace, action_name);
             let expected_goal_topic = format!("{action_root}/goal/request");
             let expected_cancel_topic = format!("{action_root}/cancel/request");
 
@@ -1108,10 +1119,10 @@ async fn action_communication_goal_cancelled() {
         .await
         .expect("action server should signal readiness");
 
-    let caller_node = router.messenger(caller_node_name).await;
+    let caller_node = router.action_messenger(caller_node_name).await;
 
     let mut goal_handle = caller_node
-        .send_action_goal(
+        .send_goal(
             action_node,
             namespace,
             action_name,
@@ -1124,11 +1135,8 @@ async fn action_communication_goal_cancelled() {
 
     assert_eq!(goal_handle.goal_response(), &goal_response_payload);
 
-    let expected_feedback_topic = PeppyMessenger::build_full_namespace(
-        action_node,
-        namespace,
-        &format!("{action_name}/feedback"),
-    );
+    let expected_feedback_topic =
+        super::build_full_namespace(action_node, namespace, &format!("{action_name}/feedback"));
 
     let first_feedback = goal_handle
         .feedback_mut()
@@ -1152,7 +1160,7 @@ async fn action_communication_goal_cancelled() {
     assert_eq!(second_feedback.payload, feedback_payload);
 
     let cancel_response = caller_node
-        .cancel_action_goal(&goal_handle, Duration::from_millis(500))
+        .cancel_goal(&goal_handle, Duration::from_millis(500))
         .await
         .expect("caller should receive cancel acknowledgement");
 
@@ -1180,7 +1188,7 @@ async fn action_communication_goal_cancelled() {
     }
 
     let err = caller_node
-        .poll_action_result(
+        .poll_result(
             &goal_handle,
             result_request_payload,
             Duration::from_millis(200),
@@ -1232,18 +1240,17 @@ async fn single_action_communication_multiple_polls() {
 
     // Launch a background task that plays the role of the action server.
     let server_task = {
-        let action_messenger = router.messenger(action_node).await;
+        let action_messenger = router.action_messenger(action_node).await;
         let action_ready_tx = Some(action_ready_tx);
         let cases = Arc::clone(&cases);
 
         tokio::spawn(async move {
             let action = action_messenger
-                .expose_action(namespace, action_name)
+                .expose(namespace, action_name)
                 .await
                 .expect("action should start");
 
-            let action_root =
-                PeppyMessenger::build_full_namespace(action_node, namespace, action_name);
+            let action_root = super::build_full_namespace(action_node, namespace, action_name);
             let expected_goal_topic = format!("{action_root}/goal/request");
             let expected_result_topic = format!("{action_root}/result/request");
             let crate::messaging::ActionCreation {
@@ -1375,11 +1382,8 @@ async fn single_action_communication_multiple_polls() {
         .await
         .expect("action server should signal readiness");
 
-    let expected_feedback_topic = PeppyMessenger::build_full_namespace(
-        action_node,
-        namespace,
-        &format!("{action_name}/feedback"),
-    );
+    let expected_feedback_topic =
+        super::build_full_namespace(action_node, namespace, &format!("{action_name}/feedback"));
 
     let total_clients = cases.len();
     let mut shuffled_cases = cases.as_ref().clone();
@@ -1393,10 +1397,10 @@ async fn single_action_communication_multiple_polls() {
         let feedback_search_limit = total_clients;
 
         let handle = tokio::spawn(async move {
-            let caller_messenger = connect_messenger(&case.client_id, &host, port).await;
+            let caller_messenger = connect_action_messenger(&case.client_id, &host, port).await;
 
             let mut goal_handle = caller_messenger
-                .send_action_goal(
+                .send_goal(
                     action_node,
                     namespace,
                     action_name,
@@ -1441,7 +1445,7 @@ async fn single_action_communication_multiple_polls() {
             );
 
             let result_response = caller_messenger
-                .poll_action_result(
+                .poll_result(
                     &goal_handle,
                     case.result_request.clone(),
                     Duration::from_millis(1000),

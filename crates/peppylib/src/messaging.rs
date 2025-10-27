@@ -20,10 +20,65 @@ use tokio::{
 };
 use tracing::error;
 
-/// This struct represent one deployment instance messaging
-pub struct PeppyMessenger {
+/// Internal handle around a messenger session shared by the specialized messengers.
+struct MessengerHandle {
     node_name: String,
     messenger: Arc<Mutex<Messenger>>,
+}
+
+fn map_node_qos_to_publisher_qos(qos: QoSProfile) -> PublisherQoS {
+    match qos {
+        QoSProfile::Standard => PublisherQoS::Standard,
+        QoSProfile::Reliable => PublisherQoS::Important,
+        QoSProfile::SensorData => PublisherQoS::BestEffort,
+        QoSProfile::Critical => PublisherQoS::Critical,
+    }
+}
+
+fn map_node_qos_to_subscriber_qos(qos: QoSProfile) -> SubscriberQoS {
+    match qos {
+        QoSProfile::SensorData => SubscriberQoS::HighThroughput,
+        _ => SubscriberQoS::Standard,
+    }
+}
+
+/// Generates a unique request ID using SHA256 hash of node name + timestamp + thread ID
+/// This ensures each service call has a unique correlation ID
+fn generate_request_id(node_name: &str) -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let thread_id = std::thread::current().id();
+
+    let mut hasher = Sha256::new();
+    hasher.update(node_name.as_bytes());
+    hasher.update(timestamp.to_le_bytes());
+    hasher.update(format!("{:?}", thread_id).as_bytes());
+
+    let result = hasher.finalize();
+    format!("{:x}", result)[..16].to_string() // Use first 16 hex chars for compactness
+}
+
+pub fn build_full_namespace(node_name: &str, namespace: &str, message_type_name: &str) -> String {
+    [node_name, namespace, message_type_name]
+        .into_iter()
+        .flat_map(|part| part.split('/'))
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+pub struct TopicMessenger {
+    handle: MessengerHandle,
+}
+
+pub struct ServiceMessenger {
+    handle: MessengerHandle,
+}
+
+pub struct ActionMessenger {
+    handle: MessengerHandle,
 }
 
 pub struct ServiceEndpoint {
@@ -218,19 +273,193 @@ pub struct ActionCreation {
     pub result_service: ServiceEndpoint,
 }
 
-impl PeppyMessenger {
+impl TopicMessenger {
     pub async fn new(node_name: &str) -> Result<Self> {
-        let adapter = ZenohAdapter::default();
-        let messenger = PeppyMessenger::new_session(adapter).await?;
-        Ok(Self {
-            node_name: String::from(node_name),
-            messenger: Arc::new(Mutex::new(messenger)),
-        })
+        let handle = MessengerHandle::new(node_name).await?;
+        Ok(Self { handle })
     }
 
     pub async fn from_host_port(node_name: &str, host: &str, port: u16) -> Result<Self> {
+        let handle = MessengerHandle::from_host_port(node_name, host, port).await?;
+        Ok(Self { handle })
+    }
+
+    pub async fn expose(
+        &self,
+        from_node_name: &str,
+        namespace: &str,
+        topic_name: &str,
+        qos: QoSProfile,
+    ) -> Result<Subscription> {
+        self.handle
+            .receive_topic_msg(from_node_name, namespace, topic_name, qos)
+            .await
+    }
+
+    pub async fn emit(
+        &self,
+        namespace: &str,
+        topic_name: &str,
+        qos: QoSProfile,
+        payload: Bytes,
+    ) -> Result<()> {
+        self.handle
+            .emit_topic_message(namespace, topic_name, qos, payload)
+            .await
+    }
+}
+
+impl ServiceMessenger {
+    pub async fn new(node_name: &str) -> Result<Self> {
+        let handle = MessengerHandle::new(node_name).await?;
+        Ok(Self { handle })
+    }
+
+    pub async fn from_host_port(node_name: &str, host: &str, port: u16) -> Result<Self> {
+        let handle = MessengerHandle::from_host_port(node_name, host, port).await?;
+        Ok(Self { handle })
+    }
+
+    pub async fn expose(&self, namespace: &str, service_name: &str) -> Result<ServiceEndpoint> {
+        self.handle.expose_service(namespace, service_name).await
+    }
+
+    pub async fn poll(
+        &self,
+        from_node_name: &str,
+        namespace: &str,
+        service_name: &str,
+        request_payload: Bytes,
+        response_timeout: Duration,
+    ) -> Result<Bytes> {
+        self.handle
+            .poll_service(
+                from_node_name,
+                namespace,
+                service_name,
+                request_payload,
+                response_timeout,
+            )
+            .await
+    }
+}
+
+impl ActionMessenger {
+    pub async fn new(node_name: &str) -> Result<Self> {
+        let handle = MessengerHandle::new(node_name).await?;
+        Ok(Self { handle })
+    }
+
+    pub async fn from_host_port(node_name: &str, host: &str, port: u16) -> Result<Self> {
+        let handle = MessengerHandle::from_host_port(node_name, host, port).await?;
+        Ok(Self { handle })
+    }
+
+    pub async fn expose(&self, namespace: &str, action_name: &str) -> Result<ActionCreation> {
+        self.handle.expose_action(namespace, action_name).await
+    }
+
+    pub async fn send_goal(
+        &self,
+        server_node: &str,
+        namespace: &str,
+        action_name: &str,
+        goal_payload: Bytes,
+        feedback_qos: QoSProfile,
+        goal_timeout: Duration,
+    ) -> Result<ActionGoalHandle> {
+        let feedback_topic = format!("{action_name}/feedback");
+        let goal_service_name = format!("{action_name}/goal");
+
+        let feedback_subscription = self
+            .handle
+            .receive_topic_msg(server_node, namespace, &feedback_topic, feedback_qos)
+            .await?;
+
+        let goal_response = self
+            .handle
+            .poll_service(
+                server_node,
+                namespace,
+                &goal_service_name,
+                goal_payload,
+                goal_timeout,
+            )
+            .await?;
+
+        Ok(ActionGoalHandle {
+            server_node: server_node.to_string(),
+            namespace: namespace.to_string(),
+            action_name: action_name.to_string(),
+            goal_response,
+            feedback: feedback_subscription,
+        })
+    }
+
+    pub async fn cancel_goal(
+        &self,
+        handle: &ActionGoalHandle,
+        cancel_timeout: Duration,
+    ) -> Result<Bytes> {
+        let cancel_service_name = format!("{}/cancel", handle.action_name);
+
+        self.handle
+            .poll_service(
+                &handle.server_node,
+                &handle.namespace,
+                &cancel_service_name,
+                Bytes::new(),
+                cancel_timeout,
+            )
+            .await
+    }
+
+    pub async fn poll_result(
+        &self,
+        handle: &ActionGoalHandle,
+        result_request_payload: Bytes,
+        result_timeout: Duration,
+    ) -> Result<Bytes> {
+        let result_service_name = format!("{}/result", handle.action_name);
+
+        self.handle
+            .poll_service(
+                &handle.server_node,
+                &handle.namespace,
+                &result_service_name,
+                result_request_payload,
+                result_timeout,
+            )
+            .await
+            .map_err(|err| match err {
+                Error::ServiceTimeout { .. } => Error::ActionResultTimeout {
+                    action_node: handle.server_node.clone(),
+                    namespace: handle.namespace.clone(),
+                    action_name: handle.action_name.clone(),
+                },
+                Error::ServiceUnreachable { .. } => Error::ActionResultUnreachable {
+                    action_node: handle.server_node.clone(),
+                    namespace: handle.namespace.clone(),
+                    action_name: handle.action_name.clone(),
+                },
+                other => other,
+            })
+    }
+}
+
+impl MessengerHandle {
+    async fn new(node_name: &str) -> Result<Self> {
+        let adapter = ZenohAdapter::default();
+        Self::from_adapter(node_name, adapter).await
+    }
+
+    async fn from_host_port(node_name: &str, host: &str, port: u16) -> Result<Self> {
         let adapter = ZenohAdapter::from_host_port(ZenohNetProtocol::Tcp, host, port);
-        let messenger = PeppyMessenger::new_session(adapter).await?;
+        Self::from_adapter(node_name, adapter).await
+    }
+
+    async fn from_adapter(node_name: &str, adapter: ZenohAdapter) -> Result<Self> {
+        let messenger = Self::new_session(adapter).await?;
         Ok(Self {
             node_name: String::from(node_name),
             messenger: Arc::new(Mutex::new(messenger)),
@@ -247,62 +476,19 @@ impl PeppyMessenger {
         Ok(messenger)
     }
 
-    fn map_node_qos_to_publisher_qos(qos: QoSProfile) -> PublisherQoS {
-        match qos {
-            QoSProfile::Standard => PublisherQoS::Standard,
-            QoSProfile::Reliable => PublisherQoS::Important,
-            QoSProfile::SensorData => PublisherQoS::BestEffort,
-            QoSProfile::Critical => PublisherQoS::Critical,
-        }
+    fn node_name(&self) -> &str {
+        &self.node_name
     }
 
-    fn map_node_qos_to_subscriber_qos(qos: QoSProfile) -> SubscriberQoS {
-        match qos {
-            QoSProfile::SensorData => SubscriberQoS::HighThroughput,
-            _ => SubscriberQoS::Standard,
-        }
-    }
-
-    /// Generates a unique request ID using SHA256 hash of node name + timestamp + thread ID
-    /// This ensures each service call has a unique correlation ID
-    fn generate_request_id(node_name: &str) -> String {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let thread_id = std::thread::current().id();
-
-        let mut hasher = Sha256::new();
-        hasher.update(node_name.as_bytes());
-        hasher.update(timestamp.to_le_bytes());
-        hasher.update(format!("{:?}", thread_id).as_bytes());
-
-        let result = hasher.finalize();
-        format!("{:x}", result)[..16].to_string() // Use first 16 hex chars for compactness
-    }
-
-    pub fn build_full_namespace(
-        node_name: &str,
-        namespace: &str,
-        message_type_name: &str,
-    ) -> String {
-        [node_name, namespace, message_type_name]
-            .into_iter()
-            .flat_map(|part| part.split('/'))
-            .filter(|segment| !segment.is_empty())
-            .collect::<Vec<_>>()
-            .join("/")
-    }
-
-    pub async fn receive_topic_msg(
+    async fn receive_topic_msg(
         &self,
         from_node_name: &str,
         namespace: &str,
         topic_name: &str,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        let topic_path = Self::build_full_namespace(from_node_name, namespace, topic_name);
-        let subscriber_qos = Self::map_node_qos_to_subscriber_qos(qos);
+        let topic_path = build_full_namespace(from_node_name, namespace, topic_name);
+        let subscriber_qos = map_node_qos_to_subscriber_qos(qos);
 
         let subscription = {
             let messenger = self.messenger.lock().await;
@@ -313,20 +499,20 @@ impl PeppyMessenger {
         Ok(subscription)
     }
 
-    pub async fn emit_topic_message(
+    async fn emit_topic_message(
         &self,
         namespace: &str,
         topic_name: &str,
         qos: QoSProfile,
         payload: Bytes,
     ) -> Result<()> {
-        let full_ns = Self::build_full_namespace(&self.node_name, namespace, topic_name);
+        let full_ns = build_full_namespace(self.node_name(), namespace, topic_name);
         let msg = Message {
             topic: full_ns,
             payload,
         };
 
-        let publisher_qos = PeppyMessenger::map_node_qos_to_publisher_qos(qos);
+        let publisher_qos = map_node_qos_to_publisher_qos(qos);
 
         let mut messenger = self.messenger.lock().await;
         messenger
@@ -335,12 +521,8 @@ impl PeppyMessenger {
             .map_err(Error::PeppyMessagingInterface)
     }
 
-    pub async fn expose_service(
-        &self,
-        namespace: &str,
-        service_name: &str,
-    ) -> Result<ServiceEndpoint> {
-        let service_root = Self::build_full_namespace(&self.node_name, namespace, service_name);
+    async fn expose_service(&self, namespace: &str, service_name: &str) -> Result<ServiceEndpoint> {
+        let service_root = build_full_namespace(self.node_name(), namespace, service_name);
         self.create_service_endpoint(service_root).await
     }
 
@@ -367,7 +549,7 @@ impl PeppyMessenger {
         })
     }
 
-    pub async fn poll_service(
+    async fn poll_service(
         &self,
         from_node_name: &str,
         namespace: &str,
@@ -375,10 +557,9 @@ impl PeppyMessenger {
         request_payload: Bytes,
         response_timeout: Duration,
     ) -> Result<Bytes> {
-        let service_root =
-            PeppyMessenger::build_full_namespace(from_node_name, namespace, service_name);
+        let service_root = build_full_namespace(from_node_name, namespace, service_name);
 
-        let request_id = Self::generate_request_id(&self.node_name);
+        let request_id = generate_request_id(self.node_name());
 
         let request_topic = format!("{service_root}/request/{request_id}");
         let response_topic = format!("{service_root}/response/{request_id}");
@@ -440,12 +621,8 @@ impl PeppyMessenger {
         Ok(response.payload)
     }
 
-    pub async fn expose_action(
-        &self,
-        namespace: &str,
-        service_name: &str,
-    ) -> Result<ActionCreation> {
-        let action_root = Self::build_full_namespace(&self.node_name, namespace, service_name);
+    async fn expose_action(&self, namespace: &str, action_name: &str) -> Result<ActionCreation> {
+        let action_root = build_full_namespace(self.node_name(), namespace, action_name);
 
         let goal_service_root = format!("{action_root}/goal");
         let cancel_service_root = format!("{action_root}/cancel");
@@ -467,89 +644,6 @@ impl PeppyMessenger {
             cancel_service,
             feedback_publisher,
             result_service,
-        })
-    }
-
-    pub async fn send_action_goal(
-        &self,
-        server_node: &str,
-        namespace: &str,
-        action_name: &str,
-        goal_payload: Bytes,
-        feedback_qos: QoSProfile,
-        goal_timeout: Duration,
-    ) -> Result<ActionGoalHandle> {
-        let feedback_topic = format!("{action_name}/feedback");
-        let goal_service_name = format!("{action_name}/goal");
-
-        let feedback_subscription = self
-            .receive_topic_msg(server_node, namespace, &feedback_topic, feedback_qos)
-            .await?;
-
-        let goal_response = self
-            .poll_service(
-                server_node,
-                namespace,
-                &goal_service_name,
-                goal_payload,
-                goal_timeout,
-            )
-            .await?;
-
-        Ok(ActionGoalHandle {
-            server_node: server_node.to_string(),
-            namespace: namespace.to_string(),
-            action_name: action_name.to_string(),
-            goal_response,
-            feedback: feedback_subscription,
-        })
-    }
-
-    pub async fn cancel_action_goal(
-        &self,
-        handle: &ActionGoalHandle,
-        cancel_timeout: Duration,
-    ) -> Result<Bytes> {
-        let cancel_service_name = format!("{}/cancel", handle.action_name);
-
-        self.poll_service(
-            &handle.server_node,
-            &handle.namespace,
-            &cancel_service_name,
-            Bytes::new(),
-            cancel_timeout,
-        )
-        .await
-    }
-
-    pub async fn poll_action_result(
-        &self,
-        handle: &ActionGoalHandle,
-        result_request_payload: Bytes,
-        result_timeout: Duration,
-    ) -> Result<Bytes> {
-        let result_service_name = format!("{}/result", handle.action_name);
-
-        self.poll_service(
-            &handle.server_node,
-            &handle.namespace,
-            &result_service_name,
-            result_request_payload,
-            result_timeout,
-        )
-        .await
-        .map_err(|err| match err {
-            Error::ServiceTimeout { .. } => Error::ActionResultTimeout {
-                action_node: handle.server_node.clone(),
-                namespace: handle.namespace.clone(),
-                action_name: handle.action_name.clone(),
-            },
-            Error::ServiceUnreachable { .. } => Error::ActionResultUnreachable {
-                action_node: handle.server_node.clone(),
-                namespace: handle.namespace.clone(),
-                action_name: handle.action_name.clone(),
-            },
-            other => other,
         })
     }
 }

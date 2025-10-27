@@ -1,10 +1,10 @@
 use bytes::Bytes;
 use config::consts::DEFAULT_ZENOH_PORT;
 use config::node::QoSProfile;
-use peppylib::PeppyMessenger;
+use peppylib::TopicMessenger;
 
-async fn connect_messenger(node_name: &str, host: &str, port: u16) -> PeppyMessenger {
-    PeppyMessenger::from_host_port(node_name, host, port)
+async fn connect_messenger(node_name: &str, host: &str, port: u16) -> TopicMessenger {
+    TopicMessenger::from_host_port(node_name, host, port)
         .await
         .unwrap_or_else(|error| {
             panic!(
