@@ -28,7 +28,7 @@ async fn test_setup_node_from_config_file() {
 
     // Invoke setup_node with the generated config file
     let res = peppylib::setup_node(Some(config_path)).await;
-    assert!(res.is_ok());
+    assert!(res.is_ok(), "setup_node failed: {:?}", res);
 
     todo!("Finish")
 }
