@@ -74,7 +74,7 @@
         },
         {
           name: "get_camera_info",
-          // Here we omit the `accept_message_format`. If both `accept_message_format` and `return_message_format`, the service is essentially useless
+          // This service simply returns camera info; no request body is required.
           return_message_format: {
             card_type: "string",
             size: "string",

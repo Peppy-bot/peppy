@@ -225,10 +225,11 @@ impl LanguageGenerator for RustGenerator {
             let fn_name = Ident::new(&(base_name.clone() + "_goal"), Span::call_site());
             let async_fn_name = Ident::new(&(fn_name.to_string() + "_async"), Span::call_site());
             let struct_prefix = format!("{}Goal", to_camel_case(&base_name));
-            let format_artifacts = map_message_format(goal.message_format.as_ref())?;
+            let accept_format_artifacts = map_message_format(goal.accept_message_format.as_ref())?;
+            let return_format_artifacts = map_message_format(goal.return_message_format.as_ref())?;
             let params = collect_function_params(
-                format_artifacts.as_ref(),
-                None,
+                accept_format_artifacts.as_ref(),
+                return_format_artifacts.as_ref(),
                 &struct_prefix,
                 &mut context,
             )?;
@@ -236,7 +237,7 @@ impl LanguageGenerator for RustGenerator {
             let encoding = self.prepare_message_encoding(
                 &fn_key,
                 &struct_prefix,
-                format_artifacts.as_ref(),
+                accept_format_artifacts.as_ref(),
                 &params,
             )?;
 
@@ -277,10 +278,11 @@ impl LanguageGenerator for RustGenerator {
             let fn_name = Ident::new(&(base_name.clone() + "_result"), Span::call_site());
             let async_fn_name = Ident::new(&(fn_name.to_string() + "_async"), Span::call_site());
             let struct_prefix = format!("{}Result", to_camel_case(&base_name));
-            let format_artifacts = map_message_format(result.message_format.as_ref())?;
+            let accept_format_artifacts = map_message_format(result.accept_message_format.as_ref())?;
+            let return_format_artifacts = map_message_format(result.return_message_format.as_ref())?;
             let params = collect_function_params(
-                format_artifacts.as_ref(),
-                None,
+                accept_format_artifacts.as_ref(),
+                return_format_artifacts.as_ref(),
                 &struct_prefix,
                 &mut context,
             )?;
@@ -288,7 +290,7 @@ impl LanguageGenerator for RustGenerator {
             let encoding = self.prepare_message_encoding(
                 &fn_key,
                 &struct_prefix,
-                format_artifacts.as_ref(),
+                accept_format_artifacts.as_ref(),
                 &params,
             )?;
 

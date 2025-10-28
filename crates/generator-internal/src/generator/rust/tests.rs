@@ -60,13 +60,16 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
         {
             name: "move_arm",
             goal_service: {
-              message_format: {
+              accept_message_format: {
                 arm_id: "u16",
                 desired_position: {
                   type: "array",
                   items: "i32",
                   length: 3
                 }
+              },
+              return_message_format: {
+                accepted: "bool"
               }
             },
             feedback_topic: {
@@ -80,12 +83,15 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
               }
             },
             result_service: {
-              message_format: {
+              accept_message_format: {
                 final_position: {
                   type: "array",
                   items: "i32",
                   length: 3
                 }
+              },
+              return_message_format: {
+                success: "bool"
               }
             }
         }

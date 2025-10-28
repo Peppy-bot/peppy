@@ -29,13 +29,16 @@
           name: "move_right_arm",
           goal_service: {
             // Always using "reliable" qos
-            message_format: {
+            accept_message_format: {
               arm_id: "u16",
               desired_position: {
                 type: "array",
                 items: "i32",
                 length: 3
               }
+            },
+            return_message_format: {
+              accepted: "bool"
             }
           },
           feedback_topic: {
@@ -50,12 +53,15 @@
           },
           result_service: {
             // Always using "reliable" qos
-            message_format: {
+            accept_message_format: {
               final_position: {
                 type: "array",
                 items: "i32",
                 length: 3
               }
+            },
+            return_message_format: {
+              success: "bool"
             }
           }
         }
