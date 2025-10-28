@@ -24,8 +24,12 @@ const EXPOSED_SERVICE_EXAMPLE: &str = r#"
         {
           name: "enable_camera",
           qos_profile: "critical",
-          message_format: {
+          accept_message_format: {
             enable: "bool"
+          },
+          return_message_format: {
+            enabled: "bool",
+            error_msg: "string"
           }
         }
     "#;

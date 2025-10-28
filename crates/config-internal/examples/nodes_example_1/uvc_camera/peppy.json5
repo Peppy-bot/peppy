@@ -63,16 +63,19 @@
       ],
       services: [
         {
-          // One instance exposes the service on ns /camera/front/enable_camera and another on /camera/rear/enable_camera
           name: "enable_camera",
-          message_format: {
+          accept_message_format: {
             enable: "bool",
-          }
+          },
+          return_message_format: {
+            enabled: "bool",
+            error_msg: "string" // Won't contain anything if enabled = True
+          },
         },
         {
-          // One instance exposes the service on ns /camera/front/get_camera_info and another on /camera/rear/get_camera_info
           name: "get_camera_info",
-          message_format: {
+          // Here we omit the `accept_message_format`. If both `accept_message_format` and `return_message_format`, the service is essentially useless
+          return_message_format: {
             card_type: "string",
             size: "string",
             interval: "string"
