@@ -333,7 +333,9 @@ pub struct ExposedTopic {
 #[serde(deny_unknown_fields)]
 pub struct ExposedService {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub message_format: Option<MessageFormat>,
+    pub accept_message_format: Option<MessageFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub return_message_format: Option<MessageFormat>,
     #[serde(default)]
     pub name: String,
 }

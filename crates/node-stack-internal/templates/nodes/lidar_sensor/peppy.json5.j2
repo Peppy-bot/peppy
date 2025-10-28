@@ -50,13 +50,16 @@
       services: [
         {
           name: "enable_camera",
-          message_format: {
+          accept_message_format: {
             enable: "bool",
-          }
+          },
+          return_message_format: {
+            enabled: "bool",
+          },
         },
         {
           name: "get_camera_info",
-          message_format: {
+          return_message_format: {
             card_type: "string",
             size: "string",
             interval: "string"

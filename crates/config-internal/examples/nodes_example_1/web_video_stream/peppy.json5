@@ -1,5 +1,7 @@
 // PeppyOS REST API Service Node Configuration
 // This node provides a REST API interface for system interaction
+// This node does not expose anything for other nodes. It exposes a web url (http://localhost:8081/video)
+// to the end user but that is outside of the realm of node-to-node communication
 {
   schema_version: 1,
   manifest: {
@@ -46,8 +48,6 @@
         }
       ],
     },
-    // This node does not expose anything for other nodes. It exposes a web url (http://localhost:8081/video)
-    // to the end user but that is outside of the realm of node-to-node communication
     exposes: {
       topics: [],
       services: [],

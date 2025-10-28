@@ -34,7 +34,7 @@ async fn try_start_zenohd_instance(
 
 #[tokio::main]
 async fn main() {
-    let host = "127.0.0.1";
+    let host = "0.0.0.0";
     let port = DEFAULT_ZENOH_PORT;
 
     println!("Starting zenohd router on tcp/{host}:{port}…");

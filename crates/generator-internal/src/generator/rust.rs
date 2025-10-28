@@ -127,8 +127,12 @@ impl LanguageGenerator for RustGenerator {
 
         let mut context = GenerationContext::default();
         let format_artifacts = map_message_format(topic.message_format.as_ref())?;
-        let params =
-            collect_function_params(format_artifacts.as_ref(), &struct_prefix, &mut context)?;
+        let params = collect_function_params(
+            format_artifacts.as_ref(),
+            None,
+            &struct_prefix,
+            &mut context,
+        )?;
         let encoding = self.prepare_message_encoding(
             &fn_name_str,
             &struct_prefix,
@@ -170,13 +174,18 @@ impl LanguageGenerator for RustGenerator {
         let struct_prefix = to_camel_case(&fn_name_str);
 
         let mut context = GenerationContext::default();
-        let format_artifacts = map_message_format(service.message_format.as_ref())?;
-        let params =
-            collect_function_params(format_artifacts.as_ref(), &struct_prefix, &mut context)?;
+        let accept_format_artifacts = map_message_format(service.accept_message_format.as_ref())?;
+        let return_format_artifacts = map_message_format(service.return_message_format.as_ref())?;
+        let params = collect_function_params(
+            accept_format_artifacts.as_ref(),
+            return_format_artifacts.as_ref(),
+            &struct_prefix,
+            &mut context,
+        )?;
         let encoding = self.prepare_message_encoding(
             &fn_name_str,
             &struct_prefix,
-            format_artifacts.as_ref(),
+            accept_format_artifacts.as_ref(),
             &params,
         )?;
         let struct_tokens = context.into_tokens();
@@ -217,8 +226,12 @@ impl LanguageGenerator for RustGenerator {
             let async_fn_name = Ident::new(&(fn_name.to_string() + "_async"), Span::call_site());
             let struct_prefix = format!("{}Goal", to_camel_case(&base_name));
             let format_artifacts = map_message_format(goal.message_format.as_ref())?;
-            let params =
-                collect_function_params(format_artifacts.as_ref(), &struct_prefix, &mut context)?;
+            let params = collect_function_params(
+                format_artifacts.as_ref(),
+                None,
+                &struct_prefix,
+                &mut context,
+            )?;
             let fn_key = fn_name.to_string();
             let encoding = self.prepare_message_encoding(
                 &fn_key,
@@ -239,8 +252,12 @@ impl LanguageGenerator for RustGenerator {
             let async_fn_name = Ident::new(&(fn_name.to_string() + "_async"), Span::call_site());
             let struct_prefix = format!("{}Feedback", to_camel_case(&base_name));
             let format_artifacts = map_message_format(feedback.message_format.as_ref())?;
-            let params =
-                collect_function_params(format_artifacts.as_ref(), &struct_prefix, &mut context)?;
+            let params = collect_function_params(
+                format_artifacts.as_ref(),
+                None,
+                &struct_prefix,
+                &mut context,
+            )?;
             let fn_key = fn_name.to_string();
             let encoding = self.prepare_message_encoding(
                 &fn_key,
@@ -261,8 +278,12 @@ impl LanguageGenerator for RustGenerator {
             let async_fn_name = Ident::new(&(fn_name.to_string() + "_async"), Span::call_site());
             let struct_prefix = format!("{}Result", to_camel_case(&base_name));
             let format_artifacts = map_message_format(result.message_format.as_ref())?;
-            let params =
-                collect_function_params(format_artifacts.as_ref(), &struct_prefix, &mut context)?;
+            let params = collect_function_params(
+                format_artifacts.as_ref(),
+                None,
+                &struct_prefix,
+                &mut context,
+            )?;
             let fn_key = fn_name.to_string();
             let encoding = self.prepare_message_encoding(
                 &fn_key,
@@ -566,11 +587,17 @@ fn map_message_format(format: Option<&MessageFormat>) -> Result<Option<CapnpSche
 }
 
 fn collect_function_params(
-    artifacts: Option<&CapnpSchemaArtifacts>,
+    accept_format_artifacts: Option<&CapnpSchemaArtifacts>,
+    return_format_artifacts: Option<&CapnpSchemaArtifacts>,
     struct_prefix: &str,
     context: &mut GenerationContext,
 ) -> Result<Vec<FunctionParam>> {
-    let Some(artifacts) = artifacts else {
+    if let Some(return_artifacts) = return_format_artifacts {
+        let response_prefix = format!("{struct_prefix}Response");
+        register_structs_for_format(return_artifacts.message_format(), &response_prefix, context);
+    }
+
+    let Some(artifacts) = accept_format_artifacts else {
         return Ok(Vec::new());
     };
 
@@ -599,6 +626,16 @@ fn collect_function_params(
     }
 
     Ok(params)
+}
+
+fn register_structs_for_format(
+    format: &MessageFormat,
+    struct_prefix: &str,
+    context: &mut GenerationContext,
+) {
+    for (field_name, schema) in &format.0 {
+        let _ = schema_type_to_tokens(schema, struct_prefix, field_name, context);
+    }
 }
 
 fn schema_type_to_tokens(
@@ -1064,7 +1101,12 @@ fn build_async_returning_function(
     let struct_prefix = to_camel_case(&fn_name_str);
     let mut context = GenerationContext::default();
     let format_artifacts = map_message_format(arguments)?;
-    let params = collect_function_params(format_artifacts.as_ref(), &struct_prefix, &mut context)?;
+    let params = collect_function_params(
+        format_artifacts.as_ref(),
+        None,
+        &struct_prefix,
+        &mut context,
+    )?;
 
     let struct_name = if struct_suffix.is_empty() {
         struct_prefix
