@@ -400,7 +400,9 @@ pub struct ActionServiceEndpoint {
     #[serde(default = "default_action_service_qos_profile")]
     pub qos_profile: QoSProfile,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub message_format: Option<MessageFormat>,
+    pub accept_message_format: Option<MessageFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub return_message_format: Option<MessageFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -410,7 +412,8 @@ impl Default for ActionServiceEndpoint {
         Self {
             service_type: None,
             qos_profile: default_action_service_qos_profile(),
-            message_format: None,
+            accept_message_format: None,
+            return_message_format: None,
             name: None,
         }
     }
