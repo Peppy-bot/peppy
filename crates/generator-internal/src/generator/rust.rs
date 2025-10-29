@@ -1055,13 +1055,12 @@ fn build_async_function(
                     capnp::serialize::write_message(&mut buffer, &message)?;
 
                     let message_payload = to_bytes(message)?;
-                    let _node_name = "temporary_node_name";
                     let _ns = "temporary_namespace";
                     let _topic_name = "temporary_topic";
-                    let _messenger = peppylib::TopicMessenger::new(_node_name).await?;
+                    let _messenger = peppylib::TopicMessenger::new().await?;
 
                     // TODO: send_topic_message only applies to topics, `send_service_message` for services and `send_action_message` for actions
-                    // messenger.send_topic_message(node_name, ns, topic_name, qos, message_payload)?;
+                    // messenger.send_topic_message(ns, topic_name, qos, message_payload)?;
                     Ok(())
                 }
             }

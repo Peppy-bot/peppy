@@ -22,7 +22,6 @@ use tracing::error;
 
 /// Internal handle around a messenger session shared by the specialized messengers.
 struct MessengerHandle {
-    node_name: String,
     messenger: Arc<Mutex<Messenger>>,
 }
 
@@ -42,9 +41,9 @@ fn map_node_qos_to_subscriber_qos(qos: QoSProfile) -> SubscriberQoS {
     }
 }
 
-/// Generates a unique request ID using SHA256 hash of node name + timestamp + thread ID
+/// Generates a unique request ID using SHA256 hash of timestamp + thread ID
 /// This ensures each service call has a unique correlation ID
-fn generate_request_id(node_name: &str) -> String {
+fn generate_request_id() -> String {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -52,7 +51,6 @@ fn generate_request_id(node_name: &str) -> String {
     let thread_id = std::thread::current().id();
 
     let mut hasher = Sha256::new();
-    hasher.update(node_name.as_bytes());
     hasher.update(timestamp.to_le_bytes());
     hasher.update(format!("{:?}", thread_id).as_bytes());
 
@@ -60,8 +58,8 @@ fn generate_request_id(node_name: &str) -> String {
     format!("{:x}", result)[..16].to_string() // Use first 16 hex chars for compactness
 }
 
-pub fn build_full_namespace(node_name: &str, namespace: &str, message_type_name: &str) -> String {
-    [node_name, namespace, message_type_name]
+pub fn build_full_namespace(namespace: &str, message_type_name: &str) -> String {
+    [namespace, message_type_name]
         .into_iter()
         .flat_map(|part| part.split('/'))
         .filter(|segment| !segment.is_empty())
@@ -248,7 +246,6 @@ impl TopicPublisher {
 }
 
 pub struct ActionGoalHandle {
-    server_node: String,
     namespace: String,
     action_name: String,
     goal_response: Bytes,
@@ -274,25 +271,24 @@ pub struct ActionCreation {
 }
 
 impl TopicMessenger {
-    pub async fn new(node_name: &str) -> Result<Self> {
-        let handle = MessengerHandle::new(node_name).await?;
+    pub async fn new() -> Result<Self> {
+        let handle = MessengerHandle::new().await?;
         Ok(Self { handle })
     }
 
-    pub async fn from_host_port(node_name: &str, host: &str, port: u16) -> Result<Self> {
-        let handle = MessengerHandle::from_host_port(node_name, host, port).await?;
+    pub async fn from_host_port(host: &str, port: u16) -> Result<Self> {
+        let handle = MessengerHandle::from_host_port(host, port).await?;
         Ok(Self { handle })
     }
 
     pub async fn subscribe(
         &self,
-        from_node_name: &str,
         namespace: &str,
         topic_name: &str,
         qos: QoSProfile,
     ) -> Result<Subscription> {
         self.handle
-            .receive_topic_msg(from_node_name, namespace, topic_name, qos)
+            .receive_topic_msg(namespace, topic_name, qos)
             .await
     }
 
@@ -310,13 +306,13 @@ impl TopicMessenger {
 }
 
 impl ServiceMessenger {
-    pub async fn new(node_name: &str) -> Result<Self> {
-        let handle = MessengerHandle::new(node_name).await?;
+    pub async fn new() -> Result<Self> {
+        let handle = MessengerHandle::new().await?;
         Ok(Self { handle })
     }
 
-    pub async fn from_host_port(node_name: &str, host: &str, port: u16) -> Result<Self> {
-        let handle = MessengerHandle::from_host_port(node_name, host, port).await?;
+    pub async fn from_host_port(host: &str, port: u16) -> Result<Self> {
+        let handle = MessengerHandle::from_host_port(host, port).await?;
         Ok(Self { handle })
     }
 
@@ -326,32 +322,25 @@ impl ServiceMessenger {
 
     pub async fn poll(
         &self,
-        from_node_name: &str,
         namespace: &str,
         service_name: &str,
         request_payload: Bytes,
         response_timeout: Duration,
     ) -> Result<Bytes> {
         self.handle
-            .poll_service(
-                from_node_name,
-                namespace,
-                service_name,
-                request_payload,
-                response_timeout,
-            )
+            .poll_service(namespace, service_name, request_payload, response_timeout)
             .await
     }
 }
 
 impl ActionMessenger {
-    pub async fn new(node_name: &str) -> Result<Self> {
-        let handle = MessengerHandle::new(node_name).await?;
+    pub async fn new() -> Result<Self> {
+        let handle = MessengerHandle::new().await?;
         Ok(Self { handle })
     }
 
-    pub async fn from_host_port(node_name: &str, host: &str, port: u16) -> Result<Self> {
-        let handle = MessengerHandle::from_host_port(node_name, host, port).await?;
+    pub async fn from_host_port(host: &str, port: u16) -> Result<Self> {
+        let handle = MessengerHandle::from_host_port(host, port).await?;
         Ok(Self { handle })
     }
 
@@ -361,7 +350,6 @@ impl ActionMessenger {
 
     pub async fn send_goal(
         &self,
-        server_node: &str,
         namespace: &str,
         action_name: &str,
         goal_payload: Bytes,
@@ -373,22 +361,15 @@ impl ActionMessenger {
 
         let feedback_subscription = self
             .handle
-            .receive_topic_msg(server_node, namespace, &feedback_topic, feedback_qos)
+            .receive_topic_msg(namespace, &feedback_topic, feedback_qos)
             .await?;
 
         let goal_response = self
             .handle
-            .poll_service(
-                server_node,
-                namespace,
-                &goal_service_name,
-                goal_payload,
-                goal_timeout,
-            )
+            .poll_service(namespace, &goal_service_name, goal_payload, goal_timeout)
             .await?;
 
         Ok(ActionGoalHandle {
-            server_node: server_node.to_string(),
             namespace: namespace.to_string(),
             action_name: action_name.to_string(),
             goal_response,
@@ -405,7 +386,6 @@ impl ActionMessenger {
 
         self.handle
             .poll_service(
-                &handle.server_node,
                 &handle.namespace,
                 &cancel_service_name,
                 Bytes::new(),
@@ -424,7 +404,6 @@ impl ActionMessenger {
 
         self.handle
             .poll_service(
-                &handle.server_node,
                 &handle.namespace,
                 &result_service_name,
                 result_request_payload,
@@ -433,12 +412,10 @@ impl ActionMessenger {
             .await
             .map_err(|err| match err {
                 Error::ServiceTimeout { .. } => Error::ActionResultTimeout {
-                    action_node: handle.server_node.clone(),
                     namespace: handle.namespace.clone(),
                     action_name: handle.action_name.clone(),
                 },
                 Error::ServiceUnreachable { .. } => Error::ActionResultUnreachable {
-                    action_node: handle.server_node.clone(),
                     namespace: handle.namespace.clone(),
                     action_name: handle.action_name.clone(),
                 },
@@ -448,20 +425,19 @@ impl ActionMessenger {
 }
 
 impl MessengerHandle {
-    async fn new(node_name: &str) -> Result<Self> {
+    async fn new() -> Result<Self> {
         let adapter = ZenohAdapter::default();
-        Self::from_adapter(node_name, adapter).await
+        Self::from_adapter(adapter).await
     }
 
-    async fn from_host_port(node_name: &str, host: &str, port: u16) -> Result<Self> {
+    async fn from_host_port(host: &str, port: u16) -> Result<Self> {
         let adapter = ZenohAdapter::from_host_port(ZenohNetProtocol::Tcp, host, port);
-        Self::from_adapter(node_name, adapter).await
+        Self::from_adapter(adapter).await
     }
 
-    async fn from_adapter(node_name: &str, adapter: ZenohAdapter) -> Result<Self> {
+    async fn from_adapter(adapter: ZenohAdapter) -> Result<Self> {
         let messenger = Self::new_session(adapter).await?;
         Ok(Self {
-            node_name: String::from(node_name),
             messenger: Arc::new(Mutex::new(messenger)),
         })
     }
@@ -476,18 +452,13 @@ impl MessengerHandle {
         Ok(messenger)
     }
 
-    fn node_name(&self) -> &str {
-        &self.node_name
-    }
-
     async fn receive_topic_msg(
         &self,
-        from_node_name: &str,
         namespace: &str,
         topic_name: &str,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        let topic_path = build_full_namespace(from_node_name, namespace, topic_name);
+        let topic_path = build_full_namespace(namespace, topic_name);
         let subscriber_qos = map_node_qos_to_subscriber_qos(qos);
 
         let subscription = {
@@ -506,7 +477,7 @@ impl MessengerHandle {
         qos: QoSProfile,
         payload: Bytes,
     ) -> Result<()> {
-        let full_ns = build_full_namespace(self.node_name(), namespace, topic_name);
+        let full_ns = build_full_namespace(namespace, topic_name);
         let msg = Message {
             topic: full_ns,
             payload,
@@ -522,7 +493,7 @@ impl MessengerHandle {
     }
 
     async fn expose_service(&self, namespace: &str, service_name: &str) -> Result<ServiceEndpoint> {
-        let service_root = build_full_namespace(self.node_name(), namespace, service_name);
+        let service_root = build_full_namespace(namespace, service_name);
         self.create_service_endpoint(service_root).await
     }
 
@@ -551,15 +522,14 @@ impl MessengerHandle {
 
     async fn poll_service(
         &self,
-        from_node_name: &str,
         namespace: &str,
         service_name: &str,
         request_payload: Bytes,
         response_timeout: Duration,
     ) -> Result<Bytes> {
-        let service_root = build_full_namespace(from_node_name, namespace, service_name);
+        let service_root = build_full_namespace(namespace, service_name);
 
-        let request_id = generate_request_id(self.node_name());
+        let request_id = generate_request_id();
 
         let request_topic = format!("{service_root}/request/{request_id}");
         let response_topic = format!("{service_root}/response/{request_id}");
@@ -604,13 +574,11 @@ impl MessengerHandle {
 
                 if has_matching_subscribers {
                     return Err(Error::ServiceTimeout {
-                        service_node: from_node_name.to_string(),
                         namespace: namespace.to_string(),
                         service_name: service_name.to_string(),
                     });
                 } else {
                     return Err(Error::ServiceUnreachable {
-                        service_node: from_node_name.to_string(),
                         namespace: namespace.to_string(),
                         service_name: service_name.to_string(),
                     });
@@ -622,7 +590,7 @@ impl MessengerHandle {
     }
 
     async fn expose_action(&self, namespace: &str, action_name: &str) -> Result<ActionCreation> {
-        let action_root = build_full_namespace(self.node_name(), namespace, action_name);
+        let action_root = build_full_namespace(namespace, action_name);
 
         let goal_service_root = format!("{action_root}/goal");
         let cancel_service_root = format!("{action_root}/cancel");

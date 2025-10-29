@@ -21,35 +21,23 @@ pub enum Error {
     PeppyMessagingInterface(#[from] pmi::PeppyMessagingInterfaceError),
 
     // -- topics/services/actions errors
-    #[error(
-        "service '{service_name}' in namespace '{namespace}' on node '{service_node}' is unreachable"
-    )]
+    #[error("service '{service_name}' in namespace '{namespace}' is unreachable")]
     ServiceUnreachable {
-        service_node: String,
         namespace: String,
         service_name: String,
     },
-    #[error(
-        "service '{service_name}' in namespace '{namespace}' on node '{service_node}' has timed out"
-    )]
+    #[error("service '{service_name}' in namespace '{namespace}' has timed out")]
     ServiceTimeout {
-        service_node: String,
         namespace: String,
         service_name: String,
     },
-    #[error(
-        "action '{action_name}' in namespace '{namespace}' on node '{action_node}' has timed out waiting for result"
-    )]
+    #[error("action '{action_name}' in namespace '{namespace}' has timed out waiting for result")]
     ActionResultTimeout {
-        action_node: String,
         namespace: String,
         action_name: String,
     },
-    #[error(
-        "action '{action_name}' in namespace '{namespace}' on node '{action_node}' is unreachable for result"
-    )]
+    #[error("action '{action_name}' in namespace '{namespace}' is unreachable for result")]
     ActionResultUnreachable {
-        action_node: String,
         namespace: String,
         action_name: String,
     },
