@@ -11,7 +11,7 @@ const NODE_CONFIG_FILE: &str = "peppy.json5";
 pub enum InitNodeError {
     OutOfSyncNode { message: String },
     RuntimeInit(std::io::Error),
-    Setup(peppylib::ControlError),
+    Setup(peppylib::PeppyError),
 }
 
 pub type InitNodeResult<T> = Result<T, InitNodeError>;
