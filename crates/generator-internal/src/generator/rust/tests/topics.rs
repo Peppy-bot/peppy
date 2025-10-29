@@ -1,6 +1,28 @@
 use super::*;
 use config::node::{ExposedTopic, SubscribedTopic};
 
+const EXPOSED_TOPIC_EXAMPLE: &str = r#"
+{
+  name: "push_frame",
+  qos_profile: "sensor_data",
+  message_format: {
+    header: {
+    type: "object",
+    stamp: "time",
+    frame_id: "u32"
+  },
+  encoding: "string",
+    width: "u32",
+    height: "u32",
+    image: {
+      type: "array",
+      items: "u8",
+      length: 3
+    }
+  }
+}
+"#;
+
 #[test]
 fn exposed_topic_gen_calling_code() {
     let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();

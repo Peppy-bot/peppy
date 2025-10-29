@@ -3,6 +3,168 @@ use config::node::{ExposedAction, ExposedService, ExposedTopic};
 use std::{fs, process::Command};
 use tempfile::TempDir;
 
+const EXPOSED_TOPIC_EXAMPLE: &str = r#"
+{
+  name: "push_frame",
+  qos_profile: "sensor_data",
+  message_format: {
+    header: {
+    type: "object",
+    stamp: "time",
+    frame_id: "u32"
+  },
+  encoding: "string",
+    width: "u32",
+    height: "u32",
+    image: {
+      type: "array",
+      items: "u8",
+      length: 3
+    }
+  }
+}
+"#;
+
+const EXPOSED_ACTION_EXAMPLE: &str = r#"
+{
+  name: "move_arm",
+  goal_service: {
+    accept_message_format: {
+      arm_id: "u16",
+      desired_position: {
+        type: "array",
+        items: "i32",
+        length: 3
+      }
+    },
+    return_message_format: {
+      accepted: "bool"
+    }
+  },
+  feedback_topic: {
+    qos_profile: "sensor_data",
+    message_format: {
+      new_position: {
+        type: "array",
+        items: "i32",
+        length: 3
+      }
+    }
+  },
+  result_service: {
+    accept_message_format: {
+      final_position: {
+        type: "array",
+        items: "i32",
+        length: 3
+      }
+    },
+    return_message_format: {
+      success: "bool"
+    }
+  }
+}
+"#;
+
+const SUBSCRIBED_TOPIC_EXAMPLE: &str = r#"
+{
+  node: "uvc_camera",
+  name: "stream",
+  tag: "0.1.0",
+  callback: "on_video_frame_received"
+}
+"#;
+
+const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
+{
+  header: {
+    type: "object",
+    stamp: "time",
+    frame_id: "u32"
+  },
+  encoding: "string",
+  width: "u32",
+  height: "u32",
+  image: {
+    type: "array",
+    items: "u8",
+    length: 3
+  }
+}
+"#;
+
+const SUBSCRIBED_SERVICE_EXAMPLE: &str = r#"
+{
+  node: "uvc_camera",
+  name: "get_camera_info",
+  tag: "0.1.0",
+  callback: "on_get_camera_info"
+}
+"#;
+
+const SUBSCRIBED_ACTION_EXAMPLE: &str = r#"
+{
+  node: "brain",
+  name: "move_arm",
+  tag: "0.1.0",
+  feedback_callback: "on_move_arm_feedback",
+  results_callback: "on_move_arm_result"
+}
+"#;
+
+const SUBSCRIBED_ACTION_FEEDBACK_FORMAT: &str = r#"
+{
+  new_position: {
+    type: "array",
+    items: "i32",
+    length: 3
+  }
+}
+"#;
+
+const SUBSCRIBED_ACTION_RESULT_FORMAT: &str = r#"
+{
+  final_position: {
+    type: "array",
+    items: "i32",
+    length: 3
+  }
+}
+"#;
+
+const SUBSCRIBED_ACTION_GOAL_FORMAT: &str = r#"
+{
+  arm_id: "u16",
+  desired_position: {
+    type: "array",
+    items: "i32",
+    length: 3
+  }
+}
+"#;
+
+const SUBSCRIBED_SERVICE_FORMAT_EXAMPLE: &str = r#"
+{
+  card_type: "string",
+  size: "string",
+  interval: "string"
+}
+"#;
+
+const EXPOSED_SERVICE_EXAMPLE: &str = r#"
+{
+  name: "enable_camera",
+  qos_profile: "critical",
+  accept_message_format: {
+    enable: "bool"
+  },
+  return_message_format: {
+    enabled: "bool",
+    error_msg: "string"
+  }
+}
+"#;
+
 #[test]
 fn create_lib_basic_structure() {
     let temp_dir = TempDir::new().unwrap();
