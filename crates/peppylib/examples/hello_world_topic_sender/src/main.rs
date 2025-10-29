@@ -21,7 +21,7 @@ async fn main() {
     let qos = QoSProfile::Reliable;
 
     // Those properties are found in the peppy_config.json5 `deployments` array
-    let ns = "/hello_ns";
+    let ns = "hello_ns";
 
     // Create a messenger for the sending node.
     let sender_node = connect_messenger(sender_node_name, "127.0.0.1", DEFAULT_ZENOH_PORT).await;

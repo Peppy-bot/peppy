@@ -2,6 +2,68 @@ use super::*;
 
 use config::node::{ExposedAction, SubscribedAction};
 
+const EXPOSED_ACTION_EXAMPLE: &str = r#"
+{
+  name: "move_arm",
+  goal_service: {
+    accept_message_format: {
+      arm_id: "u16",
+      desired_position: {
+        type: "array",
+        items: "i32",
+        length: 3
+      }
+    },
+    return_message_format: {
+      accepted: "bool"
+    }
+  },
+  feedback_topic: {
+    qos_profile: "sensor_data",
+    message_format: {
+      new_position: {
+        type: "array",
+        items: "i32",
+        length: 3
+      }
+    }
+  },
+  result_service: {
+    accept_message_format: {
+      final_position: {
+        type: "array",
+        items: "i32",
+        length: 3
+      }
+    },
+    return_message_format: {
+      success: "bool"
+    }
+  }
+}
+"#;
+
+const SUBSCRIBED_ACTION_EXAMPLE: &str = r#"
+{
+  node: "brain",
+  name: "move_arm",
+  tag: "0.1.0",
+  feedback_callback: "on_move_arm_feedback",
+  results_callback: "on_move_arm_result"
+}
+"#;
+
+const SUBSCRIBED_ACTION_GOAL_FORMAT: &str = r#"
+{
+  arm_id: "u16",
+  desired_position: {
+    type: "array",
+    items: "i32",
+    length: 3
+  }
+}
+"#;
+
 #[test]
 fn exposed_action_gen_calling_code() {
     let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();

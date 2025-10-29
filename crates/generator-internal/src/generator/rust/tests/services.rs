@@ -1,6 +1,20 @@
 use super::*;
 use config::node::{ExposedService, SubscribedService};
 
+const EXPOSED_SERVICE_EXAMPLE: &str = r#"
+{
+  name: "enable_camera",
+  qos_profile: "critical",
+  accept_message_format: {
+    enable: "bool"
+  },
+  return_message_format: {
+    enabled: "bool",
+    error_msg: "string"
+  }
+}
+"#;
+
 #[test]
 fn exposed_service_gen_calling_code() {
     let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
