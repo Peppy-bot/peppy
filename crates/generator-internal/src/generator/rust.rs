@@ -278,8 +278,10 @@ impl LanguageGenerator for RustGenerator {
             let fn_name = Ident::new(&(base_name.clone() + "_result"), Span::call_site());
             let async_fn_name = Ident::new(&(fn_name.to_string() + "_async"), Span::call_site());
             let struct_prefix = format!("{}Result", to_camel_case(&base_name));
-            let accept_format_artifacts = map_message_format(result.accept_message_format.as_ref())?;
-            let return_format_artifacts = map_message_format(result.return_message_format.as_ref())?;
+            let accept_format_artifacts =
+                map_message_format(result.accept_message_format.as_ref())?;
+            let return_format_artifacts =
+                map_message_format(result.return_message_format.as_ref())?;
             let params = collect_function_params(
                 accept_format_artifacts.as_ref(),
                 return_format_artifacts.as_ref(),
@@ -875,27 +877,14 @@ fn generate_time_assignment(
     value_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> TokenStream {
-    let seconds_ident = names.next("seconds");
-    let nanos_ident = names.next("nanos");
+    let timestamp_ident = names.next("timestamp");
     let builder_ident = names.next("timestamp_builder");
 
     quote! {
-        let (#seconds_ident, #nanos_ident) = match #value_expr.duration_since(::std::time::UNIX_EPOCH) {
-            Ok(duration) => (duration.as_secs() as i64, duration.subsec_nanos()),
-            Err(err) => {
-                let duration = err.duration();
-                let secs = duration.as_secs() as i64;
-                let nanos = duration.subsec_nanos();
-                if nanos == 0 {
-                    (-secs, 0)
-                } else {
-                    (-secs - 1, 1_000_000_000u32 - nanos)
-                }
-            }
-        };
+        let #timestamp_ident = config::convert_time(#value_expr);
         let mut #builder_ident = #builder_expr.reborrow().#init_method();
-        #builder_ident.set_sec(#seconds_ident);
-        #builder_ident.set_nsec(#nanos_ident);
+        #builder_ident.set_sec(#timestamp_ident.sec);
+        #builder_ident.set_nsec(#timestamp_ident.nsec);
     }
 }
 
