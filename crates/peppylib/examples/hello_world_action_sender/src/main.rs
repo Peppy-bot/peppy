@@ -6,19 +6,18 @@ use peppylib::{ActionMessenger, PeppyError};
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
 
-const ACTION_NODE_NAME: &str = "hello_receiver";
 const ACTION_NAME: &str = "hello_action";
 const NAMESPACE: &str = "/hello_ns";
 const FEEDBACK_TIMEOUT: Duration = Duration::from_secs(5);
 const GOAL_TIMEOUT: Duration = Duration::from_secs(3);
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(3);
 
-async fn connect_messenger(node_name: &str, host: &str, port: u16) -> ActionMessenger {
-    ActionMessenger::from_host_port(node_name, host, port)
+async fn connect_messenger(host: &str, port: u16) -> ActionMessenger {
+    ActionMessenger::from_host_port(host, port)
         .await
         .unwrap_or_else(|error| {
             panic!(
-                "failed to create action messenger for node `{node_name}` on {host}:{port}: \
+                "failed to create action messenger on {host}:{port}: \
                  {error:?}.\n Did you start a zenohd server with the `zenohd_simple` example?"
             )
         })
@@ -61,8 +60,7 @@ async fn receive_feedback(handle: &mut ActionGoalHandle, goal_label: &str) {
 
 #[tokio::main]
 async fn main() {
-    let sender_node =
-        connect_messenger("hello_action_client", "127.0.0.1", DEFAULT_ZENOH_PORT).await;
+    let sender_node = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
 
     println!(
         "{}",
@@ -72,7 +70,6 @@ async fn main() {
     );
     let mut goal_handle = sender_node
         .send_goal(
-            ACTION_NODE_NAME,
             NAMESPACE,
             ACTION_NAME,
             Bytes::from_static(b"Hello from the action client"),
@@ -114,7 +111,6 @@ async fn main() {
     println!("{}", "[GOAL] Sending cancellable goal...".bold().green());
     let mut cancellable_goal_handle = sender_node
         .send_goal(
-            ACTION_NODE_NAME,
             NAMESPACE,
             ACTION_NAME,
             Bytes::from_static(b"This goal will be cancelled"),

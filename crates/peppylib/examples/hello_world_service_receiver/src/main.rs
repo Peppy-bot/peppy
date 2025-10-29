@@ -8,12 +8,12 @@ use tokio::signal;
 const SERVICE_NAME: &str = "hello_service";
 const NAMESPACE: &str = "/hello_ns";
 
-async fn connect_messenger(node_name: &str, host: &str, port: u16) -> ServiceMessenger {
-    ServiceMessenger::from_host_port(node_name, host, port)
+async fn connect_messenger(host: &str, port: u16) -> ServiceMessenger {
+    ServiceMessenger::from_host_port(host, port)
         .await
         .unwrap_or_else(|error| {
             panic!(
-                "failed to create service messenger for node `{node_name}` on {host}:{port}: \
+                "failed to create service messenger on {host}:{port}: \
                  {error:?}. Did you start a zenohd server with the `zenohd_simple` example?"
             )
         })
@@ -61,7 +61,7 @@ fn handle_service_result(result: PeppyResult<bool>) -> bool {
 #[tokio::main]
 async fn main() {
     // Create a messenger for the receiving node.
-    let receiver_node = connect_messenger("hello_receiver", "127.0.0.1", DEFAULT_ZENOH_PORT).await;
+    let receiver_node = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
 
     let mut service = receiver_node
         .listen(NAMESPACE, SERVICE_NAME)

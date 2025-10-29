@@ -155,16 +155,16 @@ impl TestRouterContext {
         (self.host.clone(), self.port)
     }
 
-    async fn topic_messenger(&self, node_name: &str) -> TopicMessenger {
-        connect_topic_messenger(node_name, self.host(), self.port()).await
+    async fn topic_messenger(&self) -> TopicMessenger {
+        connect_topic_messenger(self.host(), self.port()).await
     }
 
-    async fn service_messenger(&self, node_name: &str) -> ServiceMessenger {
-        connect_service_messenger(node_name, self.host(), self.port()).await
+    async fn service_messenger(&self) -> ServiceMessenger {
+        connect_service_messenger(self.host(), self.port()).await
     }
 
-    async fn action_messenger(&self, node_name: &str) -> ActionMessenger {
-        connect_action_messenger(node_name, self.host(), self.port()).await
+    async fn action_messenger(&self) -> ActionMessenger {
+        connect_action_messenger(self.host(), self.port()).await
     }
 
     async fn shutdown(mut self) {
@@ -175,43 +175,40 @@ impl TestRouterContext {
     }
 }
 
-async fn connect_topic_messenger(node_name: &str, host: &str, port: u16) -> TopicMessenger {
-    TopicMessenger::from_host_port(node_name, host, port)
+async fn connect_topic_messenger(host: &str, port: u16) -> TopicMessenger {
+    TopicMessenger::from_host_port(host, port)
         .await
         .unwrap_or_else(|error| {
-            panic!("failed to create topic messenger for node `{node_name}`: {error:?}")
+            panic!("failed to create topic messenger on {host}:{port}: {error:?}")
         })
 }
 
-async fn connect_service_messenger(node_name: &str, host: &str, port: u16) -> ServiceMessenger {
-    ServiceMessenger::from_host_port(node_name, host, port)
+async fn connect_service_messenger(host: &str, port: u16) -> ServiceMessenger {
+    ServiceMessenger::from_host_port(host, port)
         .await
         .unwrap_or_else(|error| {
-            panic!("failed to create service messenger for node `{node_name}`: {error:?}")
+            panic!("failed to create service messenger on {host}:{port}: {error:?}")
         })
 }
 
-async fn connect_action_messenger(node_name: &str, host: &str, port: u16) -> ActionMessenger {
-    ActionMessenger::from_host_port(node_name, host, port)
+async fn connect_action_messenger(host: &str, port: u16) -> ActionMessenger {
+    ActionMessenger::from_host_port(host, port)
         .await
         .unwrap_or_else(|error| {
-            panic!("failed to create action messenger for node `{node_name}`: {error:?}")
+            panic!("failed to create action messenger on {host}:{port}: {error:?}")
         })
 }
 
 #[test]
 fn build_topic_path_removes_redundant_separators() {
-    let path = super::build_full_namespace("uvc_camera", "/camera/rear/", "/video_frame");
-    assert_eq!(path, "uvc_camera/camera/rear/video_frame");
+    let path = super::build_full_namespace("/camera/rear/", "/video_frame");
+    assert_eq!(path, "camera/rear/video_frame");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn topic_publish_subscribe() {
     let router = TestRouterContext::start().await;
 
-    // Those attributes are found in the peppy.json5 `exposes`
-    let sender_node_name = "uvc_camera";
-    let receiver_node = "vision_pipeline";
     let topic_name = "video_frame";
     let qos = QoSProfile::Reliable;
 
@@ -220,11 +217,11 @@ async fn topic_publish_subscribe() {
 
     let payload = Bytes::from_static(b"A message");
 
-    let sender_node = router.topic_messenger(sender_node_name).await;
-    let receiver_node = router.topic_messenger(receiver_node).await;
+    let sender_node = router.topic_messenger().await;
+    let receiver_node = router.topic_messenger().await;
 
     let mut subscription = receiver_node
-        .subscribe(&sender_node_name, ns, topic_name, qos.clone())
+        .subscribe(ns, topic_name, qos.clone())
         .await
         .expect("Should subscribe to the topic");
 
@@ -239,7 +236,7 @@ async fn topic_publish_subscribe() {
         .await
         .expect("Should receive the published message");
 
-    let expected_topic = super::build_full_namespace(&sender_node_name, ns, topic_name);
+    let expected_topic = super::build_full_namespace(ns, topic_name);
     assert_eq!(received.topic, expected_topic);
     assert_eq!(received.payload, payload);
 
@@ -250,9 +247,6 @@ async fn topic_publish_subscribe() {
 async fn topic_publish_reliable_5000hz_messages() {
     let router = TestRouterContext::start().await;
 
-    // Those attributes are found in the message definition `exposes`
-    let sender_node_name = "uvc_camera";
-    let receiver_node = "vision_pipeline";
     let topic_name = "video_frame";
     // This should not let any message be discarded
     let qos = QoSProfile::Reliable;
@@ -260,15 +254,15 @@ async fn topic_publish_reliable_5000hz_messages() {
     // Those properties are found in the `deployments` array
     let ns = "/camera/rear";
 
-    let sender_node = router.topic_messenger(sender_node_name).await;
-    let receiver_node = router.topic_messenger(receiver_node).await;
+    let sender_node = router.topic_messenger().await;
+    let receiver_node = router.topic_messenger().await;
 
     let mut subscription = receiver_node
-        .subscribe(&sender_node_name, ns, topic_name, qos.clone())
+        .subscribe(ns, topic_name, qos.clone())
         .await
         .expect("Should subscribe to the topic");
 
-    let expected_topic = super::build_full_namespace(&sender_node_name, ns, topic_name);
+    let expected_topic = super::build_full_namespace(ns, topic_name);
     let message_count = 5000;
     let mut message_ids: Vec<u32> = (0..message_count as u32).collect();
     message_ids.shuffle(&mut thread_rng());
@@ -328,7 +322,6 @@ async fn topic_publish_reliable_5000hz_messages() {
 async fn service_communication() {
     let router = TestRouterContext::start().await;
 
-    let service_node = "uvc_camera";
     let service_name = "enable_camera";
     let namespace = "/camera";
 
@@ -340,13 +333,13 @@ async fn service_communication() {
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_handle = {
-        let service_expose_node = router.service_messenger(service_node).await;
+        let service_expose_node = router.service_messenger().await;
         let mut service = service_expose_node
             .listen(namespace, service_name)
             .await
             .expect("service should start");
 
-        let service_root = super::build_full_namespace(service_node, namespace, service_name);
+        let service_root = super::build_full_namespace(namespace, service_name);
         let expected_request_topic = format!("{service_root}/request");
 
         let request_payload = request_payload.clone();
@@ -380,14 +373,12 @@ async fn service_communication() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        let caller_node_name = "vision_pipeline";
         service_ready_rx
             .await
             .expect("service should signal readiness");
-        let caller_messenger = router.service_messenger(caller_node_name).await;
+        let caller_messenger = router.service_messenger().await;
         let response = caller_messenger
             .poll(
-                service_node,
                 namespace,
                 service_name,
                 request_payload.clone(),
@@ -418,18 +409,15 @@ async fn service_communication() {
 async fn service_communication_fails_not_started() {
     let router = TestRouterContext::start().await;
 
-    let service_node = "uvc_camera";
-    let caller_node_name = "vision_pipeline";
     let service_name = "enable_camera";
     let namespace = "/camera";
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     let err = {
-        let caller_node = router.service_messenger(caller_node_name).await;
+        let caller_node = router.service_messenger().await;
 
         caller_node
             .poll(
-                service_node,
                 namespace,
                 service_name,
                 Bytes::from_static(b"enable=true"),
@@ -441,11 +429,9 @@ async fn service_communication_fails_not_started() {
 
     match err {
         Error::ServiceUnreachable {
-            service_node: err_service_node,
             namespace: err_namespace,
             service_name: err_service_name,
         } => {
-            assert_eq!(err_service_node, service_node);
             assert_eq!(err_namespace, namespace);
             assert_eq!(err_service_name, service_name);
         }
@@ -462,8 +448,6 @@ async fn service_communication_fails_not_started() {
 async fn service_communication_fails_timeout() {
     let router = TestRouterContext::start().await;
 
-    let service_node = "uvc_camera";
-    let caller_node = "vision_pipeline";
     let service_name = "enable_camera";
     let namespace = "/camera";
 
@@ -474,11 +458,11 @@ async fn service_communication_fails_timeout() {
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_handle = {
-        let service_root = super::build_full_namespace(service_node, namespace, service_name);
+        let service_root = super::build_full_namespace(namespace, service_name);
         let expected_request_topic = format!("{service_root}/request");
         let response_delay = Duration::from_millis(200);
 
-        let service_expose_node = router.service_messenger(service_node).await;
+        let service_expose_node = router.service_messenger().await;
         let mut service = service_expose_node
             .listen(namespace, service_name)
             .await
@@ -529,11 +513,10 @@ async fn service_communication_fails_timeout() {
         let caller_success_timeout = Duration::from_millis(500);
         let caller_failure_timeout = Duration::from_millis(50);
 
-        let caller_node = router.service_messenger(caller_node).await;
+        let caller_node = router.service_messenger().await;
 
         let success_response = caller_node
             .poll(
-                service_node,
                 namespace,
                 service_name,
                 request_payload.clone(),
@@ -550,7 +533,6 @@ async fn service_communication_fails_timeout() {
 
         caller_node
             .poll(
-                service_node,
                 namespace,
                 service_name,
                 request_payload,
@@ -561,7 +543,6 @@ async fn service_communication_fails_timeout() {
     };
 
     let Error::ServiceTimeout {
-        service_node: err_service_node,
         namespace: err_namespace,
         service_name: err_service_name,
     } = &err
@@ -572,7 +553,6 @@ async fn service_communication_fails_timeout() {
         );
     };
 
-    assert_eq!(err_service_node.as_str(), service_node);
     assert_eq!(err_namespace.as_str(), namespace);
     assert_eq!(err_service_name.as_str(), service_name);
 
@@ -595,7 +575,6 @@ async fn service_handle_request_processes_multiple_messages() {
     let router = TestRouterContext::start().await;
     let (host, port) = router.connection_target();
 
-    let service_node = "uvc_camera";
     let service_name = "enable_camera";
     let namespace = "/camera";
     let expected_requests = 500;
@@ -609,7 +588,7 @@ async fn service_handle_request_processes_multiple_messages() {
         let host = host.clone();
         let service_ready_tx = Some(service_ready_tx);
         tokio::spawn(async move {
-            let service_expose_node = connect_service_messenger(service_node, &host, port).await;
+            let service_expose_node = connect_service_messenger(&host, port).await;
 
             let mut service = service_expose_node
                 .listen(namespace, service_name)
@@ -639,13 +618,12 @@ async fn service_handle_request_processes_multiple_messages() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        let caller_node = router.service_messenger("vision_pipeline").await;
+        let caller_node = router.service_messenger().await;
 
         for i in 0..expected_requests {
             let request_payload = Bytes::from(format!("enable=true;request={i}").into_bytes());
             let response = caller_node
                 .poll(
-                    service_node,
                     namespace,
                     service_name,
                     request_payload.clone(),
@@ -680,7 +658,6 @@ async fn single_service_communication_multiple_polls_and_callers() {
     let router = TestRouterContext::start().await;
     let (host, port) = router.connection_target();
 
-    let service_node = "uvc_camera";
     let service_name = "enable_camera";
     let namespace = "/camera";
 
@@ -694,14 +671,14 @@ async fn single_service_communication_multiple_polls_and_callers() {
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_handle: tokio::task::JoinHandle<Result<(), Error>> = {
-        let service_expose_node = router.service_messenger(service_node).await;
+        let service_expose_node = router.service_messenger().await;
 
         let mut service = service_expose_node
             .listen(namespace, service_name)
             .await
             .expect("service should start");
 
-        let service_root = super::build_full_namespace(service_node, namespace, service_name);
+        let service_root = super::build_full_namespace(namespace, service_name);
 
         let expected_request_topic = format!("{service_root}/request");
         let expected_request_topic = expected_request_topic.clone();
@@ -765,18 +742,16 @@ async fn single_service_communication_multiple_polls_and_callers() {
         caller_requests.shuffle(&mut rng);
 
         let mut handles = Vec::with_capacity(caller_count);
-        for (caller_node_name, mut requests) in caller_requests {
+        for (caller_id, mut requests) in caller_requests {
             requests.shuffle(&mut rng);
             let host = host.clone();
             let poll_service = tokio::spawn(async move {
-                let caller_messenger =
-                    connect_service_messenger(&caller_node_name, &host, port).await;
+                let caller_messenger = connect_service_messenger(&host, port).await;
 
                 let mut caller_results = Vec::with_capacity(requests.len());
                 for (request_idx, request_payload) in requests {
                     let response = caller_messenger
                         .poll(
-                            service_node,
                             namespace,
                             service_name,
                             request_payload.clone(),
@@ -786,7 +761,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
                         .expect("caller should receive response");
 
                     caller_results.push((
-                        caller_node_name.clone(),
+                        caller_id.clone(),
                         request_idx,
                         request_payload.clone(),
                         response,
@@ -813,18 +788,18 @@ async fn single_service_communication_multiple_polls_and_callers() {
         }
 
         for index in verification_indices {
-            let (caller_node_name, request_idx, request_payload, response) = &results[index];
+            let (caller_id, request_idx, request_payload, response) = &results[index];
             let expected_payload = expected_payloads
-                .remove(&(caller_node_name.clone(), *request_idx))
+                .remove(&(caller_id.clone(), *request_idx))
                 .expect("expected payload should exist for caller/request pair");
 
             assert_eq!(
                 request_payload, &expected_payload,
-                "stored request payload should match expected value for `{caller_node_name}` request {request_idx}"
+                "stored request payload should match expected value for `{caller_id}` request {request_idx}"
             );
             assert_eq!(
                 response, &expected_payload,
-                "response for `{caller_node_name}` request {request_idx} should match the originating request payload"
+                "response for `{caller_id}` request {request_idx} should match the originating request payload"
             );
         }
 
@@ -852,7 +827,6 @@ async fn single_service_communication_multiple_polls_and_callers() {
 async fn action_communication() {
     let router = TestRouterContext::start().await;
 
-    let action_node = "controller_node";
     let action_name = "move_right_arm";
     let namespace = "/control";
 
@@ -872,7 +846,7 @@ async fn action_communication() {
         let result_payload_server = result_payload.clone();
         let result_request_payload_server = result_request_payload.clone();
 
-        let action_messenger = router.action_messenger(action_node).await;
+        let action_messenger = router.action_messenger().await;
 
         tokio::spawn(async move {
             let mut action = action_messenger
@@ -880,7 +854,7 @@ async fn action_communication() {
                 .await
                 .expect("action should start");
 
-            let action_root = super::build_full_namespace(action_node, namespace, action_name);
+            let action_root = super::build_full_namespace(namespace, action_name);
             let expected_goal_topic = format!("{action_root}/goal/request");
             let expected_result_topic = format!("{action_root}/result/request");
 
@@ -943,13 +917,11 @@ async fn action_communication() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        let caller_node = "the_brain";
-        let caller_node = router.action_messenger(caller_node).await;
+        let caller_node = router.action_messenger().await;
 
         // Client sends the goal and obtains the handle carrying goal response + feedback sub.
         let mut goal_handle = caller_node
             .send_goal(
-                action_node,
                 namespace,
                 action_name,
                 goal_payload,
@@ -962,7 +934,7 @@ async fn action_communication() {
         assert_eq!(goal_handle.goal_response(), &goal_response_payload);
 
         let expected_feedback_topic =
-            super::build_full_namespace(action_node, namespace, &format!("{action_name}/feedback"));
+            super::build_full_namespace(namespace, &format!("{action_name}/feedback"));
 
         // Consume one feedback update from the action server.
         let feedback_message = goal_handle
@@ -1000,10 +972,8 @@ async fn action_communication() {
 async fn action_communication_goal_cancelled() {
     let router = TestRouterContext::start().await;
 
-    let action_node = "controller_node";
     let action_name = "move_right_arm";
     let namespace = "/control";
-    let caller_node_name = "the_brain";
 
     let goal_payload = Bytes::from_static(b"arm=right;pos=1,2,3");
     let goal_response_payload = Bytes::from_static(b"accepted");
@@ -1019,7 +989,7 @@ async fn action_communication_goal_cancelled() {
         let feedback_payload_server = feedback_payload.clone();
         let cancel_response_payload_server = cancel_response_payload.clone();
 
-        let action_messenger = router.action_messenger(action_node).await;
+        let action_messenger = router.action_messenger().await;
         let action_ready_tx = Some(action_ready_tx);
 
         tokio::spawn(async move {
@@ -1035,7 +1005,7 @@ async fn action_communication_goal_cancelled() {
                 ..
             } = action;
 
-            let action_root = super::build_full_namespace(action_node, namespace, action_name);
+            let action_root = super::build_full_namespace(namespace, action_name);
             let expected_goal_topic = format!("{action_root}/goal/request");
             let expected_cancel_topic = format!("{action_root}/cancel/request");
 
@@ -1119,11 +1089,10 @@ async fn action_communication_goal_cancelled() {
         .await
         .expect("action server should signal readiness");
 
-    let caller_node = router.action_messenger(caller_node_name).await;
+    let caller_node = router.action_messenger().await;
 
     let mut goal_handle = caller_node
         .send_goal(
-            action_node,
             namespace,
             action_name,
             goal_payload,
@@ -1136,7 +1105,7 @@ async fn action_communication_goal_cancelled() {
     assert_eq!(goal_handle.goal_response(), &goal_response_payload);
 
     let expected_feedback_topic =
-        super::build_full_namespace(action_node, namespace, &format!("{action_name}/feedback"));
+        super::build_full_namespace(namespace, &format!("{action_name}/feedback"));
 
     let first_feedback = goal_handle
         .feedback_mut()
@@ -1197,7 +1166,6 @@ async fn action_communication_goal_cancelled() {
         .expect_err("action result should time out after cancellation");
 
     let Error::ActionResultUnreachable {
-        action_node: err_action_node,
         namespace: err_namespace,
         action_name: err_action_name,
     } = &err
@@ -1208,7 +1176,6 @@ async fn action_communication_goal_cancelled() {
         );
     };
 
-    assert_eq!(err_action_node, action_node);
     assert_eq!(err_namespace, namespace);
     assert_eq!(err_action_name, action_name);
 
@@ -1225,7 +1192,6 @@ async fn single_action_communication_multiple_polls() {
     let router = TestRouterContext::start().await;
     let (host, port) = router.connection_target();
 
-    let action_node = "controller_node";
     let action_name = "move_right_arm";
     let namespace = "/control";
     let caller_prefix = "the_brain";
@@ -1240,7 +1206,7 @@ async fn single_action_communication_multiple_polls() {
 
     // Launch a background task that plays the role of the action server.
     let server_task = {
-        let action_messenger = router.action_messenger(action_node).await;
+        let action_messenger = router.action_messenger().await;
         let action_ready_tx = Some(action_ready_tx);
         let cases = Arc::clone(&cases);
 
@@ -1250,7 +1216,7 @@ async fn single_action_communication_multiple_polls() {
                 .await
                 .expect("action should start");
 
-            let action_root = super::build_full_namespace(action_node, namespace, action_name);
+            let action_root = super::build_full_namespace(namespace, action_name);
             let expected_goal_topic = format!("{action_root}/goal/request");
             let expected_result_topic = format!("{action_root}/result/request");
             let crate::messaging::ActionCreation {
@@ -1383,7 +1349,7 @@ async fn single_action_communication_multiple_polls() {
         .expect("action server should signal readiness");
 
     let expected_feedback_topic =
-        super::build_full_namespace(action_node, namespace, &format!("{action_name}/feedback"));
+        super::build_full_namespace(namespace, &format!("{action_name}/feedback"));
 
     let total_clients = cases.len();
     let mut shuffled_cases = cases.as_ref().clone();
@@ -1397,11 +1363,10 @@ async fn single_action_communication_multiple_polls() {
         let feedback_search_limit = total_clients;
 
         let handle = tokio::spawn(async move {
-            let caller_messenger = connect_action_messenger(&case.client_id, &host, port).await;
+            let caller_messenger = connect_action_messenger(&host, port).await;
 
             let mut goal_handle = caller_messenger
                 .send_goal(
-                    action_node,
                     namespace,
                     action_name,
                     case.goal.clone(),
