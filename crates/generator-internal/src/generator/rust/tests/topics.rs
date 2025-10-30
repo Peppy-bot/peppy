@@ -37,21 +37,6 @@ fn exposed_topic_gen_calling_code() {
     let rendered = single_artifact(artifacts);
 
     assert_rendered!(
-        rendered.contains("pub fn push_frame("),
-        &rendered,
-        "expected sync function"
-    );
-    assert_rendered!(
-        rendered.contains("-> capnp::Result<Vec<u8>>"),
-        &rendered,
-        "expected capnp result type for sync function"
-    );
-    assert_rendered!(
-        rendered.contains("pub async fn push_frame_async("),
-        &rendered,
-        "expected async function"
-    );
-    assert_rendered!(
         rendered.contains("let mut message = capnp::message::Builder::new_default();"),
         &rendered,
         "expected capnp message builder"
@@ -100,6 +85,56 @@ fn exposed_topic_gen_calling_code() {
         rendered.contains("pub struct PushFrameHeader"),
         &rendered,
         "expected generated struct for nested object"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct PushFrame {"),
+        &rendered,
+        "expected topic messenger struct"
+    );
+    assert_rendered!(
+        rendered.contains("pub fn new(host: &str, port: u16) -> Self"),
+        &rendered,
+        "expected blocking constructor"
+    );
+    assert_rendered!(
+        rendered.contains("std::env::var(\"PEPPY_NAMESPACE\")"),
+        &rendered,
+        "expected namespace initialization from environment"
+    );
+    assert_rendered!(
+        rendered.contains("pub fn emit("),
+        &rendered,
+        "expected sync emit method"
+    );
+    assert_rendered!(
+        rendered.contains(") -> peppylib::PeppyResult<()>"),
+        &rendered,
+        "expected peppylib result type"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn emit_async("),
+        &rendered,
+        "expected async emit method"
+    );
+    assert_rendered!(
+        rendered.contains("runtime.block_on(self.emit_async"),
+        &rendered,
+        "expected sync emit to delegate to async variant"
+    );
+    assert_rendered!(
+        rendered.contains("let topic_name = \"push_frame\";"),
+        &rendered,
+        "expected topic name literal"
+    );
+    assert_rendered!(
+        rendered.contains("let qos = config::node::QoSProfile::SensorData;"),
+        &rendered,
+        "expected qos profile literal"
+    );
+    assert_rendered!(
+        rendered.contains("self.messenger.emit"),
+        &rendered,
+        "expected messenger emit call"
     );
 }
 
@@ -223,13 +258,18 @@ fn create_lib_with_exposed_topic_artifact() {
     let push_frame_contents =
         std::fs::read_to_string(&push_frame_mod).expect("failed to read push_frame module");
     assert!(
-        push_frame_contents.contains("pub fn push_frame("),
-        "Expected generated module to expose sync topic function, got:\n{}",
+        push_frame_contents.contains("pub struct PushFrame {"),
+        "Expected generated module to define topic struct, got:\n{}",
         push_frame_contents
     );
     assert!(
-        push_frame_contents.contains("pub async fn push_frame_async("),
-        "Expected generated module to expose async topic function, got:\n{}",
+        push_frame_contents.contains("pub fn emit("),
+        "Expected generated module to expose sync emit method, got:\n{}",
+        push_frame_contents
+    );
+    assert!(
+        push_frame_contents.contains("pub async fn emit_async("),
+        "Expected generated module to expose async emit method, got:\n{}",
         push_frame_contents
     );
 }
@@ -310,13 +350,18 @@ fn create_lib_with_exposed_double_topic_artifact() {
     let push_frame_contents =
         std::fs::read_to_string(&push_frame_mod).expect("failed to read push_frame module");
     assert!(
-        push_frame_contents.contains("pub fn push_frame("),
-        "Expected generated module to expose sync topic function, got:\n{}",
+        push_frame_contents.contains("pub struct PushFrame {"),
+        "Expected generated module to define topic struct, got:\n{}",
         push_frame_contents
     );
     assert!(
-        push_frame_contents.contains("pub async fn push_frame_async("),
-        "Expected generated module to expose async topic function, got:\n{}",
+        push_frame_contents.contains("pub fn emit("),
+        "Expected generated module to expose sync emit method, got:\n{}",
+        push_frame_contents
+    );
+    assert!(
+        push_frame_contents.contains("pub async fn emit_async("),
+        "Expected generated module to expose async emit method, got:\n{}",
         push_frame_contents
     );
 
@@ -329,13 +374,18 @@ fn create_lib_with_exposed_double_topic_artifact() {
     let push_lidar_contents =
         std::fs::read_to_string(&push_lidar_mod).expect("failed to read push_lidar_object module");
     assert!(
-        push_lidar_contents.contains("pub fn push_lidar_object("),
-        "Expected generated module to expose sync topic function, got:\n{}",
+        push_lidar_contents.contains("pub struct PushLidarObject {"),
+        "Expected generated module to define topic struct, got:\n{}",
         push_lidar_contents
     );
     assert!(
-        push_lidar_contents.contains("pub async fn push_lidar_object_async("),
-        "Expected generated module to expose async topic function, got:\n{}",
+        push_lidar_contents.contains("pub fn emit("),
+        "Expected generated module to expose sync emit method, got:\n{}",
+        push_lidar_contents
+    );
+    assert!(
+        push_lidar_contents.contains("pub async fn emit_async("),
+        "Expected generated module to expose async emit method, got:\n{}",
         push_lidar_contents
     );
 }
