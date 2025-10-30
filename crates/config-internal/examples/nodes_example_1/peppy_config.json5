@@ -23,6 +23,7 @@
       // One instance is going to emit on ns /camera/front/stream and another on /camera/rear/stream
       instances: [
         {
+          // This namespace is set in the `PEPPY_NAMESPACE` env var before launching the node instance
           namespace: "/camera/front",
           parameters: {
             device: {
@@ -41,6 +42,7 @@
           }
         },
         {
+          // This is a separate instance, so a different `PEPPY_NAMESPACE` value
           namespace: "/camera/rear",
           parameters: {
             device: {

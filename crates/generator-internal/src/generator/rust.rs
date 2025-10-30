@@ -12,8 +12,8 @@ use config::encoding::{CapnpSchemaArtifacts, FunctionParam, MessageFormatMapper}
 use config::{
     consts::PEPPY_NODE_CONFIG_FILE,
     node::{
-        ExposedAction, ExposedService, ExposedTopic, MessageFormat, SchemaType, SubscribedAction,
-        SubscribedService, SubscribedTopic, TypeToken,
+        ExposedAction, ExposedService, ExposedTopic, MessageFormat, QoSProfile, SchemaType,
+        SubscribedAction, SubscribedService, SubscribedTopic, TypeToken,
     },
 };
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -121,7 +121,6 @@ impl LanguageGenerator for RustGenerator {
     fn add_exposed_topic(&mut self, topic: &ExposedTopic) -> Result<()> {
         let fn_name = prefixed_ident("", non_empty_str(topic.name.as_str()), "topic");
         let fn_name_str = fn_name.to_string();
-        let async_fn_name = Ident::new(&(fn_name_str.clone() + "_async"), Span::call_site());
 
         let struct_prefix = to_camel_case(&fn_name_str);
 
@@ -141,21 +140,24 @@ impl LanguageGenerator for RustGenerator {
         )?;
         let struct_tokens = context.into_tokens();
 
-        let sync_fn = build_sync_function(&fn_name, &async_fn_name, &params, &fn_name_str);
-        let async_fn =
-            build_async_function(&async_fn_name, &params, encoding.as_ref(), &fn_name_str);
-        let function_tokens = quote! {
-            #sync_fn
-            #async_fn
-        };
+        let struct_ident = Ident::new(&struct_prefix, Span::call_site());
+        let topic_struct = build_topic_struct(&struct_ident);
+        let impl_block = build_topic_impl(
+            &struct_ident,
+            &params,
+            encoding.as_ref(),
+            topic,
+            &fn_name_str,
+        );
 
         let tokens: TokenStream = quote! {
             #( #struct_tokens )*
 
-            impl Topics {
-                #function_tokens
-            }
+            #topic_struct
+
+            #impl_block
         };
+
         let rendered = render_tokens(tokens);
 
         self.push_section(InterfaceArtifact::from_kind(
@@ -982,6 +984,181 @@ impl NameGenerator {
         };
         Ident::new(&format!("{base}_{suffix}"), Span::call_site())
     }
+}
+
+fn build_topic_struct(struct_ident: &Ident) -> TokenStream {
+    quote! {
+        pub struct #struct_ident {
+            messenger: peppylib::TopicMessenger,
+            namespace: String,
+        }
+    }
+}
+
+fn build_topic_impl(
+    struct_ident: &Ident,
+    params: &[FunctionParam],
+    encoding: Option<&MessageEncodingSpec>,
+    topic: &ExposedTopic,
+    label: &str,
+) -> TokenStream {
+    let constructor = build_topic_constructor(topic);
+    let emit_fn = build_topic_emit(params);
+    let emit_async_fn = build_topic_emit_async(struct_ident, params, encoding, topic, label);
+
+    quote! {
+        impl #struct_ident {
+            #constructor
+            #emit_fn
+            #emit_async_fn
+        }
+    }
+}
+
+fn build_topic_constructor(topic: &ExposedTopic) -> TokenStream {
+    let topic_literal = Literal::string(topic.name.as_str());
+
+    quote! {
+        pub fn new(host: &str, port: u16) -> Self {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "failed to build runtime for `{}` messenger: {error}",
+                        #topic_literal
+                    )
+                });
+
+            let messenger = runtime
+                .block_on(peppylib::TopicMessenger::from_host_port(host, port))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "failed to create messenger for topic `{}` on {host}:{port}: {error:?}.\
+    Did you start the peppy server?",
+                        #topic_literal
+                    )
+                });
+
+            let namespace = std::env::var("PEPPY_NAMESPACE")
+                .map(|value| if value.trim().is_empty() { "/".to_string() } else { value })
+                .unwrap_or_else(|_| "/".to_string());
+
+            Self { messenger, namespace }
+        }
+    }
+}
+
+fn build_topic_emit(params: &[FunctionParam]) -> TokenStream {
+    let param_tokens = function_param_tokens(params);
+    let async_args = function_arg_tokens(params);
+
+    quote! {
+        pub fn emit(&self, #(#param_tokens),*) -> peppylib::PeppyResult<()> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(peppylib::PeppyError::from)?;
+
+            runtime.block_on(self.emit_async(#(#async_args),*))
+        }
+    }
+}
+
+fn build_topic_emit_async(
+    _struct_ident: &Ident,
+    params: &[FunctionParam],
+    encoding: Option<&MessageEncodingSpec>,
+    topic: &ExposedTopic,
+    label: &str,
+) -> TokenStream {
+    let param_tokens = function_param_tokens(params);
+    let arg_tokens = function_arg_tokens(params);
+    let topic_literal = Literal::string(topic.name.as_str());
+    let qos_tokens = qos_profile_tokens(&topic.qos_profile);
+    let label_literal = Literal::string(label);
+
+    match encoding {
+        Some(spec) => {
+            let builder_type = &spec.builder_type;
+            let assignments = &spec.assignments;
+            let root_ident = Ident::new("root", Span::call_site());
+
+            quote! {
+                pub async fn emit_async(&self, #(#param_tokens),*) -> peppylib::PeppyResult<()> {
+                    let mut message = capnp::message::Builder::new_default();
+                    {
+                        let mut #root_ident = message.init_root::<#builder_type>();
+                        #(#assignments)*
+                    }
+
+                    let mut buffer = Vec::new();
+                    capnp::serialize::write_message(&mut buffer, &message).map_err(|error| {
+                        peppylib::PeppyError::from(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            error,
+                        ))
+                    })?;
+
+                    let message_payload: bytes::Bytes = buffer.into();
+                    let namespace = self.namespace.as_str();
+                    let topic_name = #topic_literal;
+                    let qos = #qos_tokens;
+
+                    self.messenger
+                        .emit(namespace, topic_name, qos, message_payload)
+                        .await?;
+                    Ok(())
+                }
+            }
+        }
+        None => {
+            quote! {
+                pub async fn emit_async(&self, #(#param_tokens),*) -> peppylib::PeppyResult<()> {
+                    let _ = (#(#arg_tokens),*);
+                    Err(peppylib::PeppyError::from(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!(
+                            "message format for `{}` is not available in the generator",
+                            #label_literal
+                        ),
+                    )))
+                }
+            }
+        }
+    }
+}
+
+fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
+    let variant = match profile {
+        QoSProfile::Standard => "Standard",
+        QoSProfile::Reliable => "Reliable",
+        QoSProfile::SensorData => "SensorData",
+        QoSProfile::Critical => "Critical",
+    };
+    let variant_ident = Ident::new(variant, Span::call_site());
+    quote!(config::node::QoSProfile::#variant_ident)
+}
+
+fn function_param_tokens(params: &[FunctionParam]) -> Vec<TokenStream> {
+    params
+        .iter()
+        .map(|param| {
+            let ident = &param.ident;
+            let ty = &param.ty;
+            quote!(#ident: #ty)
+        })
+        .collect()
+}
+
+fn function_arg_tokens(params: &[FunctionParam]) -> Vec<TokenStream> {
+    params
+        .iter()
+        .map(|param| {
+            let ident = &param.ident;
+            quote!(#ident)
+        })
+        .collect()
 }
 
 fn build_sync_function(
