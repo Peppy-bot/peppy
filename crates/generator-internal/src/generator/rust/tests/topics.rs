@@ -184,8 +184,6 @@ fn subscribed_to_topic() {
         .collect();
     let rendered = single_artifact(artifacts);
 
-    println!("generated subscribed topic code:\n{rendered}");
-
     assert_rendered!(
         rendered.contains("pub struct UvcCameraStreamMessage"),
         &rendered,
@@ -233,12 +231,12 @@ fn subscribed_to_topic() {
         "expected mutable self receiver for subscriber method"
     );
     assert_rendered!(
-        rendered.contains("Self::deseralize_payload"),
+        rendered.contains("Self::deseralize_stream_payload"),
         &rendered,
         "expected helper payload deserializer invocation"
     );
     assert_rendered!(
-        rendered.contains("fn deseralize_payload("),
+        rendered.contains("fn deseralize_stream_payload("),
         &rendered,
         "expected private payload deserializer function"
     );
@@ -300,6 +298,26 @@ fn subscribed_to_double_topic_same_node() {
         }
         "#;
     let format: MessageFormat = serde_json5::from_str(format).unwrap();
+
+    let mut generator = RustGenerator::new();
+    generator
+        .add_subscribed_topic(&stream_topic, Some(&format))
+        .unwrap();
+    generator
+        .add_subscribed_topic(&frame_topic, Some(&format))
+        .unwrap();
+    let artifacts: Vec<String> = generator
+        .into_artifacts()
+        .into_iter()
+        .map(|artifact| artifact.code_output)
+        .collect();
+    assert_eq!(
+        artifacts.len(),
+        2,
+        "expected two generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     todo!("Finish")
 }
