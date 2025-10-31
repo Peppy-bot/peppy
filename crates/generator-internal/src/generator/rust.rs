@@ -1294,6 +1294,15 @@ fn build_subscribed_topic_callback(
     let topic_literal = Literal::string(topic.name.as_str());
     let qos = quote!(config::node::QoSProfile::Standard);
     let reader_type = &encoding.reader_type;
+    let helper_fn_ident = {
+        let topic_component = sanitize_component(topic.name.as_str());
+        let helper_name = if topic_component.is_empty() {
+            "deseralize_payload".to_string()
+        } else {
+            format!("deseralize_{}_payload", topic_component)
+        };
+        Ident::new(&helper_name, Span::call_site())
+    };
 
     let mut schema_lookup: HashMap<String, (&String, &SchemaType)> = HashMap::new();
     for (field_name, schema) in &artifacts.message_format().0 {
@@ -1368,10 +1377,10 @@ fn build_subscribed_topic_callback(
                 }
             };
 
-            Self::deseralize_payload(message.payload.as_ref())
+            Self::#helper_fn_ident(message.payload.as_ref())
         }
 
-        fn deseralize_payload(payload: &[u8]) -> peppylib::PeppyResult<#args_struct_ident> {
+        fn #helper_fn_ident(payload: &[u8]) -> peppylib::PeppyResult<#args_struct_ident> {
             let mut cursor = std::io::Cursor::new(payload);
             let message_reader = capnp::serialize::read_message(
                 &mut cursor,
