@@ -34,8 +34,6 @@
           node: "my_action_robot_controller", // Will look for that node name
           tag: "0.1.0", // On that particular tag/version
           name: "move_right_arm", // With this action name
-          feedback_callback: "on_move_arm_feedback_received",
-          results_callback: "on_result_callback_received"
         }
       ],
     },

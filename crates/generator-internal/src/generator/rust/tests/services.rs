@@ -73,8 +73,7 @@ fn subscribed_service_returns_arguments() {
         {
             node: "uvc_camera",
             name: "get_camera_info",
-            tag: "0.1.0",
-            callback: "on_get_camera_info"
+            tag: "0.1.0"
         }
         "#;
     let service: SubscribedService = serde_json5::from_str(service).unwrap();

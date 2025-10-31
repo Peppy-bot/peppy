@@ -79,10 +79,8 @@ impl LanguageGenerator for PythonGenerator {
         self.push_section(InterfaceArtifact::from_kind(
             &topic.name,
             InterfaceKind::SubscribedTopic,
-            format!(
-                "async def {}():\n    raise NotImplementedError(\"await for message with PMI\")\n",
-                topic.callback.as_str()
-            ),
+            "async def on_message():\n    raise NotImplementedError(\"await for message with PMI\")\n"
+                .to_string(),
         ));
         Ok(())
     }
@@ -92,12 +90,13 @@ impl LanguageGenerator for PythonGenerator {
         service: &SubscribedService,
         _arguments: Option<&MessageFormat>,
     ) -> Result<()> {
+        let fn_name = prefixed_name("on", non_empty_str(service.name.as_str()), "service");
         self.push_section(InterfaceArtifact::from_kind(
             &service.name,
             InterfaceKind::SubscribedService,
             format!(
                 "async def {}():\n    raise NotImplementedError(\"await for service response with PMI\")\n",
-                service.callback.as_str()
+                fn_name
             ),
         ));
         Ok(())
@@ -108,21 +107,17 @@ impl LanguageGenerator for PythonGenerator {
         action: &SubscribedAction,
         _arguments: Option<&SubscribedActionMessage>,
     ) -> Result<()> {
+        let base_name = prefixed_name("on", non_empty_str(action.name.as_str()), "action");
         let mut sections = Vec::new();
 
-        if let Some(callback) = action.feedback_callback.as_ref() {
-            sections.push(format!(
-                "async def {}():\n    raise NotImplementedError(\"await for action feedback with PMI\")\n",
-                callback.as_str()
-            ));
-        }
-
-        if let Some(callback) = action.results_callback.as_ref() {
-            sections.push(format!(
-                "async def {}():\n    raise NotImplementedError(\"await for action result with PMI\")\n",
-                callback.as_str()
-            ));
-        }
+        sections.push(format!(
+            "async def {}_feedback():\n    raise NotImplementedError(\"await for action feedback with PMI\")\n",
+            base_name
+        ));
+        sections.push(format!(
+            "async def {}_result():\n    raise NotImplementedError(\"await for action result with PMI\")\n",
+            base_name
+        ));
 
         self.push_section(InterfaceArtifact::from_kind(
             &action.name,

@@ -47,9 +47,7 @@ const SUBSCRIBED_ACTION_EXAMPLE: &str = r#"
 {
   node: "brain",
   name: "move_arm",
-  tag: "0.1.0",
-  feedback_callback: "on_move_arm_feedback",
-  results_callback: "on_move_arm_result"
+  tag: "0.1.0"
 }
 "#;
 

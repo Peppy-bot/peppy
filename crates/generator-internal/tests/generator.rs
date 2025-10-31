@@ -85,8 +85,7 @@ fn generate_interfaces_code_rust_success() {
                 {
                     node: "uvc_camera",
                     tag: "0.1.0",
-                    name: "stream",
-                    callback: "on_handle_video_frame",
+                    name: "stream"
                 }
             ],
         },
@@ -132,8 +131,7 @@ fn generate_interfaces_code_rust_missing_topic_format() {
                 {
                     node: "uvc_camera",
                     tag: "0.1.0",
-                    name: "orphan_topic",
-                    callback: "on_handle_video_frame",
+                    name: "orphan_topic"
                 }
             ],
         },
