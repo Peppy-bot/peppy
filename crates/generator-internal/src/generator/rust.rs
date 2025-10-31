@@ -26,6 +26,7 @@ use syn::{File, parse2};
 pub struct RustGenerator {
     sections: Vec<InterfaceArtifact>,
     schemas: HashMap<String, CapnpSchema>,
+    pending_subscribed_topics: BTreeMap<String, SubscribedTopicNode>,
 }
 
 impl RustGenerator {
@@ -33,12 +34,22 @@ impl RustGenerator {
         Self {
             sections: Vec::new(),
             schemas: HashMap::new(),
+            pending_subscribed_topics: BTreeMap::new(),
         }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn into_artifacts(self) -> Vec<InterfaceArtifact> {
+    pub fn into_artifacts(mut self) -> Vec<InterfaceArtifact> {
+        self.flush_pending_subscribed_topics();
         self.sections
+    }
+
+    fn flush_pending_subscribed_topics(&mut self) {
+        let pending = std::mem::take(&mut self.pending_subscribed_topics);
+        for (_node_name, node) in pending {
+            let artifact = node.into_artifact();
+            self.push_section(artifact);
+        }
     }
 
     fn register_schema(
@@ -368,8 +379,12 @@ impl LanguageGenerator for RustGenerator {
         let callback_fn_ident = Ident::new(&callback_fn_name, Span::call_site());
 
         let mut context = GenerationContext::default();
-        let params =
-            collect_function_params(Some(&format_artifacts), None, &message_struct_name, &mut context)?;
+        let params = collect_function_params(
+            Some(&format_artifacts),
+            None,
+            &message_struct_name,
+            &mut context,
+        )?;
 
         let args_struct_ident = Ident::new(&message_struct_name, Span::call_site());
         let args_fields: Vec<(Ident, TokenStream)> = params
@@ -377,17 +392,37 @@ impl LanguageGenerator for RustGenerator {
             .map(|param| (param.ident.clone(), param.ty.clone()))
             .collect();
         context.add_struct(args_struct_ident.clone(), args_fields);
-        let struct_tokens = context.into_tokens();
 
         let encoding = self
-            .prepare_message_encoding(&callback_fn_name, &struct_prefix, Some(&format_artifacts), &params)?
+            .prepare_message_encoding(
+                &callback_fn_name,
+                &struct_prefix,
+                Some(&format_artifacts),
+                &params,
+            )?
             .expect("message encoding spec should exist when message format is provided");
+        let struct_tokens = context.into_tokens();
+        let node_name = topic.node.clone();
+        let struct_ident = Ident::new(
+            &subscribed_topic_struct_name(topic, &struct_prefix),
+            Span::call_site(),
+        );
+        let node_entry = self
+            .pending_subscribed_topics
+            .entry(node_name.clone())
+            .or_insert_with(|| SubscribedTopicNode::new(node_name.clone(), struct_ident.clone()));
+        debug_assert_eq!(
+            node_entry.struct_ident.to_string(),
+            struct_ident.to_string(),
+            "mismatched struct identifier for subscribed topic node `{}`",
+            node_name
+        );
 
-        let subscriber_struct_name = subscribed_topic_struct_name(topic, &struct_prefix);
-        let subscriber_struct_ident = Ident::new(&subscriber_struct_name, Span::call_site());
-        let subscriber_struct = build_subscribed_topic_struct(&subscriber_struct_ident);
-        let impl_block = build_subscribed_topic_impl(
-            &subscriber_struct_ident,
+        node_entry.extend_message_structs(struct_tokens);
+
+        let subscription_field_ident = node_entry.allocate_subscription_field(topic.name.as_str());
+
+        let method_tokens = build_subscribed_topic_callback(
             &callback_fn_ident,
             &args_struct_ident,
             &params,
@@ -395,21 +430,10 @@ impl LanguageGenerator for RustGenerator {
             &encoding,
             topic,
             &message_struct_name,
+            &subscription_field_ident,
         );
+        node_entry.push_method(method_tokens);
 
-        let tokens: TokenStream = quote! {
-            #( #struct_tokens )*
-
-            #subscriber_struct
-
-            #impl_block
-        };
-        let rendered = render_tokens(tokens);
-        self.push_section(InterfaceArtifact::from_kind(
-            &topic.name,
-            InterfaceKind::SubscribedTopic,
-            rendered,
-        ));
         Ok(())
     }
 
@@ -494,7 +518,9 @@ impl LanguageGenerator for RustGenerator {
         Ok(())
     }
 
-    fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
+    fn build(mut self, to_path: impl AsRef<Path>) -> Result<()> {
+        self.flush_pending_subscribed_topics();
+
         // First create the basic structure of the project
         common::add_peppylib_dependencies(&to_path)?;
         // Write the schema files to the project
@@ -511,6 +537,109 @@ impl LanguageGenerator for RustGenerator {
         checker::generate_node_config_fingerprint(&node_config_path, crate_root)?;
         Ok(())
     }
+}
+
+struct SubscribedTopicNode {
+    node_name: String,
+    struct_ident: Ident,
+    message_structs: Vec<TokenStream>,
+    methods: Vec<TokenStream>,
+    subscriptions: Vec<SubscriptionField>,
+}
+
+impl SubscribedTopicNode {
+    fn new(node_name: String, struct_ident: Ident) -> Self {
+        Self {
+            node_name,
+            struct_ident,
+            message_structs: Vec::new(),
+            methods: Vec::new(),
+            subscriptions: Vec::new(),
+        }
+    }
+
+    fn extend_message_structs(&mut self, structs: Vec<TokenStream>) {
+        self.message_structs.extend(structs);
+    }
+
+    fn allocate_subscription_field(&mut self, topic_name: &str) -> Ident {
+        if self.subscriptions.is_empty() {
+            let ident = Ident::new("subscription", Span::call_site());
+            let topic_literal = Literal::string(topic_name);
+            self.subscriptions.push(SubscriptionField {
+                field_ident: ident.clone(),
+                topic_literal,
+            });
+            return ident;
+        }
+
+        let sanitized = sanitize_component(topic_name);
+        let mut candidate = if sanitized.is_empty() {
+            format!("subscription_{}", self.subscriptions.len() + 1)
+        } else {
+            format!("{sanitized}_subscription")
+        };
+        let mut counter = 2usize;
+        while self
+            .subscriptions
+            .iter()
+            .any(|field| field.field_ident.to_string() == candidate)
+        {
+            candidate = if sanitized.is_empty() {
+                format!("subscription_{}", self.subscriptions.len() + counter)
+            } else {
+                format!("{sanitized}_subscription_{counter}")
+            };
+            counter += 1;
+        }
+
+        let ident = Ident::new(&candidate, Span::call_site());
+        let topic_literal = Literal::string(topic_name);
+        self.subscriptions.push(SubscriptionField {
+            field_ident: ident.clone(),
+            topic_literal,
+        });
+        ident
+    }
+
+    fn push_method(&mut self, tokens: TokenStream) {
+        self.methods.push(tokens);
+    }
+
+    fn into_artifact(self) -> InterfaceArtifact {
+        let SubscribedTopicNode {
+            node_name,
+            struct_ident,
+            message_structs,
+            methods,
+            subscriptions,
+        } = self;
+
+        let node_literal = Literal::string(node_name.as_str());
+        let struct_tokens = build_subscribed_topic_struct(&struct_ident, &subscriptions);
+        let connect_fn =
+            build_subscribed_topics_connect(&struct_ident, &node_literal, &subscriptions);
+
+        let tokens: TokenStream = quote! {
+            #( #message_structs )*
+
+            #struct_tokens
+
+            impl #struct_ident {
+                #connect_fn
+                #( #methods )*
+            }
+        };
+
+        let rendered = render_tokens(tokens);
+
+        InterfaceArtifact::from_kind(&node_name, InterfaceKind::SubscribedTopic, rendered)
+    }
+}
+
+struct SubscriptionField {
+    field_ident: Ident,
+    topic_literal: Literal,
 }
 
 fn non_empty_str(value: &str) -> Option<&str> {
@@ -668,9 +797,13 @@ fn collect_function_params(
         .map_err(Error::MessageEncoding)?;
 
     let mut schema_lookup: HashMap<String, (&String, &SchemaType)> =
-        HashMap::with_capacity(format.0.len());
+        HashMap::with_capacity(format.0.len() * 2);
     for (name, schema) in &format.0 {
-        schema_lookup.insert(sanitize_capnp_field_name(name), (name, schema));
+        let capnp_key = sanitize_capnp_field_name(name);
+        schema_lookup.insert(capnp_key.clone(), (name, schema));
+
+        let rust_key = sanitize_component(name);
+        schema_lookup.entry(rust_key).or_insert((name, schema));
     }
 
     let mut params = Vec::with_capacity(capnp_params.len());
@@ -1072,19 +1205,15 @@ fn build_topic_connect(topic: &ExposedTopic) -> TokenStream {
     let topic_literal = Literal::string(topic.name.as_str());
 
     quote! {
-        pub async fn connect(host: &str, port: u16) -> peppylib::PeppyResult<Self> {
+        pub async fn connect(host: &str, port: u16) -> crate::Result<Self> {
             let messenger = peppylib::TopicMessenger::from_host_port(host, port)
                 .await
-                .map_err(|error| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!(
-                            "failed to create messenger for topic `{}` on {host}:{port}: {error:?}. Did you start the peppy server?",
-                            #topic_literal
-                        ),
-                    )
-                })
-                .map_err(peppylib::PeppyError::from)?;
+                .map_err(|source| crate::Error::TopicMessengerConnect {
+                    topic_name: String::from(#topic_literal),
+                    host: host.to_string(),
+                    port,
+                    source,
+                })?;
 
             let namespace = std::env::var("PEPPY_NAMESPACE")
                 .map(|value| {
@@ -1124,7 +1253,7 @@ fn build_topic_emit(
             let root_ident = Ident::new("root", Span::call_site());
 
             quote! {
-                pub async fn emit(#method_signature) -> peppylib::PeppyResult<()> {
+                pub async fn emit(#method_signature) -> crate::Result<()> {
                     let mut message = capnp::message::Builder::new_default();
                     {
                         let mut #root_ident = message.init_root::<#builder_type>();
@@ -1132,11 +1261,11 @@ fn build_topic_emit(
                     }
 
                     let mut buffer = Vec::new();
-                    capnp::serialize::write_message(&mut buffer, &message).map_err(|error| {
-                        peppylib::PeppyError::from(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            error,
-                        ))
+                    capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
+                        crate::Error::CapnpSerialize {
+                            context: String::from(#label_literal),
+                            source,
+                        }
                     })?;
 
                     let payload = bytes::Bytes::from(buffer);
@@ -1161,16 +1290,12 @@ fn build_topic_emit(
                 .collect();
 
             quote! {
-                pub async fn emit(#method_signature) -> peppylib::PeppyResult<()> {
+                pub async fn emit(#method_signature) -> crate::Result<()> {
                     let _ = self;
                     #(#ignore_params)*
-                    Err(peppylib::PeppyError::from(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!(
-                            "message format for `{}` is not available in the generator",
-                            #label_literal
-                        ),
-                    )))
+                    Err(crate::Error::MessageFormatUnavailable {
+                        context: String::from(#label_literal),
+                    })
                 }
             }
         }
@@ -1186,62 +1311,68 @@ fn subscribed_topic_struct_name(topic: &SubscribedTopic, fallback_prefix: &str) 
     }
 }
 
-fn build_subscribed_topic_struct(struct_ident: &Ident) -> TokenStream {
+fn build_subscribed_topic_struct(
+    struct_ident: &Ident,
+    subscriptions: &[SubscriptionField],
+) -> TokenStream {
+    let subscription_fields: Vec<TokenStream> = subscriptions
+        .iter()
+        .map(|field| {
+            let ident = &field.field_ident;
+            quote!(#ident: peppylib::messaging::Subscription)
+        })
+        .collect();
+
     quote! {
         pub struct #struct_ident {
             messenger: peppylib::TopicMessenger,
             namespace: String,
-            subscription: peppylib::messaging::Subscription,
+            #( #subscription_fields ),*
         }
     }
 }
 
-fn build_subscribed_topic_impl(
-    struct_ident: &Ident,
-    fn_name: &Ident,
-    args_struct_ident: &Ident,
-    params: &[FunctionParam],
-    artifacts: &CapnpSchemaArtifacts,
-    encoding: &MessageEncodingSpec,
-    topic: &SubscribedTopic,
-    struct_prefix: &str,
+fn build_subscribed_topics_connect(
+    _struct_ident: &Ident,
+    node_literal: &Literal,
+    subscriptions: &[SubscriptionField],
 ) -> TokenStream {
-    let connect_fn = build_subscribed_topic_connect(topic);
-    let callback_fn = build_subscribed_topic_callback(
-        fn_name,
-        args_struct_ident,
-        params,
-        artifacts,
-        encoding,
-        topic,
-        struct_prefix,
-    );
+    let subscription_statements: Vec<TokenStream> = subscriptions
+        .iter()
+        .map(|field| {
+            let field_ident = &field.field_ident;
+            let topic_literal = &field.topic_literal;
+            quote! {
+                let #field_ident = {
+                    let topic_name = #topic_literal;
+                    let namespace_value = namespace.as_str();
+                    messenger
+                        .subscribe(namespace_value, topic_name, qos)
+                        .await
+                        .map_err(|source| crate::Error::TopicSubscribe {
+                            topic_name: topic_name.to_string(),
+                            namespace: namespace_value.to_string(),
+                            source,
+                        })?
+                };
+            }
+        })
+        .collect();
+    let subscription_fields: Vec<Ident> = subscriptions
+        .iter()
+        .map(|field| field.field_ident.clone())
+        .collect();
 
     quote! {
-        impl #struct_ident {
-            #connect_fn
-            #callback_fn
-        }
-    }
-}
-
-fn build_subscribed_topic_connect(topic: &SubscribedTopic) -> TokenStream {
-    let topic_literal = Literal::string(topic.name.as_str());
-
-    quote! {
-        pub async fn connect(host: &str, port: u16) -> peppylib::PeppyResult<Self> {
+        pub async fn connect(host: &str, port: u16) -> crate::Result<Self> {
             let messenger = peppylib::TopicMessenger::from_host_port(host, port)
                 .await
-                .map_err(|error| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!(
-                            "failed to create messenger for topic `{}` on {host}:{port}: {error:?}. Did you start the peppy server?",
-                            #topic_literal
-                        ),
-                    )
-                })
-                .map_err(peppylib::PeppyError::from)?;
+                .map_err(|source| crate::Error::NodeMessengerConnect {
+                    node_name: String::from(#node_literal),
+                    host: host.to_string(),
+                    port,
+                    source,
+                })?;
 
             let namespace = std::env::var("PEPPY_NAMESPACE")
                 .map(|value| {
@@ -1253,30 +1384,14 @@ fn build_subscribed_topic_connect(topic: &SubscribedTopic) -> TokenStream {
                 })
                 .unwrap_or_else(|_| "/".to_string());
 
-            let topic_name = #topic_literal;
             let qos = config::node::QoSProfile::Standard;
 
-            let subscription = {
-                let namespace_value = namespace.as_str();
-                messenger
-                    .subscribe(namespace_value, topic_name, qos)
-                    .await
-                    .map_err(|error| {
-                        peppylib::PeppyError::from(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!(
-                                "failed to subscribe to topic `{}` in namespace `{}`: {error:?}",
-                                topic_name,
-                                namespace_value,
-                            ),
-                        ))
-                    })?
-            };
+            #( #subscription_statements )*
 
             Ok(Self {
                 messenger,
                 namespace,
-                subscription,
+                #(#subscription_fields),*
             })
         }
     }
@@ -1290,9 +1405,9 @@ fn build_subscribed_topic_callback(
     encoding: &MessageEncodingSpec,
     topic: &SubscribedTopic,
     struct_prefix: &str,
+    subscription_field: &Ident,
 ) -> TokenStream {
     let topic_literal = Literal::string(topic.name.as_str());
-    let qos = quote!(config::node::QoSProfile::Standard);
     let reader_type = &encoding.reader_type;
     let helper_fn_ident = {
         let topic_component = sanitize_component(topic.name.as_str());
@@ -1306,7 +1421,13 @@ fn build_subscribed_topic_callback(
 
     let mut schema_lookup: HashMap<String, (&String, &SchemaType)> = HashMap::new();
     for (field_name, schema) in &artifacts.message_format().0 {
-        schema_lookup.insert(sanitize_capnp_field_name(field_name), (field_name, schema));
+        let capnp_key = sanitize_capnp_field_name(field_name);
+        schema_lookup.insert(capnp_key.clone(), (field_name, schema));
+
+        let rust_key = sanitize_component(field_name);
+        schema_lookup
+            .entry(rust_key)
+            .or_insert((field_name, schema));
     }
 
     let mut names = NameGenerator::new();
@@ -1329,74 +1450,42 @@ fn build_subscribed_topic_callback(
         field_inits.push(quote!(#field_ident: #value_ident));
     }
 
+    let context_literal = Literal::string(struct_prefix);
+
     quote! {
-        pub async fn #fn_name(&mut self) -> peppylib::PeppyResult<#args_struct_ident> {
+        pub async fn #fn_name(&mut self) -> crate::Result<#args_struct_ident> {
             let topic_name = #topic_literal;
-            let qos = #qos;
 
-            let message = match {
-                let subscription = &mut self.subscription;
-                subscription.rx.recv().await
-            } {
-                Some(message) => message,
-                None => {
-                    let namespace = self.namespace.clone();
-                    let mut subscription = {
-                        let namespace_value = namespace.as_str();
-                        self
-                            .messenger
-                            .subscribe(namespace_value, topic_name, qos)
-                            .await
-                            .map_err(|error| {
-                                peppylib::PeppyError::from(std::io::Error::new(
-                                    std::io::ErrorKind::Other,
-                                    format!(
-                                        "failed to resubscribe to topic `{}` in namespace `{}`: {error:?}",
-                                        topic_name,
-                                        namespace_value,
-                                    ),
-                                ))
-                            })?
-                    };
-
-                    let message = subscription
-                        .rx
-                        .recv()
-                        .await
-                        .ok_or_else(|| peppylib::PeppyError::from(std::io::Error::new(
-                            std::io::ErrorKind::UnexpectedEof,
-                            format!(
-                                "subscription to `{}` closed without yielding a message",
-                                topic_name
-                            ),
-                        )))?;
-
-                    self.subscription = subscription;
-
-                    message
-                }
+            let message = {
+                let subscription = &mut self.#subscription_field;
+                subscription
+                    .on_next_message()
+                    .await
+                    .ok_or_else(|| crate::Error::SubscriptionClosed {
+                        topic_name: topic_name.to_string(),
+                    })?
             };
 
             Self::#helper_fn_ident(message.payload.as_ref())
         }
 
-        fn #helper_fn_ident(payload: &[u8]) -> peppylib::PeppyResult<#args_struct_ident> {
+        fn #helper_fn_ident(payload: &[u8]) -> crate::Result<#args_struct_ident> {
             let mut cursor = std::io::Cursor::new(payload);
             let message_reader = capnp::serialize::read_message(
                 &mut cursor,
                 capnp::message::ReaderOptions::new(),
             )
-            .map_err(|error| peppylib::PeppyError::from(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                error,
-            )))?;
+            .map_err(|source| crate::Error::CapnpDeserialize {
+                context: String::from(#context_literal),
+                source,
+            })?;
 
             let root = message_reader
                 .get_root::<#reader_type>()
-                .map_err(|error| peppylib::PeppyError::from(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    error,
-                )))?;
+                .map_err(|source| crate::Error::CapnpDeserialize {
+                    context: String::from(#context_literal),
+                    source,
+                })?;
 
             #(#field_statements)*
 
@@ -1415,8 +1504,12 @@ fn generate_field_reader_statements(
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
     match schema {
-        SchemaType::Type(token) => generate_primitive_reader(reader_expr, field_name, token, names),
-        SchemaType::Array(array) => generate_array_reader(reader_expr, field_name, array, names),
+        SchemaType::Type(token) => {
+            generate_primitive_reader(reader_expr, field_name, token, struct_prefix, names)
+        }
+        SchemaType::Array(array) => {
+            generate_array_reader(reader_expr, field_name, array, struct_prefix, names)
+        }
         SchemaType::Object(object) => generate_object_reader(
             reader_expr,
             field_name,
@@ -1431,6 +1524,7 @@ fn generate_primitive_reader(
     reader_expr: &TokenStream,
     field_name: &str,
     token: &TypeToken,
+    context: &str,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
     let method_ident = Ident::new(
@@ -1438,6 +1532,8 @@ fn generate_primitive_reader(
         Span::call_site(),
     );
     let value_ident = names.next(field_name);
+    let field_literal = Literal::string(field_name);
+    let context_literal = Literal::string(context);
 
     match token {
         TypeToken::Bool
@@ -1460,12 +1556,14 @@ fn generate_primitive_reader(
             let reader_ident = names.next("text");
             let statements = vec![
                 quote! {
-                    let #reader_ident = #reader_expr.reborrow().#method_ident().map_err(|error| {
-                        peppylib::PeppyError::from(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            error,
-                        ))
-                    })?;
+                    let #reader_ident = #reader_expr
+                        .reborrow()
+                        .#method_ident()
+                        .map_err(|source| crate::Error::CapnpField {
+                            field: String::from(#field_literal),
+                            context: String::from(#context_literal),
+                            source,
+                        })?;
                 },
                 quote! {
                     let #value_ident = #reader_ident.to_string();
@@ -1477,12 +1575,14 @@ fn generate_primitive_reader(
             let reader_ident = names.next("data");
             let statements = vec![
                 quote! {
-                    let #reader_ident = #reader_expr.reborrow().#method_ident().map_err(|error| {
-                        peppylib::PeppyError::from(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            error,
-                        ))
-                    })?;
+                    let #reader_ident = #reader_expr
+                        .reborrow()
+                        .#method_ident()
+                        .map_err(|source| crate::Error::CapnpField {
+                            field: String::from(#field_literal),
+                            context: String::from(#context_literal),
+                            source,
+                        })?;
                 },
                 quote! {
                     let #value_ident = #reader_ident.into_iter().collect::<Vec<_>>();
@@ -1495,12 +1595,14 @@ fn generate_primitive_reader(
             let capnp_ident = names.next("capnp_timestamp");
             let statements = vec![
                 quote! {
-                    let #reader_ident = #reader_expr.reborrow().#method_ident().map_err(|error| {
-                        peppylib::PeppyError::from(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            error,
-                        ))
-                    })?;
+                    let #reader_ident = #reader_expr
+                        .reborrow()
+                        .#method_ident()
+                        .map_err(|source| crate::Error::CapnpField {
+                            field: String::from(#field_literal),
+                            context: String::from(#context_literal),
+                            source,
+                        })?;
                 },
                 quote! {
                     let #capnp_ident = config::encoding::CapnpTimestamp {
@@ -1519,6 +1621,7 @@ fn generate_array_reader(
     reader_expr: &TokenStream,
     field_name: &str,
     array: &ArraySchema,
+    context: &str,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
     let method_ident = Ident::new(
@@ -1527,7 +1630,14 @@ fn generate_array_reader(
     );
     match array.items.as_ref() {
         SchemaType::Type(TypeToken::U8) => {
-            generate_u8_array_reader(reader_expr, field_name, &method_ident, array.length, names)
+            generate_u8_array_reader(
+                reader_expr,
+                field_name,
+                &method_ident,
+                array.length,
+                context,
+                names,
+            )
         }
         SchemaType::Type(token) => generate_primitive_array_reader(
             reader_expr,
@@ -1535,6 +1645,7 @@ fn generate_array_reader(
             token,
             &method_ident,
             array.length,
+            context,
             names,
         ),
         other => panic!(
@@ -1549,19 +1660,23 @@ fn generate_u8_array_reader(
     field_name: &str,
     method_ident: &Ident,
     length: Option<usize>,
+    context: &str,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
     let reader_ident = names.next("data");
     let value_ident = names.next(field_name);
     let field_literal = Literal::string(field_name);
+    let context_literal = Literal::string(context);
 
     let mut statements = vec![quote! {
-        let #reader_ident = #reader_expr.reborrow().#method_ident().map_err(|error| {
-            peppylib::PeppyError::from(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                error,
-            ))
-        })?;
+        let #reader_ident = #reader_expr
+            .reborrow()
+            .#method_ident()
+            .map_err(|source| crate::Error::CapnpField {
+                field: String::from(#field_literal),
+                context: String::from(#context_literal),
+                source,
+            })?;
     }];
 
     match length {
@@ -1569,15 +1684,12 @@ fn generate_u8_array_reader(
             let len_lit = Literal::usize_unsuffixed(len);
             statements.push(quote! {
                 if #reader_ident.len() as usize != #len_lit {
-                    return Err(peppylib::PeppyError::from(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!(
-                            "expected {} bytes for `{}` but received {}",
-                            #len_lit,
-                            #field_literal,
-                            #reader_ident.len()
-                        ),
-                    )));
+                    let actual = #reader_ident.len() as usize;
+                    return Err(crate::Error::InvalidFixedBytes {
+                        field: String::from(#field_literal),
+                        expected: #len_lit,
+                        actual,
+                    });
                 }
             });
             statements.push(quote! {
@@ -1585,17 +1697,10 @@ fn generate_u8_array_reader(
                     .into_iter()
                     .collect::<Vec<_>>()
                     .try_into()
-                    .map_err(|vec: Vec<u8>| {
-                        let actual = vec.len();
-                        peppylib::PeppyError::from(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!(
-                                "expected {} bytes for `{}` but received {}",
-                                #len_lit,
-                                #field_literal,
-                                actual
-                            ),
-                        ))
+                    .map_err(|vec: Vec<u8>| crate::Error::InvalidFixedBytes {
+                        field: String::from(#field_literal),
+                        expected: #len_lit,
+                        actual: vec.len(),
                     })?;
             });
         }
@@ -1615,22 +1720,26 @@ fn generate_primitive_array_reader(
     token: &TypeToken,
     method_ident: &Ident,
     length: Option<usize>,
+    context: &str,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
     let reader_ident = names.next("list");
     let vec_ident = names.next("values");
     let value_ident = names.next(field_name);
     let field_literal = Literal::string(field_name);
+    let context_literal = Literal::string(context);
 
     let element_ty = primitive_type_token(token);
 
     let mut statements = vec![quote! {
-        let #reader_ident = #reader_expr.reborrow().#method_ident().map_err(|error| {
-            peppylib::PeppyError::from(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                error,
-            ))
-        })?;
+        let #reader_ident = #reader_expr
+            .reborrow()
+            .#method_ident()
+            .map_err(|source| crate::Error::CapnpField {
+                field: String::from(#field_literal),
+                context: String::from(#context_literal),
+                source,
+            })?;
     }];
 
     statements.push(quote! {
@@ -1645,15 +1754,12 @@ fn generate_primitive_array_reader(
             let len_lit = Literal::usize_unsuffixed(len);
             statements.push(quote! {
                 if #vec_ident.len() != #len_lit {
-                    return Err(peppylib::PeppyError::from(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!(
-                            "expected {} elements for `{}` but received {}",
-                            #len_lit,
-                            #field_literal,
-                            #vec_ident.len()
-                        ),
-                    )));
+                    let actual = #vec_ident.len();
+                    return Err(crate::Error::InvalidFixedListLength {
+                        field: String::from(#field_literal),
+                        expected: #len_lit,
+                        actual,
+                    });
                 }
             });
             statements.push(quote! {
@@ -1685,13 +1791,17 @@ fn generate_object_reader(
         Span::call_site(),
     );
     let reader_ident = names.next("reader");
+    let field_literal = Literal::string(field_name);
+    let context_literal = Literal::string(struct_prefix);
     let mut statements = vec![quote! {
-        let #reader_ident = #reader_expr.reborrow().#method_ident().map_err(|error| {
-            peppylib::PeppyError::from(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                error,
-            ))
-        })?;
+        let #reader_ident = #reader_expr
+            .reborrow()
+            .#method_ident()
+            .map_err(|source| crate::Error::CapnpField {
+                field: String::from(#field_literal),
+                context: String::from(#context_literal),
+                source,
+            })?;
     }];
 
     let mut field_statements = Vec::new();
@@ -1761,6 +1871,7 @@ fn build_sync_function(
             quote!(#ident: #ty)
         })
         .collect();
+    let label_literal = Literal::string(label);
 
     let async_args: Vec<TokenStream> = params
         .iter()
@@ -1770,17 +1881,15 @@ fn build_sync_function(
         })
         .collect();
 
-    let label_literal = Literal::string(label);
-
     quote! {
-        pub fn #fn_name(#(#param_tokens),*) -> capnp::Result<Vec<u8>> {
+        pub fn #fn_name(#(#param_tokens),*) -> crate::Result<()> {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .map_err(|err| capnp::Error::failed(format!(
-                    "failed to build runtime for `{}`: {err}",
-                    #label_literal
-                )))?;
+                .map_err(|source| crate::Error::RuntimeInitialization {
+                    context: String::from(#label_literal),
+                    source,
+                })?;
             runtime.block_on(#async_fn_name(#(#async_args),*))
         }
     }
@@ -1800,6 +1909,7 @@ fn build_async_function(
             quote!(#ident: #ty)
         })
         .collect();
+    let label_literal = Literal::string(label);
 
     match encoding {
         Some(spec) => {
@@ -1808,14 +1918,19 @@ fn build_async_function(
             let root_ident = Ident::new("root", Span::call_site());
 
             quote! {
-                pub async fn #fn_name(#(#param_tokens),*) -> peppylib::PeppyResult<()> {
+                pub async fn #fn_name(#(#param_tokens),*) -> crate::Result<()> {
                     let mut message = capnp::message::Builder::new_default();
                     {
                         let mut #root_ident = message.init_root::<#builder_type>();
                         #(#assignments)*
                     }
                     let mut buffer = Vec::new();
-                    capnp::serialize::write_message(&mut buffer, &message)?;
+                    capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
+                        crate::Error::CapnpSerialize {
+                            context: String::from(#label_literal),
+                            source,
+                        }
+                    })?;
 
                     let message_payload = to_bytes(message)?;
                     let _ns = "temporary_namespace";
@@ -1835,7 +1950,7 @@ fn build_async_function(
             ));
 
             quote! {
-                pub async fn #fn_name(#(#param_tokens),*) -> capnp::Result<Vec<u8>> {
+                pub async fn #fn_name(#(#param_tokens),*) -> crate::Result<()> {
                     #suppress_unused
                     todo!(#msg);
                 }

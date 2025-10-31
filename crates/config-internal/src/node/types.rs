@@ -512,7 +512,8 @@ mod tests {
     #[test]
     fn subscribed_topic_requires_non_empty_node_and_name() {
         let valid = r#"{ node: "uvc_camera", name: "stream" }"#;
-        let topic: SubscribedTopic = serde_json5::from_str(valid).expect("valid topic should parse");
+        let topic: SubscribedTopic =
+            serde_json5::from_str(valid).expect("valid topic should parse");
         assert_eq!(topic.node, "uvc_camera");
         assert_eq!(topic.name, "stream");
 

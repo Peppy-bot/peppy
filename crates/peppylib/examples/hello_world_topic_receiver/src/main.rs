@@ -3,14 +3,6 @@ use config::node::QoSProfile;
 use peppylib::TopicMessenger;
 use tokio::signal;
 
-async fn connect_messenger(host: &str, port: u16) -> TopicMessenger {
-    TopicMessenger::from_host_port(host, port)
-        .await
-        .unwrap_or_else(|error| {
-            panic!("failed to create messenger on {host}:{port}: {error:?}.\n Did you start a zenohd server with the `zenohd_simple` example?")
-        })
-}
-
 #[tokio::main]
 async fn main() {
     let topic_name = "hello_msg";
@@ -20,7 +12,13 @@ async fn main() {
     let ns = "/hello_ns";
 
     // Create a messenger for the receiving node.
-    let receiver_node = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
+    let host = "127.0.0.1";
+    let port = DEFAULT_ZENOH_PORT;
+    let receiver_node = TopicMessenger::from_host_port(host, port)
+        .await
+        .unwrap_or_else(|error| {
+            panic!("failed to create messenger on {host}:{port}: {error:?}.\n Did you start a zenohd server with the `zenohd_simple` example?")
+        });
 
     let mut subscription = receiver_node
         .subscribe(ns, topic_name, qos)
@@ -35,7 +33,7 @@ async fn main() {
                 println!("Received CTRL+C, exiting.");
                 break;
             }
-            maybe_msg = subscription.rx.recv() => {
+            maybe_msg = subscription.on_next_message() => {
                 match maybe_msg {
                     Some(received) => {
                         let payload = String::from_utf8_lossy(&received.payload);

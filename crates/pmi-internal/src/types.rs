@@ -104,6 +104,10 @@ impl Subscription {
     ) -> Self {
         Self { rx, abort_handle }
     }
+
+    pub async fn on_next_message(&mut self) -> Option<Message> {
+        self.rx.recv().await
+    }
 }
 
 impl Drop for Subscription {

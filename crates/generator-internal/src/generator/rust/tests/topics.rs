@@ -72,6 +72,16 @@ fn exposed_topic_gen_calling_code() {
         "expected serialization call"
     );
     assert_rendered!(
+        rendered.contains("crate::Error::TopicMessengerConnect"),
+        &rendered,
+        "expected explicit topic messenger error variant"
+    );
+    assert_rendered!(
+        rendered.contains("crate::Error::CapnpSerialize"),
+        &rendered,
+        "expected explicit capnp serialization error variant"
+    );
+    assert_rendered!(
         rendered.contains("header: PushFrameHeader"),
         &rendered,
         "expected structured header argument"
@@ -97,8 +107,7 @@ fn exposed_topic_gen_calling_code() {
         "expected namespace initialization from environment"
     );
     assert_rendered!(
-        rendered
-            .contains("pub async fn connect(host: &str, port: u16) -> peppylib::PeppyResult<Self>"),
+        rendered.contains("pub async fn connect(host: &str, port: u16) -> crate::Result<Self>"),
         &rendered,
         "expected async connect constructor"
     );
@@ -113,9 +122,9 @@ fn exposed_topic_gen_calling_code() {
         "expected async emit method"
     );
     assert_rendered!(
-        rendered.contains("-> peppylib::PeppyResult<()>"),
+        rendered.contains("-> crate::Result<()>"),
         &rendered,
-        "expected peppylib result type"
+        "expected crate result type"
     );
     assert_rendered!(
         rendered.contains("bytes::Bytes::from(buffer)"),
@@ -209,9 +218,15 @@ fn subscribed_to_topic() {
         &rendered,
         "expected subscription field"
     );
+    let on_next_usage_count = rendered.matches(".on_next_message()").count();
     assert_rendered!(
-        rendered
-            .contains("pub async fn connect(host: &str, port: u16) -> peppylib::PeppyResult<Self>"),
+        on_next_usage_count == 1,
+        &rendered,
+        "expected subscription helper to await next message once, found {} occurrence(s)",
+        on_next_usage_count
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn connect(host: &str, port: u16) -> crate::Result<Self>"),
         &rendered,
         "expected async connect constructor"
     );
@@ -241,7 +256,7 @@ fn subscribed_to_topic() {
         "expected private payload deserializer function"
     );
     assert_rendered!(
-        rendered.contains("-> peppylib::PeppyResult<UvcCameraStreamMessage>"),
+        rendered.contains("-> crate::Result<UvcCameraStreamMessage>"),
         &rendered,
         "expected subscriber return type"
     );
@@ -256,6 +271,31 @@ fn subscribed_to_topic() {
         "expected capnp deserialization"
     );
     assert_rendered!(
+        rendered.contains("crate::Error::TopicSubscribe"),
+        &rendered,
+        "expected explicit topic subscribe error variant"
+    );
+    assert_rendered!(
+        rendered.contains("crate::Error::SubscriptionClosed"),
+        &rendered,
+        "expected explicit subscription closed error variant"
+    );
+    assert_rendered!(
+        rendered.contains("crate::Error::CapnpDeserialize"),
+        &rendered,
+        "expected explicit capnp deserialize error variant"
+    );
+    assert_rendered!(
+        rendered.contains("crate::Error::CapnpField"),
+        &rendered,
+        "expected explicit capnp field access error variant"
+    );
+    assert_rendered!(
+        rendered.contains("crate::Error::InvalidFixedBytes"),
+        &rendered,
+        "expected explicit fixed-size byte validation error variant"
+    );
+    assert_rendered!(
         rendered.contains("let qos = config::node::QoSProfile::Standard;"),
         &rendered,
         "expected qos initialization"
@@ -264,23 +304,15 @@ fn subscribed_to_topic() {
 
 #[test]
 fn subscribed_to_double_topic_same_node() {
-    let stream_topic = r#"
+    let video_topic = r#"
         {
             node: "uvc_camera",
-            name: "stream",
+            name: "video",
             tag: "0.1.0"
         }
         "#;
-    let stream_topic: SubscribedTopic = serde_json5::from_str(stream_topic).unwrap();
-    let frame_topic = r#"
-        {
-            node: "uvc_camera",
-            name: "frame",
-            tag: "0.1.0"
-        }
-    "#;
-    let frame_topic: SubscribedTopic = serde_json5::from_str(frame_topic).unwrap();
-    let format = r#"
+    let video_topic: SubscribedTopic = serde_json5::from_str(video_topic).unwrap();
+    let video_format = r#"
         {
             header: {
                 type: "object",
@@ -297,29 +329,130 @@ fn subscribed_to_double_topic_same_node() {
             }
         }
         "#;
-    let format: MessageFormat = serde_json5::from_str(format).unwrap();
+    let video_format: MessageFormat = serde_json5::from_str(video_format).unwrap();
+    let sound_topic = r#"
+        {
+            node: "uvc_camera",
+            name: "sound",
+            tag: "0.1.0"
+        }
+    "#;
+    let sound_topic: SubscribedTopic = serde_json5::from_str(sound_topic).unwrap();
+    let sound_format = r#"
+        {
+          header: {
+            type: "object",
+            stamp: "time"
+          },
+          encoding: "string",         // e.g., "pcm_s16le", "f32", "mp3", "opus"
+          sample_rate: "u32",         // Hz
+          channels: "u32",            // e.g., 1=mono, 2=stereo
+          layout: "string",           // "interleaved" | "planar"
+          frame_count: "u32",         // samples per channel in this frame
+          samples: {
+            type: "array",
+            items: "u8",              // raw bytes; interpret per 'encoding'
+          }
+        }
+        "#;
+    let sound_format: MessageFormat = serde_json5::from_str(sound_format).unwrap();
 
     let mut generator = RustGenerator::new();
     generator
-        .add_subscribed_topic(&stream_topic, Some(&format))
+        .add_subscribed_topic(&video_topic, Some(&video_format))
         .unwrap();
     generator
-        .add_subscribed_topic(&frame_topic, Some(&format))
+        .add_subscribed_topic(&sound_topic, Some(&sound_format))
         .unwrap();
     let artifacts: Vec<String> = generator
         .into_artifacts()
         .into_iter()
         .map(|artifact| artifact.code_output)
         .collect();
-    assert_eq!(
-        artifacts.len(),
-        2,
-        "expected two generated artifact, got {}",
-        artifacts.len()
-    );
-    let rendered = artifacts.into_iter().next().expect("artifact is present");
+    let rendered = single_artifact(artifacts);
 
-    todo!("Finish")
+    let struct_count = rendered.matches("pub struct UvcCamera {").count();
+    assert_rendered!(
+        struct_count == 1,
+        &rendered,
+        "expected a single struct definition for the subscriber node, got {}",
+        struct_count
+    );
+
+    let connect_count = rendered.matches("pub async fn connect(").count();
+    assert_rendered!(
+        connect_count == 1,
+        &rendered,
+        "expected a single connect constructor, got {}",
+        connect_count
+    );
+    assert_rendered!(
+        rendered.contains("subscription: peppylib::messaging::Subscription"),
+        &rendered,
+        "expected subscription field for the first topic"
+    );
+    assert_rendered!(
+        rendered.contains("sound_subscription: peppylib::messaging::Subscription"),
+        &rendered,
+        "expected dedicated subscription field for the second topic"
+    );
+    let on_next_usage_count = rendered.matches(".on_next_message()").count();
+    assert_rendered!(
+        on_next_usage_count == 2,
+        &rendered,
+        "expected each subscription to await the next message via helper, found {} occurrence(s)",
+        on_next_usage_count
+    );
+    assert_rendered!(
+        rendered.contains("pub struct UvcCameraVideoMessage"),
+        &rendered,
+        "expected video payload struct"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct UvcCameraSoundMessage"),
+        &rendered,
+        "expected sound payload struct"
+    );
+    assert_rendered!(
+        rendered.contains("crate::Error::NodeMessengerConnect"),
+        &rendered,
+        "expected explicit node messenger error variant"
+    );
+    assert_rendered!(
+        rendered.contains("crate::Error::TopicSubscribe"),
+        &rendered,
+        "expected explicit subscribe error variant for each topic"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn on_next_video_message"),
+        &rendered,
+        "expected video subscriber method"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn on_next_sound_message"),
+        &rendered,
+        "expected sound subscriber method"
+    );
+    assert_rendered!(
+        rendered.contains("fn deseralize_video_payload"),
+        &rendered,
+        "expected video payload helper"
+    );
+    assert_rendered!(
+        rendered.contains("fn deseralize_sound_payload"),
+        &rendered,
+        "expected sound payload helper"
+    );
+    assert_rendered!(
+        rendered.contains("let topic_name = \"video\";"),
+        &rendered,
+        "expected connect routine to subscribe to the video topic"
+    );
+    assert_rendered!(
+        rendered.contains("let topic_name = \"sound\";"),
+        &rendered,
+        "expected connect routine to subscribe to the sound topic"
+    );
 }
 
 #[test]

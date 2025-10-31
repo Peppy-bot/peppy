@@ -93,9 +93,8 @@ fn exposed_action_gen_calling_code() {
     }
 
     for expected in [
-        "-> ::capnp::Result<Vec<u8>>",
-        "::capnp::message::Builder::new_default",
-        "::capnp::serialize::write_message",
+        "capnp::message::Builder::new_default",
+        "capnp::serialize::write_message",
     ] {
         assert_rendered!(
             rendered.contains(expected),
@@ -103,6 +102,16 @@ fn exposed_action_gen_calling_code() {
             "expected `{expected}` in capnp-based action code"
         );
     }
+    assert_rendered!(
+        rendered.contains("crate::Error::RuntimeInitialization"),
+        &rendered,
+        "expected explicit runtime initialization error variant"
+    );
+    assert_rendered!(
+        rendered.contains("crate::Error::CapnpSerialize"),
+        &rendered,
+        "expected explicit capnp serialization error variant"
+    );
 
     assert_rendered!(
         rendered.contains("move_arm_goal_message_capnp::move_arm_goal_message::Builder"),
@@ -123,6 +132,11 @@ fn exposed_action_gen_calling_code() {
         rendered.contains("init_final_position"),
         &rendered,
         "expected list initialization for result"
+    );
+    assert_rendered!(
+        rendered.contains("-> crate::Result<()>"),
+        &rendered,
+        "expected async helpers to return crate result type"
     );
 
     assert_rendered!(
