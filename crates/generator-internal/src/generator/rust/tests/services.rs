@@ -4,7 +4,6 @@ use config::node::{ExposedService, SubscribedService};
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {
   name: "enable_camera",
-  qos_profile: "critical",
   accept_message_format: {
     enable: "bool"
   },
@@ -36,9 +35,9 @@ fn exposed_service_gen_calling_code() {
         "expected sync service function"
     );
     assert_rendered!(
-        rendered.contains("-> ::capnp::Result<Vec<u8>>"),
+        rendered.contains("-> crate::Result<()>"),
         &rendered,
-        "expected capnp result type for service function"
+        "expected crate result type for service function"
     );
     assert_rendered!(
         rendered.contains("pub async fn enable_camera_async("),
@@ -46,7 +45,7 @@ fn exposed_service_gen_calling_code() {
         "expected async service function"
     );
     assert_rendered!(
-        rendered.contains("::capnp::message::Builder::new_default"),
+        rendered.contains("capnp::message::Builder::new_default"),
         &rendered,
         "expected capnp builder usage"
     );
@@ -56,9 +55,19 @@ fn exposed_service_gen_calling_code() {
         "expected service-specific schema builder"
     );
     assert_rendered!(
-        rendered.contains("::capnp::serialize::write_message"),
+        rendered.contains("capnp::serialize::write_message"),
         &rendered,
         "expected serialization call"
+    );
+    assert_rendered!(
+        rendered.contains("crate::Error::RuntimeInitialization"),
+        &rendered,
+        "expected explicit runtime initialization error variant"
+    );
+    assert_rendered!(
+        rendered.contains("crate::Error::CapnpSerialize"),
+        &rendered,
+        "expected explicit capnp serialization error variant"
     );
     assert_rendered!(
         rendered.contains("enable: bool"),

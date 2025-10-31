@@ -150,7 +150,6 @@ const SUBSCRIBED_SERVICE_FORMAT_EXAMPLE: &str = r#"
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {
   name: "enable_camera",
-  qos_profile: "critical",
   accept_message_format: {
     enable: "bool"
   },
@@ -434,7 +433,7 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
         std::fs::read_to_string(&stream_module).expect("failed to read stream module");
     assert!(
         stream_contents.contains(
-            "pub async fn on_next_stream_message(&mut self) -> peppylib::PeppyResult<UvcCameraStreamMessage>"
+            "pub async fn on_next_stream_message(&mut self) -> crate::Result<UvcCameraStreamMessage>"
         ),
         "Expected subscribed topic module to expose callback arguments, got:\n{}",
         stream_contents
