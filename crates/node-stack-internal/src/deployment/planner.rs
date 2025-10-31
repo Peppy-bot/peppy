@@ -609,7 +609,7 @@ mod tests {
                 .iter()
                 .map(|(dep_name, dep_tag)| {
                     format!(
-                        "{{ node: \"{dep_name}\", name: \"{dep_name}_topic\", tag: \"{dep_tag}\", callback: \"on_{dep_name}_topic\" }}"
+                        "{{ node: \"{dep_name}\", name: \"{dep_name}_topic\", tag: \"{dep_tag}\" }}"
                     )
                 })
                 .collect::<Vec<_>>()

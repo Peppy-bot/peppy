@@ -31,14 +31,12 @@
         {
           node: "{{ uvc_camera_node_name }}",
           tag: "0.1.0",
-          name: "stream",
-          callback: "on_video_frame_received"
+          name: "stream"
         },
         {
           node: "{{ lidar_sensor_node_name }}",
           tag: "0.1.0",
-          name: "stream",
-          callback: "on_video_frame_received"
+          name: "stream"
         }
       ],
       services: [],
@@ -47,8 +45,6 @@
           node: "{{ controller_node_name }}", // Will look for that node name
           tag: "0.1.0", // On that particular tag/version
           name: "move_right_arm", // With this action name
-          feedback_callback: "on_move_right_arm_feedback_received",
-          results_callback: "on_move_right_arm_result_received"
         }
       ],
     },

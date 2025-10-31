@@ -6,7 +6,7 @@ use bytes::Bytes;
 use config::node::QoSProfile;
 use pmi::{
     Message, Messenger, MessengerAdapter, MessengerBackend, PeppyMessagingInterfaceError,
-    PublisherQoS, SubscriberQoS, Subscription, ZenohAdapter, ZenohNetProtocol,
+    PublisherQoS, SubscriberQoS, ZenohAdapter, ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -19,6 +19,8 @@ use tokio::{
     time::{Duration, timeout},
 };
 use tracing::error;
+
+pub use pmi::Subscription;
 
 /// Internal handle around a messenger session shared by the specialized messengers.
 struct MessengerHandle {

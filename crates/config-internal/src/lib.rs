@@ -12,7 +12,7 @@ pub mod peppy_config {
 
 pub use common::{AnyType, NodeParameters};
 
-pub use encoding::convert_time;
+pub use encoding::{convert_time, convert_time_from_capnp};
 
 // To watch projects
 pub use watch::{FSNodeConfigWatcher, NodeIndexState};

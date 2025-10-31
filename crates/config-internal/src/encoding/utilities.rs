@@ -1,4 +1,6 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const NANOS_PER_SEC: u32 = 1_000_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapnpTimestamp {
@@ -25,9 +27,26 @@ pub fn convert_time(timestamp: SystemTime) -> CapnpTimestamp {
             } else {
                 CapnpTimestamp {
                     sec: -secs - 1,
-                    nsec: 1_000_000_000u32 - nanos,
+                    nsec: NANOS_PER_SEC - nanos,
                 }
             }
         }
+    }
+}
+
+pub fn convert_time_from_capnp(timestamp: CapnpTimestamp) -> SystemTime {
+    debug_assert!(timestamp.nsec < NANOS_PER_SEC);
+
+    if timestamp.sec >= 0 {
+        UNIX_EPOCH + Duration::new(timestamp.sec as u64, timestamp.nsec)
+    } else if timestamp.nsec == 0 {
+        let secs_to_epoch = (-i128::from(timestamp.sec)) as u64;
+
+        UNIX_EPOCH - Duration::new(secs_to_epoch, 0)
+    } else {
+        let secs_to_epoch = (-(i128::from(timestamp.sec) + 1)) as u64;
+        let nanos_to_epoch = (i128::from(NANOS_PER_SEC) - i128::from(timestamp.nsec)) as u32;
+
+        UNIX_EPOCH - Duration::new(secs_to_epoch, nanos_to_epoch)
     }
 }

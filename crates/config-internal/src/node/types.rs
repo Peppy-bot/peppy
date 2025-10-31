@@ -66,61 +66,6 @@ impl From<Name> for String {
     }
 }
 
-/// Validated callback name shared across languages (Rust/Python/Java-friendly).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
-#[serde(transparent)]
-pub struct CallbackName(String);
-
-impl CallbackName {
-    pub fn new<S: Into<String>>(value: S) -> Result<Self, CallbackNameError> {
-        let value = value.into();
-        Self::validate(&value)?;
-        Ok(Self(value))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    fn validate(value: &str) -> Result<(), CallbackNameError> {
-        let mut chars = value.chars();
-        let first = chars.next().ok_or(CallbackNameError::Empty)?;
-        if !Self::is_valid_start(first) {
-            return Err(CallbackNameError::InvalidStart(first));
-        }
-        for ch in chars {
-            if !Self::is_valid_continue(ch) {
-                return Err(CallbackNameError::InvalidChar(ch));
-            }
-        }
-        Ok(())
-    }
-
-    fn is_valid_start(ch: char) -> bool {
-        ch == '_' || ch.is_ascii_alphabetic()
-    }
-
-    fn is_valid_continue(ch: char) -> bool {
-        ch == '_' || ch.is_ascii_alphanumeric()
-    }
-}
-
-impl<'de> Deserialize<'de> for CallbackName {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = String::deserialize(deserializer)?;
-        CallbackName::new(raw).map_err(de::Error::custom)
-    }
-}
-
-impl Display for CallbackName {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallbackNameError {
     Empty,
@@ -356,13 +301,12 @@ pub struct ExposedAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubscribedTopic {
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_subscribed_topic_node")]
     pub node: String,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_subscribed_topic_name")]
     pub name: String,
     #[serde(default)]
     pub tag: String,
-    pub callback: CallbackName,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -374,7 +318,6 @@ pub struct SubscribedService {
     pub name: String,
     #[serde(default)]
     pub tag: String,
-    pub callback: CallbackName,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -386,10 +329,6 @@ pub struct SubscribedAction {
     pub name: String,
     #[serde(default)]
     pub tag: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub feedback_callback: Option<CallbackName>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub results_callback: Option<CallbackName>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -417,6 +356,40 @@ impl Default for ActionServiceEndpoint {
             name: None,
         }
     }
+}
+
+fn deserialize_subscribed_topic_node<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_non_empty_identifier(deserializer, "SubscribedTopic.node")
+}
+
+fn deserialize_subscribed_topic_name<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_non_empty_identifier(deserializer, "SubscribedTopic.name")
+}
+
+fn deserialize_non_empty_identifier<'de, D>(
+    deserializer: D,
+    label: &'static str,
+) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = String::deserialize(deserializer)?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(de::Error::custom(format!("{label} cannot be empty")));
+    }
+    if !trimmed.chars().any(|ch| ch.is_ascii_alphanumeric()) {
+        return Err(de::Error::custom(format!(
+            "{label} must contain at least one alphanumeric character"
+        )));
+    }
+    Ok(trimmed.to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -537,57 +510,32 @@ mod tests {
     }
 
     #[test]
-    fn callback_name_validation() {
-        assert!(CallbackName::new("on_brain_command_received").is_ok());
-        assert!(CallbackName::new("handleEvent").is_ok());
-        assert!(CallbackName::new("_internal_handler").is_ok());
+    fn subscribed_topic_requires_non_empty_node_and_name() {
+        let valid = r#"{ node: "uvc_camera", name: "stream" }"#;
+        let topic: SubscribedTopic = serde_json5::from_str(valid).expect("valid topic should parse");
+        assert_eq!(topic.node, "uvc_camera");
+        assert_eq!(topic.name, "stream");
 
-        assert!(matches!(
-            CallbackName::new(""),
-            Err(CallbackNameError::Empty)
-        ));
-        assert!(matches!(
-            CallbackName::new("1bad"),
-            Err(CallbackNameError::InvalidStart('1'))
-        ));
-        assert!(matches!(
-            CallbackName::new("bad-name"),
-            Err(CallbackNameError::InvalidChar('-'))
-        ));
-        assert!(matches!(
-            CallbackName::new("bad!name"),
-            Err(CallbackNameError::InvalidChar('!'))
-        ));
-    }
+        let missing_node = r#"{ node: "", name: "stream" }"#;
+        assert!(serde_json5::from_str::<SubscribedTopic>(missing_node).is_err());
 
-    #[test]
-    fn callback_name_deserialize_rejects_invalid() {
-        let parsed: CallbackName = serde_json5::from_str("\"onBrainCommand\"").unwrap();
-        assert_eq!(parsed.as_str(), "onBrainCommand");
+        let missing_name = r#"{ node: "uvc_camera", name: "" }"#;
+        assert!(serde_json5::from_str::<SubscribedTopic>(missing_name).is_err());
 
-        let err: Result<CallbackName, _> = serde_json5::from_str("\"1brainCommand\"");
-        assert!(err.is_err());
-    }
+        let whitespace_only = r#"{ node: "   ", name: "stream" }"#;
+        assert!(serde_json5::from_str::<SubscribedTopic>(whitespace_only).is_err());
 
-    #[test]
-    fn subscribed_action_accepts_all_callbacks() {
-        let json = r#"{
-            node: "brain",
-            name: "move_arm",
-            tag: "0.1.0",
-            feedback_callback: "onMoveArmFeedback",
-            results_callback: "onMoveArmResult"
-        }"#;
+        let punctuation_only = r#"{ node: "--", name: "stream" }"#;
+        assert!(serde_json5::from_str::<SubscribedTopic>(punctuation_only).is_err());
 
-        let action: SubscribedAction = serde_json5::from_str(json).unwrap();
-        assert_eq!(
-            action.feedback_callback.as_ref().unwrap().as_str(),
-            "onMoveArmFeedback"
-        );
-        assert_eq!(
-            action.results_callback.as_ref().unwrap().as_str(),
-            "onMoveArmResult"
-        );
+        let missing_field = r#"{ node: "uvc_camera" }"#;
+        assert!(serde_json5::from_str::<SubscribedTopic>(missing_field).is_err());
+
+        let trimmed = r#"{ node: " uvc_camera ", name: " stream " }"#;
+        let topic: SubscribedTopic =
+            serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
+        assert_eq!(topic.node, "uvc_camera");
+        assert_eq!(topic.name, "stream");
     }
 
     #[test]

@@ -70,8 +70,7 @@ const SUBSCRIBED_TOPIC_EXAMPLE: &str = r#"
 {
   node: "uvc_camera",
   name: "stream",
-  tag: "0.1.0",
-  callback: "on_video_frame_received"
+  tag: "0.1.0"
 }
 "#;
 
@@ -97,8 +96,7 @@ const SUBSCRIBED_SERVICE_EXAMPLE: &str = r#"
 {
   node: "uvc_camera",
   name: "get_camera_info",
-  tag: "0.1.0",
-  callback: "on_get_camera_info"
+  tag: "0.1.0"
 }
 "#;
 
@@ -107,8 +105,6 @@ const SUBSCRIBED_ACTION_EXAMPLE: &str = r#"
   node: "brain",
   name: "move_arm",
   tag: "0.1.0",
-  feedback_callback: "on_move_arm_feedback",
-  results_callback: "on_move_arm_result"
 }
 "#;
 
@@ -437,8 +433,9 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
     let stream_contents =
         std::fs::read_to_string(&stream_module).expect("failed to read stream module");
     assert!(
-        stream_contents
-            .contains("pub async fn on_video_frame_received() -> OnVideoFrameReceivedArguments"),
+        stream_contents.contains(
+            "pub async fn on_next_stream_message(&mut self) -> peppylib::PeppyResult<UvcCameraStreamMessage>"
+        ),
         "Expected subscribed topic module to expose callback arguments, got:\n{}",
         stream_contents
     );
