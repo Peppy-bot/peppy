@@ -214,7 +214,7 @@ fn subscribed_to_topic() {
         "expected subscriber struct definition"
     );
     assert_rendered!(
-        rendered.contains("subscription: peppylib::messaging::Subscription"),
+        rendered.contains("stream_subscription: peppylib::messaging::Subscription"),
         &rendered,
         "expected subscription field"
     );
@@ -387,7 +387,7 @@ fn subscribed_to_double_topic_same_node() {
         connect_count
     );
     assert_rendered!(
-        rendered.contains("subscription: peppylib::messaging::Subscription"),
+        rendered.contains("video_subscription: peppylib::messaging::Subscription"),
         &rendered,
         "expected subscription field for the first topic"
     );

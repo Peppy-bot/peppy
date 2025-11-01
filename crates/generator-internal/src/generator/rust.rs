@@ -563,19 +563,9 @@ impl SubscribedTopicNode {
     }
 
     fn allocate_subscription_field(&mut self, topic_name: &str) -> Ident {
-        if self.subscriptions.is_empty() {
-            let ident = Ident::new("subscription", Span::call_site());
-            let topic_literal = Literal::string(topic_name);
-            self.subscriptions.push(SubscriptionField {
-                field_ident: ident.clone(),
-                topic_literal,
-            });
-            return ident;
-        }
-
         let sanitized = sanitize_component(topic_name);
         let mut candidate = if sanitized.is_empty() {
-            format!("subscription_{}", self.subscriptions.len() + 1)
+            String::from("subscription")
         } else {
             format!("{sanitized}_subscription")
         };
@@ -586,7 +576,7 @@ impl SubscribedTopicNode {
             .any(|field| field.field_ident.to_string() == candidate)
         {
             candidate = if sanitized.is_empty() {
-                format!("subscription_{}", self.subscriptions.len() + counter)
+                format!("subscription_{counter}")
             } else {
                 format!("{sanitized}_subscription_{counter}")
             };
