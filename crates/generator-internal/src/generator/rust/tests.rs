@@ -50,13 +50,3 @@ fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> std::path::Path
     fs::copy(&source, &destination).unwrap();
     destination
 }
-
-fn single_artifact(artifacts: Vec<String>) -> String {
-    assert_eq!(
-        artifacts.len(),
-        1,
-        "expected a single generated artifact, got {}",
-        artifacts.len()
-    );
-    artifacts.into_iter().next().expect("artifact is present")
-}
