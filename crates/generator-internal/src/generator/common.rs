@@ -54,7 +54,6 @@ pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>) -> Result<()> {
     copy_workspace_crate(PEPPYLIB_DIR, &vendored_crates_dir, &metadata)?;
     copy_workspace_crate(PMI_INTERNAL_DIR, &vendored_crates_dir, &metadata)?;
     copy_workspace_crate(CONFIG_INTERNAL_DIR, &vendored_crates_dir, &metadata)?;
-
     Ok(())
 }
 

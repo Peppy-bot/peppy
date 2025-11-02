@@ -7,11 +7,11 @@ const EXPOSED_TOPIC_EXAMPLE: &str = r#"
   qos_profile: "sensor_data",
   message_format: {
     header: {
-    type: "object",
-    stamp: "time",
-    frame_id: "u32"
-  },
-  encoding: "string",
+      type: "object",
+      stamp: "time",
+      frame_id: "u32"
+    },
+    encoding: "string",
     width: "u32",
     height: "u32",
     image: {
@@ -142,7 +142,7 @@ fn exposed_topic_gen_calling_code() {
         "expected topic name literal"
     );
     assert_rendered!(
-        rendered.contains("let qos = config::node::QoSProfile::SensorData;"),
+        rendered.contains("let qos = peppylib::config::QoSProfile::SensorData;"),
         &rendered,
         "expected qos profile literal"
     );
@@ -296,7 +296,7 @@ fn subscribed_to_topic() {
         "expected explicit fixed-size byte validation error variant"
     );
     assert_rendered!(
-        rendered.contains("let qos = config::node::QoSProfile::Standard;"),
+        rendered.contains("let qos = peppylib::config::QoSProfile::Standard;"),
         &rendered,
         "expected qos initialization"
     );
