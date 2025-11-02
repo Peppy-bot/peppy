@@ -1061,7 +1061,7 @@ fn generate_time_assignment(
     let builder_ident = names.next("timestamp_builder");
 
     quote! {
-        let #timestamp_ident = config::convert_time(#value_expr);
+        let #timestamp_ident = peppylib::encoding::convert_time(#value_expr);
         let mut #builder_ident = #builder_expr.reborrow().#init_method();
         #builder_ident.set_sec(#timestamp_ident.sec);
         #builder_ident.set_nsec(#timestamp_ident.nsec);
@@ -1374,7 +1374,7 @@ fn build_subscribed_topics_connect(
                 })
                 .unwrap_or_else(|_| "/".to_string());
 
-            let qos = config::node::QoSProfile::Standard;
+            let qos = peppylib::config::QoSProfile::Standard;
 
             #( #subscription_statements )*
 
@@ -1619,16 +1619,14 @@ fn generate_array_reader(
         Span::call_site(),
     );
     match array.items.as_ref() {
-        SchemaType::Type(TypeToken::U8) => {
-            generate_u8_array_reader(
-                reader_expr,
-                field_name,
-                &method_ident,
-                array.length,
-                context,
-                names,
-            )
-        }
+        SchemaType::Type(TypeToken::U8) => generate_u8_array_reader(
+            reader_expr,
+            field_name,
+            &method_ident,
+            array.length,
+            context,
+            names,
+        ),
         SchemaType::Type(token) => generate_primitive_array_reader(
             reader_expr,
             field_name,
@@ -1833,7 +1831,7 @@ fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
         QoSProfile::Critical => "Critical",
     };
     let variant_ident = Ident::new(variant, Span::call_site());
-    quote!(config::node::QoSProfile::#variant_ident)
+    quote!(peppylib::config::QoSProfile::#variant_ident)
 }
 
 fn function_param_tokens(params: &[FunctionParam]) -> Vec<TokenStream> {

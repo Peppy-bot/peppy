@@ -2,10 +2,8 @@ pub mod facade;
 #[cfg(test)]
 mod frame_capnp;
 pub mod types;
-mod utilities;
 
 pub use types::FunctionParam;
-pub use utilities::*;
 
 use crate::error::{Error, Result};
 use capnp::message::ReaderOptions;
