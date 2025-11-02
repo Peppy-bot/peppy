@@ -41,7 +41,7 @@ pub enum Error {
     CapnpSerialize {
         context: String,
         #[source]
-        source: std::io::Error,
+        source: CapnpError,
     },
     #[error("failed to deserialize Cap'n Proto message for `{context}`")]
     CapnpDeserialize {

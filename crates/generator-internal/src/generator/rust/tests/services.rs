@@ -25,7 +25,13 @@ fn exposed_service_gen_calling_code() {
         .into_iter()
         .map(|artifact| artifact.code_output)
         .collect();
-    let rendered = single_artifact(artifacts);
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected a single generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     println!("generated service code:\n{rendered}");
 
@@ -104,7 +110,13 @@ fn subscribed_service_returns_arguments() {
         .into_iter()
         .map(|artifact| artifact.code_output)
         .collect();
-    let rendered = single_artifact(artifacts);
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected a single generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     println!("generated subscribed service code:\n{rendered}");
 

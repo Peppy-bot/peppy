@@ -23,8 +23,28 @@ const EXPOSED_TOPIC_EXAMPLE: &str = r#"
 }
 "#;
 
+const EXPOSED_TOPIC_EXAMPLE2: &str = r#"
+{
+  name: "push_lidar_object", // The name of the topic inside the `lidar_sensor` node
+  qos_profile: "sensor_data",
+  message_format: {
+    header: {
+      type: "object",
+      stamp: "time",
+      frame_id: "u32",
+    },
+    x: "f32",
+    y: "f32",
+    z: "f32",
+    intensity: "f32",
+    return_type: "u8", // e.g. first return, last return
+    classification: "u8", // type of object detected
+  },
+}
+"#;
+
 #[test]
-fn exposed_topic_gen_calling_code() {
+fn exposed_topic() {
     let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new();
@@ -34,7 +54,13 @@ fn exposed_topic_gen_calling_code() {
         .into_iter()
         .map(|artifact| artifact.code_output)
         .collect();
-    let rendered = single_artifact(artifacts);
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected a single generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     assert_rendered!(
         rendered.contains("let mut message = capnp::message::Builder::new_default();"),
@@ -62,7 +88,7 @@ fn exposed_topic_gen_calling_code() {
         "expected nested header initialization"
     );
     assert_rendered!(
-        rendered.contains("config::convert_time"),
+        rendered.contains("peppylib::encoding::convert_time"),
         &rendered,
         "expected timestamp conversion helper"
     );
@@ -154,6 +180,51 @@ fn exposed_topic_gen_calling_code() {
 }
 
 #[test]
+fn exposed_double_topic() {
+    let topic1: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
+    let topic2: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE2).unwrap();
+
+    let mut generator = RustGenerator::new();
+    generator.add_exposed_topic(&topic1).unwrap();
+    generator.add_exposed_topic(&topic2).unwrap();
+    let artifacts = generator.into_artifacts();
+
+    assert_eq!(
+        artifacts.len(),
+        2,
+        "expected two generated artifacts, got {}",
+        artifacts.len()
+    );
+
+    let push_frame_rendered = artifacts
+        .iter()
+        .find(|artifact| artifact.node_name == "push_frame")
+        .map(|artifact| &artifact.code_output)
+        .expect("expected generated artifact for `push_frame`");
+    let push_lidar_rendered = artifacts
+        .iter()
+        .find(|artifact| artifact.node_name == "push_lidar_object")
+        .map(|artifact| &artifact.code_output)
+        .expect("expected generated artifact for `push_lidar_object`");
+
+    assert_rendered!(
+        push_frame_rendered.contains("let mut message = capnp::message::Builder::new_default();"),
+        push_frame_rendered,
+        "expected capnp message builder"
+    );
+    assert_rendered!(
+        push_lidar_rendered.contains("pub struct PushLidarObject {"),
+        push_lidar_rendered,
+        "expected topic messenger struct for `push_lidar_object`"
+    );
+    assert_rendered!(
+        push_lidar_rendered.contains("pub struct PushLidarObjectHeader"),
+        push_lidar_rendered,
+        "expected nested header struct for `push_lidar_object`"
+    );
+}
+
+#[test]
 fn subscribed_to_topic() {
     let topic = r#"
         {
@@ -191,7 +262,13 @@ fn subscribed_to_topic() {
         .into_iter()
         .map(|artifact| artifact.code_output)
         .collect();
-    let rendered = single_artifact(artifacts);
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected a single generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     assert_rendered!(
         rendered.contains("pub struct UvcCameraStreamMessage"),
@@ -369,7 +446,13 @@ fn subscribed_to_double_topic_same_node() {
         .into_iter()
         .map(|artifact| artifact.code_output)
         .collect();
-    let rendered = single_artifact(artifacts);
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected a single generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     let struct_count = rendered.matches("pub struct UvcCamera {").count();
     assert_rendered!(
@@ -456,99 +539,10 @@ fn subscribed_to_double_topic_same_node() {
 }
 
 #[test]
-fn create_lib_with_exposed_topic_artifact() {
-    let temp_dir = TempDir::new().unwrap();
-    let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
-
-    let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
-    generator.add_exposed_topic(&topic).unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator.build(&output_dir).unwrap();
-    fs::remove_file(output_config).unwrap();
-
-    assert!(
-        output_dir.join("Cargo.toml").exists(),
-        "Expected Cargo.toml to be generated in the temporary crate directory"
-    );
-    assert!(
-        !output_dir.join(PEPPY_NODE_CONFIG_FILE).exists(),
-        "Generated crate should not keep a copy of the node configuration file"
-    );
-
-    let lib_rs = output_dir.join("src/lib.rs");
-    assert!(
-        lib_rs.exists(),
-        "Expected lib.rs to exist so `peppygen::topics` is reachable"
-    );
-    let lib_contents = std::fs::read_to_string(&lib_rs).expect("failed to read generated lib.rs");
-    assert!(
-        lib_contents.contains("pub mod topics;"),
-        "Expected generated lib.rs to re-export the `topics` module, got:\n{}",
-        lib_contents
-    );
-
-    let topics_mod = output_dir.join("src/topics.rs");
-    assert!(
-        topics_mod.exists(),
-        "Expected topics module file to exist so `peppygen::topics::<module>` resolves"
-    );
-    let topics_contents =
-        std::fs::read_to_string(&topics_mod).expect("failed to read topics module");
-    assert!(
-        topics_contents.contains("pub mod push_frame;"),
-        "Expected topics module to expose generated `push_frame` module, got:\n{}",
-        topics_contents
-    );
-
-    let push_frame_mod = output_dir.join("src/topics/push_frame.rs");
-    assert!(
-        push_frame_mod.exists(),
-        "Expected generated topic module at {:?}",
-        push_frame_mod
-    );
-    let push_frame_contents =
-        std::fs::read_to_string(&push_frame_mod).expect("failed to read push_frame module");
-    assert!(
-        push_frame_contents.contains("pub struct PushFrame {"),
-        "Expected generated module to define topic struct, got:\n{}",
-        push_frame_contents
-    );
-    assert!(
-        push_frame_contents.contains("pub async fn connect("),
-        "Expected generated module to expose async connect constructor, got:\n{}",
-        push_frame_contents
-    );
-    assert!(
-        push_frame_contents.contains("pub async fn emit("),
-        "Expected generated module to expose async emit method, got:\n{}",
-        push_frame_contents
-    );
-}
-
-#[test]
 fn create_lib_with_exposed_double_topic_artifact() {
     let temp_dir = TempDir::new().unwrap();
-    let topic2 = r#"
-        {
-            name: "push_lidar_object", // The name of the topic inside the `lidar_sensor` node
-            qos_profile: "sensor_data",
-            message_format: {
-                header: {
-                  type: "object",
-                  stamp: "time",
-                  frame_id: "u32",
-                },
-                x: "f32",
-                y: "f32",
-                z: "f32",
-                intensity: "f32",
-                return_type: "u8", // e.g. first return, last return
-                classification: "u8", // type of object detected
-            },
-        }
-        "#;
     let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
-    let topic2: ExposedTopic = serde_json5::from_str(topic2).unwrap();
+    let topic2: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE2).unwrap();
 
     let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
     generator.add_exposed_topic(&topic).unwrap();
@@ -638,5 +632,75 @@ fn create_lib_with_exposed_double_topic_artifact() {
         push_lidar_contents.contains("pub async fn emit("),
         "Expected generated module to expose async emit method, got:\n{}",
         push_lidar_contents
+    );
+}
+
+#[test]
+fn create_lib_with_exposed_topic_artifact() {
+    let temp_dir = TempDir::new().unwrap();
+    let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
+
+    let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
+    generator.add_exposed_topic(&topic).unwrap();
+    let output_config = copy_config_to_output(&user_node, &output_dir);
+    generator.build(&output_dir).unwrap();
+    fs::remove_file(output_config).unwrap();
+
+    assert!(
+        output_dir.join("Cargo.toml").exists(),
+        "Expected Cargo.toml to be generated in the temporary crate directory"
+    );
+    assert!(
+        !output_dir.join(PEPPY_NODE_CONFIG_FILE).exists(),
+        "Generated crate should not keep a copy of the node configuration file"
+    );
+
+    let lib_rs = output_dir.join("src/lib.rs");
+    assert!(
+        lib_rs.exists(),
+        "Expected lib.rs to exist so `peppygen::topics` is reachable"
+    );
+    let lib_contents = std::fs::read_to_string(&lib_rs).expect("failed to read generated lib.rs");
+    assert!(
+        lib_contents.contains("pub mod topics;"),
+        "Expected generated lib.rs to re-export the `topics` module, got:\n{}",
+        lib_contents
+    );
+
+    let topics_mod = output_dir.join("src/topics.rs");
+    assert!(
+        topics_mod.exists(),
+        "Expected topics module file to exist so `peppygen::topics::<module>` resolves"
+    );
+    let topics_contents =
+        std::fs::read_to_string(&topics_mod).expect("failed to read topics module");
+    assert!(
+        topics_contents.contains("pub mod push_frame;"),
+        "Expected topics module to expose generated `push_frame` module, got:\n{}",
+        topics_contents
+    );
+
+    let push_frame_mod = output_dir.join("src/topics/push_frame.rs");
+    assert!(
+        push_frame_mod.exists(),
+        "Expected generated topic module at {:?}",
+        push_frame_mod
+    );
+    let push_frame_contents =
+        std::fs::read_to_string(&push_frame_mod).expect("failed to read push_frame module");
+    assert!(
+        push_frame_contents.contains("pub struct PushFrame {"),
+        "Expected generated module to define topic struct, got:\n{}",
+        push_frame_contents
+    );
+    assert!(
+        push_frame_contents.contains("pub async fn connect("),
+        "Expected generated module to expose async connect constructor, got:\n{}",
+        push_frame_contents
+    );
+    assert!(
+        push_frame_contents.contains("pub async fn emit("),
+        "Expected generated module to expose async emit method, got:\n{}",
+        push_frame_contents
     );
 }

@@ -73,7 +73,13 @@ fn exposed_action_gen_calling_code() {
         .into_iter()
         .map(|artifact| artifact.code_output)
         .collect();
-    let rendered = single_artifact(artifacts);
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected a single generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     println!("generated action code:\n{rendered}");
 
@@ -191,7 +197,13 @@ fn subscribed_action_returns_arguments() {
         .into_iter()
         .map(|artifact| artifact.code_output)
         .collect();
-    let rendered = single_artifact(artifacts);
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected a single generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     println!("generated subscribed action code:\n{rendered}");
 
