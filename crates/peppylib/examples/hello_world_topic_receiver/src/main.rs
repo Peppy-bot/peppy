@@ -1,6 +1,6 @@
 use config::consts::DEFAULT_ZENOH_PORT;
 use config::node::QoSProfile;
-use peppylib::TopicMessenger;
+use peppylib::{MessengerHandle, TopicMessenger};
 use tokio::signal;
 
 #[tokio::main]
@@ -14,14 +14,13 @@ async fn main() {
     // Create a messenger for the receiving node.
     let host = "127.0.0.1";
     let port = DEFAULT_ZENOH_PORT;
-    let receiver_node = TopicMessenger::from_host_port(host, port)
+    let receiver_handle = MessengerHandle::from_host_port(host, port)
         .await
         .unwrap_or_else(|error| {
             panic!("failed to create messenger on {host}:{port}: {error:?}.\n Did you start a zenohd server with the `zenohd_simple` example?")
         });
 
-    let mut subscription = receiver_node
-        .subscribe(ns, topic_name, qos)
+    let mut subscription = TopicMessenger::subscribe(&receiver_handle, ns, topic_name, qos)
         .await
         .expect("Should subscribe to the topic");
 

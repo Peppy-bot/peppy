@@ -138,7 +138,7 @@ fn exposed_topic() {
         "expected async connect constructor"
     );
     assert_rendered!(
-        rendered.contains("peppylib::TopicMessenger::from_host_port(host, port)"),
+        rendered.contains("peppylib::MessengerHandle::from_host_port(host, port)"),
         &rendered,
         "expected async messenger creation"
     );
@@ -173,7 +173,7 @@ fn exposed_topic() {
         "expected qos profile literal"
     );
     assert_rendered!(
-        rendered.contains("self.messenger.emit"),
+        rendered.contains("peppylib::TopicMessenger::emit(&self.messenger"),
         &rendered,
         "expected messenger emit call"
     );
@@ -308,7 +308,7 @@ fn subscribed_to_topic() {
         "expected async connect constructor"
     );
     assert_rendered!(
-        rendered.contains("peppylib::TopicMessenger::from_host_port(host, port)"),
+        rendered.contains("peppylib::MessengerHandle::from_host_port(host, port)"),
         &rendered,
         "expected messenger initialization"
     );

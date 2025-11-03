@@ -1,10 +1,10 @@
 use bytes::Bytes;
 use config::consts::DEFAULT_ZENOH_PORT;
-use peppylib::ServiceMessenger;
+use peppylib::{MessengerHandle, ServiceMessenger};
 use std::time::Duration;
 
-async fn connect_messenger(host: &str, port: u16) -> ServiceMessenger {
-    ServiceMessenger::from_host_port(host, port)
+async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
+    MessengerHandle::from_host_port(host, port)
         .await
         .unwrap_or_else(|error| {
             panic!(
@@ -21,18 +21,18 @@ async fn main() {
     let ns = "/hello_ns";
 
     // Create a messenger for the sending node.
-    let sender_node = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
+    let sender_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
 
     let request_payload = Bytes::from_static(b"Hello service");
 
     println!("Sending service request...");
-    let response = sender_node
-        .poll(
-            ns,
-            service_name,
-            request_payload,
-            Duration::from_secs(3),
-        )
+    let response = ServiceMessenger::poll(
+        &sender_handle,
+        ns,
+        service_name,
+        request_payload,
+        Duration::from_secs(3),
+    )
         .await
         .expect("Service call should succeed");
 
