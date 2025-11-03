@@ -1166,10 +1166,7 @@ impl NameGenerator {
 
 fn build_topic_struct(struct_ident: &Ident) -> TokenStream {
     quote! {
-        pub struct #struct_ident {
-            messenger: peppylib::MessengerHandle,
-            namespace: String,
-        }
+        pub struct #struct_ident;
     }
 }
 
@@ -1180,42 +1177,11 @@ fn build_topic_impl(
     topic: &ExposedTopic,
     label: &str,
 ) -> TokenStream {
-    let connect_fn = build_topic_connect(topic);
     let emit_fn = build_topic_emit(params, encoding, topic, label);
 
     quote! {
         impl #struct_ident {
-            #connect_fn
             #emit_fn
-        }
-    }
-}
-
-fn build_topic_connect(topic: &ExposedTopic) -> TokenStream {
-    let topic_literal = Literal::string(topic.name.as_str());
-
-    quote! {
-        pub async fn connect(host: &str, port: u16) -> crate::Result<Self> {
-            let messenger = peppylib::MessengerHandle::from_host_port(host, port)
-                .await
-                .map_err(|source| crate::Error::TopicMessengerConnect {
-                    topic_name: String::from(#topic_literal),
-                    host: host.to_string(),
-                    port,
-                    source,
-                })?;
-
-            let namespace = std::env::var("PEPPY_NAMESPACE")
-                .map(|value| {
-                    if value.trim().is_empty() {
-                        "/".to_string()
-                    } else {
-                        value
-                    }
-                })
-                .unwrap_or_else(|_| "/".to_string());
-
-            Ok(Self { messenger, namespace })
         }
     }
 }
@@ -1228,9 +1194,9 @@ fn build_topic_emit(
 ) -> TokenStream {
     let param_tokens = function_param_tokens(params);
     let method_signature = if param_tokens.is_empty() {
-        quote!(&self)
+        quote!(messenger: &crate::Messenger)
     } else {
-        quote!(&self, #(#param_tokens),*)
+        quote!(messenger: &crate::Messenger, #(#param_tokens),*)
     };
     let topic_literal = Literal::string(topic.name.as_str());
     let qos_tokens = qos_profile_tokens(&topic.qos_profile);
@@ -1259,13 +1225,12 @@ fn build_topic_emit(
                     })?;
 
                     let payload = bytes::Bytes::from(buffer);
-                    let namespace = self.namespace.as_str();
                     let topic_name = #topic_literal;
                     let qos = #qos_tokens;
 
                     peppylib::TopicMessenger::emit(
-                        &self.messenger,
-                        namespace,
+                        messenger.handle(),
+                        messenger.namespace(),
                         topic_name,
                         qos,
                         payload,
@@ -1286,7 +1251,7 @@ fn build_topic_emit(
 
             quote! {
                 pub async fn emit(#method_signature) -> crate::Result<()> {
-                    let _ = self;
+                    let _ = messenger;
                     #(#ignore_params)*
                     Err(crate::Error::MessageFormatUnavailable {
                         context: String::from(#label_literal),
@@ -1929,7 +1894,7 @@ fn build_async_function(
                         }
                     })?;
 
-                    let message_payload = to_bytes(message)?;
+                    let _message_payload = crate::messaging::to_bytes(message)?;
                     let _ns = "temporary_namespace";
                     let _topic_name = "temporary_topic";
                     let _messenger = peppylib::MessengerHandle::new().await?;
