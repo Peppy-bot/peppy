@@ -370,8 +370,8 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
         topics_contents
     );
     assert!(
-        topics_contents.contains("pub mod stream;"),
-        "Expected topics module to expose subscribed `stream` module, got:\n{}",
+        topics_contents.contains("pub mod uvc_camera;"),
+        "Expected topics module to expose subscribed `uvc_camera` module, got:\n{}",
         topics_contents
     );
 
@@ -397,7 +397,7 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
     );
 
     let push_frame_module = output_dir.join("src/topics/push_frame.rs");
-    let stream_module = output_dir.join("src/topics/stream.rs");
+    let stream_module = output_dir.join("src/topics/uvc_camera.rs");
     let enable_module = output_dir.join("src/services/enable_camera.rs");
     let get_camera_info_module = output_dir.join("src/services/get_camera_info.rs");
     let move_arm_module = output_dir.join("src/actions/move_arm.rs");
@@ -425,17 +425,20 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
     let push_frame_contents =
         std::fs::read_to_string(&push_frame_module).expect("failed to read push_frame module");
     assert!(
-        push_frame_contents.contains("pub async fn push_frame_async("),
-        "Expected combined generation to produce async topic function, got:\n{}",
+        push_frame_contents.contains("pub async fn emit("),
+        "Expected combined generation to produce async topic emitter, got:\n{}",
         push_frame_contents
     );
     let stream_contents =
         std::fs::read_to_string(&stream_module).expect("failed to read stream module");
     assert!(
-        stream_contents.contains(
-            "pub async fn on_next_stream_message(&mut self) -> crate::Result<UvcCameraStreamMessage>"
-        ),
-        "Expected subscribed topic module to expose callback arguments, got:\n{}",
+        stream_contents.contains("pub async fn on_next_stream_message("),
+        "Expected subscribed topic module to expose callback handler, got:\n{}",
+        stream_contents
+    );
+    assert!(
+        stream_contents.contains("crate::Result<UvcCameraStreamMessage>"),
+        "Expected subscribed topic callback to return deserialized message, got:\n{}",
         stream_contents
     );
 

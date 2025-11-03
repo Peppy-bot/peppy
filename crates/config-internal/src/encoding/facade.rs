@@ -92,37 +92,36 @@ impl CapnpFacade {
         let capnp_output_dir = output_dir.join("capnp");
         std::fs::create_dir_all(&capnp_output_dir)?;
 
-        let mut command = CompilerCommand::new();
-        command.capnp_executable(capnp_executable);
-        command.output_path(&capnp_output_dir);
-        command.default_parent_module(vec!["capnp".to_string()]);
-
-        let common_parent = capnp_files
-            .first()
-            .and_then(|f| f.as_ref().parent())
-            .filter(|p| !p.as_os_str().is_empty());
-
-        if let Some(parent) = common_parent {
-            command.src_prefix(parent);
-        }
-
+        let mut module_exports: Vec<String> = Vec::with_capacity(capnp_files.len());
         for capnp_file in capnp_files {
-            command.file(capnp_file.as_ref());
+            let capnp_path = capnp_file.as_ref();
+
+            let mut command = CompilerCommand::new();
+            command.capnp_executable(capnp_executable);
+            command.output_path(&capnp_output_dir);
+            command.default_parent_module(vec!["capnp".to_string()]);
+
+            if let Some(parent) = capnp_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                command.src_prefix(parent);
+            }
+
+            command.file(capnp_path);
+
+            command
+                .run()
+                .map_err(|err| Error::Encoding(format!("failed to run capnp compiler: {err}")))?;
+
+            if let Some(module_name) = capnp_path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(|name| format!("pub mod {}_capnp;", name))
+            {
+                module_exports.push(module_name);
+            }
         }
 
-        command
-            .run()
-            .map_err(|err| Error::Encoding(format!("failed to run capnp compiler: {err}")))?;
-
-        let module_exports: Vec<String> = capnp_files
-            .iter()
-            .filter_map(|file| {
-                let path = file.as_ref();
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(|name| format!("pub mod {}_capnp;", name))
-            })
-            .collect();
+        module_exports.sort();
+        module_exports.dedup();
 
         let capnp_rs_path = output_dir.join("capnp.rs");
         let capnp_rs_content = module_exports.join("\n") + "\n";

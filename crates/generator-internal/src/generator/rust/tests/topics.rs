@@ -98,11 +98,6 @@ fn exposed_topic() {
         "expected serialization call"
     );
     assert_rendered!(
-        rendered.contains("crate::Error::TopicMessengerConnect"),
-        &rendered,
-        "expected explicit topic messenger error variant"
-    );
-    assert_rendered!(
         rendered.contains("crate::Error::CapnpSerialize"),
         &rendered,
         "expected explicit capnp serialization error variant"
@@ -123,24 +118,14 @@ fn exposed_topic() {
         "expected generated struct for nested object"
     );
     assert_rendered!(
-        rendered.contains("pub struct PushFrame {"),
+        rendered.contains("pub struct PushFrame;"),
         &rendered,
         "expected topic messenger struct"
     );
     assert_rendered!(
-        rendered.contains("std::env::var(\"PEPPY_NAMESPACE\")"),
+        rendered.contains("messenger: &crate::Messenger"),
         &rendered,
-        "expected namespace initialization from environment"
-    );
-    assert_rendered!(
-        rendered.contains("pub async fn connect(host: &str, port: u16) -> crate::Result<Self>"),
-        &rendered,
-        "expected async connect constructor"
-    );
-    assert_rendered!(
-        rendered.contains("peppylib::MessengerHandle::from_host_port(host, port)"),
-        &rendered,
-        "expected async messenger creation"
+        "expected messenger parameter in emit signature"
     );
     assert_rendered!(
         rendered.contains("pub async fn emit("),
@@ -158,11 +143,6 @@ fn exposed_topic() {
         "expected bytes payload conversion"
     );
     assert_rendered!(
-        rendered.contains("let namespace = self.namespace.as_str();"),
-        &rendered,
-        "expected namespace borrow"
-    );
-    assert_rendered!(
         rendered.contains("let topic_name = \"push_frame\";"),
         &rendered,
         "expected topic name literal"
@@ -173,9 +153,14 @@ fn exposed_topic() {
         "expected qos profile literal"
     );
     assert_rendered!(
-        rendered.contains("peppylib::TopicMessenger::emit(&self.messenger"),
+        rendered.contains("peppylib::TopicMessenger::emit("),
         &rendered,
         "expected messenger emit call"
+    );
+    assert_rendered!(
+        rendered.contains("messenger.handle()"),
+        &rendered,
+        "expected messenger handle usage"
     );
 }
 
@@ -213,7 +198,7 @@ fn exposed_double_topic() {
         "expected capnp message builder"
     );
     assert_rendered!(
-        push_lidar_rendered.contains("pub struct PushLidarObject {"),
+        push_lidar_rendered.contains("pub struct PushLidarObject;"),
         push_lidar_rendered,
         "expected topic messenger struct for `push_lidar_object`"
     );
@@ -338,9 +323,14 @@ fn subscribed_to_topic() {
         "expected subscriber return type"
     );
     assert_rendered!(
-        rendered.contains(".subscribe(namespace_value, topic_name, qos)"),
+        rendered.contains("peppylib::TopicMessenger::subscribe("),
         &rendered,
-        "expected subscription call"
+        "expected subscription helper invocation"
+    );
+    assert_rendered!(
+        rendered.contains("&messenger"),
+        &rendered,
+        "expected messenger handle to be passed to subscription helper"
     );
     assert_rendered!(
         rendered.contains("capnp::serialize::read_message"),
@@ -539,103 +529,6 @@ fn subscribed_to_double_topic_same_node() {
 }
 
 #[test]
-fn create_lib_with_exposed_double_topic_artifact() {
-    let temp_dir = TempDir::new().unwrap();
-    let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
-    let topic2: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE2).unwrap();
-
-    let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
-    generator.add_exposed_topic(&topic).unwrap();
-    generator.add_exposed_topic(&topic2).unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator.build(&output_dir).unwrap();
-    fs::remove_file(output_config).unwrap();
-
-    assert!(
-        output_dir.join("Cargo.toml").exists(),
-        "Expected Cargo.toml to be generated in the temporary crate directory"
-    );
-
-    let lib_rs = output_dir.join("src/lib.rs");
-    assert!(
-        lib_rs.exists(),
-        "Expected lib.rs to exist so `peppygen::topics` is reachable"
-    );
-    let lib_contents = std::fs::read_to_string(&lib_rs).expect("failed to read generated lib.rs");
-    assert!(
-        lib_contents.contains("pub mod topics;"),
-        "Expected generated lib.rs to re-export the `topics` module, got:\n{}",
-        lib_contents
-    );
-
-    let topics_mod = output_dir.join("src/topics.rs");
-    assert!(
-        topics_mod.exists(),
-        "Expected topics module file to exist so `peppygen::topics::<module>` resolves"
-    );
-    let topics_contents =
-        std::fs::read_to_string(&topics_mod).expect("failed to read topics module");
-    assert!(
-        topics_contents.contains("pub mod push_frame;"),
-        "Expected topics module to expose generated `push_frame` module, got:\n{}",
-        topics_contents
-    );
-    assert!(
-        topics_contents.contains("pub mod push_lidar_object;"),
-        "Expected topics module to expose generated `push_frame` module, got:\n{}",
-        topics_contents
-    );
-
-    let push_frame_mod = output_dir.join("src/topics/push_frame.rs");
-    assert!(
-        push_frame_mod.exists(),
-        "Expected generated topic module at {:?}",
-        push_frame_mod
-    );
-    let push_frame_contents =
-        std::fs::read_to_string(&push_frame_mod).expect("failed to read push_frame module");
-    assert!(
-        push_frame_contents.contains("pub struct PushFrame {"),
-        "Expected generated module to define topic struct, got:\n{}",
-        push_frame_contents
-    );
-    assert!(
-        push_frame_contents.contains("pub async fn connect("),
-        "Expected generated module to expose async connect constructor, got:\n{}",
-        push_frame_contents
-    );
-    assert!(
-        push_frame_contents.contains("pub async fn emit("),
-        "Expected generated module to expose async emit method, got:\n{}",
-        push_frame_contents
-    );
-
-    let push_lidar_mod = output_dir.join("src/topics/push_lidar_object.rs");
-    assert!(
-        push_lidar_mod.exists(),
-        "Expected generated topic module at {:?}",
-        push_lidar_mod
-    );
-    let push_lidar_contents =
-        std::fs::read_to_string(&push_lidar_mod).expect("failed to read push_lidar_object module");
-    assert!(
-        push_lidar_contents.contains("pub struct PushLidarObject {"),
-        "Expected generated module to define topic struct, got:\n{}",
-        push_lidar_contents
-    );
-    assert!(
-        push_lidar_contents.contains("pub async fn connect("),
-        "Expected generated module to expose async connect constructor, got:\n{}",
-        push_lidar_contents
-    );
-    assert!(
-        push_lidar_contents.contains("pub async fn emit("),
-        "Expected generated module to expose async emit method, got:\n{}",
-        push_lidar_contents
-    );
-}
-
-#[test]
 fn create_lib_with_exposed_topic_artifact() {
     let temp_dir = TempDir::new().unwrap();
     let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
@@ -689,18 +582,18 @@ fn create_lib_with_exposed_topic_artifact() {
     let push_frame_contents =
         std::fs::read_to_string(&push_frame_mod).expect("failed to read push_frame module");
     assert!(
-        push_frame_contents.contains("pub struct PushFrame {"),
+        push_frame_contents.contains("pub struct PushFrame;"),
         "Expected generated module to define topic struct, got:\n{}",
-        push_frame_contents
-    );
-    assert!(
-        push_frame_contents.contains("pub async fn connect("),
-        "Expected generated module to expose async connect constructor, got:\n{}",
         push_frame_contents
     );
     assert!(
         push_frame_contents.contains("pub async fn emit("),
         "Expected generated module to expose async emit method, got:\n{}",
+        push_frame_contents
+    );
+    assert!(
+        push_frame_contents.contains("messenger: &crate::Messenger"),
+        "Expected generated emit method to accept messenger reference, got:\n{}",
         push_frame_contents
     );
 }
