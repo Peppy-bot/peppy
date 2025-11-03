@@ -15,7 +15,7 @@ const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 "#;
 
 #[test]
-fn exposed_service_gen_calling_code() {
+fn exposed_service() {
     let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new();
@@ -32,8 +32,6 @@ fn exposed_service_gen_calling_code() {
         artifacts.len()
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
-
-    println!("generated service code:\n{rendered}");
 
     assert_rendered!(
         rendered.contains("pub fn enable_camera("),

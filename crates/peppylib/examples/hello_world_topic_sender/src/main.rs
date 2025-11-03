@@ -3,16 +3,6 @@ use config::consts::DEFAULT_ZENOH_PORT;
 use config::node::QoSProfile;
 use peppylib::TopicMessenger;
 
-async fn connect_messenger(host: &str, port: u16) -> TopicMessenger {
-    TopicMessenger::from_host_port(host, port)
-        .await
-        .unwrap_or_else(|error| {
-            panic!(
-                "failed to create messenger on {host}:{port}: {error:?}.\n Did you start a zenohd server with the `zenohd_simple` example?"
-            )
-        })
-}
-
 #[tokio::main]
 async fn main() {
     let topic_name = "hello_msg";
@@ -22,7 +12,13 @@ async fn main() {
     let ns = "hello_ns";
 
     // Create a messenger for the sending node.
-    let sender_node = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
+    let sender_node = TopicMessenger::from_host_port("127.0.0.1", DEFAULT_ZENOH_PORT)
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to create messenger on {host}:{port}: {error:?}.\n Did you start a zenohd server with the `zenohd_simple` example?"
+            )
+        });
 
     let payload = Bytes::from_static(b"Hello world");
 
