@@ -1167,7 +1167,7 @@ impl NameGenerator {
 fn build_topic_struct(struct_ident: &Ident) -> TokenStream {
     quote! {
         pub struct #struct_ident {
-            messenger: peppylib::TopicMessenger,
+            messenger: peppylib::MessengerHandle,
             namespace: String,
         }
     }
@@ -1196,7 +1196,7 @@ fn build_topic_connect(topic: &ExposedTopic) -> TokenStream {
 
     quote! {
         pub async fn connect(host: &str, port: u16) -> crate::Result<Self> {
-            let messenger = peppylib::TopicMessenger::from_host_port(host, port)
+            let messenger = peppylib::MessengerHandle::from_host_port(host, port)
                 .await
                 .map_err(|source| crate::Error::TopicMessengerConnect {
                     topic_name: String::from(#topic_literal),
@@ -1263,8 +1263,13 @@ fn build_topic_emit(
                     let topic_name = #topic_literal;
                     let qos = #qos_tokens;
 
-                    self.messenger
-                        .emit(namespace, topic_name, qos, payload)
+                    peppylib::TopicMessenger::emit(
+                        &self.messenger,
+                        namespace,
+                        topic_name,
+                        qos,
+                        payload,
+                    )
                         .await?;
                     Ok(())
                 }
@@ -1315,7 +1320,7 @@ fn build_subscribed_topic_struct(
 
     quote! {
         pub struct #struct_ident {
-            messenger: peppylib::TopicMessenger,
+            messenger: peppylib::MessengerHandle,
             namespace: String,
             #( #subscription_fields ),*
         }
@@ -1336,8 +1341,12 @@ fn build_subscribed_topics_connect(
                 let #field_ident = {
                     let topic_name = #topic_literal;
                     let namespace_value = namespace.as_str();
-                    messenger
-                        .subscribe(namespace_value, topic_name, qos)
+                    peppylib::TopicMessenger::subscribe(
+                        &messenger,
+                        namespace_value,
+                        topic_name,
+                        qos,
+                    )
                         .await
                         .map_err(|source| crate::Error::TopicSubscribe {
                             topic_name: topic_name.to_string(),
@@ -1355,7 +1364,7 @@ fn build_subscribed_topics_connect(
 
     quote! {
         pub async fn connect(host: &str, port: u16) -> crate::Result<Self> {
-            let messenger = peppylib::TopicMessenger::from_host_port(host, port)
+            let messenger = peppylib::MessengerHandle::from_host_port(host, port)
                 .await
                 .map_err(|source| crate::Error::NodeMessengerConnect {
                     node_name: String::from(#node_literal),
@@ -1923,7 +1932,7 @@ fn build_async_function(
                     let message_payload = to_bytes(message)?;
                     let _ns = "temporary_namespace";
                     let _topic_name = "temporary_topic";
-                    let _messenger = peppylib::TopicMessenger::new().await?;
+                    let _messenger = peppylib::MessengerHandle::new().await?;
 
                     // TODO: send_topic_message only applies to topics, `send_service_message` for services and `send_action_message` for actions
                     // messenger.send_topic_message(ns, topic_name, qos, message_payload)?;

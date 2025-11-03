@@ -2,14 +2,14 @@ use bytes::Bytes;
 use chrono::Local;
 use config::consts::DEFAULT_ZENOH_PORT;
 use peppylib::messaging::ServiceRequestContext;
-use peppylib::{PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
 use tokio::signal;
 
 const SERVICE_NAME: &str = "hello_service";
 const NAMESPACE: &str = "/hello_ns";
 
-async fn connect_messenger(host: &str, port: u16) -> ServiceMessenger {
-    ServiceMessenger::from_host_port(host, port)
+async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
+    MessengerHandle::from_host_port(host, port)
         .await
         .unwrap_or_else(|error| {
             panic!(
@@ -61,10 +61,9 @@ fn handle_service_result(result: PeppyResult<bool>) -> bool {
 #[tokio::main]
 async fn main() {
     // Create a messenger for the receiving node.
-    let receiver_node = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
+    let receiver_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
 
-    let mut service = receiver_node
-        .listen(NAMESPACE, SERVICE_NAME)
+    let mut service = ServiceMessenger::listen(&receiver_handle, NAMESPACE, SERVICE_NAME)
         .await
         .expect("Should expose the service");
 

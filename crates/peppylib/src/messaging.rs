@@ -22,8 +22,7 @@ use tracing::error;
 
 pub use pmi::Subscription;
 
-/// Internal handle around a messenger session shared by the specialized messengers.
-struct MessengerHandle {
+pub struct MessengerHandle {
     messenger: Arc<Mutex<Messenger>>,
 }
 
@@ -69,17 +68,11 @@ pub fn build_full_namespace(namespace: &str, message_type_name: &str) -> String 
         .join("/")
 }
 
-pub struct TopicMessenger {
-    handle: MessengerHandle,
-}
+pub struct TopicMessenger;
 
-pub struct ServiceMessenger {
-    handle: MessengerHandle,
-}
+pub struct ServiceMessenger;
 
-pub struct ActionMessenger {
-    handle: MessengerHandle,
-}
+pub struct ActionMessenger;
 
 pub struct ServiceEndpoint {
     messenger: Arc<Mutex<Messenger>>,
@@ -273,85 +266,63 @@ pub struct ActionCreation {
 }
 
 impl TopicMessenger {
-    pub async fn new() -> Result<Self> {
-        let handle = MessengerHandle::new().await?;
-        Ok(Self { handle })
-    }
-
-    pub async fn from_host_port(host: &str, port: u16) -> Result<Self> {
-        let handle = MessengerHandle::from_host_port(host, port).await?;
-        Ok(Self { handle })
-    }
-
     pub async fn subscribe(
-        &self,
+        messenger: &MessengerHandle,
         namespace: &str,
         topic_name: &str,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        self.handle
+        messenger
             .receive_topic_msg(namespace, topic_name, qos)
             .await
     }
 
     pub async fn emit(
-        &self,
+        messenger: &MessengerHandle,
         namespace: &str,
         topic_name: &str,
         qos: QoSProfile,
         payload: Bytes,
     ) -> Result<()> {
-        self.handle
+        messenger
             .emit_topic_message(namespace, topic_name, qos, payload)
             .await
     }
 }
 
 impl ServiceMessenger {
-    pub async fn new() -> Result<Self> {
-        let handle = MessengerHandle::new().await?;
-        Ok(Self { handle })
-    }
-
-    pub async fn from_host_port(host: &str, port: u16) -> Result<Self> {
-        let handle = MessengerHandle::from_host_port(host, port).await?;
-        Ok(Self { handle })
-    }
-
-    pub async fn listen(&self, namespace: &str, service_name: &str) -> Result<ServiceEndpoint> {
-        self.handle.expose_service(namespace, service_name).await
+    pub async fn listen(
+        messenger: &MessengerHandle,
+        namespace: &str,
+        service_name: &str,
+    ) -> Result<ServiceEndpoint> {
+        messenger.expose_service(namespace, service_name).await
     }
 
     pub async fn poll(
-        &self,
+        messenger: &MessengerHandle,
         namespace: &str,
         service_name: &str,
         request_payload: Bytes,
         response_timeout: Duration,
     ) -> Result<Bytes> {
-        self.handle
+        messenger
             .poll_service(namespace, service_name, request_payload, response_timeout)
             .await
     }
 }
 
 impl ActionMessenger {
-    pub async fn new() -> Result<Self> {
-        let handle = MessengerHandle::new().await?;
-        Ok(Self { handle })
-    }
-
-    pub async fn from_host_port(host: &str, port: u16) -> Result<Self> {
-        let handle = MessengerHandle::from_host_port(host, port).await?;
-        Ok(Self { handle })
-    }
-
-    pub async fn listen(&self, namespace: &str, action_name: &str) -> Result<ActionCreation> {
-        self.handle.expose_action(namespace, action_name).await
+    pub async fn listen(
+        messenger: &MessengerHandle,
+        namespace: &str,
+        action_name: &str,
+    ) -> Result<ActionCreation> {
+        messenger.expose_action(namespace, action_name).await
     }
 
     pub async fn send_goal(
-        &self,
+        messenger: &MessengerHandle,
         namespace: &str,
         action_name: &str,
         goal_payload: Bytes,
@@ -361,13 +332,11 @@ impl ActionMessenger {
         let feedback_topic = format!("{action_name}/feedback");
         let goal_service_name = format!("{action_name}/goal");
 
-        let feedback_subscription = self
-            .handle
+        let feedback_subscription = messenger
             .receive_topic_msg(namespace, &feedback_topic, feedback_qos)
             .await?;
 
-        let goal_response = self
-            .handle
+        let goal_response = messenger
             .poll_service(namespace, &goal_service_name, goal_payload, goal_timeout)
             .await?;
 
@@ -380,13 +349,13 @@ impl ActionMessenger {
     }
 
     pub async fn cancel_goal(
-        &self,
+        messenger: &MessengerHandle,
         handle: &ActionGoalHandle,
         cancel_timeout: Duration,
     ) -> Result<Bytes> {
         let cancel_service_name = format!("{}/cancel", handle.action_name);
 
-        self.handle
+        messenger
             .poll_service(
                 &handle.namespace,
                 &cancel_service_name,
@@ -397,14 +366,14 @@ impl ActionMessenger {
     }
 
     pub async fn poll_result(
-        &self,
+        messenger: &MessengerHandle,
         handle: &ActionGoalHandle,
         result_request_payload: Bytes,
         result_timeout: Duration,
     ) -> Result<Bytes> {
         let result_service_name = format!("{}/result", handle.action_name);
 
-        self.handle
+        messenger
             .poll_service(
                 &handle.namespace,
                 &result_service_name,
@@ -427,12 +396,12 @@ impl ActionMessenger {
 }
 
 impl MessengerHandle {
-    async fn new() -> Result<Self> {
+    pub async fn new() -> Result<Self> {
         let adapter = ZenohAdapter::default();
         Self::from_adapter(adapter).await
     }
 
-    async fn from_host_port(host: &str, port: u16) -> Result<Self> {
+    pub async fn from_host_port(host: &str, port: u16) -> Result<Self> {
         let adapter = ZenohAdapter::from_host_port(ZenohNetProtocol::Tcp, host, port);
         Self::from_adapter(adapter).await
     }

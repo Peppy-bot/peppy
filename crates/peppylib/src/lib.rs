@@ -6,7 +6,7 @@ pub mod encoding;
 pub mod messaging;
 
 pub use error::{Error as PeppyError, Result as PeppyResult};
-pub use messaging::{ActionMessenger, ServiceMessenger, TopicMessenger};
+pub use messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, TopicMessenger};
 pub use node::{setup_node, setup_node_from_config};
 
 // Reexport useful modules for the user of the lib

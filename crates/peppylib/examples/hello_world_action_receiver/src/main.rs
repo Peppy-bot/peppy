@@ -3,14 +3,14 @@ use chrono::Local;
 use colored::Colorize;
 use config::consts::DEFAULT_ZENOH_PORT;
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
-use peppylib::{ActionMessenger, PeppyResult};
+use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use tokio::signal;
 
 const ACTION_NAME: &str = "hello_action";
 const NAMESPACE: &str = "/hello_ns";
 
-async fn connect_messenger(host: &str, port: u16) -> ActionMessenger {
-    ActionMessenger::from_host_port(host, port)
+async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
+    MessengerHandle::from_host_port(host, port)
         .await
         .unwrap_or_else(|error| {
             panic!(
@@ -136,10 +136,9 @@ async fn handle_result_request(request: ServiceRequestContext) -> PeppyResult<By
 
 #[tokio::main]
 async fn main() {
-    let receiver_node = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
+    let receiver_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
 
-    let mut action = receiver_node
-        .listen(NAMESPACE, ACTION_NAME)
+    let mut action = ActionMessenger::listen(&receiver_handle, NAMESPACE, ACTION_NAME)
         .await
         .expect("Should expose the action");
 

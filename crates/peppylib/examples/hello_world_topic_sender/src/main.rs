@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use config::consts::DEFAULT_ZENOH_PORT;
 use config::node::QoSProfile;
-use peppylib::TopicMessenger;
+use peppylib::{MessengerHandle, TopicMessenger};
 
 #[tokio::main]
 async fn main() {
@@ -12,7 +12,9 @@ async fn main() {
     let ns = "hello_ns";
 
     // Create a messenger for the sending node.
-    let sender_node = TopicMessenger::from_host_port("127.0.0.1", DEFAULT_ZENOH_PORT)
+    let host = "127.0.0.1";
+    let port = DEFAULT_ZENOH_PORT;
+    let sender_handle = MessengerHandle::from_host_port(host, port)
         .await
         .unwrap_or_else(|error| {
             panic!(
@@ -23,8 +25,7 @@ async fn main() {
     let payload = Bytes::from_static(b"Hello world");
 
     println!("Sending payload...");
-    sender_node
-        .emit(ns, topic_name, qos, payload)
+    TopicMessenger::emit(&sender_handle, ns, topic_name, qos, payload)
         .await
         .expect("Should send the payload");
     println!("Payload sent");

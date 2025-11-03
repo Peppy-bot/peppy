@@ -2,7 +2,7 @@ use bytes::Bytes;
 use colored::Colorize;
 use config::{consts::DEFAULT_ZENOH_PORT, node::QoSProfile};
 use peppylib::messaging::ActionGoalHandle;
-use peppylib::{ActionMessenger, PeppyError};
+use peppylib::{ActionMessenger, MessengerHandle, PeppyError};
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
 
@@ -12,8 +12,8 @@ const FEEDBACK_TIMEOUT: Duration = Duration::from_secs(5);
 const GOAL_TIMEOUT: Duration = Duration::from_secs(3);
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(3);
 
-async fn connect_messenger(host: &str, port: u16) -> ActionMessenger {
-    ActionMessenger::from_host_port(host, port)
+async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
+    MessengerHandle::from_host_port(host, port)
         .await
         .unwrap_or_else(|error| {
             panic!(
@@ -60,7 +60,7 @@ async fn receive_feedback(handle: &mut ActionGoalHandle, goal_label: &str) {
 
 #[tokio::main]
 async fn main() {
-    let sender_node = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
+    let sender_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
 
     println!(
         "{}",
@@ -68,14 +68,14 @@ async fn main() {
             .bold()
             .green()
     );
-    let mut goal_handle = sender_node
-        .send_goal(
-            NAMESPACE,
-            ACTION_NAME,
-            Bytes::from_static(b"Hello from the action client"),
-            QoSProfile::Reliable,
-            GOAL_TIMEOUT,
-        )
+    let mut goal_handle = ActionMessenger::send_goal(
+        &sender_handle,
+        NAMESPACE,
+        ACTION_NAME,
+        Bytes::from_static(b"Hello from the action client"),
+        QoSProfile::Reliable,
+        GOAL_TIMEOUT,
+    )
         .await
         .expect("Action goal should succeed");
 
@@ -89,12 +89,12 @@ async fn main() {
 
     receive_feedback(&mut goal_handle, "initial goal").await;
 
-    let result_payload = sender_node
-        .poll_result(
-            &goal_handle,
-            Bytes::from_static(b"request result after completion"),
-            GOAL_TIMEOUT,
-        )
+    let result_payload = ActionMessenger::poll_result(
+        &sender_handle,
+        &goal_handle,
+        Bytes::from_static(b"request result after completion"),
+        GOAL_TIMEOUT,
+    )
         .await
         .expect("Action result should be available");
     let result_text = String::from_utf8_lossy(result_payload.as_ref());
@@ -109,14 +109,14 @@ async fn main() {
     sleep(Duration::from_secs(2)).await;
 
     println!("{}", "[GOAL] Sending cancellable goal...".bold().green());
-    let mut cancellable_goal_handle = sender_node
-        .send_goal(
-            NAMESPACE,
-            ACTION_NAME,
-            Bytes::from_static(b"This goal will be cancelled"),
-            QoSProfile::Reliable,
-            GOAL_TIMEOUT,
-        )
+    let mut cancellable_goal_handle = ActionMessenger::send_goal(
+        &sender_handle,
+        NAMESPACE,
+        ACTION_NAME,
+        Bytes::from_static(b"This goal will be cancelled"),
+        QoSProfile::Reliable,
+        GOAL_TIMEOUT,
+    )
         .await
         .expect("Cancellable action goal should succeed");
 
@@ -134,8 +134,11 @@ async fn main() {
     println!("Waiting before issuing cancel request...");
     sleep(Duration::from_secs(2)).await;
 
-    let cancel_response = sender_node
-        .cancel_goal(&cancellable_goal_handle, CANCEL_TIMEOUT)
+    let cancel_response = ActionMessenger::cancel_goal(
+        &sender_handle,
+        &cancellable_goal_handle,
+        CANCEL_TIMEOUT,
+    )
         .await
         .expect("Cancel request should succeed");
     let cancel_text = String::from_utf8_lossy(cancel_response.as_ref());
@@ -153,12 +156,12 @@ async fn main() {
             .cyan()
     );
 
-    match sender_node
-        .poll_result(
-            &cancellable_goal_handle,
-            Bytes::from_static(b"result request after cancel"),
-            GOAL_TIMEOUT,
-        )
+    match ActionMessenger::poll_result(
+        &sender_handle,
+        &cancellable_goal_handle,
+        Bytes::from_static(b"result request after cancel"),
+        GOAL_TIMEOUT,
+    )
         .await
     {
         Ok(result_payload) => {
