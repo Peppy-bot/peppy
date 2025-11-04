@@ -34,19 +34,39 @@ fn exposed_service() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     assert_rendered!(
-        rendered.contains("pub fn enable_camera("),
+        rendered.contains("struct Endpoints;"),
         &rendered,
-        "expected sync service function"
+        "expected endpoints struct declaration"
     );
     assert_rendered!(
-        rendered.contains("-> crate::Result<()>"),
+        rendered.contains("pub struct EnableCameraResponse"),
         &rendered,
-        "expected crate result type for service function"
+        "expected response struct for exposed service"
     );
     assert_rendered!(
-        rendered.contains("pub async fn enable_camera_async("),
+        rendered.contains("enabled: bool"),
         &rendered,
-        "expected async service function"
+        "expected bool field in response struct"
+    );
+    assert_rendered!(
+        rendered.contains("error_msg: String"),
+        &rendered,
+        "expected string field in response struct"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn enable_camera_next_request("),
+        &rendered,
+        "expected async service function with _next_request suffix"
+    );
+    assert_rendered!(
+        !rendered.contains("pub fn enable_camera("),
+        &rendered,
+        "expected removal of sync service wrapper"
+    );
+    assert_rendered!(
+        rendered.contains("-> crate::Result<EnableCameraResponse>"),
+        &rendered,
+        "expected async function to return response struct"
     );
     assert_rendered!(
         rendered.contains("capnp::message::Builder::new_default"),
@@ -54,9 +74,25 @@ fn exposed_service() {
         "expected capnp builder usage"
     );
     assert_rendered!(
-        rendered.contains("enable_camera_message_capnp::enable_camera_message::Builder"),
+        rendered
+            .contains("crate::capnp::enable_camera_message_capnp::enable_camera_message::Builder"),
         &rendered,
         "expected service-specific schema builder"
+    );
+    assert_rendered!(
+        rendered.contains("messenger.handle().listen(namespace, service_name).await?"),
+        &rendered,
+        "expected service listen call"
+    );
+    assert_rendered!(
+        rendered.contains("service.handle_next_request(payload).await?"),
+        &rendered,
+        "expected handle_next_request call"
+    );
+    assert_rendered!(
+        rendered.contains("messenger.namespace()"),
+        &rendered,
+        "expected namespace usage from messenger"
     );
     assert_rendered!(
         rendered.contains("capnp::serialize::write_message"),
@@ -64,14 +100,19 @@ fn exposed_service() {
         "expected serialization call"
     );
     assert_rendered!(
-        rendered.contains("crate::Error::RuntimeInitialization"),
-        &rendered,
-        "expected explicit runtime initialization error variant"
-    );
-    assert_rendered!(
         rendered.contains("crate::Error::CapnpSerialize"),
         &rendered,
         "expected explicit capnp serialization error variant"
+    );
+    assert_rendered!(
+        rendered.contains("enable_camera_response_from_payload"),
+        &rendered,
+        "expected response parsing helper"
+    );
+    assert_rendered!(
+        rendered.contains("capnp::serialize::read_message"),
+        &rendered,
+        "expected response deserialization call"
     );
     assert_rendered!(
         rendered.contains("enable: bool"),

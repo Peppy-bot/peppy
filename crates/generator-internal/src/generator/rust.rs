@@ -130,6 +130,13 @@ struct MessageEncodingSpec {
     reader_type: TokenStream,
 }
 
+struct ServiceResponseSpec<'a> {
+    reader_type: TokenStream,
+    format: &'a MessageFormat,
+    struct_ident: Ident,
+    context: String,
+}
+
 impl LanguageGenerator for RustGenerator {
     fn push_section(&mut self, section: InterfaceArtifact) {
         if !section.code_output.is_empty() {
@@ -190,8 +197,6 @@ impl LanguageGenerator for RustGenerator {
     fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()> {
         let fn_name = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
         let fn_name_str = fn_name.to_string();
-        let async_fn_name = Ident::new(&(fn_name_str.clone() + "_async"), Span::call_site());
-
         let struct_prefix = to_camel_case(&fn_name_str);
 
         let mut context = GenerationContext::default();
@@ -209,21 +214,41 @@ impl LanguageGenerator for RustGenerator {
             accept_format_artifacts.as_ref(),
             &params,
         )?;
+
+        let response_spec = if let Some(return_artifacts) = return_format_artifacts.as_ref() {
+            let response_prefix = format!("{struct_prefix}Response");
+            let schema_key = format!("{fn_name_str}_response");
+            let schema = self.register_schema(&schema_key, &response_prefix, return_artifacts)?;
+            Some(ServiceResponseSpec {
+                reader_type: schema.reader_type_tokens(),
+                format: return_artifacts.message_format(),
+                struct_ident: Ident::new(&response_prefix, Span::call_site()),
+                context: response_prefix,
+            })
+        } else {
+            None
+        };
+
         let struct_tokens = context.into_tokens();
 
-        let sync_fn = build_sync_function(&fn_name, &async_fn_name, &params, &fn_name_str);
-        let async_fn =
-            build_async_function(&async_fn_name, &params, encoding.as_ref(), &fn_name_str);
-        let function_tokens = quote! {
-            #sync_fn
-            #async_fn
-        };
+        let service_name_literal = Literal::string(service.name.as_str());
+        let (method_token, helper_tokens) = build_exposed_service_method(
+            &fn_name,
+            &params,
+            encoding.as_ref(),
+            &fn_name_str,
+            &service_name_literal,
+            response_spec.as_ref(),
+        );
 
         let tokens: TokenStream = quote! {
             #( #struct_tokens )*
 
-            impl Services {
-                #function_tokens
+            struct Endpoints;
+
+            impl Endpoints {
+                #method_token
+                #( #helper_tokens )*
             }
         };
         let rendered = render_tokens(tokens);
@@ -736,7 +761,7 @@ impl StructDefinition {
             .map(|(field_ident, ty)| {
                 let name = field_ident;
                 let field_ty = ty;
-                quote!(pub #name: #field_ty)
+                quote!(#name: #field_ty)
             })
             .collect();
 
@@ -774,7 +799,17 @@ fn collect_function_params(
 ) -> Result<Vec<FunctionParam>> {
     if let Some(return_artifacts) = return_format_artifacts {
         let response_prefix = format!("{struct_prefix}Response");
-        register_structs_for_format(return_artifacts.message_format(), &response_prefix, context);
+        let response_ident = Ident::new(&response_prefix, Span::call_site());
+        let mut fields = Vec::new();
+
+        for (field_name, schema) in &return_artifacts.message_format().0 {
+            let field_ident =
+                Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
+            let field_ty = schema_type_to_tokens(schema, &response_prefix, field_name, context);
+            fields.push((field_ident, field_ty));
+        }
+
+        context.add_struct(response_ident, fields);
     }
 
     let Some(artifacts) = accept_format_artifacts else {
@@ -810,16 +845,6 @@ fn collect_function_params(
     }
 
     Ok(params)
-}
-
-fn register_structs_for_format(
-    format: &MessageFormat,
-    struct_prefix: &str,
-    context: &mut GenerationContext,
-) {
-    for (field_name, schema) in &format.0 {
-        let _ = schema_type_to_tokens(schema, struct_prefix, field_name, context);
-    }
 }
 
 fn schema_type_to_tokens(
@@ -1817,6 +1842,155 @@ fn function_param_tokens(params: &[FunctionParam]) -> Vec<TokenStream> {
             quote!(#ident: #ty)
         })
         .collect()
+}
+
+fn build_exposed_service_method(
+    fn_name: &Ident,
+    params: &[FunctionParam],
+    encoding: Option<&MessageEncodingSpec>,
+    label: &str,
+    service_name_literal: &Literal,
+    response_spec: Option<&ServiceResponseSpec>,
+) -> (TokenStream, Vec<TokenStream>) {
+    let param_tokens = function_param_tokens(params);
+    let method_signature = if param_tokens.is_empty() {
+        quote!(messenger: &crate::Messenger)
+    } else {
+        quote!(messenger: &crate::Messenger, #(#param_tokens),*)
+    };
+    let label_literal = Literal::string(label);
+
+    let (result_ty, parse_response_expr, helper_tokens) =
+        build_service_response_handling(fn_name, response_spec);
+
+    let fn_name_next_request = Ident::new(&format!("{}_next_request", fn_name), Span::call_site());
+
+    let method = match encoding {
+        Some(spec) => {
+            let builder_type = &spec.builder_type;
+            let assignments = &spec.assignments;
+            let root_ident = Ident::new("root", Span::call_site());
+            let service_name = service_name_literal;
+
+            quote! {
+                pub async fn #fn_name_next_request(#method_signature) -> crate::Result<#result_ty> {
+                    let mut message = capnp::message::Builder::new_default();
+                    {
+                        let mut #root_ident = message.init_root::<#builder_type>();
+                        #(#assignments)*
+                    }
+                    let mut buffer = Vec::new();
+                    capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
+                        crate::Error::CapnpSerialize {
+                            context: String::from(#label_literal),
+                            source,
+                        }
+                    })?;
+                    let payload = bytes::Bytes::from(buffer);
+                    let namespace = messenger.namespace();
+                    let service_name = #service_name;
+
+                    let mut service = messenger.handle().listen(namespace, service_name).await?;
+
+                    let response_payload = service.handle_next_request(payload).await?;
+
+                    #parse_response_expr
+                }
+            }
+        }
+        None => {
+            let suppress_unused = unused_params_stmt(params);
+            quote! {
+                pub async fn #fn_name_next_request(#method_signature) -> crate::Result<#result_ty> {
+                    let _ = messenger;
+                    #suppress_unused
+                    Err(crate::Error::MessageFormatUnavailable {
+                        context: String::from(#label_literal),
+                    })
+                }
+            }
+        }
+    };
+
+    (method, helper_tokens)
+}
+
+fn build_service_response_handling(
+    fn_name: &Ident,
+    response_spec: Option<&ServiceResponseSpec>,
+) -> (TokenStream, TokenStream, Vec<TokenStream>) {
+    let Some(spec) = response_spec else {
+        let result_ty = quote!(());
+        let parse_response = quote!({
+            let _ = response_payload;
+            Ok(())
+        });
+        return (result_ty, parse_response, Vec::new());
+    };
+
+    let struct_ident = &spec.struct_ident;
+    let reader_type = &spec.reader_type;
+    let context_literal = Literal::string(&spec.context);
+    let helper_fn_ident = Ident::new(
+        &format!("{}_response_from_payload", fn_name),
+        Span::call_site(),
+    );
+
+    let mut names = NameGenerator::new();
+    let mut field_statements = Vec::new();
+    let mut field_inits = Vec::new();
+
+    for (field_name, schema) in &spec.format.0 {
+        let (mut statements, value_ident) = generate_field_reader_statements(
+            &quote!(root),
+            field_name.as_str(),
+            schema,
+            &spec.context,
+            &mut names,
+        );
+        field_statements.append(&mut statements);
+        let field_ident = Ident::new(&sanitize_component(field_name), Span::call_site());
+        field_inits.push(quote!(#field_ident: #value_ident));
+    }
+
+    let struct_init = if field_inits.is_empty() {
+        quote!(#struct_ident {})
+    } else {
+        quote!(#struct_ident {
+            #( #field_inits ),*
+        })
+    };
+
+    let helper_fn = quote! {
+        fn #helper_fn_ident(payload: &[u8]) -> crate::Result<#struct_ident> {
+            let mut cursor = std::io::Cursor::new(payload);
+            let message_reader = capnp::serialize::read_message(
+                &mut cursor,
+                capnp::message::ReaderOptions::new(),
+            )
+            .map_err(|source| crate::Error::CapnpDeserialize {
+                context: String::from(#context_literal),
+                source,
+            })?;
+
+            let root = message_reader
+                .get_root::<#reader_type>()
+                .map_err(|source| crate::Error::CapnpDeserialize {
+                    context: String::from(#context_literal),
+                    source,
+                })?;
+
+            #(#field_statements)*
+
+            Ok(#struct_init)
+        }
+    };
+
+    let parse_response = quote!(Self::#helper_fn_ident(response_payload.as_ref()));
+    let mut helpers = Vec::new();
+    helpers.push(helper_fn);
+
+    (quote!(#struct_ident), parse_response, helpers)
 }
 
 fn build_sync_function(
