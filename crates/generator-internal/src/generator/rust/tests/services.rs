@@ -4,10 +4,10 @@ use config::node::{ExposedService, SubscribedService};
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {
   name: "enable_camera",
-  accept_message_format: {
+  request_message_format: {
     enable: "bool"
   },
-  return_message_format: {
+  response_message_format: {
     enabled: "bool",
     error_msg: "string"
   }
@@ -34,9 +34,9 @@ fn exposed_service() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     assert_rendered!(
-        rendered.contains("struct Endpoints;"),
+        rendered.contains("struct EnableCameraService;"),
         &rendered,
-        "expected endpoints struct declaration"
+        "expected service struct declaration"
     );
     assert_rendered!(
         rendered.contains("pub struct EnableCameraResponse"),
@@ -54,9 +54,9 @@ fn exposed_service() {
         "expected string field in response struct"
     );
     assert_rendered!(
-        rendered.contains("pub async fn handle_enable_camera_next_request<F>("),
+        rendered.contains("pub async fn handle_next_request<F>("),
         &rendered,
-        "expected async service handler with handle_*_next_request naming"
+        "expected async service handler with handle_next_request naming"
     );
     assert_rendered!(
         rendered.contains("handler: F"),
@@ -109,7 +109,8 @@ fn exposed_service() {
         "expected request deserialization"
     );
     assert_rendered!(
-        rendered.contains("crate::capnp::enable_camera_message_capnp::enable_camera_message::Reader"),
+        rendered
+            .contains("crate::capnp::enable_camera_message_capnp::enable_camera_message::Reader"),
         &rendered,
         "expected service request schema reader"
     );
@@ -120,23 +121,28 @@ fn subscribed_service_returns_arguments() {
     let service = r#"
         {
             node: "uvc_camera",
-            name: "get_camera_info",
+            name: "enable_camera",
             tag: "0.1.0"
         }
         "#;
     let service: SubscribedService = serde_json5::from_str(service).unwrap();
-    let format = r#"
+    let accept_format = r#"
         {
-            card_type: "string",
-            size: "string",
-            interval: "string"
+          enable: "bool"
         }
         "#;
-    let format: MessageFormat = serde_json5::from_str(format).unwrap();
+    let return_format = r#"
+        {
+          enabled: "bool",
+          error_msg: "string"
+        }
+        "#;
+    let request_format: MessageFormat = serde_json5::from_str(accept_format).unwrap();
+    let response_format: MessageFormat = serde_json5::from_str(return_format).unwrap();
 
     let mut generator = RustGenerator::new();
     generator
-        .add_subscribed_service(&service, Some(&format))
+        .add_subscribed_service(&service, Some(&request_format), Some(&response_format))
         .unwrap();
     let artifacts: Vec<String> = generator
         .into_artifacts()
@@ -151,21 +157,99 @@ fn subscribed_service_returns_arguments() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    println!("generated subscribed service code:\n{rendered}");
-
     assert_rendered!(
-        rendered.contains("pub async fn on_get_camera_info() -> OnGetCameraInfoArguments"),
+        rendered.contains("#[derive(Debug, Clone)]"),
         &rendered,
-        "expected async service subscriber"
+        "expected response struct derives"
     );
     assert_rendered!(
-        rendered.contains("pub struct OnGetCameraInfoArguments"),
+        rendered.contains("pub struct OnEnableCameraResponse"),
         &rendered,
-        "expected return struct"
+        "expected response struct"
     );
     assert_rendered!(
-        rendered.contains("card_type: String"),
+        rendered.contains("enabled: bool"),
         &rendered,
-        "expected field mapping"
+        "expected response bool field"
+    );
+    assert_rendered!(
+        rendered.contains("error_msg: String"),
+        &rendered,
+        "expected response string field"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct EnableCameraServicePoll;"),
+        &rendered,
+        "expected poll helper struct for subscribed service"
+    );
+    assert_rendered!(
+        rendered.contains("impl EnableCameraServicePoll {"),
+        &rendered,
+        "expected poll helper impl"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn enable_camera("),
+        &rendered,
+        "expected async poll helper signature"
+    );
+    assert_rendered!(
+        rendered.contains("messenger: &crate::Messenger"),
+        &rendered,
+        "expected messenger parameter"
+    );
+    assert_rendered!(
+        rendered.contains("-> crate::Result<OnEnableCameraResponse>"),
+        &rendered,
+        "expected result return type"
+    );
+    assert_rendered!(
+        rendered.contains("let service_name = \"enable_camera\";"),
+        &rendered,
+        "expected service name literal"
+    );
+    assert_rendered!(
+        rendered.contains("capnp::message::Builder::new_default"),
+        &rendered,
+        "expected capnp message builder"
+    );
+    assert_rendered!(
+        rendered.contains("root.set_enable(enable);"),
+        &rendered,
+        "expected request serialization assignment"
+    );
+    assert_rendered!(
+        rendered.contains("crate::messaging::to_bytes(message)?"),
+        &rendered,
+        "expected capnp to bytes conversion"
+    );
+    assert_rendered!(
+        rendered.contains("crate::messaging::ServiceMessenger::poll("),
+        &rendered,
+        "expected poll helper invocation"
+    );
+    assert_rendered!(
+        rendered.contains("std::time::Duration::from_secs(3)"),
+        &rendered,
+        "expected poll timeout constant"
+    );
+    assert_rendered!(
+        rendered.contains("capnp::serialize::read_message"),
+        &rendered,
+        "expected response deserialization"
+    );
+    assert_rendered!(
+        rendered.contains("root.reborrow().get_enabled()"),
+        &rendered,
+        "expected response field reader for bool"
+    );
+    assert_rendered!(
+        rendered.contains(".get_error_msg()"),
+        &rendered,
+        "expected response field reader for string"
+    );
+    assert_rendered!(
+        rendered.contains("Ok(OnEnableCameraResponse {"),
+        &rendered,
+        "expected response construction"
     );
 }
