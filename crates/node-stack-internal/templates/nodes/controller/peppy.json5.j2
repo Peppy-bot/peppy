@@ -29,7 +29,7 @@
           name: "move_right_arm",
           goal_service: {
             // Always using "reliable" qos
-            accept_message_format: {
+            request_message_format: {
               arm_id: "u16",
               desired_position: {
                 type: "array",
@@ -37,7 +37,7 @@
                 length: 3
               }
             },
-            return_message_format: {
+            response_message_format: {
               accepted: "bool"
             }
           },
@@ -53,14 +53,14 @@
           },
           result_service: {
             // Always using "reliable" qos
-            accept_message_format: {
+            request_message_format: {
               final_position: {
                 type: "array",
                 items: "i32",
                 length: 3
               }
             },
-            return_message_format: {
+            response_message_format: {
               success: "bool"
             }
           }

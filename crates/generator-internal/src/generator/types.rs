@@ -36,7 +36,7 @@ pub enum InterfaceVariant {
     ExposedService(ExposedService),
     ExposedAction(ExposedAction),
     SubscribedTopic(SubscribedTopic, MessageFormat),
-    SubscribedService(SubscribedService, MessageFormat),
+    SubscribedService(SubscribedService, MessageFormat, MessageFormat),
     SubscribedAction(SubscribedAction, SubscribedActionMessage),
 }
 
@@ -92,7 +92,8 @@ pub trait LanguageGenerator {
     fn add_subscribed_service(
         &mut self,
         service: &SubscribedService,
-        arguments: Option<&MessageFormat>,
+        request_arguments: Option<&MessageFormat>,
+        response_arguments: Option<&MessageFormat>,
     ) -> Result<()>;
     fn add_subscribed_action(
         &mut self,
@@ -112,8 +113,12 @@ impl DeploymentInterface {
             InterfaceVariant::SubscribedTopic(topic, format) => {
                 backend.add_subscribed_topic(topic, Some(format))
             }
-            InterfaceVariant::SubscribedService(service, format) => {
-                backend.add_subscribed_service(service, Some(format))
+            InterfaceVariant::SubscribedService(service, request_arguments, response_arguments) => {
+                backend.add_subscribed_service(
+                    service,
+                    Some(request_arguments),
+                    Some(response_arguments),
+                )
             }
             InterfaceVariant::SubscribedAction(action, messages) => {
                 backend.add_subscribed_action(action, Some(messages))

@@ -6,7 +6,7 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
 {
   name: "move_arm",
   goal_service: {
-    accept_message_format: {
+    request_message_format: {
       arm_id: "u16",
       desired_position: {
         type: "array",
@@ -14,7 +14,7 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
         length: 3
       }
     },
-    return_message_format: {
+    response_message_format: {
       accepted: "bool"
     }
   },
@@ -36,7 +36,7 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
         length: 3
       }
     },
-    return_message_format: {
+    response_message_format: {
       success: "bool"
     }
   }

@@ -88,7 +88,8 @@ impl LanguageGenerator for PythonGenerator {
     fn add_subscribed_service(
         &mut self,
         service: &SubscribedService,
-        _arguments: Option<&MessageFormat>,
+        _request_arguments: Option<&MessageFormat>,
+        _response_arguments: Option<&MessageFormat>,
     ) -> Result<()> {
         let fn_name = prefixed_name("on", non_empty_str(service.name.as_str()), "service");
         self.push_section(InterfaceArtifact::from_kind(

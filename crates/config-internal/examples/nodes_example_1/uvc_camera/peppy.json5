@@ -64,10 +64,10 @@
       services: [
         {
           name: "enable_camera",
-          accept_message_format: {
+          request_message_format: {
             enable: "bool",
           },
-          return_message_format: {
+          response_message_format: {
             enabled: "bool",
             error_msg: "string" // Won't contain anything if enabled = True
           },
@@ -75,7 +75,7 @@
         {
           name: "get_camera_info",
           // This service simply returns camera info; no request body is required.
-          return_message_format: {
+          response_message_format: {
             card_type: "string",
             size: "string",
             interval: "string"

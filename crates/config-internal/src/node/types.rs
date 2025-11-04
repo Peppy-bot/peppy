@@ -280,9 +280,9 @@ pub struct ExposedService {
     #[serde(default)]
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub accept_message_format: Option<MessageFormat>,
+    pub request_message_format: Option<MessageFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub return_message_format: Option<MessageFormat>,
+    pub response_message_format: Option<MessageFormat>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -341,7 +341,7 @@ pub struct ActionServiceEndpoint {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accept_message_format: Option<MessageFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub return_message_format: Option<MessageFormat>,
+    pub response_message_format: Option<MessageFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -352,7 +352,7 @@ impl Default for ActionServiceEndpoint {
             service_type: None,
             qos_profile: default_action_service_qos_profile(),
             accept_message_format: None,
-            return_message_format: None,
+            response_message_format: None,
             name: None,
         }
     }

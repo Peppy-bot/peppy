@@ -37,7 +37,7 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
         length: 3
       }
     },
-    return_message_format: {
+    response_message_format: {
       accepted: "bool"
     }
   },
@@ -59,7 +59,7 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
         length: 3
       }
     },
-    return_message_format: {
+    response_message_format: {
       success: "bool"
     }
   }
@@ -139,7 +139,13 @@ const SUBSCRIBED_ACTION_GOAL_FORMAT: &str = r#"
 }
 "#;
 
-const SUBSCRIBED_SERVICE_FORMAT_EXAMPLE: &str = r#"
+const SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE: &str = r#"
+{
+  camera_id: "u16"
+}
+"#;
+
+const SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 {
   card_type: "string",
   size: "string",
@@ -153,7 +159,7 @@ const EXPOSED_SERVICE_EXAMPLE: &str = r#"
   accept_message_format: {
     enable: "bool"
   },
-  return_message_format: {
+  response_message_format: {
     enabled: "bool",
     error_msg: "string"
   }
@@ -287,8 +293,14 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
     let subscribed_service: SubscribedService =
         serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE).unwrap();
-    let subscribed_service_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_SERVICE_FORMAT_EXAMPLE).unwrap();
+    let subscribed_service_request_format: MessageFormat = serde_json5::from_str(
+        SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE,
+    )
+    .unwrap();
+    let subscribed_service_response_format: MessageFormat = serde_json5::from_str(
+        SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE,
+    )
+    .unwrap();
     let subscribed_action: SubscribedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
     let subscribed_action_messages = SubscribedActionMessage {
@@ -305,7 +317,11 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
         .add_subscribed_topic(&subscribed_topic, Some(&subscribed_topic_format))
         .unwrap();
     generator
-        .add_subscribed_service(&subscribed_service, Some(&subscribed_service_format))
+        .add_subscribed_service(
+            &subscribed_service,
+            Some(&subscribed_service_request_format),
+            Some(&subscribed_service_response_format),
+        )
         .unwrap();
     generator
         .add_subscribed_action(&subscribed_action, Some(&subscribed_action_messages))
@@ -452,9 +468,38 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
     let get_camera_info_contents = std::fs::read_to_string(&get_camera_info_module)
         .expect("failed to read get_camera_info module");
     assert!(
+        get_camera_info_contents.contains("pub async fn on_get_camera_info("),
+        "Expected subscribed service module to expose callback function, got:\n{}",
         get_camera_info_contents
-            .contains("pub async fn on_get_camera_info() -> OnGetCameraInfoArguments"),
-        "Expected subscribed service module to expose callback, got:\n{}",
+    );
+    assert!(
+        get_camera_info_contents.contains("request: OnGetCameraInfoRequest"),
+        "Expected subscribed service module to expose request parameter, got:\n{}",
+        get_camera_info_contents
+    );
+    assert!(
+        get_camera_info_contents.contains(") -> OnGetCameraInfoResponse"),
+        "Expected subscribed service module to expose response return type, got:\n{}",
+        get_camera_info_contents
+    );
+    assert!(
+        get_camera_info_contents.contains("pub struct OnGetCameraInfoRequest"),
+        "Expected subscribed service module to expose request struct, got:\n{}",
+        get_camera_info_contents
+    );
+    assert!(
+        get_camera_info_contents.contains("pub struct OnGetCameraInfoResponse"),
+        "Expected subscribed service module to expose response struct, got:\n{}",
+        get_camera_info_contents
+    );
+    assert!(
+        get_camera_info_contents.contains("camera_id: u16"),
+        "Expected subscribed service request struct to expose request field, got:\n{}",
+        get_camera_info_contents
+    );
+    assert!(
+        get_camera_info_contents.contains("card_type: String"),
+        "Expected subscribed service response struct to expose field, got:\n{}",
         get_camera_info_contents
     );
 

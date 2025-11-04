@@ -37,7 +37,7 @@
                 length: 3
               }
             },
-            return_message_format: {
+            response_message_format: {
               accepted: "bool"
             }
           },
@@ -60,7 +60,7 @@
                 length: 3
               }
             },
-            return_message_format: {
+            response_message_format: {
               success: "bool"
             }
           }
