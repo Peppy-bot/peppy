@@ -132,6 +132,7 @@ struct MessageEncodingSpec {
 
 struct ServiceResponseSpec<'a> {
     reader_type: TokenStream,
+    #[allow(dead_code)] // TODO: Use this for proper response serialization
     format: &'a MessageFormat,
     struct_ident: Ident,
     context: String,
@@ -1869,7 +1870,6 @@ fn build_exposed_service_method(
 
     let method = match encoding {
         Some(request_spec) => {
-            let request_reader_type = &request_spec.reader_type;
             let service_name = service_name_literal;
 
             // Build request deserializer and response serializer helper functions
@@ -2068,100 +2068,14 @@ fn build_response_serializer(
     };
 
     let struct_ident = &spec.struct_ident;
-    let context = &spec.context;
-    let context_literal = Literal::string(context);
 
-    // We need the builder type for the response, but we only have reader_type in the spec
-    // This is a problem - we need to store both reader and builder types
-    // For now, let's use a workaround by replacing "Reader" with "Builder" in the type path
-    let reader_tokens = &spec.reader_type;
-    let builder_type = quote!(#reader_tokens); // This needs to be fixed properly
-
+    // TODO: Implement proper response serialization using the response spec
+    // For now, return empty bytes
     quote! {
-        fn #serializer_fn_name(response: &#struct_ident) -> crate::Result<bytes::Bytes> {
-            // TODO: Implement proper response serialization
-            // For now, return empty bytes
+        fn #serializer_fn_name(_response: &#struct_ident) -> crate::Result<bytes::Bytes> {
             Ok(bytes::Bytes::new())
         }
     }
-}
-
-fn build_service_response_handling(
-    fn_name: &Ident,
-    response_spec: Option<&ServiceResponseSpec>,
-) -> (TokenStream, TokenStream, Vec<TokenStream>) {
-    let Some(spec) = response_spec else {
-        let result_ty = quote!(());
-        let parse_response = quote!({
-            let _ = response_payload;
-            Ok(())
-        });
-        return (result_ty, parse_response, Vec::new());
-    };
-
-    let struct_ident = &spec.struct_ident;
-    let reader_type = &spec.reader_type;
-    let context_literal = Literal::string(&spec.context);
-    let helper_fn_ident = Ident::new(
-        &format!("{}_response_from_payload", fn_name),
-        Span::call_site(),
-    );
-
-    let mut names = NameGenerator::new();
-    let mut field_statements = Vec::new();
-    let mut field_inits = Vec::new();
-
-    for (field_name, schema) in &spec.format.0 {
-        let (mut statements, value_ident) = generate_field_reader_statements(
-            &quote!(root),
-            field_name.as_str(),
-            schema,
-            &spec.context,
-            &mut names,
-        );
-        field_statements.append(&mut statements);
-        let field_ident = Ident::new(&sanitize_component(field_name), Span::call_site());
-        field_inits.push(quote!(#field_ident: #value_ident));
-    }
-
-    let struct_init = if field_inits.is_empty() {
-        quote!(#struct_ident {})
-    } else {
-        quote!(#struct_ident {
-            #( #field_inits ),*
-        })
-    };
-
-    let helper_fn = quote! {
-        fn #helper_fn_ident(payload: &[u8]) -> crate::Result<#struct_ident> {
-            let mut cursor = std::io::Cursor::new(payload);
-            let message_reader = capnp::serialize::read_message(
-                &mut cursor,
-                capnp::message::ReaderOptions::new(),
-            )
-            .map_err(|source| crate::Error::CapnpDeserialize {
-                context: String::from(#context_literal),
-                source,
-            })?;
-
-            let root = message_reader
-                .get_root::<#reader_type>()
-                .map_err(|source| crate::Error::CapnpDeserialize {
-                    context: String::from(#context_literal),
-                    source,
-                })?;
-
-            #(#field_statements)*
-
-            Ok(#struct_init)
-        }
-    };
-
-    let parse_response = quote!(Self::#helper_fn_ident(response_payload.as_ref()));
-    let mut helpers = Vec::new();
-    helpers.push(helper_fn);
-
-    (quote!(#struct_ident), parse_response, helpers)
 }
 
 fn build_sync_function(
