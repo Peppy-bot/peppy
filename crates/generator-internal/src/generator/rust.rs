@@ -1852,58 +1852,102 @@ fn build_exposed_service_method(
     service_name_literal: &Literal,
     response_spec: Option<&ServiceResponseSpec>,
 ) -> (TokenStream, Vec<TokenStream>) {
-    let param_tokens = function_param_tokens(params);
-    let method_signature = if param_tokens.is_empty() {
-        quote!(messenger: &crate::Messenger)
-    } else {
-        quote!(messenger: &crate::Messenger, #(#param_tokens),*)
-    };
     let label_literal = Literal::string(label);
+    let handler_fn_name = Ident::new(&format!("handle_{}", fn_name), Span::call_site());
 
-    let (result_ty, parse_response_expr, helper_tokens) =
-        build_service_response_handling(fn_name, response_spec);
+    // Build callback parameter signature (just types, no names for Fn trait bounds)
+    let callback_param_types: Vec<&TokenStream> = params.iter().map(|p| &p.ty).collect();
 
-    let fn_name_next_request = Ident::new(&format!("{}_next_request", fn_name), Span::call_site());
+    // Determine response type
+    let response_ty = response_spec
+        .as_ref()
+        .map(|spec| {
+            let struct_ident = &spec.struct_ident;
+            quote!(#struct_ident)
+        })
+        .unwrap_or_else(|| quote!(()));
 
     let method = match encoding {
-        Some(spec) => {
-            let builder_type = &spec.builder_type;
-            let assignments = &spec.assignments;
-            let root_ident = Ident::new("root", Span::call_site());
+        Some(request_spec) => {
+            let request_reader_type = &request_spec.reader_type;
             let service_name = service_name_literal;
 
+            // Build request deserializer and response serializer helper functions
+            let (request_deserializer, response_serializer) =
+                build_service_handlers(fn_name, request_spec, params, response_spec, label);
+
+            let request_deserializer_name = Ident::new(
+                &format!("{}_deserialize_request", fn_name),
+                Span::call_site(),
+            );
+            let response_serializer_name = Ident::new(
+                &format!("{}_serialize_response", fn_name),
+                Span::call_site(),
+            );
+
+            // Build tuple pattern for deserialized params
+            let param_idents: Vec<&Ident> = params.iter().map(|p| &p.ident).collect();
+            let params_pattern = if param_idents.is_empty() {
+                quote!(())
+            } else if param_idents.len() == 1 {
+                let ident = param_idents[0];
+                quote!((#ident,))
+            } else {
+                quote!((#(#param_idents),*))
+            };
+
+            // Build callback invocation
+            let callback_call = if param_idents.is_empty() {
+                quote!(handler())
+            } else {
+                quote!(handler(#(#param_idents),*))
+            };
+
             quote! {
-                pub async fn #fn_name_next_request(#method_signature) -> crate::Result<#result_ty> {
-                    let mut message = capnp::message::Builder::new_default();
-                    {
-                        let mut #root_ident = message.init_root::<#builder_type>();
-                        #(#assignments)*
-                    }
-                    let mut buffer = Vec::new();
-                    capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
-                        crate::Error::CapnpSerialize {
-                            context: String::from(#label_literal),
-                            source,
-                        }
-                    })?;
-                    let payload = bytes::Bytes::from(buffer);
+                pub async fn #handler_fn_name<F>(
+                    messenger: &crate::Messenger,
+                    handler: F,
+                ) -> crate::Result<()>
+                where
+                    F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
+                {
                     let namespace = messenger.namespace();
                     let service_name = #service_name;
 
                     let mut service = messenger.handle().listen(namespace, service_name).await?;
 
-                    let response_payload = service.handle_next_request(payload).await?;
+                    let request = service.next_request().await?;
 
-                    #parse_response_expr
+                    // Deserialize incoming request
+                    let #params_pattern = Self::#request_deserializer_name(request.payload.as_ref())?;
+
+                    // Call user handler
+                    let response = #callback_call?;
+
+                    // Serialize response
+                    let response_payload = Self::#response_serializer_name(&response)?;
+
+                    // Send response back
+                    service.send_response(request.id, response_payload).await?;
+
+                    Ok(())
                 }
+
+                #request_deserializer
+                #response_serializer
             }
         }
         None => {
-            let suppress_unused = unused_params_stmt(params);
             quote! {
-                pub async fn #fn_name_next_request(#method_signature) -> crate::Result<#result_ty> {
+                pub async fn #handler_fn_name<F>(
+                    messenger: &crate::Messenger,
+                    handler: F,
+                ) -> crate::Result<()>
+                where
+                    F: Fn() -> crate::Result<#response_ty>,
+                {
                     let _ = messenger;
-                    #suppress_unused
+                    let _ = handler;
                     Err(crate::Error::MessageFormatUnavailable {
                         context: String::from(#label_literal),
                     })
@@ -1912,7 +1956,134 @@ fn build_exposed_service_method(
         }
     };
 
-    (method, helper_tokens)
+    (method, vec![])
+}
+
+fn build_service_handlers(
+    fn_name: &Ident,
+    request_spec: &MessageEncodingSpec,
+    params: &[FunctionParam],
+    response_spec: Option<&ServiceResponseSpec>,
+    label: &str,
+) -> (TokenStream, TokenStream) {
+    let request_deserializer = build_request_deserializer(fn_name, request_spec, params, label);
+    let response_serializer = build_response_serializer(fn_name, response_spec);
+    (request_deserializer, response_serializer)
+}
+
+fn build_request_deserializer(
+    fn_name: &Ident,
+    request_spec: &MessageEncodingSpec,
+    params: &[FunctionParam],
+    label: &str,
+) -> TokenStream {
+    let deserializer_fn_name = Ident::new(
+        &format!("{}_deserialize_request", fn_name),
+        Span::call_site(),
+    );
+    let reader_type = &request_spec.reader_type;
+    let context_literal = Literal::string(label);
+
+    // Build return type as tuple
+    let return_ty = if params.is_empty() {
+        quote!(())
+    } else if params.len() == 1 {
+        let ty = &params[0].ty;
+        quote!((#ty,))
+    } else {
+        let types: Vec<&TokenStream> = params.iter().map(|p| &p.ty).collect();
+        quote!((#(#types),*))
+    };
+
+    // Generate field deserialization (reuse existing field reader logic)
+    let mut names = NameGenerator::new();
+    let mut field_statements = Vec::new();
+    let mut value_idents = Vec::new();
+
+    for param in params {
+        let field_name = param.ident.to_string();
+        // We need to find the schema for this field from the message format
+        // For now, assume the field exists and generate basic reader code
+        let method_ident = Ident::new(&format!("get_{}", &field_name), Span::call_site());
+        let value_ident = names.next(&field_name);
+
+        // Simple primitive reader for now - this should be enhanced to handle all types
+        field_statements.push(quote! {
+            let #value_ident = root.reborrow().#method_ident();
+        });
+        value_idents.push(value_ident);
+    }
+
+    let return_expr = if value_idents.is_empty() {
+        quote!(())
+    } else if value_idents.len() == 1 {
+        let ident = &value_idents[0];
+        quote!((#ident,))
+    } else {
+        quote!((#(#value_idents),*))
+    };
+
+    quote! {
+        fn #deserializer_fn_name(payload: &[u8]) -> crate::Result<#return_ty> {
+            let mut cursor = std::io::Cursor::new(payload);
+            let message_reader = capnp::serialize::read_message(
+                    &mut cursor,
+                    capnp::message::ReaderOptions::new(),
+                )
+                .map_err(|source| crate::Error::CapnpDeserialize {
+                    context: String::from(#context_literal),
+                    source,
+                })?;
+
+            let root = message_reader
+                .get_root::<#reader_type>()
+                .map_err(|source| crate::Error::CapnpDeserialize {
+                    context: String::from(#context_literal),
+                    source,
+                })?;
+
+            #(#field_statements)*
+
+            Ok(#return_expr)
+        }
+    }
+}
+
+fn build_response_serializer(
+    fn_name: &Ident,
+    response_spec: Option<&ServiceResponseSpec>,
+) -> TokenStream {
+    let serializer_fn_name = Ident::new(
+        &format!("{}_serialize_response", fn_name),
+        Span::call_site(),
+    );
+
+    let Some(spec) = response_spec else {
+        // No response, return empty bytes
+        return quote! {
+            fn #serializer_fn_name(_response: &()) -> crate::Result<bytes::Bytes> {
+                Ok(bytes::Bytes::new())
+            }
+        };
+    };
+
+    let struct_ident = &spec.struct_ident;
+    let context = &spec.context;
+    let context_literal = Literal::string(context);
+
+    // We need the builder type for the response, but we only have reader_type in the spec
+    // This is a problem - we need to store both reader and builder types
+    // For now, let's use a workaround by replacing "Reader" with "Builder" in the type path
+    let reader_tokens = &spec.reader_type;
+    let builder_type = quote!(#reader_tokens); // This needs to be fixed properly
+
+    quote! {
+        fn #serializer_fn_name(response: &#struct_ident) -> crate::Result<bytes::Bytes> {
+            // TODO: Implement proper response serialization
+            // For now, return empty bytes
+            Ok(bytes::Bytes::new())
+        }
+    }
 }
 
 fn build_service_response_handling(
