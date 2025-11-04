@@ -1854,7 +1854,7 @@ fn build_exposed_service_method(
     response_spec: Option<&ServiceResponseSpec>,
 ) -> (TokenStream, Vec<TokenStream>) {
     let label_literal = Literal::string(label);
-    let handler_fn_name = Ident::new(&format!("handle_{}", fn_name), Span::call_site());
+    let handler_fn_name = Ident::new(&format!("handle_{}_next_request", fn_name), Span::call_site());
 
     // Build callback parameter signature (just types, no names for Fn trait bounds)
     let callback_param_types: Vec<&TokenStream> = params.iter().map(|p| &p.ty).collect();
@@ -1872,18 +1872,16 @@ fn build_exposed_service_method(
         Some(request_spec) => {
             let service_name = service_name_literal;
 
-            // Build request deserializer and response serializer helper functions
-            let (request_deserializer, response_serializer) =
-                build_service_handlers(fn_name, request_spec, params, response_spec, label);
+            // Build request deserializer helper function
+            let request_deserializer = build_request_deserializer(fn_name, request_spec, params, label);
 
             let request_deserializer_name = Ident::new(
                 &format!("{}_deserialize_request", fn_name),
                 Span::call_site(),
             );
-            let response_serializer_name = Ident::new(
-                &format!("{}_serialize_response", fn_name),
-                Span::call_site(),
-            );
+
+            // Build response serialization code inline
+            let response_serialization = build_response_serialization_code(response_spec, label);
 
             // Build tuple pattern for deserialized params
             let param_idents: Vec<&Ident> = params.iter().map(|p| &p.ident).collect();
@@ -1925,7 +1923,7 @@ fn build_exposed_service_method(
                     let response = #callback_call?;
 
                     // Serialize response
-                    let response_payload = Self::#response_serializer_name(&response)?;
+                    #response_serialization
 
                     // Send response back
                     service.send_response(request.id, response_payload).await?;
@@ -1934,7 +1932,6 @@ fn build_exposed_service_method(
                 }
 
                 #request_deserializer
-                #response_serializer
             }
         }
         None => {
@@ -1957,18 +1954,6 @@ fn build_exposed_service_method(
     };
 
     (method, vec![])
-}
-
-fn build_service_handlers(
-    fn_name: &Ident,
-    request_spec: &MessageEncodingSpec,
-    params: &[FunctionParam],
-    response_spec: Option<&ServiceResponseSpec>,
-    label: &str,
-) -> (TokenStream, TokenStream) {
-    let request_deserializer = build_request_deserializer(fn_name, request_spec, params, label);
-    let response_serializer = build_response_serializer(fn_name, response_spec);
-    (request_deserializer, response_serializer)
 }
 
 fn build_request_deserializer(
@@ -2049,32 +2034,22 @@ fn build_request_deserializer(
     }
 }
 
-fn build_response_serializer(
-    fn_name: &Ident,
+fn build_response_serialization_code(
     response_spec: Option<&ServiceResponseSpec>,
+    label: &str,
 ) -> TokenStream {
-    let serializer_fn_name = Ident::new(
-        &format!("{}_serialize_response", fn_name),
-        Span::call_site(),
-    );
-
-    let Some(spec) = response_spec else {
+    let Some(_spec) = response_spec else {
         // No response, return empty bytes
         return quote! {
-            fn #serializer_fn_name(_response: &()) -> crate::Result<bytes::Bytes> {
-                Ok(bytes::Bytes::new())
-            }
+            let response_payload = bytes::Bytes::new();
         };
     };
 
-    let struct_ident = &spec.struct_ident;
-
-    // TODO: Implement proper response serialization using the response spec
-    // For now, return empty bytes
+    // TODO: Implement proper response serialization using the response spec format
+    // For now, return empty bytes as placeholder
+    let _context_literal = Literal::string(label);
     quote! {
-        fn #serializer_fn_name(_response: &#struct_ident) -> crate::Result<bytes::Bytes> {
-            Ok(bytes::Bytes::new())
-        }
+        let response_payload = bytes::Bytes::new();
     }
 }
 
