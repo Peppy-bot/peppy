@@ -54,9 +54,9 @@ fn exposed_service() {
         "expected string field in response struct"
     );
     assert_rendered!(
-        rendered.contains("pub async fn handle_enable_camera<F>("),
+        rendered.contains("pub async fn handle_enable_camera_next_request<F>("),
         &rendered,
-        "expected async service handler with handle_ prefix and generic F"
+        "expected async service handler with handle_*_next_request naming"
     );
     assert_rendered!(
         rendered.contains("handler: F"),
@@ -89,9 +89,9 @@ fn exposed_service() {
         "expected request deserializer helper function"
     );
     assert_rendered!(
-        rendered.contains("enable_camera_serialize_response"),
+        rendered.contains("let response_payload = bytes::Bytes::new();"),
         &rendered,
-        "expected response serializer helper function"
+        "expected inline response serialization"
     );
     assert_rendered!(
         rendered.contains("handler(enable)?"),
