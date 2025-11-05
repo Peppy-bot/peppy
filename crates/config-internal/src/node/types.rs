@@ -279,7 +279,10 @@ pub struct ExposedTopic {
 pub struct ExposedService {
     #[serde(default)]
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        alias = "accept_message_format"
+    )]
     pub request_message_format: Option<MessageFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_message_format: Option<MessageFormat>,
@@ -301,8 +304,12 @@ pub struct ExposedAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubscribedTopic {
-    #[serde(deserialize_with = "deserialize_subscribed_topic_node")]
-    pub node: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_subscribed_topic_node"
+    )]
+    pub node: Option<String>,
     #[serde(deserialize_with = "deserialize_subscribed_topic_name")]
     pub name: String,
     #[serde(default)]
@@ -342,7 +349,10 @@ pub struct ActionServiceEndpoint {
     pub service_type: Option<String>,
     #[serde(default = "default_action_service_qos_profile")]
     pub qos_profile: QoSProfile,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        alias = "request_message_format"
+    )]
     pub accept_message_format: Option<MessageFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_message_format: Option<MessageFormat>,
@@ -362,11 +372,17 @@ impl Default for ActionServiceEndpoint {
     }
 }
 
-fn deserialize_subscribed_topic_node<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_subscribed_topic_node<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "SubscribedTopic.node")
+    let value = Option::<String>::deserialize(deserializer)?;
+    match value {
+        Some(raw) => validate_non_empty_identifier(&raw, "SubscribedTopic.node")
+            .map(Some)
+            .map_err(de::Error::custom),
+        None => Ok(None),
+    }
 }
 
 fn deserialize_subscribed_topic_name<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -399,14 +415,18 @@ where
     D: Deserializer<'de>,
 {
     let raw = String::deserialize(deserializer)?;
+    validate_non_empty_identifier(&raw, label).map_err(de::Error::custom)
+}
+
+fn validate_non_empty_identifier(raw: &str, label: &'static str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(de::Error::custom(format!("{label} cannot be empty")));
+        return Err(format!("{label} cannot be empty"));
     }
     if !trimmed.chars().any(|ch| ch.is_ascii_alphanumeric()) {
-        return Err(de::Error::custom(format!(
+        return Err(format!(
             "{label} must contain at least one alphanumeric character"
-        )));
+        ));
     }
     Ok(trimmed.to_string())
 }
@@ -518,12 +538,17 @@ mod tests {
     }
 
     #[test]
-    fn subscribed_topic_requires_non_empty_node_and_name() {
+    fn subscribed_topic_node_is_optional_but_validated() {
         let valid = r#"{ node: "uvc_camera", name: "stream" }"#;
         let topic: SubscribedTopic =
             serde_json5::from_str(valid).expect("valid topic should parse");
-        assert_eq!(topic.node, "uvc_camera");
+        assert_eq!(topic.node.as_deref(), Some("uvc_camera"));
         assert_eq!(topic.name, "stream");
+
+        let without_node = r#"{ name: "stream" }"#;
+        let topic: SubscribedTopic =
+            serde_json5::from_str(without_node).expect("topic without node should parse");
+        assert!(topic.node.is_none());
 
         let missing_node = r#"{ node: "", name: "stream" }"#;
         assert!(serde_json5::from_str::<SubscribedTopic>(missing_node).is_err());
@@ -543,7 +568,7 @@ mod tests {
         let trimmed = r#"{ node: " uvc_camera ", name: " stream " }"#;
         let topic: SubscribedTopic =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
-        assert_eq!(topic.node, "uvc_camera");
+        assert_eq!(topic.node.as_deref(), Some("uvc_camera"));
         assert_eq!(topic.name, "stream");
     }
 
@@ -563,6 +588,48 @@ mod tests {
         let service: SubscribedService =
             serde_json5::from_str(blank_node).expect("blank node should be treated as None");
         assert!(service.node.is_none());
+    }
+
+    #[test]
+    fn action_service_endpoint_accepts_request_and_accept_keys() {
+        let request_version = r#"
+        {
+            request_message_format: { value: "u32" }
+        }
+        "#;
+        let endpoint: ActionServiceEndpoint =
+            serde_json5::from_str(request_version).expect("request field should parse");
+        assert!(endpoint.accept_message_format.is_some());
+
+        let accept_version = r#"
+        {
+            accept_message_format: { value: "u32" }
+        }
+        "#;
+        let endpoint: ActionServiceEndpoint =
+            serde_json5::from_str(accept_version).expect("accept field should parse");
+        assert!(endpoint.accept_message_format.is_some());
+    }
+
+    #[test]
+    fn exposed_service_accepts_request_and_accept_keys() {
+        let request_version = r#"
+        {
+            request_message_format: { value: "u32" }
+        }
+        "#;
+        let service: ExposedService =
+            serde_json5::from_str(request_version).expect("request field should parse");
+        assert!(service.request_message_format.is_some());
+
+        let accept_version = r#"
+        {
+            accept_message_format: { value: "u32" }
+        }
+        "#;
+        let service: ExposedService =
+            serde_json5::from_str(accept_version).expect("accept field should parse");
+        assert!(service.request_message_format.is_some());
     }
 
     #[test]
