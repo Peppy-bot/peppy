@@ -26,6 +26,7 @@ use syn::{File, parse2};
 pub struct RustGenerator {
     sections: Vec<InterfaceArtifact>,
     schemas: HashMap<String, CapnpSchema>,
+    pending_exposed_topics: Option<ExposedTopicsModule>,
     pending_subscribed_topics: BTreeMap<String, SubscribedTopicNode>,
 }
 
@@ -34,14 +35,22 @@ impl RustGenerator {
         Self {
             sections: Vec::new(),
             schemas: HashMap::new(),
+            pending_exposed_topics: None,
             pending_subscribed_topics: BTreeMap::new(),
         }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn into_artifacts(mut self) -> Vec<InterfaceArtifact> {
+        self.flush_pending_exposed_topics();
         self.flush_pending_subscribed_topics();
         self.sections
+    }
+
+    fn flush_pending_exposed_topics(&mut self) {
+        if let Some(module) = self.pending_exposed_topics.take() {
+            self.push_section(module.into_artifact());
+        }
     }
 
     fn flush_pending_subscribed_topics(&mut self) {
@@ -166,13 +175,8 @@ impl LanguageGenerator for RustGenerator {
             &params,
         )?;
         let struct_tokens = context.into_tokens();
-
-        let exposes_ident = Ident::new("Exposes", Span::call_site());
-        let method_ident =
-            Ident::new(&format!("emit_{fn_name_str}"), Span::call_site());
-        let topic_struct = build_topic_struct(&exposes_ident);
-        let impl_block = build_topic_impl(
-            &exposes_ident,
+        let method_ident = Ident::new(&format!("emit_{fn_name_str}"), Span::call_site());
+        let method_tokens = build_topic_emit(
             &method_ident,
             &params,
             encoding.as_ref(),
@@ -180,21 +184,11 @@ impl LanguageGenerator for RustGenerator {
             &fn_name_str,
         );
 
-        let tokens: TokenStream = quote! {
-            #( #struct_tokens )*
-
-            #topic_struct
-
-            #impl_block
-        };
-
-        let rendered = render_tokens(tokens);
-
-        self.push_section(InterfaceArtifact::from_kind(
-            &topic.name,
-            InterfaceKind::ExposedTopic,
-            rendered,
-        ));
+        let module = self
+            .pending_exposed_topics
+            .get_or_insert_with(ExposedTopicsModule::new);
+        module.extend_structs(struct_tokens);
+        module.push_method(method_tokens);
         Ok(())
     }
 
@@ -723,6 +717,57 @@ impl LanguageGenerator for RustGenerator {
         // Lastly generate the codegen fingerprint based on the peppy.json5 config file
         checker::generate_node_config_fingerprint(&node_config_path, crate_root)?;
         Ok(())
+    }
+}
+
+struct ExposedTopicsModule {
+    node_name: String,
+    struct_ident: Ident,
+    message_structs: Vec<TokenStream>,
+    methods: Vec<TokenStream>,
+}
+
+impl ExposedTopicsModule {
+    fn new() -> Self {
+        Self {
+            node_name: String::new(),
+            struct_ident: Ident::new("Exposes", Span::call_site()),
+            message_structs: Vec::new(),
+            methods: Vec::new(),
+        }
+    }
+
+    fn extend_structs(&mut self, structs: Vec<TokenStream>) {
+        self.message_structs.extend(structs);
+    }
+
+    fn push_method(&mut self, method: TokenStream) {
+        self.methods.push(method);
+    }
+
+    fn into_artifact(self) -> InterfaceArtifact {
+        let ExposedTopicsModule {
+            node_name,
+            struct_ident,
+            message_structs,
+            methods,
+        } = self;
+
+        let struct_tokens = build_topic_struct(&struct_ident);
+
+        let tokens: TokenStream = quote! {
+            #( #message_structs )*
+
+            #struct_tokens
+
+            impl #struct_ident {
+                #( #methods )*
+            }
+        };
+
+        let rendered = render_tokens(tokens);
+
+        InterfaceArtifact::from_kind(&node_name, InterfaceKind::ExposedTopic, rendered)
     }
 }
 
@@ -1320,23 +1365,6 @@ impl NameGenerator {
 fn build_topic_struct(struct_ident: &Ident) -> TokenStream {
     quote! {
         pub struct #struct_ident;
-    }
-}
-
-fn build_topic_impl(
-    struct_ident: &Ident,
-    method_ident: &Ident,
-    params: &[FunctionParam],
-    encoding: Option<&MessageEncodingSpec>,
-    topic: &ExposedTopic,
-    label: &str,
-) -> TokenStream {
-    let emit_fn = build_topic_emit(method_ident, params, encoding, topic, label);
-
-    quote! {
-        impl #struct_ident {
-            #emit_fn
-        }
     }
 }
 
