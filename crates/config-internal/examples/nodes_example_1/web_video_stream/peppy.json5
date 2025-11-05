@@ -13,10 +13,6 @@
       "--release"
     ]
   },
-  config: {
-    respawn: true,
-    respawn_delay: 5.0,
-  },
   // The input parameters of the current node
   parameters: {
     cameras_namespaces: {
