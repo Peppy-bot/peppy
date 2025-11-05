@@ -71,6 +71,7 @@
         {
           namespace: "/camera/stream/right",
           parameters: {
+            // When given in parameters, a single instance can take in multiple streams
             cameras_namespaces: [
               "/camera/right",
               "/camera/left"
@@ -89,6 +90,20 @@
               max_fps: 30,
             },
           }
+        }
+      ]
+    },
+    {
+      name: "esp32_board",
+      tag: "0.1.0",
+      instances: [
+        {
+          namespace: "/boards",
+          // Some vars such as `PEPPY_NAMESPACE` are automatically passed onto the instance
+          env_vars: {
+            ESP32_DEVICE: "/dev/tty.usbmodem585A0076841"
+          },
+          // No parameters given for this node, no_std env cannot accept dynamic parameters after compilation
         }
       ]
     },

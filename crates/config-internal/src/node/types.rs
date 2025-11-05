@@ -14,8 +14,6 @@ pub struct NodeConfig {
     pub schema_version: SchemaVersion,
     pub manifest: Manifest,
     #[serde(default)]
-    pub config: NodeRuntimeConfig,
-    #[serde(default)]
     pub parameters: NodeParameters,
     #[serde(default)]
     pub interfaces: Interfaces,
@@ -111,7 +109,9 @@ pub enum TypeToken {
     I16,
     I32,
     I64,
+    #[serde(alias = "float")]
     F32,
+    #[serde(alias = "double")]
     F64,
 }
 // Derives above keep serde logic concise; `TypeToken` handles mapping of known strings.
@@ -491,17 +491,6 @@ pub struct Manifest {
     // Command to launch the node, e.g., ["cargo", "run", "--release"]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_cmd: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct NodeRuntimeConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auto_start: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub respawn: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub respawn_delay: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

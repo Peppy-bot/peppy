@@ -58,11 +58,6 @@ mod tests {
                 tag: "2.1.0",
                 launch_cmd: ["cargo", "run", "--release"],
             },
-            config: {
-                auto_start: true,
-                respawn: true,
-                respawn_delay: 2.0
-            },
             interfaces: {
                 exposes: {
                     topics: [
@@ -75,9 +70,6 @@ mod tests {
         assert_eq!(config.manifest.name.as_str(), "camera_driver");
         assert_eq!(config.manifest.tag, "2.1.0");
         assert!(config.manifest.launch_cmd.is_some());
-        assert_eq!(config.config.auto_start, Some(true));
-        assert_eq!(config.config.respawn, Some(true));
-        assert_eq!(config.config.respawn_delay, Some(2.0));
         assert!(config.interfaces.exposes.is_some());
     }
 

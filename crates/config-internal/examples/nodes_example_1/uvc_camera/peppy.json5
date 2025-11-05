@@ -16,11 +16,6 @@
       "--release"
     ]
   },
-  config: {
-    auto_start: false, // Can be started with the `enable_camera` service
-    respawn: true,
-    respawn_delay: 3.0,
-  },
   // Expected parameter types to start the node
   parameters: {
     device: {

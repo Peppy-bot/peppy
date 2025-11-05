@@ -145,10 +145,6 @@ mod tests {
                 tag: "0.1.0",
                 launch_cmd: ["cargo", "run", "--release"]
             },
-            config: {
-                respawn: true,
-                respawn_delay: 1
-            },
             resources: {
                 max_memory_mb: 1024
             },
