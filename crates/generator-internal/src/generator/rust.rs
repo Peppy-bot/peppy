@@ -412,9 +412,7 @@ impl LanguageGenerator for RustGenerator {
             (true, true) => "on_next_message".to_string(),
             (true, false) => format!("on_next_{topic_component}_message"),
             (false, true) => format!("on_next_{node_component}_message"),
-            (false, false) => format!(
-                "on_next_{node_component}_{topic_component}_message"
-            ),
+            (false, false) => format!("on_next_{node_component}_{topic_component}_message"),
         };
         let callback_fn_ident = Ident::new(&callback_fn_name, Span::call_site());
 
@@ -448,10 +446,7 @@ impl LanguageGenerator for RustGenerator {
             )?
             .expect("message encoding spec should exist when message format is provided");
         let struct_tokens = context.into_tokens();
-        let node_key = topic
-            .node
-            .clone()
-            .unwrap_or_else(|| topic.name.clone());
+        let node_key = topic.node.clone().unwrap_or_else(|| topic.name.clone());
         let node_entry = self
             .pending_subscribed_topics
             .entry(node_key.clone())
@@ -468,7 +463,7 @@ impl LanguageGenerator for RustGenerator {
             topic,
             &message_struct_name,
         );
-            node_entry.push_method(method_tokens);
+        node_entry.push_method(method_tokens);
 
         Ok(())
     }
@@ -1470,10 +1465,7 @@ fn build_subscribed_topic_callback(
             (true, true) => "deseralize_payload".to_string(),
             (true, false) => format!("deseralize_{}_payload", topic_component),
             (false, true) => format!("deseralize_{}_payload", node_component),
-            (false, false) => format!(
-                "deseralize_{}_{}_payload",
-                node_component, topic_component
-            ),
+            (false, false) => format!("deseralize_{}_{}_payload", node_component, topic_component),
         };
         Ident::new(&helper_name, Span::call_site())
     };
