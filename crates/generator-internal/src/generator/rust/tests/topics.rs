@@ -525,6 +525,7 @@ fn create_lib_with_exposed_topic_artifact() {
 
     let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
     generator.add_exposed_topic(&topic).unwrap();
+    generator.flush_pending_exposed_topics();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator.build(&output_dir).unwrap();
     fs::remove_file(output_config).unwrap();
@@ -557,27 +558,50 @@ fn create_lib_with_exposed_topic_artifact() {
     );
     let topics_contents =
         std::fs::read_to_string(&topics_mod).expect("failed to read topics module");
+    let topic_modules: Vec<String> = topics_contents
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            trimmed
+                .strip_prefix("pub mod ")
+                .map(|rest| rest.trim_end_matches(';').trim().to_string())
+        })
+        .collect();
     assert!(
-        topics_contents.contains("pub mod push_frame;"),
-        "Expected topics module to expose generated `push_frame` module, got:\n{}",
+        !topic_modules.is_empty(),
+        "Expected topics module to expose at least one generated topic module, got:\n{}",
         topics_contents
     );
+    assert_eq!(
+        topic_modules.len(),
+        1,
+        "Expected a single generated topic module, got {:?}",
+        topic_modules
+    );
+    let generated_module = &topic_modules[0];
 
-    let push_frame_mod = output_dir.join("src/topics/push_frame.rs");
+    let topic_module_path = output_dir
+        .join("src/topics")
+        .join(format!("{generated_module}.rs"));
     assert!(
-        push_frame_mod.exists(),
+        topic_module_path.exists(),
         "Expected generated topic module at {:?}",
-        push_frame_mod
+        topic_module_path
     );
     let push_frame_contents =
-        std::fs::read_to_string(&push_frame_mod).expect("failed to read push_frame module");
+        std::fs::read_to_string(&topic_module_path).expect("failed to read generated topic module");
     assert!(
-        push_frame_contents.contains("pub struct PushFrame;"),
-        "Expected generated module to define topic struct, got:\n{}",
+        push_frame_contents.contains("pub struct PushFrameHeader"),
+        "Expected generated module to define message struct, got:\n{}",
         push_frame_contents
     );
     assert!(
-        push_frame_contents.contains("pub async fn emit("),
+        push_frame_contents.contains("pub struct Exposes;"),
+        "Expected generated module to define exposes struct, got:\n{}",
+        push_frame_contents
+    );
+    assert!(
+        push_frame_contents.contains("pub async fn emit_push_frame("),
         "Expected generated module to expose async emit method, got:\n{}",
         push_frame_contents
     );
