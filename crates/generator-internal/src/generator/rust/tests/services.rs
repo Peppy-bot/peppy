@@ -14,6 +14,19 @@ const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 }
 "#;
 
+const EXPOSED_SERVICE_EXAMPLE2: &str = r#"
+{
+    name: "get_lidar_info",
+    request_message_format: {
+      channels: "string",
+      horizontal_fov: "string",
+      vertical_fov: "string",
+      resolution: "string",
+      frequency: "string"
+    }
+}
+"#;
+
 #[test]
 fn exposed_service() {
     let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
@@ -117,7 +130,95 @@ fn exposed_service() {
 }
 
 #[test]
-fn subscribed_service_returns_arguments() {
+fn exposed_double_service() {
+    let service1: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
+    let service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
+
+    let mut generator = RustGenerator::new();
+    generator.add_exposed_service(&service1).unwrap();
+    generator.add_exposed_service(&service2).unwrap();
+
+    let artifacts = generator.into_artifacts();
+
+    assert_eq!(
+        artifacts.len(),
+        2,
+        "expected two generated artifacts, got {}",
+        artifacts.len()
+    );
+
+    let enable_camera_rendered = artifacts
+        .iter()
+        .find(|artifact| artifact.node_name == "enable_camera")
+        .map(|artifact| &artifact.code_output)
+        .expect("expected generated artifact for `enable_camera`");
+    let get_lidar_info_rendered = artifacts
+        .iter()
+        .find(|artifact| artifact.node_name == "get_lidar_info")
+        .map(|artifact| &artifact.code_output)
+        .expect("expected generated artifact for `get_lidar_info`");
+
+    assert_rendered!(
+        enable_camera_rendered.contains("struct EnableCameraService;"),
+        enable_camera_rendered,
+        "expected service struct declaration for `enable_camera`"
+    );
+    assert_rendered!(
+        enable_camera_rendered.contains("pub async fn handle_next_request<F>("),
+        enable_camera_rendered,
+        "expected async handler for `enable_camera`"
+    );
+    assert_rendered!(
+        enable_camera_rendered.contains("F: Fn(bool) -> crate::Result<EnableCameraResponse>"),
+        enable_camera_rendered,
+        "expected handler signature for `enable_camera`"
+    );
+
+    assert_rendered!(
+        get_lidar_info_rendered.contains("struct GetLidarInfoService;"),
+        get_lidar_info_rendered,
+        "expected service struct declaration for `get_lidar_info`"
+    );
+    assert_rendered!(
+        get_lidar_info_rendered.contains("struct GetLidarInfoRequest"),
+        get_lidar_info_rendered,
+        "expected private request struct for `get_lidar_info`"
+    );
+    assert_rendered!(
+        get_lidar_info_rendered.contains("pub async fn handle_next_request<F>("),
+        get_lidar_info_rendered,
+        "expected async handler for `get_lidar_info`"
+    );
+    assert_rendered!(
+        get_lidar_info_rendered.contains("F: Fn(GetLidarInfoRequest) -> crate::Result<()"),
+        get_lidar_info_rendered,
+        "expected handler signature for `get_lidar_info`"
+    );
+    assert_rendered!(
+        get_lidar_info_rendered
+            .contains("let request_data = Self::get_lidar_info_deserialize_request"),
+        get_lidar_info_rendered,
+        "expected deserializer binding for `get_lidar_info`"
+    );
+    assert_rendered!(
+        get_lidar_info_rendered.contains("handler(request_data)?"),
+        get_lidar_info_rendered,
+        "expected handler invocation with request struct for `get_lidar_info`"
+    );
+    assert_rendered!(
+        get_lidar_info_rendered.contains("fn get_lidar_info_deserialize_request("),
+        get_lidar_info_rendered,
+        "expected request deserializer helper for `get_lidar_info`"
+    );
+    assert_rendered!(
+        get_lidar_info_rendered.contains("-> crate::Result<GetLidarInfoRequest>"),
+        get_lidar_info_rendered,
+        "expected request deserializer to return request struct for `get_lidar_info`"
+    );
+}
+
+#[test]
+fn subscribed_to_service() {
     let service = r#"
         {
             node: "uvc_camera",
@@ -252,4 +353,13 @@ fn subscribed_service_returns_arguments() {
         &rendered,
         "expected response construction"
     );
+}
+
+#[test]
+fn subscribed_to_two_services_same_node() {
+    todo!("finish")
+}
+
+fn create_lib_with_exposed_services_artifact() {
+    todo!("finish")
 }

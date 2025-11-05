@@ -20,7 +20,7 @@ use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use syn::{parse2, File};
+use syn::{File, parse2};
 
 /// Rust-specific implementation of the interface generator.
 pub struct RustGenerator {
@@ -216,6 +216,14 @@ impl LanguageGenerator for RustGenerator {
             &params,
         )?;
 
+        let request_struct_ident =
+            if let Some((ident, tokens)) = build_request_struct(&struct_prefix, &params) {
+                context.add_private_struct(tokens);
+                Some(ident)
+            } else {
+                None
+            };
+
         let response_spec = if let Some(return_artifacts) = return_format_artifacts.as_ref() {
             let response_prefix = format!("{struct_prefix}Response");
             let schema_key = format!("{fn_name_str}_response");
@@ -241,6 +249,7 @@ impl LanguageGenerator for RustGenerator {
             encoding.as_ref(),
             &fn_name_str,
             &service_name_literal,
+            request_struct_ident.as_ref(),
             response_spec.as_ref(),
         );
 
@@ -482,8 +491,7 @@ impl LanguageGenerator for RustGenerator {
         let struct_prefix = to_camel_case(&fn_name_str);
         let method_ident = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
         let method_name = method_ident.to_string();
-        let service_struct_name =
-            format!("{}ServicePoll", to_camel_case(method_name.as_str()));
+        let service_struct_name = format!("{}ServicePoll", to_camel_case(method_name.as_str()));
         let service_struct_ident = Ident::new(&service_struct_name, Span::call_site());
         let response_struct_name = format!("{struct_prefix}Response");
         let response_struct_ident = Ident::new(&response_struct_name, Span::call_site());
@@ -844,6 +852,7 @@ fn sanitize_component(raw: &str) -> String {
 #[derive(Default)]
 struct GenerationContext {
     structs: Vec<StructDefinition>,
+    private_items: Vec<TokenStream>,
 }
 
 impl GenerationContext {
@@ -855,11 +864,18 @@ impl GenerationContext {
         }
     }
 
+    fn add_private_struct(&mut self, tokens: TokenStream) {
+        self.private_items.push(tokens);
+    }
+
     fn into_tokens(self) -> Vec<TokenStream> {
-        self.structs
+        let mut items: Vec<TokenStream> = self
+            .structs
             .into_iter()
             .map(StructDefinition::into_tokens)
-            .collect()
+            .collect();
+        items.extend(self.private_items);
+        items
     }
 }
 
@@ -1966,13 +1982,18 @@ fn build_exposed_service_method(
     encoding: Option<&MessageEncodingSpec>,
     label: &str,
     service_name_literal: &Literal,
+    request_struct: Option<&Ident>,
     response_spec: Option<&ServiceResponseSpec>,
 ) -> (TokenStream, Vec<TokenStream>) {
     let label_literal = Literal::string(label);
     let handler_fn_name = Ident::new("handle_next_request", Span::call_site());
 
     // Build callback parameter signature (just types, no names for Fn trait bounds)
-    let callback_param_types: Vec<&TokenStream> = params.iter().map(|p| &p.ty).collect();
+    let callback_param_types: Vec<TokenStream> = if let Some(request_struct) = request_struct {
+        vec![quote!(#request_struct)]
+    } else {
+        params.iter().map(|p| p.ty.clone()).collect()
+    };
 
     // Determine response type
     let response_ty = response_spec
@@ -1989,7 +2010,7 @@ fn build_exposed_service_method(
 
             // Build request deserializer helper function
             let request_deserializer =
-                build_request_deserializer(fn_name, request_spec, params, label);
+                build_request_deserializer(fn_name, request_spec, params, label, request_struct);
 
             let request_deserializer_name = Ident::new(
                 &format!("{}_deserialize_request", fn_name),
@@ -2001,20 +2022,19 @@ fn build_exposed_service_method(
 
             // Build tuple pattern for deserialized params
             let param_idents: Vec<&Ident> = params.iter().map(|p| &p.ident).collect();
-            let params_pattern = if param_idents.is_empty() {
-                quote!(())
+            let (params_pattern, callback_call) = if request_struct.is_some() {
+                let binding_ident = Ident::new("request_data", Span::call_site());
+                (quote!(#binding_ident), quote!(handler(#binding_ident)))
+            } else if param_idents.is_empty() {
+                (quote!(()), quote!(handler()))
             } else if param_idents.len() == 1 {
                 let ident = param_idents[0];
-                quote!((#ident,))
+                (quote!((#ident,)), quote!(handler(#ident)))
             } else {
-                quote!((#(#param_idents),*))
-            };
-
-            // Build callback invocation
-            let callback_call = if param_idents.is_empty() {
-                quote!(handler())
-            } else {
-                quote!(handler(#(#param_idents),*))
+                (
+                    quote!((#(#param_idents),*)),
+                    quote!(handler(#(#param_idents),*)),
+                )
             };
 
             quote! {
@@ -2072,11 +2092,40 @@ fn build_exposed_service_method(
     (method, vec![])
 }
 
+fn build_request_struct(
+    struct_prefix: &str,
+    params: &[FunctionParam],
+) -> Option<(Ident, TokenStream)> {
+    if params.len() <= 1 {
+        return None;
+    }
+
+    let ident = Ident::new(&format!("{struct_prefix}Request"), Span::call_site());
+    let field_tokens: Vec<TokenStream> = params
+        .iter()
+        .map(|param| {
+            let ident = &param.ident;
+            let ty = &param.ty;
+            quote!(#ident: #ty)
+        })
+        .collect();
+
+    let tokens = quote! {
+        #[derive(Debug, Clone)]
+        struct #ident {
+            #( #field_tokens ),*
+        }
+    };
+
+    Some((ident, tokens))
+}
+
 fn build_request_deserializer(
     fn_name: &Ident,
     request_spec: &MessageEncodingSpec,
     params: &[FunctionParam],
     label: &str,
+    request_struct: Option<&Ident>,
 ) -> TokenStream {
     let deserializer_fn_name = Ident::new(
         &format!("{}_deserialize_request", fn_name),
@@ -2085,8 +2134,10 @@ fn build_request_deserializer(
     let reader_type = &request_spec.reader_type;
     let context_literal = Literal::string(label);
 
-    // Build return type as tuple
-    let return_ty = if params.is_empty() {
+    // Build return type as tuple or struct if available
+    let return_ty = if let Some(request_struct) = request_struct {
+        quote!(#request_struct)
+    } else if params.is_empty() {
         quote!(())
     } else if params.len() == 1 {
         let ty = &params[0].ty;
@@ -2115,7 +2166,17 @@ fn build_request_deserializer(
         value_idents.push(value_ident);
     }
 
-    let return_expr = if value_idents.is_empty() {
+    let return_expr = if let Some(request_struct) = request_struct {
+        let field_assignments: Vec<TokenStream> = params
+            .iter()
+            .zip(value_idents.iter())
+            .map(|(param, value_ident)| {
+                let field_ident = &param.ident;
+                quote!(#field_ident: #value_ident)
+            })
+            .collect();
+        quote!(#request_struct { #( #field_assignments ),* })
+    } else if value_idents.is_empty() {
         quote!(())
     } else if value_idents.len() == 1 {
         let ident = &value_idents[0];
