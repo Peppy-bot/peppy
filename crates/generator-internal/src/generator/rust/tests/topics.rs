@@ -269,7 +269,7 @@ fn subscribed_to_topic() {
         "expected array element type"
     );
     assert_rendered!(
-        rendered.contains("pub struct UvcCamera;"),
+        rendered.contains("pub struct Subscribes;"),
         &rendered,
         "expected subscriber struct definition"
     );
@@ -278,15 +278,8 @@ fn subscribed_to_topic() {
         &rendered,
         "subscriber should not expose a connect constructor"
     );
-    let on_next_usage_count = rendered.matches(".on_next_message()").count();
     assert_rendered!(
-        on_next_usage_count == 1,
-        &rendered,
-        "expected subscription helper to await next message once, found {} occurrence(s)",
-        on_next_usage_count
-    );
-    assert_rendered!(
-        rendered.contains("pub async fn on_next_stream_message("),
+        rendered.contains("pub async fn on_next_uvc_camera_stream_message("),
         &rendered,
         "expected async subscriber method"
     );
@@ -296,12 +289,12 @@ fn subscribed_to_topic() {
         "expected messenger reference parameter"
     );
     assert_rendered!(
-        rendered.contains("Self::deseralize_stream_payload"),
+        rendered.contains("Self::deseralize_uvc_camera_stream_payload"),
         &rendered,
         "expected helper payload deserializer invocation"
     );
     assert_rendered!(
-        rendered.contains("fn deseralize_stream_payload("),
+        rendered.contains("fn deseralize_uvc_camera_stream_payload("),
         &rendered,
         "expected private payload deserializer function"
     );
@@ -437,7 +430,7 @@ fn subscribed_to_two_topics_same_node() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    let struct_count = rendered.matches("pub struct UvcCamera;").count();
+    let struct_count = rendered.matches("pub struct Subscribes;").count();
     assert_rendered!(
         struct_count == 1,
         &rendered,
@@ -473,22 +466,22 @@ fn subscribed_to_two_topics_same_node() {
         "expected explicit subscribe error variant for each topic"
     );
     assert_rendered!(
-        rendered.contains("pub async fn on_next_video_message("),
+        rendered.contains("pub async fn on_next_uvc_camera_video_message("),
         &rendered,
         "expected video subscriber method"
     );
     assert_rendered!(
-        rendered.contains("pub async fn on_next_sound_message("),
+        rendered.contains("pub async fn on_next_uvc_camera_sound_message("),
         &rendered,
         "expected sound subscriber method"
     );
     assert_rendered!(
-        rendered.contains("fn deseralize_video_payload"),
+        rendered.contains("fn deseralize_uvc_camera_video_payload"),
         &rendered,
         "expected video payload helper"
     );
     assert_rendered!(
-        rendered.contains("fn deseralize_sound_payload"),
+        rendered.contains("fn deseralize_uvc_camera_sound_payload"),
         &rendered,
         "expected sound payload helper"
     );

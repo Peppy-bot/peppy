@@ -408,10 +408,13 @@ impl LanguageGenerator for RustGenerator {
         let struct_prefix = format!("{node_prefix}{topic_prefix}");
         let message_struct_name = format!("{struct_prefix}Message");
 
-        let callback_fn_name = if topic_component.is_empty() {
-            "on_next_message".to_string()
-        } else {
-            format!("on_next_{topic_component}_message")
+        let callback_fn_name = match (node_component.is_empty(), topic_component.is_empty()) {
+            (true, true) => "on_next_message".to_string(),
+            (true, false) => format!("on_next_{topic_component}_message"),
+            (false, true) => format!("on_next_{node_component}_message"),
+            (false, false) => format!(
+                "on_next_{node_component}_{topic_component}_message"
+            ),
         };
         let callback_fn_ident = Ident::new(&callback_fn_name, Span::call_site());
 
@@ -430,9 +433,15 @@ impl LanguageGenerator for RustGenerator {
             .collect();
         context.add_struct(args_struct_ident.clone(), args_fields);
 
+        let schema_key = if topic_component.is_empty() {
+            callback_fn_name.clone()
+        } else {
+            format!("on_next_{topic_component}_message")
+        };
+
         let encoding = self
             .prepare_message_encoding(
-                &callback_fn_name,
+                &schema_key,
                 &struct_prefix,
                 Some(&format_artifacts),
                 &params,
@@ -443,20 +452,10 @@ impl LanguageGenerator for RustGenerator {
             .node
             .clone()
             .unwrap_or_else(|| topic.name.clone());
-        let struct_ident = Ident::new(
-            &subscribed_topic_struct_name(topic, &struct_prefix),
-            Span::call_site(),
-        );
         let node_entry = self
             .pending_subscribed_topics
             .entry(node_key.clone())
-            .or_insert_with(|| SubscribedTopicNode::new(node_key.clone(), struct_ident.clone()));
-        debug_assert_eq!(
-            node_entry.struct_ident.to_string(),
-            struct_ident.to_string(),
-            "mismatched struct identifier for subscribed topic node `{}`",
-            node_key
-        );
+            .or_insert_with(|| SubscribedTopicNode::new(node_key.clone()));
 
         node_entry.extend_message_structs(struct_tokens);
 
@@ -773,16 +772,14 @@ impl ExposedTopicsModule {
 
 struct SubscribedTopicNode {
     node_name: String,
-    struct_ident: Ident,
     message_structs: Vec<TokenStream>,
     methods: Vec<TokenStream>,
 }
 
 impl SubscribedTopicNode {
-    fn new(node_name: String, struct_ident: Ident) -> Self {
+    fn new(node_name: String) -> Self {
         Self {
             node_name,
-            struct_ident,
             message_structs: Vec::new(),
             methods: Vec::new(),
         }
@@ -799,19 +796,19 @@ impl SubscribedTopicNode {
     fn into_artifact(self) -> InterfaceArtifact {
         let SubscribedTopicNode {
             node_name,
-            struct_ident,
             message_structs,
             methods,
         } = self;
 
-        let struct_tokens = build_subscribed_topic_struct(&struct_ident);
+        let final_struct_ident = Ident::new("Subscribes", Span::call_site());
+        let struct_tokens = build_subscribed_topic_struct(&final_struct_ident);
 
         let tokens: TokenStream = quote! {
             #( #message_structs )*
 
             #struct_tokens
 
-            impl #struct_ident {
+            impl #final_struct_ident {
                 #( #methods )*
             }
         };
@@ -1445,15 +1442,6 @@ fn build_topic_emit(
     }
 }
 
-fn subscribed_topic_struct_name(topic: &SubscribedTopic, fallback_prefix: &str) -> String {
-    let candidate = to_camel_case(topic.node.as_deref().unwrap_or(""));
-    if candidate.is_empty() {
-        format!("{fallback_prefix}Subscriber")
-    } else {
-        candidate
-    }
-}
-
 fn build_subscribed_topic_struct(struct_ident: &Ident) -> TokenStream {
     quote! {
         pub struct #struct_ident;
@@ -1472,11 +1460,20 @@ fn build_subscribed_topic_callback(
     let topic_literal = Literal::string(topic.name.as_str());
     let reader_type = &encoding.reader_type;
     let helper_fn_ident = {
+        let node_component = topic
+            .node
+            .as_deref()
+            .map(sanitize_component)
+            .unwrap_or_default();
         let topic_component = sanitize_component(topic.name.as_str());
-        let helper_name = if topic_component.is_empty() {
-            "deseralize_payload".to_string()
-        } else {
-            format!("deseralize_{}_payload", topic_component)
+        let helper_name = match (node_component.is_empty(), topic_component.is_empty()) {
+            (true, true) => "deseralize_payload".to_string(),
+            (true, false) => format!("deseralize_{}_payload", topic_component),
+            (false, true) => format!("deseralize_{}_payload", node_component),
+            (false, false) => format!(
+                "deseralize_{}_{}_payload",
+                node_component, topic_component
+            ),
         };
         Ident::new(&helper_name, Span::call_site())
     };
