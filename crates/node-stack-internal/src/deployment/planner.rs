@@ -455,7 +455,9 @@ impl DeploymentPlanner {
 
         if let Some(services) = subscriptions.services.as_ref() {
             for service in services {
-                register_dependency(&service.node, &service.tag);
+                if let Some(node) = service.node.as_deref() {
+                    register_dependency(node, &service.tag);
+                }
             }
         }
 

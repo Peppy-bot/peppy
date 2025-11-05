@@ -312,8 +312,12 @@ pub struct SubscribedTopic {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubscribedService {
-    #[serde(default)]
-    pub node: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_subscribed_service_node"
+    )]
+    pub node: Option<String>,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -370,6 +374,21 @@ where
     D: Deserializer<'de>,
 {
     deserialize_non_empty_identifier(deserializer, "SubscribedTopic.name")
+}
+
+fn deserialize_subscribed_service_node<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    Ok(value.and_then(|raw| {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }))
 }
 
 fn deserialize_non_empty_identifier<'de, D>(
@@ -537,6 +556,24 @@ mod tests {
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
         assert_eq!(topic.node, "uvc_camera");
         assert_eq!(topic.name, "stream");
+    }
+
+    #[test]
+    fn subscribed_service_node_is_optional() {
+        let with_node = r#"{ node: "uvc_camera", name: "enable_camera", tag: "0.1.0" }"#;
+        let service: SubscribedService =
+            serde_json5::from_str(with_node).expect("service with node should parse");
+        assert_eq!(service.node.as_deref(), Some("uvc_camera"));
+
+        let without_node = r#"{ name: "enable_camera", tag: "0.1.0" }"#;
+        let service: SubscribedService =
+            serde_json5::from_str(without_node).expect("service without node should parse");
+        assert!(service.node.is_none());
+
+        let blank_node = r#"{ node: "   ", name: "enable_camera", tag: "0.1.0" }"#;
+        let service: SubscribedService =
+            serde_json5::from_str(blank_node).expect("blank node should be treated as None");
+        assert!(service.node.is_none());
     }
 
     #[test]

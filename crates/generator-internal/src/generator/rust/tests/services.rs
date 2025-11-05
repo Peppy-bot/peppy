@@ -28,7 +28,7 @@ const EXPOSED_SERVICE_EXAMPLE2: &str = r#"
 "#;
 
 #[test]
-fn exposed_service() {
+fn expose_service() {
     let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new();
@@ -130,7 +130,7 @@ fn exposed_service() {
 }
 
 #[test]
-fn exposed_double_service() {
+fn expose_two_services() {
     let service1: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
 
@@ -227,19 +227,19 @@ fn subscribed_to_service() {
         }
         "#;
     let service: SubscribedService = serde_json5::from_str(service).unwrap();
-    let accept_format = r#"
+    let request_format = r#"
         {
           enable: "bool"
         }
         "#;
-    let return_format = r#"
+    let response_format = r#"
         {
           enabled: "bool",
           error_msg: "string"
         }
         "#;
-    let request_format: MessageFormat = serde_json5::from_str(accept_format).unwrap();
-    let response_format: MessageFormat = serde_json5::from_str(return_format).unwrap();
+    let request_format: MessageFormat = serde_json5::from_str(request_format).unwrap();
+    let response_format: MessageFormat = serde_json5::from_str(response_format).unwrap();
 
     let mut generator = RustGenerator::new();
     generator
@@ -357,7 +357,69 @@ fn subscribed_to_service() {
 
 #[test]
 fn subscribed_to_two_services_same_node() {
-    todo!("finish")
+    // TODO: How to insert the namespace here?
+    let service1 = r#"
+        {
+            node: "uvc_camera",
+            name: "enable_camera",
+            tag: "0.1.0"
+        }
+        "#;
+    let service1: SubscribedService = serde_json5::from_str(service1).unwrap();
+    let accept_format1 = r#"
+        {
+          enable: "bool"
+        }
+        "#;
+    let return_format1 = r#"
+        {
+          enabled: "bool",
+          error_msg: "string"
+        }
+        "#;
+    let request_format1: MessageFormat = serde_json5::from_str(accept_format1).unwrap();
+    let response_format1: MessageFormat = serde_json5::from_str(return_format1).unwrap();
+
+    // Second service pointing to the same node
+    let service2 = r#"
+        {
+            node: "uvc_camera",
+            name: "get_camera_info",
+            tag: "0.1.0"
+        }
+        "#;
+    let service2: SubscribedService = serde_json5::from_str(service2).unwrap();
+    let accept_format2 = r#"
+        {
+          enable: "bool"
+        }
+        "#;
+    let return_format2 = r#"
+        {
+          card_type: "string",
+          size: "string",
+          interval: "string"
+        }
+        "#;
+    let request_format2: MessageFormat = serde_json5::from_str(accept_format2).unwrap();
+    let response_format2: MessageFormat = serde_json5::from_str(return_format2).unwrap();
+
+    let mut generator = RustGenerator::new();
+    generator
+        .add_subscribed_service(&service1, Some(&request_format1), Some(&response_format1))
+        .unwrap();
+    let artifacts: Vec<String> = generator
+        .into_artifacts()
+        .into_iter()
+        .map(|artifact| artifact.code_output)
+        .collect();
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected a single generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
 }
 
 fn create_lib_with_exposed_services_artifact() {

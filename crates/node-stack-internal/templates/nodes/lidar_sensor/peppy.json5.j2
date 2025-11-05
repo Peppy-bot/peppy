@@ -49,6 +49,7 @@
       ],
       services: [
         {
+          node: "uvc_camera",
           name: "enable_camera",
           request_message_format: {
             enable: "bool",
@@ -58,6 +59,7 @@
           },
         },
         {
+          node: "uvc_camera",
           name: "get_camera_info",
           request_message_format: {
             card_type: "string",

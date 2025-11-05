@@ -44,7 +44,7 @@ const EXPOSED_TOPIC_EXAMPLE2: &str = r#"
 "#;
 
 #[test]
-fn exposed_topic() {
+fn expose_topic() {
     let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new();
@@ -165,7 +165,7 @@ fn exposed_topic() {
 }
 
 #[test]
-fn exposed_double_topic() {
+fn expose_two_topics() {
     let topic1: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
     let topic2: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE2).unwrap();
 
