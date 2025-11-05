@@ -172,44 +172,37 @@ fn expose_two_topics() {
     let mut generator = RustGenerator::new();
     generator.add_exposed_topic(&topic1).unwrap();
     generator.add_exposed_topic(&topic2).unwrap();
-    let artifacts = generator.into_artifacts();
-
+    let artifacts: Vec<String> = generator
+        .into_artifacts()
+        .into_iter()
+        .map(|artifact| artifact.code_output)
+        .collect();
     assert_eq!(
         artifacts.len(),
-        2,
-        "expected two generated artifacts, got {}",
+        1,
+        "expected a single generated artifact, got {}",
         artifacts.len()
     );
-
-    let push_frame_rendered = artifacts
-        .iter()
-        .find(|artifact| artifact.node_name == "push_frame")
-        .map(|artifact| &artifact.code_output)
-        .expect("expected generated artifact for `push_frame`");
-    let push_lidar_rendered = artifacts
-        .iter()
-        .find(|artifact| artifact.node_name == "push_lidar_object")
-        .map(|artifact| &artifact.code_output)
-        .expect("expected generated artifact for `push_lidar_object`");
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     assert_rendered!(
-        push_frame_rendered.contains("let mut message = capnp::message::Builder::new_default();"),
-        push_frame_rendered,
+        rendered.contains("let mut message = capnp::message::Builder::new_default();"),
+        rendered,
         "expected capnp message builder"
     );
     assert_rendered!(
-        push_lidar_rendered.contains("pub struct Exposes;"),
-        push_lidar_rendered,
+        rendered.contains("pub struct Exposes;"),
+        rendered,
         "expected topic messenger struct for `push_lidar_object`"
     );
     assert_rendered!(
-        push_lidar_rendered.contains("pub async fn emit_push_lidar_object("),
-        push_lidar_rendered,
+        rendered.contains("pub async fn emit_push_lidar_object("),
+        rendered,
         "expected async emit method for `push_lidar_object`"
     );
     assert_rendered!(
-        push_lidar_rendered.contains("pub struct PushLidarObjectHeader"),
-        push_lidar_rendered,
+        rendered.contains("pub struct PushLidarObjectHeader"),
+        rendered,
         "expected nested header struct for `push_lidar_object`"
     );
 }
