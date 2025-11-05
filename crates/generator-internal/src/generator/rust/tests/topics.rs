@@ -118,7 +118,7 @@ fn expose_topic() {
         "expected generated struct for nested object"
     );
     assert_rendered!(
-        rendered.contains("pub struct PushFrame;"),
+        rendered.contains("pub struct Exposes;"),
         &rendered,
         "expected topic messenger struct"
     );
@@ -128,7 +128,7 @@ fn expose_topic() {
         "expected messenger parameter in emit signature"
     );
     assert_rendered!(
-        rendered.contains("pub async fn emit("),
+        rendered.contains("pub async fn emit_push_frame("),
         &rendered,
         "expected async emit method"
     );
@@ -198,9 +198,14 @@ fn expose_two_topics() {
         "expected capnp message builder"
     );
     assert_rendered!(
-        push_lidar_rendered.contains("pub struct PushLidarObject;"),
+        push_lidar_rendered.contains("pub struct Exposes;"),
         push_lidar_rendered,
         "expected topic messenger struct for `push_lidar_object`"
+    );
+    assert_rendered!(
+        push_lidar_rendered.contains("pub async fn emit_push_lidar_object("),
+        push_lidar_rendered,
+        "expected async emit method for `push_lidar_object`"
     );
     assert_rendered!(
         push_lidar_rendered.contains("pub struct PushLidarObjectHeader"),

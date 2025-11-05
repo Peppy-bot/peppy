@@ -167,10 +167,13 @@ impl LanguageGenerator for RustGenerator {
         )?;
         let struct_tokens = context.into_tokens();
 
-        let struct_ident = Ident::new(&struct_prefix, Span::call_site());
-        let topic_struct = build_topic_struct(&struct_ident);
+        let exposes_ident = Ident::new("Exposes", Span::call_site());
+        let method_ident =
+            Ident::new(&format!("emit_{fn_name_str}"), Span::call_site());
+        let topic_struct = build_topic_struct(&exposes_ident);
         let impl_block = build_topic_impl(
-            &struct_ident,
+            &exposes_ident,
+            &method_ident,
             &params,
             encoding.as_ref(),
             topic,
@@ -392,13 +395,15 @@ impl LanguageGenerator for RustGenerator {
         let format_artifacts = map_message_format(arguments)?
             .ok_or_else(|| Error::SubscriberTopicMessageFormatMissing(topic.name.clone()))?;
 
-        let node_component = sanitize_component(topic.node.as_str());
+        let node_component = sanitize_component(topic.node.as_deref().unwrap_or(""));
         let topic_component = sanitize_component(topic.name.as_str());
 
-        debug_assert!(
-            !node_component.is_empty(),
-            "SubscribedTopic.node should be validated as non-empty"
-        );
+        if topic.node.is_some() {
+            debug_assert!(
+                !node_component.is_empty(),
+                "SubscribedTopic.node should be validated as non-empty"
+            );
+        }
         debug_assert!(
             !topic_component.is_empty(),
             "SubscribedTopic.name should be validated as non-empty"
@@ -440,20 +445,23 @@ impl LanguageGenerator for RustGenerator {
             )?
             .expect("message encoding spec should exist when message format is provided");
         let struct_tokens = context.into_tokens();
-        let node_name = topic.node.clone();
+        let node_key = topic
+            .node
+            .clone()
+            .unwrap_or_else(|| topic.name.clone());
         let struct_ident = Ident::new(
             &subscribed_topic_struct_name(topic, &struct_prefix),
             Span::call_site(),
         );
         let node_entry = self
             .pending_subscribed_topics
-            .entry(node_name.clone())
-            .or_insert_with(|| SubscribedTopicNode::new(node_name.clone(), struct_ident.clone()));
+            .entry(node_key.clone())
+            .or_insert_with(|| SubscribedTopicNode::new(node_key.clone(), struct_ident.clone()));
         debug_assert_eq!(
             node_entry.struct_ident.to_string(),
             struct_ident.to_string(),
             "mismatched struct identifier for subscribed topic node `{}`",
-            node_name
+            node_key
         );
 
         node_entry.extend_message_structs(struct_tokens);
@@ -467,7 +475,7 @@ impl LanguageGenerator for RustGenerator {
             topic,
             &message_struct_name,
         );
-        node_entry.push_method(method_tokens);
+            node_entry.push_method(method_tokens);
 
         Ok(())
     }
@@ -1317,12 +1325,13 @@ fn build_topic_struct(struct_ident: &Ident) -> TokenStream {
 
 fn build_topic_impl(
     struct_ident: &Ident,
+    method_ident: &Ident,
     params: &[FunctionParam],
     encoding: Option<&MessageEncodingSpec>,
     topic: &ExposedTopic,
     label: &str,
 ) -> TokenStream {
-    let emit_fn = build_topic_emit(params, encoding, topic, label);
+    let emit_fn = build_topic_emit(method_ident, params, encoding, topic, label);
 
     quote! {
         impl #struct_ident {
@@ -1332,6 +1341,7 @@ fn build_topic_impl(
 }
 
 fn build_topic_emit(
+    method_ident: &Ident,
     params: &[FunctionParam],
     encoding: Option<&MessageEncodingSpec>,
     topic: &ExposedTopic,
@@ -1354,7 +1364,7 @@ fn build_topic_emit(
             let root_ident = Ident::new("root", Span::call_site());
 
             quote! {
-                pub async fn emit(#method_signature) -> crate::Result<()> {
+                pub async fn #method_ident(#method_signature) -> crate::Result<()> {
                     let mut message = capnp::message::Builder::new_default();
                     {
                         let mut #root_ident = message.init_root::<#builder_type>();
@@ -1395,7 +1405,7 @@ fn build_topic_emit(
                 .collect();
 
             quote! {
-                pub async fn emit(#method_signature) -> crate::Result<()> {
+                pub async fn #method_ident(#method_signature) -> crate::Result<()> {
                     let _ = messenger;
                     #(#ignore_params)*
                     Err(crate::Error::MessageFormatUnavailable {
@@ -1408,7 +1418,7 @@ fn build_topic_emit(
 }
 
 fn subscribed_topic_struct_name(topic: &SubscribedTopic, fallback_prefix: &str) -> String {
-    let candidate = to_camel_case(topic.node.as_str());
+    let candidate = to_camel_case(topic.node.as_deref().unwrap_or(""));
     if candidate.is_empty() {
         format!("{fallback_prefix}Subscriber")
     } else {
