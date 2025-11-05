@@ -388,10 +388,6 @@ fn subscribed_to_two_services_same_node() {
         }
         "#;
     let service2: SubscribedService = serde_json5::from_str(service2).unwrap();
-    let request_format2 = r#"
-        {
-        }
-        "#;
     let response_format2 = r#"
         {
           card_type: "string",
@@ -399,7 +395,6 @@ fn subscribed_to_two_services_same_node() {
           interval: "string"
         }
         "#;
-    let request_format2: MessageFormat = serde_json5::from_str(request_format2).unwrap();
     let response_format2: MessageFormat = serde_json5::from_str(response_format2).unwrap();
 
     let mut generator = RustGenerator::new();
@@ -407,7 +402,7 @@ fn subscribed_to_two_services_same_node() {
         .add_subscribed_service(&service1, Some(&request_format1), Some(&response_format1))
         .unwrap();
     generator
-        .add_subscribed_service(&service2, Some(&request_format2), Some(&response_format2))
+        .add_subscribed_service(&service2, None, Some(&response_format2))
         .unwrap();
     let artifacts = generator.into_artifacts();
     assert_eq!(
@@ -524,6 +519,56 @@ fn subscribed_to_two_services_same_node() {
         get_camera_info_rendered.contains("Ok(OnGetCameraInfoResponse {"),
         get_camera_info_rendered,
         "expected response construction for `get_camera_info`"
+    );
+}
+
+#[test]
+fn subscribed_service_without_response_payload() {
+    let service = r#"
+        {
+            node: "uvc_camera",
+            name: "get_camera_info",
+            tag: "0.1.0"
+        }
+        "#;
+    let service: SubscribedService = serde_json5::from_str(service).unwrap();
+
+    let mut generator = RustGenerator::new();
+    generator
+        .add_subscribed_service(&service, None, None)
+        .expect("generator should allow services without response format");
+
+    let artifacts = generator.into_artifacts();
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected single generated artifact, got {}",
+        artifacts.len()
+    );
+
+    let rendered = &artifacts[0].code_output;
+
+    assert_rendered!(
+        rendered.contains("pub struct GetCameraInfoServicePoll;"),
+        rendered,
+        "expected poll struct definition for `get_camera_info`"
+    );
+    assert_rendered!(
+        rendered.contains(
+            "pub async fn get_camera_info(messenger: &crate::Messenger) -> crate::Result<()> {"
+        ),
+        rendered,
+        "expected requestless poll helper returning unit result"
+    );
+    assert_rendered!(
+        !rendered.contains("OnGetCameraInfoResponse"),
+        rendered,
+        "expected no response struct when response format is missing"
+    );
+    assert_rendered!(
+        rendered.contains("let _ = crate::messaging::ServiceMessenger::poll("),
+        rendered,
+        "expected poll invocation that discards response bytes"
     );
 }
 
