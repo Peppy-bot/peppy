@@ -449,7 +449,9 @@ impl DeploymentPlanner {
 
         if let Some(topics) = subscriptions.topics.as_ref() {
             for topic in topics {
-                register_dependency(&topic.node, &topic.tag);
+                if let Some(node) = topic.node.as_deref() {
+                    register_dependency(node, &topic.tag);
+                }
             }
         }
 
