@@ -293,14 +293,10 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
     let subscribed_service: SubscribedService =
         serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE).unwrap();
-    let subscribed_service_request_format: MessageFormat = serde_json5::from_str(
-        SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE,
-    )
-    .unwrap();
-    let subscribed_service_response_format: MessageFormat = serde_json5::from_str(
-        SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE,
-    )
-    .unwrap();
+    let subscribed_service_request_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap();
+    let subscribed_service_response_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE).unwrap();
     let subscribed_action: SubscribedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
     let subscribed_action_messages = SubscribedActionMessage {
