@@ -458,8 +458,6 @@ impl LanguageGenerator for RustGenerator {
 
         node_entry.extend_message_structs(struct_tokens);
 
-        let subscription_field_ident = node_entry.allocate_subscription_field(topic.name.as_str());
-
         let method_tokens = build_subscribed_topic_callback(
             &callback_fn_ident,
             &args_struct_ident,
@@ -468,7 +466,6 @@ impl LanguageGenerator for RustGenerator {
             &encoding,
             topic,
             &message_struct_name,
-            &subscription_field_ident,
         );
         node_entry.push_method(method_tokens);
 
@@ -693,7 +690,6 @@ struct SubscribedTopicNode {
     struct_ident: Ident,
     message_structs: Vec<TokenStream>,
     methods: Vec<TokenStream>,
-    subscriptions: Vec<SubscriptionField>,
 }
 
 impl SubscribedTopicNode {
@@ -703,42 +699,11 @@ impl SubscribedTopicNode {
             struct_ident,
             message_structs: Vec::new(),
             methods: Vec::new(),
-            subscriptions: Vec::new(),
         }
     }
 
     fn extend_message_structs(&mut self, structs: Vec<TokenStream>) {
         self.message_structs.extend(structs);
-    }
-
-    fn allocate_subscription_field(&mut self, topic_name: &str) -> Ident {
-        let sanitized = sanitize_component(topic_name);
-        let mut candidate = if sanitized.is_empty() {
-            String::from("subscription")
-        } else {
-            format!("{sanitized}_subscription")
-        };
-        let mut counter = 2usize;
-        while self
-            .subscriptions
-            .iter()
-            .any(|field| field.field_ident.to_string() == candidate)
-        {
-            candidate = if sanitized.is_empty() {
-                format!("subscription_{counter}")
-            } else {
-                format!("{sanitized}_subscription_{counter}")
-            };
-            counter += 1;
-        }
-
-        let ident = Ident::new(&candidate, Span::call_site());
-        let topic_literal = Literal::string(topic_name);
-        self.subscriptions.push(SubscriptionField {
-            field_ident: ident.clone(),
-            topic_literal,
-        });
-        ident
     }
 
     fn push_method(&mut self, tokens: TokenStream) {
@@ -751,13 +716,9 @@ impl SubscribedTopicNode {
             struct_ident,
             message_structs,
             methods,
-            subscriptions,
         } = self;
 
-        let node_literal = Literal::string(node_name.as_str());
-        let struct_tokens = build_subscribed_topic_struct(&struct_ident, &subscriptions);
-        let connect_fn =
-            build_subscribed_topics_connect(&struct_ident, &node_literal, &subscriptions);
+        let struct_tokens = build_subscribed_topic_struct(&struct_ident);
 
         let tokens: TokenStream = quote! {
             #( #message_structs )*
@@ -765,7 +726,6 @@ impl SubscribedTopicNode {
             #struct_tokens
 
             impl #struct_ident {
-                #connect_fn
                 #( #methods )*
             }
         };
@@ -774,11 +734,6 @@ impl SubscribedTopicNode {
 
         InterfaceArtifact::from_kind(&node_name, InterfaceKind::SubscribedTopic, rendered)
     }
-}
-
-struct SubscriptionField {
-    field_ident: Ident,
-    topic_literal: Literal,
 }
 
 fn non_empty_str(value: &str) -> Option<&str> {
@@ -1428,93 +1383,9 @@ fn subscribed_topic_struct_name(topic: &SubscribedTopic, fallback_prefix: &str) 
     }
 }
 
-fn build_subscribed_topic_struct(
-    struct_ident: &Ident,
-    subscriptions: &[SubscriptionField],
-) -> TokenStream {
-    let subscription_fields: Vec<TokenStream> = subscriptions
-        .iter()
-        .map(|field| {
-            let ident = &field.field_ident;
-            quote!(#ident: peppylib::messaging::Subscription)
-        })
-        .collect();
-
+fn build_subscribed_topic_struct(struct_ident: &Ident) -> TokenStream {
     quote! {
-        pub struct #struct_ident {
-            messenger: peppylib::MessengerHandle,
-            namespace: String,
-            #( #subscription_fields ),*
-        }
-    }
-}
-
-fn build_subscribed_topics_connect(
-    _struct_ident: &Ident,
-    node_literal: &Literal,
-    subscriptions: &[SubscriptionField],
-) -> TokenStream {
-    let subscription_statements: Vec<TokenStream> = subscriptions
-        .iter()
-        .map(|field| {
-            let field_ident = &field.field_ident;
-            let topic_literal = &field.topic_literal;
-            quote! {
-                let #field_ident = {
-                    let topic_name = #topic_literal;
-                    let namespace_value = namespace.as_str();
-                    peppylib::TopicMessenger::subscribe(
-                        &messenger,
-                        namespace_value,
-                        topic_name,
-                        qos,
-                    )
-                        .await
-                        .map_err(|source| crate::Error::TopicSubscribe {
-                            topic_name: topic_name.to_string(),
-                            namespace: namespace_value.to_string(),
-                            source,
-                        })?
-                };
-            }
-        })
-        .collect();
-    let subscription_fields: Vec<Ident> = subscriptions
-        .iter()
-        .map(|field| field.field_ident.clone())
-        .collect();
-
-    quote! {
-        pub async fn connect(host: &str, port: u16) -> crate::Result<Self> {
-            let messenger = peppylib::MessengerHandle::from_host_port(host, port)
-                .await
-                .map_err(|source| crate::Error::NodeMessengerConnect {
-                    node_name: String::from(#node_literal),
-                    host: host.to_string(),
-                    port,
-                    source,
-                })?;
-
-            let namespace = std::env::var("PEPPY_NAMESPACE")
-                .map(|value| {
-                    if value.trim().is_empty() {
-                        "/".to_string()
-                    } else {
-                        value
-                    }
-                })
-                .unwrap_or_else(|_| "/".to_string());
-
-            let qos = peppylib::config::QoSProfile::Standard;
-
-            #( #subscription_statements )*
-
-            Ok(Self {
-                messenger,
-                namespace,
-                #(#subscription_fields),*
-            })
-        }
+        pub struct #struct_ident;
     }
 }
 
@@ -1526,7 +1397,6 @@ fn build_subscribed_topic_callback(
     encoding: &MessageEncodingSpec,
     topic: &SubscribedTopic,
     struct_prefix: &str,
-    subscription_field: &Ident,
 ) -> TokenStream {
     let topic_literal = Literal::string(topic.name.as_str());
     let reader_type = &encoding.reader_type;
@@ -1574,11 +1444,24 @@ fn build_subscribed_topic_callback(
     let context_literal = Literal::string(struct_prefix);
 
     quote! {
-        pub async fn #fn_name(&mut self) -> crate::Result<#args_struct_ident> {
+        pub async fn #fn_name(messenger: &crate::Messenger) -> crate::Result<#args_struct_ident> {
             let topic_name = #topic_literal;
+            let namespace = messenger.namespace();
+            let qos = peppylib::config::QoSProfile::Standard;
 
             let message = {
-                let subscription = &mut self.#subscription_field;
+                let mut subscription = peppylib::TopicMessenger::subscribe(
+                    messenger.handle(),
+                    namespace,
+                    topic_name,
+                    qos,
+                )
+                .await
+                .map_err(|source| crate::Error::TopicSubscribe {
+                    topic_name: topic_name.to_string(),
+                    namespace: namespace.to_string(),
+                    source,
+                })?;
                 subscription
                     .on_next_message()
                     .await

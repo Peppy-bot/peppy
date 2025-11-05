@@ -357,7 +357,6 @@ fn subscribed_to_service() {
 
 #[test]
 fn subscribed_to_two_services_same_node() {
-    // TODO: How to insert the namespace here?
     let service1 = r#"
         {
             node: "uvc_camera",
@@ -366,19 +365,19 @@ fn subscribed_to_two_services_same_node() {
         }
         "#;
     let service1: SubscribedService = serde_json5::from_str(service1).unwrap();
-    let accept_format1 = r#"
+    let request_format1 = r#"
         {
           enable: "bool"
         }
         "#;
-    let return_format1 = r#"
+    let response_format1 = r#"
         {
           enabled: "bool",
           error_msg: "string"
         }
         "#;
-    let request_format1: MessageFormat = serde_json5::from_str(accept_format1).unwrap();
-    let response_format1: MessageFormat = serde_json5::from_str(return_format1).unwrap();
+    let request_format1: MessageFormat = serde_json5::from_str(request_format1).unwrap();
+    let response_format1: MessageFormat = serde_json5::from_str(response_format1).unwrap();
 
     // Second service pointing to the same node
     let service2 = r#"
@@ -389,37 +388,143 @@ fn subscribed_to_two_services_same_node() {
         }
         "#;
     let service2: SubscribedService = serde_json5::from_str(service2).unwrap();
-    let accept_format2 = r#"
+    let request_format2 = r#"
         {
-          enable: "bool"
         }
         "#;
-    let return_format2 = r#"
+    let response_format2 = r#"
         {
           card_type: "string",
           size: "string",
           interval: "string"
         }
         "#;
-    let request_format2: MessageFormat = serde_json5::from_str(accept_format2).unwrap();
-    let response_format2: MessageFormat = serde_json5::from_str(return_format2).unwrap();
+    let request_format2: MessageFormat = serde_json5::from_str(request_format2).unwrap();
+    let response_format2: MessageFormat = serde_json5::from_str(response_format2).unwrap();
 
     let mut generator = RustGenerator::new();
     generator
         .add_subscribed_service(&service1, Some(&request_format1), Some(&response_format1))
         .unwrap();
-    let artifacts: Vec<String> = generator
-        .into_artifacts()
-        .into_iter()
-        .map(|artifact| artifact.code_output)
-        .collect();
+    generator
+        .add_subscribed_service(&service2, Some(&request_format2), Some(&response_format2))
+        .unwrap();
+    let artifacts = generator.into_artifacts();
     assert_eq!(
         artifacts.len(),
-        1,
-        "expected a single generated artifact, got {}",
+        2,
+        "expected two generated artifacts, got {}",
         artifacts.len()
     );
-    let rendered = artifacts.into_iter().next().expect("artifact is present");
+    let enable_camera_rendered = artifacts
+        .iter()
+        .find(|artifact| artifact.node_name == "enable_camera")
+        .map(|artifact| &artifact.code_output)
+        .expect("expected generated artifact for `enable_camera`");
+    let get_camera_info_rendered = artifacts
+        .iter()
+        .find(|artifact| artifact.node_name == "get_camera_info")
+        .map(|artifact| &artifact.code_output)
+        .expect("expected generated artifact for `get_camera_info`");
+
+    assert_rendered!(
+        enable_camera_rendered.contains("pub struct OnEnableCameraResponse"),
+        enable_camera_rendered,
+        "expected response struct for `enable_camera`"
+    );
+    assert_rendered!(
+        enable_camera_rendered.contains("pub struct EnableCameraServicePoll;"),
+        enable_camera_rendered,
+        "expected service poll struct for `enable_camera`"
+    );
+    assert_rendered!(
+        enable_camera_rendered.contains("pub async fn enable_camera("),
+        enable_camera_rendered,
+        "expected poll helper function for `enable_camera`"
+    );
+    assert_rendered!(
+        enable_camera_rendered.contains("enable: bool"),
+        enable_camera_rendered,
+        "expected request parameter for `enable_camera`"
+    );
+    assert_rendered!(
+        enable_camera_rendered.contains("-> crate::Result<OnEnableCameraResponse>"),
+        enable_camera_rendered,
+        "expected return type for `enable_camera` poll helper"
+    );
+    assert_rendered!(
+        enable_camera_rendered.contains("root.set_enable(enable);"),
+        enable_camera_rendered,
+        "expected request serialization for `enable_camera`"
+    );
+    assert_rendered!(
+        enable_camera_rendered.contains("crate::messaging::ServiceMessenger::poll("),
+        enable_camera_rendered,
+        "expected poll invocation for `enable_camera`"
+    );
+    assert_rendered!(
+        enable_camera_rendered.contains("capnp::serialize::read_message"),
+        enable_camera_rendered,
+        "expected response deserialization for `enable_camera`"
+    );
+    assert_rendered!(
+        enable_camera_rendered.contains("Ok(OnEnableCameraResponse {"),
+        enable_camera_rendered,
+        "expected response construction for `enable_camera`"
+    );
+
+    assert_rendered!(
+        get_camera_info_rendered.contains("pub struct OnGetCameraInfoResponse"),
+        get_camera_info_rendered,
+        "expected response struct for `get_camera_info`"
+    );
+    assert_rendered!(
+        get_camera_info_rendered.contains("card_type: String"),
+        get_camera_info_rendered,
+        "expected response field for `card_type`"
+    );
+    assert_rendered!(
+        get_camera_info_rendered.contains("interval: String"),
+        get_camera_info_rendered,
+        "expected response field for `interval`"
+    );
+    assert_rendered!(
+        get_camera_info_rendered.contains("size: String"),
+        get_camera_info_rendered,
+        "expected response field for `size`"
+    );
+    assert_rendered!(
+        get_camera_info_rendered.contains("pub struct GetCameraInfoServicePoll;"),
+        get_camera_info_rendered,
+        "expected service poll struct for `get_camera_info`"
+    );
+    assert_rendered!(
+        get_camera_info_rendered.contains(
+            "pub async fn get_camera_info(\n        messenger: &crate::Messenger,\n    )"
+        ),
+        get_camera_info_rendered,
+        "expected requestless poll helper signature for `get_camera_info`"
+    );
+    assert_rendered!(
+        get_camera_info_rendered.contains("-> crate::Result<OnGetCameraInfoResponse>"),
+        get_camera_info_rendered,
+        "expected return type for `get_camera_info` poll helper"
+    );
+    assert_rendered!(
+        get_camera_info_rendered.contains("crate::messaging::ServiceMessenger::poll("),
+        get_camera_info_rendered,
+        "expected poll invocation for `get_camera_info`"
+    );
+    assert_rendered!(
+        get_camera_info_rendered.contains("capnp::serialize::read_message"),
+        get_camera_info_rendered,
+        "expected response deserialization for `get_camera_info`"
+    );
+    assert_rendered!(
+        get_camera_info_rendered.contains("Ok(OnGetCameraInfoResponse {"),
+        get_camera_info_rendered,
+        "expected response construction for `get_camera_info`"
+    );
 }
 
 fn create_lib_with_exposed_services_artifact() {
