@@ -271,14 +271,14 @@ fn subscribed_to_topic() {
         "expected array element type"
     );
     assert_rendered!(
-        rendered.contains("pub struct UvcCamera {"),
+        rendered.contains("pub struct UvcCamera;"),
         &rendered,
         "expected subscriber struct definition"
     );
     assert_rendered!(
-        rendered.contains("stream_subscription: peppylib::messaging::Subscription"),
+        !rendered.contains("pub async fn connect("),
         &rendered,
-        "expected subscription field"
+        "subscriber should not expose a connect constructor"
     );
     let on_next_usage_count = rendered.matches(".on_next_message()").count();
     assert_rendered!(
@@ -288,24 +288,14 @@ fn subscribed_to_topic() {
         on_next_usage_count
     );
     assert_rendered!(
-        rendered.contains("pub async fn connect(host: &str, port: u16) -> crate::Result<Self>"),
-        &rendered,
-        "expected async connect constructor"
-    );
-    assert_rendered!(
-        rendered.contains("peppylib::MessengerHandle::from_host_port(host, port)"),
-        &rendered,
-        "expected messenger initialization"
-    );
-    assert_rendered!(
         rendered.contains("pub async fn on_next_stream_message("),
         &rendered,
         "expected async subscriber method"
     );
     assert_rendered!(
-        rendered.contains("&mut self"),
+        rendered.contains("messenger: &crate::Messenger"),
         &rendered,
-        "expected mutable self receiver for subscriber method"
+        "expected messenger reference parameter"
     );
     assert_rendered!(
         rendered.contains("Self::deseralize_stream_payload"),
@@ -328,9 +318,14 @@ fn subscribed_to_topic() {
         "expected subscription helper invocation"
     );
     assert_rendered!(
-        rendered.contains("&messenger"),
+        rendered.contains("messenger.handle()"),
         &rendered,
         "expected messenger handle to be passed to subscription helper"
+    );
+    assert_rendered!(
+        rendered.contains("let namespace = messenger.namespace();"),
+        &rendered,
+        "expected namespace lookup via messenger helper"
     );
     assert_rendered!(
         rendered.contains("capnp::serialize::read_message"),
@@ -444,7 +439,7 @@ fn subscribed_to_two_topics_same_node() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    let struct_count = rendered.matches("pub struct UvcCamera {").count();
+    let struct_count = rendered.matches("pub struct UvcCamera;").count();
     assert_rendered!(
         struct_count == 1,
         &rendered,
@@ -452,22 +447,10 @@ fn subscribed_to_two_topics_same_node() {
         struct_count
     );
 
-    let connect_count = rendered.matches("pub async fn connect(").count();
     assert_rendered!(
-        connect_count == 1,
+        !rendered.contains("pub async fn connect("),
         &rendered,
-        "expected a single connect constructor, got {}",
-        connect_count
-    );
-    assert_rendered!(
-        rendered.contains("video_subscription: peppylib::messaging::Subscription"),
-        &rendered,
-        "expected subscription field for the first topic"
-    );
-    assert_rendered!(
-        rendered.contains("sound_subscription: peppylib::messaging::Subscription"),
-        &rendered,
-        "expected dedicated subscription field for the second topic"
+        "subscriber should not expose a connect constructor"
     );
     let on_next_usage_count = rendered.matches(".on_next_message()").count();
     assert_rendered!(
@@ -487,22 +470,17 @@ fn subscribed_to_two_topics_same_node() {
         "expected sound payload struct"
     );
     assert_rendered!(
-        rendered.contains("crate::Error::NodeMessengerConnect"),
-        &rendered,
-        "expected explicit node messenger error variant"
-    );
-    assert_rendered!(
         rendered.contains("crate::Error::TopicSubscribe"),
         &rendered,
         "expected explicit subscribe error variant for each topic"
     );
     assert_rendered!(
-        rendered.contains("pub async fn on_next_video_message"),
+        rendered.contains("pub async fn on_next_video_message("),
         &rendered,
         "expected video subscriber method"
     );
     assert_rendered!(
-        rendered.contains("pub async fn on_next_sound_message"),
+        rendered.contains("pub async fn on_next_sound_message("),
         &rendered,
         "expected sound subscriber method"
     );
@@ -516,15 +494,36 @@ fn subscribed_to_two_topics_same_node() {
         &rendered,
         "expected sound payload helper"
     );
+    let handle_usage_count = rendered.matches("messenger.handle()").count();
+    assert_rendered!(
+        handle_usage_count == 2,
+        &rendered,
+        "expected each subscriber method to pass the messenger handle, got {} occurrence(s)",
+        handle_usage_count
+    );
+    let messenger_param_count = rendered.matches("messenger: &crate::Messenger").count();
+    assert_rendered!(
+        messenger_param_count == 2,
+        &rendered,
+        "expected each subscriber method to accept a messenger reference, got {} occurrence(s)",
+        messenger_param_count
+    );
+    let namespace_usage_count = rendered.matches("messenger.namespace()").count();
+    assert_rendered!(
+        namespace_usage_count == 2,
+        &rendered,
+        "expected each subscriber method to resolve namespace from messenger, got {} occurrence(s)",
+        namespace_usage_count
+    );
     assert_rendered!(
         rendered.contains("let topic_name = \"video\";"),
         &rendered,
-        "expected connect routine to subscribe to the video topic"
+        "expected video subscriber routine to set topic literal"
     );
     assert_rendered!(
         rendered.contains("let topic_name = \"sound\";"),
         &rendered,
-        "expected connect routine to subscribe to the sound topic"
+        "expected sound subscriber routine to set topic literal"
     );
 }
 

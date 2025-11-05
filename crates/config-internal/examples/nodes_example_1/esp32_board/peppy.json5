@@ -2,55 +2,55 @@
 // no_std environenments will be a bit particular so we'll need a "peppylib_no_std" version of "peppylib".
 // This lib will allow topics/actions/services creation/polling
 {
-    schema_version: 1,
-    manifest: {
-        // Here we assume a XIAO ESP32-C3 board connected to a servo and responsible for controlling it 
-        name: "esp32_board",
-        tag: "0.1.0",
-        labels: [
-            "no_std",
-            "STS3XIAO",
-            "ESP32",
-            "STS3XIAO_ESP32C3215"
-        ],
-        launch_cmd: [
-            // This programs compiles and flashes the program to the board 
-            "flash_firmware_exec",
-            "flash",
-            "--compile",
-            "--namespace ${PEPPY_NAMESPACE}", // The heap doesn't exist in no_std envs, so this flag need to be set at compilation time
-            "--to_device ${ESP32_DEVICE}" // This is an extra var that can be defined in the deployments
-        ]
+  schema_version: 1,
+  manifest: {
+    // Here we assume a XIAO ESP32-C3 board connected to a servo and responsible for controlling it 
+    name: "esp32_board",
+    tag: "0.1.0",
+    labels: [
+      "no_std",
+      "STS3XIAO",
+      "ESP32",
+      "STS3XIAO_ESP32C3215"
+    ],
+    launch_cmd: [
+      // This programs compiles and flashes the program to the board 
+      "flash_firmware_exec",
+      "flash",
+      "--compile",
+      "--namespace ${PEPPY_NAMESPACE}", // The heap doesn't exist in no_std envs, so this flag need to be set at compilation time
+      "--to_device ${ESP32_DEVICE}" // This is an extra var that can be defined in the deployments
+    ]
+  },
+  // no_std can't accept dynamic parameters, they won't have any effect
+  parameters: {},
+  interfaces: {
+    exposes: {
+      // `peppylib_no_std` will help expose this topic
+      topics: [
+        {
+          name: "actuator",
+          qos_profile: "sensor_data",
+          message_format: {
+            header: {
+              type: "object",
+              stamp: "time",
+              actuator_id: "u32"
+            },
+            command: "string", // e.g., "set_position", "toggle", "set_pwm"
+            value: "float", // e.g., position, speed, duty cycle
+            status: "string", // "ok", "error", "busy"
+            feedback: {
+              type: "object",
+              position: "float", // Actual measured position (if available)
+              current: "float", // Current consumption (if available)
+            }
+          }
+        }
+      ],
     },
-    // no_std can't accept dynamic parameters, they won't have any effect
-    parameters: {},
-    interfaces: {
-        exposes: {
-            // `peppylib_no_std` will help expose this topic
-            topics: [
-                {
-                    name: "actuator",
-                    qos_profile: "sensor_data",
-                    message_format: {
-                        header: {
-                            type: "object",
-                            stamp: "time",
-                            actuator_id: "u32"
-                        },
-                        command: "string", // e.g., "set_position", "toggle", "set_pwm"
-                        value: "float", // e.g., position, speed, duty cycle
-                        status: "string", // "ok", "error", "busy"
-                        feedback: {
-                            type: "object",
-                            position: "float", // Actual measured position (if available)
-                            current: "float", // Current consumption (if available)
-                        }
-                    }
-                }
-            ],
-        },
-    },
-    logging: {
-        min_level: "info",
-    }
+  },
+  logging: {
+    min_level: "info",
+  }
 }
