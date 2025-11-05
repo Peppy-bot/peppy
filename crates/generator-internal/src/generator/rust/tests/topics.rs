@@ -370,7 +370,7 @@ fn subscribed_to_topic() {
 }
 
 #[test]
-fn subscribed_to_double_topic_same_node() {
+fn subscribed_to_two_topics_same_node() {
     let video_topic = r#"
         {
             node: "uvc_camera",
