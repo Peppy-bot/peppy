@@ -673,7 +673,6 @@ fn create_lib_with_exposed_topic_artifact() {
 
     let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
     generator.add_exposed_topic(&topic).unwrap();
-    generator.flush_pending_exposed_topics();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator.build(&output_dir).unwrap();
     fs::remove_file(output_config).unwrap();

@@ -2182,7 +2182,7 @@ fn build_request_struct(
     struct_prefix: &str,
     params: &[FunctionParam],
 ) -> Option<(Ident, TokenStream)> {
-    if params.len() <= 1 {
+    if params.is_empty() {
         return None;
     }
 
@@ -2192,13 +2192,13 @@ fn build_request_struct(
         .map(|param| {
             let ident = &param.ident;
             let ty = &param.ty;
-            quote!(#ident: #ty)
+            quote!(pub #ident: #ty)
         })
         .collect();
 
     let tokens = quote! {
         #[derive(Debug, Clone)]
-        struct #ident {
+        pub struct #ident {
             #( #field_tokens ),*
         }
     };
