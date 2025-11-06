@@ -28,6 +28,7 @@ pub struct RustGenerator {
     schemas: HashMap<String, CapnpSchema>,
     pending_exposed_services: Option<ExposedServicesModule>,
     pending_exposed_topics: Option<ExposedTopicsModule>,
+    pending_subscribed_services: BTreeMap<String, SubscribedServiceNode>,
     pending_subscribed_topics: BTreeMap<String, SubscribedTopicNode>,
 }
 
@@ -38,6 +39,7 @@ impl RustGenerator {
             schemas: HashMap::new(),
             pending_exposed_services: None,
             pending_exposed_topics: None,
+            pending_subscribed_services: BTreeMap::new(),
             pending_subscribed_topics: BTreeMap::new(),
         }
     }
@@ -46,6 +48,7 @@ impl RustGenerator {
     pub fn into_artifacts(mut self) -> Vec<InterfaceArtifact> {
         self.flush_pending_exposed_services();
         self.flush_pending_exposed_topics();
+        self.flush_pending_subscribed_services();
         self.flush_pending_subscribed_topics();
         self.sections
     }
@@ -59,6 +62,14 @@ impl RustGenerator {
     fn flush_pending_exposed_topics(&mut self) {
         if let Some(module) = self.pending_exposed_topics.take() {
             self.push_section(module.into_artifact());
+        }
+    }
+
+    fn flush_pending_subscribed_services(&mut self) {
+        let pending = std::mem::take(&mut self.pending_subscribed_services);
+        for (_node_name, node) in pending {
+            let artifact = node.into_artifact();
+            self.push_section(artifact);
         }
     }
 
@@ -483,8 +494,6 @@ impl LanguageGenerator for RustGenerator {
         let service_name_component = service_ident.to_string();
         let struct_prefix = to_camel_case(service_name_component.as_str());
 
-        let service_struct_ident = Ident::new("Subscribes", Span::call_site());
-
         let method_ident = {
             let mut components = Vec::with_capacity(3);
             components.push(String::from("poll"));
@@ -640,21 +649,14 @@ impl LanguageGenerator for RustGenerator {
             }
         };
 
-        let tokens: TokenStream = quote! {
-            #( #struct_tokens )*
+        let node_key = service.node.clone().unwrap_or_else(|| service.name.clone());
+        let entry = self
+            .pending_subscribed_services
+            .entry(node_key.clone())
+            .or_insert_with(|| SubscribedServiceNode::new(node_key.clone()));
 
-            pub struct #service_struct_ident;
-
-            impl #service_struct_ident {
-                #function_token
-            }
-        };
-        let rendered = render_tokens(tokens);
-        self.push_section(InterfaceArtifact::from_kind(
-            &service.name,
-            InterfaceKind::SubscribedService,
-            rendered,
-        ));
+        entry.extend_message_structs(struct_tokens);
+        entry.push_method(function_token);
         Ok(())
     }
 
@@ -713,6 +715,7 @@ impl LanguageGenerator for RustGenerator {
     fn build(mut self, to_path: impl AsRef<Path>) -> Result<()> {
         self.flush_pending_exposed_services();
         self.flush_pending_exposed_topics();
+        self.flush_pending_subscribed_services();
         self.flush_pending_subscribed_topics();
 
         // First create the basic structure of the project
@@ -852,6 +855,54 @@ struct SubscribedTopicNode {
     node_name: String,
     message_structs: Vec<TokenStream>,
     methods: Vec<TokenStream>,
+}
+
+struct SubscribedServiceNode {
+    node_name: String,
+    message_structs: Vec<TokenStream>,
+    methods: Vec<TokenStream>,
+}
+
+impl SubscribedServiceNode {
+    fn new(node_name: String) -> Self {
+        Self {
+            node_name,
+            message_structs: Vec::new(),
+            methods: Vec::new(),
+        }
+    }
+
+    fn extend_message_structs(&mut self, structs: Vec<TokenStream>) {
+        self.message_structs.extend(structs);
+    }
+
+    fn push_method(&mut self, tokens: TokenStream) {
+        self.methods.push(tokens);
+    }
+
+    fn into_artifact(self) -> InterfaceArtifact {
+        let SubscribedServiceNode {
+            node_name,
+            message_structs,
+            methods,
+        } = self;
+
+        let struct_ident = Ident::new("Subscribes", Span::call_site());
+
+        let tokens: TokenStream = quote! {
+            #( #message_structs )*
+
+            pub struct #struct_ident;
+
+            impl #struct_ident {
+                #( #methods )*
+            }
+        };
+
+        let rendered = render_tokens(tokens);
+
+        InterfaceArtifact::from_kind(&node_name, InterfaceKind::SubscribedService, rendered)
+    }
 }
 
 impl SubscribedTopicNode {
