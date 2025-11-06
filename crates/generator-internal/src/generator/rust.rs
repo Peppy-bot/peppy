@@ -2391,7 +2391,6 @@ fn build_async_function(
                         }
                     })?;
 
-                    let _message_payload = crate::messaging::to_bytes(message)?;
                     let _ns = "temporary_namespace";
                     let _topic_name = "temporary_topic";
                     let _messenger = peppylib::MessengerHandle::new().await?;

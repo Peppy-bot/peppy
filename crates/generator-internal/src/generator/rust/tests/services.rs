@@ -1,3 +1,5 @@
+use std::process::Command;
+
 use super::*;
 use config::node::{ExposedService, SubscribedService};
 
@@ -703,6 +705,40 @@ fn create_lib_with_exposed_services_artifact() {
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator.build(&output_dir).unwrap();
     fs::remove_file(output_config).unwrap();
+
+    let cargo_output = Command::new("cargo")
+        .arg("build")
+        .env("CARGO_NET_OFFLINE", "true")
+        .current_dir(&output_dir)
+        .output()
+        .expect("failed to invoke cargo build on generated crate");
+    assert!(
+        cargo_output.status.success(),
+        "cargo build failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        cargo_output.status.code(),
+        String::from_utf8_lossy(&cargo_output.stdout),
+        String::from_utf8_lossy(&cargo_output.stderr)
+    );
+
+    let clippy_output = Command::new("cargo")
+        .arg("clippy")
+        .arg("--all-targets")
+        .arg("--color")
+        .arg("always")
+        .arg("--")
+        .arg("-D")
+        .arg("warnings")
+        .env("CARGO_NET_OFFLINE", "true")
+        .current_dir(&output_dir)
+        .output()
+        .expect("failed to run cargo clippy on generated crate");
+    assert!(
+        clippy_output.status.success(),
+        "cargo clippy failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        clippy_output.status.code(),
+        String::from_utf8_lossy(&clippy_output.stdout),
+        String::from_utf8_lossy(&clippy_output.stderr)
+    );
 
     assert!(
         output_dir.join("Cargo.toml").exists(),

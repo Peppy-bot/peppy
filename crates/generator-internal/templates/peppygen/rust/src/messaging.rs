@@ -31,16 +31,3 @@ impl Messenger {
         &self.messenger
     }
 }
-
-pub fn to_bytes(
-    message: capnp::message::Builder<capnp::message::HeapAllocator>,
-) -> crate::Result<bytes::Bytes> {
-    let mut buffer = Vec::new();
-    capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
-        crate::Error::CapnpSerialize {
-            context: String::from("message"),
-            source,
-        }
-    })?;
-    Ok(bytes::Bytes::from(buffer))
-}
