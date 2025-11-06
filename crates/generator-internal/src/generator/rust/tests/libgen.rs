@@ -437,14 +437,14 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
     let push_frame_contents =
         std::fs::read_to_string(&push_frame_module).expect("failed to read push_frame module");
     assert!(
-        push_frame_contents.contains("pub async fn emit("),
+        push_frame_contents.contains("pub async fn emit_push_frame("),
         "Expected combined generation to produce async topic emitter, got:\n{}",
         push_frame_contents
     );
     let stream_contents =
         std::fs::read_to_string(&stream_module).expect("failed to read stream module");
     assert!(
-        stream_contents.contains("pub async fn on_next_stream_message("),
+        stream_contents.contains("pub async fn on_next_uvc_camera_stream_message("),
         "Expected subscribed topic module to expose callback handler, got:\n{}",
         stream_contents
     );
@@ -457,30 +457,25 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
     let enable_contents =
         std::fs::read_to_string(&enable_module).expect("failed to read enable_camera module");
     assert!(
-        enable_contents.contains("pub fn enable_camera("),
+        enable_contents.contains("pub async fn handle_enable_camera_next_request<F>("),
         "Expected combined generation to produce service function, got:\n{}",
         enable_contents
     );
     let get_camera_info_contents = std::fs::read_to_string(&get_camera_info_module)
         .expect("failed to read get_camera_info module");
     assert!(
-        get_camera_info_contents.contains("pub async fn on_get_camera_info("),
+        get_camera_info_contents.contains("pub async fn get_camera_info("),
         "Expected subscribed service module to expose callback function, got:\n{}",
         get_camera_info_contents
     );
     assert!(
-        get_camera_info_contents.contains("request: OnGetCameraInfoRequest"),
+        get_camera_info_contents.contains("camera_id: u16"),
         "Expected subscribed service module to expose request parameter, got:\n{}",
         get_camera_info_contents
     );
     assert!(
-        get_camera_info_contents.contains(") -> OnGetCameraInfoResponse"),
+        get_camera_info_contents.contains("-> crate::Result<OnGetCameraInfoResponse>"),
         "Expected subscribed service module to expose response return type, got:\n{}",
-        get_camera_info_contents
-    );
-    assert!(
-        get_camera_info_contents.contains("pub struct OnGetCameraInfoRequest"),
-        "Expected subscribed service module to expose request struct, got:\n{}",
         get_camera_info_contents
     );
     assert!(
@@ -490,7 +485,7 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
     );
     assert!(
         get_camera_info_contents.contains("camera_id: u16"),
-        "Expected subscribed service request struct to expose request field, got:\n{}",
+        "Expected subscribed service request handling to expose request field, got:\n{}",
         get_camera_info_contents
     );
     assert!(
