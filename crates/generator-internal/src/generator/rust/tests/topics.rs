@@ -356,6 +356,154 @@ fn subscribed_to_topic() {
 }
 
 #[test]
+fn subscribed_to_topic_no_node() {
+    // Here we don't use a node name so any node in the network with a topic named "stream" is gonna be captured
+    let topic = r#"
+        {
+            name: "stream",
+            tag: "0.1.0"
+        }
+        "#;
+    let topic: SubscribedTopic = serde_json5::from_str(topic).unwrap();
+    let format = r#"
+        {
+            header: {
+                type: "object",
+                stamp: "time",
+                frame_id: "u32"
+            },
+            encoding: "string",
+            width: "u32",
+            height: "u32",
+            image: {
+                type: "array",
+                items: "u8",
+                length: 3
+            }
+        }
+        "#;
+    let format: MessageFormat = serde_json5::from_str(format).unwrap();
+
+    let mut generator = RustGenerator::new();
+    generator
+        .add_subscribed_topic(&topic, Some(&format))
+        .unwrap();
+    let artifacts: Vec<String> = generator
+        .into_artifacts()
+        .into_iter()
+        .map(|artifact| artifact.code_output)
+        .collect();
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected a single generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
+
+    assert_rendered!(
+        rendered.contains("pub struct StreamMessage"),
+        &rendered,
+        "expected return struct definition"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct StreamMessageHeader"),
+        &rendered,
+        "expected nested struct definition"
+    );
+    assert_rendered!(
+        rendered.contains("image: [u8; 3]"),
+        &rendered,
+        "expected array element type"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct Subscribes;"),
+        &rendered,
+        "expected subscriber struct definition"
+    );
+    assert_rendered!(
+        !rendered.contains("pub async fn connect("),
+        &rendered,
+        "subscriber should not expose a connect constructor"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn on_next_stream_message("),
+        &rendered,
+        "expected async subscriber method"
+    );
+    assert_rendered!(
+        rendered.contains("messenger: &crate::Messenger"),
+        &rendered,
+        "expected messenger reference parameter"
+    );
+    assert_rendered!(
+        rendered.contains("Self::deseralize_stream_payload"),
+        &rendered,
+        "expected helper payload deserializer invocation"
+    );
+    assert_rendered!(
+        rendered.contains("fn deseralize_stream_payload("),
+        &rendered,
+        "expected private payload deserializer function"
+    );
+    assert_rendered!(
+        rendered.contains("-> crate::Result<StreamMessage>"),
+        &rendered,
+        "expected subscriber return type"
+    );
+    assert_rendered!(
+        rendered.contains("peppylib::TopicMessenger::subscribe("),
+        &rendered,
+        "expected subscription helper invocation"
+    );
+    assert_rendered!(
+        rendered.contains("messenger.handle()"),
+        &rendered,
+        "expected messenger handle to be passed to subscription helper"
+    );
+    assert_rendered!(
+        rendered.contains("let namespace = messenger.namespace();"),
+        &rendered,
+        "expected namespace lookup via messenger helper"
+    );
+    assert_rendered!(
+        rendered.contains("capnp::serialize::read_message"),
+        &rendered,
+        "expected capnp deserialization"
+    );
+    assert_rendered!(
+        rendered.contains("crate::Error::TopicSubscribe"),
+        &rendered,
+        "expected explicit topic subscribe error variant"
+    );
+    assert_rendered!(
+        rendered.contains("crate::Error::SubscriptionClosed"),
+        &rendered,
+        "expected explicit subscription closed error variant"
+    );
+    assert_rendered!(
+        rendered.contains("crate::Error::CapnpDeserialize"),
+        &rendered,
+        "expected explicit capnp deserialize error variant"
+    );
+    assert_rendered!(
+        rendered.contains("crate::Error::CapnpField"),
+        &rendered,
+        "expected explicit capnp field access error variant"
+    );
+    assert_rendered!(
+        rendered.contains("crate::Error::InvalidFixedBytes"),
+        &rendered,
+        "expected explicit fixed-size byte validation error variant"
+    );
+    assert_rendered!(
+        rendered.contains("let qos = peppylib::config::QoSProfile::Standard;"),
+        &rendered,
+        "expected qos initialization"
+    );
+}
+
+#[test]
 fn subscribed_to_two_topics_same_node() {
     let video_topic = r#"
         {
