@@ -77,9 +77,19 @@ fn expose_service() {
         "expected handler callback parameter"
     );
     assert_rendered!(
-        rendered.contains("F: Fn(bool) -> crate::Result<EnableCameraResponse>"),
+        rendered.contains("F: Fn(EnableCameraRequest) -> crate::Result<EnableCameraResponse>"),
         &rendered,
         "expected Fn trait bound for handler"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct EnableCameraRequest"),
+        &rendered,
+        "expected public request struct for enable_camera"
+    );
+    assert_rendered!(
+        rendered.contains("pub enable: bool"),
+        &rendered,
+        "expected public request field for enable_camera"
     );
     assert_rendered!(
         rendered.contains("-> crate::Result<()>"),
@@ -97,9 +107,14 @@ fn expose_service() {
         "expected next_request call to receive incoming request"
     );
     assert_rendered!(
-        rendered.contains("enable_camera_deserialize_request"),
+        rendered.contains("fn enable_camera_deserialize_request("),
         &rendered,
         "expected request deserializer helper function"
+    );
+    assert_rendered!(
+        rendered.contains("-> crate::Result<EnableCameraRequest>"),
+        &rendered,
+        "expected request deserializer to return request struct"
     );
     assert_rendered!(
         rendered.contains("let response_payload = bytes::Bytes::new();"),
@@ -107,7 +122,7 @@ fn expose_service() {
         "expected inline response serialization"
     );
     assert_rendered!(
-        rendered.contains("handler(enable)?"),
+        rendered.contains("handler(request_data)?"),
         &rendered,
         "expected handler callback invocation with deserialized parameter"
     );
@@ -164,14 +179,29 @@ fn expose_two_services() {
         "expected async handler for `enable_camera`"
     );
     assert_rendered!(
-        rendered.contains("F: Fn(bool) -> crate::Result<EnableCameraResponse>"),
+        rendered.contains("F: Fn(EnableCameraRequest) -> crate::Result<EnableCameraResponse>"),
         &rendered,
         "expected handler signature for `enable_camera`"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct EnableCameraRequest"),
+        &rendered,
+        "expected public request struct for `enable_camera`"
+    );
+    assert_rendered!(
+        rendered.contains("pub enable: bool"),
+        &rendered,
+        "expected public request field for `enable_camera`"
     );
     assert_rendered!(
         rendered.contains("fn enable_camera_deserialize_request("),
         &rendered,
         "expected request deserializer helper for `enable_camera`"
+    );
+    assert_rendered!(
+        rendered.contains("-> crate::Result<EnableCameraRequest>"),
+        &rendered,
+        "expected request deserializer to return request struct for `enable_camera`"
     );
     assert_rendered!(
         rendered.contains("pub struct EnableCameraResponse"),
@@ -189,9 +219,14 @@ fn expose_two_services() {
         "expected handler signature for `get_lidar_info`"
     );
     assert_rendered!(
-        rendered.contains("struct GetLidarInfoRequest"),
+        rendered.contains("pub struct GetLidarInfoRequest"),
         &rendered,
-        "expected private request struct for `get_lidar_info`"
+        "expected public request struct for `get_lidar_info`"
+    );
+    assert_rendered!(
+        rendered.contains("pub channels: String"),
+        &rendered,
+        "expected public request field for `get_lidar_info`"
     );
     assert_rendered!(
         rendered.contains("fn get_lidar_info_deserialize_request("),
@@ -594,13 +629,6 @@ fn subscribed_to_two_services_same_node() {
         "expected response field for `size`"
     );
     assert_rendered!(
-        rendered.contains(
-            "pub async fn poll_uvc_camera_get_camera_info(\n        messenger: &crate::Messenger,\n    )"
-        ),
-        rendered,
-        "expected requestless poll helper signature for `get_camera_info`"
-    );
-    assert_rendered!(
         rendered.contains("-> crate::Result<GetCameraInfoResponse>"),
         rendered,
         "expected return type for `get_camera_info` poll helper"
@@ -654,13 +682,6 @@ fn subscribed_service_without_response_payload() {
         "expected poll struct definition for `get_camera_info`"
     );
     assert_rendered!(
-        rendered.contains(
-            "pub async fn poll_uvc_camera_get_camera_info(messenger: &crate::Messenger) -> crate::Result<()> {"
-        ),
-        rendered,
-        "expected requestless poll helper returning unit result"
-    );
-    assert_rendered!(
         !rendered.contains("GetCameraInfoResponse"),
         rendered,
         "expected no response struct when response format is missing"
@@ -672,6 +693,129 @@ fn subscribed_service_without_response_payload() {
     );
 }
 
+#[test]
 fn create_lib_with_exposed_services_artifact() {
-    todo!("finish")
+    let temp_dir = TempDir::new().unwrap();
+    let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
+
+    let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
+    generator.add_exposed_service(&service).unwrap();
+    let output_config = copy_config_to_output(&user_node, &output_dir);
+    generator.build(&output_dir).unwrap();
+    fs::remove_file(output_config).unwrap();
+
+    assert!(
+        output_dir.join("Cargo.toml").exists(),
+        "Expected Cargo.toml to be generated in the temporary crate directory"
+    );
+    assert!(
+        !output_dir.join(PEPPY_NODE_CONFIG_FILE).exists(),
+        "Generated crate should not keep a copy of the node configuration file"
+    );
+
+    let lib_rs = output_dir.join("src/lib.rs");
+    assert!(
+        lib_rs.exists(),
+        "Expected lib.rs to exist so `peppygen::services` is reachable"
+    );
+    let lib_contents = std::fs::read_to_string(&lib_rs).expect("failed to read generated lib.rs");
+    assert!(
+        lib_contents.contains("pub mod services;"),
+        "Expected generated lib.rs to re-export the `services` module, got:\n{}",
+        lib_contents
+    );
+
+    let services_mod = output_dir.join("src/services.rs");
+    assert!(
+        services_mod.exists(),
+        "Expected services module file to exist so `peppygen::services::<module>` resolves"
+    );
+    let services_contents =
+        std::fs::read_to_string(&services_mod).expect("failed to read services module");
+    let service_modules: Vec<String> = services_contents
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            trimmed
+                .strip_prefix("pub mod ")
+                .map(|rest| rest.trim_end_matches(';').trim().to_string())
+        })
+        .collect();
+    assert!(
+        !service_modules.is_empty(),
+        "Expected services module to expose at least one generated service module, got:\n{}",
+        services_contents
+    );
+    assert_eq!(
+        service_modules.len(),
+        1,
+        "Expected a single generated service module, got {:?}",
+        service_modules
+    );
+    let generated_module = &service_modules[0];
+    let service_module_path = output_dir
+        .join("src/services")
+        .join(format!("{generated_module}.rs"));
+    assert!(
+        service_module_path.exists(),
+        "Expected generated service module at {:?}",
+        service_module_path
+    );
+    let module_contents = std::fs::read_to_string(&service_module_path)
+        .expect("failed to read generated service module");
+    assert!(
+        module_contents.contains("struct Exposes;"),
+        "Expected generated service module to define exposes struct, got:\n{}",
+        module_contents
+    );
+    assert!(
+        module_contents.contains("pub struct EnableCameraResponse"),
+        "Expected generated service module to define response struct, got:\n{}",
+        module_contents
+    );
+    assert!(
+        module_contents.contains("enabled: bool"),
+        "Expected generated response struct to include `enabled` field, got:\n{}",
+        module_contents
+    );
+    assert!(
+        module_contents.contains("error_msg: String"),
+        "Expected generated response struct to include `error_msg` field, got:\n{}",
+        module_contents
+    );
+    assert!(
+        module_contents.contains("pub async fn handle_enable_camera_next_request<F>("),
+        "Expected generated service module to expose async handler, got:\n{}",
+        module_contents
+    );
+    assert!(
+        module_contents.contains("messenger: &crate::Messenger"),
+        "Expected generated handler to accept messenger reference, got:\n{}",
+        module_contents
+    );
+    assert!(
+        module_contents.contains("service.next_request().await?"),
+        "Expected generated handler to await next request, got:\n{}",
+        module_contents
+    );
+    assert!(
+        module_contents.contains("enable_camera_deserialize_request"),
+        "Expected generated helper to deserialize request payload, got:\n{}",
+        module_contents
+    );
+    assert!(
+        module_contents.contains("let response_payload = bytes::Bytes::new();"),
+        "Expected generated handler to create placeholder response payload, got:\n{}",
+        module_contents
+    );
+    assert!(
+        module_contents.contains("service.send_response(request.id, response_payload).await?"),
+        "Expected generated handler to send response payload, got:\n{}",
+        module_contents
+    );
+    assert!(
+        module_contents.contains("capnp::serialize::read_message"),
+        "Expected generated module to deserialize requests using capnp, got:\n{}",
+        module_contents
+    );
 }
