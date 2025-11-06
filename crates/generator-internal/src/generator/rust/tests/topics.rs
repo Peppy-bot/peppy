@@ -671,6 +671,7 @@ fn subscribed_to_two_topics_same_node() {
 fn create_lib_with_exposed_topic_artifact() {
     let temp_dir = TempDir::new().unwrap();
     let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
+    // TODO: Add a second exposed topic and subscribed topics
 
     let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
     generator.add_exposed_topic(&topic).unwrap();
