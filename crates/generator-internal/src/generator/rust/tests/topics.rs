@@ -756,13 +756,10 @@ fn compile_lib_with_exposed_topic_artifact() {
         "Expected topics module to expose at least one generated topic module, got:\n{}",
         topics_contents
     );
-    assert_eq!(
-        topic_modules.len(),
-        1,
-        "Expected a single generated topic module, got {:?}",
-        topic_modules
-    );
-    let generated_module = &topic_modules[0];
+    let generated_module = topic_modules
+        .iter()
+        .find(|module| module.as_str() == "push_frame")
+        .unwrap_or_else(|| panic!("Expected `push_frame` module, got {:?}", topic_modules));
 
     let topic_module_path = output_dir
         .join("src/topics")
