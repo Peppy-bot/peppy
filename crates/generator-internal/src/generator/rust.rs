@@ -160,11 +160,9 @@ struct MessageEncodingSpec {
 }
 
 struct ServiceResponseSpec<'a> {
-    reader_type: TokenStream,
     #[allow(dead_code)] // TODO: Use this for proper response serialization
     format: &'a MessageFormat,
     struct_ident: Ident,
-    context: String,
 }
 
 impl LanguageGenerator for RustGenerator {
@@ -245,12 +243,10 @@ impl LanguageGenerator for RustGenerator {
         let response_spec = if let Some(return_artifacts) = return_format_artifacts.as_ref() {
             let response_prefix = format!("{struct_prefix}Response");
             let schema_key = format!("{fn_name_str}_response");
-            let schema = self.register_schema(&schema_key, &response_prefix, return_artifacts)?;
+            self.register_schema(&schema_key, &response_prefix, return_artifacts)?;
             Some(ServiceResponseSpec {
-                reader_type: schema.reader_type_tokens(),
                 format: return_artifacts.message_format(),
                 struct_ident: Ident::new(&response_prefix, Span::call_site()),
-                context: response_prefix,
             })
         } else {
             None
