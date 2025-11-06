@@ -695,8 +695,9 @@ fn subscribed_service_without_response_payload() {
     );
 }
 
+/// This is a long running test
 #[test]
-fn create_lib_with_exposed_services_artifact() {
+fn compile_lib_with_exposed_services_artifact() {
     let temp_dir = TempDir::new().unwrap();
     let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
 

@@ -44,6 +44,58 @@ const EXPOSED_TOPIC_EXAMPLE2: &str = r#"
 }
 "#;
 
+const SUBSCRIBED_TOPIC_EXAMPLE1: &str = r#"
+{
+    node: "uvc_camera",
+    name: "stream",
+    tag: "0.1.0"
+}
+"#;
+
+const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1: &str = r#"
+{
+    header: {
+        type: "object",
+        stamp: "time",
+        frame_id: "u32"
+    },
+    encoding: "string",
+    width: "u32",
+    height: "u32",
+    image: {
+        type: "array",
+        items: "u8",
+        length: 3
+    }
+}
+"#;
+
+const SUBSCRIBED_TOPIC_EXAMPLE2: &str = r#"
+{
+    node: "uvc_camera",
+    name: "sound",
+    tag: "0.1.0"
+}
+"#;
+
+const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2: &str = r#"
+{
+  header: {
+    type: "object",
+    stamp: "time"
+  },
+  encoding: "string",         // e.g., "pcm_s16le", "f32", "mp3", "opus"
+  sample_rate: "u32",         // Hz
+  channels: "u32",            // e.g., 1=mono, 2=stereo
+  layout: "string",           // "interleaved" | "planar"
+  frame_count: "u32",         // samples per channel in this frame
+  samples: {
+    type: "array",
+    items: "u8",              // raw bytes; interpret per 'encoding'
+  }
+}
+"#;
+
 #[test]
 fn expose_topic() {
     let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
@@ -210,32 +262,8 @@ fn expose_two_topics() {
 
 #[test]
 fn subscribed_to_topic() {
-    let topic = r#"
-        {
-            node: "uvc_camera",
-            name: "stream",
-            tag: "0.1.0"
-        }
-        "#;
-    let topic: SubscribedTopic = serde_json5::from_str(topic).unwrap();
-    let format = r#"
-        {
-            header: {
-                type: "object",
-                stamp: "time",
-                frame_id: "u32"
-            },
-            encoding: "string",
-            width: "u32",
-            height: "u32",
-            image: {
-                type: "array",
-                items: "u8",
-                length: 3
-            }
-        }
-        "#;
-    let format: MessageFormat = serde_json5::from_str(format).unwrap();
+    let topic: SubscribedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE1).unwrap();
+    let format: MessageFormat = serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1).unwrap();
 
     let mut generator = RustGenerator::new();
     generator
@@ -506,58 +534,13 @@ fn subscribed_to_topic_no_node() {
 
 #[test]
 fn subscribed_to_two_topics_same_node() {
-    let video_topic = r#"
-        {
-            node: "uvc_camera",
-            name: "video",
-            tag: "0.1.0"
-        }
-        "#;
-    let video_topic: SubscribedTopic = serde_json5::from_str(video_topic).unwrap();
-    let video_format = r#"
-        {
-            header: {
-                type: "object",
-                stamp: "time",
-                frame_id: "u32"
-            },
-            encoding: "string",
-            width: "u32",
-            height: "u32",
-            image: {
-                type: "array",
-                items: "u8",
-                length: 3
-            }
-        }
-        "#;
-    let video_format: MessageFormat = serde_json5::from_str(video_format).unwrap();
-    let sound_topic = r#"
-        {
-            node: "uvc_camera",
-            name: "sound",
-            tag: "0.1.0"
-        }
-    "#;
-    let sound_topic: SubscribedTopic = serde_json5::from_str(sound_topic).unwrap();
-    let sound_format = r#"
-        {
-          header: {
-            type: "object",
-            stamp: "time"
-          },
-          encoding: "string",         // e.g., "pcm_s16le", "f32", "mp3", "opus"
-          sample_rate: "u32",         // Hz
-          channels: "u32",            // e.g., 1=mono, 2=stereo
-          layout: "string",           // "interleaved" | "planar"
-          frame_count: "u32",         // samples per channel in this frame
-          samples: {
-            type: "array",
-            items: "u8",              // raw bytes; interpret per 'encoding'
-          }
-        }
-        "#;
-    let sound_format: MessageFormat = serde_json5::from_str(sound_format).unwrap();
+    let video_topic: SubscribedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE1).unwrap();
+    let video_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1).unwrap();
+
+    let sound_topic: SubscribedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE2).unwrap();
+    let sound_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2).unwrap();
 
     let mut generator = RustGenerator::new();
     generator
@@ -600,9 +583,9 @@ fn subscribed_to_two_topics_same_node() {
         on_next_usage_count
     );
     assert_rendered!(
-        rendered.contains("pub struct UvcCameraVideoMessage"),
+        rendered.contains("pub struct UvcCameraStreamMessage"),
         &rendered,
-        "expected video payload struct"
+        "expected stream payload struct"
     );
     assert_rendered!(
         rendered.contains("pub struct UvcCameraSoundMessage"),
@@ -615,9 +598,9 @@ fn subscribed_to_two_topics_same_node() {
         "expected explicit subscribe error variant for each topic"
     );
     assert_rendered!(
-        rendered.contains("pub async fn on_next_uvc_camera_video_message("),
+        rendered.contains("pub async fn on_next_uvc_camera_stream_message("),
         &rendered,
-        "expected video subscriber method"
+        "expected stream subscriber method"
     );
     assert_rendered!(
         rendered.contains("pub async fn on_next_uvc_camera_sound_message("),
@@ -625,9 +608,9 @@ fn subscribed_to_two_topics_same_node() {
         "expected sound subscriber method"
     );
     assert_rendered!(
-        rendered.contains("fn deseralize_uvc_camera_video_payload"),
+        rendered.contains("fn deseralize_uvc_camera_stream_payload"),
         &rendered,
-        "expected video payload helper"
+        "expected stream payload helper"
     );
     assert_rendered!(
         rendered.contains("fn deseralize_uvc_camera_sound_payload"),
@@ -656,9 +639,9 @@ fn subscribed_to_two_topics_same_node() {
         namespace_usage_count
     );
     assert_rendered!(
-        rendered.contains("let topic_name = \"video\";"),
+        rendered.contains("let topic_name = \"stream\";"),
         &rendered,
-        "expected video subscriber routine to set topic literal"
+        "expected stream subscriber routine to set topic literal"
     );
     assert_rendered!(
         rendered.contains("let topic_name = \"sound\";"),
@@ -667,14 +650,32 @@ fn subscribed_to_two_topics_same_node() {
     );
 }
 
+/// This is a long running test
 #[test]
-fn create_lib_with_exposed_topic_artifact() {
+fn compile_lib_with_exposed_topic_artifact() {
     let temp_dir = TempDir::new().unwrap();
-    let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
+    let exposed_topic1: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
+    let exposed_topic2: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE2).unwrap();
+    let subscribed_topic1: SubscribedTopic =
+        serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE1).unwrap();
+    let subscribed_format1: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1).unwrap();
+    let subscribed_topic2: SubscribedTopic =
+        serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE2).unwrap();
+    let subscribed_format2: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2).unwrap();
+
     // TODO: Add a second exposed topic and subscribed topics
 
     let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
-    generator.add_exposed_topic(&topic).unwrap();
+    generator.add_exposed_topic(&exposed_topic1).unwrap();
+    generator.add_exposed_topic(&exposed_topic2).unwrap();
+    generator
+        .add_subscribed_topic(&subscribed_topic1, Some(&subscribed_format1))
+        .unwrap();
+    generator
+        .add_subscribed_topic(&subscribed_topic2, Some(&subscribed_format2))
+        .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator.build(&output_dir).unwrap();
     fs::remove_file(output_config).unwrap();
