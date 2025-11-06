@@ -401,7 +401,11 @@ impl LanguageGenerator for RustGenerator {
             "SubscribedTopic.name should be validated as non-empty"
         );
 
-        let node_prefix = to_camel_case(&node_component);
+        let node_prefix = if node_component.is_empty() {
+            String::new()
+        } else {
+            to_camel_case(&node_component)
+        };
         let topic_prefix = to_camel_case(&topic_component);
         let struct_prefix = format!("{node_prefix}{topic_prefix}");
         let message_struct_name = format!("{struct_prefix}Message");
@@ -475,13 +479,28 @@ impl LanguageGenerator for RustGenerator {
         let request_artifacts = map_message_format(request_arguments)?;
         let response_artifacts = map_message_format(response_arguments)?;
 
-        let fn_name_str =
-            prefixed_ident("on", non_empty_str(service.name.as_str()), "service").to_string();
-        let struct_prefix = to_camel_case(&fn_name_str);
-        let method_ident = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
+        let service_ident = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
+        let service_name_component = service_ident.to_string();
+        let struct_prefix = to_camel_case(service_name_component.as_str());
+
+        let service_struct_ident = Ident::new("Subscribes", Span::call_site());
+
+        let method_ident = {
+            let mut components = Vec::with_capacity(3);
+            components.push(String::from("poll"));
+
+            if let Some(node_name) = service.node.as_deref().and_then(non_empty_str) {
+                let node_ident = prefixed_ident("", Some(node_name), "node");
+                components.push(node_ident.to_string());
+            }
+
+            components.push(service_name_component.clone());
+
+            let method_name = components.join("_");
+            Ident::new(&method_name, Span::call_site())
+        };
+
         let method_name = method_ident.to_string();
-        let service_struct_name = format!("{}ServicePoll", to_camel_case(method_name.as_str()));
-        let service_struct_ident = Ident::new(&service_struct_name, Span::call_site());
 
         let mut context = GenerationContext::default();
 
