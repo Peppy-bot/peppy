@@ -377,41 +377,66 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
     let topics_contents =
         std::fs::read_to_string(&topics_mod).expect("failed to read topics module");
     assert!(
-        topics_contents.contains("pub mod push_frame;"),
-        "Expected topics module to expose generated `push_frame` module, got:\n{}",
+        topics_contents.contains("mod push_frame;"),
+        "Expected topics module to declare generated `push_frame` module, got:\n{}",
         topics_contents
     );
     assert!(
-        topics_contents.contains("pub mod uvc_camera;"),
-        "Expected topics module to expose subscribed `uvc_camera` module, got:\n{}",
+        topics_contents.contains("mod uvc_camera;"),
+        "Expected topics module to declare subscribed `uvc_camera` module, got:\n{}",
+        topics_contents
+    );
+    assert!(
+        topics_contents.contains("pub use push_frame::*;"),
+        "Expected topics module to re-export generated `push_frame` API, got:\n{}",
+        topics_contents
+    );
+    assert!(
+        topics_contents.contains("pub use uvc_camera::*;"),
+        "Expected topics module to re-export subscribed `uvc_camera` API, got:\n{}",
         topics_contents
     );
 
     let services_contents =
         std::fs::read_to_string(&services_mod).expect("failed to read services module");
     assert!(
-        services_contents.contains("pub mod enable_camera;"),
-        "Expected services module to expose generated `enable_camera` module, got:\n{}",
+        services_contents.contains("mod enable_camera;"),
+        "Expected services module to declare generated `enable_camera` module, got:\n{}",
         services_contents
     );
     assert!(
-        services_contents.contains("pub mod get_camera_info;"),
-        "Expected services module to expose subscribed `get_camera_info` module, got:\n{}",
+        services_contents.contains("mod uvc_camera;"),
+        "Expected services module to declare subscribed `uvc_camera` module, got:\n{}",
+        services_contents
+    );
+    assert!(
+        services_contents.contains("pub use enable_camera::*;"),
+        "Expected services module to re-export generated `enable_camera` API, got:\n{}",
+        services_contents
+    );
+    assert!(
+        services_contents.contains("pub use uvc_camera::*;"),
+        "Expected services module to re-export subscribed `uvc_camera` API, got:\n{}",
         services_contents
     );
 
     let actions_contents =
         std::fs::read_to_string(&actions_mod).expect("failed to read actions module");
     assert!(
-        actions_contents.contains("pub mod move_arm;"),
-        "Expected actions module to expose generated `move_arm` module, got:\n{}",
+        actions_contents.contains("mod move_arm;"),
+        "Expected actions module to declare generated `move_arm` module, got:\n{}",
+        actions_contents
+    );
+    assert!(
+        actions_contents.contains("pub use move_arm::*;"),
+        "Expected actions module to re-export generated `move_arm` API, got:\n{}",
         actions_contents
     );
 
     let push_frame_module = output_dir.join("src/topics/push_frame.rs");
     let stream_module = output_dir.join("src/topics/uvc_camera.rs");
     let enable_module = output_dir.join("src/services/enable_camera.rs");
-    let get_camera_info_module = output_dir.join("src/services/get_camera_info.rs");
+    let uvc_camera_service_module = output_dir.join("src/services/uvc_camera.rs");
     let move_arm_module = output_dir.join("src/actions/move_arm.rs");
     assert!(
         push_frame_module.exists(),
@@ -426,7 +451,7 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
         "Expected generated subscribed topic module to exist"
     );
     assert!(
-        get_camera_info_module.exists(),
+        uvc_camera_service_module.exists(),
         "Expected generated subscribed service module to exist"
     );
     assert!(
@@ -461,8 +486,8 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
         "Expected combined generation to produce service function, got:\n{}",
         enable_contents
     );
-    let get_camera_info_contents = std::fs::read_to_string(&get_camera_info_module)
-        .expect("failed to read get_camera_info module");
+    let get_camera_info_contents = std::fs::read_to_string(&uvc_camera_service_module)
+        .expect("failed to read subscribed service module");
     assert!(
         get_camera_info_contents.contains("pub async fn get_camera_info("),
         "Expected subscribed service module to expose callback function, got:\n{}",

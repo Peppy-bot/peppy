@@ -178,13 +178,23 @@ fn write_category_modules(
 }
 
 fn write_category_module_file(category_file: &Path, modules: &[(String, String)]) -> Result<()> {
-    let mut content = String::new();
+    let mut mod_section = String::new();
+    let mut reexport_section = String::new();
     for (module, original) in modules {
         if !original.is_empty() {
-            content.push_str(&format!("// Node: {original}\n"));
+            mod_section.push_str(&format!("// Node: {original}\n"));
         }
-        content.push_str(&format!("pub mod {module};\n"));
+        mod_section.push_str(&format!("mod {module};\n"));
+        reexport_section.push_str(&format!("pub use {module}::*;\n"));
     }
+
+    let mut content = String::new();
+    content.push_str(&mod_section);
+    if !modules.is_empty() && !reexport_section.is_empty() {
+        content.push('\n');
+    }
+    content.push_str(&reexport_section);
+
     fs::write(category_file, content)?;
     Ok(())
 }

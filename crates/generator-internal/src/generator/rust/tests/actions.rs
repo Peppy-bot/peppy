@@ -279,8 +279,13 @@ fn create_lib_with_exposed_action_artifact() {
     let actions_contents =
         std::fs::read_to_string(&actions_mod).expect("failed to read actions module");
     assert!(
-        actions_contents.contains("pub mod move_arm;"),
-        "Expected actions module to expose generated `move_arm` module, got:\n{}",
+        actions_contents.contains("mod move_arm;"),
+        "Expected actions module to declare generated `move_arm` module, got:\n{}",
+        actions_contents
+    );
+    assert!(
+        actions_contents.contains("pub use move_arm::*;"),
+        "Expected actions module to re-export generated `move_arm` API, got:\n{}",
         actions_contents
     );
 

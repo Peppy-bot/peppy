@@ -665,8 +665,6 @@ fn compile_lib_with_exposed_topic_artifact() {
     let subscribed_format2: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2).unwrap();
 
-    // TODO: Add a second exposed topic and subscribed topics
-
     let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
     generator.add_exposed_topic(&exposed_topic1).unwrap();
     generator.add_exposed_topic(&exposed_topic2).unwrap();
@@ -742,12 +740,22 @@ fn compile_lib_with_exposed_topic_artifact() {
     );
     let topics_contents =
         std::fs::read_to_string(&topics_mod).expect("failed to read topics module");
+    assert!(
+        topics_contents.contains("pub use push_frame::*;"),
+        "Expected topics module to re-export generated module, got:\n{}",
+        topics_contents
+    );
+    assert!(
+        topics_contents.contains("pub use uvc_camera::*;"),
+        "Expected topics module to re-export subscribed module, got:\n{}",
+        topics_contents
+    );
     let topic_modules: Vec<String> = topics_contents
         .lines()
         .filter_map(|line| {
             let trimmed = line.trim();
             trimmed
-                .strip_prefix("pub mod ")
+                .strip_prefix("mod ")
                 .map(|rest| rest.trim_end_matches(';').trim().to_string())
         })
         .collect();
@@ -755,6 +763,13 @@ fn compile_lib_with_exposed_topic_artifact() {
         !topic_modules.is_empty(),
         "Expected topics module to expose at least one generated topic module, got:\n{}",
         topics_contents
+    );
+    assert!(
+        topic_modules
+            .iter()
+            .any(|module| module.as_str() == "uvc_camera"),
+        "Expected `uvc_camera` module, got {:?}",
+        topic_modules
     );
     let generated_module = topic_modules
         .iter()
