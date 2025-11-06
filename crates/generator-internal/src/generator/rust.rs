@@ -1029,7 +1029,10 @@ fn normalize_snake_case(input: &str) -> String {
                 .copied()
                 .map(|next| next.is_ascii_lowercase())
                 .unwrap_or(false);
-            if !result.is_empty() && (prev_was_lower_or_digit || next_is_lower) && !result.ends_with('_') {
+            if !result.is_empty()
+                && (prev_was_lower_or_digit || next_is_lower)
+                && !result.ends_with('_')
+            {
                 result.push('_');
             }
             result.push(ch.to_ascii_lowercase());
@@ -1116,11 +1119,13 @@ impl StructDefinition {
         if field_tokens.is_empty() {
             quote! {
                 #[derive(Debug, Clone)]
+                #[allow(dead_code)]
                 pub struct #ident {}
             }
         } else {
             quote! {
                 #[derive(Debug, Clone)]
+                #[allow(dead_code)]
                 pub struct #ident {
                     #( #field_tokens ),*
                 }
@@ -1573,6 +1578,7 @@ fn build_topic_emit(
             let root_ident = Ident::new("root", Span::call_site());
 
             quote! {
+                #[allow(clippy::too_many_arguments)]
                 pub async fn #method_ident(#method_signature) -> crate::Result<()> {
                     let mut message = capnp::message::Builder::new_default();
                     {
@@ -1614,6 +1620,7 @@ fn build_topic_emit(
                 .collect();
 
             quote! {
+                #[allow(clippy::too_many_arguments)]
                 pub async fn #method_ident(#method_signature) -> crate::Result<()> {
                     let _ = messenger;
                     #(#ignore_params)*
@@ -1819,7 +1826,14 @@ fn generate_primitive_reader(
                         })?;
                 },
                 quote! {
-                    let #value_ident = #reader_ident.to_string();
+                    let #value_ident = #reader_ident
+                        .to_str()
+                        .map_err(|source| crate::Error::CapnpField {
+                            field: String::from(#field_literal),
+                            context: String::from(#context_literal),
+                            source: capnp::Error::failed(source.to_string()),
+                        })?
+                        .to_owned();
                 },
             ];
             (statements, value_ident)
@@ -1838,7 +1852,11 @@ fn generate_primitive_reader(
                         })?;
                 },
                 quote! {
-                    let #value_ident = #reader_ident.into_iter().collect::<Vec<_>>();
+                    let len = #reader_ident.len();
+                    let mut #value_ident = Vec::with_capacity(len as usize);
+                    for byte in #reader_ident.iter() {
+                        #value_ident.push(*byte);
+                    }
                 },
             ];
             (statements, value_ident)
@@ -1933,6 +1951,7 @@ fn generate_u8_array_reader(
     match length {
         Some(len) => {
             let len_lit = Literal::usize_unsuffixed(len);
+            let array_ident = names.next("bytes");
             statements.push(quote! {
                 if #reader_ident.len() as usize != #len_lit {
                     let actual = #reader_ident.len() as usize;
@@ -1944,20 +1963,21 @@ fn generate_u8_array_reader(
                 }
             });
             statements.push(quote! {
-                let #value_ident: [u8; #len_lit] = #reader_ident
-                    .into_iter()
-                    .collect::<Vec<_>>()
-                    .try_into()
-                    .map_err(|vec: Vec<u8>| crate::Error::InvalidFixedBytes {
-                        field: String::from(#field_literal),
-                        expected: #len_lit,
-                        actual: vec.len(),
-                    })?;
+                let mut #array_ident = [0u8; #len_lit];
+                for (idx, byte) in #reader_ident.iter().enumerate() {
+                    #array_ident[idx] = *byte;
+                }
+                let #value_ident = #array_ident;
             });
         }
         None => {
+            let vec_ident = names.next("bytes");
             statements.push(quote! {
-                let #value_ident = #reader_ident.into_iter().collect::<Vec<_>>();
+                let mut #vec_ident = Vec::with_capacity(#reader_ident.len() as usize);
+                for byte in #reader_ident.iter() {
+                    #vec_ident.push(*byte);
+                }
+                let #value_ident = #vec_ident;
             });
         }
     }
@@ -2390,6 +2410,7 @@ fn build_sync_function(
         .collect();
 
     quote! {
+        #[allow(clippy::too_many_arguments)]
         pub fn #fn_name(#(#param_tokens),*) -> crate::Result<()> {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
