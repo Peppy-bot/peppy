@@ -769,12 +769,17 @@ fn compile_lib_with_exposed_services_artifact() {
     );
     let services_contents =
         std::fs::read_to_string(&services_mod).expect("failed to read services module");
+    assert!(
+        services_contents.contains("pub use enable_camera::*;"),
+        "Expected services module to re-export generated service API, got:\n{}",
+        services_contents
+    );
     let service_modules: Vec<String> = services_contents
         .lines()
         .filter_map(|line| {
             let trimmed = line.trim();
             trimmed
-                .strip_prefix("pub mod ")
+                .strip_prefix("mod ")
                 .map(|rest| rest.trim_end_matches(';').trim().to_string())
         })
         .collect();
