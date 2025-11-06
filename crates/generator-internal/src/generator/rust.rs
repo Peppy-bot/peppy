@@ -26,6 +26,7 @@ use syn::{File, parse2};
 pub struct RustGenerator {
     sections: Vec<InterfaceArtifact>,
     schemas: HashMap<String, CapnpSchema>,
+    pending_exposed_services: Option<ExposedServicesModule>,
     pending_exposed_topics: Option<ExposedTopicsModule>,
     pending_subscribed_topics: BTreeMap<String, SubscribedTopicNode>,
 }
@@ -35,6 +36,7 @@ impl RustGenerator {
         Self {
             sections: Vec::new(),
             schemas: HashMap::new(),
+            pending_exposed_services: None,
             pending_exposed_topics: None,
             pending_subscribed_topics: BTreeMap::new(),
         }
@@ -42,9 +44,16 @@ impl RustGenerator {
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn into_artifacts(mut self) -> Vec<InterfaceArtifact> {
+        self.flush_pending_exposed_services();
         self.flush_pending_exposed_topics();
         self.flush_pending_subscribed_topics();
         self.sections
+    }
+
+    fn flush_pending_exposed_services(&mut self) {
+        if let Some(module) = self.pending_exposed_services.take() {
+            self.push_section(module.into_artifact());
+        }
     }
 
     fn flush_pending_exposed_topics(&mut self) {
@@ -187,6 +196,7 @@ impl LanguageGenerator for RustGenerator {
         let module = self
             .pending_exposed_topics
             .get_or_insert_with(ExposedTopicsModule::new);
+        module.ensure_node_name(topic.name.as_str());
         module.extend_structs(struct_tokens);
         module.push_method(method_tokens);
         Ok(())
@@ -236,8 +246,6 @@ impl LanguageGenerator for RustGenerator {
         };
 
         let struct_tokens = context.into_tokens();
-        let service_struct_ident =
-            Ident::new(&format!("{struct_prefix}Service"), Span::call_site());
 
         let service_name_literal = Literal::string(service.name.as_str());
         let (method_token, helper_tokens) = build_exposed_service_method(
@@ -250,22 +258,12 @@ impl LanguageGenerator for RustGenerator {
             response_spec.as_ref(),
         );
 
-        let tokens: TokenStream = quote! {
-            #( #struct_tokens )*
-
-            struct #service_struct_ident;
-
-            impl #service_struct_ident {
-                #method_token
-                #( #helper_tokens )*
-            }
-        };
-        let rendered = render_tokens(tokens);
-        self.push_section(InterfaceArtifact::from_kind(
-            &service.name,
-            InterfaceKind::ExposedService,
-            rendered,
-        ));
+        let module = self
+            .pending_exposed_services
+            .get_or_insert_with(ExposedServicesModule::new);
+        module.ensure_node_name(service.name.as_str());
+        module.extend_structs(struct_tokens);
+        module.push_method(method_token, helper_tokens);
         Ok(())
     }
 
@@ -694,6 +692,8 @@ impl LanguageGenerator for RustGenerator {
     }
 
     fn build(mut self, to_path: impl AsRef<Path>) -> Result<()> {
+        self.flush_pending_exposed_services();
+        self.flush_pending_exposed_topics();
         self.flush_pending_subscribed_topics();
 
         // First create the basic structure of the project
@@ -714,6 +714,64 @@ impl LanguageGenerator for RustGenerator {
     }
 }
 
+struct ExposedServicesModule {
+    node_name: String,
+    struct_ident: Ident,
+    message_structs: Vec<TokenStream>,
+    impl_items: Vec<TokenStream>,
+}
+
+impl ExposedServicesModule {
+    fn new() -> Self {
+        Self {
+            node_name: String::new(),
+            struct_ident: Ident::new("Exposes", Span::call_site()),
+            message_structs: Vec::new(),
+            impl_items: Vec::new(),
+        }
+    }
+
+    fn ensure_node_name(&mut self, name: &str) {
+        if self.node_name.is_empty() {
+            self.node_name = name.to_string();
+        }
+    }
+
+    fn extend_structs(&mut self, structs: Vec<TokenStream>) {
+        self.message_structs.extend(structs);
+    }
+
+    fn push_method(&mut self, method: TokenStream, helpers: Vec<TokenStream>) {
+        self.impl_items.push(method);
+        self.impl_items.extend(helpers);
+    }
+
+    fn into_artifact(self) -> InterfaceArtifact {
+        let ExposedServicesModule {
+            node_name,
+            struct_ident,
+            message_structs,
+            impl_items,
+        } = self;
+
+        let struct_tokens = build_service_struct(&struct_ident);
+
+        let tokens: TokenStream = quote! {
+            #( #message_structs )*
+
+            #struct_tokens
+
+            impl #struct_ident {
+                #( #impl_items )*
+            }
+        };
+
+        let rendered = render_tokens(tokens);
+
+        InterfaceArtifact::from_kind(&node_name, InterfaceKind::ExposedService, rendered)
+    }
+}
+
 struct ExposedTopicsModule {
     node_name: String,
     struct_ident: Ident,
@@ -728,6 +786,12 @@ impl ExposedTopicsModule {
             struct_ident: Ident::new("Exposes", Span::call_site()),
             message_structs: Vec::new(),
             methods: Vec::new(),
+        }
+    }
+
+    fn ensure_node_name(&mut self, name: &str) {
+        if self.node_name.is_empty() {
+            self.node_name = name.to_string();
         }
     }
 
@@ -1360,6 +1424,12 @@ fn build_topic_struct(struct_ident: &Ident) -> TokenStream {
     }
 }
 
+fn build_service_struct(struct_ident: &Ident) -> TokenStream {
+    quote! {
+        struct #struct_ident;
+    }
+}
+
 fn build_topic_emit(
     method_ident: &Ident,
     params: &[FunctionParam],
@@ -1929,7 +1999,10 @@ fn build_exposed_service_method(
     response_spec: Option<&ServiceResponseSpec>,
 ) -> (TokenStream, Vec<TokenStream>) {
     let label_literal = Literal::string(label);
-    let handler_fn_name = Ident::new("handle_next_request", Span::call_site());
+    let handler_fn_name = Ident::new(
+        &format!("handle_{}_next_request", fn_name),
+        Span::call_site(),
+    );
 
     // Build callback parameter signature (just types, no names for Fn trait bounds)
     let callback_param_types: Vec<TokenStream> = if let Some(request_struct) = request_struct {
