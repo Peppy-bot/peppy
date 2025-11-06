@@ -103,12 +103,16 @@ impl RustGenerator {
         };
 
         let struct_name = format!("{struct_prefix}Message");
+        let struct_module = normalize_snake_case(&struct_name);
         let schema = schema_source.replacen("struct Message", &format!("struct {struct_name}"), 1);
 
         let capnp_schema = CapnpSchema::new(file_stem.clone(), schema);
         self.schemas.insert(file_stem.clone(), capnp_schema);
 
-        Ok(SchemaInfo { file_stem })
+        Ok(SchemaInfo {
+            file_stem,
+            struct_module,
+        })
     }
 
     fn prepare_message_encoding(
@@ -137,18 +141,19 @@ impl RustGenerator {
 
 struct SchemaInfo {
     file_stem: String,
+    struct_module: String,
 }
 
 impl SchemaInfo {
     fn builder_type_tokens(&self) -> TokenStream {
         let module_ident = Ident::new(&format!("{}_capnp", self.file_stem), Span::call_site());
-        let struct_module_ident = Ident::new(&self.file_stem, Span::call_site());
+        let struct_module_ident = Ident::new(&self.struct_module, Span::call_site());
         quote!(crate::capnp::#module_ident::#struct_module_ident::Builder)
     }
 
     fn reader_type_tokens(&self) -> TokenStream {
         let module_ident = Ident::new(&format!("{}_capnp", self.file_stem), Span::call_site());
-        let struct_module_ident = Ident::new(&self.file_stem, Span::call_site());
+        let struct_module_ident = Ident::new(&self.struct_module, Span::call_site());
         quote!(crate::capnp::#module_ident::#struct_module_ident::Reader)
     }
 }
@@ -1012,6 +1017,54 @@ fn sanitize_component(raw: &str) -> String {
     out
 }
 
+fn normalize_snake_case(input: &str) -> String {
+    let mut result = String::new();
+    let mut chars = input.chars().peekable();
+    let mut prev_was_lower_or_digit = false;
+
+    while let Some(ch) = chars.next() {
+        if ch.is_ascii_uppercase() {
+            let next_is_lower = chars
+                .peek()
+                .copied()
+                .map(|next| next.is_ascii_lowercase())
+                .unwrap_or(false);
+            if !result.is_empty() && (prev_was_lower_or_digit || next_is_lower) && !result.ends_with('_') {
+                result.push('_');
+            }
+            result.push(ch.to_ascii_lowercase());
+            prev_was_lower_or_digit = true;
+        } else if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+            result.push(ch);
+            prev_was_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+        } else {
+            if !result.ends_with('_') && !result.is_empty() {
+                result.push('_');
+            }
+            prev_was_lower_or_digit = false;
+        }
+    }
+
+    while result.ends_with('_') {
+        result.pop();
+    }
+
+    if result.is_empty() {
+        return String::from("message");
+    }
+
+    if result
+        .chars()
+        .next()
+        .map(|ch| ch.is_ascii_digit())
+        .unwrap_or(false)
+    {
+        result.insert(0, '_');
+    }
+
+    result
+}
+
 #[derive(Default)]
 struct GenerationContext {
     structs: Vec<StructDefinition>,
@@ -1805,11 +1858,11 @@ fn generate_primitive_reader(
                         })?;
                 },
                 quote! {
-                    let #capnp_ident = config::encoding::CapnpTimestamp {
+                    let #capnp_ident = peppylib::encoding::CapnpTimestamp {
                         sec: #reader_ident.get_sec(),
                         nsec: #reader_ident.get_nsec(),
                     };
-                    let #value_ident = config::convert_time_from_capnp(#capnp_ident);
+                    let #value_ident = peppylib::encoding::convert_time_from_capnp(#capnp_ident);
                 },
             ];
             (statements, value_ident)
