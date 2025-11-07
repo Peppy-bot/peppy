@@ -29,11 +29,13 @@ pub struct RustGenerator {
     pending_exposed_services: Option<ExposedServicesModule>,
     pending_exposed_topics: Option<ExposedTopicsModule>,
     pending_subscribed_services: BTreeMap<String, SubscribedServiceNode>,
-    pending_subscribed_topics: BTreeMap<String, SubscribedTopicNode>,
+    pending_subscribed_topics: Option<SubscribedTopicsModule>,
 }
 
 const EXPOSED_SERVICES_MODULE: &str = "exposers";
 const SUBSCRIBED_SERVICES_MODULE: &str = "subscribers";
+const EXPOSED_TOPICS_MODULE: &str = EXPOSED_SERVICES_MODULE;
+const SUBSCRIBED_TOPICS_MODULE: &str = SUBSCRIBED_SERVICES_MODULE;
 
 impl RustGenerator {
     pub fn new() -> Self {
@@ -43,7 +45,7 @@ impl RustGenerator {
             pending_exposed_services: None,
             pending_exposed_topics: None,
             pending_subscribed_services: BTreeMap::new(),
-            pending_subscribed_topics: BTreeMap::new(),
+            pending_subscribed_topics: None,
         }
     }
 
@@ -77,10 +79,8 @@ impl RustGenerator {
     }
 
     fn flush_pending_subscribed_topics(&mut self) {
-        let pending = std::mem::take(&mut self.pending_subscribed_topics);
-        for (_node_name, node) in pending {
-            let artifact = node.into_artifact();
-            self.push_section(artifact);
+        if let Some(module) = self.pending_subscribed_topics.take() {
+            self.push_section(module.into_artifact());
         }
     }
 
@@ -213,7 +213,7 @@ impl LanguageGenerator for RustGenerator {
         let module = self
             .pending_exposed_topics
             .get_or_insert_with(ExposedTopicsModule::new);
-        module.ensure_node_name(topic.name.as_str());
+        module.ensure_node_name(EXPOSED_TOPICS_MODULE);
         module.extend_structs(struct_tokens);
         module.push_method(method_tokens);
         Ok(())
@@ -466,13 +466,11 @@ impl LanguageGenerator for RustGenerator {
             )?
             .expect("message encoding spec should exist when message format is provided");
         let struct_tokens = context.into_tokens();
-        let node_key = topic.node.clone().unwrap_or_else(|| topic.name.clone());
-        let node_entry = self
+        let module = self
             .pending_subscribed_topics
-            .entry(node_key.clone())
-            .or_insert_with(|| SubscribedTopicNode::new(node_key.clone()));
-
-        node_entry.extend_message_structs(struct_tokens);
+            .get_or_insert_with(SubscribedTopicsModule::new);
+        module.ensure_node_name(SUBSCRIBED_TOPICS_MODULE);
+        module.extend_message_structs(struct_tokens);
 
         let method_tokens = build_subscribed_topic_callback(
             &callback_fn_ident,
@@ -483,7 +481,7 @@ impl LanguageGenerator for RustGenerator {
             topic,
             &message_struct_name,
         );
-        node_entry.push_method(method_tokens);
+        module.push_method(method_tokens);
 
         Ok(())
     }
@@ -867,12 +865,6 @@ impl ExposedTopicsModule {
     }
 }
 
-struct SubscribedTopicNode {
-    node_name: String,
-    message_structs: Vec<TokenStream>,
-    methods: Vec<TokenStream>,
-}
-
 struct SubscribedServiceNode {
     node_name: String,
     message_structs: Vec<TokenStream>,
@@ -921,12 +913,24 @@ impl SubscribedServiceNode {
     }
 }
 
-impl SubscribedTopicNode {
-    fn new(node_name: String) -> Self {
+struct SubscribedTopicsModule {
+    node_name: String,
+    message_structs: Vec<TokenStream>,
+    methods: Vec<TokenStream>,
+}
+
+impl SubscribedTopicsModule {
+    fn new() -> Self {
         Self {
-            node_name,
+            node_name: String::new(),
             message_structs: Vec::new(),
             methods: Vec::new(),
+        }
+    }
+
+    fn ensure_node_name(&mut self, name: &str) {
+        if self.node_name.is_empty() {
+            self.node_name = name.to_string();
         }
     }
 
@@ -939,7 +943,7 @@ impl SubscribedTopicNode {
     }
 
     fn into_artifact(self) -> InterfaceArtifact {
-        let SubscribedTopicNode {
+        let SubscribedTopicsModule {
             node_name,
             message_structs,
             methods,
