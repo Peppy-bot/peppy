@@ -29,6 +29,43 @@ const EXPOSED_SERVICE_EXAMPLE2: &str = r#"
 }
 "#;
 
+const SUBSCRIBED_SERVICE_EXAMPLE1: &str = r#"
+{
+  node: "uvc_camera",
+  name: "enable_camera",
+  tag: "0.1.0"
+}
+"#;
+
+const SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1: &str = r#"
+{
+  enable: "bool"
+}
+"#;
+
+const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1: &str = r#"
+{
+  enabled: "bool",
+  error_msg: "string"
+}
+"#;
+
+const SUBSCRIBED_SERVICE_EXAMPLE2: &str = r#"
+{
+    node: "uvc_camera",
+    name: "get_camera_info",
+    tag: "0.1.0"
+}
+"#;
+// No request body for the second subscribed service
+const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2: &str = r#"
+{
+    card_type: "string",
+    size: "string",
+    interval: "string"
+}
+"#;
+
 #[test]
 fn expose_service() {
     let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
@@ -49,7 +86,7 @@ fn expose_service() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     assert_rendered!(
-        rendered.contains("struct Exposes;"),
+        rendered.contains("pub struct Exposes;"),
         &rendered,
         "expected service struct declaration"
     );
@@ -57,6 +94,16 @@ fn expose_service() {
         rendered.contains("pub struct EnableCameraResponse"),
         &rendered,
         "expected response struct for exposed service"
+    );
+    assert_rendered!(
+        rendered.contains("impl EnableCameraResponse {"),
+        &rendered,
+        "expected response struct impl block"
+    );
+    assert_rendered!(
+        rendered.contains("pub fn new("),
+        &rendered,
+        "expected response constructor"
     );
     assert_rendered!(
         rendered.contains("enabled: bool"),
@@ -99,14 +146,19 @@ fn expose_service() {
         "expected async function to return unit result"
     );
     assert_rendered!(
-        rendered.contains("messenger.handle().listen(namespace, service_name).await?"),
+        rendered.contains("peppylib::ServiceMessenger::listen("),
         &rendered,
-        "expected service listen call"
+        "expected service listen call through peppylib helper"
     );
     assert_rendered!(
-        rendered.contains("service.next_request().await?"),
+        rendered.contains(".handle_next_request(move |request_context|"),
         &rendered,
-        "expected next_request call to receive incoming request"
+        "expected generated handler to schedule request handling through ServiceMessenger"
+    );
+    assert_rendered!(
+        rendered.contains("request_context.message.payload"),
+        &rendered,
+        "expected request payload to be pulled from the request context"
     );
     assert_rendered!(
         rendered.contains("fn enable_camera_deserialize_request("),
@@ -127,11 +179,6 @@ fn expose_service() {
         rendered.contains("handler(request_data)?"),
         &rendered,
         "expected handler callback invocation with deserialized parameter"
-    );
-    assert_rendered!(
-        rendered.contains("service.send_response(request.id, response_payload).await?"),
-        &rendered,
-        "expected send_response call"
     );
     assert_rendered!(
         rendered.contains("capnp::serialize::read_message"),
@@ -171,7 +218,7 @@ fn expose_two_services() {
         .expect("artifact is present");
 
     assert_rendered!(
-        rendered.contains("struct Exposes;"),
+        rendered.contains("pub struct Exposes;"),
         &rendered,
         "expected service struct declaration for combined services"
     );
@@ -239,27 +286,11 @@ fn expose_two_services() {
 
 #[test]
 fn subscribed_to_service() {
-    let service = r#"
-        {
-            node: "uvc_camera",
-            name: "enable_camera",
-            tag: "0.1.0"
-        }
-        "#;
-    let service: SubscribedService = serde_json5::from_str(service).unwrap();
-    let request_format = r#"
-        {
-          enable: "bool"
-        }
-        "#;
-    let response_format = r#"
-        {
-          enabled: "bool",
-          error_msg: "string"
-        }
-        "#;
-    let request_format: MessageFormat = serde_json5::from_str(request_format).unwrap();
-    let response_format: MessageFormat = serde_json5::from_str(response_format).unwrap();
+    let service: SubscribedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
+    let request_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1).unwrap();
+    let response_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1).unwrap();
 
     let mut generator = RustGenerator::new();
     generator
@@ -339,9 +370,19 @@ fn subscribed_to_service() {
         "expected request serialization assignment"
     );
     assert_rendered!(
-        rendered.contains("crate::messaging::to_bytes(message)?"),
+        rendered.contains("let mut buffer = Vec::new();"),
         &rendered,
-        "expected capnp to bytes conversion"
+        "expected request serialization buffer allocation"
+    );
+    assert_rendered!(
+        rendered.contains("capnp::serialize::write_message(&mut buffer, &message)"),
+        &rendered,
+        "expected request serialization using capnp"
+    );
+    assert_rendered!(
+        rendered.contains("context: String::from(\"poll_uvc_camera_enable_camera\")"),
+        &rendered,
+        "expected request serialization error context"
     );
     assert_rendered!(
         rendered.contains("crate::messaging::ServiceMessenger::poll("),
@@ -372,6 +413,137 @@ fn subscribed_to_service() {
         rendered.contains("Ok(EnableCameraResponse {"),
         &rendered,
         "expected response construction"
+    );
+}
+
+#[test]
+fn subscribed_to_two_services_same_node() {
+    let service1: SubscribedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
+
+    let request_format1: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1).unwrap();
+    let response_format1: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1).unwrap();
+
+    // Second service pointing to the same node
+    let service2: SubscribedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE2).unwrap();
+    let response_format2: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2).unwrap();
+
+    let mut generator = RustGenerator::new();
+    generator
+        .add_subscribed_service(&service1, Some(&request_format1), Some(&response_format1))
+        .unwrap();
+    generator
+        .add_subscribed_service(&service2, None, Some(&response_format2))
+        .unwrap();
+    let artifacts: Vec<String> = generator
+        .into_artifacts()
+        .into_iter()
+        .map(|artifact| artifact.code_output)
+        .collect();
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected a single generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
+
+    assert_rendered!(
+        rendered.contains("pub struct EnableCameraResponse"),
+        rendered,
+        "expected response struct for `enable_camera`"
+    );
+    let struct_count = rendered.matches("pub struct Subscribes;").count();
+    assert_rendered!(
+        struct_count == 1,
+        rendered,
+        "expected a single service subscriber struct, got {}",
+        struct_count
+    );
+    let impl_count = rendered.matches("impl Subscribes {").count();
+    assert_rendered!(
+        impl_count == 1,
+        rendered,
+        "expected a single impl block for service subscribers, got {}",
+        impl_count
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn poll_uvc_camera_enable_camera("),
+        rendered,
+        "expected poll helper function for `enable_camera`"
+    );
+    assert_rendered!(
+        rendered.contains("enable: bool"),
+        rendered,
+        "expected request parameter for `enable_camera`"
+    );
+    assert_rendered!(
+        rendered.contains("-> crate::Result<EnableCameraResponse>"),
+        rendered,
+        "expected return type for `enable_camera` poll helper"
+    );
+    assert_rendered!(
+        rendered.contains("root.set_enable(enable);"),
+        rendered,
+        "expected request serialization for `enable_camera`"
+    );
+    assert_rendered!(
+        rendered.contains("crate::messaging::ServiceMessenger::poll("),
+        rendered,
+        "expected poll invocation for `enable_camera`"
+    );
+    assert_rendered!(
+        rendered.contains("capnp::serialize::read_message"),
+        rendered,
+        "expected response deserialization for `enable_camera`"
+    );
+    assert_rendered!(
+        rendered.contains("Ok(EnableCameraResponse {"),
+        rendered,
+        "expected response construction for `enable_camera`"
+    );
+
+    assert_rendered!(
+        rendered.contains("pub struct GetCameraInfoResponse"),
+        rendered,
+        "expected response struct for `get_camera_info`"
+    );
+    assert_rendered!(
+        rendered.contains("card_type: String"),
+        rendered,
+        "expected response field for `card_type`"
+    );
+    assert_rendered!(
+        rendered.contains("interval: String"),
+        rendered,
+        "expected response field for `interval`"
+    );
+    assert_rendered!(
+        rendered.contains("size: String"),
+        rendered,
+        "expected response field for `size`"
+    );
+    assert_rendered!(
+        rendered.contains("-> crate::Result<GetCameraInfoResponse>"),
+        rendered,
+        "expected return type for `get_camera_info` poll helper"
+    );
+    assert_rendered!(
+        rendered.contains("crate::messaging::ServiceMessenger::poll("),
+        rendered,
+        "expected poll invocation for `get_camera_info`"
+    );
+    assert_rendered!(
+        rendered.contains("capnp::serialize::read_message"),
+        rendered,
+        "expected response deserialization for `get_camera_info`"
+    );
+    assert_rendered!(
+        rendered.contains("Ok(GetCameraInfoResponse {"),
+        rendered,
+        "expected response construction for `get_camera_info`"
     );
 }
 
@@ -494,165 +666,6 @@ fn subscribed_to_service_no_node() {
 }
 
 #[test]
-fn subscribed_to_two_services_same_node() {
-    let service1 = r#"
-        {
-            node: "uvc_camera",
-            name: "enable_camera",
-            tag: "0.1.0"
-        }
-        "#;
-    let service1: SubscribedService = serde_json5::from_str(service1).unwrap();
-    let request_format1 = r#"
-        {
-          enable: "bool"
-        }
-        "#;
-    let response_format1 = r#"
-        {
-          enabled: "bool",
-          error_msg: "string"
-        }
-        "#;
-    let request_format1: MessageFormat = serde_json5::from_str(request_format1).unwrap();
-    let response_format1: MessageFormat = serde_json5::from_str(response_format1).unwrap();
-
-    // Second service pointing to the same node
-    let service2 = r#"
-        {
-            node: "uvc_camera",
-            name: "get_camera_info",
-            tag: "0.1.0"
-        }
-        "#;
-    let service2: SubscribedService = serde_json5::from_str(service2).unwrap();
-    let response_format2 = r#"
-        {
-          card_type: "string",
-          size: "string",
-          interval: "string"
-        }
-        "#;
-    let response_format2: MessageFormat = serde_json5::from_str(response_format2).unwrap();
-
-    let mut generator = RustGenerator::new();
-    generator
-        .add_subscribed_service(&service1, Some(&request_format1), Some(&response_format1))
-        .unwrap();
-    generator
-        .add_subscribed_service(&service2, None, Some(&response_format2))
-        .unwrap();
-    let artifacts: Vec<String> = generator
-        .into_artifacts()
-        .into_iter()
-        .map(|artifact| artifact.code_output)
-        .collect();
-    assert_eq!(
-        artifacts.len(),
-        1,
-        "expected a single generated artifact, got {}",
-        artifacts.len()
-    );
-    let rendered = artifacts.into_iter().next().expect("artifact is present");
-
-    assert_rendered!(
-        rendered.contains("pub struct EnableCameraResponse"),
-        rendered,
-        "expected response struct for `enable_camera`"
-    );
-    let struct_count = rendered.matches("pub struct Subscribes;").count();
-    assert_rendered!(
-        struct_count == 1,
-        rendered,
-        "expected a single service subscriber struct, got {}",
-        struct_count
-    );
-    let impl_count = rendered.matches("impl Subscribes {").count();
-    assert_rendered!(
-        impl_count == 1,
-        rendered,
-        "expected a single impl block for service subscribers, got {}",
-        impl_count
-    );
-    assert_rendered!(
-        rendered.contains("pub async fn poll_uvc_camera_enable_camera("),
-        rendered,
-        "expected poll helper function for `enable_camera`"
-    );
-    assert_rendered!(
-        rendered.contains("enable: bool"),
-        rendered,
-        "expected request parameter for `enable_camera`"
-    );
-    assert_rendered!(
-        rendered.contains("-> crate::Result<EnableCameraResponse>"),
-        rendered,
-        "expected return type for `enable_camera` poll helper"
-    );
-    assert_rendered!(
-        rendered.contains("root.set_enable(enable);"),
-        rendered,
-        "expected request serialization for `enable_camera`"
-    );
-    assert_rendered!(
-        rendered.contains("crate::messaging::ServiceMessenger::poll("),
-        rendered,
-        "expected poll invocation for `enable_camera`"
-    );
-    assert_rendered!(
-        rendered.contains("capnp::serialize::read_message"),
-        rendered,
-        "expected response deserialization for `enable_camera`"
-    );
-    assert_rendered!(
-        rendered.contains("Ok(EnableCameraResponse {"),
-        rendered,
-        "expected response construction for `enable_camera`"
-    );
-
-    assert_rendered!(
-        rendered.contains("pub struct GetCameraInfoResponse"),
-        rendered,
-        "expected response struct for `get_camera_info`"
-    );
-    assert_rendered!(
-        rendered.contains("card_type: String"),
-        rendered,
-        "expected response field for `card_type`"
-    );
-    assert_rendered!(
-        rendered.contains("interval: String"),
-        rendered,
-        "expected response field for `interval`"
-    );
-    assert_rendered!(
-        rendered.contains("size: String"),
-        rendered,
-        "expected response field for `size`"
-    );
-    assert_rendered!(
-        rendered.contains("-> crate::Result<GetCameraInfoResponse>"),
-        rendered,
-        "expected return type for `get_camera_info` poll helper"
-    );
-    assert_rendered!(
-        rendered.contains("crate::messaging::ServiceMessenger::poll("),
-        rendered,
-        "expected poll invocation for `get_camera_info`"
-    );
-    assert_rendered!(
-        rendered.contains("capnp::serialize::read_message"),
-        rendered,
-        "expected response deserialization for `get_camera_info`"
-    );
-    assert_rendered!(
-        rendered.contains("Ok(GetCameraInfoResponse {"),
-        rendered,
-        "expected response construction for `get_camera_info`"
-    );
-}
-
-#[test]
 fn subscribed_service_without_response_payload() {
     let service = r#"
         {
@@ -699,10 +712,42 @@ fn subscribed_service_without_response_payload() {
 #[test]
 fn compile_lib_with_exposed_services_artifact() {
     let temp_dir = TempDir::new().unwrap();
-    let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
+    let exposed_service1: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
+    let exposed_service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
+
+    let subscribed_service1: SubscribedService =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
+
+    let subscribed_service_request1: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1).unwrap();
+    let subscribed_service_response1: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1).unwrap();
+
+    // Second service pointing to the same node
+    let subscribed_service2: SubscribedService =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE2).unwrap();
+    let subscribed_service_response2: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2).unwrap();
+
+    // TODO: add another ExposedService and 2 subscribers
 
     let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
-    generator.add_exposed_service(&service).unwrap();
+    generator.add_exposed_service(&exposed_service1).unwrap();
+    // generator.add_exposed_service(&exposed_service2).unwrap();
+    // generator
+    //     .add_subscribed_service(
+    //         &subscribed_service1,
+    //         Some(&subscribed_service_request1),
+    //         Some(&subscribed_service_response1),
+    //     )
+    //     .unwrap();
+    // generator
+    //     .add_subscribed_service(
+    //         &subscribed_service2,
+    //         None,
+    //         Some(&subscribed_service_response2),
+    //     )
+    //     .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator.build(&output_dir).unwrap();
     fs::remove_file(output_config).unwrap();
@@ -806,13 +851,18 @@ fn compile_lib_with_exposed_services_artifact() {
     let module_contents = std::fs::read_to_string(&service_module_path)
         .expect("failed to read generated service module");
     assert!(
-        module_contents.contains("struct Exposes;"),
+        module_contents.contains("pub struct Exposes;"),
         "Expected generated service module to define exposes struct, got:\n{}",
         module_contents
     );
     assert!(
         module_contents.contains("pub struct EnableCameraResponse"),
         "Expected generated service module to define response struct, got:\n{}",
+        module_contents
+    );
+    assert!(
+        module_contents.contains("impl EnableCameraResponse {"),
+        "Expected generated service module to define response struct impl, got:\n{}",
         module_contents
     );
     assert!(
@@ -836,8 +886,18 @@ fn compile_lib_with_exposed_services_artifact() {
         module_contents
     );
     assert!(
-        module_contents.contains("service.next_request().await?"),
-        "Expected generated handler to await next request, got:\n{}",
+        module_contents.contains("peppylib::ServiceMessenger::listen("),
+        "Expected generated handler to initialize ServiceMessenger listener, got:\n{}",
+        module_contents
+    );
+    assert!(
+        module_contents.contains(".handle_next_request(move |request_context|"),
+        "Expected generated handler to use ServiceMessenger::handle_next_request, got:\n{}",
+        module_contents
+    );
+    assert!(
+        module_contents.contains("request_context.message.payload"),
+        "Expected generated handler to deserialize request payload from the context, got:\n{}",
         module_contents
     );
     assert!(
@@ -848,11 +908,6 @@ fn compile_lib_with_exposed_services_artifact() {
     assert!(
         module_contents.contains("let response_payload = bytes::Bytes::new();"),
         "Expected generated handler to create placeholder response payload, got:\n{}",
-        module_contents
-    );
-    assert!(
-        module_contents.contains("service.send_response(request.id, response_payload).await?"),
-        "Expected generated handler to send response payload, got:\n{}",
         module_contents
     );
     assert!(

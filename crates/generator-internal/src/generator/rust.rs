@@ -528,6 +528,8 @@ impl LanguageGenerator for RustGenerator {
             &params,
         )?;
 
+        let request_context_literal = Literal::string(&method_name);
+
         let request_payload_tokens = if let Some(spec) = &request_encoding {
             let builder_type = &spec.builder_type;
             let assignments = &spec.assignments;
@@ -539,7 +541,14 @@ impl LanguageGenerator for RustGenerator {
                         let mut root = message.init_root::<#builder_type>();
                         #( #assignments )*
                     }
-                    crate::messaging::to_bytes(message)?
+                    let mut buffer = Vec::new();
+                    capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
+                        crate::Error::CapnpSerialize {
+                            context: String::from(#request_context_literal),
+                            source,
+                        }
+                    })?;
+                    bytes::Bytes::from(buffer)
                 };
             }
         } else {
@@ -1154,15 +1163,42 @@ fn collect_function_params(
         let response_prefix = format!("{struct_prefix}Response");
         let response_ident = Ident::new(&response_prefix, Span::call_site());
         let mut fields = Vec::new();
+        let mut ctor_params: Vec<TokenStream> = Vec::new();
+        let mut ctor_bindings: Vec<TokenStream> = Vec::new();
 
         for (field_name, schema) in &return_artifacts.message_format().0 {
             let field_ident =
                 Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
             let field_ty = schema_type_to_tokens(schema, &response_prefix, field_name, context);
+            let ctor_ident = field_ident.clone();
+            let ctor_ty = field_ty.clone();
+            ctor_params.push(quote!(#ctor_ident: #ctor_ty));
+            ctor_bindings.push(quote!(#ctor_ident));
             fields.push((field_ident, field_ty));
         }
 
-        context.add_struct(response_ident, fields);
+        context.add_struct(response_ident.clone(), fields);
+
+        let ctor_tokens = if ctor_params.is_empty() {
+            quote! {
+                impl #response_ident {
+                    pub fn new() -> Self {
+                        Self {}
+                    }
+                }
+            }
+        } else {
+            quote! {
+                impl #response_ident {
+                    pub fn new(#(#ctor_params),*) -> Self {
+                        Self {
+                            #( #ctor_bindings ),*
+                        }
+                    }
+                }
+            }
+        };
+        context.add_private_struct(ctor_tokens);
     }
 
     let Some(artifacts) = accept_format_artifacts else {
@@ -1550,7 +1586,7 @@ fn build_topic_struct(struct_ident: &Ident) -> TokenStream {
 
 fn build_service_struct(struct_ident: &Ident) -> TokenStream {
     quote! {
-        struct #struct_ident;
+        pub struct #struct_ident;
     }
 }
 
@@ -2203,21 +2239,41 @@ fn build_exposed_service_method(
                     let namespace = messenger.namespace();
                     let service_name = #service_name;
 
-                    let mut service = messenger.handle().listen(namespace, service_name).await?;
+                    let mut service = peppylib::ServiceMessenger::listen(
+                        messenger.handle(),
+                        namespace,
+                        service_name,
+                    )
+                    .await?;
 
-                    let request = service.next_request().await?;
+                    let handler_fn = handler;
+                    let _handled_request = service
+                        .handle_next_request(move |request_context| {
+                            let handler = handler_fn;
+                            async move {
+                                let payload = request_context.message.payload;
 
-                    // Deserialize incoming request
-                    let #params_pattern = Self::#request_deserializer_name(request.payload.as_ref())?;
+                                let handler_result = (|| -> crate::Result<bytes::Bytes> {
+                                    // Deserialize incoming request
+                                    let #params_pattern = Self::#request_deserializer_name(payload.as_ref())?;
 
-                    // Call user handler
-                    let response = #callback_call?;
+                                    // Call user handler
+                                    let _response = #callback_call?;
 
-                    // Serialize response
-                    #response_serialization
+                                    // Serialize response
+                                    #response_serialization
 
-                    // Send response back
-                    service.send_response(request.id, response_payload).await?;
+                                    Ok(response_payload)
+                                })();
+
+                                handler_result.map_err(|error| {
+                                    peppylib::PeppyError::Io(std::io::Error::other(
+                                        error.to_string(),
+                                    ))
+                                })
+                            }
+                        })
+                        .await?;
 
                     Ok(())
                 }
