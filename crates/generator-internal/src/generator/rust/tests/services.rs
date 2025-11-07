@@ -872,17 +872,33 @@ fn compile_lib_with_exposed_services_artifact() {
     let services_contents =
         std::fs::read_to_string(&services_mod).expect("failed to read services module");
     assert!(
-        services_contents.contains("pub use enable_camera::*;"),
-        "Expected services module to re-export generated service API, got:\n{}",
+        services_contents.contains("pub mod exposers;"),
+        "Expected services module to declare generated `exposers` module, got:\n{}",
+        services_contents
+    );
+    assert!(
+        services_contents.contains("pub mod subscribers;"),
+        "Expected services module to declare subscribed `subscribers` module, got:\n{}",
+        services_contents
+    );
+    assert!(
+        services_contents.contains("pub use exposers::Exposes;"),
+        "Expected services module to re-export generated service struct, got:\n{}",
+        services_contents
+    );
+    assert!(
+        services_contents.contains("pub use subscribers::Subscribes;"),
+        "Expected services module to re-export subscribed service struct, got:\n{}",
         services_contents
     );
     let service_modules: Vec<String> = services_contents
         .lines()
         .filter_map(|line| {
             let trimmed = line.trim();
-            trimmed
+            let module_name = trimmed
                 .strip_prefix("mod ")
-                .map(|rest| rest.trim_end_matches(';').trim().to_string())
+                .or_else(|| trimmed.strip_prefix("pub mod "));
+            module_name.map(|rest| rest.trim_end_matches(';').trim().to_string())
         })
         .collect();
     assert!(
@@ -897,31 +913,30 @@ fn compile_lib_with_exposed_services_artifact() {
         service_modules
     );
 
-    let enable_module = service_modules
-        .iter()
-        .find(|module| module.contains("enable_camera"))
-        .expect("Expected enable_camera service module");
-    let enable_module_path = output_dir
-        .join("src/services")
-        .join(format!("{enable_module}.rs"));
     assert!(
-        enable_module_path.exists(),
-        "Expected generated enable_camera service module at {:?}",
-        enable_module_path
+        service_modules.iter().any(|module| module == "exposers"),
+        "Expected exposers service module, got {:?}",
+        service_modules
     );
-    let module_contents = std::fs::read_to_string(&enable_module_path)
-        .expect("failed to read generated service module");
-    let uvc_module = service_modules
-        .iter()
-        .find(|module| module.contains("uvc_camera"))
-        .expect("Expected uvc_camera service module");
-    let uvc_module_path = output_dir
-        .join("src/services")
-        .join(format!("{uvc_module}.rs"));
     assert!(
-        uvc_module_path.exists(),
-        "Expected generated uvc_camera service module at {:?}",
-        uvc_module_path
+        service_modules.iter().any(|module| module == "subscribers"),
+        "Expected subscribers service module, got {:?}",
+        service_modules
+    );
+
+    let exposers_module_path = output_dir.join("src/services/exposers.rs");
+    assert!(
+        exposers_module_path.exists(),
+        "Expected generated exposers service module at {:?}",
+        exposers_module_path
+    );
+    let module_contents = std::fs::read_to_string(&exposers_module_path)
+        .expect("failed to read generated service module");
+    let subscribers_module_path = output_dir.join("src/services/subscribers.rs");
+    assert!(
+        subscribers_module_path.exists(),
+        "Expected generated subscribers service module at {:?}",
+        subscribers_module_path
     );
     assert!(
         module_contents.contains("pub struct Exposes;"),

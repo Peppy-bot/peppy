@@ -400,23 +400,23 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
     let services_contents =
         std::fs::read_to_string(&services_mod).expect("failed to read services module");
     assert!(
-        services_contents.contains("mod enable_camera;"),
-        "Expected services module to declare generated `enable_camera` module, got:\n{}",
+        services_contents.contains("pub mod exposers;"),
+        "Expected services module to declare generated `exposers` module, got:\n{}",
         services_contents
     );
     assert!(
-        services_contents.contains("mod uvc_camera;"),
-        "Expected services module to declare subscribed `uvc_camera` module, got:\n{}",
+        services_contents.contains("pub mod subscribers;"),
+        "Expected services module to declare subscribed `subscribers` module, got:\n{}",
         services_contents
     );
     assert!(
-        services_contents.contains("pub use enable_camera::*;"),
-        "Expected services module to re-export generated `enable_camera` API, got:\n{}",
+        services_contents.contains("pub use exposers::Exposes;"),
+        "Expected services module to re-export generated service struct, got:\n{}",
         services_contents
     );
     assert!(
-        services_contents.contains("pub use uvc_camera::*;"),
-        "Expected services module to re-export subscribed `uvc_camera` API, got:\n{}",
+        services_contents.contains("pub use subscribers::Subscribes;"),
+        "Expected services module to re-export subscribed service struct, got:\n{}",
         services_contents
     );
 
@@ -435,24 +435,24 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
 
     let push_frame_module = output_dir.join("src/topics/push_frame.rs");
     let stream_module = output_dir.join("src/topics/uvc_camera.rs");
-    let enable_module = output_dir.join("src/services/enable_camera.rs");
-    let uvc_camera_service_module = output_dir.join("src/services/uvc_camera.rs");
+    let exposers_module = output_dir.join("src/services/exposers.rs");
+    let subscribers_service_module = output_dir.join("src/services/subscribers.rs");
     let move_arm_module = output_dir.join("src/actions/move_arm.rs");
     assert!(
         push_frame_module.exists(),
         "Expected generated topic module to exist"
     );
     assert!(
-        enable_module.exists(),
-        "Expected generated service module to exist"
+        exposers_module.exists(),
+        "Expected generated exposers service module to exist"
     );
     assert!(
         stream_module.exists(),
         "Expected generated subscribed topic module to exist"
     );
     assert!(
-        uvc_camera_service_module.exists(),
-        "Expected generated subscribed service module to exist"
+        subscribers_service_module.exists(),
+        "Expected generated subscribers service module to exist"
     );
     assert!(
         move_arm_module.exists(),
@@ -480,16 +480,16 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
     );
 
     let enable_contents =
-        std::fs::read_to_string(&enable_module).expect("failed to read enable_camera module");
+        std::fs::read_to_string(&exposers_module).expect("failed to read exposers module");
     assert!(
         enable_contents.contains("pub async fn handle_enable_camera_next_request<F>("),
         "Expected combined generation to produce service function, got:\n{}",
         enable_contents
     );
-    let get_camera_info_contents = std::fs::read_to_string(&uvc_camera_service_module)
+    let get_camera_info_contents = std::fs::read_to_string(&subscribers_service_module)
         .expect("failed to read subscribed service module");
     assert!(
-        get_camera_info_contents.contains("pub async fn get_camera_info("),
+        get_camera_info_contents.contains("pub async fn poll_uvc_camera_get_camera_info("),
         "Expected subscribed service module to expose callback function, got:\n{}",
         get_camera_info_contents
     );
@@ -499,12 +499,12 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
         get_camera_info_contents
     );
     assert!(
-        get_camera_info_contents.contains("-> crate::Result<OnGetCameraInfoResponse>"),
+        get_camera_info_contents.contains("-> crate::Result<GetCameraInfoResponse>"),
         "Expected subscribed service module to expose response return type, got:\n{}",
         get_camera_info_contents
     );
     assert!(
-        get_camera_info_contents.contains("pub struct OnGetCameraInfoResponse"),
+        get_camera_info_contents.contains("pub struct GetCameraInfoResponse"),
         "Expected subscribed service module to expose response struct, got:\n{}",
         get_camera_info_contents
     );

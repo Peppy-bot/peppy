@@ -173,19 +173,37 @@ fn write_category_modules(
         modules.push((module_name, original_name));
     }
 
-    write_category_module_file(category_file, &modules)?;
+    write_category_module_file(category_file, &modules, category)?;
     Ok(())
 }
 
-fn write_category_module_file(category_file: &Path, modules: &[(String, String)]) -> Result<()> {
+fn write_category_module_file(
+    category_file: &Path,
+    modules: &[(String, String)],
+    category: ModuleCategory,
+) -> Result<()> {
     let mut mod_section = String::new();
     let mut reexport_section = String::new();
     for (module, original) in modules {
         if !original.is_empty() {
             mod_section.push_str(&format!("// Node: {original}\n"));
         }
-        mod_section.push_str(&format!("mod {module};\n"));
-        reexport_section.push_str(&format!("pub use {module}::*;\n"));
+        match category {
+            ModuleCategory::Services => {
+                mod_section.push_str(&format!("pub mod {module};\n"));
+                match module.as_str() {
+                    "exposers" => reexport_section.push_str("pub use exposers::Exposes;\n"),
+                    "subscribers" => {
+                        reexport_section.push_str("pub use subscribers::Subscribes;\n")
+                    }
+                    _ => reexport_section.push_str(&format!("pub use {module}::*;\n")),
+                }
+            }
+            _ => {
+                mod_section.push_str(&format!("mod {module};\n"));
+                reexport_section.push_str(&format!("pub use {module}::*;\n"));
+            }
+        }
     }
 
     let mut content = String::new();
