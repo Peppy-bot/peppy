@@ -32,6 +32,9 @@ pub struct RustGenerator {
     pending_subscribed_topics: BTreeMap<String, SubscribedTopicNode>,
 }
 
+const EXPOSED_SERVICES_MODULE: &str = "exposers";
+const SUBSCRIBED_SERVICES_MODULE: &str = "subscribers";
+
 impl RustGenerator {
     pub fn new() -> Self {
         Self {
@@ -276,7 +279,7 @@ impl LanguageGenerator for RustGenerator {
         let module = self
             .pending_exposed_services
             .get_or_insert_with(ExposedServicesModule::new);
-        module.ensure_node_name(service.name.as_str());
+        module.ensure_node_name(EXPOSED_SERVICES_MODULE);
         module.extend_structs(struct_tokens);
         module.push_method(method_token, helper_tokens);
         Ok(())
@@ -662,7 +665,7 @@ impl LanguageGenerator for RustGenerator {
             }
         };
 
-        let node_key = service.node.clone().unwrap_or_else(|| service.name.clone());
+        let node_key = SUBSCRIBED_SERVICES_MODULE.to_string();
         let entry = self
             .pending_subscribed_services
             .entry(node_key.clone())
