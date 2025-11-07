@@ -1039,6 +1039,7 @@ dependencies = [
  "askama",
  "capnp",
  "config",
+ "peppylib",
  "pmi",
  "prettyplease",
  "proc-macro2",
@@ -1048,6 +1049,7 @@ dependencies = [
  "syn 2.0.108",
  "tempfile",
  "thiserror 2.0.17",
+ "tokio",
  "toml",
 ]
 

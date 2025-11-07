@@ -20,3 +20,5 @@ capnp = "0.23"
 [dev-dependencies]
 serde_json5 = "0.2.1"
 tempfile = "3.10"
+peppylib = { path = "../peppylib", features = ["test-support"] }
+tokio = { version = "1.47.0", features = ["macros", "rt-multi-thread"] }

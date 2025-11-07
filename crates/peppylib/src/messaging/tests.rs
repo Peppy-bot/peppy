@@ -1,96 +1,16 @@
 use bytes::Bytes;
 use config::node::QoSProfile;
-use pmi::{
-    Messenger, MessengerAdapter, MessengerBackend, PeppyMessagingInterfaceError, ZenohAdapter,
-};
+use pmi::{Messenger, MessengerBackend};
 use rand::{seq::SliceRandom, thread_rng};
 use std::collections::HashMap;
-use std::fs;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 
 use crate::error::Error;
 use crate::messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, TopicMessenger};
-
-const PORT_START: u16 = 40_000;
-const PORT_END: u16 = 65_000;
-static NEXT_PORT: AtomicU32 = AtomicU32::new(PORT_START as u32);
-
-fn allocate_candidate_port() -> u16 {
-    loop {
-        let current = NEXT_PORT.load(Ordering::Relaxed);
-        let candidate = if current >= PORT_END as u32 {
-            PORT_START as u32
-        } else {
-            current
-        };
-        let next = candidate + 1;
-        if NEXT_PORT
-            .compare_exchange(current, next, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-        {
-            return candidate as u16;
-        }
-    }
-}
-
-fn pick_free_tcp_port() -> Option<u16> {
-    Some(allocate_candidate_port())
-}
-
-async fn try_start_zenohd_instance(
-    host: &str,
-    port: u16,
-) -> Result<(Messenger, TempDir, String, u16), PeppyMessagingInterfaceError> {
-    let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let zenohd_config_path = temp_dir.path().join("test_zenoh_config.json5");
-
-    let config_content = format!(
-        r#"{{
-              "listen": {{
-                "endpoints": {{
-                  "router": ["tcp/{host}:{port}"]
-                }}
-              }}
-            }}"#
-    );
-
-    fs::write(&zenohd_config_path, config_content).expect("Failed to write zenoh router config");
-    let adapter = ZenohAdapter::from_zenohd_config(Some(&zenohd_config_path))
-        .expect("Failed to create zenoh adapter from config");
-    let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
-    messenger.start_router().await?;
-    Ok((messenger, temp_dir, String::from(host), port))
-}
-
-/// Helper function start a zenoh router before each test (done by peppyd in the real world)
-/// We'd rather start a real local zenoh router than use a mocked instance that can blow up in the real world
-async fn start_zenohd_process() -> (Messenger, TempDir, String, u16) {
-    const MAX_START_ATTEMPTS: usize = 32;
-    let host = "127.0.0.1";
-
-    for attempt in 0..MAX_START_ATTEMPTS {
-        let port = pick_free_tcp_port().expect("Failed to allocate TCP port");
-        match try_start_zenohd_instance(host, port).await {
-            Ok(result) => return result,
-            Err(err) if attempt + 1 < MAX_START_ATTEMPTS => {
-                if !matches!(err, PeppyMessagingInterfaceError::BackendError(_)) {
-                    panic!("Failed to start zenoh router: {:?}", err);
-                }
-                // Retry with a new port when the backend signals a binding failure.
-            }
-            Err(err) => panic!(
-                "Failed to start zenoh router after {MAX_START_ATTEMPTS} attempts: {:?}",
-                err
-            ),
-        }
-    }
-
-    unreachable!("zenoh router start retry loop exhausted unexpectedly")
-}
 
 #[derive(Clone)]
 struct ActionClientCase {
@@ -134,7 +54,9 @@ struct TestRouterContext {
 
 impl TestRouterContext {
     async fn start() -> Self {
-        let (router, temp_dir, host, port) = start_zenohd_process().await;
+        let (router, temp_dir, host, port) = crate::start_zenohd_process()
+            .await
+            .expect("failed to start zenoh router for tests");
         Self {
             router,
             _temp_dir: temp_dir,
