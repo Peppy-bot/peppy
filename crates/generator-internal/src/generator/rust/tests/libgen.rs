@@ -1,5 +1,6 @@
 use super::*;
 use config::node::{ExposedAction, ExposedService, ExposedTopic};
+use pmi::MessengerBackend;
 use std::{fs, process::Command};
 use tempfile::TempDir;
 
@@ -51,6 +52,130 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
 }
 "#;
 
+/// Creates 2 projects in separate directory and check if they can send/receive topics
+#[test]
+fn topics_communication() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("failed to create tokio runtime");
+
+    let (mut router, _dir, router_host, router_port) = rt
+        .block_on(peppylib::start_zenohd_process())
+        .expect("failed to start zenoh router for test");
+
+    // --- Subscriber project
+    let temp_dir_proj2 = TempDir::new().unwrap();
+    let subscribed_topic: SubscribedTopic =
+        serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
+    let subscribed_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
+    let (mut generator, output_dir2, user_node_subscriber) = init_test_env(&temp_dir_proj2);
+    generator
+        .add_subscribed_topic(&subscribed_topic, Some(&subscribed_format))
+        .unwrap();
+    let output_config = copy_config_to_output(&user_node_subscriber, &output_dir2);
+    generator.build(&output_dir2).unwrap();
+    fs::remove_file(output_config).unwrap();
+    init_cargo_user_node(&user_node_subscriber);
+    let subscriber_main = format!(
+        "
+use peppygen::topics::{{Exposes, PushFrameHeader, Subscribes}};
+use peppygen::{{Messenger, Result}};
+
+#[tokio::main]
+async fn main() -> Result<()> {{
+    let messenger = Messenger::connect(\"{}\", {}).await?;
+
+    let frame = Subscribes::on_next_uvc_camera_stream_message(&messenger).await?;
+    println!(
+        \"got {{}}x{{}} frame encoded as {{}}\",
+        frame.width, frame.height, frame.encoding
+    );
+
+    Ok(())
+}}
+",
+        router_host, router_port
+    );
+    let main_file = user_node_subscriber.join("src").join("main.rs");
+    fs::write(main_file, &subscriber_main).expect("failed to write main file");
+    let cargo_output = Command::new("cargo")
+        .arg("build")
+        .env("CARGO_NET_OFFLINE", "true")
+        .current_dir(&user_node_subscriber)
+        .output()
+        .expect("failed to invoke cargo build on generated crate");
+    assert!(
+        cargo_output.status.success(),
+        "cargo build failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        cargo_output.status.code(),
+        String::from_utf8_lossy(&cargo_output.stdout),
+        String::from_utf8_lossy(&cargo_output.stderr)
+    );
+
+    // --- Exposer project
+    let temp_dir_proj1 = TempDir::new().unwrap();
+    let exposed_topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
+    let (mut generator, output_dir1, user_node_exposer) = init_test_env(&temp_dir_proj1);
+    generator.add_exposed_topic(&exposed_topic).unwrap();
+    let output_config = copy_config_to_output(&user_node_exposer, &output_dir1);
+    generator.build(&output_dir1).unwrap();
+    fs::remove_file(output_config).unwrap();
+    init_cargo_user_node(&user_node_exposer);
+    let exposer_main = format!(
+        "
+use peppygen::topics::{{{{Exposes, PushFrameHeader, Subscribes}}}};
+use peppygen::{{{{Messenger, Result}}}};
+
+#[tokio::main]
+async fn main() -> Result<()> {{{{
+    let messenger = Messenger::connect(\"{}\", {}).await?;
+
+    Exposes::emit_push_frame(
+        &messenger,
+        PushFrameHeader {{{{
+            stamp: std::time::SystemTime::now(),
+            frame_id: 42,
+        }}}},
+        \"rgb8\".to_owned(),
+        640,
+        480,
+        [0, 0, 0],
+    )
+    .await?;
+
+    Ok(())
+}}}}
+",
+        router_host, router_port
+    );
+
+    let main_file = user_node_exposer.join("src").join("main.rs");
+    fs::write(main_file, &exposer_main).expect("failed to write main file");
+    let cargo_output = Command::new("cargo")
+        .arg("build")
+        .env("CARGO_NET_OFFLINE", "true")
+        .current_dir(&user_node_exposer)
+        .output()
+        .expect("failed to invoke cargo build on generated crate");
+    assert!(
+        cargo_output.status.success(),
+        "cargo build failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        cargo_output.status.code(),
+        String::from_utf8_lossy(&cargo_output.stdout),
+        String::from_utf8_lossy(&cargo_output.stderr)
+    );
+
+    rt.block_on(async {
+        router
+            .stop_router()
+            .await
+            .expect("failed to stop zenoh router");
+    });
+}
+
 // --- Services exposes and its corresponding subscriber
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {
@@ -86,6 +211,11 @@ const SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
   interval: "string"
 }
 "#;
+
+#[test]
+fn services_communication() {
+    todo!("Finish")
+}
 
 // --- Actions
 const EXPOSED_ACTION_EXAMPLE: &str = r#"

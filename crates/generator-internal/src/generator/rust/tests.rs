@@ -13,7 +13,7 @@ mod services;
 mod topics;
 
 use super::*;
-use std::{fs, path::Path};
+use std::{fs, path::Path, process::Command};
 use tempfile::TempDir;
 
 const STUB_NODE_CONFIG: &str = r#"{
@@ -44,9 +44,73 @@ fn init_test_env(temp_dir: &TempDir) -> (RustGenerator, std::path::PathBuf, std:
     (RustGenerator::new(), output_dir, user_node)
 }
 
+/// Init the cargo project in a given path and add the peppygen dependency to the project
+fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
+    let crate_dir = to_dir.as_ref();
+    fs::create_dir_all(crate_dir).expect("failed to create user node directory");
+    let cargo_toml_path = crate_dir.join("Cargo.toml");
+
+    if !cargo_toml_path.exists() {
+        let _output = Command::new("cargo")
+            .arg("init")
+            .arg("--bin")
+            .arg("--vcs")
+            .arg("none")
+            .current_dir(crate_dir)
+            .output()
+            .expect("failed to invoke cargo init for user node");
+    }
+
+    let peppygen_path = "../.peppy/libs/peppygen";
+
+    let manifest_contents =
+        fs::read_to_string(&cargo_toml_path).expect("failed to read user node Cargo.toml");
+
+    if manifest_contents
+        .lines()
+        .any(|line| line.trim_start().starts_with("peppygen"))
+    {
+        return;
+    }
+
+    let dependency_line = format!("peppygen = {{ path = \"{}\" }}\n", peppygen_path);
+
+    let updated_manifest = insert_dependency_line(&manifest_contents, &dependency_line);
+    fs::write(&cargo_toml_path, updated_manifest).expect("failed to write user node Cargo.toml");
+}
+
 fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> std::path::PathBuf {
     let source = user_node.join(PEPPY_NODE_CONFIG_FILE);
     let destination = output_dir.join(PEPPY_NODE_CONFIG_FILE);
     fs::copy(&source, &destination).unwrap();
     destination
+}
+
+fn insert_dependency_line(contents: &str, dependency_line: &str) -> String {
+    let header = "[dependencies]";
+    if let Some(section_start) = contents.find(header) {
+        let after_header = contents[section_start..]
+            .find('\n')
+            .map(|offset| section_start + offset + 1)
+            .unwrap_or(contents.len());
+        let insert_pos = contents[after_header..]
+            .find("\n[")
+            .map(|offset| after_header + offset)
+            .unwrap_or(contents.len());
+
+        let mut updated = contents.to_string();
+        if insert_pos > 0 && !updated[..insert_pos].ends_with('\n') {
+            updated.insert(insert_pos, '\n');
+        }
+        updated.insert_str(insert_pos, dependency_line);
+        updated
+    } else {
+        let mut updated = contents.to_string();
+        if !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        updated.push_str("[dependencies]\n");
+        updated.push_str(dependency_line);
+        updated
+    }
 }
