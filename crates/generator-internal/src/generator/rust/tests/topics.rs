@@ -385,6 +385,124 @@ fn subscribed_to_topic() {
 }
 
 #[test]
+fn subscribed_to_two_topics_same_node() {
+    let video_topic: SubscribedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE1).unwrap();
+    let video_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1).unwrap();
+
+    let sound_topic: SubscribedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE2).unwrap();
+    let sound_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2).unwrap();
+
+    let mut generator = RustGenerator::new();
+    generator
+        .add_subscribed_topic(&video_topic, Some(&video_format))
+        .unwrap();
+    generator
+        .add_subscribed_topic(&sound_topic, Some(&sound_format))
+        .unwrap();
+    let artifacts: Vec<String> = generator
+        .into_artifacts()
+        .into_iter()
+        .map(|artifact| artifact.code_output)
+        .collect();
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected a single generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
+
+    let struct_count = rendered.matches("pub struct Subscribes;").count();
+    assert_rendered!(
+        struct_count == 1,
+        &rendered,
+        "expected a single struct definition for the subscriber node, got {}",
+        struct_count
+    );
+
+    assert_rendered!(
+        !rendered.contains("pub async fn connect("),
+        &rendered,
+        "subscriber should not expose a connect constructor"
+    );
+    let on_next_usage_count = rendered.matches(".on_next_message()").count();
+    assert_rendered!(
+        on_next_usage_count == 2,
+        &rendered,
+        "expected each subscription to await the next message via helper, found {} occurrence(s)",
+        on_next_usage_count
+    );
+    assert_rendered!(
+        rendered.contains("pub struct UvcCameraStreamMessage"),
+        &rendered,
+        "expected stream payload struct"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct UvcCameraSoundMessage"),
+        &rendered,
+        "expected sound payload struct"
+    );
+    assert_rendered!(
+        rendered.contains("crate::Error::TopicSubscribe"),
+        &rendered,
+        "expected explicit subscribe error variant for each topic"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn on_next_uvc_camera_stream_message("),
+        &rendered,
+        "expected stream subscriber method"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn on_next_uvc_camera_sound_message("),
+        &rendered,
+        "expected sound subscriber method"
+    );
+    assert_rendered!(
+        rendered.contains("fn deseralize_uvc_camera_stream_payload"),
+        &rendered,
+        "expected stream payload helper"
+    );
+    assert_rendered!(
+        rendered.contains("fn deseralize_uvc_camera_sound_payload"),
+        &rendered,
+        "expected sound payload helper"
+    );
+    let handle_usage_count = rendered.matches("messenger.handle()").count();
+    assert_rendered!(
+        handle_usage_count == 2,
+        &rendered,
+        "expected each subscriber method to pass the messenger handle, got {} occurrence(s)",
+        handle_usage_count
+    );
+    let messenger_param_count = rendered.matches("messenger: &crate::Messenger").count();
+    assert_rendered!(
+        messenger_param_count == 2,
+        &rendered,
+        "expected each subscriber method to accept a messenger reference, got {} occurrence(s)",
+        messenger_param_count
+    );
+    let namespace_usage_count = rendered.matches("messenger.namespace()").count();
+    assert_rendered!(
+        namespace_usage_count == 2,
+        &rendered,
+        "expected each subscriber method to resolve namespace from messenger, got {} occurrence(s)",
+        namespace_usage_count
+    );
+    assert_rendered!(
+        rendered.contains("let topic_name = \"stream\";"),
+        &rendered,
+        "expected stream subscriber routine to set topic literal"
+    );
+    assert_rendered!(
+        rendered.contains("let topic_name = \"sound\";"),
+        &rendered,
+        "expected sound subscriber routine to set topic literal"
+    );
+}
+
+#[test]
 fn subscribed_to_topic_no_node() {
     // Here we don't use a node name so any node in the network with a topic named "stream" is gonna be captured
     let topic = r#"
@@ -529,124 +647,6 @@ fn subscribed_to_topic_no_node() {
         rendered.contains("let qos = peppylib::config::QoSProfile::Standard;"),
         &rendered,
         "expected qos initialization"
-    );
-}
-
-#[test]
-fn subscribed_to_two_topics_same_node() {
-    let video_topic: SubscribedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE1).unwrap();
-    let video_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1).unwrap();
-
-    let sound_topic: SubscribedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE2).unwrap();
-    let sound_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2).unwrap();
-
-    let mut generator = RustGenerator::new();
-    generator
-        .add_subscribed_topic(&video_topic, Some(&video_format))
-        .unwrap();
-    generator
-        .add_subscribed_topic(&sound_topic, Some(&sound_format))
-        .unwrap();
-    let artifacts: Vec<String> = generator
-        .into_artifacts()
-        .into_iter()
-        .map(|artifact| artifact.code_output)
-        .collect();
-    assert_eq!(
-        artifacts.len(),
-        1,
-        "expected a single generated artifact, got {}",
-        artifacts.len()
-    );
-    let rendered = artifacts.into_iter().next().expect("artifact is present");
-
-    let struct_count = rendered.matches("pub struct Subscribes;").count();
-    assert_rendered!(
-        struct_count == 1,
-        &rendered,
-        "expected a single struct definition for the subscriber node, got {}",
-        struct_count
-    );
-
-    assert_rendered!(
-        !rendered.contains("pub async fn connect("),
-        &rendered,
-        "subscriber should not expose a connect constructor"
-    );
-    let on_next_usage_count = rendered.matches(".on_next_message()").count();
-    assert_rendered!(
-        on_next_usage_count == 2,
-        &rendered,
-        "expected each subscription to await the next message via helper, found {} occurrence(s)",
-        on_next_usage_count
-    );
-    assert_rendered!(
-        rendered.contains("pub struct UvcCameraStreamMessage"),
-        &rendered,
-        "expected stream payload struct"
-    );
-    assert_rendered!(
-        rendered.contains("pub struct UvcCameraSoundMessage"),
-        &rendered,
-        "expected sound payload struct"
-    );
-    assert_rendered!(
-        rendered.contains("crate::Error::TopicSubscribe"),
-        &rendered,
-        "expected explicit subscribe error variant for each topic"
-    );
-    assert_rendered!(
-        rendered.contains("pub async fn on_next_uvc_camera_stream_message("),
-        &rendered,
-        "expected stream subscriber method"
-    );
-    assert_rendered!(
-        rendered.contains("pub async fn on_next_uvc_camera_sound_message("),
-        &rendered,
-        "expected sound subscriber method"
-    );
-    assert_rendered!(
-        rendered.contains("fn deseralize_uvc_camera_stream_payload"),
-        &rendered,
-        "expected stream payload helper"
-    );
-    assert_rendered!(
-        rendered.contains("fn deseralize_uvc_camera_sound_payload"),
-        &rendered,
-        "expected sound payload helper"
-    );
-    let handle_usage_count = rendered.matches("messenger.handle()").count();
-    assert_rendered!(
-        handle_usage_count == 2,
-        &rendered,
-        "expected each subscriber method to pass the messenger handle, got {} occurrence(s)",
-        handle_usage_count
-    );
-    let messenger_param_count = rendered.matches("messenger: &crate::Messenger").count();
-    assert_rendered!(
-        messenger_param_count == 2,
-        &rendered,
-        "expected each subscriber method to accept a messenger reference, got {} occurrence(s)",
-        messenger_param_count
-    );
-    let namespace_usage_count = rendered.matches("messenger.namespace()").count();
-    assert_rendered!(
-        namespace_usage_count == 2,
-        &rendered,
-        "expected each subscriber method to resolve namespace from messenger, got {} occurrence(s)",
-        namespace_usage_count
-    );
-    assert_rendered!(
-        rendered.contains("let topic_name = \"stream\";"),
-        &rendered,
-        "expected stream subscriber routine to set topic literal"
-    );
-    assert_rendered!(
-        rendered.contains("let topic_name = \"sound\";"),
-        &rendered,
-        "expected sound subscriber routine to set topic literal"
     );
 }
 
