@@ -269,7 +269,9 @@ impl LanguageGenerator for RustGenerator {
             &fn_name,
             &params,
             encoding.as_ref(),
-            accept_format_artifacts.as_ref().map(|art| art.message_format()),
+            accept_format_artifacts
+                .as_ref()
+                .map(|art| art.message_format()),
             &fn_name_str,
             &service_name_literal,
             request_struct_ident.as_ref(),
@@ -296,7 +298,7 @@ impl LanguageGenerator for RustGenerator {
             let fn_name = Ident::new(&(base_name.clone() + "_goal"), Span::call_site());
             let async_fn_name = Ident::new(&(fn_name.to_string() + "_async"), Span::call_site());
             let struct_prefix = format!("{}Goal", to_camel_case(&base_name));
-            let accept_format_artifacts = map_message_format(goal.accept_message_format.as_ref())?;
+            let accept_format_artifacts = map_message_format(goal.request_message_format.as_ref())?;
             let return_format_artifacts =
                 map_message_format(goal.response_message_format.as_ref())?;
             let params = collect_function_params(
@@ -351,7 +353,7 @@ impl LanguageGenerator for RustGenerator {
             let async_fn_name = Ident::new(&(fn_name.to_string() + "_async"), Span::call_site());
             let struct_prefix = format!("{}Result", to_camel_case(&base_name));
             let accept_format_artifacts =
-                map_message_format(result.accept_message_format.as_ref())?;
+                map_message_format(result.request_message_format.as_ref())?;
             let return_format_artifacts =
                 map_message_format(result.response_message_format.as_ref())?;
             let params = collect_function_params(
@@ -2225,22 +2227,24 @@ fn build_exposed_service_method(
 
     let response_serialization =
         build_response_serialization_code(response_spec, label, &callback_call);
-    let handler_helper_name =
-        Ident::new(&format!("{}_handle_request_payload", fn_name), Span::call_site());
+    let handler_helper_name = Ident::new(
+        &format!("{}_handle_request_payload", fn_name),
+        Span::call_site(),
+    );
 
     let mut helper_tokens = Vec::new();
 
     if let Some(request_spec) = encoding {
-        let request_format = request_format.expect("request format should exist when encoding is present");
-        let request_deserializer =
-            build_request_deserializer(
-                fn_name,
-                request_spec,
-                request_format,
-                params,
-                label,
-                request_struct,
-            );
+        let request_format =
+            request_format.expect("request format should exist when encoding is present");
+        let request_deserializer = build_request_deserializer(
+            fn_name,
+            request_spec,
+            request_format,
+            params,
+            label,
+            request_struct,
+        );
         let request_deserializer_name = Ident::new(
             &format!("{}_deserialize_request", fn_name),
             Span::call_site(),

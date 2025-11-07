@@ -3,6 +3,7 @@ use config::node::{ExposedAction, ExposedService, ExposedTopic};
 use std::{fs, process::Command};
 use tempfile::TempDir;
 
+// --- Topics exposes and its corresponding subscriber
 const EXPOSED_TOPIC_EXAMPLE: &str = r#"
 {
   name: "push_frame",
@@ -25,51 +26,9 @@ const EXPOSED_TOPIC_EXAMPLE: &str = r#"
 }
 "#;
 
-const EXPOSED_ACTION_EXAMPLE: &str = r#"
-{
-  name: "move_arm",
-  goal_service: {
-    accept_message_format: {
-      arm_id: "u16",
-      desired_position: {
-        type: "array",
-        items: "i32",
-        length: 3
-      }
-    },
-    response_message_format: {
-      accepted: "bool"
-    }
-  },
-  feedback_topic: {
-    qos_profile: "sensor_data",
-    message_format: {
-      new_position: {
-        type: "array",
-        items: "i32",
-        length: 3
-      }
-    }
-  },
-  result_service: {
-    accept_message_format: {
-      final_position: {
-        type: "array",
-        items: "i32",
-        length: 3
-      }
-    },
-    response_message_format: {
-      success: "bool"
-    }
-  }
-}
-"#;
-
 const SUBSCRIBED_TOPIC_EXAMPLE: &str = r#"
 {
-  node: "uvc_camera",
-  name: "stream",
+  name: "push_frame",
   tag: "0.1.0"
 }
 "#;
@@ -92,11 +51,82 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
 }
 "#;
 
+// --- Services exposes and its corresponding subscriber
+const EXPOSED_SERVICE_EXAMPLE: &str = r#"
+{
+  name: "enable_camera",
+  request_message_format: {
+    enable: "bool"
+  },
+  response_message_format: {
+    enabled: "bool",
+    error_msg: "string"
+  }
+}
+"#;
+
+// TODO: A `node` in a service cannot actually be optional, only in topics
 const SUBSCRIBED_SERVICE_EXAMPLE: &str = r#"
 {
   node: "uvc_camera",
-  name: "get_camera_info",
+  name: "enable_camera",
   tag: "0.1.0"
+}
+"#;
+
+const SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE: &str = r#"
+{
+  camera_id: "u16"
+}
+"#;
+
+const SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
+{
+  card_type: "string",
+  size: "string",
+  interval: "string"
+}
+"#;
+
+// --- Actions
+const EXPOSED_ACTION_EXAMPLE: &str = r#"
+{
+  name: "move_arm",
+  goal_service: {
+    request_message_format: {
+      arm_id: "u16",
+      desired_position: {
+        type: "array",
+        items: "i32",
+        length: 3
+      }
+    },
+    response_message_format: {
+      accepted: "bool"
+    }
+  },
+  feedback_topic: {
+    qos_profile: "sensor_data",
+    message_format: {
+      new_position: {
+        type: "array",
+        items: "i32",
+        length: 3
+      }
+    }
+  },
+  result_service: {
+    request_message_format: {
+      final_position: {
+        type: "array",
+        items: "i32",
+        length: 3
+      }
+    },
+    response_message_format: {
+      success: "bool"
+    }
+  }
 }
 "#;
 
@@ -135,33 +165,6 @@ const SUBSCRIBED_ACTION_GOAL_FORMAT: &str = r#"
     type: "array",
     items: "i32",
     length: 3
-  }
-}
-"#;
-
-const SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE: &str = r#"
-{
-  camera_id: "u16"
-}
-"#;
-
-const SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
-{
-  card_type: "string",
-  size: "string",
-  interval: "string"
-}
-"#;
-
-const EXPOSED_SERVICE_EXAMPLE: &str = r#"
-{
-  name: "enable_camera",
-  accept_message_format: {
-    enable: "bool"
-  },
-  response_message_format: {
-    enabled: "bool",
-    error_msg: "string"
   }
 }
 "#;

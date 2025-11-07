@@ -279,10 +279,7 @@ pub struct ExposedTopic {
 pub struct ExposedService {
     #[serde(default)]
     pub name: String,
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        alias = "accept_message_format"
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub request_message_format: Option<MessageFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_message_format: Option<MessageFormat>,
@@ -349,11 +346,8 @@ pub struct ActionServiceEndpoint {
     pub service_type: Option<String>,
     #[serde(default = "default_action_service_qos_profile")]
     pub qos_profile: QoSProfile,
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        alias = "request_message_format"
-    )]
-    pub accept_message_format: Option<MessageFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_message_format: Option<MessageFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_message_format: Option<MessageFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -365,7 +359,7 @@ impl Default for ActionServiceEndpoint {
         Self {
             service_type: None,
             qos_profile: default_action_service_qos_profile(),
-            accept_message_format: None,
+            request_message_format: None,
             response_message_format: None,
             name: None,
         }
@@ -599,16 +593,16 @@ mod tests {
         "#;
         let endpoint: ActionServiceEndpoint =
             serde_json5::from_str(request_version).expect("request field should parse");
-        assert!(endpoint.accept_message_format.is_some());
+        assert!(endpoint.request_message_format.is_some());
 
         let accept_version = r#"
         {
-            accept_message_format: { value: "u32" }
+            request_message_format: { value: "u32" }
         }
         "#;
         let endpoint: ActionServiceEndpoint =
             serde_json5::from_str(accept_version).expect("accept field should parse");
-        assert!(endpoint.accept_message_format.is_some());
+        assert!(endpoint.request_message_format.is_some());
     }
 
     #[test]
@@ -624,7 +618,7 @@ mod tests {
 
         let accept_version = r#"
         {
-            accept_message_format: { value: "u32" }
+            request_message_format: { value: "u32" }
         }
         "#;
         let service: ExposedService =

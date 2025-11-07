@@ -29,7 +29,7 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
     }
   },
   result_service: {
-    accept_message_format: {
+    request_message_format: {
       final_position: {
         type: "array",
         items: "i32",
