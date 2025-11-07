@@ -789,9 +789,7 @@ fn compile_lib_with_exposed_topic_artifact() {
         topic_modules
     );
 
-    let topic_module_path = output_dir
-        .join("src/topics")
-        .join("exposers.rs");
+    let topic_module_path = output_dir.join("src/topics").join("exposers.rs");
     assert!(
         topic_module_path.exists(),
         "Expected generated topic module at {:?}",
