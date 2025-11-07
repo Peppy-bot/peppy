@@ -171,14 +171,19 @@ fn expose_service() {
         "expected request deserializer to return request struct"
     );
     assert_rendered!(
-        rendered.contains("let response_payload = bytes::Bytes::new();"),
-        &rendered,
-        "expected inline response serialization"
-    );
-    assert_rendered!(
         rendered.contains("handler(request_data)?"),
         &rendered,
         "expected handler callback invocation with deserialized parameter"
+    );
+    assert_rendered!(
+        rendered.contains("let response = handler(request_data)?;"),
+        &rendered,
+        "expected handler result to be captured"
+    );
+    assert_rendered!(
+        rendered.contains("bytes::Bytes::from(buffer)"),
+        &rendered,
+        "expected response serialization to produce bytes"
     );
     assert_rendered!(
         rendered.contains("capnp::serialize::read_message"),
@@ -906,8 +911,8 @@ fn compile_lib_with_exposed_services_artifact() {
         module_contents
     );
     assert!(
-        module_contents.contains("let response_payload = bytes::Bytes::new();"),
-        "Expected generated handler to create placeholder response payload, got:\n{}",
+        module_contents.contains("bytes::Bytes::from(buffer)"),
+        "Expected generated handler to serialize response payload, got:\n{}",
         module_contents
     );
     assert!(

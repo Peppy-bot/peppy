@@ -165,9 +165,9 @@ struct MessageEncodingSpec {
 }
 
 struct ServiceResponseSpec<'a> {
-    #[allow(dead_code)] // TODO: Use this for proper response serialization
     format: &'a MessageFormat,
     struct_ident: Ident,
+    builder_type: TokenStream,
 }
 
 impl LanguageGenerator for RustGenerator {
@@ -248,10 +248,12 @@ impl LanguageGenerator for RustGenerator {
         let response_spec = if let Some(return_artifacts) = return_format_artifacts.as_ref() {
             let response_prefix = format!("{struct_prefix}Response");
             let schema_key = format!("{fn_name_str}_response");
-            self.register_schema(&schema_key, &response_prefix, return_artifacts)?;
+            let schema_info =
+                self.register_schema(&schema_key, &response_prefix, return_artifacts)?;
             Some(ServiceResponseSpec {
                 format: return_artifacts.message_format(),
                 struct_ident: Ident::new(&response_prefix, Span::call_site()),
+                builder_type: schema_info.builder_type_tokens(),
             })
         } else {
             None
@@ -2228,6 +2230,26 @@ fn build_exposed_service_method(
                 )
             };
 
+            let handler_helper_name = Ident::new(
+                &format!("{}_handle_request_payload", fn_name),
+                Span::call_site(),
+            );
+
+            let request_helper_fn = quote! {
+                fn #handler_helper_name<F>(payload: &[u8], handler: &F) -> crate::Result<bytes::Bytes>
+                where
+                    F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
+                {
+                    let #params_pattern = Self::#request_deserializer_name(payload)?;
+
+                    let response = #callback_call?;
+
+                    #response_serialization
+
+                    Ok(response_payload)
+                }
+            };
+
             quote! {
                 pub async fn #handler_fn_name<F>(
                     messenger: &crate::Messenger,
@@ -2246,31 +2268,16 @@ fn build_exposed_service_method(
                     )
                     .await?;
 
-                    let handler_fn = handler;
-                    let _handled_request = service
+                    service
                         .handle_next_request(move |request_context| {
-                            let handler = handler_fn;
                             async move {
                                 let payload = request_context.message.payload;
 
-                                let handler_result = (|| -> crate::Result<bytes::Bytes> {
-                                    // Deserialize incoming request
-                                    let #params_pattern = Self::#request_deserializer_name(payload.as_ref())?;
-
-                                    // Call user handler
-                                    let _response = #callback_call?;
-
-                                    // Serialize response
-                                    #response_serialization
-
-                                    Ok(response_payload)
-                                })();
-
-                                handler_result.map_err(|error| {
-                                    peppylib::PeppyError::Io(std::io::Error::other(
+                                Self::#handler_helper_name(payload.as_ref(), &handler).map_err(
+                                    |error| peppylib::PeppyError::Io(std::io::Error::other(
                                         error.to_string(),
-                                    ))
-                                })
+                                    )),
+                                )
                             }
                         })
                         .await?;
@@ -2279,6 +2286,8 @@ fn build_exposed_service_method(
                 }
 
                 #request_deserializer
+
+                #request_helper_fn
             }
         }
         None => {
@@ -2426,18 +2435,50 @@ fn build_response_serialization_code(
     response_spec: Option<&ServiceResponseSpec>,
     label: &str,
 ) -> TokenStream {
-    let Some(_spec) = response_spec else {
-        // No response, return empty bytes
+    let Some(spec) = response_spec else {
+        // No response format, still consume handler output to avoid warnings
         return quote! {
+            let _ = response;
             let response_payload = bytes::Bytes::new();
         };
     };
 
-    // TODO: Implement proper response serialization using the response spec format
-    // For now, return empty bytes as placeholder
-    let _context_literal = Literal::string(label);
+    let builder_type = &spec.builder_type;
+    let format = spec.format;
+    let context_literal = Literal::string(label);
+    let builder_ident = Ident::new("response_root", Span::call_site());
+    let mut assignments = Vec::new();
+    let mut names = NameGenerator::new();
+    let response_ident = Ident::new("response", Span::call_site());
+
+    for (field_name, schema) in &format.0 {
+        let field_ident = Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
+        let value_expr = quote!(#response_ident.#field_ident);
+        assignments.push(generate_field_assignment(
+            &quote!(#builder_ident),
+            field_name,
+            schema,
+            &value_expr,
+            &mut names,
+        ));
+    }
+
     quote! {
-        let response_payload = bytes::Bytes::new();
+        let response_payload = {
+            let mut message = capnp::message::Builder::new_default();
+            {
+                let mut #builder_ident = message.init_root::<#builder_type>();
+                #( #assignments )*
+            }
+            let mut buffer = Vec::new();
+            capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
+                crate::Error::CapnpSerialize {
+                    context: String::from(#context_literal),
+                    source,
+                }
+            })?;
+            bytes::Bytes::from(buffer)
+        };
     }
 }
 
