@@ -741,13 +741,23 @@ fn compile_lib_with_exposed_topic_artifact() {
     let topics_contents =
         std::fs::read_to_string(&topics_mod).expect("failed to read topics module");
     assert!(
-        topics_contents.contains("pub use push_frame::*;"),
-        "Expected topics module to re-export generated module, got:\n{}",
+        topics_contents.contains("mod exposers;"),
+        "Expected topics module to declare the `exposers` module, got:\n{}",
         topics_contents
     );
     assert!(
-        topics_contents.contains("pub use uvc_camera::*;"),
-        "Expected topics module to re-export subscribed module, got:\n{}",
+        topics_contents.contains("mod subscribers;"),
+        "Expected topics module to declare the `subscribers` module, got:\n{}",
+        topics_contents
+    );
+    assert!(
+        topics_contents.contains("pub use exposers::*;"),
+        "Expected topics module to re-export generated topics API, got:\n{}",
+        topics_contents
+    );
+    assert!(
+        topics_contents.contains("pub use subscribers::*;"),
+        "Expected topics module to re-export subscribed topics API, got:\n{}",
         topics_contents
     );
     let topic_modules: Vec<String> = topics_contents
@@ -767,18 +777,21 @@ fn compile_lib_with_exposed_topic_artifact() {
     assert!(
         topic_modules
             .iter()
-            .any(|module| module.as_str() == "uvc_camera"),
-        "Expected `uvc_camera` module, got {:?}",
+            .any(|module| module.as_str() == "exposers"),
+        "Expected `exposers` module, got {:?}",
         topic_modules
     );
-    let generated_module = topic_modules
-        .iter()
-        .find(|module| module.as_str() == "push_frame")
-        .unwrap_or_else(|| panic!("Expected `push_frame` module, got {:?}", topic_modules));
+    assert!(
+        topic_modules
+            .iter()
+            .any(|module| module.as_str() == "subscribers"),
+        "Expected `subscribers` module, got {:?}",
+        topic_modules
+    );
 
     let topic_module_path = output_dir
         .join("src/topics")
-        .join(format!("{generated_module}.rs"));
+        .join("exposers.rs");
     assert!(
         topic_module_path.exists(),
         "Expected generated topic module at {:?}",

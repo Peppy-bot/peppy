@@ -377,23 +377,23 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
     let topics_contents =
         std::fs::read_to_string(&topics_mod).expect("failed to read topics module");
     assert!(
-        topics_contents.contains("mod push_frame;"),
-        "Expected topics module to declare generated `push_frame` module, got:\n{}",
+        topics_contents.contains("mod exposers;"),
+        "Expected topics module to declare generated `exposers` module, got:\n{}",
         topics_contents
     );
     assert!(
-        topics_contents.contains("mod uvc_camera;"),
-        "Expected topics module to declare subscribed `uvc_camera` module, got:\n{}",
+        topics_contents.contains("mod subscribers;"),
+        "Expected topics module to declare subscribed `subscribers` module, got:\n{}",
         topics_contents
     );
     assert!(
-        topics_contents.contains("pub use push_frame::*;"),
-        "Expected topics module to re-export generated `push_frame` API, got:\n{}",
+        topics_contents.contains("pub use exposers::*;"),
+        "Expected topics module to re-export generated topics API, got:\n{}",
         topics_contents
     );
     assert!(
-        topics_contents.contains("pub use uvc_camera::*;"),
-        "Expected topics module to re-export subscribed `uvc_camera` API, got:\n{}",
+        topics_contents.contains("pub use subscribers::*;"),
+        "Expected topics module to re-export subscribed topics API, got:\n{}",
         topics_contents
     );
 
@@ -433,21 +433,21 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
         actions_contents
     );
 
-    let push_frame_module = output_dir.join("src/topics/push_frame.rs");
-    let stream_module = output_dir.join("src/topics/uvc_camera.rs");
+    let exposers_topic_module = output_dir.join("src/topics/exposers.rs");
+    let subscribers_topic_module = output_dir.join("src/topics/subscribers.rs");
     let exposers_module = output_dir.join("src/services/exposers.rs");
     let subscribers_service_module = output_dir.join("src/services/subscribers.rs");
     let move_arm_module = output_dir.join("src/actions/move_arm.rs");
     assert!(
-        push_frame_module.exists(),
-        "Expected generated topic module to exist"
+        exposers_topic_module.exists(),
+        "Expected generated exposers topic module to exist"
     );
     assert!(
         exposers_module.exists(),
         "Expected generated exposers service module to exist"
     );
     assert!(
-        stream_module.exists(),
+        subscribers_topic_module.exists(),
         "Expected generated subscribed topic module to exist"
     );
     assert!(
@@ -459,15 +459,15 @@ fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
         "Expected generated action module to exist"
     );
 
-    let push_frame_contents =
-        std::fs::read_to_string(&push_frame_module).expect("failed to read push_frame module");
+    let push_frame_contents = std::fs::read_to_string(&exposers_topic_module)
+        .expect("failed to read exposers topic module");
     assert!(
         push_frame_contents.contains("pub async fn emit_push_frame("),
         "Expected combined generation to produce async topic emitter, got:\n{}",
         push_frame_contents
     );
-    let stream_contents =
-        std::fs::read_to_string(&stream_module).expect("failed to read stream module");
+    let stream_contents = std::fs::read_to_string(&subscribers_topic_module)
+        .expect("failed to read subscribers topic module");
     assert!(
         stream_contents.contains("pub async fn on_next_uvc_camera_stream_message("),
         "Expected subscribed topic module to expose callback handler, got:\n{}",
