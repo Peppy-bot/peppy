@@ -29,6 +29,15 @@ const EXPOSED_SERVICE_EXAMPLE2: &str = r#"
 }
 "#;
 
+const EXPOSED_SERVICE_EXAMPLE3: &str = r#"
+{
+    name: "get_system_status",
+    response_message_format: {
+        healthy: "bool"
+    }
+}
+"#;
+
 const SUBSCRIBED_SERVICE_EXAMPLE1: &str = r#"
 {
   node: "uvc_camera",
@@ -199,6 +208,46 @@ fn expose_service() {
 }
 
 #[test]
+fn expose_service_without_request_body() {
+    let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE3).unwrap();
+
+    let mut generator = RustGenerator::new();
+    generator.add_exposed_service(&service).unwrap();
+    let rendered = generator
+        .into_artifacts()
+        .into_iter()
+        .map(|artifact| artifact.code_output)
+        .next()
+        .expect("artifact is present");
+
+    assert_rendered!(
+        rendered.contains("pub struct GetSystemStatusResponse"),
+        &rendered,
+        "expected response struct for service without request body"
+    );
+    assert_rendered!(
+        !rendered.contains("GetSystemStatusRequest"),
+        &rendered,
+        "expected no request struct when request format is missing"
+    );
+    assert_rendered!(
+        rendered.contains("F: Fn() -> crate::Result<GetSystemStatusResponse>"),
+        &rendered,
+        "expected handler to take no parameters"
+    );
+    assert_rendered!(
+        rendered.contains("fn get_system_status_handle_request_payload"),
+        &rendered,
+        "expected helper function even without request payload"
+    );
+    assert_rendered!(
+        !rendered.contains("fn get_system_status_deserialize_request"),
+        &rendered,
+        "expected no deserializer when there is no request schema"
+    );
+}
+
+#[test]
 fn expose_two_services() {
     let service1: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
@@ -276,6 +325,11 @@ fn expose_two_services() {
         rendered.contains("pub struct GetLidarInfoRequest"),
         &rendered,
         "expected public request struct for `get_lidar_info`"
+    );
+    assert_rendered!(
+        !rendered.contains("GetLidarInfoResponse"),
+        &rendered,
+        "expected no response struct for `get_lidar_info`"
     );
     assert_rendered!(
         rendered.contains("pub channels: String"),
@@ -390,7 +444,7 @@ fn subscribed_to_service() {
         "expected request serialization error context"
     );
     assert_rendered!(
-        rendered.contains("crate::messaging::ServiceMessenger::poll("),
+        rendered.contains("peppylib::ServiceMessenger::poll("),
         &rendered,
         "expected poll helper invocation"
     );
@@ -495,7 +549,7 @@ fn subscribed_to_two_services_same_node() {
         "expected request serialization for `enable_camera`"
     );
     assert_rendered!(
-        rendered.contains("crate::messaging::ServiceMessenger::poll("),
+        rendered.contains("peppylib::ServiceMessenger::poll("),
         rendered,
         "expected poll invocation for `enable_camera`"
     );
@@ -536,7 +590,7 @@ fn subscribed_to_two_services_same_node() {
         "expected return type for `get_camera_info` poll helper"
     );
     assert_rendered!(
-        rendered.contains("crate::messaging::ServiceMessenger::poll("),
+        rendered.contains("peppylib::ServiceMessenger::poll("),
         rendered,
         "expected poll invocation for `get_camera_info`"
     );
@@ -639,7 +693,7 @@ fn subscribed_to_service_no_node() {
         "expected request serialization assignment"
     );
     assert_rendered!(
-        rendered.contains("crate::messaging::ServiceMessenger::poll("),
+        rendered.contains("peppylib::ServiceMessenger::poll("),
         &rendered,
         "expected service poll invocation"
     );
@@ -707,7 +761,7 @@ fn subscribed_service_without_response_payload() {
         "expected no response struct when response format is missing"
     );
     assert_rendered!(
-        rendered.contains("let _ = crate::messaging::ServiceMessenger::poll("),
+        rendered.contains("let _ = peppylib::ServiceMessenger::poll("),
         rendered,
         "expected poll invocation that discards response bytes"
     );
@@ -734,25 +788,23 @@ fn compile_lib_with_exposed_services_artifact() {
     let subscribed_service_response2: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2).unwrap();
 
-    // TODO: add another ExposedService and 2 subscribers
-
     let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
     generator.add_exposed_service(&exposed_service1).unwrap();
-    // generator.add_exposed_service(&exposed_service2).unwrap();
-    // generator
-    //     .add_subscribed_service(
-    //         &subscribed_service1,
-    //         Some(&subscribed_service_request1),
-    //         Some(&subscribed_service_response1),
-    //     )
-    //     .unwrap();
-    // generator
-    //     .add_subscribed_service(
-    //         &subscribed_service2,
-    //         None,
-    //         Some(&subscribed_service_response2),
-    //     )
-    //     .unwrap();
+    generator.add_exposed_service(&exposed_service2).unwrap();
+    generator
+        .add_subscribed_service(
+            &subscribed_service1,
+            Some(&subscribed_service_request1),
+            Some(&subscribed_service_response1),
+        )
+        .unwrap();
+    generator
+        .add_subscribed_service(
+            &subscribed_service2,
+            None,
+            Some(&subscribed_service_response2),
+        )
+        .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator.build(&output_dir).unwrap();
     fs::remove_file(output_config).unwrap();
@@ -840,21 +892,37 @@ fn compile_lib_with_exposed_services_artifact() {
     );
     assert_eq!(
         service_modules.len(),
-        1,
-        "Expected a single generated service module, got {:?}",
+        2,
+        "Expected two generated service modules, got {:?}",
         service_modules
     );
-    let generated_module = &service_modules[0];
-    let service_module_path = output_dir
+
+    let enable_module = service_modules
+        .iter()
+        .find(|module| module.contains("enable_camera"))
+        .expect("Expected enable_camera service module");
+    let enable_module_path = output_dir
         .join("src/services")
-        .join(format!("{generated_module}.rs"));
+        .join(format!("{enable_module}.rs"));
     assert!(
-        service_module_path.exists(),
-        "Expected generated service module at {:?}",
-        service_module_path
+        enable_module_path.exists(),
+        "Expected generated enable_camera service module at {:?}",
+        enable_module_path
     );
-    let module_contents = std::fs::read_to_string(&service_module_path)
+    let module_contents = std::fs::read_to_string(&enable_module_path)
         .expect("failed to read generated service module");
+    let uvc_module = service_modules
+        .iter()
+        .find(|module| module.contains("uvc_camera"))
+        .expect("Expected uvc_camera service module");
+    let uvc_module_path = output_dir
+        .join("src/services")
+        .join(format!("{uvc_module}.rs"));
+    assert!(
+        uvc_module_path.exists(),
+        "Expected generated uvc_camera service module at {:?}",
+        uvc_module_path
+    );
     assert!(
         module_contents.contains("pub struct Exposes;"),
         "Expected generated service module to define exposes struct, got:\n{}",
@@ -918,6 +986,26 @@ fn compile_lib_with_exposed_services_artifact() {
     assert!(
         module_contents.contains("capnp::serialize::read_message"),
         "Expected generated module to deserialize requests using capnp, got:\n{}",
+        module_contents
+    );
+    assert!(
+        module_contents.contains("pub async fn handle_get_lidar_info_next_request<F>("),
+        "Expected generated module to expose handler for get_lidar_info, got:\n{}",
+        module_contents
+    );
+    assert!(
+        module_contents.contains("pub struct GetLidarInfoRequest"),
+        "Expected generated module to define request struct for get_lidar_info, got:\n{}",
+        module_contents
+    );
+    assert!(
+        !module_contents.contains("pub struct GetLidarInfoResponse"),
+        "Expected no response struct for get_lidar_info, got:\n{}",
+        module_contents
+    );
+    assert!(
+        module_contents.contains("fn get_lidar_info_handle_request_payload"),
+        "Expected helper for get_lidar_info payload handling, got:\n{}",
         module_contents
     );
 }
