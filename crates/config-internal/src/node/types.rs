@@ -316,12 +316,9 @@ pub struct SubscribedTopic {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubscribedService {
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_subscribed_service_node"
-    )]
-    pub node: Option<String>,
+    /// A subscribed service has to specify to which node it wants to connect to
+    #[serde(deserialize_with = "deserialize_subscribed_service_node")]
+    pub node: String,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -386,19 +383,11 @@ where
     deserialize_non_empty_identifier(deserializer, "SubscribedTopic.name")
 }
 
-fn deserialize_subscribed_service_node<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+fn deserialize_subscribed_service_node<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let value = Option::<String>::deserialize(deserializer)?;
-    Ok(value.and_then(|raw| {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    }))
+    deserialize_non_empty_identifier(deserializer, "SubscribedService.node")
 }
 
 fn deserialize_non_empty_identifier<'de, D>(
@@ -567,21 +556,22 @@ mod tests {
     }
 
     #[test]
-    fn subscribed_service_node_is_optional() {
+    fn subscribed_service_node_is_required() {
         let with_node = r#"{ node: "uvc_camera", name: "enable_camera", tag: "0.1.0" }"#;
         let service: SubscribedService =
             serde_json5::from_str(with_node).expect("service with node should parse");
-        assert_eq!(service.node.as_deref(), Some("uvc_camera"));
+        assert_eq!(service.node, "uvc_camera");
+
+        let trimmed = r#"{ node: "  uvc_camera  ", name: "enable_camera", tag: "0.1.0" }"#;
+        let service: SubscribedService =
+            serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
+        assert_eq!(service.node, "uvc_camera");
 
         let without_node = r#"{ name: "enable_camera", tag: "0.1.0" }"#;
-        let service: SubscribedService =
-            serde_json5::from_str(without_node).expect("service without node should parse");
-        assert!(service.node.is_none());
+        assert!(serde_json5::from_str::<SubscribedService>(without_node).is_err());
 
         let blank_node = r#"{ node: "   ", name: "enable_camera", tag: "0.1.0" }"#;
-        let service: SubscribedService =
-            serde_json5::from_str(blank_node).expect("blank node should be treated as None");
-        assert!(service.node.is_none());
+        assert!(serde_json5::from_str::<SubscribedService>(blank_node).is_err());
     }
 
     #[test]

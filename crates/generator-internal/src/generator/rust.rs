@@ -505,10 +505,8 @@ impl LanguageGenerator for RustGenerator {
             let mut components = Vec::with_capacity(3);
             components.push(String::from("poll"));
 
-            if let Some(node_name) = service.node.as_deref().and_then(non_empty_str) {
-                let node_ident = prefixed_ident("", Some(node_name), "node");
-                components.push(node_ident.to_string());
-            }
+            let node_ident = prefixed_ident("", Some(service.node.as_str()), "node");
+            components.push(node_ident.to_string());
 
             components.push(service_name_component.clone());
 

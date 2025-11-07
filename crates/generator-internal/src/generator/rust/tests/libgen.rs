@@ -65,7 +65,6 @@ const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 }
 "#;
 
-// TODO: A `node` in a service cannot actually be optional, only in topics
 const SUBSCRIBED_SERVICE_EXAMPLE: &str = r#"
 {
   node: "uvc_camera",
