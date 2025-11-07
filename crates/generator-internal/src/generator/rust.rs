@@ -266,6 +266,7 @@ impl LanguageGenerator for RustGenerator {
             &fn_name,
             &params,
             encoding.as_ref(),
+            accept_format_artifacts.as_ref().map(|art| art.message_format()),
             &fn_name_str,
             &service_name_literal,
             request_struct_ident.as_ref(),
@@ -563,7 +564,7 @@ impl LanguageGenerator for RustGenerator {
         };
 
         let poll_call = quote! {
-            crate::messaging::ServiceMessenger::poll(
+            peppylib::ServiceMessenger::poll(
                 messenger.handle(),
                 namespace,
                 service_name,
@@ -2170,12 +2171,12 @@ fn build_exposed_service_method(
     fn_name: &Ident,
     params: &[FunctionParam],
     encoding: Option<&MessageEncodingSpec>,
+    request_format: Option<&MessageFormat>,
     label: &str,
     service_name_literal: &Literal,
     request_struct: Option<&Ident>,
     response_spec: Option<&ServiceResponseSpec>,
 ) -> (TokenStream, Vec<TokenStream>) {
-    let label_literal = Literal::string(label);
     let handler_fn_name = Ident::new(
         &format!("handle_{}_next_request", fn_name),
         Span::call_site(),
@@ -2197,119 +2198,110 @@ fn build_exposed_service_method(
         })
         .unwrap_or_else(|| quote!(()));
 
-    let method = match encoding {
-        Some(request_spec) => {
-            let service_name = service_name_literal;
+    let service_name = service_name_literal;
 
-            // Build request deserializer helper function
-            let request_deserializer =
-                build_request_deserializer(fn_name, request_spec, params, label, request_struct);
+    let param_idents: Vec<&Ident> = params.iter().map(|p| &p.ident).collect();
+    let (params_pattern, callback_call) = if request_struct.is_some() {
+        let binding_ident = Ident::new("request_data", Span::call_site());
+        (quote!(#binding_ident), quote!(handler(#binding_ident)))
+    } else if param_idents.is_empty() {
+        (quote!(()), quote!(handler()))
+    } else if param_idents.len() == 1 {
+        let ident = param_idents[0];
+        (quote!((#ident,)), quote!(handler(#ident)))
+    } else {
+        (
+            quote!((#(#param_idents),*)),
+            quote!(handler(#(#param_idents),*)),
+        )
+    };
 
-            let request_deserializer_name = Ident::new(
-                &format!("{}_deserialize_request", fn_name),
-                Span::call_site(),
+    let response_serialization =
+        build_response_serialization_code(response_spec, label, &callback_call);
+    let handler_helper_name =
+        Ident::new(&format!("{}_handle_request_payload", fn_name), Span::call_site());
+
+    let mut helper_tokens = Vec::new();
+
+    if let Some(request_spec) = encoding {
+        let request_format = request_format.expect("request format should exist when encoding is present");
+        let request_deserializer =
+            build_request_deserializer(
+                fn_name,
+                request_spec,
+                request_format,
+                params,
+                label,
+                request_struct,
             );
+        let request_deserializer_name = Ident::new(
+            &format!("{}_deserialize_request", fn_name),
+            Span::call_site(),
+        );
+        helper_tokens.push(request_deserializer);
 
-            // Build response serialization code inline
-            let response_serialization = build_response_serialization_code(response_spec, label);
+        let helper_fn = quote! {
+            fn #handler_helper_name<F>(payload: &[u8], handler: &F) -> crate::Result<bytes::Bytes>
+            where
+                F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
+            {
+                let #params_pattern = Self::#request_deserializer_name(payload)?;
 
-            // Build tuple pattern for deserialized params
-            let param_idents: Vec<&Ident> = params.iter().map(|p| &p.ident).collect();
-            let (params_pattern, callback_call) = if request_struct.is_some() {
-                let binding_ident = Ident::new("request_data", Span::call_site());
-                (quote!(#binding_ident), quote!(handler(#binding_ident)))
-            } else if param_idents.is_empty() {
-                (quote!(()), quote!(handler()))
-            } else if param_idents.len() == 1 {
-                let ident = param_idents[0];
-                (quote!((#ident,)), quote!(handler(#ident)))
-            } else {
-                (
-                    quote!((#(#param_idents),*)),
-                    quote!(handler(#(#param_idents),*)),
-                )
-            };
+                let response_payload = #response_serialization;
 
-            let handler_helper_name = Ident::new(
-                &format!("{}_handle_request_payload", fn_name),
-                Span::call_site(),
-            );
+                Ok(response_payload)
+            }
+        };
+        helper_tokens.push(helper_fn);
+    } else {
+        let helper_fn = quote! {
+            fn #handler_helper_name<F>(_: &[u8], handler: &F) -> crate::Result<bytes::Bytes>
+            where
+                F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
+            {
+                let response_payload = #response_serialization;
 
-            let request_helper_fn = quote! {
-                fn #handler_helper_name<F>(payload: &[u8], handler: &F) -> crate::Result<bytes::Bytes>
-                where
-                    F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
-                {
-                    let #params_pattern = Self::#request_deserializer_name(payload)?;
+                Ok(response_payload)
+            }
+        };
+        helper_tokens.push(helper_fn);
+    }
 
-                    let response = #callback_call?;
+    let method = quote! {
+        pub async fn #handler_fn_name<F>(
+            messenger: &crate::Messenger,
+            handler: F,
+        ) -> crate::Result<()>
+        where
+            F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
+        {
+            let namespace = messenger.namespace();
+            let service_name = #service_name;
 
-                    #response_serialization
+            let mut service = peppylib::ServiceMessenger::listen(
+                messenger.handle(),
+                namespace,
+                service_name,
+            )
+            .await?;
 
-                    Ok(response_payload)
-                }
-            };
+            service
+                .handle_next_request(move |request_context| {
+                    async move {
+                        let payload = request_context.message.payload;
 
-            quote! {
-                pub async fn #handler_fn_name<F>(
-                    messenger: &crate::Messenger,
-                    handler: F,
-                ) -> crate::Result<()>
-                where
-                    F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
-                {
-                    let namespace = messenger.namespace();
-                    let service_name = #service_name;
-
-                    let mut service = peppylib::ServiceMessenger::listen(
-                        messenger.handle(),
-                        namespace,
-                        service_name,
-                    )
-                    .await?;
-
-                    service
-                        .handle_next_request(move |request_context| {
-                            async move {
-                                let payload = request_context.message.payload;
-
-                                Self::#handler_helper_name(payload.as_ref(), &handler).map_err(
-                                    |error| peppylib::PeppyError::Io(std::io::Error::other(
-                                        error.to_string(),
-                                    )),
-                                )
-                            }
+                        Self::#handler_helper_name(payload.as_ref(), &handler).map_err(|error| {
+                            peppylib::PeppyError::Io(std::io::Error::other(error.to_string()))
                         })
-                        .await?;
+                    }
+                })
+                .await?;
 
-                    Ok(())
-                }
-
-                #request_deserializer
-
-                #request_helper_fn
-            }
-        }
-        None => {
-            quote! {
-                pub async fn #handler_fn_name<F>(
-                    messenger: &crate::Messenger,
-                    handler: F,
-                ) -> crate::Result<()>
-                where
-                    F: Fn() -> crate::Result<#response_ty>,
-                {
-                    let _ = messenger;
-                    let _ = handler;
-                    Err(crate::Error::MessageFormatUnavailable {
-                        context: String::from(#label_literal),
-                    })
-                }
-            }
+            Ok(())
         }
     };
 
-    (method, vec![])
+    (method, helper_tokens)
 }
 
 fn build_request_struct(
@@ -2343,6 +2335,7 @@ fn build_request_struct(
 fn build_request_deserializer(
     fn_name: &Ident,
     request_spec: &MessageEncodingSpec,
+    request_format: &MessageFormat,
     params: &[FunctionParam],
     label: &str,
     request_struct: Option<&Ident>,
@@ -2367,22 +2360,32 @@ fn build_request_deserializer(
         quote!((#(#types),*))
     };
 
-    // Generate field deserialization (reuse existing field reader logic)
+    // Generate field deserialization using schema metadata
+    let mut schema_lookup: HashMap<String, (&String, &SchemaType)> =
+        HashMap::with_capacity(request_format.0.len());
+    for (field_name, schema) in &request_format.0 {
+        let key = sanitize_component(field_name);
+        schema_lookup.insert(key, (field_name, schema));
+    }
+
     let mut names = NameGenerator::new();
     let mut field_statements = Vec::new();
     let mut value_idents = Vec::new();
 
     for param in params {
-        let field_name = param.ident.to_string();
-        // We need to find the schema for this field from the message format
-        // For now, assume the field exists and generate basic reader code
-        let method_ident = Ident::new(&format!("get_{}", &field_name), Span::call_site());
-        let value_ident = names.next(&field_name);
+        let field_key = param.ident.to_string();
+        let (original_name, schema) = schema_lookup
+            .get(&field_key)
+            .unwrap_or_else(|| panic!("missing schema entry for field `{field_key}`"));
 
-        // Simple primitive reader for now - this should be enhanced to handle all types
-        field_statements.push(quote! {
-            let #value_ident = root.reborrow().#method_ident();
-        });
+        let (mut statements, value_ident) = generate_field_reader_statements(
+            &quote!(root),
+            original_name.as_str(),
+            schema,
+            label,
+            &mut names,
+        );
+        field_statements.append(&mut statements);
         value_idents.push(value_ident);
     }
 
@@ -2434,13 +2437,13 @@ fn build_request_deserializer(
 fn build_response_serialization_code(
     response_spec: Option<&ServiceResponseSpec>,
     label: &str,
+    callback_call: &TokenStream,
 ) -> TokenStream {
     let Some(spec) = response_spec else {
-        // No response format, still consume handler output to avoid warnings
-        return quote! {
-            let _ = response;
-            let response_payload = bytes::Bytes::new();
-        };
+        return quote!({
+            #callback_call?;
+            bytes::Bytes::new()
+        });
     };
 
     let builder_type = &spec.builder_type;
@@ -2463,23 +2466,23 @@ fn build_response_serialization_code(
         ));
     }
 
-    quote! {
-        let response_payload = {
-            let mut message = capnp::message::Builder::new_default();
-            {
-                let mut #builder_ident = message.init_root::<#builder_type>();
-                #( #assignments )*
+    quote!({
+        let response = #callback_call?;
+
+        let mut message = capnp::message::Builder::new_default();
+        {
+            let mut #builder_ident = message.init_root::<#builder_type>();
+            #( #assignments )*
+        }
+        let mut buffer = Vec::new();
+        capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
+            crate::Error::CapnpSerialize {
+                context: String::from(#context_literal),
+                source,
             }
-            let mut buffer = Vec::new();
-            capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
-                crate::Error::CapnpSerialize {
-                    context: String::from(#context_literal),
-                    source,
-                }
-            })?;
-            bytes::Bytes::from(buffer)
-        };
-    }
+        })?;
+        bytes::Bytes::from(buffer)
+    })
 }
 
 fn build_sync_function(
