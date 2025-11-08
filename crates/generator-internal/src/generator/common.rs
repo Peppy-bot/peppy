@@ -188,20 +188,21 @@ fn write_category_module_file(
         if !original.is_empty() {
             mod_section.push_str(&format!("// Node: {original}\n"));
         }
-        match category {
-            ModuleCategory::Services => {
-                mod_section.push_str(&format!("pub mod {module};\n"));
-                match module.as_str() {
-                    "exposers" => reexport_section.push_str("pub use exposers::*;\n"),
-                    "subscribers" => reexport_section.push_str("pub use subscribers::*;\n"),
-                    _ => reexport_section.push_str(&format!("pub use {module}::*;\n")),
-                }
-            }
-            _ => {
-                mod_section.push_str(&format!("mod {module};\n"));
-                reexport_section.push_str(&format!("pub use {module}::*;\n"));
-            }
+        let is_service_category = matches!(category, ModuleCategory::Services);
+        let module_decl = if is_service_category {
+            "pub mod"
+        } else {
+            "mod"
+        };
+        mod_section.push_str(&format!("{module_decl} {module};\n"));
+
+        let skip_reexport =
+            is_service_category && matches!(module.as_str(), "exposers" | "subscribers");
+        if skip_reexport {
+            // Exposed/subscribed service modules share types, so skip the glob re-export.
+            continue;
         }
+        reexport_section.push_str(&format!("pub use {module}::*;\n"));
     }
 
     let mut content = String::new();

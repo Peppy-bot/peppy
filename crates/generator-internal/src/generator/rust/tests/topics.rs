@@ -171,9 +171,9 @@ fn expose_topic() {
         "expected generated struct for nested object"
     );
     assert_rendered!(
-        rendered.contains("pub struct Exposes;"),
+        !rendered.contains("pub struct Exposes;"),
         &rendered,
-        "expected topic messenger struct"
+        "emit helpers should not be wrapped in an Exposes struct"
     );
     assert_rendered!(
         rendered.contains("messenger: &crate::Messenger"),
@@ -244,9 +244,9 @@ fn expose_two_topics() {
         "expected capnp message builder"
     );
     assert_rendered!(
-        rendered.contains("pub struct Exposes;"),
+        !rendered.contains("pub struct Exposes;"),
         rendered,
-        "expected topic messenger struct for `push_lidar_object`"
+        "emit helpers should not be wrapped in an Exposes struct"
     );
     assert_rendered!(
         rendered.contains("pub async fn emit_push_lidar_object("),
@@ -328,9 +328,9 @@ fn subscribed_to_topic() {
         "expected width field to be public"
     );
     assert_rendered!(
-        rendered.contains("pub struct Subscribes;"),
+        !rendered.contains("pub struct Subscribes;"),
         &rendered,
-        "expected subscriber struct definition"
+        "subscriber helpers should be emitted as free functions"
     );
     assert_rendered!(
         !rendered.contains("pub async fn connect("),
@@ -348,7 +348,7 @@ fn subscribed_to_topic() {
         "expected messenger reference parameter"
     );
     assert_rendered!(
-        rendered.contains("Self::deseralize_uvc_camera_stream_payload"),
+        rendered.contains("deseralize_uvc_camera_stream_payload(message.payload.as_ref())"),
         &rendered,
         "expected helper payload deserializer invocation"
     );
@@ -446,9 +446,9 @@ fn subscribed_to_two_topics_same_node() {
 
     let struct_count = rendered.matches("pub struct Subscribes;").count();
     assert_rendered!(
-        struct_count == 1,
+        struct_count == 0,
         &rendered,
-        "expected a single struct definition for the subscriber node, got {}",
+        "subscriber helpers should not be wrapped in structs, found {} definition(s)",
         struct_count
     );
 
@@ -594,9 +594,9 @@ fn subscribed_to_topic_no_node() {
         "expected array element type"
     );
     assert_rendered!(
-        rendered.contains("pub struct Subscribes;"),
+        !rendered.contains("pub struct Subscribes;"),
         &rendered,
-        "expected subscriber struct definition"
+        "subscriber helpers should be emitted as free functions"
     );
     assert_rendered!(
         !rendered.contains("pub async fn connect("),
@@ -614,7 +614,7 @@ fn subscribed_to_topic_no_node() {
         "expected messenger reference parameter"
     );
     assert_rendered!(
-        rendered.contains("Self::deseralize_stream_payload"),
+        rendered.contains("deseralize_stream_payload(message.payload.as_ref())"),
         &rendered,
         "expected helper payload deserializer invocation"
     );
@@ -833,8 +833,8 @@ fn compile_lib_with_exposed_topic_artifact() {
         push_frame_contents
     );
     assert!(
-        push_frame_contents.contains("pub struct Exposes;"),
-        "Expected generated module to define exposes struct, got:\n{}",
+        !push_frame_contents.contains("pub struct Exposes;"),
+        "Generated module should expose free functions, got:\n{}",
         push_frame_contents
     );
     assert!(

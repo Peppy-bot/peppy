@@ -1,7 +1,7 @@
 use super::*;
 use config::node::{ExposedAction, ExposedService, ExposedTopic};
 use pmi::MessengerBackend;
-use std::{fs, process::Command, thread, time::Duration};
+use std::{fs, thread, time::Duration};
 use tempfile::TempDir;
 
 // --- Topics exposes and its corresponding subscriber
@@ -81,14 +81,14 @@ fn topics_communication() {
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = format!(
         "
-use peppygen::topics::{{Subscribes}};
+use peppygen::topics::on_next_push_frame_message;
 use peppygen::{{Messenger, Result}};
 
 #[tokio::main]
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
-    let frame = Subscribes::on_next_push_frame_message(&messenger).await?;
+    let frame = on_next_push_frame_message(&messenger).await?;
     println!(
         \"got {{}}x{{}} frame encoded as {{}}\",
         frame.width, frame.height, frame.encoding
@@ -113,14 +113,14 @@ async fn main() -> Result<()> {{
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = format!(
         "
-use peppygen::topics::{{Exposes, PushFrameHeader}};
+use peppygen::topics::{{emit_push_frame, PushFrameHeader}};
 use peppygen::{{Messenger, Result}};
 
 #[tokio::main]
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
-    Exposes::emit_push_frame(
+    emit_push_frame(
         &messenger,
         PushFrameHeader {{
             stamp: std::time::SystemTime::now(),
@@ -264,14 +264,14 @@ fn services_communication() {
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = format!(
         "
-use peppygen::services::Subscribes;
+use peppygen::services::subscribers::poll_uvc_camera_enable_camera;
 use peppygen::{{Messenger, Result}};
 
 #[tokio::main]
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
-    let response = Subscribes::poll_uvc_camera_enable_camera(&messenger, true).await?;
+    let response = poll_uvc_camera_enable_camera(&messenger, true).await?;
     println!(
         \"enable_camera result: enabled={{}} error={{}}\",
         response.enabled,
@@ -297,14 +297,14 @@ async fn main() -> Result<()> {{
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = format!(
         "
-use peppygen::services::{{EnableCameraResponse, Exposes}};
+use peppygen::services::exposers::{{EnableCameraResponse, handle_enable_camera_next_request}};
 use peppygen::{{Messenger, Result}};
 
 #[tokio::main]
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
-    Exposes::handle_enable_camera_next_request(&messenger, |request| -> Result<EnableCameraResponse> {{
+    handle_enable_camera_next_request(&messenger, |request| -> Result<EnableCameraResponse> {{
         println!(\"received enable_camera request: {{}}\", request.enable);
         Ok(EnableCameraResponse::new(request.enable, \"handled\".to_owned()))
     }})
