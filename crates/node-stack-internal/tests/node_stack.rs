@@ -8,6 +8,52 @@ use tempfile::TempDir;
 #[path = "./helpers/mod.rs"]
 mod helpers;
 
+#[test]
+fn test_node_repo_resolve() {
+    todo!(
+        "Test when a node doesn't resolve, for instance if the right node tag cannot be pulled from github"
+    )
+}
+
+#[test]
+fn test_node_parameter_resolve() {
+    todo!(
+        "Test when a node doesn't resolve because the input parameters of the peppy_config.json do not match the input paramters of the node"
+    )
+}
+
+#[test]
+fn test_optional_node_ignored() {
+    let git_repo_temp_dir = TempDir::new().unwrap();
+    let git_repo_path = helpers::create_git_repo(&git_repo_temp_dir);
+
+    let root_temp_dir = TempDir::new().unwrap();
+    let root = root_temp_dir.path();
+
+    let git_repo_path = git_repo_path.to_str().unwrap().to_owned();
+    let lidar_remote = format!("nodes/{}", helpers::LIDAR_SENSOR_NODE_NAME);
+    let uvc_remote = format!("nodes/{}", helpers::UVC_CAMERA_NODE_NAME);
+    let _peppy_config = helpers::render_peppy_config_template(
+        &root_temp_dir,
+        helpers::PeppyConfigTemplateExample1 {
+            lidar_sensor_node_name: helpers::LIDAR_SENSOR_NODE_NAME,
+            lidar_sensor_github_repo: &git_repo_path,
+            lidar_sensor_github_repo_path: lidar_remote.as_str(),
+            lidar_sensor_github_tag: "0.1.0",
+            uvc_camera_node_name: helpers::UVC_CAMERA_NODE_NAME,
+            uvc_camera_github_repo: &git_repo_path,
+            uvc_camera_github_repo_path: uvc_remote.as_str(),
+            web_video_stream_node_name: helpers::WEB_VIDEO_STREAM_NODE_NAME,
+            web_video_stream_optional: true, // web_video_stream is marked as optional here
+            brain_node_name: helpers::BRAIN_NODE_NAME,
+            controller_node_name: helpers::CONTROLLER_NODE_NAME,
+        },
+    );
+    todo!(
+        "Test when a node is marked as optional and can't be resolved because of a different tag, the node should be ignored"
+    )
+}
+
 /// Uses the following nodes:
 /// - brain
 /// - controller
@@ -16,8 +62,9 @@ mod helpers;
 /// - web_video_stream
 ///
 /// With the following dependencies:
-/// - `brain` depends on `lidar_sensor` and `uvc_camera` (`subscribes_to.topics` property)
-/// - `controller` depends on `brain` (`subscribes_to.actions` property)
+/// - `brain` depends on `lidar_sensor`, `uvc_camera`, and `controller`
+///   (`subscribes_to.topics` and `subscribes_to.actions` properties)
+/// - `controller` does not declare dependencies in this example
 /// - `web_video_stream` depends on `uvc_camera` (`subscribes_to.topics` property)
 #[test]
 fn test_create_node_stack_config_example_1() {
@@ -39,10 +86,12 @@ fn test_create_node_stack_config_example_1() {
             lidar_sensor_node_name: helpers::LIDAR_SENSOR_NODE_NAME,
             lidar_sensor_github_repo: &git_repo_path,
             lidar_sensor_github_repo_path: lidar_remote.as_str(),
+            lidar_sensor_github_tag: "0.1.0",
             uvc_camera_node_name: helpers::UVC_CAMERA_NODE_NAME,
             uvc_camera_github_repo: &git_repo_path,
             uvc_camera_github_repo_path: uvc_remote.as_str(),
             web_video_stream_node_name: helpers::WEB_VIDEO_STREAM_NODE_NAME,
+            web_video_stream_optional: false,
             brain_node_name: helpers::BRAIN_NODE_NAME,
             controller_node_name: helpers::CONTROLLER_NODE_NAME,
         },
@@ -75,6 +124,8 @@ fn test_create_node_stack_config_example_1() {
         node_path(helpers::CONTROLLER_NODE_NAME),
         helpers::ControllerNodeTemplate::new(helpers::CONTROLLER_NODE_NAME),
     );
+
+    // DO NOT add lidar_sensor and uvc_camera to the node stack, they will be automatically pulled fromt the local github repo
 
     let mapper = LocalNodeStackBuilder::from_root_config_file(peppy_config, None).unwrap();
     let planner = mapper.build().unwrap();
@@ -154,6 +205,7 @@ fn test_create_node_stack_config_example_1() {
     assert_eq!(
         actual(helpers::BRAIN_NODE_NAME),
         expected(&[
+            helpers::CONTROLLER_NODE_NAME,
             helpers::LIDAR_SENSOR_NODE_NAME,
             helpers::UVC_CAMERA_NODE_NAME,
         ]),
@@ -161,7 +213,7 @@ fn test_create_node_stack_config_example_1() {
     );
     assert_eq!(
         actual(helpers::CONTROLLER_NODE_NAME),
-        expected(&[helpers::BRAIN_NODE_NAME]),
+        expected(&[]),
         "controller dependencies"
     );
     assert_eq!(

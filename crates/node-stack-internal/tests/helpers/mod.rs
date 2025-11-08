@@ -19,12 +19,15 @@ pub struct PeppyConfigTemplateExample1<'a> {
     pub lidar_sensor_github_repo: &'a str,
     // The path to the node inside the repository
     pub lidar_sensor_github_repo_path: &'a str,
+    // The github tag
+    pub lidar_sensor_github_tag: &'a str,
 
     pub uvc_camera_node_name: &'a str,
     pub uvc_camera_github_repo: &'a str,
     pub uvc_camera_github_repo_path: &'a str,
 
     pub web_video_stream_node_name: &'a str,
+    pub web_video_stream_optional: bool,
 
     pub brain_node_name: &'a str,
 

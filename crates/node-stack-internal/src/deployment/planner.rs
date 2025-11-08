@@ -515,6 +515,11 @@ impl DeploymentPlanner {
     fn collect_parameter_paths(value: &AnyType, current: String, acc: &mut BTreeSet<String>) {
         match value {
             AnyType::Object(map) if !map.is_empty() => {
+                if Self::is_array_parameter_schema(map) {
+                    acc.insert(current);
+                    return;
+                }
+
                 for (child_key, child_value) in map {
                     let next = format!("{current}.{child_key}");
                     Self::collect_parameter_paths(child_value, next, acc);
@@ -524,6 +529,15 @@ impl DeploymentPlanner {
                 acc.insert(current);
             }
         }
+    }
+
+    fn is_array_parameter_schema(
+        map: &std::collections::BTreeMap<String, AnyType>,
+    ) -> bool {
+        matches!(
+            map.get("type"),
+            Some(AnyType::String(kind)) if kind.eq_ignore_ascii_case("array")
+        )
     }
 }
 
