@@ -51,11 +51,17 @@ fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
     let cargo_toml_path = crate_dir.join("Cargo.toml");
 
     if !cargo_toml_path.exists() {
-        let _output = Command::new("cargo")
+        Command::new("cargo")
             .arg("init")
             .arg("--bin")
             .arg("--vcs")
             .arg("none")
+            .current_dir(crate_dir)
+            .output()
+            .expect("failed to invoke cargo init for user node");
+        Command::new("cargo")
+            .arg("add")
+            .arg("tokio")
             .current_dir(crate_dir)
             .output()
             .expect("failed to invoke cargo init for user node");
@@ -84,6 +90,22 @@ fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> std::path::Path
     let destination = output_dir.join(PEPPY_NODE_CONFIG_FILE);
     fs::copy(&source, &destination).unwrap();
     destination
+}
+
+fn compile_project(dir: impl AsRef<Path>) {
+    let cargo_output = Command::new("cargo")
+        .arg("build")
+        .env("CARGO_NET_OFFLINE", "true")
+        .current_dir(dir)
+        .output()
+        .expect("failed to invoke cargo build on generated crate");
+    assert!(
+        cargo_output.status.success(),
+        "cargo build failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        cargo_output.status.code(),
+        String::from_utf8_lossy(&cargo_output.stdout),
+        String::from_utf8_lossy(&cargo_output.stderr)
+    );
 }
 
 fn insert_dependency_line(contents: &str, dependency_line: &str) -> String {
