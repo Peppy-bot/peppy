@@ -13,7 +13,14 @@ mod services;
 mod topics;
 
 use super::*;
-use std::{fs, path::Path, process::Command};
+use std::path::Path;
+use std::{
+    fs,
+    io::Read,
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
+};
 use tempfile::TempDir;
 
 const STUB_NODE_CONFIG: &str = r#"{
@@ -83,6 +90,54 @@ fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
 
     let updated_manifest = insert_dependency_line(&manifest_contents, &dependency_line);
     fs::write(&cargo_toml_path, updated_manifest).expect("failed to write user node Cargo.toml");
+}
+
+fn run_cargo_run(dir: &std::path::Path, timeout: Option<Duration>) -> std::process::Output {
+    let mut child = Command::new("cargo")
+        .arg("run")
+        .env("CARGO_NET_OFFLINE", "true")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .current_dir(dir)
+        .spawn()
+        .expect("failed to spawn cargo run");
+    let start = Instant::now();
+    loop {
+        if let Some(limit) = timeout {
+            if start.elapsed() > limit {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!(
+                    "cargo run timed out after {:?} for project at {}",
+                    limit,
+                    dir.display()
+                );
+            }
+        }
+
+        if let Some(status) = child
+            .try_wait()
+            .expect("failed to poll cargo run status for generated project")
+        {
+            let mut stdout = Vec::new();
+            if let Some(mut out) = child.stdout.take() {
+                out.read_to_end(&mut stdout)
+                    .expect("failed to capture cargo stdout");
+            }
+            let mut stderr = Vec::new();
+            if let Some(mut err) = child.stderr.take() {
+                err.read_to_end(&mut stderr)
+                    .expect("failed to capture cargo stderr");
+            }
+            return std::process::Output {
+                status,
+                stdout,
+                stderr,
+            };
+        }
+
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> std::path::PathBuf {

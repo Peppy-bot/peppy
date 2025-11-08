@@ -1,7 +1,7 @@
 use super::*;
 use config::node::{ExposedAction, ExposedService, ExposedTopic};
 use pmi::MessengerBackend;
-use std::{fs, process::Command};
+use std::{fs, process::Command, thread, time::Duration};
 use tempfile::TempDir;
 
 // --- Topics exposes and its corresponding subscriber
@@ -144,6 +144,47 @@ async fn main() -> Result<()> {{
 
     compile_project(&user_node_subscriber);
     compile_project(&user_node_exposer);
+
+    let subscriber_dir = user_node_subscriber.clone();
+    let subscriber_thread =
+        thread::spawn(move || run_cargo_run(&subscriber_dir, Some(Duration::from_secs(5))));
+
+    // Give the subscriber a moment to connect before emitting frames.
+    thread::sleep(Duration::from_millis(500));
+
+    let exposer_dir = user_node_exposer.clone();
+    let exposer_thread = thread::spawn(move || run_cargo_run(&exposer_dir, None));
+
+    let subscriber_output = subscriber_thread
+        .join()
+        .expect("subscriber thread panicked");
+    let exposer_output = exposer_thread.join().expect("exposer thread panicked");
+
+    let subscriber_stdout = String::from_utf8_lossy(&subscriber_output.stdout).into_owned();
+    let subscriber_stderr = String::from_utf8_lossy(&subscriber_output.stderr).into_owned();
+    assert!(
+        subscriber_output.status.success(),
+        "subscriber cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        subscriber_output.status.code(),
+        subscriber_stdout,
+        subscriber_stderr
+    );
+    assert!(
+        subscriber_stdout.contains("got 640x480 frame encoded as rgb8"),
+        "subscriber did not receive exposer frame.\nstdout:\n{}\nstderr:\n{}",
+        subscriber_stdout,
+        subscriber_stderr
+    );
+
+    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
+    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
+    assert!(
+        exposer_output.status.success(),
+        "exposer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        exposer_output.status.code(),
+        exposer_stdout,
+        exposer_stderr
+    );
 
     rt.block_on(async {
         router

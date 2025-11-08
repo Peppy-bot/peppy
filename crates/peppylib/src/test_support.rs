@@ -63,8 +63,8 @@ async fn try_start_zenohd_instance(
 /// The router listens on a randomly allocated TCP port bound to 127.0.0.1.
 /// A temporary directory containing the generated zenoh configuration is kept alive as
 /// part of the returned tuple to ensure the file remains available for the router process.
-pub async fn start_zenohd_process(
-) -> Result<(Messenger, TempDir, String, u16), PeppyMessagingInterfaceError> {
+pub async fn start_zenohd_process()
+-> Result<(Messenger, TempDir, String, u16), PeppyMessagingInterfaceError> {
     const MAX_START_ATTEMPTS: usize = 32;
     let host = "127.0.0.1";
 
@@ -83,9 +83,6 @@ pub async fn start_zenohd_process(
     }
 
     Err(PeppyMessagingInterfaceError::BackendError(
-        format!(
-            "Failed to start zenoh router after {MAX_START_ATTEMPTS} attempts"
-        )
-        .into(),
+        format!("Failed to start zenoh router after {MAX_START_ATTEMPTS} attempts").into(),
     ))
 }
