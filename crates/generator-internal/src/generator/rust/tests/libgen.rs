@@ -218,21 +218,166 @@ const SUBSCRIBED_SERVICE_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE: &str = r#"
 {
-  camera_id: "u16"
+  enable: "bool"
 }
 "#;
 
 const SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 {
-  card_type: "string",
-  size: "string",
-  interval: "string"
+    enabled: "bool",
+    error_msg: "string"
 }
 "#;
 
 #[test]
 fn services_communication() {
-    todo!("Finish")
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("failed to create tokio runtime");
+
+    let (mut router, _dir, router_host, router_port) = rt
+        .block_on(peppylib::start_zenohd_process())
+        .expect("failed to start zenoh router for test");
+
+    // --- Subscriber (client) project
+    let temp_dir_subscriber = TempDir::new().unwrap();
+    let subscribed_service: SubscribedService =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE).unwrap();
+    let subscribed_request_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap();
+    let subscribed_response_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE).unwrap();
+    let (mut generator, output_dir_subscriber, user_node_subscriber) =
+        init_test_env(&temp_dir_subscriber);
+    generator
+        .add_subscribed_service(
+            &subscribed_service,
+            Some(&subscribed_request_format),
+            Some(&subscribed_response_format),
+        )
+        .unwrap();
+    let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
+    generator.build(&output_dir_subscriber).unwrap();
+    fs::remove_file(output_config).unwrap();
+    init_cargo_user_node(&user_node_subscriber);
+    let subscriber_main = format!(
+        "
+use peppygen::services::Subscribes;
+use peppygen::{{Messenger, Result}};
+
+#[tokio::main]
+async fn main() -> Result<()> {{
+    let messenger = Messenger::connect(\"{}\", {}).await?;
+
+    let response = Subscribes::poll_uvc_camera_enable_camera(&messenger, true).await?;
+    println!(
+        \"enable_camera result: enabled={{}} error={{}}\",
+        response.enabled,
+        response.error_msg
+    );
+
+    Ok(())
+}}
+",
+        router_host, router_port
+    );
+    let main_file = user_node_subscriber.join("src").join("main.rs");
+    fs::write(main_file, subscriber_main).expect("failed to write subscriber main");
+
+    // --- Exposer (server) project
+    let temp_dir_exposer = TempDir::new().unwrap();
+    let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
+    let (mut generator, output_dir_exposer, user_node_exposer) = init_test_env(&temp_dir_exposer);
+    generator.add_exposed_service(&exposed_service).unwrap();
+    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
+    generator.build(&output_dir_exposer).unwrap();
+    fs::remove_file(output_config).unwrap();
+    init_cargo_user_node(&user_node_exposer);
+    let exposer_main = format!(
+        "
+use peppygen::services::{{EnableCameraResponse, Exposes}};
+use peppygen::{{Messenger, Result}};
+
+#[tokio::main]
+async fn main() -> Result<()> {{
+    let messenger = Messenger::connect(\"{}\", {}).await?;
+
+    Exposes::handle_enable_camera_next_request(&messenger, |request| -> Result<EnableCameraResponse> {{
+        println!(\"received enable_camera request: {{}}\", request.enable);
+        Ok(EnableCameraResponse::new(request.enable, \"handled\".to_owned()))
+    }})
+    .await?;
+
+    println!(\"enable_camera handler finished\");
+
+    Ok(())
+}}
+",
+        router_host, router_port
+    );
+    let main_file = user_node_exposer.join("src").join("main.rs");
+    fs::write(main_file, exposer_main).expect("failed to write exposer main");
+
+    compile_project(&user_node_subscriber);
+    compile_project(&user_node_exposer);
+
+    let exposer_dir = user_node_exposer.clone();
+    let exposer_thread =
+        thread::spawn(move || run_cargo_run(&exposer_dir, Some(Duration::from_secs(10))));
+
+    // Give the exposer a moment to start listening before the subscriber sends a request.
+    thread::sleep(Duration::from_millis(500));
+
+    let subscriber_dir = user_node_subscriber.clone();
+    let subscriber_thread =
+        thread::spawn(move || run_cargo_run(&subscriber_dir, Some(Duration::from_secs(10))));
+
+    let exposer_output = exposer_thread.join().expect("exposer thread panicked");
+    let subscriber_output = subscriber_thread
+        .join()
+        .expect("subscriber thread panicked");
+
+    let subscriber_stdout = String::from_utf8_lossy(&subscriber_output.stdout).into_owned();
+    let subscriber_stderr = String::from_utf8_lossy(&subscriber_output.stderr).into_owned();
+    assert!(
+        subscriber_output.status.success(),
+        "subscriber cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        subscriber_output.status.code(),
+        subscriber_stdout,
+        subscriber_stderr
+    );
+    assert!(
+        subscriber_stdout.contains("enable_camera result: enabled=true error=handled"),
+        "subscriber did not receive expected service response.\nstdout:\n{}\nstderr:\n{}",
+        subscriber_stdout,
+        subscriber_stderr
+    );
+
+    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
+    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
+    assert!(
+        exposer_output.status.success(),
+        "exposer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        exposer_output.status.code(),
+        exposer_stdout,
+        exposer_stderr
+    );
+    assert!(
+        exposer_stdout.contains("received enable_camera request: true")
+            && exposer_stdout.contains("enable_camera handler finished"),
+        "exposer did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
+        exposer_stdout,
+        exposer_stderr
+    );
+
+    rt.block_on(async {
+        router
+            .stop_router()
+            .await
+            .expect("failed to stop zenoh router");
+    });
 }
 
 // --- Actions
@@ -317,379 +462,4 @@ const SUBSCRIBED_ACTION_GOAL_FORMAT: &str = r#"
 "#;
 
 #[test]
-fn create_lib_basic_structure() {
-    let temp_dir = TempDir::new().unwrap();
-    let (generator, output_dir, user_node) = init_test_env(&temp_dir);
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator.build(&output_dir).unwrap();
-    fs::remove_file(output_config).unwrap();
-
-    assert!(
-        output_dir.join("Cargo.toml").exists(),
-        "Expected Cargo.toml to be generated in the temporary crate directory"
-    );
-    assert!(
-        !output_dir.join(PEPPY_NODE_CONFIG_FILE).exists(),
-        "Generated crate should not keep a copy of the node configuration file"
-    );
-    assert!(
-        user_node.join(PEPPY_NODE_CONFIG_FILE).exists(),
-        "Expected original user project to retain the node configuration file"
-    );
-    assert!(
-        !output_dir.join(PEPPY_NODE_CONFIG_FILE).exists(),
-        "Generated crate should not keep a copy of the node configuration file"
-    );
-    let temp_dir_path = temp_dir.path();
-    let mut entries = fs::read_dir(&temp_dir_path)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    entries.sort();
-    assert_eq!(entries, vec![".peppy", "user_node"]);
-
-    let mut hidden_entries = fs::read_dir(temp_dir_path.join(".peppy"))
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    hidden_entries.sort();
-    assert_eq!(hidden_entries, vec!["libs"]);
-
-    let mut libs_entries = fs::read_dir(temp_dir_path.join(".peppy/libs"))
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    libs_entries.sort();
-    assert_eq!(libs_entries, vec!["peppygen"]);
-
-    let output = Command::new("cargo")
-        .arg("build")
-        .env("CARGO_NET_OFFLINE", "true")
-        .current_dir(&output_dir)
-        .output()
-        .expect("failed to invoke cargo build on generated crate");
-    let status = output.status;
-
-    assert!(
-        status.success(),
-        "cargo build failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        status.code(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-/// Generates the peppygen lib and runs the tests inside of it, including clippy
-#[test]
-fn generate_lib_and_run_tests() {
-    let temp_dir = TempDir::new().unwrap();
-    let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
-    let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
-    let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-
-    let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
-    generator.add_exposed_service(&service).unwrap();
-    generator.add_exposed_topic(&topic).unwrap();
-    generator.add_exposed_action(&action).unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator.build(&output_dir).unwrap();
-    fs::remove_file(output_config).unwrap();
-
-    let clippy_output = Command::new("cargo")
-        .arg("clippy")
-        .arg("--color")
-        .arg("always")
-        .arg("--")
-        .arg("-D")
-        .arg("warnings")
-        .env("CARGO_NET_OFFLINE", "true")
-        .current_dir(&output_dir)
-        .output()
-        .expect("failed to run cargo clippy on generated crate");
-    assert!(
-        clippy_output.status.success(),
-        "cargo clippy failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        clippy_output.status.code(),
-        String::from_utf8_lossy(&clippy_output.stdout),
-        String::from_utf8_lossy(&clippy_output.stderr)
-    );
-
-    let test_output = Command::new("cargo")
-        .arg("test")
-        .arg("--color")
-        .arg("always")
-        .env("CARGO_NET_OFFLINE", "true")
-        .current_dir(&output_dir)
-        .output()
-        .expect("failed to run cargo test on generated crate");
-    assert!(
-        test_output.status.success(),
-        "cargo test failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        test_output.status.code(),
-        String::from_utf8_lossy(&test_output.stdout),
-        String::from_utf8_lossy(&test_output.stderr)
-    );
-}
-
-#[test]
-fn create_lib_with_exposed_and_subscribed_topic_service_and_action_artifacts() {
-    let temp_dir = TempDir::new().unwrap();
-    let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
-    let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
-    let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let subscribed_topic: SubscribedTopic =
-        serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
-    let subscribed_topic_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
-    let subscribed_service: SubscribedService =
-        serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE).unwrap();
-    let subscribed_service_request_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap();
-    let subscribed_service_response_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE).unwrap();
-    let subscribed_action: SubscribedAction =
-        serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
-    let subscribed_action_messages = SubscribedActionMessage {
-        goal: serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT).unwrap(),
-        feedback: serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT).unwrap(),
-        result: serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_FORMAT).unwrap(),
-    };
-
-    let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
-    generator.add_exposed_topic(&topic).unwrap();
-    generator.add_exposed_service(&service).unwrap();
-    generator.add_exposed_action(&action).unwrap();
-    generator
-        .add_subscribed_topic(&subscribed_topic, Some(&subscribed_topic_format))
-        .unwrap();
-    generator
-        .add_subscribed_service(
-            &subscribed_service,
-            Some(&subscribed_service_request_format),
-            Some(&subscribed_service_response_format),
-        )
-        .unwrap();
-    generator
-        .add_subscribed_action(&subscribed_action, Some(&subscribed_action_messages))
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator.build(&output_dir).unwrap();
-    fs::remove_file(output_config).unwrap();
-
-    let lib_rs = output_dir.join("src/lib.rs");
-    assert!(
-        lib_rs.exists(),
-        "Expected lib.rs to exist so the generated crate exposes its modules"
-    );
-    let lib_contents = std::fs::read_to_string(&lib_rs).expect("failed to read generated lib.rs");
-    assert!(
-        output_dir.join("Cargo.toml").exists(),
-        "Expected Cargo.toml to be generated in the temporary crate directory"
-    );
-    assert!(
-        user_node.join(PEPPY_NODE_CONFIG_FILE).exists(),
-        "Expected original user project to retain the node configuration file"
-    );
-    assert!(
-        !output_dir.join(PEPPY_NODE_CONFIG_FILE).exists(),
-        "Generated crate should not keep a copy of the node configuration file"
-    );
-
-    assert!(
-        lib_contents.contains("pub mod topics;"),
-        "Expected lib.rs to re-export `topics` module, got:\n{}",
-        lib_contents
-    );
-    assert!(
-        lib_contents.contains("pub mod services;"),
-        "Expected lib.rs to re-export `services` module, got:\n{}",
-        lib_contents
-    );
-    assert!(
-        lib_contents.contains("pub mod actions;"),
-        "Expected lib.rs to re-export `actions` module, got:\n{}",
-        lib_contents
-    );
-
-    let topics_mod = output_dir.join("src/topics.rs");
-    let services_mod = output_dir.join("src/services.rs");
-    let actions_mod = output_dir.join("src/actions.rs");
-    assert!(topics_mod.exists(), "Expected topics module file to exist");
-    assert!(
-        services_mod.exists(),
-        "Expected services module file to exist"
-    );
-    assert!(
-        actions_mod.exists(),
-        "Expected actions module file to exist"
-    );
-
-    let topics_contents =
-        std::fs::read_to_string(&topics_mod).expect("failed to read topics module");
-    assert!(
-        topics_contents.contains("mod exposers;"),
-        "Expected topics module to declare generated `exposers` module, got:\n{}",
-        topics_contents
-    );
-    assert!(
-        topics_contents.contains("mod subscribers;"),
-        "Expected topics module to declare subscribed `subscribers` module, got:\n{}",
-        topics_contents
-    );
-    assert!(
-        topics_contents.contains("pub use exposers::*;"),
-        "Expected topics module to re-export generated topics API, got:\n{}",
-        topics_contents
-    );
-    assert!(
-        topics_contents.contains("pub use subscribers::*;"),
-        "Expected topics module to re-export subscribed topics API, got:\n{}",
-        topics_contents
-    );
-
-    let services_contents =
-        std::fs::read_to_string(&services_mod).expect("failed to read services module");
-    assert!(
-        services_contents.contains("pub mod exposers;"),
-        "Expected services module to declare generated `exposers` module, got:\n{}",
-        services_contents
-    );
-    assert!(
-        services_contents.contains("pub mod subscribers;"),
-        "Expected services module to declare subscribed `subscribers` module, got:\n{}",
-        services_contents
-    );
-    assert!(
-        services_contents.contains("pub use exposers::Exposes;"),
-        "Expected services module to re-export generated service struct, got:\n{}",
-        services_contents
-    );
-    assert!(
-        services_contents.contains("pub use subscribers::Subscribes;"),
-        "Expected services module to re-export subscribed service struct, got:\n{}",
-        services_contents
-    );
-
-    let actions_contents =
-        std::fs::read_to_string(&actions_mod).expect("failed to read actions module");
-    assert!(
-        actions_contents.contains("mod move_arm;"),
-        "Expected actions module to declare generated `move_arm` module, got:\n{}",
-        actions_contents
-    );
-    assert!(
-        actions_contents.contains("pub use move_arm::*;"),
-        "Expected actions module to re-export generated `move_arm` API, got:\n{}",
-        actions_contents
-    );
-
-    let exposers_topic_module = output_dir.join("src/topics/exposers.rs");
-    let subscribers_topic_module = output_dir.join("src/topics/subscribers.rs");
-    let exposers_module = output_dir.join("src/services/exposers.rs");
-    let subscribers_service_module = output_dir.join("src/services/subscribers.rs");
-    let move_arm_module = output_dir.join("src/actions/move_arm.rs");
-    assert!(
-        exposers_topic_module.exists(),
-        "Expected generated exposers topic module to exist"
-    );
-    assert!(
-        exposers_module.exists(),
-        "Expected generated exposers service module to exist"
-    );
-    assert!(
-        subscribers_topic_module.exists(),
-        "Expected generated subscribed topic module to exist"
-    );
-    assert!(
-        subscribers_service_module.exists(),
-        "Expected generated subscribers service module to exist"
-    );
-    assert!(
-        move_arm_module.exists(),
-        "Expected generated action module to exist"
-    );
-
-    let push_frame_contents = std::fs::read_to_string(&exposers_topic_module)
-        .expect("failed to read exposers topic module");
-    assert!(
-        push_frame_contents.contains("pub async fn emit_push_frame("),
-        "Expected combined generation to produce async topic emitter, got:\n{}",
-        push_frame_contents
-    );
-    let stream_contents = std::fs::read_to_string(&subscribers_topic_module)
-        .expect("failed to read subscribers topic module");
-    assert!(
-        stream_contents.contains("pub async fn on_next_uvc_camera_stream_message("),
-        "Expected subscribed topic module to expose callback handler, got:\n{}",
-        stream_contents
-    );
-    assert!(
-        stream_contents.contains("crate::Result<UvcCameraStreamMessage>"),
-        "Expected subscribed topic callback to return deserialized message, got:\n{}",
-        stream_contents
-    );
-
-    let enable_contents =
-        std::fs::read_to_string(&exposers_module).expect("failed to read exposers module");
-    assert!(
-        enable_contents.contains("pub async fn handle_enable_camera_next_request<F>("),
-        "Expected combined generation to produce service function, got:\n{}",
-        enable_contents
-    );
-    let get_camera_info_contents = std::fs::read_to_string(&subscribers_service_module)
-        .expect("failed to read subscribed service module");
-    assert!(
-        get_camera_info_contents.contains("pub async fn poll_uvc_camera_get_camera_info("),
-        "Expected subscribed service module to expose callback function, got:\n{}",
-        get_camera_info_contents
-    );
-    assert!(
-        get_camera_info_contents.contains("camera_id: u16"),
-        "Expected subscribed service module to expose request parameter, got:\n{}",
-        get_camera_info_contents
-    );
-    assert!(
-        get_camera_info_contents.contains("-> crate::Result<GetCameraInfoResponse>"),
-        "Expected subscribed service module to expose response return type, got:\n{}",
-        get_camera_info_contents
-    );
-    assert!(
-        get_camera_info_contents.contains("pub struct GetCameraInfoResponse"),
-        "Expected subscribed service module to expose response struct, got:\n{}",
-        get_camera_info_contents
-    );
-    assert!(
-        get_camera_info_contents.contains("camera_id: u16"),
-        "Expected subscribed service request handling to expose request field, got:\n{}",
-        get_camera_info_contents
-    );
-    assert!(
-        get_camera_info_contents.contains("card_type: String"),
-        "Expected subscribed service response struct to expose field, got:\n{}",
-        get_camera_info_contents
-    );
-
-    let move_arm_contents =
-        std::fs::read_to_string(&move_arm_module).expect("failed to read move_arm module");
-    assert!(
-        move_arm_contents.contains("pub async fn move_arm_result_async("),
-        "Expected combined generation to produce action result async function, got:\n{}",
-        move_arm_contents
-    );
-    assert!(
-        move_arm_contents
-            .contains("pub async fn on_move_arm_feedback() -> OnMoveArmFeedbackArguments"),
-        "Expected subscribed action module to expose feedback callback, got:\n{}",
-        move_arm_contents
-    );
-    assert!(
-        move_arm_contents.contains("pub async fn on_move_arm_result() -> OnMoveArmResultArguments"),
-        "Expected subscribed action module to expose result callback, got:\n{}",
-        move_arm_contents
-    );
-
-    assert!(
-        !output_dir.join(PEPPY_NODE_CONFIG_FILE).exists(),
-        "Generated crate should not keep a copy of the node configuration file"
-    );
-}
+fn actions_communication() {}

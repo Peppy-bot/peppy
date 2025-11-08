@@ -192,10 +192,8 @@ fn write_category_module_file(
             ModuleCategory::Services => {
                 mod_section.push_str(&format!("pub mod {module};\n"));
                 match module.as_str() {
-                    "exposers" => reexport_section.push_str("pub use exposers::Exposes;\n"),
-                    "subscribers" => {
-                        reexport_section.push_str("pub use subscribers::Subscribes;\n")
-                    }
+                    "exposers" => reexport_section.push_str("pub use exposers::*;\n"),
+                    "subscribers" => reexport_section.push_str("pub use subscribers::*;\n"),
                     _ => reexport_section.push_str(&format!("pub use {module}::*;\n")),
                 }
             }

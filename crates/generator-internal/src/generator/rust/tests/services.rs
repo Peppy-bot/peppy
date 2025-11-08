@@ -764,12 +764,12 @@ fn compile_lib_with_exposed_services_artifact() {
         services_contents
     );
     assert!(
-        services_contents.contains("pub use exposers::Exposes;"),
+        services_contents.contains("pub use exposers::*;"),
         "Expected services module to re-export generated service struct, got:\n{}",
         services_contents
     );
     assert!(
-        services_contents.contains("pub use subscribers::Subscribes;"),
+        services_contents.contains("pub use subscribers::*;"),
         "Expected services module to re-export subscribed service struct, got:\n{}",
         services_contents
     );
