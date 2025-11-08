@@ -16,6 +16,7 @@ use config::{
         SchemaType, SubscribedAction, SubscribedService, SubscribedTopic, TypeToken,
     },
 };
+use indexmap::IndexMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 use std::collections::{BTreeMap, HashMap};
@@ -1131,7 +1132,7 @@ impl StructDefinition {
             .map(|(field_ident, ty)| {
                 let name = field_ident;
                 let field_ty = ty;
-                quote!(#name: #field_ty)
+                quote!(pub #name: #field_ty)
             })
             .collect();
 
@@ -1541,7 +1542,7 @@ fn generate_object_assignment(
     builder_expr: &TokenStream,
     init_method: &Ident,
     value_expr: &TokenStream,
-    fields: &BTreeMap<String, SchemaType>,
+    fields: &IndexMap<String, SchemaType>,
     names: &mut NameGenerator,
 ) -> TokenStream {
     let builder_ident = names.next("builder");
@@ -2099,7 +2100,7 @@ fn generate_primitive_array_reader(
 fn generate_object_reader(
     reader_expr: &TokenStream,
     field_name: &str,
-    object: &BTreeMap<String, SchemaType>,
+    object: &IndexMap<String, SchemaType>,
     struct_prefix: &str,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {

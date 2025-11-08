@@ -1,4 +1,5 @@
 use crate::{common::NodeParameters, config::SchemaVersion, error::ParsingError};
+use indexmap::IndexMap;
 use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer, MapAccess, Visitor},
@@ -118,7 +119,7 @@ pub enum TypeToken {
 
 // Common wrapper for dynamic message formats in topics/services
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct MessageFormat(pub std::collections::BTreeMap<String, SchemaType>);
+pub struct MessageFormat(pub IndexMap<String, SchemaType>);
 
 // Schema types used inside MessageFormat
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -151,7 +152,7 @@ pub struct ObjectSchema {
     #[serde(rename = "type")]
     pub kind: ObjectKind,
     #[serde(default, flatten)]
-    pub fields: std::collections::BTreeMap<String, SchemaType>,
+    pub fields: IndexMap<String, SchemaType>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -196,7 +197,7 @@ impl<'de> Visitor<'de> for ObjectSchemaVisitor {
         M: MapAccess<'de>,
     {
         let mut kind: Option<ObjectKind> = None;
-        let mut fields = std::collections::BTreeMap::<String, SchemaType>::new();
+        let mut fields = IndexMap::<String, SchemaType>::new();
 
         while let Some(key) = map.next_key::<String>()? {
             if key == "type" {

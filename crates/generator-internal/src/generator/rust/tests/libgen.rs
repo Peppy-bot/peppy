@@ -81,14 +81,14 @@ fn topics_communication() {
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = format!(
         "
-use peppygen::topics::{{Exposes, PushFrameHeader, Subscribes}};
+use peppygen::topics::{{Subscribes}};
 use peppygen::{{Messenger, Result}};
 
 #[tokio::main]
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
-    let frame = Subscribes::on_next_uvc_camera_stream_message(&messenger).await?;
+    let frame = Subscribes::on_next_push_frame_message(&messenger).await?;
     println!(
         \"got {{}}x{{}} frame encoded as {{}}\",
         frame.width, frame.height, frame.encoding
@@ -101,19 +101,6 @@ async fn main() -> Result<()> {{
     );
     let main_file = user_node_subscriber.join("src").join("main.rs");
     fs::write(main_file, &subscriber_main).expect("failed to write main file");
-    let cargo_output = Command::new("cargo")
-        .arg("build")
-        .env("CARGO_NET_OFFLINE", "true")
-        .current_dir(&user_node_subscriber)
-        .output()
-        .expect("failed to invoke cargo build on generated crate");
-    assert!(
-        cargo_output.status.success(),
-        "cargo build failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        cargo_output.status.code(),
-        String::from_utf8_lossy(&cargo_output.stdout),
-        String::from_utf8_lossy(&cargo_output.stderr)
-    );
 
     // --- Exposer project
     let temp_dir_proj1 = TempDir::new().unwrap();
@@ -126,47 +113,37 @@ async fn main() -> Result<()> {{
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = format!(
         "
-use peppygen::topics::{{{{Exposes, PushFrameHeader, Subscribes}}}};
-use peppygen::{{{{Messenger, Result}}}};
+use peppygen::topics::{{Exposes, PushFrameHeader}};
+use peppygen::{{Messenger, Result}};
 
 #[tokio::main]
-async fn main() -> Result<()> {{{{
+async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
     Exposes::emit_push_frame(
         &messenger,
-        PushFrameHeader {{{{
+        PushFrameHeader {{
             stamp: std::time::SystemTime::now(),
             frame_id: 42,
-        }}}},
+        }},
         \"rgb8\".to_owned(),
         640,
         480,
-        [0, 0, 0],
+        [1, 2, 3],
     )
     .await?;
 
     Ok(())
-}}}}
+}}
 ",
         router_host, router_port
     );
 
     let main_file = user_node_exposer.join("src").join("main.rs");
     fs::write(main_file, &exposer_main).expect("failed to write main file");
-    let cargo_output = Command::new("cargo")
-        .arg("build")
-        .env("CARGO_NET_OFFLINE", "true")
-        .current_dir(&user_node_exposer)
-        .output()
-        .expect("failed to invoke cargo build on generated crate");
-    assert!(
-        cargo_output.status.success(),
-        "cargo build failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        cargo_output.status.code(),
-        String::from_utf8_lossy(&cargo_output.stdout),
-        String::from_utf8_lossy(&cargo_output.stderr)
-    );
+
+    compile_project(&user_node_subscriber);
+    compile_project(&user_node_exposer);
 
     rt.block_on(async {
         router

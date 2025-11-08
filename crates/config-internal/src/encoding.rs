@@ -20,6 +20,7 @@ use std::str::FromStr;
 use tempfile::tempdir;
 
 use crate::node::{ArraySchema, MessageFormat, SchemaType, TypeToken};
+use indexmap::IndexMap;
 use facade::CapnpFacade;
 
 /// The output_dir should point to the `src` of a Rust crate. A new `capnp` module will be
@@ -146,7 +147,7 @@ impl MessageFormatMapper {
         Ok(mapping)
     }
 
-    fn compute_schema_id(fields: &std::collections::BTreeMap<String, SchemaType>) -> u64 {
+    fn compute_schema_id(fields: &IndexMap<String, SchemaType>) -> u64 {
         const FNV_OFFSET: u64 = 0xcbf29ce484222325;
         const FNV_PRIME: u64 = 0x100000001b3;
 
@@ -186,7 +187,7 @@ impl MessageFormatMapper {
 
         fn hash_fields(
             mut hash: u64,
-            fields: &std::collections::BTreeMap<String, SchemaType>,
+            fields: &IndexMap<String, SchemaType>,
             prime: u64,
         ) -> u64 {
             for (key, value) in fields {
@@ -265,7 +266,7 @@ impl CapnpSchemaGenerator {
     fn render_struct(
         &mut self,
         struct_name: &str,
-        fields: &std::collections::BTreeMap<String, SchemaType>,
+        fields: &IndexMap<String, SchemaType>,
         depth: usize,
     ) -> Result<String> {
         let indent = "  ".repeat(depth);

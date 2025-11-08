@@ -293,9 +293,39 @@ fn subscribed_to_topic() {
         "expected nested struct definition"
     );
     assert_rendered!(
-        rendered.contains("image: [u8; 3]"),
+        rendered.contains("pub frame_id: u32"),
         &rendered,
-        "expected array element type"
+        "expected header frame identifier to be public"
+    );
+    assert_rendered!(
+        rendered.contains("pub stamp: std::time::SystemTime"),
+        &rendered,
+        "expected header stamp to be public"
+    );
+    assert_rendered!(
+        rendered.contains("pub encoding: String"),
+        &rendered,
+        "expected encoding field to be public"
+    );
+    assert_rendered!(
+        rendered.contains("pub header: UvcCameraStreamMessageHeader"),
+        &rendered,
+        "expected nested header field to be public"
+    );
+    assert_rendered!(
+        rendered.contains("pub height: u32"),
+        &rendered,
+        "expected height field to be public"
+    );
+    assert_rendered!(
+        rendered.contains("pub image: [u8; 3]"),
+        &rendered,
+        "expected array element field to be public"
+    );
+    assert_rendered!(
+        rendered.contains("pub width: u32"),
+        &rendered,
+        "expected width field to be public"
     );
     assert_rendered!(
         rendered.contains("pub struct Subscribes;"),
