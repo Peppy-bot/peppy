@@ -20,8 +20,8 @@ use std::str::FromStr;
 use tempfile::tempdir;
 
 use crate::node::{ArraySchema, MessageFormat, SchemaType, TypeToken};
-use indexmap::IndexMap;
 use facade::CapnpFacade;
+use indexmap::IndexMap;
 
 /// The output_dir should point to the `src` of a Rust crate. A new `capnp` module will be
 /// created at the root of this directory with all the `capnp` files.
@@ -185,11 +185,7 @@ impl MessageFormatMapper {
             hash
         }
 
-        fn hash_fields(
-            mut hash: u64,
-            fields: &IndexMap<String, SchemaType>,
-            prime: u64,
-        ) -> u64 {
+        fn hash_fields(mut hash: u64, fields: &IndexMap<String, SchemaType>, prime: u64) -> u64 {
             for (key, value) in fields {
                 hash = update(hash, key.as_bytes(), prime);
                 hash = hash_schema(hash, value, prime);
