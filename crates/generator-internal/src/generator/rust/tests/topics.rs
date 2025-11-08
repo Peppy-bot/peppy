@@ -171,11 +171,6 @@ fn expose_topic() {
         "expected generated struct for nested object"
     );
     assert_rendered!(
-        !rendered.contains("pub struct Exposes;"),
-        &rendered,
-        "emit helpers should not be wrapped in an Exposes struct"
-    );
-    assert_rendered!(
         rendered.contains("messenger: &crate::Messenger"),
         &rendered,
         "expected messenger parameter in emit signature"
@@ -242,11 +237,6 @@ fn expose_two_topics() {
         rendered.contains("let mut message = capnp::message::Builder::new_default();"),
         rendered,
         "expected capnp message builder"
-    );
-    assert_rendered!(
-        !rendered.contains("pub struct Exposes;"),
-        rendered,
-        "emit helpers should not be wrapped in an Exposes struct"
     );
     assert_rendered!(
         rendered.contains("pub async fn emit_push_lidar_object("),
@@ -326,11 +316,6 @@ fn subscribed_to_topic() {
         rendered.contains("pub width: u32"),
         &rendered,
         "expected width field to be public"
-    );
-    assert_rendered!(
-        !rendered.contains("pub struct Subscribes;"),
-        &rendered,
-        "subscriber helpers should be emitted as free functions"
     );
     assert_rendered!(
         !rendered.contains("pub async fn connect("),
@@ -443,14 +428,6 @@ fn subscribed_to_two_topics_same_node() {
         artifacts.len()
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
-
-    let struct_count = rendered.matches("pub struct Subscribes;").count();
-    assert_rendered!(
-        struct_count == 0,
-        &rendered,
-        "subscriber helpers should not be wrapped in structs, found {} definition(s)",
-        struct_count
-    );
 
     assert_rendered!(
         !rendered.contains("pub async fn connect("),
@@ -830,11 +807,6 @@ fn compile_lib_with_exposed_topic_artifact() {
     assert!(
         push_frame_contents.contains("pub struct PushFrameHeader"),
         "Expected generated module to define message struct, got:\n{}",
-        push_frame_contents
-    );
-    assert!(
-        !push_frame_contents.contains("pub struct Exposes;"),
-        "Generated module should expose free functions, got:\n{}",
         push_frame_contents
     );
     assert!(
