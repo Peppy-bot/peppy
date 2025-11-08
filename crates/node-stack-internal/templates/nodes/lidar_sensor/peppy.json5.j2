@@ -19,6 +19,15 @@
       physical: "string",
       sim: "string",
       priority: "string"
+    },
+    lidar_point: {
+      x: "f32",
+      y: "f32",
+      z: "f32",
+      intensity: "f32",
+      return_type: "u8",
+      classification: "u8",
+      timestamp: "time",
     }
   },
   interfaces: {
@@ -44,7 +53,6 @@
       ],
       services: [
         {
-          node: "uvc_camera",
           name: "enable_camera",
           request_message_format: {
             enable: "bool",
@@ -54,9 +62,8 @@
           },
         },
         {
-          node: "uvc_camera",
           name: "get_camera_info",
-          request_message_format: {
+          response_message_format: {
             card_type: "string",
             size: "string",
             interval: "string"

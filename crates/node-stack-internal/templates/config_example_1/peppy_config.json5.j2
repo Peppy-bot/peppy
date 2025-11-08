@@ -6,7 +6,7 @@
         repo: "{{ lidar_sensor_github_repo }}",
         path: "{{ lidar_sensor_github_repo_path }}"
       },
-      tag: "0.1.0",
+      tag: "{{ lidar_sensor_github_tag }}",
       instances: [
         {
           namespace: "/lidar",
@@ -81,7 +81,7 @@
       name: "{{ web_video_stream_node_name }}",
       tag: "0.1.0",
       // Since it's optional, if the node cannot be found, it will be ignored
-      optional: true,
+      optional: {{ web_video_stream_optional }},
       instances: [
         {
           namespace: "/camera/stream/right",
