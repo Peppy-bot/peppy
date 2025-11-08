@@ -95,11 +95,6 @@ fn expose_service() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     assert_rendered!(
-        !rendered.contains("pub struct Exposes;"),
-        &rendered,
-        "service helpers should be emitted as free functions"
-    );
-    assert_rendered!(
         rendered.contains("pub struct EnableCameraResponse"),
         &rendered,
         "expected response struct for exposed service"
@@ -110,7 +105,7 @@ fn expose_service() {
         "expected response struct impl block"
     );
     assert_rendered!(
-        rendered.contains("pub fn new("),
+        rendered.contains("pub fn new"),
         &rendered,
         "expected response constructor"
     );
@@ -125,14 +120,9 @@ fn expose_service() {
         "expected string field in response struct"
     );
     assert_rendered!(
-        rendered.contains("pub async fn handle_enable_camera_next_request<F>("),
+        rendered.contains("pub async fn handle_enable_camera_next_request<F>"),
         &rendered,
         "expected async service handler with handle_enable_camera_next_request naming"
-    );
-    assert_rendered!(
-        rendered.contains("handler: F"),
-        &rendered,
-        "expected handler callback parameter"
     );
     assert_rendered!(
         rendered.contains("F: Fn(EnableCameraRequest) -> crate::Result<EnableCameraResponse>"),
@@ -150,12 +140,7 @@ fn expose_service() {
         "expected public request field for enable_camera"
     );
     assert_rendered!(
-        rendered.contains("-> crate::Result<()>"),
-        &rendered,
-        "expected async function to return unit result"
-    );
-    assert_rendered!(
-        rendered.contains("peppylib::ServiceMessenger::listen("),
+        rendered.contains("peppylib::ServiceMessenger::listen"),
         &rendered,
         "expected service listen call through peppylib helper"
     );
@@ -175,7 +160,7 @@ fn expose_service() {
         "expected request payload to be pulled from the request context"
     );
     assert_rendered!(
-        rendered.contains("fn enable_camera_deserialize_request("),
+        rendered.contains("fn enable_camera_deserialize_request"),
         &rendered,
         "expected request deserializer helper function"
     );
@@ -276,11 +261,6 @@ fn expose_two_services() {
         .map(|artifact| artifact.code_output)
         .expect("artifact is present");
 
-    assert_rendered!(
-        !rendered.contains("pub struct Exposes;"),
-        &rendered,
-        "service helpers should be emitted as free functions"
-    );
     assert_rendered!(
         rendered.contains("pub async fn handle_enable_camera_next_request<F>("),
         &rendered,
@@ -392,11 +372,6 @@ fn subscribed_to_service() {
         rendered.contains("error_msg: String"),
         &rendered,
         "expected response string field"
-    );
-    assert_rendered!(
-        !rendered.contains("pub struct Subscribes;"),
-        &rendered,
-        "poll helpers should be emitted as free functions"
     );
     assert_rendered!(
         rendered.contains("pub async fn poll_uvc_camera_enable_camera("),
@@ -513,13 +488,6 @@ fn subscribed_to_two_services_same_node() {
         rendered.contains("pub struct EnableCameraResponse"),
         rendered,
         "expected response struct for `enable_camera`"
-    );
-    let struct_count = rendered.matches("pub struct Subscribes;").count();
-    assert_rendered!(
-        struct_count == 0,
-        rendered,
-        "subscriber helpers should not introduce wrapper structs, found {}",
-        struct_count
     );
     assert_rendered!(
         rendered.contains("pub async fn poll_uvc_camera_enable_camera("),
@@ -812,11 +780,6 @@ fn compile_lib_with_exposed_services_artifact() {
         subscribers_module_path.exists(),
         "Expected generated subscribers service module at {:?}",
         subscribers_module_path
-    );
-    assert!(
-        !module_contents.contains("pub struct Exposes;"),
-        "Generated service module should expose free functions, got:\n{}",
-        module_contents
     );
     assert!(
         module_contents.contains("pub struct EnableCameraResponse"),

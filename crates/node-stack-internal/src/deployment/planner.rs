@@ -531,9 +531,7 @@ impl DeploymentPlanner {
         }
     }
 
-    fn is_array_parameter_schema(
-        map: &std::collections::BTreeMap<String, AnyType>,
-    ) -> bool {
+    fn is_array_parameter_schema(map: &std::collections::BTreeMap<String, AnyType>) -> bool {
         matches!(
             map.get("type"),
             Some(AnyType::String(kind)) if kind.eq_ignore_ascii_case("array")

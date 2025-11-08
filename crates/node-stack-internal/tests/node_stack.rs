@@ -28,7 +28,7 @@ fn test_optional_node_ignored() {
     let git_repo_path = helpers::create_git_repo(&git_repo_temp_dir);
 
     let root_temp_dir = TempDir::new().unwrap();
-    let root = root_temp_dir.path();
+    let _root = root_temp_dir.path();
 
     let git_repo_path = git_repo_path.to_str().unwrap().to_owned();
     let lidar_remote = format!("nodes/{}", helpers::LIDAR_SENSOR_NODE_NAME);

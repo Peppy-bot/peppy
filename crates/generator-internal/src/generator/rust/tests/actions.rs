@@ -63,7 +63,7 @@ const SUBSCRIBED_ACTION_GOAL_FORMAT: &str = r#"
 "#;
 
 #[test]
-fn exposed_action_gen_calling_code() {
+fn exposed_action() {
     let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new();
@@ -81,94 +81,21 @@ fn exposed_action_gen_calling_code() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    println!("generated action code:\n{rendered}");
-
-    for expected in [
-        "pub fn move_arm_goal(",
-        "pub async fn move_arm_goal_async(",
-        "pub fn move_arm_feedback(",
-        "pub async fn move_arm_feedback_async(",
-        "pub fn move_arm_result(",
-        "pub async fn move_arm_result_async(",
-    ] {
-        assert_rendered!(
-            rendered.contains(expected),
-            &rendered,
-            "expected `{expected}` in rendered"
-        );
-    }
-
-    for expected in [
-        "capnp::message::Builder::new_default",
-        "capnp::serialize::write_message",
-    ] {
-        assert_rendered!(
-            rendered.contains(expected),
-            &rendered,
-            "expected `{expected}` in capnp-based action code"
-        );
-    }
-    assert_rendered!(
-        rendered.contains("crate::Error::RuntimeInitialization"),
-        &rendered,
-        "expected explicit runtime initialization error variant"
-    );
-    assert_rendered!(
-        rendered.contains("crate::Error::CapnpSerialize"),
-        &rendered,
-        "expected explicit capnp serialization error variant"
-    );
-
-    assert_rendered!(
-        rendered.contains("move_arm_goal_message_capnp::move_arm_goal_message::Builder"),
-        &rendered,
-        "expected goal schema builder"
-    );
-    assert_rendered!(
-        rendered.contains("init_desired_position"),
-        &rendered,
-        "expected list initialization for desired position"
-    );
-    assert_rendered!(
-        rendered.contains("init_new_position"),
-        &rendered,
-        "expected list initialization for feedback"
-    );
-    assert_rendered!(
-        rendered.contains("init_final_position"),
-        &rendered,
-        "expected list initialization for result"
-    );
-    assert_rendered!(
-        rendered.contains("-> crate::Result<()>"),
-        &rendered,
-        "expected async helpers to return crate result type"
-    );
-
-    assert_rendered!(
-        rendered.contains("arm_id: u16"),
-        &rendered,
-        "expected goal argument"
-    );
-    assert_rendered!(
-        rendered.contains("desired_position: [i32; 3]"),
-        &rendered,
-        "expected goal array argument"
-    );
-    assert_rendered!(
-        rendered.contains("new_position: [i32; 3]"),
-        &rendered,
-        "expected feedback array argument"
-    );
-    assert_rendered!(
-        rendered.contains("final_position: [i32; 3]"),
-        &rendered,
-        "expected result array argument"
-    );
+    todo!("Finish")
 }
 
 #[test]
-fn subscribed_action_returns_arguments() {
+fn expose_action_without_request_body() {
+    todo!("Finish")
+}
+
+#[test]
+fn expose_two_actions() {
+    todo!("Finish")
+}
+
+#[test]
+fn subscribed_to_action() {
     let action: SubscribedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
     let goal_format: MessageFormat = serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT).unwrap();
     let feedback_format: MessageFormat = serde_json5::from_str(r#"{ payload: "bytes" }"#).unwrap();
@@ -205,42 +132,21 @@ fn subscribed_action_returns_arguments() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    println!("generated subscribed action code:\n{rendered}");
-
-    assert!(
-        !rendered.contains("pub async fn on_move_arm_goal()"),
-        "unexpected goal callback generated:\n{rendered}"
-    );
-
-    for expected in [
-        "pub async fn on_move_arm_feedback() -> OnMoveArmFeedbackArguments",
-        "pub async fn on_move_arm_result() -> OnMoveArmResultArguments",
-    ] {
-        assert_rendered!(
-            rendered.contains(expected),
-            &rendered,
-            "expected `{expected}` in rendered"
-        );
-    }
-
-    assert_rendered!(
-        rendered.contains("payload: Vec<u8>"),
-        &rendered,
-        "expected feedback payload"
-    );
-    assert_rendered!(
-        rendered.contains("final_position: [i32; 3]"),
-        &rendered,
-        "expected result array"
-    );
-    assert!(
-        !rendered.contains("arm_id: u16"),
-        "goal fields should not appear in feedback or result structs:\n{rendered}"
-    );
+    todo!("Finish")
 }
 
 #[test]
-fn create_lib_with_exposed_action_artifact() {
+fn subscribed_to_two_actions_same_node() {
+    todo!("Finish")
+}
+
+#[test]
+fn subscribed_action_without_response_payload() {
+    todo!("Finish")
+}
+
+#[test]
+fn compile_lib_with_exposed_action_artifact() {
     let temp_dir = TempDir::new().unwrap();
     let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
 
@@ -250,65 +156,5 @@ fn create_lib_with_exposed_action_artifact() {
     generator.build(&output_dir).unwrap();
     fs::remove_file(output_config).unwrap();
 
-    assert!(
-        output_dir.join("Cargo.toml").exists(),
-        "Expected Cargo.toml to be generated in the temporary crate directory"
-    );
-    assert!(
-        !output_dir.join(PEPPY_NODE_CONFIG_FILE).exists(),
-        "Generated crate should not keep a copy of the node configuration file"
-    );
-
-    let lib_rs = output_dir.join("src/lib.rs");
-    assert!(
-        lib_rs.exists(),
-        "Expected lib.rs to exist so `peppygen::actions` is reachable"
-    );
-    let lib_contents = std::fs::read_to_string(&lib_rs).expect("failed to read generated lib.rs");
-    assert!(
-        lib_contents.contains("pub mod actions;"),
-        "Expected generated lib.rs to re-export the `actions` module, got:\n{}",
-        lib_contents
-    );
-
-    let actions_mod = output_dir.join("src/actions.rs");
-    assert!(
-        actions_mod.exists(),
-        "Expected actions module file to exist so `peppygen::actions::<module>` resolves"
-    );
-    let actions_contents =
-        std::fs::read_to_string(&actions_mod).expect("failed to read actions module");
-    assert!(
-        actions_contents.contains("mod move_arm;"),
-        "Expected actions module to declare generated `move_arm` module, got:\n{}",
-        actions_contents
-    );
-    assert!(
-        actions_contents.contains("pub use move_arm::*;"),
-        "Expected actions module to re-export generated `move_arm` API, got:\n{}",
-        actions_contents
-    );
-
-    let move_arm_module = output_dir.join("src/actions/move_arm.rs");
-    assert!(
-        move_arm_module.exists(),
-        "Expected generated action module at {:?}",
-        move_arm_module
-    );
-    let move_arm_contents =
-        std::fs::read_to_string(&move_arm_module).expect("failed to read move_arm module");
-    for expected in [
-        "pub fn move_arm_goal(",
-        "pub async fn move_arm_goal_async(",
-        "pub fn move_arm_feedback(",
-        "pub async fn move_arm_feedback_async(",
-        "pub fn move_arm_result(",
-        "pub async fn move_arm_result_async(",
-    ] {
-        assert!(
-            move_arm_contents.contains(expected),
-            "Expected generated action module to expose `{expected}`, got:\n{}",
-            move_arm_contents
-        );
-    }
+    todo!("Finish")
 }
