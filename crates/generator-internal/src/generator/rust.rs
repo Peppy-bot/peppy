@@ -753,18 +753,16 @@ impl LanguageGenerator for RustGenerator {
 
 struct ExposedServicesModule {
     node_name: String,
-    struct_ident: Ident,
     message_structs: Vec<TokenStream>,
-    impl_items: Vec<TokenStream>,
+    functions: Vec<TokenStream>,
 }
 
 impl ExposedServicesModule {
     fn new() -> Self {
         Self {
             node_name: String::new(),
-            struct_ident: Ident::new("Exposes", Span::call_site()),
             message_structs: Vec::new(),
-            impl_items: Vec::new(),
+            functions: Vec::new(),
         }
     }
 
@@ -779,28 +777,21 @@ impl ExposedServicesModule {
     }
 
     fn push_method(&mut self, method: TokenStream, helpers: Vec<TokenStream>) {
-        self.impl_items.push(method);
-        self.impl_items.extend(helpers);
+        self.functions.push(method);
+        self.functions.extend(helpers);
     }
 
     fn into_artifact(self) -> InterfaceArtifact {
         let ExposedServicesModule {
             node_name,
-            struct_ident,
             message_structs,
-            impl_items,
+            functions,
         } = self;
-
-        let struct_tokens = build_service_struct(&struct_ident);
 
         let tokens: TokenStream = quote! {
             #( #message_structs )*
 
-            #struct_tokens
-
-            impl #struct_ident {
-                #( #impl_items )*
-            }
+            #( #functions )*
         };
 
         let rendered = render_tokens(tokens);
@@ -811,7 +802,6 @@ impl ExposedServicesModule {
 
 struct ExposedTopicsModule {
     node_name: String,
-    struct_ident: Ident,
     message_structs: Vec<TokenStream>,
     methods: Vec<TokenStream>,
 }
@@ -820,7 +810,6 @@ impl ExposedTopicsModule {
     fn new() -> Self {
         Self {
             node_name: String::new(),
-            struct_ident: Ident::new("Exposes", Span::call_site()),
             message_structs: Vec::new(),
             methods: Vec::new(),
         }
@@ -843,21 +832,14 @@ impl ExposedTopicsModule {
     fn into_artifact(self) -> InterfaceArtifact {
         let ExposedTopicsModule {
             node_name,
-            struct_ident,
             message_structs,
             methods,
         } = self;
 
-        let struct_tokens = build_topic_struct(&struct_ident);
-
         let tokens: TokenStream = quote! {
             #( #message_structs )*
 
-            #struct_tokens
-
-            impl #struct_ident {
-                #( #methods )*
-            }
+            #( #methods )*
         };
 
         let rendered = render_tokens(tokens);
@@ -869,7 +851,7 @@ impl ExposedTopicsModule {
 struct SubscribedServiceNode {
     node_name: String,
     message_structs: Vec<TokenStream>,
-    methods: Vec<TokenStream>,
+    functions: Vec<TokenStream>,
 }
 
 impl SubscribedServiceNode {
@@ -877,7 +859,7 @@ impl SubscribedServiceNode {
         Self {
             node_name,
             message_structs: Vec::new(),
-            methods: Vec::new(),
+            functions: Vec::new(),
         }
     }
 
@@ -886,26 +868,20 @@ impl SubscribedServiceNode {
     }
 
     fn push_method(&mut self, tokens: TokenStream) {
-        self.methods.push(tokens);
+        self.functions.push(tokens);
     }
 
     fn into_artifact(self) -> InterfaceArtifact {
         let SubscribedServiceNode {
             node_name,
             message_structs,
-            methods,
+            functions,
         } = self;
-
-        let struct_ident = Ident::new("Subscribes", Span::call_site());
 
         let tokens: TokenStream = quote! {
             #( #message_structs )*
 
-            pub struct #struct_ident;
-
-            impl #struct_ident {
-                #( #methods )*
-            }
+            #( #functions )*
         };
 
         let rendered = render_tokens(tokens);
@@ -950,17 +926,10 @@ impl SubscribedTopicsModule {
             methods,
         } = self;
 
-        let final_struct_ident = Ident::new("Subscribes", Span::call_site());
-        let struct_tokens = build_subscribed_topic_struct(&final_struct_ident);
-
         let tokens: TokenStream = quote! {
             #( #message_structs )*
 
-            #struct_tokens
-
-            impl #final_struct_ident {
-                #( #methods )*
-            }
+            #( #methods )*
         };
 
         let rendered = render_tokens(tokens);
@@ -1589,18 +1558,6 @@ impl NameGenerator {
     }
 }
 
-fn build_topic_struct(struct_ident: &Ident) -> TokenStream {
-    quote! {
-        pub struct #struct_ident;
-    }
-}
-
-fn build_service_struct(struct_ident: &Ident) -> TokenStream {
-    quote! {
-        pub struct #struct_ident;
-    }
-}
-
 fn build_topic_emit(
     method_ident: &Ident,
     params: &[FunctionParam],
@@ -1677,12 +1634,6 @@ fn build_topic_emit(
                 }
             }
         }
-    }
-}
-
-fn build_subscribed_topic_struct(struct_ident: &Ident) -> TokenStream {
-    quote! {
-        pub struct #struct_ident;
     }
 }
 
@@ -1773,7 +1724,7 @@ fn build_subscribed_topic_callback(
                     })?
             };
 
-            Self::#helper_fn_ident(message.payload.as_ref())
+            #helper_fn_ident(message.payload.as_ref())
         }
 
         fn #helper_fn_ident(payload: &[u8]) -> crate::Result<#args_struct_ident> {
@@ -2255,7 +2206,7 @@ fn build_exposed_service_method(
             where
                 F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
             {
-                let #params_pattern = Self::#request_deserializer_name(payload)?;
+                let #params_pattern = #request_deserializer_name(payload)?;
 
                 let response_payload = #response_serialization;
 
@@ -2300,7 +2251,7 @@ fn build_exposed_service_method(
                     async move {
                         let payload = request_context.message.payload;
 
-                        Self::#handler_helper_name(payload.as_ref(), &handler).map_err(|error| {
+                        #handler_helper_name(payload.as_ref(), &handler).map_err(|error| {
                             peppylib::PeppyError::Io(std::io::Error::other(error.to_string()))
                         })
                     }

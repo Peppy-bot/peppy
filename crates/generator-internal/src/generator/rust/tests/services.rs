@@ -95,9 +95,9 @@ fn expose_service() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     assert_rendered!(
-        rendered.contains("pub struct Exposes;"),
+        !rendered.contains("pub struct Exposes;"),
         &rendered,
-        "expected service struct declaration"
+        "service helpers should be emitted as free functions"
     );
     assert_rendered!(
         rendered.contains("pub struct EnableCameraResponse"),
@@ -163,6 +163,11 @@ fn expose_service() {
         rendered.contains(".handle_next_request(move |request_context|"),
         &rendered,
         "expected generated handler to schedule request handling through ServiceMessenger"
+    );
+    assert_rendered!(
+        !rendered.contains("Self::enable_camera_handle_request_payload"),
+        &rendered,
+        "free function handler should invoke helper without a struct receiver"
     );
     assert_rendered!(
         rendered.contains("request_context.message.payload"),
@@ -272,9 +277,9 @@ fn expose_two_services() {
         .expect("artifact is present");
 
     assert_rendered!(
-        rendered.contains("pub struct Exposes;"),
+        !rendered.contains("pub struct Exposes;"),
         &rendered,
-        "expected service struct declaration for combined services"
+        "service helpers should be emitted as free functions"
     );
     assert_rendered!(
         rendered.contains("pub async fn handle_enable_camera_next_request<F>("),
@@ -389,14 +394,9 @@ fn subscribed_to_service() {
         "expected response string field"
     );
     assert_rendered!(
-        rendered.contains("pub struct Subscribes;"),
+        !rendered.contains("pub struct Subscribes;"),
         &rendered,
-        "expected poll helper struct for subscribed service"
-    );
-    assert_rendered!(
-        rendered.contains("impl Subscribes {"),
-        &rendered,
-        "expected poll helper impl"
+        "poll helpers should be emitted as free functions"
     );
     assert_rendered!(
         rendered.contains("pub async fn poll_uvc_camera_enable_camera("),
@@ -516,17 +516,10 @@ fn subscribed_to_two_services_same_node() {
     );
     let struct_count = rendered.matches("pub struct Subscribes;").count();
     assert_rendered!(
-        struct_count == 1,
+        struct_count == 0,
         rendered,
-        "expected a single service subscriber struct, got {}",
+        "subscriber helpers should not introduce wrapper structs, found {}",
         struct_count
-    );
-    let impl_count = rendered.matches("impl Subscribes {").count();
-    assert_rendered!(
-        impl_count == 1,
-        rendered,
-        "expected a single impl block for service subscribers, got {}",
-        impl_count
     );
     assert_rendered!(
         rendered.contains("pub async fn poll_uvc_camera_enable_camera("),
@@ -633,9 +626,9 @@ fn subscribed_service_without_response_payload() {
     let rendered = &artifacts[0].code_output;
 
     assert_rendered!(
-        rendered.contains("pub struct Subscribes;"),
+        !rendered.contains("pub struct Subscribes;"),
         rendered,
-        "expected poll struct definition for `get_camera_info`"
+        "poll helpers should be emitted as free functions"
     );
     assert_rendered!(
         !rendered.contains("GetCameraInfoResponse"),
@@ -764,13 +757,13 @@ fn compile_lib_with_exposed_services_artifact() {
         services_contents
     );
     assert!(
-        services_contents.contains("pub use exposers::*;"),
-        "Expected services module to re-export generated service struct, got:\n{}",
+        !services_contents.contains("pub use exposers::*;"),
+        "Services module should not glob re-export exposers to avoid duplicate type names, got:\n{}",
         services_contents
     );
     assert!(
-        services_contents.contains("pub use subscribers::*;"),
-        "Expected services module to re-export subscribed service struct, got:\n{}",
+        !services_contents.contains("pub use subscribers::*;"),
+        "Services module should not glob re-export subscribers to avoid duplicate type names, got:\n{}",
         services_contents
     );
     let service_modules: Vec<String> = services_contents
@@ -821,8 +814,8 @@ fn compile_lib_with_exposed_services_artifact() {
         subscribers_module_path
     );
     assert!(
-        module_contents.contains("pub struct Exposes;"),
-        "Expected generated service module to define exposes struct, got:\n{}",
+        !module_contents.contains("pub struct Exposes;"),
+        "Generated service module should expose free functions, got:\n{}",
         module_contents
     );
     assert!(
