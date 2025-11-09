@@ -571,7 +571,7 @@ impl LanguageGenerator for RustGenerator {
                 namespace,
                 service_name,
                 request_payload,
-                std::time::Duration::from_secs(3),
+                timeout,
             )
         };
 
@@ -648,7 +648,10 @@ impl LanguageGenerator for RustGenerator {
         let struct_tokens = context.into_tokens();
         let service_name_literal = Literal::string(service.name.as_str());
 
-        let mut fn_param_tokens = vec![quote!(messenger: &crate::Messenger)];
+        let mut fn_param_tokens = vec![
+            quote!(messenger: &crate::Messenger),
+            quote!(timeout: std::time::Duration),
+        ];
         fn_param_tokens.extend(function_param_tokens(&params));
 
         let function_token = quote! {
