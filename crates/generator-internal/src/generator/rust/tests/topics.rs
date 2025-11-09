@@ -96,6 +96,7 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2: &str = r#"
 }
 "#;
 
+/// In the case of a topic, an "exposed" topic is an entity that emits messages
 #[test]
 fn expose_topic() {
     let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
@@ -250,6 +251,7 @@ fn expose_two_topics() {
     );
 }
 
+/// In the case of a topic, a "subscribed" topic is an entity expects to receive messages from another entity
 #[test]
 fn subscribed_to_topic() {
     let topic: SubscribedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE1).unwrap();

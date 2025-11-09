@@ -37,7 +37,8 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
       }
     },
     response_message_format: {
-      success: "bool"
+      success: "bool",
+      error_msg: "string"
     }
   }
 }
@@ -81,7 +82,131 @@ fn exposed_action() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    todo!("Finish")
+    assert_rendered!(
+        rendered.contains("pub struct MoveArmGoalRequest"),
+        &rendered,
+        "expected goal request struct"
+    );
+    assert_rendered!(
+        rendered.contains("pub arm_id: u16"),
+        &rendered,
+        "expected arm_id field in goal request"
+    );
+    assert_rendered!(
+        rendered.contains("desired_position: [i32; 3]"),
+        &rendered,
+        "expected desired_position array in goal request"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct MoveArmGoalResponse"),
+        &rendered,
+        "expected goal response struct"
+    );
+    assert_rendered!(
+        rendered.contains("impl MoveArmGoalResponse"),
+        &rendered,
+        "expected goal response constructor block"
+    );
+    assert_rendered!(
+        rendered.contains("pub fn new(accepted: bool) -> Self"),
+        &rendered,
+        "expected goal response constructor signature"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct MoveArmResultRequest"),
+        &rendered,
+        "expected result request struct"
+    );
+    assert_rendered!(
+        rendered.contains("final_position: [i32; 3]"),
+        &rendered,
+        "expected final_position field in result request"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct MoveArmResultResponse"),
+        &rendered,
+        "expected result response struct"
+    );
+    assert_rendered!(
+        rendered.contains("success: bool"),
+        &rendered,
+        "expected success field in result response"
+    );
+    assert_rendered!(
+        rendered.contains("error_msg: String"),
+        &rendered,
+        "expected error_msg field in result response"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct MoveArmAction;"),
+        &rendered,
+        "expected action marker struct"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn handle_move_arm_goal_next_request"),
+        &rendered,
+        "expected goal handler method"
+    );
+    assert_rendered!(
+        rendered.contains("F: Fn(MoveArmGoalRequest) -> crate::Result<MoveArmGoalResponse>"),
+        &rendered,
+        "expected goal handler signature"
+    );
+    assert_rendered!(
+        rendered.contains("let service_name = \"move_arm/goal\";"),
+        &rendered,
+        "expected goal service name literal"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn handle_move_arm_goal_cancel_request"),
+        &rendered,
+        "expected cancel handler method"
+    );
+    assert_rendered!(
+        rendered.contains("F: Fn() -> crate::Result<()>"),
+        &rendered,
+        "expected cancel handler signature"
+    );
+    assert_rendered!(
+        rendered.contains("let service_name = \"move_arm/cancel\";"),
+        &rendered,
+        "expected cancel service name"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn emit_move_arm_feedback"),
+        &rendered,
+        "expected feedback emit method"
+    );
+    assert_rendered!(
+        rendered.contains("let topic_name = \"move_arm/feedback\";"),
+        &rendered,
+        "expected feedback topic literal"
+    );
+    assert_rendered!(
+        rendered.contains("#[allow(clippy::too_many_arguments)]"),
+        &rendered,
+        "expected clippy allowance on feedback emitter"
+    );
+    assert_rendered!(
+        rendered.contains("peppylib::TopicMessenger::emit"),
+        &rendered,
+        "expected topic messenger emit call"
+    );
+    assert_rendered!(
+        rendered.contains("peppylib::ServiceMessenger::listen"),
+        &rendered,
+        "expected service listen call for action endpoints"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn handle_move_arm_result_next_request"),
+        &rendered,
+        "expected result handler method"
+    );
+    assert_rendered!(
+        rendered.contains("F: Fn(MoveArmResultRequest) -> crate::Result<MoveArmResultResponse>"),
+        &rendered,
+        "expected result handler signature"
+    );
 }
 
 #[test]

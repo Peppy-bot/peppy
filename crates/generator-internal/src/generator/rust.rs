@@ -141,6 +141,71 @@ impl RustGenerator {
             reader_type: schema_info.reader_type_tokens(),
         }))
     }
+
+    fn build_action_service_handler(
+        &mut self,
+        fn_name: &Ident,
+        handler_fn_name_override: Option<&Ident>,
+        struct_prefix: &str,
+        request_format: Option<&MessageFormat>,
+        response_format: Option<&MessageFormat>,
+        label: &str,
+        service_name_literal: &Literal,
+        context: &mut GenerationContext,
+    ) -> Result<(TokenStream, Vec<TokenStream>)> {
+        let accept_format_artifacts = map_message_format(request_format)?;
+        let return_format_artifacts = map_message_format(response_format)?;
+
+        let params = collect_function_params(
+            accept_format_artifacts.as_ref(),
+            return_format_artifacts.as_ref(),
+            struct_prefix,
+            context,
+        )?;
+
+        let encoding = self.prepare_message_encoding(
+            label,
+            struct_prefix,
+            accept_format_artifacts.as_ref(),
+            &params,
+        )?;
+
+        let request_struct_ident =
+            if let Some((ident, tokens)) = build_request_struct(struct_prefix, &params) {
+                context.add_private_struct(tokens);
+                Some(ident)
+            } else {
+                None
+            };
+
+        let response_spec = if let Some(return_artifacts) = return_format_artifacts.as_ref() {
+            let response_prefix = format!("{struct_prefix}Response");
+            let schema_key = format!("{label}_response");
+            let schema_info =
+                self.register_schema(&schema_key, &response_prefix, return_artifacts)?;
+            Some(ServiceResponseSpec {
+                format: return_artifacts.message_format(),
+                struct_ident: Ident::new(&response_prefix, Span::call_site()),
+                builder_type: schema_info.builder_type_tokens(),
+            })
+        } else {
+            None
+        };
+
+        Ok(build_exposed_service_method(
+            fn_name,
+            handler_fn_name_override,
+            &params,
+            encoding.as_ref(),
+            accept_format_artifacts
+                .as_ref()
+                .map(|art| art.message_format()),
+            label,
+            service_name_literal,
+            request_struct_ident.as_ref(),
+            response_spec.as_ref(),
+        ))
+    }
 }
 
 struct SchemaInfo {
@@ -268,6 +333,7 @@ impl LanguageGenerator for RustGenerator {
         let service_name_literal = Literal::string(service.name.as_str());
         let (method_token, helper_tokens) = build_exposed_service_method(
             &fn_name,
+            None,
             &params,
             encoding.as_ref(),
             accept_format_artifacts
@@ -291,42 +357,63 @@ impl LanguageGenerator for RustGenerator {
     fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()> {
         let base_ident = prefixed_ident("", non_empty_str(&action.name), "action");
         let base_name = base_ident.to_string();
+        let action_prefix = to_camel_case(&base_name);
+        let action_struct_ident = Ident::new(&format!("{action_prefix}Action"), Span::call_site());
 
         let mut context = GenerationContext::default();
-        let mut function_blocks: Vec<TokenStream> = Vec::new();
+        let mut methods: Vec<TokenStream> = Vec::new();
+        let mut helper_tokens: Vec<TokenStream> = Vec::new();
 
         if let Some(goal) = action.goal_service.as_ref() {
             let fn_name = Ident::new(&(base_name.clone() + "_goal"), Span::call_site());
-            let async_fn_name = Ident::new(&(fn_name.to_string() + "_async"), Span::call_site());
-            let struct_prefix = format!("{}Goal", to_camel_case(&base_name));
-            let accept_format_artifacts = map_message_format(goal.request_message_format.as_ref())?;
-            let return_format_artifacts =
-                map_message_format(goal.response_message_format.as_ref())?;
-            let params = collect_function_params(
-                accept_format_artifacts.as_ref(),
-                return_format_artifacts.as_ref(),
+            let struct_prefix = format!("{action_prefix}Goal");
+            let label = fn_name.to_string();
+            let service_name =
+                action_endpoint_name(goal.name.as_deref(), action.name.as_str(), "goal");
+            let service_literal = Literal::string(&service_name);
+
+            let (method, helpers) = self.build_action_service_handler(
+                &fn_name,
+                None,
                 &struct_prefix,
+                goal.request_message_format.as_ref(),
+                goal.response_message_format.as_ref(),
+                &label,
+                &service_literal,
                 &mut context,
             )?;
-            let fn_key = fn_name.to_string();
-            let encoding = self.prepare_message_encoding(
-                &fn_key,
-                &struct_prefix,
-                accept_format_artifacts.as_ref(),
-                &params,
-            )?;
+            methods.push(method);
+            helper_tokens.extend(helpers);
 
-            let sync_fn = build_sync_function(&fn_name, &async_fn_name, &params, &fn_key);
-            let async_fn =
-                build_async_function(&async_fn_name, &params, encoding.as_ref(), &fn_key);
-            function_blocks.push(sync_fn);
-            function_blocks.push(async_fn);
+            let cancel_fn_name =
+                Ident::new(&(base_name.clone() + "_goal_cancel"), Span::call_site());
+            let cancel_label = cancel_fn_name.to_string();
+            let cancel_service_name = action_endpoint_name(None, action.name.as_str(), "cancel");
+            let cancel_service_literal = Literal::string(&cancel_service_name);
+            let cancel_struct_prefix = format!("{action_prefix}GoalCancel");
+            let cancel_handler_ident = Ident::new(
+                &format!("handle_{base_name}_goal_cancel_request"),
+                Span::call_site(),
+            );
+
+            let (cancel_method, cancel_helpers) = self.build_action_service_handler(
+                &cancel_fn_name,
+                Some(&cancel_handler_ident),
+                &cancel_struct_prefix,
+                None,
+                None,
+                &cancel_label,
+                &cancel_service_literal,
+                &mut context,
+            )?;
+            methods.push(cancel_method);
+            helper_tokens.extend(cancel_helpers);
         }
 
         if let Some(feedback) = action.feedback_topic.as_ref() {
-            let fn_name = Ident::new(&(base_name.clone() + "_feedback"), Span::call_site());
-            let async_fn_name = Ident::new(&(fn_name.to_string() + "_async"), Span::call_site());
-            let struct_prefix = format!("{}Feedback", to_camel_case(&base_name));
+            let method_ident = Ident::new(&format!("emit_{base_name}_feedback"), Span::call_site());
+            let label = method_ident.to_string();
+            let struct_prefix = format!("{action_prefix}Feedback");
             let format_artifacts = map_message_format(feedback.message_format.as_ref())?;
             let params = collect_function_params(
                 format_artifacts.as_ref(),
@@ -334,62 +421,69 @@ impl LanguageGenerator for RustGenerator {
                 &struct_prefix,
                 &mut context,
             )?;
-            let fn_key = fn_name.to_string();
             let encoding = self.prepare_message_encoding(
-                &fn_key,
+                &label,
                 &struct_prefix,
                 format_artifacts.as_ref(),
                 &params,
             )?;
 
-            let sync_fn = build_sync_function(&fn_name, &async_fn_name, &params, &fn_key);
-            let async_fn =
-                build_async_function(&async_fn_name, &params, encoding.as_ref(), &fn_key);
-            function_blocks.push(sync_fn);
-            function_blocks.push(async_fn);
+            let topic_name =
+                action_endpoint_name(feedback.name.as_deref(), action.name.as_str(), "feedback");
+            let topic_descriptor = ExposedTopic {
+                name: topic_name,
+                qos_profile: feedback.qos_profile.clone(),
+                message_format: feedback.message_format.clone(),
+            };
+
+            let method_tokens = build_topic_emit(
+                &method_ident,
+                &params,
+                encoding.as_ref(),
+                &topic_descriptor,
+                &label,
+            );
+            methods.push(method_tokens);
         }
 
         if let Some(result) = action.result_service.as_ref() {
             let fn_name = Ident::new(&(base_name.clone() + "_result"), Span::call_site());
-            let async_fn_name = Ident::new(&(fn_name.to_string() + "_async"), Span::call_site());
-            let struct_prefix = format!("{}Result", to_camel_case(&base_name));
-            let accept_format_artifacts =
-                map_message_format(result.request_message_format.as_ref())?;
-            let return_format_artifacts =
-                map_message_format(result.response_message_format.as_ref())?;
-            let params = collect_function_params(
-                accept_format_artifacts.as_ref(),
-                return_format_artifacts.as_ref(),
+            let struct_prefix = format!("{action_prefix}Result");
+            let label = fn_name.to_string();
+            let service_name =
+                action_endpoint_name(result.name.as_deref(), action.name.as_str(), "result");
+            let service_literal = Literal::string(&service_name);
+
+            let (method, helpers) = self.build_action_service_handler(
+                &fn_name,
+                None,
                 &struct_prefix,
+                result.request_message_format.as_ref(),
+                result.response_message_format.as_ref(),
+                &label,
+                &service_literal,
                 &mut context,
             )?;
-            let fn_key = fn_name.to_string();
-            let encoding = self.prepare_message_encoding(
-                &fn_key,
-                &struct_prefix,
-                accept_format_artifacts.as_ref(),
-                &params,
-            )?;
-
-            let sync_fn = build_sync_function(&fn_name, &async_fn_name, &params, &fn_key);
-            let async_fn =
-                build_async_function(&async_fn_name, &params, encoding.as_ref(), &fn_key);
-            function_blocks.push(sync_fn);
-            function_blocks.push(async_fn);
+            methods.push(method);
+            helper_tokens.extend(helpers);
         }
 
-        if function_blocks.is_empty() {
+        if methods.is_empty() {
             return Ok(());
         }
 
-        let struct_tokens = context.into_tokens();
+        let mut items = context.into_tokens();
+        items.push(quote!(pub struct #action_struct_ident;));
+        let impl_block = quote! {
+            impl #action_struct_ident {
+                #( #methods )*
+            }
+        };
+        items.push(impl_block);
+        items.extend(helper_tokens);
 
         let tokens: TokenStream = quote! {
-            #( #struct_tokens )*
-
-            impl Actions {
-                #( #function_blocks )*
-            }
+            #( #items )*
         };
         let rendered = render_tokens(tokens);
         self.push_section(InterfaceArtifact::from_kind(
@@ -946,6 +1040,24 @@ fn non_empty_str(value: &str) -> Option<&str> {
         None
     } else {
         Some(value)
+    }
+}
+
+fn action_endpoint_name(custom: Option<&str>, action_name: &str, suffix: &str) -> String {
+    if let Some(candidate) = custom {
+        let trimmed = candidate.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    let trimmed_action = action_name.trim();
+    if trimmed_action.is_empty() {
+        suffix.to_string()
+    } else if trimmed_action.ends_with('/') {
+        format!("{trimmed_action}{suffix}")
+    } else {
+        format!("{trimmed_action}/{suffix}")
     }
 }
 
@@ -2131,6 +2243,7 @@ fn function_param_tokens(params: &[FunctionParam]) -> Vec<TokenStream> {
 
 fn build_exposed_service_method(
     fn_name: &Ident,
+    handler_fn_name_override: Option<&Ident>,
     params: &[FunctionParam],
     encoding: Option<&MessageEncodingSpec>,
     request_format: Option<&MessageFormat>,
@@ -2139,10 +2252,12 @@ fn build_exposed_service_method(
     request_struct: Option<&Ident>,
     response_spec: Option<&ServiceResponseSpec>,
 ) -> (TokenStream, Vec<TokenStream>) {
-    let handler_fn_name = Ident::new(
-        &format!("handle_{}_next_request", fn_name),
-        Span::call_site(),
-    );
+    let handler_fn_name = handler_fn_name_override.cloned().unwrap_or_else(|| {
+        Ident::new(
+            &format!("handle_{}_next_request", fn_name),
+            Span::call_site(),
+        )
+    });
 
     // Build callback parameter signature (just types, no names for Fn trait bounds)
     let callback_param_types: Vec<TokenStream> = if let Some(request_struct) = request_struct {
@@ -2449,6 +2564,7 @@ fn build_response_serialization_code(
     })
 }
 
+#[allow(dead_code)]
 fn build_sync_function(
     fn_name: &Ident,
     async_fn_name: &Ident,
@@ -2488,6 +2604,7 @@ fn build_sync_function(
     }
 }
 
+#[allow(dead_code)]
 fn build_async_function(
     fn_name: &Ident,
     params: &[FunctionParam],
