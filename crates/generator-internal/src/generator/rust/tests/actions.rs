@@ -88,6 +88,28 @@ const SUBSCRIBED_ACTION_GOAL_FORMAT: &str = r#"
 }
 "#;
 
+const SUBSCRIBED_ACTION_FEEDBACK_FORMAT: &str = r#"
+{
+  new_position: {
+    type: "array",
+    items: "i32",
+    length: 3
+  }
+}
+"#;
+
+const SUBSCRIBED_ACTION_RESULT_FORMAT: &str = r#"
+{
+  success: "bool",
+  error_msg: "string",
+  final_position: {
+    type: "array",
+    items: "i32",
+    length: 3
+  }
+}
+"#;
+
 #[test]
 fn exposed_action() {
     let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
@@ -429,19 +451,10 @@ fn expose_two_actions() {
 fn subscribed_to_action() {
     let action: SubscribedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
     let goal_format: MessageFormat = serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT).unwrap();
-    let feedback_format: MessageFormat = serde_json5::from_str(r#"{ payload: "bytes" }"#).unwrap();
-    let result_format: MessageFormat = serde_json5::from_str(
-        r#"{
-            success: "bool",
-            error_msg: "string",
-            final_position: {
-                type: "array",
-                items: "i32",
-                length: 3
-            }
-        }"#,
-    )
-    .unwrap();
+    let feedback_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT).unwrap();
+    let result_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_FORMAT).unwrap();
     let format = SubscribedActionMessage {
         goal: goal_format,
         feedback: feedback_format,
