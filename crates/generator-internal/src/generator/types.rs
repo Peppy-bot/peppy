@@ -24,10 +24,10 @@ pub enum InterfaceKind {
 
 #[derive(Debug, Clone)]
 pub struct SubscribedActionMessage {
-    pub goal_request: MessageFormat,
+    pub goal_request: Option<MessageFormat>,
     pub goal_response: MessageFormat,
     pub feedback: MessageFormat,
-    pub result_request: MessageFormat,
+    pub result_request: Option<MessageFormat>,
     pub result_response: MessageFormat,
 }
 
