@@ -75,6 +75,7 @@ const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2: &str = r#"
 }
 "#;
 
+/// In the case of a service, an "exposed" service is an entity that accept incoming messages
 #[test]
 fn expose_service() {
     let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
@@ -328,6 +329,7 @@ fn expose_two_services() {
     );
 }
 
+/// In the case of a service, a "subscribed" service is an entity expects to connect to another entity
 #[test]
 fn subscribed_to_service() {
     let service: SubscribedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
