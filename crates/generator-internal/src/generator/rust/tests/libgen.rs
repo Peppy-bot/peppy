@@ -408,15 +408,14 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
     }
   },
   result_service: {
-    request_message_format: {
+    response_message_format: {
+      success: "bool",
+      error_msg: "string",
       final_position: {
         type: "array",
         items: "i32",
         length: 3
       }
-    },
-    response_message_format: {
-      success: "bool"
     }
   }
 }
@@ -442,6 +441,8 @@ const SUBSCRIBED_ACTION_FEEDBACK_FORMAT: &str = r#"
 
 const SUBSCRIBED_ACTION_RESULT_FORMAT: &str = r#"
 {
+  success: "bool",
+  error_msg: "string",
   final_position: {
     type: "array",
     items: "i32",
