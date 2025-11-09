@@ -206,6 +206,332 @@ impl RustGenerator {
             response_spec.as_ref(),
         ))
     }
+
+    fn build_action_service_method(
+        &mut self,
+        context: &mut GenerationContext,
+        method_ident: &Ident,
+        struct_prefix: &str,
+        request_format: Option<&MessageFormat>,
+        response_format: Option<&MessageFormat>,
+        service_name: &str,
+    ) -> Result<TokenStream> {
+        let request_artifacts = map_message_format(request_format)?;
+        let response_artifacts = map_message_format(response_format)?;
+
+        let params = collect_function_params(
+            request_artifacts.as_ref(),
+            response_artifacts.as_ref(),
+            struct_prefix,
+            context,
+        )?;
+
+        let method_label = method_ident.to_string();
+        let method_label_literal = Literal::string(&method_label);
+        let request_encoding = self.prepare_message_encoding(
+            &method_label,
+            struct_prefix,
+            request_artifacts.as_ref(),
+            &params,
+        )?;
+
+        let request_payload_tokens = if let Some(spec) = &request_encoding {
+            let builder_type = &spec.builder_type;
+            let assignments = &spec.assignments;
+
+            quote! {
+                let request_payload = {
+                    let mut message = capnp::message::Builder::new_default();
+                    {
+                        let mut root = message.init_root::<#builder_type>();
+                        #( #assignments )*
+                    }
+                    let mut buffer = Vec::new();
+                    capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
+                        crate::Error::CapnpSerialize {
+                            context: String::from(#method_label_literal),
+                            source,
+                        }
+                    })?;
+                    bytes::Bytes::from(buffer)
+                };
+            }
+        } else {
+            let suppress_unused = unused_params_stmt(&params);
+            quote! {
+                #suppress_unused
+                let request_payload = bytes::Bytes::new();
+            }
+        };
+
+        let service_name_literal = Literal::string(service_name);
+        let poll_call = quote! {
+            peppylib::ServiceMessenger::poll(
+                messenger.handle(),
+                namespace,
+                service_name,
+                request_payload,
+                timeout,
+            )
+        };
+
+        let (return_ty, response_tokens, poll_tokens) =
+            if let Some(response_artifacts) = response_artifacts.as_ref() {
+                let response_struct_name = format!("{struct_prefix}Response");
+                let response_struct_ident = Ident::new(&response_struct_name, Span::call_site());
+
+                let response_schema_key = format!("{method_label}_response");
+                let response_schema = self.register_schema(
+                    &response_schema_key,
+                    &response_struct_name,
+                    response_artifacts,
+                )?;
+                let reader_type = response_schema.reader_type_tokens();
+
+                let response_format = response_artifacts.message_format();
+                let mut response_statements = Vec::new();
+                let mut response_inits = Vec::new();
+                let mut names = NameGenerator::new();
+
+                for (field_name, schema) in &response_format.0 {
+                    let (mut statements, value_ident) = generate_field_reader_statements(
+                        &quote!(root),
+                        field_name,
+                        schema,
+                        &response_struct_name,
+                        &mut names,
+                    );
+                    response_statements.append(&mut statements);
+                    let field_ident =
+                        Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
+                    response_inits.push(quote!(#field_ident: #value_ident));
+                }
+
+                let response_context_literal = Literal::string(&response_struct_name);
+
+                let poll_tokens = quote! {
+                    let response_bytes = #poll_call.await?;
+                };
+
+                let response_tokens = quote! {
+                    let mut cursor = std::io::Cursor::new(response_bytes.as_ref());
+                    let message_reader = capnp::serialize::read_message(
+                        &mut cursor,
+                        capnp::message::ReaderOptions::new(),
+                    )
+                    .map_err(|source| crate::Error::CapnpDeserialize {
+                        context: String::from(#response_context_literal),
+                        source,
+                    })?;
+
+                    let root = message_reader
+                        .get_root::<#reader_type>()
+                        .map_err(|source| crate::Error::CapnpDeserialize {
+                            context: String::from(#response_context_literal),
+                            source,
+                        })?;
+
+                    #( #response_statements )*
+
+                    Ok(#response_struct_ident {
+                        #( #response_inits ),*
+                    })
+                };
+
+                (quote!(#response_struct_ident), response_tokens, poll_tokens)
+            } else {
+                let poll_tokens = quote! {
+                    let _ = #poll_call.await?;
+                };
+                (quote!(()), quote!(Ok(())), poll_tokens)
+            };
+
+        let mut fn_params = vec![
+            quote!(messenger: &crate::Messenger),
+            quote!(timeout: std::time::Duration),
+        ];
+        fn_params.extend(function_param_tokens(&params));
+
+        Ok(quote! {
+            pub async fn #method_ident(#(#fn_params),*) -> crate::Result<#return_ty> {
+                let namespace = messenger.namespace();
+                let service_name = #service_name_literal;
+
+                #request_payload_tokens
+
+                #poll_tokens
+
+                #response_tokens
+            }
+        })
+    }
+
+    fn build_action_cancel_method(&self, service_name: &str) -> TokenStream {
+        let service_name_literal = Literal::string(service_name);
+        quote! {
+            pub async fn cancel_goal(
+                messenger: &crate::Messenger,
+                timeout: std::time::Duration,
+            ) -> crate::Result<()> {
+                let namespace = messenger.namespace();
+                let service_name = #service_name_literal;
+                let request_payload = bytes::Bytes::new();
+
+                let _ = peppylib::ServiceMessenger::poll(
+                    messenger.handle(),
+                    namespace,
+                    service_name,
+                    request_payload,
+                    timeout,
+                )
+                .await?;
+
+                Ok(())
+            }
+        }
+    }
+
+    fn build_action_feedback_method(
+        &mut self,
+        context: &mut GenerationContext,
+        action: &SubscribedAction,
+        format: &MessageFormat,
+        action_struct_name: &str,
+    ) -> Result<(TokenStream, Vec<TokenStream>)> {
+        let format_artifacts = map_message_format(Some(format))?
+            .expect("feedback format should always yield encoding artifacts");
+
+        let struct_prefix = format!("{action_struct_name}Feedback");
+        let struct_name = format!("{struct_prefix}Message");
+        let struct_ident = Ident::new(&struct_name, Span::call_site());
+
+        let params = collect_function_params(
+            Some(&format_artifacts),
+            None,
+            &struct_name,
+            context,
+        )?;
+
+        let fields: Vec<(Ident, TokenStream)> = params
+            .iter()
+            .map(|param| (param.ident.clone(), param.ty.clone()))
+            .collect();
+        context.add_struct(struct_ident.clone(), fields);
+
+        let schema_key = format!("{struct_name}_payload");
+        let encoding = self
+            .prepare_message_encoding(&schema_key, &struct_prefix, Some(&format_artifacts), &params)?
+            .expect("feedback encoding spec should exist");
+        let reader_type = encoding.reader_type.clone();
+
+        let topic_name = action_endpoint_name(None, action.name.as_str(), "feedback");
+        let topic_literal = Literal::string(&topic_name);
+
+        let node_component = sanitize_component(action.node.as_str());
+        let topic_component = sanitize_component(topic_name.as_str());
+        let helper_name = match (node_component.is_empty(), topic_component.is_empty()) {
+            (true, true) => "deserialize_feedback_payload".to_string(),
+            (true, false) => format!("deserialize_{topic_component}_payload"),
+            (false, true) => format!("deserialize_{node_component}_payload"),
+            (false, false) => format!("deserialize_{node_component}_{topic_component}_payload"),
+        };
+        let helper_fn_ident = Ident::new(&helper_name, Span::call_site());
+
+        let mut schema_lookup: HashMap<String, (&String, &SchemaType)> = HashMap::new();
+        let format_schema = format_artifacts.message_format();
+        for (field_name, schema) in &format_schema.0 {
+            let capnp_key = sanitize_capnp_field_name(field_name);
+            schema_lookup.insert(capnp_key.clone(), (field_name, schema));
+
+            let rust_key = sanitize_component(field_name);
+            schema_lookup.entry(rust_key).or_insert((field_name, schema));
+        }
+
+        let mut names = NameGenerator::new();
+        let mut field_statements = Vec::new();
+        let mut field_inits = Vec::new();
+        for param in &params {
+            let key = param.ident.to_string();
+            let (original_name, schema) = schema_lookup
+                .get(&key)
+                .unwrap_or_else(|| panic!("missing schema entry for field `{key}`"));
+            let (mut statements, value_ident) = generate_field_reader_statements(
+                &quote!(root),
+                original_name,
+                schema,
+                &struct_name,
+                &mut names,
+            );
+            field_statements.append(&mut statements);
+            let field_ident = &param.ident;
+            field_inits.push(quote!(#field_ident: #value_ident));
+        }
+
+        let context_literal = Literal::string(&struct_name);
+
+        let helper_tokens = quote! {
+            fn #helper_fn_ident(payload: &[u8]) -> crate::Result<#struct_ident> {
+                let mut cursor = std::io::Cursor::new(payload);
+                let message_reader = capnp::serialize::read_message(
+                    &mut cursor,
+                    capnp::message::ReaderOptions::new(),
+                )
+                .map_err(|source| crate::Error::CapnpDeserialize {
+                    context: String::from(#context_literal),
+                    source,
+                })?;
+
+                let root = message_reader
+                    .get_root::<#reader_type>()
+                    .map_err(|source| crate::Error::CapnpDeserialize {
+                        context: String::from(#context_literal),
+                        source,
+                    })?;
+
+                #( #field_statements )*
+
+                Ok(#struct_ident {
+                    #( #field_inits ),*
+                })
+            }
+        };
+
+        let method_ident = Ident::new("on_next_feedback_message", Span::call_site());
+        let method_tokens = quote! {
+            pub async fn #method_ident(
+                messenger: &crate::Messenger,
+            ) -> crate::Result<#struct_ident> {
+                let topic_name = #topic_literal;
+                let namespace = messenger.namespace();
+                let qos = peppylib::config::QoSProfile::Standard;
+
+                let message = {
+                    let mut subscription = peppylib::TopicMessenger::subscribe(
+                        messenger.handle(),
+                        namespace,
+                        topic_name,
+                        qos,
+                    )
+                    .await
+                    .map_err(|source| crate::Error::TopicSubscribe {
+                        topic_name: topic_name.to_string(),
+                        namespace: namespace.to_string(),
+                        source,
+                    })?;
+                    subscription
+                        .on_next_message()
+                        .await
+                        .ok_or_else(|| crate::Error::SubscriptionClosed {
+                            topic_name: topic_name.to_string(),
+                        })?
+                };
+
+                #helper_fn_ident(message.payload.as_ref())
+            }
+        };
+
+        Ok((method_tokens, vec![helper_tokens]))
+    }
 }
 
 struct SchemaInfo {
@@ -777,43 +1103,74 @@ impl LanguageGenerator for RustGenerator {
         action: &SubscribedAction,
         messages: Option<&SubscribedActionMessage>,
     ) -> Result<()> {
-        let base_ident = prefixed_ident("on", non_empty_str(action.name.as_str()), "action");
-        let base_name = base_ident.to_string();
-        let mut struct_blocks: Vec<TokenStream> = Vec::new();
-        let mut function_blocks: Vec<TokenStream> = Vec::new();
+        let messages = messages.ok_or_else(|| {
+            Error::SubscriberActionMessageFormatMissing(action.name.clone())
+        })?;
 
-        let feedback_fn_name = Ident::new(&(base_name.clone() + "_feedback"), Span::call_site());
-        let feedback_format = messages.map(|msg| &msg.feedback);
-        let (feedback_structs, feedback_fn) = build_async_returning_function(
-            &feedback_fn_name,
-            feedback_format,
-            "Arguments",
-            "await for action feedback with PMI",
+        let node_component = sanitize_component(action.node.as_str());
+        let action_component = sanitize_component(action.name.as_str());
+        let base_component = match (node_component.is_empty(), action_component.is_empty()) {
+            (true, true) => "action".to_string(),
+            (true, false) => action_component.clone(),
+            (false, true) => node_component.clone(),
+            (false, false) => format!("{node_component}_{action_component}"),
+        };
+        let action_prefix = to_camel_case(&base_component);
+        let action_struct_name = format!("{action_prefix}Action");
+        let action_struct_ident = Ident::new(&action_struct_name, Span::call_site());
+
+        let mut context = GenerationContext::default();
+        let mut methods: Vec<TokenStream> = Vec::new();
+        let mut helper_items: Vec<TokenStream> = Vec::new();
+
+        let goal_method = self.build_action_service_method(
+            &mut context,
+            &Ident::new("fire_goal", Span::call_site()),
+            &format!("{action_struct_name}Goal"),
+            Some(&messages.goal_request),
+            Some(&messages.goal_response),
+            &action_endpoint_name(None, action.name.as_str(), "goal"),
         )?;
-        struct_blocks.extend(feedback_structs);
-        function_blocks.push(feedback_fn);
+        methods.push(goal_method);
 
-        let result_fn_name = Ident::new(&(base_name + "_result"), Span::call_site());
-        let result_format = messages.map(|msg| &msg.result);
-        let (result_structs, result_fn) = build_async_returning_function(
-            &result_fn_name,
-            result_format,
-            "Arguments",
-            "await for action result with PMI",
+        let cancel_method = self.build_action_cancel_method(&action_endpoint_name(
+            None,
+            action.name.as_str(),
+            "cancel",
+        ));
+        methods.push(cancel_method);
+
+        let (feedback_method, mut feedback_helpers) = self.build_action_feedback_method(
+            &mut context,
+            action,
+            &messages.feedback,
+            &action_struct_name,
         )?;
-        struct_blocks.extend(result_structs);
-        function_blocks.push(result_fn);
+        methods.push(feedback_method);
+        helper_items.append(&mut feedback_helpers);
 
-        if function_blocks.is_empty() {
-            return Ok(());
-        }
+        let result_method = self.build_action_service_method(
+            &mut context,
+            &Ident::new("get_action_result", Span::call_site()),
+            &format!("{action_struct_name}Result"),
+            Some(&messages.result_request),
+            Some(&messages.result_response),
+            &action_endpoint_name(None, action.name.as_str(), "result"),
+        )?;
+        methods.push(result_method);
+
+        let mut items = context.into_tokens();
+        items.push(quote!(pub struct #action_struct_ident;));
+        let impl_block = quote! {
+            impl #action_struct_ident {
+                #( #methods )*
+            }
+        };
+        items.push(impl_block);
+        items.extend(helper_items);
 
         let tokens: TokenStream = quote! {
-            #( #struct_blocks )*
-
-            impl Actions {
-                #( #function_blocks )*
-            }
+            #( #items )*
         };
         let rendered = render_tokens(tokens);
         self.push_section(InterfaceArtifact::from_kind(
