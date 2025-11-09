@@ -1,7 +1,9 @@
 use super::*;
 
 use config::node::{ExposedAction, SubscribedAction};
+use std::collections::HashMap;
 
+// --- Exposes examples
 const EXPOSED_ACTION_EXAMPLE: &str = r#"
 {
   name: "move_arm",
@@ -29,16 +31,14 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
     }
   },
   result_service: {
-    request_message_format: {
+    response_message_format: {
+      success: "bool",
+      error_msg: "string",
       final_position: {
         type: "array",
         items: "i32",
         length: 3
       }
-    },
-    response_message_format: {
-      success: "bool",
-      error_msg: "string"
     }
   }
 }
@@ -55,11 +55,8 @@ const EXPOSED_ACTION_EXAMPLE2: &str = r#"
   feedback_topic: {
     qos_profile: "sensor_data",
     message_format: {
-      new_position: {
-        type: "array",
-        items: "i32",
-        length: 3
-      }
+      new_position: "i32", // Angular position in degree
+      speed: "i32"
     }
   },
   result_service: {
@@ -71,6 +68,7 @@ const EXPOSED_ACTION_EXAMPLE2: &str = r#"
 }
 "#;
 
+// --- Subscribes examples
 const SUBSCRIBED_ACTION_EXAMPLE: &str = r#"
 {
   node: "brain",
@@ -140,14 +138,9 @@ fn exposed_action() {
         "expected goal response constructor signature"
     );
     assert_rendered!(
-        rendered.contains("pub struct MoveArmResultRequest"),
-        &rendered,
-        "expected result request struct"
-    );
-    assert_rendered!(
         rendered.contains("final_position: [i32; 3]"),
         &rendered,
-        "expected final_position field in result request"
+        "expected final_position field in result response"
     );
     assert_rendered!(
         rendered.contains("pub struct MoveArmResultResponse"),
@@ -230,7 +223,7 @@ fn exposed_action() {
         "expected result handler method"
     );
     assert_rendered!(
-        rendered.contains("F: Fn(MoveArmResultRequest) -> crate::Result<MoveArmResultResponse>"),
+        rendered.contains("F: Fn() -> crate::Result<MoveArmResultResponse>"),
         &rendered,
         "expected result handler signature"
     );
@@ -341,7 +334,95 @@ fn expose_action_without_request_body() {
 
 #[test]
 fn expose_two_actions() {
-    todo!("Finish")
+    let action1: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let action2: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
+
+    let mut generator = RustGenerator::new();
+    generator.add_exposed_action(&action1).unwrap();
+    generator.add_exposed_action(&action2).unwrap();
+
+    let artifacts = generator.into_artifacts();
+
+    assert_eq!(
+        artifacts.len(),
+        2,
+        "expected two generated artifacts, got {}",
+        artifacts.len()
+    );
+
+    let artifact_map: HashMap<_, _> = artifacts
+        .into_iter()
+        .map(|artifact| (artifact.node_name, artifact.code_output))
+        .collect();
+
+    let move_arm = artifact_map
+        .get("move_arm")
+        .expect("move_arm artifact is present");
+    let rotate_servo = artifact_map
+        .get("rotate_servo_clockwise")
+        .expect("rotate_servo_clockwise artifact is present");
+
+    assert_rendered!(
+        move_arm.contains("pub struct MoveArmAction;"),
+        &move_arm,
+        "expected action marker struct for `move_arm`"
+    );
+    assert_rendered!(
+        move_arm.contains("pub async fn handle_move_arm_goal_next_request"),
+        &move_arm,
+        "expected goal handler for `move_arm`"
+    );
+    assert_rendered!(
+        move_arm.contains("pub struct MoveArmGoalRequest"),
+        &move_arm,
+        "expected goal request struct for `move_arm`"
+    );
+    assert_rendered!(
+        move_arm.contains("pub struct MoveArmResultResponse"),
+        &move_arm,
+        "expected result response struct for `move_arm`"
+    );
+    assert_rendered!(
+        move_arm.contains("pub async fn emit_move_arm_feedback"),
+        &move_arm,
+        "expected feedback emitter for `move_arm`"
+    );
+
+    assert_rendered!(
+        rotate_servo.contains("pub struct RotateServoClockwiseAction;"),
+        &rotate_servo,
+        "expected action marker struct for `rotate_servo_clockwise`"
+    );
+    assert_rendered!(
+        rotate_servo.contains("pub async fn handle_rotate_servo_clockwise_goal_next_request"),
+        &rotate_servo,
+        "expected goal handler for `rotate_servo_clockwise`"
+    );
+    assert_rendered!(
+        rotate_servo.contains("F: Fn() -> crate::Result<RotateServoClockwiseGoalResponse>"),
+        &rotate_servo,
+        "expected zero-argument goal handler signature for `rotate_servo_clockwise`"
+    );
+    assert_rendered!(
+        !rotate_servo.contains("RotateServoClockwiseGoalRequest"),
+        &rotate_servo,
+        "expected no goal request struct when goal payload is absent for `rotate_servo_clockwise`"
+    );
+    assert_rendered!(
+        rotate_servo.contains("pub struct RotateServoClockwiseGoalResponse"),
+        &rotate_servo,
+        "expected goal response struct for `rotate_servo_clockwise`"
+    );
+    assert_rendered!(
+        rotate_servo.contains("pub struct RotateServoClockwiseResultResponse"),
+        &rotate_servo,
+        "expected result response struct for `rotate_servo_clockwise`"
+    );
+    assert_rendered!(
+        rotate_servo.contains("pub async fn emit_rotate_servo_clockwise_feedback"),
+        &rotate_servo,
+        "expected feedback emitter for `rotate_servo_clockwise`"
+    );
 }
 
 #[test]
@@ -351,6 +432,8 @@ fn subscribed_to_action() {
     let feedback_format: MessageFormat = serde_json5::from_str(r#"{ payload: "bytes" }"#).unwrap();
     let result_format: MessageFormat = serde_json5::from_str(
         r#"{
+            success: "bool",
+            error_msg: "string",
             final_position: {
                 type: "array",
                 items: "i32",

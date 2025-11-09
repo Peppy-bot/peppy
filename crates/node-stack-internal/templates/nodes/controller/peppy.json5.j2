@@ -46,17 +46,14 @@
               }
             }
           },
+          // Always using "reliable" qos
           result_service: {
-            // Always using "reliable" qos
-            request_message_format: {
+            response_message_format: {
               final_position: {
                 type: "array",
                 items: "i32",
                 length: 3
               }
-            },
-            response_message_format: {
-              success: "bool"
             }
           }
         }
