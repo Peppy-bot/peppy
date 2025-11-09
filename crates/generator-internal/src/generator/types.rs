@@ -25,10 +25,10 @@ pub enum InterfaceKind {
 #[derive(Debug, Clone)]
 pub struct SubscribedActionMessage {
     pub goal_request: Option<MessageFormat>,
-    pub goal_response: MessageFormat,
-    pub feedback: MessageFormat,
+    pub goal_response: Option<MessageFormat>,
+    pub feedback: Option<MessageFormat>,
     pub result_request: Option<MessageFormat>,
-    pub result_response: MessageFormat,
+    pub result_response: Option<MessageFormat>,
 }
 
 /// Describes a concrete subscriber/exposer interface that a deployment requires.
