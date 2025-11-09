@@ -88,6 +88,12 @@ const SUBSCRIBED_ACTION_GOAL_FORMAT: &str = r#"
 }
 "#;
 
+const SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT: &str = r#"
+{
+  accepted: "bool"
+}
+"#;
+
 const SUBSCRIBED_ACTION_FEEDBACK_FORMAT: &str = r#"
 {
   new_position: {
@@ -98,7 +104,11 @@ const SUBSCRIBED_ACTION_FEEDBACK_FORMAT: &str = r#"
 }
 "#;
 
-const SUBSCRIBED_ACTION_RESULT_FORMAT: &str = r#"
+const SUBSCRIBED_ACTION_RESULT_REQUEST_FORMAT: &str = r#"
+{}
+"#;
+
+const SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT: &str = r#"
 {
   success: "bool",
   error_msg: "string",
@@ -450,15 +460,22 @@ fn expose_two_actions() {
 #[test]
 fn subscribed_to_action() {
     let action: SubscribedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
-    let goal_format: MessageFormat = serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT).unwrap();
+    let goal_request_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT).unwrap();
+    let goal_response_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap();
     let feedback_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT).unwrap();
-    let result_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_FORMAT).unwrap();
+    let result_request_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_REQUEST_FORMAT).unwrap();
+    let result_response_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT).unwrap();
     let format = SubscribedActionMessage {
-        goal: goal_format,
+        goal_request: goal_request_format,
+        goal_response: goal_response_format,
         feedback: feedback_format,
-        result: result_format,
+        result_request: result_request_format,
+        result_response: result_response_format,
     };
 
     let mut generator = RustGenerator::new();
@@ -478,7 +495,111 @@ fn subscribed_to_action() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    todo!("Finish")
+    assert_rendered!(
+        rendered.contains("pub struct BrainMoveArmActionGoalResponse"),
+        &rendered,
+        "expected goal response struct for subscribed action"
+    );
+    assert_rendered!(
+        rendered.contains("pub accepted: bool"),
+        &rendered,
+        "expected accepted field in goal response"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct BrainMoveArmActionResultResponse"),
+        &rendered,
+        "expected result response struct for subscribed action"
+    );
+    assert_rendered!(
+        rendered.contains("final_position: [i32; 3]"),
+        &rendered,
+        "expected final_position array in result response"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct BrainMoveArmActionFeedbackMessage"),
+        &rendered,
+        "expected feedback message struct for subscribed action"
+    );
+    assert_rendered!(
+        rendered.contains("new_position: [i32; 3]"),
+        &rendered,
+        "expected feedback message field in struct"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct BrainMoveArmAction;"),
+        &rendered,
+        "expected action marker struct for subscribed action"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn fire_goal("),
+        &rendered,
+        "expected fire_goal method definition"
+    );
+    assert_rendered!(
+        rendered.contains("arm_id: u16"),
+        &rendered,
+        "expected goal parameter arm_id"
+    );
+    assert_rendered!(
+        rendered.contains("desired_position: [i32; 3]"),
+        &rendered,
+        "expected goal parameter desired_position"
+    );
+    assert_rendered!(
+        rendered.contains("-> crate::Result<BrainMoveArmActionGoalResponse>"),
+        &rendered,
+        "expected goal method to return goal response struct"
+    );
+    assert_rendered!(
+        rendered.contains("let service_name = \"move_arm/goal\";"),
+        &rendered,
+        "expected goal service endpoint literal"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn cancel_goal"),
+        &rendered,
+        "expected cancel_goal method definition"
+    );
+    assert_rendered!(
+        rendered.contains("-> crate::Result<()>"),
+        &rendered,
+        "expected cancel goal to return unit result"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn on_next_feedback_message"),
+        &rendered,
+        "expected feedback listener method definition"
+    );
+    assert_rendered!(
+        rendered.contains("peppylib::TopicMessenger::subscribe"),
+        &rendered,
+        "expected topic subscription for feedback listener"
+    );
+    assert_rendered!(
+        rendered.contains("fn deserialize_brain_move_arm_feedback_payload"),
+        &rendered,
+        "expected feedback payload helper function"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn get_action_result"),
+        &rendered,
+        "expected result method definition"
+    );
+    assert_rendered!(
+        rendered.contains("let service_name = \"move_arm/result\";"),
+        &rendered,
+        "expected result service endpoint literal"
+    );
+    assert_rendered!(
+        rendered.contains("-> crate::Result<BrainMoveArmActionResultResponse>"),
+        &rendered,
+        "expected result method to return result response struct"
+    );
+    assert_rendered!(
+        rendered.contains("peppylib::ServiceMessenger::poll"),
+        &rendered,
+        "expected service poll usage in subscribed action methods"
+    );
 }
 
 #[test]
