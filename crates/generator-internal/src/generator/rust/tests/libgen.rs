@@ -266,12 +266,14 @@ fn services_communication() {
         "
 use peppygen::services::subscribers::poll_uvc_camera_enable_camera;
 use peppygen::{{Messenger, Result}};
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
-    let response = poll_uvc_camera_enable_camera(&messenger, true).await?;
+    let response =
+        poll_uvc_camera_enable_camera(&messenger, Duration::from_secs(5), true).await?;
     println!(
         \"enable_camera result: enabled={{}} error={{}}\",
         response.enabled,

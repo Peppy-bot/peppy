@@ -492,10 +492,10 @@ fn subscribed_to_action() {
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
     let format = SubscribedActionMessage {
         goal_request: Some(goal_request_format),
-        goal_response: goal_response_format,
-        feedback: feedback_format,
+        goal_response: Some(goal_response_format),
+        feedback: Some(feedback_format),
         result_request: None,
-        result_response: result_response_format,
+        result_response: Some(result_response_format),
     };
 
     let mut generator = RustGenerator::new();
@@ -636,10 +636,10 @@ fn subscribed_to_two_actions_same_node() {
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
     let move_arm_messages = SubscribedActionMessage {
         goal_request: Some(move_arm_goal_request),
-        goal_response: move_arm_goal_response,
-        feedback: move_arm_feedback,
+        goal_response: Some(move_arm_goal_response),
+        feedback: Some(move_arm_feedback),
         result_request: None,
-        result_response: move_arm_result_response,
+        result_response: Some(move_arm_result_response),
     };
 
     let mut rotate_action: SubscribedAction =
@@ -654,10 +654,10 @@ fn subscribed_to_two_actions_same_node() {
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2).unwrap();
     let rotate_messages = SubscribedActionMessage {
         goal_request: None,
-        goal_response: rotate_goal_response,
-        feedback: rotate_feedback,
+        goal_response: Some(rotate_goal_response),
+        feedback: Some(rotate_feedback),
         result_request: None,
-        result_response: rotate_result_response,
+        result_response: Some(rotate_result_response),
     };
 
     let mut generator = RustGenerator::new();
@@ -792,7 +792,116 @@ fn subscribed_to_two_actions_same_node() {
 
 #[test]
 fn subscribed_action_without_response_payload() {
-    todo!("Finish")
+    let action: SubscribedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+    let goal_request_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
+    let feedback_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
+
+    let format = SubscribedActionMessage {
+        goal_request: Some(goal_request_format),
+        goal_response: None,
+        feedback: Some(feedback_format),
+        result_request: None,
+        result_response: None,
+    };
+
+    let mut generator = RustGenerator::new();
+    generator
+        .add_subscribed_action(&action, Some(&format))
+        .expect("generator should allow subscribed actions with empty response payloads");
+    let artifacts: Vec<String> = generator
+        .into_artifacts()
+        .into_iter()
+        .map(|artifact| artifact.code_output)
+        .collect();
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected a single generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
+
+    assert_rendered!(
+        rendered.contains("pub struct BrainMoveArmActionGoalResponse"),
+        &rendered,
+        "expected goal response struct even when payload is empty"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct BrainMoveArmActionResultResponse"),
+        &rendered,
+        "expected result response struct even when payload is empty"
+    );
+    assert_rendered!(
+        rendered.contains("pub fn new() -> Self"),
+        &rendered,
+        "expected empty response structs to expose zero-argument constructors"
+    );
+    assert_rendered!(
+        !rendered.contains("pub accepted: bool"),
+        &rendered,
+        "expected goal response struct to omit payload fields when schema is empty"
+    );
+    assert_rendered!(
+        !rendered.contains("pub success: bool"),
+        &rendered,
+        "expected result response struct to omit payload fields when schema is empty"
+    );
+    assert_rendered!(
+        rendered.contains("Ok(BrainMoveArmActionGoalResponse {"),
+        &rendered,
+        "expected goal helper to construct an empty response struct"
+    );
+    assert_rendered!(
+        rendered.contains("Ok(BrainMoveArmActionResultResponse {"),
+        &rendered,
+        "expected result helper to construct an empty response struct"
+    );
+}
+
+#[test]
+fn subscribed_action_without_feedback() {
+    let action: SubscribedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+    let goal_request_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
+
+    let format = SubscribedActionMessage {
+        goal_request: Some(goal_request_format),
+        goal_response: None,
+        feedback: None,
+        result_request: None,
+        result_response: None,
+    };
+
+    let mut generator = RustGenerator::new();
+    generator
+        .add_subscribed_action(&action, Some(&format))
+        .expect("generator should allow subscribed actions without feedback payloads");
+    let artifacts: Vec<_> = generator.into_artifacts();
+    assert_eq!(artifacts.len(), 1, "expected single generated artifact");
+
+    let rendered = artifacts[0].code_output.clone();
+    assert_rendered!(
+        rendered.contains("pub async fn fire_goal"),
+        &rendered,
+        "expected subscribed actions to still emit goal helpers"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn get_action_result"),
+        &rendered,
+        "expected subscribed actions to still emit result helpers"
+    );
+    assert_rendered!(
+        !rendered.contains("pub async fn on_next_feedback_message"),
+        &rendered,
+        "expected subscribed actions without feedback to omit feedback listener helpers"
+    );
+    assert_rendered!(
+        !rendered.contains("ActionFeedbackMessage"),
+        &rendered,
+        "expected subscribed actions without feedback to omit feedback structs"
+    );
 }
 
 #[test]

@@ -1129,7 +1129,7 @@ impl LanguageGenerator for RustGenerator {
             &Ident::new("fire_goal", Span::call_site()),
             &format!("{action_struct_name}Goal"),
             messages.goal_request.as_ref(),
-            Some(&messages.goal_response),
+            messages.goal_response.as_ref(),
             &action_endpoint_name(None, action.name.as_str(), "goal"),
         )?;
         methods.push(goal_method);
@@ -1141,21 +1141,23 @@ impl LanguageGenerator for RustGenerator {
         ));
         methods.push(cancel_method);
 
-        let (feedback_method, mut feedback_helpers) = self.build_action_feedback_method(
-            &mut context,
-            action,
-            &messages.feedback,
-            &action_struct_name,
-        )?;
-        methods.push(feedback_method);
-        helper_items.append(&mut feedback_helpers);
+        if let Some(feedback_format) = messages.feedback.as_ref() {
+            let (feedback_method, mut feedback_helpers) = self.build_action_feedback_method(
+                &mut context,
+                action,
+                feedback_format,
+                &action_struct_name,
+            )?;
+            methods.push(feedback_method);
+            helper_items.append(&mut feedback_helpers);
+        }
 
         let result_method = self.build_action_service_method(
             &mut context,
             &Ident::new("get_action_result", Span::call_site()),
             &format!("{action_struct_name}Result"),
             messages.result_request.as_ref(),
-            Some(&messages.result_response),
+            messages.result_response.as_ref(),
             &action_endpoint_name(None, action.name.as_str(), "result"),
         )?;
         methods.push(result_method);
