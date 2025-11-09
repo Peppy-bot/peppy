@@ -824,39 +824,20 @@ fn subscribed_action_without_response_payload() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     assert_rendered!(
-        rendered.contains("pub struct BrainMoveArmActionGoalResponse"),
+        rendered.contains("pub async fn fire_goal"),
         &rendered,
-        "expected goal response struct even when payload is empty"
+        "expected fire_goal helper to be generated"
     );
     assert_rendered!(
-        rendered.contains("pub struct BrainMoveArmActionResultResponse"),
+        rendered.contains("pub async fn get_action_result"),
         &rendered,
-        "expected result response struct even when payload is empty"
+        "expected get_action_result helper to be generated"
     );
+    let ok_unit_count = rendered.matches("Ok(())").count();
     assert_rendered!(
-        rendered.contains("pub fn new() -> Self"),
+        ok_unit_count >= 2,
         &rendered,
-        "expected empty response structs to expose zero-argument constructors"
-    );
-    assert_rendered!(
-        !rendered.contains("pub accepted: bool"),
-        &rendered,
-        "expected goal response struct to omit payload fields when schema is empty"
-    );
-    assert_rendered!(
-        !rendered.contains("pub success: bool"),
-        &rendered,
-        "expected result response struct to omit payload fields when schema is empty"
-    );
-    assert_rendered!(
-        rendered.contains("Ok(BrainMoveArmActionGoalResponse {"),
-        &rendered,
-        "expected goal helper to construct an empty response struct"
-    );
-    assert_rendered!(
-        rendered.contains("Ok(BrainMoveArmActionResultResponse {"),
-        &rendered,
-        "expected result helper to construct an empty response struct"
+        "expected helpers with empty responses to return Ok(())"
     );
 }
 

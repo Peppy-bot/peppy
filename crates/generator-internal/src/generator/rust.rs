@@ -1124,12 +1124,18 @@ impl LanguageGenerator for RustGenerator {
         let mut methods: Vec<TokenStream> = Vec::new();
         let mut helper_items: Vec<TokenStream> = Vec::new();
 
+        let goal_request_format = non_empty_message_format(messages.goal_request.as_ref());
+        let goal_response_format = non_empty_message_format(messages.goal_response.as_ref());
+        let feedback_format = non_empty_message_format(messages.feedback.as_ref());
+        let result_request_format = non_empty_message_format(messages.result_request.as_ref());
+        let result_response_format = non_empty_message_format(messages.result_response.as_ref());
+
         let goal_method = self.build_action_service_method(
             &mut context,
             &Ident::new("fire_goal", Span::call_site()),
             &format!("{action_struct_name}Goal"),
-            messages.goal_request.as_ref(),
-            messages.goal_response.as_ref(),
+            goal_request_format,
+            goal_response_format,
             &action_endpoint_name(None, action.name.as_str(), "goal"),
         )?;
         methods.push(goal_method);
@@ -1141,7 +1147,7 @@ impl LanguageGenerator for RustGenerator {
         ));
         methods.push(cancel_method);
 
-        if let Some(feedback_format) = messages.feedback.as_ref() {
+        if let Some(feedback_format) = feedback_format {
             let (feedback_method, mut feedback_helpers) = self.build_action_feedback_method(
                 &mut context,
                 action,
@@ -1156,8 +1162,8 @@ impl LanguageGenerator for RustGenerator {
             &mut context,
             &Ident::new("get_action_result", Span::call_site()),
             &format!("{action_struct_name}Result"),
-            messages.result_request.as_ref(),
-            messages.result_response.as_ref(),
+            result_request_format,
+            result_response_format,
             &action_endpoint_name(None, action.name.as_str(), "result"),
         )?;
         methods.push(result_method);
@@ -1401,6 +1407,10 @@ fn non_empty_str(value: &str) -> Option<&str> {
     } else {
         Some(value)
     }
+}
+
+fn non_empty_message_format<'a>(format: Option<&'a MessageFormat>) -> Option<&'a MessageFormat> {
+    format.filter(|format| !format.0.is_empty())
 }
 
 fn action_endpoint_name(custom: Option<&str>, action_name: &str, suffix: &str) -> String {
