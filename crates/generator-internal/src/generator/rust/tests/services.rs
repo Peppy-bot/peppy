@@ -384,6 +384,11 @@ fn subscribed_to_service() {
         "expected messenger parameter"
     );
     assert_rendered!(
+        rendered.contains("timeout: std::time::Duration"),
+        &rendered,
+        "expected timeout parameter"
+    );
+    assert_rendered!(
         rendered.contains("-> crate::Result<EnableCameraResponse>"),
         &rendered,
         "expected result return type"
@@ -424,9 +429,9 @@ fn subscribed_to_service() {
         "expected poll helper invocation"
     );
     assert_rendered!(
-        rendered.contains("std::time::Duration::from_secs(3)"),
+        rendered.contains("timeout,\n        )\n        .await?"),
         &rendered,
-        "expected poll timeout constant"
+        "expected poll timeout to use function parameter"
     );
     assert_rendered!(
         rendered.contains("capnp::serialize::read_message"),
