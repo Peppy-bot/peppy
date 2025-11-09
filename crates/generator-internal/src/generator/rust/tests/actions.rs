@@ -624,7 +624,170 @@ fn subscribed_to_action() {
 
 #[test]
 fn subscribed_to_two_actions_same_node() {
-    todo!("Finish")
+    let move_arm_action: SubscribedAction =
+        serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+    let move_arm_goal_request: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
+    let move_arm_goal_response: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT1).unwrap();
+    let move_arm_feedback: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
+    let move_arm_result_response: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
+    let move_arm_messages = SubscribedActionMessage {
+        goal_request: Some(move_arm_goal_request),
+        goal_response: move_arm_goal_response,
+        feedback: move_arm_feedback,
+        result_request: None,
+        result_response: move_arm_result_response,
+    };
+
+    let mut rotate_action: SubscribedAction =
+        serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE2).unwrap();
+    // Reuse the same upstream node so both subscriptions target the same source.
+    rotate_action.node = move_arm_action.node.clone();
+    let rotate_goal_response: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT2).unwrap();
+    let rotate_feedback: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT2).unwrap();
+    let rotate_result_response: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2).unwrap();
+    let rotate_messages = SubscribedActionMessage {
+        goal_request: None,
+        goal_response: rotate_goal_response,
+        feedback: rotate_feedback,
+        result_request: None,
+        result_response: rotate_result_response,
+    };
+
+    let mut generator = RustGenerator::new();
+    generator
+        .add_subscribed_action(&move_arm_action, Some(&move_arm_messages))
+        .unwrap();
+    generator
+        .add_subscribed_action(&rotate_action, Some(&rotate_messages))
+        .unwrap();
+
+    let artifacts: Vec<_> = generator.into_artifacts();
+    assert_eq!(
+        artifacts.len(),
+        2,
+        "expected two generated artifacts, got {}",
+        artifacts.len()
+    );
+
+    let artifact_map: HashMap<_, _> = artifacts
+        .into_iter()
+        .map(|artifact| (artifact.node_name, artifact.code_output))
+        .collect();
+
+    let move_arm = artifact_map
+        .get("move_arm")
+        .expect("move_arm artifact is present");
+    assert_rendered!(
+        move_arm.contains("pub struct BrainMoveArmAction;"),
+        move_arm,
+        "expected move_arm action marker struct"
+    );
+    assert_rendered!(
+        move_arm.contains("pub struct BrainMoveArmActionGoalResponse"),
+        move_arm,
+        "expected move_arm goal response struct"
+    );
+    assert_rendered!(
+        move_arm.contains("pub struct BrainMoveArmActionResultResponse"),
+        move_arm,
+        "expected move_arm result response struct"
+    );
+    assert_rendered!(
+        move_arm.contains("pub struct BrainMoveArmActionFeedbackMessage"),
+        move_arm,
+        "expected move_arm feedback message struct"
+    );
+    assert_rendered!(
+        move_arm.contains("arm_id: u16"),
+        move_arm,
+        "expected arm_id goal parameter"
+    );
+    assert_rendered!(
+        move_arm.contains("desired_position: [i32; 3]"),
+        move_arm,
+        "expected desired_position goal parameter"
+    );
+    assert_rendered!(
+        move_arm.contains("let service_name = \"move_arm/goal\";"),
+        move_arm,
+        "expected move_arm goal service literal"
+    );
+    assert_rendered!(
+        move_arm.contains("let service_name = \"move_arm/result\";"),
+        move_arm,
+        "expected move_arm result service literal"
+    );
+    assert_rendered!(
+        move_arm.contains("fn deserialize_brain_move_arm_feedback_payload"),
+        move_arm,
+        "expected move_arm feedback helper"
+    );
+
+    let rotate_servo = artifact_map
+        .get("rotate_servo_clockwise")
+        .expect("rotate_servo_clockwise artifact is present");
+    assert_rendered!(
+        rotate_servo.contains("pub struct BrainRotateServoClockwiseAction;"),
+        rotate_servo,
+        "expected rotate_servo_clockwise action marker struct"
+    );
+    assert_rendered!(
+        rotate_servo.contains("pub struct BrainRotateServoClockwiseActionGoalResponse"),
+        rotate_servo,
+        "expected rotate_servo_clockwise goal response struct"
+    );
+    assert_rendered!(
+        rotate_servo.contains("pub struct BrainRotateServoClockwiseActionResultResponse"),
+        rotate_servo,
+        "expected rotate_servo_clockwise result response struct"
+    );
+    assert_rendered!(
+        rotate_servo.contains("pub struct BrainRotateServoClockwiseActionFeedbackMessage"),
+        rotate_servo,
+        "expected rotate_servo_clockwise feedback message struct"
+    );
+    assert_rendered!(
+        rotate_servo.contains("let service_name = \"rotate_servo_clockwise/goal\";"),
+        rotate_servo,
+        "expected rotate_servo_clockwise goal service literal"
+    );
+    assert_rendered!(
+        rotate_servo.contains("let service_name = \"rotate_servo_clockwise/result\";"),
+        rotate_servo,
+        "expected rotate_servo_clockwise result service literal"
+    );
+    assert_rendered!(
+        rotate_servo.contains("fn deserialize_brain_rotate_servo_clockwise_feedback_payload"),
+        rotate_servo,
+        "expected rotate_servo_clockwise feedback helper"
+    );
+    assert_rendered!(
+        !rotate_servo.contains("BrainRotateServoClockwiseActionGoalRequest"),
+        rotate_servo,
+        "expected rotate_servo_clockwise goal helper to omit request struct"
+    );
+    assert_rendered!(
+        rotate_servo.contains("-> crate::Result<BrainRotateServoClockwiseActionGoalResponse>"),
+        rotate_servo,
+        "expected rotate_servo_clockwise goal helper return type"
+    );
+    assert_rendered!(
+        rotate_servo.contains("peppylib::ServiceMessenger::poll"),
+        rotate_servo,
+        "expected rotate_servo_clockwise to poll service endpoints"
+    );
+    assert_rendered!(
+        rotate_servo.contains("peppylib::TopicMessenger::subscribe"),
+        rotate_servo,
+        "expected rotate_servo_clockwise to subscribe for feedback"
+    );
 }
 
 #[test]
