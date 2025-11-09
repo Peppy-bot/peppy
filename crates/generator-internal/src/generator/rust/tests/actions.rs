@@ -44,6 +44,33 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
 }
 "#;
 
+const EXPOSED_ACTION_EXAMPLE2: &str = r#"
+{
+  name: "rotate_servo_clockwise",
+  goal_service: {
+    response_message_format: {
+      accepted: "bool"
+    }
+  },
+  feedback_topic: {
+    qos_profile: "sensor_data",
+    message_format: {
+      new_position: {
+        type: "array",
+        items: "i32",
+        length: 3
+      }
+    }
+  },
+  result_service: {
+    response_message_format: {
+      success: "bool",
+      error_msg: "string"
+    }
+  }
+}
+"#;
+
 const SUBSCRIBED_ACTION_EXAMPLE: &str = r#"
 {
   node: "brain",
@@ -211,7 +238,105 @@ fn exposed_action() {
 
 #[test]
 fn expose_action_without_request_body() {
-    todo!("Finish")
+    let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
+
+    let mut generator = RustGenerator::new();
+    generator.add_exposed_action(&action).unwrap();
+    let artifacts: Vec<String> = generator
+        .into_artifacts()
+        .into_iter()
+        .map(|artifact| artifact.code_output)
+        .collect();
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected a single generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
+
+    assert_rendered!(
+        rendered.contains("pub struct RotateServoClockwiseGoalResponse"),
+        &rendered,
+        "expected goal response struct without request body"
+    );
+    assert_rendered!(
+        !rendered.contains("RotateServoClockwiseGoalRequest"),
+        &rendered,
+        "expected no goal request struct when goal request body is missing"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn handle_rotate_servo_clockwise_goal_next_request"),
+        &rendered,
+        "expected goal handler even when goal request body is missing"
+    );
+    assert_rendered!(
+        rendered.contains("F: Fn() -> crate::Result<RotateServoClockwiseGoalResponse>"),
+        &rendered,
+        "expected goal handler signature with zero parameters"
+    );
+    assert_rendered!(
+        rendered.contains("fn rotate_servo_clockwise_goal_handle_request_payload"),
+        &rendered,
+        "expected helper function for goal handler without request body"
+    );
+    assert_rendered!(
+        !rendered.contains("fn rotate_servo_clockwise_goal_deserialize_request"),
+        &rendered,
+        "expected no goal request deserializer when there is no request schema"
+    );
+
+    assert_rendered!(
+        rendered.contains("pub struct RotateServoClockwiseResultResponse"),
+        &rendered,
+        "expected result response struct without request body"
+    );
+    assert_rendered!(
+        !rendered.contains("RotateServoClockwiseResultRequest"),
+        &rendered,
+        "expected no result request struct when result request body is missing"
+    );
+    assert_rendered!(
+        rendered.contains("success: bool"),
+        &rendered,
+        "expected result response to expose success field"
+    );
+    assert_rendered!(
+        rendered.contains("error_msg: String"),
+        &rendered,
+        "expected result response to expose error message field"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn handle_rotate_servo_clockwise_result_next_request"),
+        &rendered,
+        "expected result handler even when result request body is missing"
+    );
+    assert_rendered!(
+        rendered.contains("F: Fn() -> crate::Result<RotateServoClockwiseResultResponse>"),
+        &rendered,
+        "expected result handler signature with zero parameters"
+    );
+    assert_rendered!(
+        rendered.contains("fn rotate_servo_clockwise_result_handle_request_payload"),
+        &rendered,
+        "expected helper function for result handler without request body"
+    );
+    assert_rendered!(
+        !rendered.contains("fn rotate_servo_clockwise_result_deserialize_request"),
+        &rendered,
+        "expected no result request deserializer when there is no request schema"
+    );
+
+    assert_rendered!(
+        rendered.contains("pub async fn emit_rotate_servo_clockwise_feedback"),
+        &rendered,
+        "expected feedback emitter for action without request payloads"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct RotateServoClockwiseAction;"),
+        &rendered,
+        "expected action marker struct even when request payloads are absent"
+    );
 }
 
 #[test]
