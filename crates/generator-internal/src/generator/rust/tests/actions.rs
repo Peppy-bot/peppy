@@ -69,7 +69,7 @@ const EXPOSED_ACTION_EXAMPLE2: &str = r#"
 "#;
 
 // --- Subscribes examples
-const SUBSCRIBED_ACTION_EXAMPLE: &str = r#"
+const SUBSCRIBED_ACTION_EXAMPLE1: &str = r#"
 {
   node: "brain",
   name: "move_arm",
@@ -77,7 +77,7 @@ const SUBSCRIBED_ACTION_EXAMPLE: &str = r#"
 }
 "#;
 
-const SUBSCRIBED_ACTION_GOAL_FORMAT: &str = r#"
+const SUBSCRIBED_ACTION_GOAL_FORMAT1: &str = r#"
 {
   arm_id: "u16",
   desired_position: {
@@ -88,13 +88,13 @@ const SUBSCRIBED_ACTION_GOAL_FORMAT: &str = r#"
 }
 "#;
 
-const SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT: &str = r#"
+const SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT1: &str = r#"
 {
   accepted: "bool"
 }
 "#;
 
-const SUBSCRIBED_ACTION_FEEDBACK_FORMAT: &str = r#"
+const SUBSCRIBED_ACTION_FEEDBACK_FORMAT1: &str = r#"
 {
   new_position: {
     type: "array",
@@ -104,11 +104,7 @@ const SUBSCRIBED_ACTION_FEEDBACK_FORMAT: &str = r#"
 }
 "#;
 
-const SUBSCRIBED_ACTION_RESULT_REQUEST_FORMAT: &str = r#"
-{}
-"#;
-
-const SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT: &str = r#"
+const SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1: &str = r#"
 {
   success: "bool",
   error_msg: "string",
@@ -117,6 +113,32 @@ const SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT: &str = r#"
     items: "i32",
     length: 3
   }
+}
+"#;
+
+const SUBSCRIBED_ACTION_EXAMPLE2: &str = r#"
+{
+  node: "controller",
+  name: "rotate_servo_clockwise",
+  tag: "0.1.0"
+}
+"#;
+
+const SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT2: &str = r#"
+{
+  accepted: "bool"
+}
+"#;
+const SUBSCRIBED_ACTION_FEEDBACK_FORMAT2: &str = r#"
+{
+  new_position: "i32",
+  speed: "i32"
+}
+"#;
+const SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2: &str = r#"
+{
+  success: "bool",
+  error_msg: "string"
 }
 "#;
 
@@ -459,22 +481,20 @@ fn expose_two_actions() {
 
 #[test]
 fn subscribed_to_action() {
-    let action: SubscribedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
+    let action: SubscribedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
     let goal_request_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT).unwrap();
+        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
     let goal_response_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap();
+        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT1).unwrap();
     let feedback_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT).unwrap();
-    let result_request_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_REQUEST_FORMAT).unwrap();
+        serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
     let result_response_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT).unwrap();
+        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
     let format = SubscribedActionMessage {
-        goal_request: goal_request_format,
+        goal_request: Some(goal_request_format),
         goal_response: goal_response_format,
         feedback: feedback_format,
-        result_request: result_request_format,
+        result_request: None,
         result_response: result_response_format,
     };
 

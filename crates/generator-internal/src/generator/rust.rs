@@ -405,12 +405,7 @@ impl RustGenerator {
         let struct_name = format!("{struct_prefix}Message");
         let struct_ident = Ident::new(&struct_name, Span::call_site());
 
-        let params = collect_function_params(
-            Some(&format_artifacts),
-            None,
-            &struct_name,
-            context,
-        )?;
+        let params = collect_function_params(Some(&format_artifacts), None, &struct_name, context)?;
 
         let fields: Vec<(Ident, TokenStream)> = params
             .iter()
@@ -420,7 +415,12 @@ impl RustGenerator {
 
         let schema_key = format!("{struct_name}_payload");
         let encoding = self
-            .prepare_message_encoding(&schema_key, &struct_prefix, Some(&format_artifacts), &params)?
+            .prepare_message_encoding(
+                &schema_key,
+                &struct_prefix,
+                Some(&format_artifacts),
+                &params,
+            )?
             .expect("feedback encoding spec should exist");
         let reader_type = encoding.reader_type.clone();
 
@@ -444,7 +444,9 @@ impl RustGenerator {
             schema_lookup.insert(capnp_key.clone(), (field_name, schema));
 
             let rust_key = sanitize_component(field_name);
-            schema_lookup.entry(rust_key).or_insert((field_name, schema));
+            schema_lookup
+                .entry(rust_key)
+                .or_insert((field_name, schema));
         }
 
         let mut names = NameGenerator::new();
@@ -1103,9 +1105,8 @@ impl LanguageGenerator for RustGenerator {
         action: &SubscribedAction,
         messages: Option<&SubscribedActionMessage>,
     ) -> Result<()> {
-        let messages = messages.ok_or_else(|| {
-            Error::SubscriberActionMessageFormatMissing(action.name.clone())
-        })?;
+        let messages = messages
+            .ok_or_else(|| Error::SubscriberActionMessageFormatMissing(action.name.clone()))?;
 
         let node_component = sanitize_component(action.node.as_str());
         let action_component = sanitize_component(action.name.as_str());
@@ -1127,7 +1128,7 @@ impl LanguageGenerator for RustGenerator {
             &mut context,
             &Ident::new("fire_goal", Span::call_site()),
             &format!("{action_struct_name}Goal"),
-            Some(&messages.goal_request),
+            messages.goal_request.as_ref(),
             Some(&messages.goal_response),
             &action_endpoint_name(None, action.name.as_str(), "goal"),
         )?;
@@ -1153,7 +1154,7 @@ impl LanguageGenerator for RustGenerator {
             &mut context,
             &Ident::new("get_action_result", Span::call_site()),
             &format!("{action_struct_name}Result"),
-            Some(&messages.result_request),
+            messages.result_request.as_ref(),
             Some(&messages.result_response),
             &action_endpoint_name(None, action.name.as_str(), "result"),
         )?;
