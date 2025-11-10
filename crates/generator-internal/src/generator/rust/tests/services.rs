@@ -96,12 +96,12 @@ fn expose_service() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     assert_rendered!(
-        rendered.contains("pub struct EnableCameraResponse"),
+        rendered.contains("pub struct Response"),
         &rendered,
         "expected response struct for exposed service"
     );
     assert_rendered!(
-        rendered.contains("impl EnableCameraResponse {"),
+        rendered.contains("impl Response {"),
         &rendered,
         "expected response struct impl block"
     );
@@ -121,17 +121,17 @@ fn expose_service() {
         "expected string field in response struct"
     );
     assert_rendered!(
-        rendered.contains("pub async fn handle_enable_camera_next_request<F>"),
+        rendered.contains("pub async fn handle_next_request<F>"),
         &rendered,
-        "expected async service handler with handle_enable_camera_next_request naming"
+        "expected async service handler with generic naming"
     );
     assert_rendered!(
-        rendered.contains("F: Fn(EnableCameraRequest) -> crate::Result<EnableCameraResponse>"),
+        rendered.contains("F: Fn(Request) -> crate::Result<Response>"),
         &rendered,
         "expected Fn trait bound for handler"
     );
     assert_rendered!(
-        rendered.contains("pub struct EnableCameraRequest"),
+        rendered.contains("pub struct Request"),
         &rendered,
         "expected public request struct for enable_camera"
     );
@@ -156,14 +156,19 @@ fn expose_service() {
         "expected request payload to be pulled from the request context"
     );
     assert_rendered!(
-        rendered.contains("fn enable_camera_deserialize_request"),
+        rendered.contains("fn deserialize_request"),
         &rendered,
         "expected request deserializer helper function"
     );
     assert_rendered!(
-        rendered.contains("-> crate::Result<EnableCameraRequest>"),
+        rendered.contains("-> crate::Result<Request>"),
         &rendered,
         "expected request deserializer to return request struct"
+    );
+    assert_rendered!(
+        rendered.contains("fn handle_request_payload"),
+        &rendered,
+        "expected generic helper for handling request payloads"
     );
     assert_rendered!(
         rendered.contains("handler(request_data)?"),
@@ -207,19 +212,24 @@ fn expose_service_without_request_body() {
         .expect("artifact is present");
 
     assert_rendered!(
-        rendered.contains("pub struct GetSystemStatusResponse"),
+        rendered.contains("pub struct Response"),
         &rendered,
         "expected response struct for service without request body"
     );
     assert_rendered!(
-        rendered.contains("F: Fn() -> crate::Result<GetSystemStatusResponse>"),
+        rendered.contains("impl Response {"),
+        &rendered,
+        "expected response impl block for service without request body"
+    );
+    assert_rendered!(
+        rendered.contains("F: Fn() -> crate::Result<Response>"),
         &rendered,
         "expected handler to take no parameters"
     );
     assert_rendered!(
-        rendered.contains("fn get_system_status_handle_request_payload"),
+        rendered.contains("fn handle_request_payload"),
         &rendered,
-        "expected helper function even without request payload"
+        "expected generic helper function even without request payload"
     );
 }
 
@@ -232,80 +242,93 @@ fn expose_two_services() {
     generator.add_exposed_service(&service1).unwrap();
     generator.add_exposed_service(&service2).unwrap();
 
-    let artifacts = generator.into_artifacts();
+    let artifacts: Vec<String> = generator
+        .into_artifacts()
+        .into_iter()
+        .map(|artifact| artifact.code_output)
+        .collect();
 
     assert_eq!(
         artifacts.len(),
-        1,
-        "expected a single generated artifact, got {}",
+        2,
+        "expected two generated artifacts, got {}",
         artifacts.len()
     );
 
-    let rendered = artifacts
-        .into_iter()
-        .next()
-        .map(|artifact| artifact.code_output)
-        .expect("artifact is present");
+    let enable_rendered = artifacts
+        .iter()
+        .find(|rendered| rendered.contains("enable_camera"))
+        .expect("enable_camera artifact is present");
+    let lidar_rendered = artifacts
+        .iter()
+        .find(|rendered| rendered.contains("get_lidar_info"))
+        .expect("get_lidar_info artifact is present");
 
     assert_rendered!(
-        rendered.contains("pub async fn handle_enable_camera_next_request<F>("),
-        &rendered,
-        "expected async handler for `enable_camera`"
+        enable_rendered.contains("let service_name = \"enable_camera\";"),
+        enable_rendered,
+        "expected enable_camera service name literal"
     );
     assert_rendered!(
-        rendered.contains("F: Fn(EnableCameraRequest) -> crate::Result<EnableCameraResponse>"),
-        &rendered,
-        "expected handler signature for `enable_camera`"
+        enable_rendered.contains("pub struct Request"),
+        enable_rendered,
+        "expected request struct for enable_camera"
     );
     assert_rendered!(
-        rendered.contains("pub struct EnableCameraRequest"),
-        &rendered,
-        "expected public request struct for `enable_camera`"
+        enable_rendered.contains("pub struct Response"),
+        enable_rendered,
+        "expected response struct for enable_camera"
     );
     assert_rendered!(
-        rendered.contains("pub enable: bool"),
-        &rendered,
-        "expected public request field for `enable_camera`"
+        enable_rendered.contains("pub async fn handle_next_request<F>("),
+        enable_rendered,
+        "expected async handler for enable_camera"
     );
     assert_rendered!(
-        rendered.contains("fn enable_camera_deserialize_request("),
-        &rendered,
-        "expected request deserializer helper for `enable_camera`"
+        enable_rendered.contains("F: Fn(Request) -> crate::Result<Response>"),
+        enable_rendered,
+        "expected handler signature for enable_camera"
     );
     assert_rendered!(
-        rendered.contains("-> crate::Result<EnableCameraRequest>"),
-        &rendered,
-        "expected request deserializer to return request struct for `enable_camera`"
+        enable_rendered.contains("fn deserialize_request("),
+        enable_rendered,
+        "expected request deserializer for enable_camera"
     );
     assert_rendered!(
-        rendered.contains("pub struct EnableCameraResponse"),
-        &rendered,
-        "expected response struct for `enable_camera`"
+        enable_rendered.contains("fn handle_request_payload"),
+        enable_rendered,
+        "expected payload handler for enable_camera"
+    );
+
+    assert_rendered!(
+        lidar_rendered.contains("let service_name = \"get_lidar_info\";"),
+        lidar_rendered,
+        "expected get_lidar_info service name literal"
     );
     assert_rendered!(
-        rendered.contains("pub async fn handle_get_lidar_info_next_request<F>("),
-        &rendered,
-        "expected async handler for `get_lidar_info`"
+        lidar_rendered.contains("pub struct Request"),
+        lidar_rendered,
+        "expected request struct for get_lidar_info"
     );
     assert_rendered!(
-        rendered.contains("F: Fn(GetLidarInfoRequest) -> crate::Result<()>"),
-        &rendered,
-        "expected handler signature for `get_lidar_info`"
+        !lidar_rendered.contains("pub struct Response"),
+        lidar_rendered,
+        "expected get_lidar_info to omit response struct"
     );
     assert_rendered!(
-        rendered.contains("pub struct GetLidarInfoRequest"),
-        &rendered,
-        "expected public request struct for `get_lidar_info`"
+        lidar_rendered.contains("F: Fn(Request) -> crate::Result<()>"),
+        lidar_rendered,
+        "expected handler signature for get_lidar_info"
     );
     assert_rendered!(
-        rendered.contains("pub channels: String"),
-        &rendered,
-        "expected public request field for `get_lidar_info`"
+        lidar_rendered.contains("fn deserialize_request("),
+        lidar_rendered,
+        "expected request deserializer for get_lidar_info"
     );
     assert_rendered!(
-        rendered.contains("fn get_lidar_info_deserialize_request("),
-        &rendered,
-        "expected request deserializer helper for `get_lidar_info`"
+        lidar_rendered.contains("fn handle_request_payload"),
+        lidar_rendered,
+        "expected payload handler for get_lidar_info"
     );
 }
 

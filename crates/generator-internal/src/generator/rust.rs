@@ -53,7 +53,9 @@ impl RustGenerator {
 
     fn flush_pending_exposed_services(&mut self) {
         if let Some(module) = self.pending_exposed_services.take() {
-            self.push_section(module.into_artifact());
+            for artifact in module.into_artifacts() {
+                self.push_section(artifact);
+            }
         }
     }
 
@@ -141,6 +143,7 @@ impl RustGenerator {
             return_format_artifacts.as_ref(),
             struct_prefix,
             context,
+            None,
         )?;
 
         let encoding = self.prepare_message_encoding(
@@ -175,6 +178,8 @@ impl RustGenerator {
         Ok(build_exposed_service_method(
             fn_name,
             handler_fn_name_override,
+            None,
+            None,
             &params,
             encoding.as_ref(),
             accept_format_artifacts
@@ -204,6 +209,7 @@ impl RustGenerator {
             response_artifacts.as_ref(),
             struct_prefix,
             context,
+            None,
         )?;
 
         let method_label = method_ident.to_string();
@@ -385,7 +391,8 @@ impl RustGenerator {
         let struct_name = format!("{struct_prefix}Message");
         let struct_ident = Ident::new(&struct_name, Span::call_site());
 
-        let params = collect_function_params(Some(&format_artifacts), None, &struct_name, context)?;
+        let params =
+            collect_function_params(Some(&format_artifacts), None, &struct_name, context, None)?;
 
         let fields: Vec<(Ident, TokenStream)> = params
             .iter()
@@ -568,6 +575,7 @@ impl LanguageGenerator for RustGenerator {
             None,
             &struct_prefix,
             &mut context,
+            None,
         )?;
         let encoding = self.prepare_message_encoding(
             &fn_name_str,
@@ -608,6 +616,10 @@ impl LanguageGenerator for RustGenerator {
         let fn_name = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
         let fn_name_str = fn_name.to_string();
         let struct_prefix = to_camel_case(&fn_name_str);
+        let generic_response_ident = Ident::new("Response", Span::call_site());
+        let generic_handler_ident = Ident::new("handle_next_request", Span::call_site());
+        let generic_helper_ident = Ident::new("handle_request_payload", Span::call_site());
+        let generic_deserializer_ident = Ident::new("deserialize_request", Span::call_site());
 
         let mut context = GenerationContext::default();
         let accept_format_artifacts = map_message_format(service.request_message_format.as_ref())?;
@@ -617,6 +629,7 @@ impl LanguageGenerator for RustGenerator {
             return_format_artifacts.as_ref(),
             &struct_prefix,
             &mut context,
+            Some(&generic_response_ident),
         )?;
         let encoding = self.prepare_message_encoding(
             &fn_name_str,
@@ -626,7 +639,7 @@ impl LanguageGenerator for RustGenerator {
         )?;
 
         let request_struct_ident =
-            if let Some((ident, tokens)) = build_request_struct(&struct_prefix, &params) {
+            if let Some((ident, tokens)) = build_request_struct_with_name("Request", &params) {
                 context.add_private_struct(tokens);
                 Some(ident)
             } else {
@@ -640,19 +653,19 @@ impl LanguageGenerator for RustGenerator {
                 self.register_schema(&schema_key, &response_prefix, return_artifacts)?;
             Some(ServiceResponseSpec {
                 format: return_artifacts.message_format(),
-                struct_ident: Ident::new(&response_prefix, Span::call_site()),
+                struct_ident: generic_response_ident.clone(),
                 builder_type: schema_info.builder_type_tokens(),
             })
         } else {
             None
         };
 
-        let struct_tokens = context.into_tokens();
-
         let service_name_literal = Literal::string(service.name.as_str());
         let (method_token, helper_tokens) = build_exposed_service_method(
             &fn_name,
-            None,
+            Some(&generic_handler_ident),
+            Some(&generic_helper_ident),
+            Some(&generic_deserializer_ident),
             &params,
             encoding.as_ref(),
             accept_format_artifacts
@@ -664,12 +677,20 @@ impl LanguageGenerator for RustGenerator {
             response_spec.as_ref(),
         );
 
+        let mut service_tokens = context.into_tokens();
+        service_tokens.push(method_token);
+        service_tokens.extend(helper_tokens);
+
+        let mut submodule_name = sanitize_component(service.name.as_str());
+        if submodule_name.is_empty() {
+            submodule_name = fn_name_str.clone();
+        }
+
         let module = self
             .pending_exposed_services
             .get_or_insert_with(ExposedServicesModule::new);
         module.ensure_node_name(EXPOSED_SERVICES_MODULE);
-        module.extend_structs(struct_tokens);
-        module.push_method(method_token, helper_tokens);
+        module.push_service(submodule_name, service_tokens);
         Ok(())
     }
 
@@ -738,6 +759,7 @@ impl LanguageGenerator for RustGenerator {
                 None,
                 &struct_prefix,
                 &mut context,
+                None,
             )?;
             let encoding = self.prepare_message_encoding(
                 &label,
@@ -859,6 +881,7 @@ impl LanguageGenerator for RustGenerator {
             None,
             &message_struct_name,
             &mut context,
+            None,
         )?;
 
         let args_struct_ident = Ident::new(&message_struct_name, Span::call_site());
@@ -945,6 +968,7 @@ impl LanguageGenerator for RustGenerator {
             response_artifacts.as_ref(),
             &struct_prefix,
             &mut context,
+            None,
         )?;
 
         let request_encoding = self.prepare_message_encoding(
@@ -1204,18 +1228,21 @@ impl LanguageGenerator for RustGenerator {
     }
 }
 
+struct ServiceModule {
+    submodule: String,
+    tokens: Vec<TokenStream>,
+}
+
 struct ExposedServicesModule {
     node_name: String,
-    message_structs: Vec<TokenStream>,
-    functions: Vec<TokenStream>,
+    services: Vec<ServiceModule>,
 }
 
 impl ExposedServicesModule {
     fn new() -> Self {
         Self {
             node_name: String::new(),
-            message_structs: Vec::new(),
-            functions: Vec::new(),
+            services: Vec::new(),
         }
     }
 
@@ -1225,31 +1252,34 @@ impl ExposedServicesModule {
         }
     }
 
-    fn extend_structs(&mut self, structs: Vec<TokenStream>) {
-        self.message_structs.extend(structs);
+    fn push_service(&mut self, submodule: String, tokens: Vec<TokenStream>) {
+        self.services.push(ServiceModule { submodule, tokens });
     }
 
-    fn push_method(&mut self, method: TokenStream, helpers: Vec<TokenStream>) {
-        self.functions.push(method);
-        self.functions.extend(helpers);
-    }
-
-    fn into_artifact(self) -> InterfaceArtifact {
+    fn into_artifacts(self) -> Vec<InterfaceArtifact> {
         let ExposedServicesModule {
             node_name,
-            message_structs,
-            functions,
+            services,
         } = self;
 
-        let tokens: TokenStream = quote! {
-            #( #message_structs )*
+        services
+            .into_iter()
+            .map(|service| {
+                let ServiceModule { submodule, tokens } = service;
+                let tokens: TokenStream = quote! {
+                    #( #tokens )*
+                };
 
-            #( #functions )*
-        };
+                let rendered = render_tokens(tokens);
 
-        let rendered = render_tokens(tokens);
-
-        InterfaceArtifact::from_kind(&node_name, InterfaceKind::ExposedService, rendered)
+                InterfaceArtifact::from_kind_with_submodule(
+                    &node_name,
+                    InterfaceKind::ExposedService,
+                    rendered,
+                    Some(submodule),
+                )
+            })
+            .collect()
     }
 }
 
@@ -1517,10 +1547,13 @@ fn collect_function_params(
     return_format_artifacts: Option<&CapnpSchemaArtifacts>,
     struct_prefix: &str,
     context: &mut GenerationContext,
+    response_struct_name_override: Option<&Ident>,
 ) -> Result<Vec<FunctionParam>> {
     if let Some(return_artifacts) = return_format_artifacts {
-        let response_prefix = format!("{struct_prefix}Response");
-        let response_ident = Ident::new(&response_prefix, Span::call_site());
+        let response_struct_name = response_struct_name_override
+            .map(|ident| ident.to_string())
+            .unwrap_or_else(|| format!("{struct_prefix}Response"));
+        let response_ident = Ident::new(&response_struct_name, Span::call_site());
         let mut fields = Vec::new();
         let mut ctor_params: Vec<TokenStream> = Vec::new();
         let mut ctor_bindings: Vec<TokenStream> = Vec::new();
@@ -1528,7 +1561,8 @@ fn collect_function_params(
         for (field_name, schema) in &return_artifacts.message_format().0 {
             let field_ident =
                 Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
-            let field_ty = schema_type_to_tokens(schema, &response_prefix, field_name, context);
+            let field_ty =
+                schema_type_to_tokens(schema, &response_struct_name, field_name, context);
             let ctor_ident = field_ident.clone();
             let ctor_ty = field_ty.clone();
             ctor_params.push(quote!(#ctor_ident: #ctor_ty));
@@ -2494,6 +2528,8 @@ fn function_param_tokens(params: &[FunctionParam]) -> Vec<TokenStream> {
 fn build_exposed_service_method(
     fn_name: &Ident,
     handler_fn_name_override: Option<&Ident>,
+    handler_helper_name_override: Option<&Ident>,
+    request_deserializer_name_override: Option<&Ident>,
     params: &[FunctionParam],
     encoding: Option<&MessageEncodingSpec>,
     request_format: Option<&MessageFormat>,
@@ -2545,10 +2581,21 @@ fn build_exposed_service_method(
 
     let response_serialization =
         build_response_serialization_code(response_spec, label, &callback_call);
-    let handler_helper_name = Ident::new(
-        &format!("{}_handle_request_payload", fn_name),
-        Span::call_site(),
-    );
+    let handler_helper_name = handler_helper_name_override.cloned().unwrap_or_else(|| {
+        Ident::new(
+            &format!("{}_handle_request_payload", fn_name),
+            Span::call_site(),
+        )
+    });
+    let request_deserializer_name =
+        request_deserializer_name_override
+            .cloned()
+            .unwrap_or_else(|| {
+                Ident::new(
+                    &format!("{}_deserialize_request", fn_name),
+                    Span::call_site(),
+                )
+            });
 
     let mut helper_tokens = Vec::new();
 
@@ -2556,16 +2603,12 @@ fn build_exposed_service_method(
         let request_format =
             request_format.expect("request format should exist when encoding is present");
         let request_deserializer = build_request_deserializer(
-            fn_name,
+            &request_deserializer_name,
             request_spec,
             request_format,
             params,
             label,
             request_struct,
-        );
-        let request_deserializer_name = Ident::new(
-            &format!("{}_deserialize_request", fn_name),
-            Span::call_site(),
         );
         helper_tokens.push(request_deserializer);
 
@@ -2633,15 +2676,15 @@ fn build_exposed_service_method(
     (method, helper_tokens)
 }
 
-fn build_request_struct(
-    struct_prefix: &str,
+fn build_request_struct_with_name(
+    struct_name: &str,
     params: &[FunctionParam],
 ) -> Option<(Ident, TokenStream)> {
     if params.is_empty() {
         return None;
     }
 
-    let ident = Ident::new(&format!("{struct_prefix}Request"), Span::call_site());
+    let ident = Ident::new(struct_name, Span::call_site());
     let field_tokens: Vec<TokenStream> = params
         .iter()
         .map(|param| {
@@ -2661,18 +2704,22 @@ fn build_request_struct(
     Some((ident, tokens))
 }
 
+fn build_request_struct(
+    struct_prefix: &str,
+    params: &[FunctionParam],
+) -> Option<(Ident, TokenStream)> {
+    let struct_name = format!("{struct_prefix}Request");
+    build_request_struct_with_name(&struct_name, params)
+}
+
 fn build_request_deserializer(
-    fn_name: &Ident,
+    deserializer_fn_name: &Ident,
     request_spec: &MessageEncodingSpec,
     request_format: &MessageFormat,
     params: &[FunctionParam],
     label: &str,
     request_struct: Option<&Ident>,
 ) -> TokenStream {
-    let deserializer_fn_name = Ident::new(
-        &format!("{}_deserialize_request", fn_name),
-        Span::call_site(),
-    );
     let reader_type = &request_spec.reader_type;
     let context_literal = Literal::string(label);
 

@@ -294,8 +294,11 @@ fn write_node_module(
 
     let mut attrs: Vec<Attribute> = Vec::new();
     if !original_name.is_empty() {
-        let doc_comment =
-            format!("Generated {} interfaces for `{}`.", category.doc_label(), original_name);
+        let doc_comment = format!(
+            "Generated {} interfaces for `{}`.",
+            category.doc_label(),
+            original_name
+        );
         attrs.push(parse_quote!(#![doc = #doc_comment]));
     }
     let module_file = File {
