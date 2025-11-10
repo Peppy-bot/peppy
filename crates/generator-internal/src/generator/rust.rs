@@ -1111,7 +1111,6 @@ impl LanguageGenerator for RustGenerator {
         };
         let action_prefix = to_camel_case(&base_component);
         let action_struct_name = format!("{action_prefix}Action");
-        let action_struct_ident = Ident::new(&action_struct_name, Span::call_site());
 
         let mut context = GenerationContext::default();
         let mut methods: Vec<TokenStream> = Vec::new();
@@ -1162,13 +1161,7 @@ impl LanguageGenerator for RustGenerator {
         methods.push(result_method);
 
         let mut items = context.into_tokens();
-        items.push(quote!(pub struct #action_struct_ident;));
-        let impl_block = quote! {
-            impl #action_struct_ident {
-                #( #methods )*
-            }
-        };
-        items.push(impl_block);
+        items.extend(methods);
         items.extend(helper_items);
 
         let tokens: TokenStream = quote! {
