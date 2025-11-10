@@ -1,5 +1,5 @@
 use super::*;
-use config::node::{ExposedAction, ExposedService, ExposedTopic};
+use config::node::{ExposedService, ExposedTopic};
 use pmi::MessengerBackend;
 use std::{fs, thread, time::Duration};
 use tempfile::TempDir;
