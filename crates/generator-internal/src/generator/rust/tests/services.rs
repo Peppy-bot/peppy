@@ -498,36 +498,16 @@ fn subscribed_to_two_services_same_node() {
         "expected two generated artifacts, got {}",
         artifacts.len()
     );
+    let enable_module_name = subscribed_service_module_name(&service1);
     let enable_artifact = artifacts
         .iter()
-        .find(|artifact| {
-            artifact
-                .submodule
-                .as_deref()
-                .map(|name| name.contains("enable_camera"))
-                .unwrap_or(false)
-        })
-        .expect("enable_camera artifact is present");
-    assert_eq!(
-        enable_artifact.submodule.as_deref(),
-        Some("uvc_camera_enable_camera"),
-        "expected enable_camera artifact to land in its own module"
-    );
+        .find(|artifact| artifact.node_name.as_str() == enable_module_name.as_str())
+        .unwrap_or_else(|| panic!("expected {enable_module_name} artifact to be generated"));
+    let camera_module_name = subscribed_service_module_name(&service2);
     let camera_artifact = artifacts
         .iter()
-        .find(|artifact| {
-            artifact
-                .submodule
-                .as_deref()
-                .map(|name| name.contains("get_camera_info"))
-                .unwrap_or(false)
-        })
-        .expect("get_camera_info artifact is present");
-    assert_eq!(
-        camera_artifact.submodule.as_deref(),
-        Some("uvc_camera_get_camera_info"),
-        "expected get_camera_info artifact to land in its own module"
-    );
+        .find(|artifact| artifact.node_name.as_str() == camera_module_name.as_str())
+        .unwrap_or_else(|| panic!("expected {camera_module_name} artifact to be generated"));
     let enable_rendered = &enable_artifact.code_output;
     let camera_rendered = &camera_artifact.code_output;
 
@@ -755,95 +735,87 @@ fn compile_lib_with_exposed_services_artifact() {
     let lib_rs = output_dir.join("src/lib.rs");
     assert!(
         lib_rs.exists(),
-        "Expected lib.rs to exist so `peppygen::services` is reachable"
+        "Expected lib.rs to exist so generated service modules are reachable"
     );
     let lib_contents = std::fs::read_to_string(&lib_rs).expect("failed to read generated lib.rs");
     assert!(
-        lib_contents.contains("pub mod services;"),
-        "Expected generated lib.rs to re-export the `services` module, got:\n{}",
+        lib_contents.contains("pub mod exposed_services;"),
+        "Expected generated lib.rs to re-export the `exposed_services` module, got:\n{}",
+        lib_contents
+    );
+    assert!(
+        lib_contents.contains("pub mod subscribed_services;"),
+        "Expected generated lib.rs to re-export the `subscribed_services` module, got:\n{}",
         lib_contents
     );
 
-    let services_mod = output_dir.join("src/services.rs");
+    let exposed_services_mod = output_dir.join("src/exposed_services.rs");
     assert!(
-        services_mod.exists(),
-        "Expected services module file to exist so `peppygen::services::<module>` resolves"
+        exposed_services_mod.exists(),
+        "Expected exposed services module file to exist so `peppygen::exposed_services::<service>` resolves"
     );
-    let services_contents =
-        std::fs::read_to_string(&services_mod).expect("failed to read services module");
+    let exposed_services_contents = std::fs::read_to_string(&exposed_services_mod)
+        .expect("failed to read exposed_services module");
     assert!(
-        services_contents.contains("pub mod exposers;"),
-        "Expected services module to declare generated `exposers` module, got:\n{}",
-        services_contents
-    );
-    assert!(
-        services_contents.contains("pub mod subscribers;"),
-        "Expected services module to declare subscribed `subscribers` module, got:\n{}",
-        services_contents
+        exposed_services_contents.contains("pub mod enable_camera;"),
+        "Expected exposed services module to declare the `enable_camera` service, got:\n{}",
+        exposed_services_contents
     );
     assert!(
-        !services_contents.contains("pub use exposers::*;"),
-        "Services module should not glob re-export exposers to avoid duplicate type names, got:\n{}",
-        services_contents
-    );
-    assert!(
-        !services_contents.contains("pub use subscribers::*;"),
-        "Services module should not glob re-export subscribers to avoid duplicate type names, got:\n{}",
-        services_contents
-    );
-    let service_modules: Vec<String> = services_contents
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            let module_name = trimmed
-                .strip_prefix("mod ")
-                .or_else(|| trimmed.strip_prefix("pub mod "));
-            module_name.map(|rest| rest.trim_end_matches(';').trim().to_string())
-        })
-        .collect();
-    assert!(
-        !service_modules.is_empty(),
-        "Expected services module to expose at least one generated service module, got:\n{}",
-        services_contents
-    );
-    assert_eq!(
-        service_modules.len(),
-        2,
-        "Expected two generated service modules, got {:?}",
-        service_modules
+        exposed_services_contents.contains("pub mod get_lidar_info;"),
+        "Expected exposed services module to declare the `get_lidar_info` service, got:\n{}",
+        exposed_services_contents
     );
 
+    let subscribed_services_mod = output_dir.join("src/subscribed_services.rs");
     assert!(
-        service_modules.iter().any(|module| module == "exposers"),
-        "Expected exposers service module, got {:?}",
-        service_modules
+        subscribed_services_mod.exists(),
+        "Expected subscribed services module file to exist so `peppygen::subscribed_services::<service>` resolves"
+    );
+    let subscribed_services_contents = std::fs::read_to_string(&subscribed_services_mod)
+        .expect("failed to read subscribed_services module");
+    assert!(
+        subscribed_services_contents.contains("pub mod uvc_camera_enable_camera;"),
+        "Expected subscribed services module to declare the `uvc_camera_enable_camera` client, got:\n{}",
+        subscribed_services_contents
     );
     assert!(
-        service_modules.iter().any(|module| module == "subscribers"),
-        "Expected subscribers service module, got {:?}",
-        service_modules
+        subscribed_services_contents.contains("pub mod uvc_camera_get_camera_info;"),
+        "Expected subscribed services module to declare the `uvc_camera_get_camera_info` client, got:\n{}",
+        subscribed_services_contents
     );
 
-    let exposers_module_path = output_dir.join("src/services/exposers.rs");
+    let enable_camera_module_path = output_dir.join("src/exposed_services/enable_camera.rs");
     assert!(
-        exposers_module_path.exists(),
-        "Expected generated exposers service module at {:?}",
-        exposers_module_path
+        enable_camera_module_path.exists(),
+        "Expected generated enable_camera service module at {:?}",
+        enable_camera_module_path
     );
-    let module_contents = std::fs::read_to_string(&exposers_module_path)
-        .expect("failed to read generated service module");
-    let subscribers_module_path = output_dir.join("src/services/subscribers.rs");
+    let enable_module_contents = std::fs::read_to_string(&enable_camera_module_path)
+        .expect("failed to read enable_camera service module");
+
+    let get_lidar_module_path = output_dir.join("src/exposed_services/get_lidar_info.rs");
     assert!(
-        subscribers_module_path.exists(),
-        "Expected generated subscribers service module at {:?}",
-        subscribers_module_path
+        get_lidar_module_path.exists(),
+        "Expected generated get_lidar_info service module at {:?}",
+        get_lidar_module_path
     );
+    let lidar_module_contents = std::fs::read_to_string(&get_lidar_module_path)
+        .expect("failed to read get_lidar_info service module");
+
     let subscriber_module_impl_path =
-        output_dir.join("src/services/subscribers/uvc_camera_enable_camera.rs");
+        output_dir.join("src/subscribed_services/uvc_camera_enable_camera.rs");
     assert!(
         subscriber_module_impl_path.exists(),
         "Expected enable_camera subscriber module implementation at {:?}",
         subscriber_module_impl_path
+    );
+    let subscriber_module_two_path =
+        output_dir.join("src/subscribed_services/uvc_camera_get_camera_info.rs");
+    assert!(
+        subscriber_module_two_path.exists(),
+        "Expected get_camera_info subscriber module implementation at {:?}",
+        subscriber_module_two_path
     );
     let subscriber_module_contents = std::fs::read_to_string(&subscriber_module_impl_path)
         .expect("failed to read enable_camera subscriber module");
@@ -870,83 +842,88 @@ fn compile_lib_with_exposed_services_artifact() {
         subscriber_module_contents
     );
     assert!(
-        module_contents.contains("pub struct EnableCameraResponse"),
+        enable_module_contents.contains("pub struct Response"),
         "Expected generated service module to define response struct, got:\n{}",
-        module_contents
+        enable_module_contents
     );
     assert!(
-        module_contents.contains("impl EnableCameraResponse {"),
+        enable_module_contents.contains("impl Response {"),
         "Expected generated service module to define response struct impl, got:\n{}",
-        module_contents
+        enable_module_contents
     );
     assert!(
-        module_contents.contains("enabled: bool"),
+        enable_module_contents.contains("enabled: bool"),
         "Expected generated response struct to include `enabled` field, got:\n{}",
-        module_contents
+        enable_module_contents
     );
     assert!(
-        module_contents.contains("error_msg: String"),
+        enable_module_contents.contains("error_msg: String"),
         "Expected generated response struct to include `error_msg` field, got:\n{}",
-        module_contents
+        enable_module_contents
     );
     assert!(
-        module_contents.contains("pub async fn handle_enable_camera_next_request<F>("),
+        enable_module_contents.contains("pub async fn handle_next_request<F>("),
         "Expected generated service module to expose async handler, got:\n{}",
-        module_contents
+        enable_module_contents
     );
     assert!(
-        module_contents.contains("messenger: &crate::Messenger"),
+        enable_module_contents.contains("messenger: &crate::Messenger"),
         "Expected generated handler to accept messenger reference, got:\n{}",
-        module_contents
+        enable_module_contents
     );
     assert!(
-        module_contents.contains("peppylib::ServiceMessenger::listen("),
+        enable_module_contents.contains("peppylib::ServiceMessenger::listen("),
         "Expected generated handler to initialize ServiceMessenger listener, got:\n{}",
-        module_contents
+        enable_module_contents
     );
     assert!(
-        module_contents.contains(".handle_next_request(move |request_context|"),
+        enable_module_contents.contains(".handle_next_request(move |request_context|"),
         "Expected generated handler to use ServiceMessenger::handle_next_request, got:\n{}",
-        module_contents
+        enable_module_contents
     );
     assert!(
-        module_contents.contains("request_context.message.payload"),
+        enable_module_contents.contains("request_context.message.payload"),
         "Expected generated handler to deserialize request payload from the context, got:\n{}",
-        module_contents
+        enable_module_contents
     );
     assert!(
-        module_contents.contains("enable_camera_deserialize_request"),
+        enable_module_contents.contains("fn deserialize_request"),
         "Expected generated helper to deserialize request payload, got:\n{}",
-        module_contents
+        enable_module_contents
     );
     assert!(
-        module_contents.contains("bytes::Bytes::from(buffer)"),
+        enable_module_contents.contains("fn handle_request_payload"),
+        "Expected generated helper to convert handler output to bytes, got:\n{}",
+        enable_module_contents
+    );
+    assert!(
+        enable_module_contents.contains("bytes::Bytes::from(buffer)"),
         "Expected generated handler to serialize response payload, got:\n{}",
-        module_contents
+        enable_module_contents
     );
     assert!(
-        module_contents.contains("capnp::serialize::read_message"),
+        enable_module_contents.contains("capnp::serialize::read_message"),
         "Expected generated module to deserialize requests using capnp, got:\n{}",
-        module_contents
+        enable_module_contents
     );
     assert!(
-        module_contents.contains("pub async fn handle_get_lidar_info_next_request<F>("),
+        lidar_module_contents.contains("pub async fn handle_next_request<F>("),
         "Expected generated module to expose handler for get_lidar_info, got:\n{}",
-        module_contents
+        lidar_module_contents
     );
     assert!(
-        module_contents.contains("pub struct GetLidarInfoRequest"),
+        lidar_module_contents.contains("pub struct Request"),
         "Expected generated module to define request struct for get_lidar_info, got:\n{}",
-        module_contents
+        lidar_module_contents
     );
     assert!(
-        !module_contents.contains("pub struct GetLidarInfoResponse"),
+        !lidar_module_contents.contains("pub struct Response"),
         "Expected no response struct for get_lidar_info, got:\n{}",
-        module_contents
+        lidar_module_contents
     );
     assert!(
-        module_contents.contains("fn get_lidar_info_handle_request_payload"),
+        lidar_module_contents.contains("fn handle_request_payload"),
         "Expected helper for get_lidar_info payload handling, got:\n{}",
-        module_contents
+        lidar_module_contents
     );
 }

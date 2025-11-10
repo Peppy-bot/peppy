@@ -30,9 +30,6 @@ pub struct RustGenerator {
     pending_exposed_services: Option<ExposedServicesModule>,
 }
 
-const EXPOSED_SERVICES_MODULE: &str = "exposers";
-const SUBSCRIBED_SERVICES_MODULE: &str = "subscribers";
-
 impl RustGenerator {
     pub fn new() -> Self {
         Self {
@@ -672,16 +669,15 @@ impl LanguageGenerator for RustGenerator {
         service_tokens.push(method_token);
         service_tokens.extend(helper_tokens);
 
-        let mut submodule_name = sanitize_component(service.name.as_str());
-        if submodule_name.is_empty() {
-            submodule_name = fn_name_str.clone();
+        let mut module_name = sanitize_component(service.name.as_str());
+        if module_name.is_empty() {
+            module_name = fn_name_str.clone();
         }
 
         let module = self
             .pending_exposed_services
             .get_or_insert_with(ExposedServicesModule::new);
-        module.ensure_node_name(EXPOSED_SERVICES_MODULE);
-        module.push_service(submodule_name, service_tokens);
+        module.push_service(module_name, service_tokens);
         Ok(())
     }
 
@@ -1108,9 +1104,9 @@ impl LanguageGenerator for RustGenerator {
 
         service_tokens.push(function_token);
 
-        let mut submodule_name = subscribed_service_module_name(service);
-        if submodule_name.is_empty() {
-            submodule_name = method_label
+        let mut module_name = subscribed_service_module_name(service);
+        if module_name.is_empty() {
+            module_name = method_label
                 .strip_prefix("poll_")
                 .map(|label| label.to_string())
                 .filter(|label| !label.is_empty())
@@ -1122,11 +1118,10 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
 
-        self.push_section(InterfaceArtifact::from_kind_with_submodule(
-            SUBSCRIBED_SERVICES_MODULE,
+        self.push_section(InterfaceArtifact::from_kind(
+            &module_name,
             InterfaceKind::SubscribedService,
             rendered,
-            Some(submodule_name),
         ));
         Ok(())
     }
@@ -1236,55 +1231,43 @@ impl LanguageGenerator for RustGenerator {
 }
 
 struct ServiceModule {
-    submodule: String,
+    module_name: String,
     tokens: Vec<TokenStream>,
 }
 
 struct ExposedServicesModule {
-    node_name: String,
     services: Vec<ServiceModule>,
 }
 
 impl ExposedServicesModule {
     fn new() -> Self {
         Self {
-            node_name: String::new(),
             services: Vec::new(),
         }
     }
 
-    fn ensure_node_name(&mut self, name: &str) {
-        if self.node_name.is_empty() {
-            self.node_name = name.to_string();
-        }
-    }
-
-    fn push_service(&mut self, submodule: String, tokens: Vec<TokenStream>) {
-        self.services.push(ServiceModule { submodule, tokens });
+    fn push_service(&mut self, module_name: String, tokens: Vec<TokenStream>) {
+        self.services.push(ServiceModule {
+            module_name,
+            tokens,
+        });
     }
 
     fn into_artifacts(self) -> Vec<InterfaceArtifact> {
-        let ExposedServicesModule {
-            node_name,
-            services,
-        } = self;
-
-        services
+        self.services
             .into_iter()
             .map(|service| {
-                let ServiceModule { submodule, tokens } = service;
+                let ServiceModule {
+                    module_name,
+                    tokens,
+                } = service;
                 let tokens: TokenStream = quote! {
                     #( #tokens )*
                 };
 
                 let rendered = render_tokens(tokens);
 
-                InterfaceArtifact::from_kind_with_submodule(
-                    &node_name,
-                    InterfaceKind::ExposedService,
-                    rendered,
-                    Some(submodule),
-                )
+                InterfaceArtifact::from_kind(&module_name, InterfaceKind::ExposedService, rendered)
             })
             .collect()
     }

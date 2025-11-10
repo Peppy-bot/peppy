@@ -264,7 +264,7 @@ fn services_communication() {
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = format!(
         "
-use peppygen::services::subscribers::uvc_camera_enable_camera;
+use peppygen::subscribed_services::uvc_camera_enable_camera;
 use peppygen::{{Messenger, Result}};
 use std::time::Duration;
 
@@ -299,16 +299,16 @@ async fn main() -> Result<()> {{
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = format!(
         "
-use peppygen::services::exposers::{{EnableCameraResponse, handle_enable_camera_next_request}};
+use peppygen::exposed_services::enable_camera::{{Response, handle_next_request}};
 use peppygen::{{Messenger, Result}};
 
 #[tokio::main]
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
-    handle_enable_camera_next_request(&messenger, |request| -> Result<EnableCameraResponse> {{
+    handle_next_request(&messenger, |request| -> Result<Response> {{
         println!(\"received enable_camera request: {{}}\", request.enable);
-        Ok(EnableCameraResponse::new(request.enable, \"handled\".to_owned()))
+        Ok(Response::new(request.enable, \"handled\".to_owned()))
     }})
     .await?;
 
