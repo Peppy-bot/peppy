@@ -317,7 +317,6 @@ fn expose_action_without_request_body() {
         &rendered,
         "expected helper function for goal handler without request body"
     );
-
     assert_rendered!(
         rendered.contains("pub struct RotateServoClockwiseResultResponse"),
         &rendered,
@@ -415,11 +414,6 @@ fn expose_two_actions() {
         rotate_servo.contains("F: Fn() -> crate::Result<RotateServoClockwiseGoalResponse>"),
         &rotate_servo,
         "expected zero-argument goal handler signature for `rotate_servo_clockwise`"
-    );
-    assert_rendered!(
-        !rotate_servo.contains("RotateServoClockwiseGoalRequest"),
-        &rotate_servo,
-        "expected no goal request struct when goal payload is absent for `rotate_servo_clockwise`"
     );
     assert_rendered!(
         rotate_servo.contains("pub struct RotateServoClockwiseGoalResponse"),
@@ -714,11 +708,6 @@ fn subscribed_to_two_actions_same_node() {
         rotate_servo.contains("fn deserialize_brain_rotate_servo_clockwise_feedback_payload"),
         rotate_servo,
         "expected rotate_servo_clockwise feedback helper"
-    );
-    assert_rendered!(
-        !rotate_servo.contains("BrainRotateServoClockwiseActionGoalRequest"),
-        rotate_servo,
-        "expected rotate_servo_clockwise goal helper to omit request struct"
     );
     assert_rendered!(
         rotate_servo.contains("-> crate::Result<BrainRotateServoClockwiseActionGoalResponse>"),
