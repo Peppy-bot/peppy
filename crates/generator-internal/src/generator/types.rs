@@ -67,15 +67,26 @@ pub struct InterfaceArtifact {
     pub kind: InterfaceKind,
     pub interface: Option<InterfaceVariant>,
     pub code_output: String,
+    pub submodule: Option<String>,
 }
 
 impl InterfaceArtifact {
     pub fn from_kind(node_name: &str, kind: InterfaceKind, code_output: String) -> Self {
+        Self::from_kind_with_submodule(node_name, kind, code_output, None)
+    }
+
+    pub fn from_kind_with_submodule(
+        node_name: &str,
+        kind: InterfaceKind,
+        code_output: String,
+        submodule: Option<String>,
+    ) -> Self {
         Self {
             node_name: node_name.to_string(),
             kind,
             interface: None,
             code_output,
+            submodule,
         }
     }
 }

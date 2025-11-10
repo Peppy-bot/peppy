@@ -28,7 +28,6 @@ pub struct RustGenerator {
     sections: Vec<InterfaceArtifact>,
     schemas: HashMap<String, CapnpSchema>,
     pending_exposed_services: Option<ExposedServicesModule>,
-    pending_exposed_topics: Option<ExposedTopicsModule>,
     pending_subscribed_services: BTreeMap<String, SubscribedServiceNode>,
 }
 
@@ -43,7 +42,6 @@ impl RustGenerator {
             sections: Vec::new(),
             schemas: HashMap::new(),
             pending_exposed_services: None,
-            pending_exposed_topics: None,
             pending_subscribed_services: BTreeMap::new(),
         }
     }
@@ -51,19 +49,12 @@ impl RustGenerator {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn into_artifacts(mut self) -> Vec<InterfaceArtifact> {
         self.flush_pending_exposed_services();
-        self.flush_pending_exposed_topics();
         self.flush_pending_subscribed_services();
         self.sections
     }
 
     fn flush_pending_exposed_services(&mut self) {
         if let Some(module) = self.pending_exposed_services.take() {
-            self.push_section(module.into_artifact());
-        }
-    }
-
-    fn flush_pending_exposed_topics(&mut self) {
-        if let Some(module) = self.pending_exposed_topics.take() {
             self.push_section(module.into_artifact());
         }
     }
@@ -569,7 +560,8 @@ impl LanguageGenerator for RustGenerator {
         let fn_name = prefixed_ident("", non_empty_str(topic.name.as_str()), "topic");
         let fn_name_str = fn_name.to_string();
 
-        let struct_prefix = to_camel_case(&fn_name_str);
+        let schema_prefix = to_camel_case(&fn_name_str);
+        let struct_prefix = String::from("Message");
 
         let mut context = GenerationContext::default();
         let format_artifacts = map_message_format(topic.message_format.as_ref())?;
@@ -581,12 +573,12 @@ impl LanguageGenerator for RustGenerator {
         )?;
         let encoding = self.prepare_message_encoding(
             &fn_name_str,
-            &struct_prefix,
+            &schema_prefix,
             format_artifacts.as_ref(),
             &params,
         )?;
         let struct_tokens = context.into_tokens();
-        let method_ident = Ident::new(&format!("emit_{fn_name_str}"), Span::call_site());
+        let method_ident = Ident::new("emit", Span::call_site());
         let method_tokens = build_topic_emit(
             &method_ident,
             &params,
@@ -595,12 +587,23 @@ impl LanguageGenerator for RustGenerator {
             &fn_name_str,
         );
 
-        let module = self
-            .pending_exposed_topics
-            .get_or_insert_with(ExposedTopicsModule::new);
-        module.ensure_node_name(EXPOSED_TOPICS_MODULE);
-        module.extend_structs(struct_tokens);
-        module.push_method(method_tokens);
+        let tokens: TokenStream = quote! {
+            #( #struct_tokens )*
+            #method_tokens
+        };
+        let rendered = render_tokens(tokens);
+
+        let mut module_name = sanitize_component(topic.name.as_str());
+        if module_name.is_empty() {
+            module_name = String::from("topic");
+        }
+
+        self.push_section(InterfaceArtifact::from_kind_with_submodule(
+            EXPOSED_TOPICS_MODULE,
+            InterfaceKind::ExposedTopic,
+            rendered,
+            Some(module_name),
+        ));
         Ok(())
     }
 
@@ -835,14 +838,15 @@ impl LanguageGenerator for RustGenerator {
         };
         let topic_prefix = to_camel_case(&topic_component);
         let struct_prefix = format!("{node_prefix}{topic_prefix}");
-        let message_struct_name = format!("{struct_prefix}Message");
+        let message_struct_name = String::from("Message");
 
-        let callback_fn_name = match (node_component.is_empty(), topic_component.is_empty()) {
-            (true, true) => "on_next_message".to_string(),
-            (true, false) => format!("on_next_{topic_component}_message"),
-            (false, true) => format!("on_next_{node_component}_message"),
-            (false, false) => format!("on_next_{node_component}_{topic_component}_message"),
+        let module_name = match (node_component.is_empty(), topic_component.is_empty()) {
+            (false, false) => format!("{node_component}_{topic_component}"),
+            (false, true) => node_component.clone(),
+            (true, false) => topic_component.clone(),
+            (true, true) => String::from("topic"),
         };
+        let callback_fn_name = String::from("on_next_message_received");
         let callback_fn_ident = Ident::new(&callback_fn_name, Span::call_site());
 
         let mut context = GenerationContext::default();
@@ -860,10 +864,12 @@ impl LanguageGenerator for RustGenerator {
             .collect();
         context.add_struct(args_struct_ident.clone(), args_fields);
 
-        let schema_key = if topic_component.is_empty() {
-            callback_fn_name.clone()
-        } else {
+        let schema_key = if !topic_component.is_empty() {
             format!("on_next_{topic_component}_message")
+        } else if !node_component.is_empty() {
+            format!("on_next_{node_component}_message")
+        } else {
+            format!("{module_name}_message")
         };
 
         let encoding = self
@@ -891,10 +897,11 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
 
-        self.push_section(InterfaceArtifact::from_kind(
+        self.push_section(InterfaceArtifact::from_kind_with_submodule(
             SUBSCRIBED_TOPICS_MODULE,
             InterfaceKind::SubscribedTopic,
             rendered,
+            Some(module_name),
         ));
 
         Ok(())
@@ -1174,7 +1181,6 @@ impl LanguageGenerator for RustGenerator {
 
     fn build(mut self, to_path: impl AsRef<Path>) -> Result<()> {
         self.flush_pending_exposed_services();
-        self.flush_pending_exposed_topics();
         self.flush_pending_subscribed_services();
 
         // First create the basic structure of the project
@@ -1241,54 +1247,6 @@ impl ExposedServicesModule {
         let rendered = render_tokens(tokens);
 
         InterfaceArtifact::from_kind(&node_name, InterfaceKind::ExposedService, rendered)
-    }
-}
-
-struct ExposedTopicsModule {
-    node_name: String,
-    message_structs: Vec<TokenStream>,
-    methods: Vec<TokenStream>,
-}
-
-impl ExposedTopicsModule {
-    fn new() -> Self {
-        Self {
-            node_name: String::new(),
-            message_structs: Vec::new(),
-            methods: Vec::new(),
-        }
-    }
-
-    fn ensure_node_name(&mut self, name: &str) {
-        if self.node_name.is_empty() {
-            self.node_name = name.to_string();
-        }
-    }
-
-    fn extend_structs(&mut self, structs: Vec<TokenStream>) {
-        self.message_structs.extend(structs);
-    }
-
-    fn push_method(&mut self, method: TokenStream) {
-        self.methods.push(method);
-    }
-
-    fn into_artifact(self) -> InterfaceArtifact {
-        let ExposedTopicsModule {
-            node_name,
-            message_structs,
-            methods,
-        } = self;
-
-        let tokens: TokenStream = quote! {
-            #( #message_structs )*
-
-            #( #methods )*
-        };
-
-        let rendered = render_tokens(tokens);
-
-        InterfaceArtifact::from_kind(&node_name, InterfaceKind::ExposedTopic, rendered)
     }
 }
 
@@ -2066,21 +2024,7 @@ fn build_subscribed_topic_callback(
 ) -> TokenStream {
     let topic_literal = Literal::string(topic.name.as_str());
     let reader_type = &encoding.reader_type;
-    let helper_fn_ident = {
-        let node_component = topic
-            .node
-            .as_deref()
-            .map(sanitize_component)
-            .unwrap_or_default();
-        let topic_component = sanitize_component(topic.name.as_str());
-        let helper_name = match (node_component.is_empty(), topic_component.is_empty()) {
-            (true, true) => "deseralize_payload".to_string(),
-            (true, false) => format!("deseralize_{}_payload", topic_component),
-            (false, true) => format!("deseralize_{}_payload", node_component),
-            (false, false) => format!("deseralize_{}_{}_payload", node_component, topic_component),
-        };
-        Ident::new(&helper_name, Span::call_site())
-    };
+    let helper_fn_ident = Ident::new("deseralize_payload", Span::call_site());
 
     let mut schema_lookup: HashMap<String, (&String, &SchemaType)> = HashMap::new();
     for (field_name, schema) in &artifacts.message_format().0 {

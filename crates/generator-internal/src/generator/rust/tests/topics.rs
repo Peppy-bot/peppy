@@ -157,7 +157,7 @@ fn expose_topic() {
         "expected explicit capnp serialization error variant"
     );
     assert_rendered!(
-        rendered.contains("header: PushFrameHeader"),
+        rendered.contains("header: MessageHeader"),
         &rendered,
         "expected structured header argument"
     );
@@ -167,7 +167,7 @@ fn expose_topic() {
         "expected fixed-size array argument"
     );
     assert_rendered!(
-        rendered.contains("pub struct PushFrameHeader"),
+        rendered.contains("pub struct MessageHeader"),
         &rendered,
         "expected generated struct for nested object"
     );
@@ -177,7 +177,7 @@ fn expose_topic() {
         "expected messenger parameter in emit signature"
     );
     assert_rendered!(
-        rendered.contains("pub async fn emit_push_frame("),
+        rendered.contains("pub async fn emit("),
         &rendered,
         "expected async emit method"
     );
@@ -228,27 +228,59 @@ fn expose_two_topics() {
         .collect();
     assert_eq!(
         artifacts.len(),
-        1,
-        "expected a single generated artifact, got {}",
+        2,
+        "expected two generated artifacts, got {}",
         artifacts.len()
     );
-    let rendered = artifacts.into_iter().next().expect("artifact is present");
+    struct ArtifactExpectation<'a> {
+        builder_snippet: &'a str,
+        topic_literal: &'a str,
+    }
+    let expectations = [
+        ArtifactExpectation {
+            builder_snippet: "crate::capnp::push_frame_message_capnp::push_frame_message::Builder",
+            topic_literal: "let topic_name = \"push_frame\";",
+        },
+        ArtifactExpectation {
+            builder_snippet: "crate::capnp::push_lidar_object_message_capnp::push_lidar_object_message::Builder",
+            topic_literal: "let topic_name = \"push_lidar_object\";",
+        },
+    ];
 
-    assert_rendered!(
-        rendered.contains("let mut message = capnp::message::Builder::new_default();"),
-        rendered,
-        "expected capnp message builder"
-    );
-    assert_rendered!(
-        rendered.contains("pub async fn emit_push_lidar_object("),
-        rendered,
-        "expected async emit method for `push_lidar_object`"
-    );
-    assert_rendered!(
-        rendered.contains("pub struct PushLidarObjectHeader"),
-        rendered,
-        "expected nested header struct for `push_lidar_object`"
-    );
+    for (rendered, expectation) in artifacts.iter().zip(expectations.iter()) {
+        assert_rendered!(
+            rendered.contains("let mut message = capnp::message::Builder::new_default();"),
+            rendered,
+            "expected capnp message builder"
+        );
+        assert_rendered!(
+            rendered.contains(expectation.builder_snippet),
+            rendered,
+            "expected capnp root initialization `{}`",
+            expectation.builder_snippet
+        );
+        assert_rendered!(
+            rendered.contains("pub async fn emit("),
+            rendered,
+            "expected async emit method"
+        );
+        assert_rendered!(
+            !rendered.contains("emit_push"),
+            rendered,
+            "did not expect topic-specific emit function name"
+        );
+        assert_rendered!(
+            rendered.contains("pub struct MessageHeader"),
+            rendered,
+            "expected nested header struct"
+        );
+        assert_rendered!(
+            rendered.contains(expectation.topic_literal),
+            rendered,
+            "expected topic literal `{}`",
+            expectation.topic_literal
+        );
+    }
 }
 
 /// In the case of a topic, a "subscribed" topic is an entity expects to receive messages from another entity
@@ -275,12 +307,12 @@ fn subscribed_to_topic() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     assert_rendered!(
-        rendered.contains("pub struct UvcCameraStreamMessage"),
+        rendered.contains("pub struct Message"),
         &rendered,
         "expected return struct definition"
     );
     assert_rendered!(
-        rendered.contains("pub struct UvcCameraStreamMessageHeader"),
+        rendered.contains("pub struct MessageHeader"),
         &rendered,
         "expected nested struct definition"
     );
@@ -300,7 +332,7 @@ fn subscribed_to_topic() {
         "expected encoding field to be public"
     );
     assert_rendered!(
-        rendered.contains("pub header: UvcCameraStreamMessageHeader"),
+        rendered.contains("pub header: MessageHeader"),
         &rendered,
         "expected nested header field to be public"
     );
@@ -320,7 +352,7 @@ fn subscribed_to_topic() {
         "expected width field to be public"
     );
     assert_rendered!(
-        rendered.contains("pub async fn on_next_uvc_camera_stream_message("),
+        rendered.contains("pub async fn on_next_message_received("),
         &rendered,
         "expected async subscriber method"
     );
@@ -330,17 +362,17 @@ fn subscribed_to_topic() {
         "expected messenger reference parameter"
     );
     assert_rendered!(
-        rendered.contains("deseralize_uvc_camera_stream_payload(message.payload.as_ref())"),
+        rendered.contains("deseralize_payload(message.payload.as_ref())"),
         &rendered,
         "expected helper payload deserializer invocation"
     );
     assert_rendered!(
-        rendered.contains("fn deseralize_uvc_camera_stream_payload("),
+        rendered.contains("fn deseralize_payload("),
         &rendered,
         "expected private payload deserializer function"
     );
     assert_rendered!(
-        rendered.contains("-> crate::Result<UvcCameraStreamMessage>"),
+        rendered.contains("-> crate::Result<Message>"),
         &rendered,
         "expected subscriber return type"
     );
@@ -425,22 +457,13 @@ fn subscribed_to_two_topics_same_node() {
         artifacts.len()
     );
     struct ArtifactExpectation<'a> {
-        struct_name: &'a str,
-        helper_name: &'a str,
-        method_name: &'a str,
         topic_literal: &'a str,
     }
     let expectations = [
         ArtifactExpectation {
-            struct_name: "UvcCameraStreamMessage",
-            helper_name: "fn deseralize_uvc_camera_stream_payload",
-            method_name: "pub async fn on_next_uvc_camera_stream_message(",
             topic_literal: "let topic_name = \"stream\";",
         },
         ArtifactExpectation {
-            struct_name: "UvcCameraSoundMessage",
-            helper_name: "fn deseralize_uvc_camera_sound_payload",
-            method_name: "pub async fn on_next_uvc_camera_sound_message(",
             topic_literal: "let topic_name = \"sound\";",
         },
     ];
@@ -454,10 +477,9 @@ fn subscribed_to_two_topics_same_node() {
             on_next_usage_count
         );
         assert_rendered!(
-            rendered.contains(expectation.struct_name),
+            rendered.contains("pub struct Message"),
             rendered,
-            "expected payload struct `{}`",
-            expectation.struct_name
+            "expected payload struct `Message`"
         );
         assert_rendered!(
             rendered.contains("crate::Error::TopicSubscribe"),
@@ -465,16 +487,14 @@ fn subscribed_to_two_topics_same_node() {
             "expected explicit subscribe error variant"
         );
         assert_rendered!(
-            rendered.contains(expectation.method_name),
+            rendered.contains("pub async fn on_next_message_received("),
             rendered,
-            "expected subscriber method `{}`",
-            expectation.method_name
+            "expected subscriber method"
         );
         assert_rendered!(
-            rendered.contains(expectation.helper_name),
+            rendered.contains("fn deseralize_payload("),
             rendered,
-            "expected payload helper `{}`",
-            expectation.helper_name
+            "expected payload helper"
         );
         assert_rendered!(
             rendered.contains("messenger.handle()"),
@@ -547,12 +567,12 @@ fn subscribed_to_topic_no_node() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     assert_rendered!(
-        rendered.contains("pub struct StreamMessage"),
+        rendered.contains("pub struct Message"),
         &rendered,
         "expected return struct definition"
     );
     assert_rendered!(
-        rendered.contains("pub struct StreamMessageHeader"),
+        rendered.contains("pub struct MessageHeader"),
         &rendered,
         "expected nested struct definition"
     );
@@ -562,7 +582,7 @@ fn subscribed_to_topic_no_node() {
         "expected array element type"
     );
     assert_rendered!(
-        rendered.contains("pub async fn on_next_stream_message("),
+        rendered.contains("pub async fn on_next_message_received("),
         &rendered,
         "expected async subscriber method"
     );
@@ -572,17 +592,17 @@ fn subscribed_to_topic_no_node() {
         "expected messenger reference parameter"
     );
     assert_rendered!(
-        rendered.contains("deseralize_stream_payload(message.payload.as_ref())"),
+        rendered.contains("deseralize_payload(message.payload.as_ref())"),
         &rendered,
         "expected helper payload deserializer invocation"
     );
     assert_rendered!(
-        rendered.contains("fn deseralize_stream_payload("),
+        rendered.contains("fn deseralize_payload("),
         &rendered,
         "expected private payload deserializer function"
     );
     assert_rendered!(
-        rendered.contains("-> crate::Result<StreamMessage>"),
+        rendered.contains("-> crate::Result<Message>"),
         &rendered,
         "expected subscriber return type"
     );
