@@ -162,7 +162,7 @@ fn exposed_action() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     assert_rendered!(
-        rendered.contains("pub struct MoveArmGoalRequest"),
+        rendered.contains("pub struct GoalRequest"),
         &rendered,
         "expected goal request struct"
     );
@@ -177,12 +177,12 @@ fn exposed_action() {
         "expected desired_position array in goal request"
     );
     assert_rendered!(
-        rendered.contains("pub struct MoveArmGoalResponse"),
+        rendered.contains("pub struct GoalResponse"),
         &rendered,
         "expected goal response struct"
     );
     assert_rendered!(
-        rendered.contains("impl MoveArmGoalResponse"),
+        rendered.contains("impl GoalResponse"),
         &rendered,
         "expected goal response constructor block"
     );
@@ -197,7 +197,7 @@ fn exposed_action() {
         "expected final_position field in result response"
     );
     assert_rendered!(
-        rendered.contains("pub struct MoveArmResultResponse"),
+        rendered.contains("pub struct ResultResponse"),
         &rendered,
         "expected result response struct"
     );
@@ -212,12 +212,12 @@ fn exposed_action() {
         "expected error_msg field in result response"
     );
     assert_rendered!(
-        rendered.contains("pub async fn handle_move_arm_goal_next_request"),
+        rendered.contains("pub async fn handle_goal_next_request"),
         &rendered,
         "expected goal handler method"
     );
     assert_rendered!(
-        rendered.contains("F: Fn(MoveArmGoalRequest) -> crate::Result<MoveArmGoalResponse>"),
+        rendered.contains("F: Fn(GoalRequest) -> crate::Result<GoalResponse>"),
         &rendered,
         "expected goal handler signature"
     );
@@ -227,7 +227,7 @@ fn exposed_action() {
         "expected goal service name literal"
     );
     assert_rendered!(
-        rendered.contains("pub async fn handle_move_arm_goal_cancel_request"),
+        rendered.contains("pub async fn handle_cancel_next_request"),
         &rendered,
         "expected cancel handler method"
     );
@@ -242,7 +242,7 @@ fn exposed_action() {
         "expected cancel service name"
     );
     assert_rendered!(
-        rendered.contains("pub async fn emit_move_arm_feedback"),
+        rendered.contains("pub async fn emit_feedback"),
         &rendered,
         "expected feedback emit method"
     );
@@ -267,14 +267,29 @@ fn exposed_action() {
         "expected service listen call for action endpoints"
     );
     assert_rendered!(
-        rendered.contains("pub async fn handle_move_arm_result_next_request"),
+        rendered.contains("pub async fn handle_result_next_request"),
         &rendered,
         "expected result handler method"
     );
     assert_rendered!(
-        rendered.contains("F: Fn() -> crate::Result<MoveArmResultResponse>"),
+        rendered.contains("F: Fn() -> crate::Result<ResultResponse>"),
         &rendered,
         "expected result handler signature"
+    );
+    assert_rendered!(
+        rendered.contains("fn handle_goal_payload"),
+        &rendered,
+        "expected goal payload helper"
+    );
+    assert_rendered!(
+        rendered.contains("fn handle_cancel_request_payload"),
+        &rendered,
+        "expected cancel payload helper"
+    );
+    assert_rendered!(
+        rendered.contains("fn handle_result_payload"),
+        &rendered,
+        "expected result payload helper"
     );
 }
 
@@ -298,27 +313,27 @@ fn expose_action_without_request_body() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     assert_rendered!(
-        rendered.contains("pub struct RotateServoClockwiseGoalResponse"),
+        rendered.contains("pub struct GoalResponse"),
         &rendered,
         "expected goal response struct without request body"
     );
     assert_rendered!(
-        rendered.contains("pub async fn handle_rotate_servo_clockwise_goal_next_request"),
+        rendered.contains("pub async fn handle_goal_next_request"),
         &rendered,
         "expected goal handler even when goal request body is missing"
     );
     assert_rendered!(
-        rendered.contains("F: Fn() -> crate::Result<RotateServoClockwiseGoalResponse>"),
+        rendered.contains("F: Fn() -> crate::Result<GoalResponse>"),
         &rendered,
         "expected goal handler signature with zero parameters"
     );
     assert_rendered!(
-        rendered.contains("fn rotate_servo_clockwise_goal_handle_request_payload"),
+        rendered.contains("fn handle_goal_payload"),
         &rendered,
         "expected helper function for goal handler without request body"
     );
     assert_rendered!(
-        rendered.contains("pub struct RotateServoClockwiseResultResponse"),
+        rendered.contains("pub struct ResultResponse"),
         &rendered,
         "expected result response struct without request body"
     );
@@ -333,23 +348,23 @@ fn expose_action_without_request_body() {
         "expected result response to expose error message field"
     );
     assert_rendered!(
-        rendered.contains("pub async fn handle_rotate_servo_clockwise_result_next_request"),
+        rendered.contains("pub async fn handle_result_next_request"),
         &rendered,
         "expected result handler even when result request body is missing"
     );
     assert_rendered!(
-        rendered.contains("F: Fn() -> crate::Result<RotateServoClockwiseResultResponse>"),
+        rendered.contains("F: Fn() -> crate::Result<ResultResponse>"),
         &rendered,
         "expected result handler signature with zero parameters"
     );
     assert_rendered!(
-        rendered.contains("fn rotate_servo_clockwise_result_handle_request_payload"),
+        rendered.contains("fn handle_result_payload"),
         &rendered,
         "expected helper function for result handler without request body"
     );
 
     assert_rendered!(
-        rendered.contains("pub async fn emit_rotate_servo_clockwise_feedback"),
+        rendered.contains("pub async fn emit_feedback"),
         &rendered,
         "expected feedback emitter for action without request payloads"
     );
@@ -386,49 +401,59 @@ fn expose_two_actions() {
         .expect("rotate_servo_clockwise artifact is present");
 
     assert_rendered!(
-        move_arm.contains("pub async fn handle_move_arm_goal_next_request"),
+        move_arm.contains("pub async fn handle_goal_next_request"),
         &move_arm,
         "expected goal handler for `move_arm`"
     );
     assert_rendered!(
-        move_arm.contains("pub struct MoveArmGoalRequest"),
+        move_arm.contains("pub struct GoalRequest"),
         &move_arm,
         "expected goal request struct for `move_arm`"
     );
     assert_rendered!(
-        move_arm.contains("pub struct MoveArmResultResponse"),
+        move_arm.contains("pub struct ResultResponse"),
         &move_arm,
         "expected result response struct for `move_arm`"
     );
     assert_rendered!(
-        move_arm.contains("pub async fn emit_move_arm_feedback"),
+        move_arm.contains("pub async fn emit_feedback"),
         &move_arm,
         "expected feedback emitter for `move_arm`"
     );
     assert_rendered!(
-        rotate_servo.contains("pub async fn handle_rotate_servo_clockwise_goal_next_request"),
+        move_arm.contains("let service_name = \"move_arm/goal\";"),
+        &move_arm,
+        "expected move_arm goal service literal"
+    );
+    assert_rendered!(
+        rotate_servo.contains("pub async fn handle_goal_next_request"),
         &rotate_servo,
         "expected goal handler for `rotate_servo_clockwise`"
     );
     assert_rendered!(
-        rotate_servo.contains("F: Fn() -> crate::Result<RotateServoClockwiseGoalResponse>"),
+        rotate_servo.contains("F: Fn() -> crate::Result<GoalResponse>"),
         &rotate_servo,
         "expected zero-argument goal handler signature for `rotate_servo_clockwise`"
     );
     assert_rendered!(
-        rotate_servo.contains("pub struct RotateServoClockwiseGoalResponse"),
+        rotate_servo.contains("pub struct GoalResponse"),
         &rotate_servo,
         "expected goal response struct for `rotate_servo_clockwise`"
     );
     assert_rendered!(
-        rotate_servo.contains("pub struct RotateServoClockwiseResultResponse"),
+        rotate_servo.contains("pub struct ResultResponse"),
         &rotate_servo,
         "expected result response struct for `rotate_servo_clockwise`"
     );
     assert_rendered!(
-        rotate_servo.contains("pub async fn emit_rotate_servo_clockwise_feedback"),
+        rotate_servo.contains("pub async fn emit_feedback"),
         &rotate_servo,
         "expected feedback emitter for `rotate_servo_clockwise`"
+    );
+    assert_rendered!(
+        rotate_servo.contains("let service_name = \"rotate_servo_clockwise/goal\";"),
+        &rotate_servo,
+        "expected rotate_servo_clockwise goal service literal"
     );
 }
 

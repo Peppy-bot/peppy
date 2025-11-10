@@ -114,7 +114,9 @@ impl RustGenerator {
         &mut self,
         fn_name: &Ident,
         handler_fn_name_override: Option<&Ident>,
-        struct_prefix: &str,
+        handler_helper_name_override: Option<&Ident>,
+        rust_struct_prefix: &str,
+        schema_struct_prefix: &str,
         request_format: Option<&MessageFormat>,
         response_format: Option<&MessageFormat>,
         label: &str,
@@ -127,20 +129,20 @@ impl RustGenerator {
         let params = collect_function_params(
             accept_format_artifacts.as_ref(),
             return_format_artifacts.as_ref(),
-            struct_prefix,
+            rust_struct_prefix,
             context,
             None,
         )?;
 
         let encoding = self.prepare_message_encoding(
             label,
-            struct_prefix,
+            schema_struct_prefix,
             accept_format_artifacts.as_ref(),
             &params,
         )?;
 
         let request_struct_ident =
-            if let Some((ident, tokens)) = build_request_struct(struct_prefix, &params) {
+            if let Some((ident, tokens)) = build_request_struct(rust_struct_prefix, &params) {
                 context.add_private_struct(tokens);
                 Some(ident)
             } else {
@@ -148,13 +150,14 @@ impl RustGenerator {
             };
 
         let response_spec = if let Some(return_artifacts) = return_format_artifacts.as_ref() {
-            let response_prefix = format!("{struct_prefix}Response");
+            let response_struct_prefix = format!("{rust_struct_prefix}Response");
+            let response_schema_prefix = format!("{schema_struct_prefix}Response");
             let schema_key = format!("{label}_response");
             let schema_info =
-                self.register_schema(&schema_key, &response_prefix, return_artifacts)?;
+                self.register_schema(&schema_key, &response_schema_prefix, return_artifacts)?;
             Some(ServiceResponseSpec {
                 format: return_artifacts.message_format(),
-                struct_ident: Ident::new(&response_prefix, Span::call_site()),
+                struct_ident: Ident::new(&response_struct_prefix, Span::call_site()),
                 builder_type: schema_info.builder_type_tokens(),
             })
         } else {
@@ -164,7 +167,7 @@ impl RustGenerator {
         Ok(build_exposed_service_method(
             fn_name,
             handler_fn_name_override,
-            None,
+            handler_helper_name_override,
             None,
             &params,
             encoding.as_ref(),
@@ -691,9 +694,10 @@ impl LanguageGenerator for RustGenerator {
         let mut helper_tokens: Vec<TokenStream> = Vec::new();
 
         if let Some(goal) = action.goal_service.as_ref() {
-            let fn_name = Ident::new(&(base_name.clone() + "_goal"), Span::call_site());
-            let struct_prefix = format!("{action_prefix}Goal");
-            let label = fn_name.to_string();
+            let fn_name = Ident::new("goal", Span::call_site());
+            let label = format!("{base_name}_goal");
+            let schema_struct_prefix = format!("{action_prefix}Goal");
+            let helper_ident = Ident::new("handle_goal_payload", Span::call_site());
             let service_name =
                 action_endpoint_name(goal.name.as_deref(), action.name.as_str(), "goal");
             let service_literal = Literal::string(&service_name);
@@ -701,7 +705,9 @@ impl LanguageGenerator for RustGenerator {
             let (method, helpers) = self.build_action_service_handler(
                 &fn_name,
                 None,
-                &struct_prefix,
+                Some(&helper_ident),
+                "Goal",
+                schema_struct_prefix.as_str(),
                 goal.request_message_format.as_ref(),
                 goal.response_message_format.as_ref(),
                 &label,
@@ -711,21 +717,21 @@ impl LanguageGenerator for RustGenerator {
             methods.push(method);
             helper_tokens.extend(helpers);
 
-            let cancel_fn_name =
-                Ident::new(&(base_name.clone() + "_goal_cancel"), Span::call_site());
-            let cancel_label = cancel_fn_name.to_string();
+            let cancel_fn_name = Ident::new("cancel", Span::call_site());
+            let cancel_label = format!("{base_name}_goal_cancel");
             let cancel_service_name = action_endpoint_name(None, action.name.as_str(), "cancel");
             let cancel_service_literal = Literal::string(&cancel_service_name);
-            let cancel_struct_prefix = format!("{action_prefix}GoalCancel");
-            let cancel_handler_ident = Ident::new(
-                &format!("handle_{base_name}_goal_cancel_request"),
-                Span::call_site(),
-            );
+            let cancel_struct_prefix = "Cancel";
+            let cancel_schema_prefix = format!("{action_prefix}GoalCancel");
+            let cancel_helper_ident =
+                Ident::new("handle_cancel_request_payload", Span::call_site());
 
             let (cancel_method, cancel_helpers) = self.build_action_service_handler(
                 &cancel_fn_name,
-                Some(&cancel_handler_ident),
-                &cancel_struct_prefix,
+                None,
+                Some(&cancel_helper_ident),
+                cancel_struct_prefix,
+                cancel_schema_prefix.as_str(),
                 None,
                 None,
                 &cancel_label,
@@ -737,8 +743,8 @@ impl LanguageGenerator for RustGenerator {
         }
 
         if let Some(feedback) = action.feedback_topic.as_ref() {
-            let method_ident = Ident::new(&format!("emit_{base_name}_feedback"), Span::call_site());
-            let label = method_ident.to_string();
+            let method_ident = Ident::new("emit_feedback", Span::call_site());
+            let label = format!("emit_{base_name}_feedback");
             let struct_prefix = format!("{action_prefix}Feedback");
             let format_artifacts = map_message_format(feedback.message_format.as_ref())?;
             let params = collect_function_params(
@@ -774,9 +780,10 @@ impl LanguageGenerator for RustGenerator {
         }
 
         if let Some(result) = action.result_service.as_ref() {
-            let fn_name = Ident::new(&(base_name.clone() + "_result"), Span::call_site());
-            let struct_prefix = format!("{action_prefix}Result");
-            let label = fn_name.to_string();
+            let fn_name = Ident::new("result", Span::call_site());
+            let label = format!("{base_name}_result");
+            let schema_struct_prefix = format!("{action_prefix}Result");
+            let helper_ident = Ident::new("handle_result_payload", Span::call_site());
             let service_name =
                 action_endpoint_name(result.name.as_deref(), action.name.as_str(), "result");
             let service_literal = Literal::string(&service_name);
@@ -784,7 +791,9 @@ impl LanguageGenerator for RustGenerator {
             let (method, helpers) = self.build_action_service_handler(
                 &fn_name,
                 None,
-                &struct_prefix,
+                Some(&helper_ident),
+                "Result",
+                schema_struct_prefix.as_str(),
                 result.request_message_format.as_ref(),
                 result.response_message_format.as_ref(),
                 &label,
