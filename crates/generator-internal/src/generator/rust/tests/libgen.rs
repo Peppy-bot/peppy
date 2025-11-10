@@ -81,14 +81,14 @@ fn topics_communication() {
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = format!(
         "
-use peppygen::topics::on_next_push_frame_message;
+use peppygen::subscribed_topics::push_frame::on_next_message_received;
 use peppygen::{{Messenger, Result}};
 
 #[tokio::main]
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
-    let frame = on_next_push_frame_message(&messenger).await?;
+    let frame = on_next_message_received(&messenger).await?;
     println!(
         \"got {{}}x{{}} frame encoded as {{}}\",
         frame.width, frame.height, frame.encoding
@@ -113,16 +113,16 @@ async fn main() -> Result<()> {{
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = format!(
         "
-use peppygen::topics::{{emit_push_frame, PushFrameHeader}};
+use peppygen::exposed_topics::push_frame::{{emit, MessageHeader}};
 use peppygen::{{Messenger, Result}};
 
 #[tokio::main]
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
-    emit_push_frame(
+    emit(
         &messenger,
-        PushFrameHeader {{
+        MessageHeader {{
             stamp: std::time::SystemTime::now(),
             frame_id: 42,
         }},

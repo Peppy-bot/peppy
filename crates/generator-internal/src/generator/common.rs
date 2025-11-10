@@ -79,17 +79,24 @@ pub fn add_artifacts_to_lib(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ModuleCategory {
-    Topics,
+    ExposedTopics,
+    SubscribedTopics,
     Services,
     Actions,
 }
 
 impl ModuleCategory {
-    const ALL: [Self; 3] = [Self::Topics, Self::Services, Self::Actions];
+    const ALL: [Self; 4] = [
+        Self::ExposedTopics,
+        Self::SubscribedTopics,
+        Self::Services,
+        Self::Actions,
+    ];
 
     fn from_kind(kind: InterfaceKind) -> Self {
         match kind {
-            InterfaceKind::ExposedTopic | InterfaceKind::SubscribedTopic => Self::Topics,
+            InterfaceKind::ExposedTopic => Self::ExposedTopics,
+            InterfaceKind::SubscribedTopic => Self::SubscribedTopics,
             InterfaceKind::ExposedService | InterfaceKind::SubscribedService => Self::Services,
             InterfaceKind::ExposedAction | InterfaceKind::SubscribedAction => Self::Actions,
         }
@@ -97,9 +104,28 @@ impl ModuleCategory {
 
     fn struct_name(self) -> &'static str {
         match self {
-            Self::Topics => "Topics",
+            Self::ExposedTopics => "ExposedTopics",
+            Self::SubscribedTopics => "SubscribedTopics",
             Self::Services => "Services",
             Self::Actions => "Actions",
+        }
+    }
+
+    fn module_file_name(self) -> &'static str {
+        match self {
+            Self::ExposedTopics => "exposed_topics",
+            Self::SubscribedTopics => "subscribed_topics",
+            Self::Services => "services",
+            Self::Actions => "actions",
+        }
+    }
+
+    fn doc_label(self) -> &'static str {
+        match self {
+            Self::ExposedTopics => "exposed topics",
+            Self::SubscribedTopics => "subscribed topics",
+            Self::Services => "services",
+            Self::Actions => "actions",
         }
     }
 }
@@ -134,7 +160,7 @@ fn group_artifacts_by_category(
 }
 
 fn prepare_category_dir(src_dir: &Path, category: ModuleCategory) -> Result<PathBuf> {
-    let category_dir = src_dir.join(category.struct_name().to_lowercase());
+    let category_dir = src_dir.join(category.module_file_name());
     if category_dir.exists() {
         fs::remove_dir_all(&category_dir)?;
     }
@@ -149,7 +175,7 @@ fn prepare_category_dir(src_dir: &Path, category: ModuleCategory) -> Result<Path
 }
 
 fn category_module_path(src_dir: &Path, category: ModuleCategory) -> PathBuf {
-    src_dir.join(format!("{}.rs", category.struct_name().to_lowercase()))
+    src_dir.join(format!("{}.rs", category.module_file_name()))
 }
 
 fn write_category_modules(
@@ -188,21 +214,22 @@ fn write_category_module_file(
         if !original.is_empty() {
             mod_section.push_str(&format!("// Node: {original}\n"));
         }
-        let is_service_category = matches!(category, ModuleCategory::Services);
-        let module_decl = if is_service_category {
-            "pub mod"
-        } else {
-            "mod"
+        let module_decl = match category {
+            ModuleCategory::ExposedTopics
+            | ModuleCategory::SubscribedTopics
+            | ModuleCategory::Services => "pub mod",
+            ModuleCategory::Actions => "mod",
         };
         mod_section.push_str(&format!("{module_decl} {module};\n"));
 
-        let skip_reexport =
-            is_service_category && matches!(module.as_str(), "exposers" | "subscribers");
-        if skip_reexport {
-            // Exposed/subscribed service modules share types, so skip the glob re-export.
-            continue;
+        let should_reexport = match category {
+            ModuleCategory::ExposedTopics | ModuleCategory::SubscribedTopics => false,
+            ModuleCategory::Services => !matches!(module.as_str(), "exposers" | "subscribers"),
+            ModuleCategory::Actions => true,
+        };
+        if should_reexport {
+            reexport_section.push_str(&format!("pub use {module}::*;\n"));
         }
-        reexport_section.push_str(&format!("pub use {module}::*;\n"));
     }
 
     let mut content = String::new();
@@ -267,11 +294,8 @@ fn write_node_module(
 
     let mut attrs: Vec<Attribute> = Vec::new();
     if !original_name.is_empty() {
-        let doc_comment = format!(
-            "Generated {} interfaces for `{}`.",
-            category.struct_name().to_lowercase(),
-            original_name
-        );
+        let doc_comment =
+            format!("Generated {} interfaces for `{}`.", category.doc_label(), original_name);
         attrs.push(parse_quote!(#![doc = #doc_comment]));
     }
     let module_file = File {
