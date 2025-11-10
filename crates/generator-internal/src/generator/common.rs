@@ -230,8 +230,25 @@ fn write_node_module(
     } else {
         original_name.to_string()
     };
+    let mut submodule_counts: HashMap<String, usize> = HashMap::new();
+    let module_dir = base_dir.join(module_name);
 
     for artifact in artifacts {
+        if let Some(submodule) = &artifact.submodule {
+            let submodule_name = unique_module_name(submodule, &mut submodule_counts);
+            fs::create_dir_all(&module_dir)?;
+            let submodule_path = module_dir.join(format!("{submodule_name}.rs"));
+            let mut contents = artifact.code_output;
+            if !contents.ends_with('\n') {
+                contents.push('\n');
+            }
+            fs::write(&submodule_path, contents)?;
+            let ident = syn::Ident::new(&submodule_name, Span::call_site());
+            let mod_item: Item = parse_quote!(pub mod #ident;);
+            items.push(mod_item);
+            continue;
+        }
+
         let file =
             parse_file(&artifact.code_output).map_err(|source| Error::NodeModuleParseError {
                 node: node_label.clone(),
@@ -257,7 +274,6 @@ fn write_node_module(
         );
         attrs.push(parse_quote!(#![doc = #doc_comment]));
     }
-
     let module_file = File {
         shebang: None,
         attrs,
