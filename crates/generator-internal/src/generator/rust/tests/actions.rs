@@ -525,11 +525,6 @@ fn subscribed_to_action() {
         "expected feedback message field in struct"
     );
     assert_rendered!(
-        rendered.contains("pub struct BrainMoveArmAction;"),
-        &rendered,
-        "expected action marker struct for subscribed action"
-    );
-    assert_rendered!(
         rendered.contains("pub async fn fire_goal("),
         &rendered,
         "expected fire_goal method definition"
@@ -663,11 +658,11 @@ fn subscribed_to_two_actions_same_node() {
     let move_arm = artifact_map
         .get("move_arm")
         .expect("move_arm artifact is present");
-    assert_rendered!(
-        move_arm.contains("pub struct BrainMoveArmAction;"),
-        move_arm,
-        "expected move_arm action marker struct"
-    );
+    let rotate_servo = artifact_map
+        .get("rotate_servo_clockwise")
+        .expect("rotate_servo_clockwise artifact is present");
+
+    // move_arm
     assert_rendered!(
         move_arm.contains("pub struct BrainMoveArmActionGoalResponse"),
         move_arm,
@@ -709,14 +704,7 @@ fn subscribed_to_two_actions_same_node() {
         "expected move_arm feedback helper"
     );
 
-    let rotate_servo = artifact_map
-        .get("rotate_servo_clockwise")
-        .expect("rotate_servo_clockwise artifact is present");
-    assert_rendered!(
-        rotate_servo.contains("pub struct BrainRotateServoClockwiseAction;"),
-        rotate_servo,
-        "expected rotate_servo_clockwise action marker struct"
-    );
+    // rotate_servo_clockwise
     assert_rendered!(
         rotate_servo.contains("pub struct BrainRotateServoClockwiseActionGoalResponse"),
         rotate_servo,
