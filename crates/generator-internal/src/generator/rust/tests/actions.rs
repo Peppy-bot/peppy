@@ -212,11 +212,6 @@ fn exposed_action() {
         "expected error_msg field in result response"
     );
     assert_rendered!(
-        rendered.contains("pub struct MoveArmAction;"),
-        &rendered,
-        "expected action marker struct"
-    );
-    assert_rendered!(
         rendered.contains("pub async fn handle_move_arm_goal_next_request"),
         &rendered,
         "expected goal handler method"
@@ -379,11 +374,6 @@ fn expose_action_without_request_body() {
         &rendered,
         "expected feedback emitter for action without request payloads"
     );
-    assert_rendered!(
-        rendered.contains("pub struct RotateServoClockwiseAction;"),
-        &rendered,
-        "expected action marker struct even when request payloads are absent"
-    );
 }
 
 #[test]
@@ -417,11 +407,6 @@ fn expose_two_actions() {
         .expect("rotate_servo_clockwise artifact is present");
 
     assert_rendered!(
-        move_arm.contains("pub struct MoveArmAction;"),
-        &move_arm,
-        "expected action marker struct for `move_arm`"
-    );
-    assert_rendered!(
         move_arm.contains("pub async fn handle_move_arm_goal_next_request"),
         &move_arm,
         "expected goal handler for `move_arm`"
@@ -440,12 +425,6 @@ fn expose_two_actions() {
         move_arm.contains("pub async fn emit_move_arm_feedback"),
         &move_arm,
         "expected feedback emitter for `move_arm`"
-    );
-
-    assert_rendered!(
-        rotate_servo.contains("pub struct RotateServoClockwiseAction;"),
-        &rotate_servo,
-        "expected action marker struct for `rotate_servo_clockwise`"
     );
     assert_rendered!(
         rotate_servo.contains("pub async fn handle_rotate_servo_clockwise_goal_next_request"),
