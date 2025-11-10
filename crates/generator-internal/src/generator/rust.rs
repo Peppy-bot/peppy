@@ -19,7 +19,7 @@ use config::{
 use indexmap::IndexMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::Path;
 use syn::{File, parse2};
 
@@ -28,7 +28,6 @@ pub struct RustGenerator {
     sections: Vec<InterfaceArtifact>,
     schemas: HashMap<String, CapnpSchema>,
     pending_exposed_services: Option<ExposedServicesModule>,
-    pending_subscribed_services: BTreeMap<String, SubscribedServiceNode>,
 }
 
 const EXPOSED_SERVICES_MODULE: &str = "exposers";
@@ -40,14 +39,12 @@ impl RustGenerator {
             sections: Vec::new(),
             schemas: HashMap::new(),
             pending_exposed_services: None,
-            pending_subscribed_services: BTreeMap::new(),
         }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn into_artifacts(mut self) -> Vec<InterfaceArtifact> {
         self.flush_pending_exposed_services();
-        self.flush_pending_subscribed_services();
         self.sections
     }
 
@@ -56,14 +53,6 @@ impl RustGenerator {
             for artifact in module.into_artifacts() {
                 self.push_section(artifact);
             }
-        }
-    }
-
-    fn flush_pending_subscribed_services(&mut self) {
-        let pending = std::mem::take(&mut self.pending_subscribed_services);
-        for (_node_name, node) in pending {
-            let artifact = node.into_artifact();
-            self.push_section(artifact);
         }
     }
 
@@ -285,6 +274,7 @@ impl RustGenerator {
                         field_name,
                         schema,
                         &response_struct_name,
+                        &response_struct_name,
                         &mut names,
                     );
                     response_statements.append(&mut statements);
@@ -448,6 +438,7 @@ impl RustGenerator {
                 &quote!(root),
                 original_name,
                 schema,
+                &struct_name,
                 &struct_name,
                 &mut names,
             );
@@ -945,8 +936,11 @@ impl LanguageGenerator for RustGenerator {
         let service_ident = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
         let service_name_component = service_ident.to_string();
         let struct_prefix = to_camel_case(service_name_component.as_str());
+        let service_label = subscribed_service_label(service);
+        let request_context_label = format!("poll {service_label}");
+        let response_context_label = format!("{service_label} response");
 
-        let method_ident = {
+        let method_label = {
             let mut components = Vec::with_capacity(3);
             components.push(String::from("poll"));
 
@@ -955,30 +949,29 @@ impl LanguageGenerator for RustGenerator {
 
             components.push(service_name_component.clone());
 
-            let method_name = components.join("_");
-            Ident::new(&method_name, Span::call_site())
+            components.join("_")
         };
-
-        let method_name = method_ident.to_string();
+        let method_ident = Ident::new("poll", Span::call_site());
 
         let mut context = GenerationContext::default();
+        let generic_response_ident = Ident::new("Response", Span::call_site());
 
         let params = collect_function_params(
             request_artifacts.as_ref(),
             response_artifacts.as_ref(),
             &struct_prefix,
             &mut context,
-            None,
+            Some(&generic_response_ident),
         )?;
 
         let request_encoding = self.prepare_message_encoding(
-            &method_name,
+            &method_label,
             &struct_prefix,
             request_artifacts.as_ref(),
             &params,
         )?;
 
-        let request_context_literal = Literal::string(&method_name);
+        let request_context_literal = Literal::string(&request_context_label);
 
         let request_payload_tokens = if let Some(spec) = &request_encoding {
             let builder_type = &spec.builder_type;
@@ -1023,9 +1016,9 @@ impl LanguageGenerator for RustGenerator {
         let (return_ty, response_tokens, poll_tokens) =
             if let Some(response_artifacts) = response_artifacts.as_ref() {
                 let response_struct_name = format!("{struct_prefix}Response");
-                let response_struct_ident = Ident::new(&response_struct_name, Span::call_site());
+                let response_struct_ident = generic_response_ident.clone();
 
-                let response_schema_key = format!("{method_name}_response");
+                let response_schema_key = format!("{method_label}_response");
                 let response_schema = self.register_schema(
                     &response_schema_key,
                     &response_struct_name,
@@ -1043,6 +1036,7 @@ impl LanguageGenerator for RustGenerator {
                         field_name.as_str(),
                         schema,
                         &response_struct_name,
+                        &response_context_label,
                         &mut name_gen,
                     );
                     response_statements.append(&mut statements);
@@ -1051,7 +1045,7 @@ impl LanguageGenerator for RustGenerator {
                     response_inits.push(quote!(#field_ident: #value_ident));
                 }
 
-                let response_context_literal = Literal::string(&response_struct_name);
+                let response_context_literal = Literal::string(&response_context_label);
 
                 let poll_tokens = quote! {
                     let response_bytes = #poll_call.await?;
@@ -1090,7 +1084,7 @@ impl LanguageGenerator for RustGenerator {
                 (quote!(()), quote!(Ok(())), poll_tokens)
             };
 
-        let struct_tokens = context.into_tokens();
+        let mut service_tokens = context.into_tokens();
         let service_name_literal = Literal::string(service.name.as_str());
 
         let mut fn_param_tokens = vec![
@@ -1112,14 +1106,28 @@ impl LanguageGenerator for RustGenerator {
             }
         };
 
-        let node_key = SUBSCRIBED_SERVICES_MODULE.to_string();
-        let entry = self
-            .pending_subscribed_services
-            .entry(node_key.clone())
-            .or_insert_with(|| SubscribedServiceNode::new(node_key.clone()));
+        service_tokens.push(function_token);
 
-        entry.extend_message_structs(struct_tokens);
-        entry.push_method(function_token);
+        let mut submodule_name = subscribed_service_module_name(service);
+        if submodule_name.is_empty() {
+            submodule_name = method_label
+                .strip_prefix("poll_")
+                .map(|label| label.to_string())
+                .filter(|label| !label.is_empty())
+                .unwrap_or_else(|| method_label.clone());
+        }
+
+        let tokens: TokenStream = quote! {
+            #( #service_tokens )*
+        };
+        let rendered = render_tokens(tokens);
+
+        self.push_section(InterfaceArtifact::from_kind_with_submodule(
+            SUBSCRIBED_SERVICES_MODULE,
+            InterfaceKind::SubscribedService,
+            rendered,
+            Some(submodule_name),
+        ));
         Ok(())
     }
 
@@ -1208,7 +1216,6 @@ impl LanguageGenerator for RustGenerator {
 
     fn build(mut self, to_path: impl AsRef<Path>) -> Result<()> {
         self.flush_pending_exposed_services();
-        self.flush_pending_subscribed_services();
 
         // First create the basic structure of the project
         common::add_peppylib_dependencies(&to_path)?;
@@ -1283,53 +1290,44 @@ impl ExposedServicesModule {
     }
 }
 
-struct SubscribedServiceNode {
-    node_name: String,
-    message_structs: Vec<TokenStream>,
-    functions: Vec<TokenStream>,
-}
-
-impl SubscribedServiceNode {
-    fn new(node_name: String) -> Self {
-        Self {
-            node_name,
-            message_structs: Vec::new(),
-            functions: Vec::new(),
-        }
-    }
-
-    fn extend_message_structs(&mut self, structs: Vec<TokenStream>) {
-        self.message_structs.extend(structs);
-    }
-
-    fn push_method(&mut self, tokens: TokenStream) {
-        self.functions.push(tokens);
-    }
-
-    fn into_artifact(self) -> InterfaceArtifact {
-        let SubscribedServiceNode {
-            node_name,
-            message_structs,
-            functions,
-        } = self;
-
-        let tokens: TokenStream = quote! {
-            #( #message_structs )*
-
-            #( #functions )*
-        };
-
-        let rendered = render_tokens(tokens);
-
-        InterfaceArtifact::from_kind(&node_name, InterfaceKind::SubscribedService, rendered)
-    }
-}
-
 fn non_empty_str(value: &str) -> Option<&str> {
     if value.trim().is_empty() {
         None
     } else {
         Some(value)
+    }
+}
+
+fn subscribed_service_label(service: &SubscribedService) -> String {
+    let mut label = String::new();
+    let node = service.node.trim();
+    if !node.is_empty() {
+        label.push_str(node);
+    }
+    let name = service.name.trim();
+    if !name.is_empty() {
+        if !label.is_empty() {
+            label.push(' ');
+        }
+        label.push_str(name);
+    }
+
+    if label.is_empty() {
+        "service".to_string()
+    } else {
+        label
+    }
+}
+
+fn subscribed_service_module_name(service: &SubscribedService) -> String {
+    let node_component = sanitize_component(service.node.as_str());
+    let service_component = sanitize_component(service.name.as_str());
+
+    match (node_component.is_empty(), service_component.is_empty()) {
+        (false, false) => format!("{node_component}_{service_component}"),
+        (false, true) => node_component,
+        (true, false) => service_component,
+        (true, true) => String::new(),
     }
 }
 
@@ -2087,6 +2085,7 @@ fn build_subscribed_topic_callback(
             original_name.as_str(),
             schema,
             struct_prefix,
+            struct_prefix,
             &mut names,
         );
         field_statements.append(&mut statements);
@@ -2158,20 +2157,22 @@ fn generate_field_reader_statements(
     field_name: &str,
     schema: &SchemaType,
     struct_prefix: &str,
+    context_label: &str,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
     match schema {
         SchemaType::Type(token) => {
-            generate_primitive_reader(reader_expr, field_name, token, struct_prefix, names)
+            generate_primitive_reader(reader_expr, field_name, token, context_label, names)
         }
         SchemaType::Array(array) => {
-            generate_array_reader(reader_expr, field_name, array, struct_prefix, names)
+            generate_array_reader(reader_expr, field_name, array, context_label, names)
         }
         SchemaType::Object(object) => generate_object_reader(
             reader_expr,
             field_name,
             &object.fields,
             struct_prefix,
+            context_label,
             names,
         ),
     }
@@ -2181,7 +2182,7 @@ fn generate_primitive_reader(
     reader_expr: &TokenStream,
     field_name: &str,
     token: &TypeToken,
-    context: &str,
+    context_label: &str,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
     let method_ident = Ident::new(
@@ -2190,7 +2191,7 @@ fn generate_primitive_reader(
     );
     let value_ident = names.next(field_name);
     let field_literal = Literal::string(field_name);
-    let context_literal = Literal::string(context);
+    let context_literal = Literal::string(context_label);
 
     match token {
         TypeToken::Bool
@@ -2289,7 +2290,7 @@ fn generate_array_reader(
     reader_expr: &TokenStream,
     field_name: &str,
     array: &ArraySchema,
-    context: &str,
+    context_label: &str,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
     let method_ident = Ident::new(
@@ -2302,7 +2303,7 @@ fn generate_array_reader(
             field_name,
             &method_ident,
             array.length,
-            context,
+            context_label,
             names,
         ),
         SchemaType::Type(token) => generate_primitive_array_reader(
@@ -2311,7 +2312,7 @@ fn generate_array_reader(
             token,
             &method_ident,
             array.length,
-            context,
+            context_label,
             names,
         ),
         other => panic!(
@@ -2326,13 +2327,13 @@ fn generate_u8_array_reader(
     field_name: &str,
     method_ident: &Ident,
     length: Option<usize>,
-    context: &str,
+    context_label: &str,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
     let reader_ident = names.next("data");
     let value_ident = names.next(field_name);
     let field_literal = Literal::string(field_name);
-    let context_literal = Literal::string(context);
+    let context_literal = Literal::string(context_label);
 
     let mut statements = vec![quote! {
         let #reader_ident = #reader_expr
@@ -2388,14 +2389,14 @@ fn generate_primitive_array_reader(
     token: &TypeToken,
     method_ident: &Ident,
     length: Option<usize>,
-    context: &str,
+    context_label: &str,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
     let reader_ident = names.next("list");
     let vec_ident = names.next("values");
     let value_ident = names.next(field_name);
     let field_literal = Literal::string(field_name);
-    let context_literal = Literal::string(context);
+    let context_literal = Literal::string(context_label);
 
     let element_ty = primitive_type_token(token);
 
@@ -2452,6 +2453,7 @@ fn generate_object_reader(
     field_name: &str,
     object: &IndexMap<String, SchemaType>,
     struct_prefix: &str,
+    context_label: &str,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
     let method_ident = Ident::new(
@@ -2460,7 +2462,7 @@ fn generate_object_reader(
     );
     let reader_ident = names.next("reader");
     let field_literal = Literal::string(field_name);
-    let context_literal = Literal::string(struct_prefix);
+    let context_literal = Literal::string(context_label);
     let mut statements = vec![quote! {
         let #reader_ident = #reader_expr
             .reborrow()
@@ -2481,6 +2483,7 @@ fn generate_object_reader(
             &quote!(#reader_ident),
             nested_name.as_str(),
             nested_schema,
+            &nested_prefix,
             &nested_prefix,
             names,
         );
@@ -2758,6 +2761,7 @@ fn build_request_deserializer(
             &quote!(root),
             original_name.as_str(),
             schema,
+            label,
             label,
             &mut names,
         );

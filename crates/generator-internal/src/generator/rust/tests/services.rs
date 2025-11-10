@@ -364,9 +364,14 @@ fn subscribed_to_service() {
         "expected response struct derives"
     );
     assert_rendered!(
-        rendered.contains("pub struct EnableCameraResponse"),
+        rendered.contains("pub struct Response"),
         &rendered,
-        "expected response struct"
+        "expected generic response struct"
+    );
+    assert_rendered!(
+        rendered.contains("impl Response {"),
+        &rendered,
+        "expected response implementation block"
     );
     assert_rendered!(
         rendered.contains("enabled: bool"),
@@ -379,7 +384,7 @@ fn subscribed_to_service() {
         "expected response string field"
     );
     assert_rendered!(
-        rendered.contains("pub async fn poll_uvc_camera_enable_camera("),
+        rendered.contains("pub async fn poll("),
         &rendered,
         "expected async poll helper signature"
     );
@@ -394,9 +399,9 @@ fn subscribed_to_service() {
         "expected timeout parameter"
     );
     assert_rendered!(
-        rendered.contains("-> crate::Result<EnableCameraResponse>"),
+        rendered.contains("-> crate::Result<Response>"),
         &rendered,
-        "expected result return type"
+        "expected generic result return type"
     );
     assert_rendered!(
         rendered.contains("let service_name = \"enable_camera\";"),
@@ -424,7 +429,7 @@ fn subscribed_to_service() {
         "expected request serialization using capnp"
     );
     assert_rendered!(
-        rendered.contains("context: String::from(\"poll_uvc_camera_enable_camera\")"),
+        rendered.contains("context: String::from(\"poll uvc_camera enable_camera\")"),
         &rendered,
         "expected request serialization error context"
     );
@@ -454,7 +459,12 @@ fn subscribed_to_service() {
         "expected response field reader for string"
     );
     assert_rendered!(
-        rendered.contains("Ok(EnableCameraResponse {"),
+        rendered.contains("context: String::from(\"uvc_camera enable_camera response\")"),
+        &rendered,
+        "expected response deserialization error context"
+    );
+    assert_rendered!(
+        rendered.contains("Ok(Response {"),
         &rendered,
         "expected response construction"
     );
@@ -481,98 +491,145 @@ fn subscribed_to_two_services_same_node() {
     generator
         .add_subscribed_service(&service2, None, Some(&response_format2))
         .unwrap();
-    let artifacts: Vec<String> = generator
-        .into_artifacts()
-        .into_iter()
-        .map(|artifact| artifact.code_output)
-        .collect();
+    let artifacts = generator.into_artifacts();
     assert_eq!(
         artifacts.len(),
-        1,
-        "expected a single generated artifact, got {}",
+        2,
+        "expected two generated artifacts, got {}",
         artifacts.len()
     );
-    let rendered = artifacts.into_iter().next().expect("artifact is present");
+    let enable_artifact = artifacts
+        .iter()
+        .find(|artifact| {
+            artifact
+                .submodule
+                .as_deref()
+                .map(|name| name.contains("enable_camera"))
+                .unwrap_or(false)
+        })
+        .expect("enable_camera artifact is present");
+    assert_eq!(
+        enable_artifact.submodule.as_deref(),
+        Some("uvc_camera_enable_camera"),
+        "expected enable_camera artifact to land in its own module"
+    );
+    let camera_artifact = artifacts
+        .iter()
+        .find(|artifact| {
+            artifact
+                .submodule
+                .as_deref()
+                .map(|name| name.contains("get_camera_info"))
+                .unwrap_or(false)
+        })
+        .expect("get_camera_info artifact is present");
+    assert_eq!(
+        camera_artifact.submodule.as_deref(),
+        Some("uvc_camera_get_camera_info"),
+        "expected get_camera_info artifact to land in its own module"
+    );
+    let enable_rendered = &enable_artifact.code_output;
+    let camera_rendered = &camera_artifact.code_output;
 
     assert_rendered!(
-        rendered.contains("pub struct EnableCameraResponse"),
-        rendered,
+        enable_rendered.contains("pub struct Response"),
+        enable_rendered,
         "expected response struct for `enable_camera`"
     );
     assert_rendered!(
-        rendered.contains("pub async fn poll_uvc_camera_enable_camera("),
-        rendered,
+        enable_rendered.contains("pub async fn poll("),
+        enable_rendered,
         "expected poll helper function for `enable_camera`"
     );
     assert_rendered!(
-        rendered.contains("enable: bool"),
-        rendered,
+        enable_rendered.contains("enable: bool"),
+        enable_rendered,
         "expected request parameter for `enable_camera`"
     );
     assert_rendered!(
-        rendered.contains("-> crate::Result<EnableCameraResponse>"),
-        rendered,
+        enable_rendered.contains("-> crate::Result<Response>"),
+        enable_rendered,
         "expected return type for `enable_camera` poll helper"
     );
     assert_rendered!(
-        rendered.contains("root.set_enable(enable);"),
-        rendered,
+        enable_rendered.contains("root.set_enable(enable);"),
+        enable_rendered,
         "expected request serialization for `enable_camera`"
     );
     assert_rendered!(
-        rendered.contains("peppylib::ServiceMessenger::poll("),
-        rendered,
+        enable_rendered.contains("peppylib::ServiceMessenger::poll("),
+        enable_rendered,
         "expected poll invocation for `enable_camera`"
     );
     assert_rendered!(
-        rendered.contains("capnp::serialize::read_message"),
-        rendered,
+        enable_rendered.contains("context: String::from(\"poll uvc_camera enable_camera\")"),
+        enable_rendered,
+        "expected request context for `enable_camera`"
+    );
+    assert_rendered!(
+        enable_rendered.contains("capnp::serialize::read_message"),
+        enable_rendered,
         "expected response deserialization for `enable_camera`"
     );
     assert_rendered!(
-        rendered.contains("Ok(EnableCameraResponse {"),
-        rendered,
+        enable_rendered.contains("context: String::from(\"uvc_camera enable_camera response\")"),
+        enable_rendered,
+        "expected response context for `enable_camera`"
+    );
+    assert_rendered!(
+        enable_rendered.contains("Ok(Response {"),
+        enable_rendered,
         "expected response construction for `enable_camera`"
     );
 
     assert_rendered!(
-        rendered.contains("pub struct GetCameraInfoResponse"),
-        rendered,
+        camera_rendered.contains("pub struct Response"),
+        camera_rendered,
         "expected response struct for `get_camera_info`"
     );
     assert_rendered!(
-        rendered.contains("card_type: String"),
-        rendered,
+        camera_rendered.contains("card_type: String"),
+        camera_rendered,
         "expected response field for `card_type`"
     );
     assert_rendered!(
-        rendered.contains("interval: String"),
-        rendered,
+        camera_rendered.contains("interval: String"),
+        camera_rendered,
         "expected response field for `interval`"
     );
     assert_rendered!(
-        rendered.contains("size: String"),
-        rendered,
+        camera_rendered.contains("size: String"),
+        camera_rendered,
         "expected response field for `size`"
     );
     assert_rendered!(
-        rendered.contains("-> crate::Result<GetCameraInfoResponse>"),
-        rendered,
+        camera_rendered.contains("pub async fn poll("),
+        camera_rendered,
+        "expected poll helper for `get_camera_info`"
+    );
+    assert_rendered!(
+        camera_rendered.contains("-> crate::Result<Response>"),
+        camera_rendered,
         "expected return type for `get_camera_info` poll helper"
     );
     assert_rendered!(
-        rendered.contains("peppylib::ServiceMessenger::poll("),
-        rendered,
+        camera_rendered.contains("peppylib::ServiceMessenger::poll("),
+        camera_rendered,
         "expected poll invocation for `get_camera_info`"
     );
     assert_rendered!(
-        rendered.contains("capnp::serialize::read_message"),
-        rendered,
+        camera_rendered.contains("capnp::serialize::read_message"),
+        camera_rendered,
         "expected response deserialization for `get_camera_info`"
     );
     assert_rendered!(
-        rendered.contains("Ok(GetCameraInfoResponse {"),
-        rendered,
+        camera_rendered.contains("context: String::from(\"uvc_camera get_camera_info response\")"),
+        camera_rendered,
+        "expected response context for `get_camera_info`"
+    );
+    assert_rendered!(
+        camera_rendered.contains("Ok(Response {"),
+        camera_rendered,
         "expected response construction for `get_camera_info`"
     );
 }
@@ -780,6 +837,37 @@ fn compile_lib_with_exposed_services_artifact() {
         subscribers_module_path.exists(),
         "Expected generated subscribers service module at {:?}",
         subscribers_module_path
+    );
+    let subscriber_module_impl_path =
+        output_dir.join("src/services/subscribers/uvc_camera_enable_camera.rs");
+    assert!(
+        subscriber_module_impl_path.exists(),
+        "Expected enable_camera subscriber module implementation at {:?}",
+        subscriber_module_impl_path
+    );
+    let subscriber_module_contents = std::fs::read_to_string(&subscriber_module_impl_path)
+        .expect("failed to read enable_camera subscriber module");
+    assert!(
+        subscriber_module_contents.contains("pub struct Response"),
+        "Enable_camera subscriber module should define generic Response struct, got:\n{}",
+        subscriber_module_contents
+    );
+    assert!(
+        subscriber_module_contents.contains("pub async fn poll("),
+        "Enable_camera subscriber module should define poll helper, got:\n{}",
+        subscriber_module_contents
+    );
+    assert!(
+        subscriber_module_contents
+            .contains("context: String::from(\"poll uvc_camera enable_camera\")"),
+        "Enable_camera subscriber module should use simplified request context, got:\n{}",
+        subscriber_module_contents
+    );
+    assert!(
+        subscriber_module_contents
+            .contains("context: String::from(\"uvc_camera enable_camera response\")"),
+        "Enable_camera subscriber module should use simplified response context, got:\n{}",
+        subscriber_module_contents
     );
     assert!(
         module_contents.contains("pub struct EnableCameraResponse"),
