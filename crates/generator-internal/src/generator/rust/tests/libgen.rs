@@ -264,7 +264,7 @@ fn services_communication() {
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = format!(
         "
-use peppygen::services::subscribers::poll_uvc_camera_enable_camera;
+use peppygen::services::subscribers::uvc_camera_enable_camera;
 use peppygen::{{Messenger, Result}};
 use std::time::Duration;
 
@@ -273,7 +273,7 @@ async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
     let response =
-        poll_uvc_camera_enable_camera(&messenger, Duration::from_secs(5), true).await?;
+        uvc_camera_enable_camera::poll(&messenger, Duration::from_secs(5), true).await?;
     println!(
         \"enable_camera result: enabled={{}} error={{}}\",
         response.enabled,
