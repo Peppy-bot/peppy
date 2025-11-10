@@ -420,85 +420,84 @@ fn subscribed_to_two_topics_same_node() {
         .collect();
     assert_eq!(
         artifacts.len(),
-        1,
-        "expected a single generated artifact, got {}",
+        2,
+        "expected two generated artifacts, got {}",
         artifacts.len()
     );
-    let rendered = artifacts.into_iter().next().expect("artifact is present");
+    struct ArtifactExpectation<'a> {
+        struct_name: &'a str,
+        helper_name: &'a str,
+        method_name: &'a str,
+        topic_literal: &'a str,
+    }
+    let expectations = [
+        ArtifactExpectation {
+            struct_name: "UvcCameraStreamMessage",
+            helper_name: "fn deseralize_uvc_camera_stream_payload",
+            method_name: "pub async fn on_next_uvc_camera_stream_message(",
+            topic_literal: "let topic_name = \"stream\";",
+        },
+        ArtifactExpectation {
+            struct_name: "UvcCameraSoundMessage",
+            helper_name: "fn deseralize_uvc_camera_sound_payload",
+            method_name: "pub async fn on_next_uvc_camera_sound_message(",
+            topic_literal: "let topic_name = \"sound\";",
+        },
+    ];
 
-    let on_next_usage_count = rendered.matches(".on_next_message()").count();
-    assert_rendered!(
-        on_next_usage_count == 2,
-        &rendered,
-        "expected each subscription to await the next message via helper, found {} occurrence(s)",
-        on_next_usage_count
-    );
-    assert_rendered!(
-        rendered.contains("pub struct UvcCameraStreamMessage"),
-        &rendered,
-        "expected stream payload struct"
-    );
-    assert_rendered!(
-        rendered.contains("pub struct UvcCameraSoundMessage"),
-        &rendered,
-        "expected sound payload struct"
-    );
-    assert_rendered!(
-        rendered.contains("crate::Error::TopicSubscribe"),
-        &rendered,
-        "expected explicit subscribe error variant for each topic"
-    );
-    assert_rendered!(
-        rendered.contains("pub async fn on_next_uvc_camera_stream_message("),
-        &rendered,
-        "expected stream subscriber method"
-    );
-    assert_rendered!(
-        rendered.contains("pub async fn on_next_uvc_camera_sound_message("),
-        &rendered,
-        "expected sound subscriber method"
-    );
-    assert_rendered!(
-        rendered.contains("fn deseralize_uvc_camera_stream_payload"),
-        &rendered,
-        "expected stream payload helper"
-    );
-    assert_rendered!(
-        rendered.contains("fn deseralize_uvc_camera_sound_payload"),
-        &rendered,
-        "expected sound payload helper"
-    );
-    let handle_usage_count = rendered.matches("messenger.handle()").count();
-    assert_rendered!(
-        handle_usage_count == 2,
-        &rendered,
-        "expected each subscriber method to pass the messenger handle, got {} occurrence(s)",
-        handle_usage_count
-    );
-    let messenger_param_count = rendered.matches("messenger: &crate::Messenger").count();
-    assert_rendered!(
-        messenger_param_count == 2,
-        &rendered,
-        "expected each subscriber method to accept a messenger reference, got {} occurrence(s)",
-        messenger_param_count
-    );
-    let namespace_usage_count = rendered.matches("messenger.namespace()").count();
-    assert_rendered!(
-        namespace_usage_count == 2,
-        &rendered,
-        "expected each subscriber method to resolve namespace from messenger, got {} occurrence(s)",
-        namespace_usage_count
-    );
-    assert_rendered!(
-        rendered.contains("let topic_name = \"stream\";"),
-        &rendered,
-        "expected stream subscriber routine to set topic literal"
-    );
-    assert_rendered!(
-        rendered.contains("let topic_name = \"sound\";"),
-        &rendered,
-        "expected sound subscriber routine to set topic literal"
-    );
+    for (rendered, expectation) in artifacts.iter().zip(expectations.iter()) {
+        let on_next_usage_count = rendered.matches(".on_next_message()").count();
+        assert_rendered!(
+            on_next_usage_count == 1,
+            rendered,
+            "expected a single subscription helper invocation per artifact, found {} occurrence(s)",
+            on_next_usage_count
+        );
+        assert_rendered!(
+            rendered.contains(expectation.struct_name),
+            rendered,
+            "expected payload struct `{}`",
+            expectation.struct_name
+        );
+        assert_rendered!(
+            rendered.contains("crate::Error::TopicSubscribe"),
+            rendered,
+            "expected explicit subscribe error variant"
+        );
+        assert_rendered!(
+            rendered.contains(expectation.method_name),
+            rendered,
+            "expected subscriber method `{}`",
+            expectation.method_name
+        );
+        assert_rendered!(
+            rendered.contains(expectation.helper_name),
+            rendered,
+            "expected payload helper `{}`",
+            expectation.helper_name
+        );
+        assert_rendered!(
+            rendered.contains("messenger.handle()"),
+            rendered,
+            "expected messenger handle usage"
+        );
+        assert_rendered!(
+            rendered.contains("messenger: &crate::Messenger"),
+            rendered,
+            "expected messenger parameter"
+        );
+        assert_rendered!(
+            rendered.contains("messenger.namespace()"),
+            rendered,
+            "expected namespace resolution via messenger"
+        );
+        assert_rendered!(
+            rendered.contains(expectation.topic_literal),
+            rendered,
+            "expected subscriber routine to set topic literal `{}`",
+            expectation.topic_literal
+        );
+    }
 }
 
 #[test]

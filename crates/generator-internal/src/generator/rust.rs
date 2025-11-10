@@ -30,7 +30,6 @@ pub struct RustGenerator {
     pending_exposed_services: Option<ExposedServicesModule>,
     pending_exposed_topics: Option<ExposedTopicsModule>,
     pending_subscribed_services: BTreeMap<String, SubscribedServiceNode>,
-    pending_subscribed_topics: Option<SubscribedTopicsModule>,
 }
 
 const EXPOSED_SERVICES_MODULE: &str = "exposers";
@@ -46,7 +45,6 @@ impl RustGenerator {
             pending_exposed_services: None,
             pending_exposed_topics: None,
             pending_subscribed_services: BTreeMap::new(),
-            pending_subscribed_topics: None,
         }
     }
 
@@ -55,7 +53,6 @@ impl RustGenerator {
         self.flush_pending_exposed_services();
         self.flush_pending_exposed_topics();
         self.flush_pending_subscribed_services();
-        self.flush_pending_subscribed_topics();
         self.sections
     }
 
@@ -76,12 +73,6 @@ impl RustGenerator {
         for (_node_name, node) in pending {
             let artifact = node.into_artifact();
             self.push_section(artifact);
-        }
-    }
-
-    fn flush_pending_subscribed_topics(&mut self) {
-        if let Some(module) = self.pending_subscribed_topics.take() {
-            self.push_section(module.into_artifact());
         }
     }
 
@@ -883,13 +874,6 @@ impl LanguageGenerator for RustGenerator {
                 &params,
             )?
             .expect("message encoding spec should exist when message format is provided");
-        let struct_tokens = context.into_tokens();
-        let module = self
-            .pending_subscribed_topics
-            .get_or_insert_with(SubscribedTopicsModule::new);
-        module.ensure_node_name(SUBSCRIBED_TOPICS_MODULE);
-        module.extend_message_structs(struct_tokens);
-
         let method_tokens = build_subscribed_topic_callback(
             &callback_fn_ident,
             &args_struct_ident,
@@ -899,7 +883,19 @@ impl LanguageGenerator for RustGenerator {
             topic,
             &message_struct_name,
         );
-        module.push_method(method_tokens);
+        let mut items = context.into_tokens();
+        items.push(method_tokens);
+
+        let tokens: TokenStream = quote! {
+            #( #items )*
+        };
+        let rendered = render_tokens(tokens);
+
+        self.push_section(InterfaceArtifact::from_kind(
+            SUBSCRIBED_TOPICS_MODULE,
+            InterfaceKind::SubscribedTopic,
+            rendered,
+        ));
 
         Ok(())
     }
@@ -1180,7 +1176,6 @@ impl LanguageGenerator for RustGenerator {
         self.flush_pending_exposed_services();
         self.flush_pending_exposed_topics();
         self.flush_pending_subscribed_services();
-        self.flush_pending_subscribed_topics();
 
         // First create the basic structure of the project
         common::add_peppylib_dependencies(&to_path)?;
@@ -1336,54 +1331,6 @@ impl SubscribedServiceNode {
         let rendered = render_tokens(tokens);
 
         InterfaceArtifact::from_kind(&node_name, InterfaceKind::SubscribedService, rendered)
-    }
-}
-
-struct SubscribedTopicsModule {
-    node_name: String,
-    message_structs: Vec<TokenStream>,
-    methods: Vec<TokenStream>,
-}
-
-impl SubscribedTopicsModule {
-    fn new() -> Self {
-        Self {
-            node_name: String::new(),
-            message_structs: Vec::new(),
-            methods: Vec::new(),
-        }
-    }
-
-    fn ensure_node_name(&mut self, name: &str) {
-        if self.node_name.is_empty() {
-            self.node_name = name.to_string();
-        }
-    }
-
-    fn extend_message_structs(&mut self, structs: Vec<TokenStream>) {
-        self.message_structs.extend(structs);
-    }
-
-    fn push_method(&mut self, tokens: TokenStream) {
-        self.methods.push(tokens);
-    }
-
-    fn into_artifact(self) -> InterfaceArtifact {
-        let SubscribedTopicsModule {
-            node_name,
-            message_structs,
-            methods,
-        } = self;
-
-        let tokens: TokenStream = quote! {
-            #( #message_structs )*
-
-            #( #methods )*
-        };
-
-        let rendered = render_tokens(tokens);
-
-        InterfaceArtifact::from_kind(&node_name, InterfaceKind::SubscribedTopic, rendered)
     }
 }
 
