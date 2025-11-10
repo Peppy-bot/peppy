@@ -81,15 +81,17 @@ pub fn add_artifacts_to_lib(
 enum ModuleCategory {
     ExposedTopics,
     SubscribedTopics,
-    Services,
+    ExposedServices,
+    SubscribedServices,
     Actions,
 }
 
 impl ModuleCategory {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::ExposedTopics,
         Self::SubscribedTopics,
-        Self::Services,
+        Self::ExposedServices,
+        Self::SubscribedServices,
         Self::Actions,
     ];
 
@@ -97,7 +99,8 @@ impl ModuleCategory {
         match kind {
             InterfaceKind::ExposedTopic => Self::ExposedTopics,
             InterfaceKind::SubscribedTopic => Self::SubscribedTopics,
-            InterfaceKind::ExposedService | InterfaceKind::SubscribedService => Self::Services,
+            InterfaceKind::ExposedService => Self::ExposedServices,
+            InterfaceKind::SubscribedService => Self::SubscribedServices,
             InterfaceKind::ExposedAction | InterfaceKind::SubscribedAction => Self::Actions,
         }
     }
@@ -106,7 +109,8 @@ impl ModuleCategory {
         match self {
             Self::ExposedTopics => "ExposedTopics",
             Self::SubscribedTopics => "SubscribedTopics",
-            Self::Services => "Services",
+            Self::ExposedServices => "ExposedServices",
+            Self::SubscribedServices => "SubscribedServices",
             Self::Actions => "Actions",
         }
     }
@@ -115,7 +119,8 @@ impl ModuleCategory {
         match self {
             Self::ExposedTopics => "exposed_topics",
             Self::SubscribedTopics => "subscribed_topics",
-            Self::Services => "services",
+            Self::ExposedServices => "exposed_services",
+            Self::SubscribedServices => "subscribed_services",
             Self::Actions => "actions",
         }
     }
@@ -124,7 +129,8 @@ impl ModuleCategory {
         match self {
             Self::ExposedTopics => "exposed topics",
             Self::SubscribedTopics => "subscribed topics",
-            Self::Services => "services",
+            Self::ExposedServices => "exposed services",
+            Self::SubscribedServices => "subscribed services",
             Self::Actions => "actions",
         }
     }
@@ -214,19 +220,14 @@ fn write_category_module_file(
         if !original.is_empty() {
             mod_section.push_str(&format!("// Node: {original}\n"));
         }
-        let module_decl = match category {
-            ModuleCategory::ExposedTopics
-            | ModuleCategory::SubscribedTopics
-            | ModuleCategory::Services => "pub mod",
-            ModuleCategory::Actions => "mod",
+        let module_decl = if matches!(category, ModuleCategory::Actions) {
+            "mod"
+        } else {
+            "pub mod"
         };
         mod_section.push_str(&format!("{module_decl} {module};\n"));
 
-        let should_reexport = match category {
-            ModuleCategory::ExposedTopics | ModuleCategory::SubscribedTopics => false,
-            ModuleCategory::Services => !matches!(module.as_str(), "exposers" | "subscribers"),
-            ModuleCategory::Actions => true,
-        };
+        let should_reexport = matches!(category, ModuleCategory::Actions);
         if should_reexport {
             reexport_section.push_str(&format!("pub use {module}::*;\n"));
         }

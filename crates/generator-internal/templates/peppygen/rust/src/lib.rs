@@ -4,7 +4,8 @@ mod messaging;
 
 pub mod actions;
 pub mod capnp;
-pub mod services;
+pub mod exposed_services;
+pub mod subscribed_services;
 pub mod exposed_topics;
 pub mod subscribed_topics;
 
