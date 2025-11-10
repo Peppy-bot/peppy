@@ -730,88 +730,66 @@ fn compile_lib_with_exposed_topic_artifact() {
     );
 
     let lib_rs = output_dir.join("src/lib.rs");
-    assert!(
-        lib_rs.exists(),
-        "Expected lib.rs to exist so `peppygen::topics` is reachable"
-    );
+    assert!(lib_rs.exists(), "Expected generated lib.rs to exist");
     let lib_contents = std::fs::read_to_string(&lib_rs).expect("failed to read generated lib.rs");
     assert!(
-        lib_contents.contains("pub mod topics;"),
-        "Expected generated lib.rs to re-export the `topics` module, got:\n{}",
+        lib_contents.contains("pub mod exposed_topics;"),
+        "Expected generated lib.rs to re-export the `exposed_topics` module, got:\n{}",
+        lib_contents
+    );
+    assert!(
+        lib_contents.contains("pub mod subscribed_topics;"),
+        "Expected generated lib.rs to re-export the `subscribed_topics` module, got:\n{}",
+        lib_contents
+    );
+    assert!(
+        !lib_contents.contains("pub mod topics;"),
+        "Generated lib.rs should not declare the legacy `topics` module anymore, got:\n{}",
         lib_contents
     );
 
-    let topics_mod = output_dir.join("src/topics.rs");
+    let exposes_mod = output_dir.join("src/exposed_topics.rs");
     assert!(
-        topics_mod.exists(),
-        "Expected topics module file to exist so `peppygen::topics::<module>` resolves"
+        exposes_mod.exists(),
+        "Expected exposed_topics module file at {:?}",
+        exposes_mod
     );
-    let topics_contents =
-        std::fs::read_to_string(&topics_mod).expect("failed to read topics module");
-    assert!(
-        topics_contents.contains("mod exposers;"),
-        "Expected topics module to declare the `exposers` module, got:\n{}",
-        topics_contents
-    );
-    assert!(
-        topics_contents.contains("mod subscribers;"),
-        "Expected topics module to declare the `subscribers` module, got:\n{}",
-        topics_contents
-    );
-    assert!(
-        topics_contents.contains("pub use exposers::*;"),
-        "Expected topics module to re-export generated topics API, got:\n{}",
-        topics_contents
-    );
-    assert!(
-        topics_contents.contains("pub use subscribers::*;"),
-        "Expected topics module to re-export subscribed topics API, got:\n{}",
-        topics_contents
-    );
-    let topic_modules: Vec<String> = topics_contents
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            trimmed
-                .strip_prefix("mod ")
-                .map(|rest| rest.trim_end_matches(';').trim().to_string())
-        })
-        .collect();
-    assert!(
-        !topic_modules.is_empty(),
-        "Expected topics module to expose at least one generated topic module, got:\n{}",
-        topics_contents
-    );
-    assert!(
-        topic_modules
-            .iter()
-            .any(|module| module.as_str() == "exposers"),
-        "Expected `exposers` module, got {:?}",
-        topic_modules
-    );
-    assert!(
-        topic_modules
-            .iter()
-            .any(|module| module.as_str() == "subscribers"),
-        "Expected `subscribers` module, got {:?}",
-        topic_modules
-    );
+    let exposes_contents =
+        std::fs::read_to_string(&exposes_mod).expect("failed to read exposed_topics module");
+    for expected in ["pub mod push_frame;", "pub mod push_lidar_object;"] {
+        assert!(
+            exposes_contents.contains(expected),
+            "Expected exposed_topics module to declare `{expected}`, got:\n{}",
+            exposes_contents
+        );
+    }
 
-    let topic_module_path = output_dir.join("src/topics").join("exposers.rs");
+    let subscribes_mod = output_dir.join("src/subscribed_topics.rs");
     assert!(
-        topic_module_path.exists(),
-        "Expected generated topic module at {:?}",
-        topic_module_path
+        subscribes_mod.exists(),
+        "Expected subscribed_topics module file at {:?}",
+        subscribes_mod
     );
+    let subscribes_contents =
+        std::fs::read_to_string(&subscribes_mod).expect("failed to read subscribed_topics module");
+    for expected in ["pub mod uvc_camera_stream;", "pub mod uvc_camera_sound;"] {
+        assert!(
+            subscribes_contents.contains(expected),
+            "Expected subscribed_topics module to declare `{expected}`, got:\n{}",
+            subscribes_contents
+        );
+    }
+
+    let push_frame_module = output_dir.join("src/exposed_topics").join("push_frame.rs");
     let push_frame_contents =
-        std::fs::read_to_string(&topic_module_path).expect("failed to read generated topic module");
+        std::fs::read_to_string(&push_frame_module).expect("failed to read generated topic module");
     assert!(
-        push_frame_contents.contains("pub struct PushFrameHeader"),
+        push_frame_contents.contains("pub struct MessageHeader"),
         "Expected generated module to define message struct, got:\n{}",
         push_frame_contents
     );
     assert!(
-        push_frame_contents.contains("pub async fn emit_push_frame("),
+        push_frame_contents.contains("pub async fn emit("),
         "Expected generated module to expose async emit method, got:\n{}",
         push_frame_contents
     );
@@ -819,5 +797,26 @@ fn compile_lib_with_exposed_topic_artifact() {
         push_frame_contents.contains("messenger: &crate::Messenger"),
         "Expected generated emit method to accept messenger reference, got:\n{}",
         push_frame_contents
+    );
+
+    let subscriber_module = output_dir
+        .join("src/subscribed_topics")
+        .join("uvc_camera_stream.rs");
+    let subscriber_contents = std::fs::read_to_string(&subscriber_module)
+        .expect("failed to read generated subscriber module");
+    assert!(
+        subscriber_contents.contains("pub struct Message"),
+        "Expected generated subscriber module to define message struct, got:\n{}",
+        subscriber_contents
+    );
+    assert!(
+        subscriber_contents.contains("pub async fn on_next_message_received("),
+        "Expected generated subscriber module to expose async callback, got:\n{}",
+        subscriber_contents
+    );
+    assert!(
+        subscriber_contents.contains("messenger: &crate::Messenger"),
+        "Expected generated subscriber module to accept messenger reference, got:\n{}",
+        subscriber_contents
     );
 }

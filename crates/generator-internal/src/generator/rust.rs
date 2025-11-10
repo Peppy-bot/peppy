@@ -33,8 +33,6 @@ pub struct RustGenerator {
 
 const EXPOSED_SERVICES_MODULE: &str = "exposers";
 const SUBSCRIBED_SERVICES_MODULE: &str = "subscribers";
-const EXPOSED_TOPICS_MODULE: &str = EXPOSED_SERVICES_MODULE;
-const SUBSCRIBED_TOPICS_MODULE: &str = SUBSCRIBED_SERVICES_MODULE;
 
 impl RustGenerator {
     pub fn new() -> Self {
@@ -593,16 +591,15 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
 
-        let mut module_name = sanitize_component(topic.name.as_str());
-        if module_name.is_empty() {
-            module_name = String::from("topic");
+        let mut module_label = topic.name.trim().to_string();
+        if module_label.is_empty() {
+            module_label = String::from("topic");
         }
 
-        self.push_section(InterfaceArtifact::from_kind_with_submodule(
-            EXPOSED_TOPICS_MODULE,
+        self.push_section(InterfaceArtifact::from_kind(
+            &module_label,
             InterfaceKind::ExposedTopic,
             rendered,
-            Some(module_name),
         ));
         Ok(())
     }
@@ -840,12 +837,19 @@ impl LanguageGenerator for RustGenerator {
         let struct_prefix = format!("{node_prefix}{topic_prefix}");
         let message_struct_name = String::from("Message");
 
-        let module_name = match (node_component.is_empty(), topic_component.is_empty()) {
-            (false, false) => format!("{node_component}_{topic_component}"),
-            (false, true) => node_component.clone(),
-            (true, false) => topic_component.clone(),
+        let mut module_label = match (node_component.is_empty(), topic_component.is_empty()) {
+            (false, false) => format!("{}_{}", topic.node.as_deref().unwrap(), topic.name.as_str()),
+            (false, true) => topic.node.clone().unwrap_or_default(),
+            (true, false) => topic.name.clone(),
             (true, true) => String::from("topic"),
         };
+        if module_label.trim().is_empty() {
+            module_label = String::from("topic");
+        }
+        let mut module_component = sanitize_component(&module_label);
+        if module_component.is_empty() {
+            module_component = String::from("topic");
+        }
         let callback_fn_name = String::from("on_next_message_received");
         let callback_fn_ident = Ident::new(&callback_fn_name, Span::call_site());
 
@@ -869,7 +873,7 @@ impl LanguageGenerator for RustGenerator {
         } else if !node_component.is_empty() {
             format!("on_next_{node_component}_message")
         } else {
-            format!("{module_name}_message")
+            format!("{module_component}_message")
         };
 
         let encoding = self
@@ -897,11 +901,10 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
 
-        self.push_section(InterfaceArtifact::from_kind_with_submodule(
-            SUBSCRIBED_TOPICS_MODULE,
+        self.push_section(InterfaceArtifact::from_kind(
+            &module_label,
             InterfaceKind::SubscribedTopic,
             rendered,
-            Some(module_name),
         ));
 
         Ok(())
