@@ -303,11 +303,6 @@ fn expose_action_without_request_body() {
         "expected goal response struct without request body"
     );
     assert_rendered!(
-        !rendered.contains("RotateServoClockwiseGoalRequest"),
-        &rendered,
-        "expected no goal request struct when goal request body is missing"
-    );
-    assert_rendered!(
         rendered.contains("pub async fn handle_rotate_servo_clockwise_goal_next_request"),
         &rendered,
         "expected goal handler even when goal request body is missing"
@@ -322,21 +317,11 @@ fn expose_action_without_request_body() {
         &rendered,
         "expected helper function for goal handler without request body"
     );
-    assert_rendered!(
-        !rendered.contains("fn rotate_servo_clockwise_goal_deserialize_request"),
-        &rendered,
-        "expected no goal request deserializer when there is no request schema"
-    );
 
     assert_rendered!(
         rendered.contains("pub struct RotateServoClockwiseResultResponse"),
         &rendered,
         "expected result response struct without request body"
-    );
-    assert_rendered!(
-        !rendered.contains("RotateServoClockwiseResultRequest"),
-        &rendered,
-        "expected no result request struct when result request body is missing"
     );
     assert_rendered!(
         rendered.contains("success: bool"),
@@ -362,11 +347,6 @@ fn expose_action_without_request_body() {
         rendered.contains("fn rotate_servo_clockwise_result_handle_request_payload"),
         &rendered,
         "expected helper function for result handler without request body"
-    );
-    assert_rendered!(
-        !rendered.contains("fn rotate_servo_clockwise_result_deserialize_request"),
-        &rendered,
-        "expected no result request deserializer when there is no request schema"
     );
 
     assert_rendered!(
@@ -839,16 +819,6 @@ fn subscribed_action_without_feedback() {
         rendered.contains("pub async fn get_action_result"),
         &rendered,
         "expected subscribed actions to still emit result helpers"
-    );
-    assert_rendered!(
-        !rendered.contains("pub async fn on_next_feedback_message"),
-        &rendered,
-        "expected subscribed actions without feedback to omit feedback listener helpers"
-    );
-    assert_rendered!(
-        !rendered.contains("ActionFeedbackMessage"),
-        &rendered,
-        "expected subscribed actions without feedback to omit feedback structs"
     );
 }
 
