@@ -299,16 +299,16 @@ async fn main() -> Result<()> {{
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = format!(
         "
-use peppygen::exposed_services::enable_camera::{{Response, handle_next_request}};
+use peppygen::exposed_services::enable_camera;
 use peppygen::{{Messenger, Result}};
 
 #[tokio::main]
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
-    handle_next_request(&messenger, |request| -> Result<Response> {{
+    enable_camera::handle_next_request(&messenger, |request| -> Result<enable_camera::Response> {{
         println!(\"received enable_camera request: {{}}\", request.enable);
-        Ok(Response::new(request.enable, \"handled\".to_owned()))
+        Ok(enable_camera::Response::new(request.enable, \"handled\".to_owned()))
     }})
     .await?;
 

@@ -2613,7 +2613,7 @@ fn build_exposed_service_method(
         helper_tokens.push(helper_fn);
     } else {
         let helper_fn = quote! {
-            fn #handler_helper_name<F>(_: &[u8], handler: &F) -> crate::Result<bytes::Bytes>
+            fn #handler_helper_name<F>(handler: &F) -> crate::Result<bytes::Bytes>
             where
                 F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
             {
@@ -2624,6 +2624,21 @@ fn build_exposed_service_method(
         };
         helper_tokens.push(helper_fn);
     }
+
+    let request_context_ident = if encoding.is_some() {
+        Ident::new("request_context", Span::call_site())
+    } else {
+        Ident::new("_request_context", Span::call_site())
+    };
+
+    let helper_call_tokens = if encoding.is_some() {
+        quote!({
+            let payload = #request_context_ident.message.payload;
+            #handler_helper_name(payload.as_ref(), &handler)
+        })
+    } else {
+        quote!(#handler_helper_name(&handler))
+    };
 
     let method = quote! {
         pub async fn #handler_fn_name<F>(
@@ -2644,11 +2659,9 @@ fn build_exposed_service_method(
             .await?;
 
             service
-                .handle_next_request(move |request_context| {
+                .handle_next_request(move |#request_context_ident| {
                     async move {
-                        let payload = request_context.message.payload;
-
-                        #handler_helper_name(payload.as_ref(), &handler).map_err(|error| {
+                        #helper_call_tokens.map_err(|error| {
                             peppylib::PeppyError::Io(std::io::Error::other(error.to_string()))
                         })
                     }
