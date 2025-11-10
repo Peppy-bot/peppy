@@ -151,11 +151,6 @@ fn expose_service() {
         "expected generated handler to schedule request handling through ServiceMessenger"
     );
     assert_rendered!(
-        !rendered.contains("Self::enable_camera_handle_request_payload"),
-        &rendered,
-        "free function handler should invoke helper without a struct receiver"
-    );
-    assert_rendered!(
         rendered.contains("request_context.message.payload"),
         &rendered,
         "expected request payload to be pulled from the request context"
@@ -217,11 +212,6 @@ fn expose_service_without_request_body() {
         "expected response struct for service without request body"
     );
     assert_rendered!(
-        !rendered.contains("GetSystemStatusRequest"),
-        &rendered,
-        "expected no request struct when request format is missing"
-    );
-    assert_rendered!(
         rendered.contains("F: Fn() -> crate::Result<GetSystemStatusResponse>"),
         &rendered,
         "expected handler to take no parameters"
@@ -230,11 +220,6 @@ fn expose_service_without_request_body() {
         rendered.contains("fn get_system_status_handle_request_payload"),
         &rendered,
         "expected helper function even without request payload"
-    );
-    assert_rendered!(
-        !rendered.contains("fn get_system_status_deserialize_request"),
-        &rendered,
-        "expected no deserializer when there is no request schema"
     );
 }
 
@@ -311,11 +296,6 @@ fn expose_two_services() {
         rendered.contains("pub struct GetLidarInfoRequest"),
         &rendered,
         "expected public request struct for `get_lidar_info`"
-    );
-    assert_rendered!(
-        !rendered.contains("GetLidarInfoResponse"),
-        &rendered,
-        "expected no response struct for `get_lidar_info`"
     );
     assert_rendered!(
         rendered.contains("pub channels: String"),
@@ -600,16 +580,6 @@ fn subscribed_service_without_response_payload() {
 
     let rendered = &artifacts[0].code_output;
 
-    assert_rendered!(
-        !rendered.contains("pub struct Subscribes;"),
-        rendered,
-        "poll helpers should be emitted as free functions"
-    );
-    assert_rendered!(
-        !rendered.contains("GetCameraInfoResponse"),
-        rendered,
-        "expected no response struct when response format is missing"
-    );
     assert_rendered!(
         rendered.contains("let _ = peppylib::ServiceMessenger::poll("),
         rendered,

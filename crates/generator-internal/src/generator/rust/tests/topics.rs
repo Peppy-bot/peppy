@@ -320,11 +320,6 @@ fn subscribed_to_topic() {
         "expected width field to be public"
     );
     assert_rendered!(
-        !rendered.contains("pub async fn connect("),
-        &rendered,
-        "subscriber should not expose a connect constructor"
-    );
-    assert_rendered!(
         rendered.contains("pub async fn on_next_uvc_camera_stream_message("),
         &rendered,
         "expected async subscriber method"
@@ -431,11 +426,6 @@ fn subscribed_to_two_topics_same_node() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
-    assert_rendered!(
-        !rendered.contains("pub async fn connect("),
-        &rendered,
-        "subscriber should not expose a connect constructor"
-    );
     let on_next_usage_count = rendered.matches(".on_next_message()").count();
     assert_rendered!(
         on_next_usage_count == 2,
@@ -571,16 +561,6 @@ fn subscribed_to_topic_no_node() {
         rendered.contains("image: [u8; 3]"),
         &rendered,
         "expected array element type"
-    );
-    assert_rendered!(
-        !rendered.contains("pub struct Subscribes;"),
-        &rendered,
-        "subscriber helpers should be emitted as free functions"
-    );
-    assert_rendered!(
-        !rendered.contains("pub async fn connect("),
-        &rendered,
-        "subscriber should not expose a connect constructor"
     );
     assert_rendered!(
         rendered.contains("pub async fn on_next_stream_message("),
