@@ -27,9 +27,9 @@
             request_message_format: {
               arm_id: "u16",
               desired_position: {
-                type: "array",
-                items: "i32",
-                length: 3
+                $type: "array",
+                $items: "i32",
+                $length: 3
               }
             },
             response_message_format: {
@@ -40,9 +40,9 @@
             qos_profile: "standard", // Options: "standard", "reliable", "sensor_data"
             message_format: {
               new_position: {
-                type: "array",
-                items: "i32",
-                length: 3
+                $type: "array",
+                $items: "i32",
+                $length: 3
               }
             }
           },
@@ -50,9 +50,9 @@
           result_service: {
             response_message_format: {
               final_position: {
-                type: "array",
-                items: "i32",
-                length: 3
+                $type: "array",
+                $items: "i32",
+                $length: 3
               }
             }
           }

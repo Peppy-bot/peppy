@@ -33,7 +33,7 @@
           qos_profile: "sensor_data",
           message_format: {
             header: {
-              type: "object",
+              $type: "object",
               stamp: "time",
               actuator_id: "u32"
             },
@@ -41,7 +41,7 @@
             value: "float", // e.g., position, speed, duty cycle
             status: "string", // "ok", "error", "busy"
             feedback: {
-              type: "object",
+              $type: "object",
               position: "float", // Actual measured position (if available)
               current: "float", // Current consumption (if available)
             }

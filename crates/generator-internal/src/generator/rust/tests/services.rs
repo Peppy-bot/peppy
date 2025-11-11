@@ -12,8 +12,8 @@ const EXPOSED_SERVICE_EXAMPLE: &str = r#"
   response_message_format: {
     enabled: "bool",
     error_msg: {
-      type: "string",
-      optional: true
+      $type: "string",
+      $optional: true
     }
   }
 }
@@ -59,8 +59,8 @@ const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1: &str = r#"
 {
   enabled: "bool",
   error_msg: {
-    type: "string",
-    optional: true
+    $type: "string",
+    $optional: true
   },
 }
 "#;

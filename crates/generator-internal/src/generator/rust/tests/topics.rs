@@ -8,7 +8,7 @@ const EXPOSED_TOPIC_EXAMPLE: &str = r#"
   qos_profile: "sensor_data",
   message_format: {
     header: {
-      type: "object",
+      $type: "object",
       stamp: "time",
       frame_id: "u32"
     },
@@ -16,9 +16,9 @@ const EXPOSED_TOPIC_EXAMPLE: &str = r#"
     width: "u32",
     height: "u32",
     image: {
-      type: "array",
-      items: "u8",
-      length: 3
+      $type: "array",
+      $items: "u8",
+      $length: 3
     }
   }
 }
@@ -30,7 +30,7 @@ const EXPOSED_TOPIC_EXAMPLE2: &str = r#"
   qos_profile: "sensor_data",
   message_format: {
     header: {
-      type: "object",
+      $type: "object",
       stamp: "time",
       frame_id: "u32",
     },
@@ -55,7 +55,7 @@ const SUBSCRIBED_TOPIC_EXAMPLE1: &str = r#"
 const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1: &str = r#"
 {
     header: {
-        type: "object",
+        $type: "object",
         stamp: "time",
         frame_id: "u32"
     },
@@ -63,9 +63,9 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1: &str = r#"
     width: "u32",
     height: "u32",
     image: {
-        type: "array",
-        items: "u8",
-        length: 3
+        $type: "array",
+        $items: "u8",
+        $length: 3
     }
 }
 "#;
@@ -81,7 +81,7 @@ const SUBSCRIBED_TOPIC_EXAMPLE2: &str = r#"
 const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2: &str = r#"
 {
   header: {
-    type: "object",
+    $type: "object",
     stamp: "time"
   },
   encoding: "string",         // e.g., "pcm_s16le", "f32", "mp3", "opus"
@@ -90,8 +90,8 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2: &str = r#"
   layout: "string",           // "interleaved" | "planar"
   frame_count: "u32",         // samples per channel in this frame
   samples: {
-    type: "array",
-    items: "u8",              // raw bytes; interpret per 'encoding'
+    $type: "array",
+    $items: "u8",              // raw bytes; interpret per 'encoding'
   }
 }
 "#;
@@ -533,7 +533,7 @@ fn subscribed_to_topic_no_node() {
     let format = r#"
         {
             header: {
-                type: "object",
+                $type: "object",
                 stamp: "time",
                 frame_id: "u32"
             },
@@ -541,9 +541,9 @@ fn subscribed_to_topic_no_node() {
             width: "u32",
             height: "u32",
             image: {
-                type: "array",
-                items: "u8",
-                length: 3
+                $type: "array",
+                $items: "u8",
+                $length: 3
             }
         }
         "#;
