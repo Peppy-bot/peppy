@@ -83,16 +83,18 @@ enum ModuleCategory {
     SubscribedTopics,
     ExposedServices,
     SubscribedServices,
-    Actions,
+    ExposedActions,
+    SubscribedActions,
 }
 
 impl ModuleCategory {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::ExposedTopics,
         Self::SubscribedTopics,
         Self::ExposedServices,
         Self::SubscribedServices,
-        Self::Actions,
+        Self::ExposedActions,
+        Self::SubscribedActions,
     ];
 
     fn from_kind(kind: InterfaceKind) -> Self {
@@ -101,7 +103,8 @@ impl ModuleCategory {
             InterfaceKind::SubscribedTopic => Self::SubscribedTopics,
             InterfaceKind::ExposedService => Self::ExposedServices,
             InterfaceKind::SubscribedService => Self::SubscribedServices,
-            InterfaceKind::ExposedAction | InterfaceKind::SubscribedAction => Self::Actions,
+            InterfaceKind::ExposedAction => Self::ExposedActions,
+            InterfaceKind::SubscribedAction => Self::SubscribedActions,
         }
     }
 
@@ -111,7 +114,8 @@ impl ModuleCategory {
             Self::SubscribedTopics => "SubscribedTopics",
             Self::ExposedServices => "ExposedServices",
             Self::SubscribedServices => "SubscribedServices",
-            Self::Actions => "Actions",
+            Self::ExposedActions => "ExposedActions",
+            Self::SubscribedActions => "SubscribedActions",
         }
     }
 
@@ -121,7 +125,8 @@ impl ModuleCategory {
             Self::SubscribedTopics => "subscribed_topics",
             Self::ExposedServices => "exposed_services",
             Self::SubscribedServices => "subscribed_services",
-            Self::Actions => "actions",
+            Self::ExposedActions => "exposed_actions",
+            Self::SubscribedActions => "subscribed_actions",
         }
     }
 
@@ -131,7 +136,8 @@ impl ModuleCategory {
             Self::SubscribedTopics => "subscribed topics",
             Self::ExposedServices => "exposed services",
             Self::SubscribedServices => "subscribed services",
-            Self::Actions => "actions",
+            Self::ExposedActions => "exposed actions",
+            Self::SubscribedActions => "subscribed actions",
         }
     }
 }
@@ -205,40 +211,20 @@ fn write_category_modules(
         modules.push((module_name, original_name));
     }
 
-    write_category_module_file(category_file, &modules, category)?;
+    write_category_module_file(category_file, &modules)?;
     Ok(())
 }
 
-fn write_category_module_file(
-    category_file: &Path,
-    modules: &[(String, String)],
-    category: ModuleCategory,
-) -> Result<()> {
+fn write_category_module_file(category_file: &Path, modules: &[(String, String)]) -> Result<()> {
     let mut mod_section = String::new();
-    let mut reexport_section = String::new();
     for (module, original) in modules {
         if !original.is_empty() {
             mod_section.push_str(&format!("// Node: {original}\n"));
         }
-        let module_decl = if matches!(category, ModuleCategory::Actions) {
-            "mod"
-        } else {
-            "pub mod"
-        };
-        mod_section.push_str(&format!("{module_decl} {module};\n"));
-
-        let should_reexport = matches!(category, ModuleCategory::Actions);
-        if should_reexport {
-            reexport_section.push_str(&format!("pub use {module}::*;\n"));
-        }
+        mod_section.push_str(&format!("pub mod {module};\n"));
     }
 
-    let mut content = String::new();
-    content.push_str(&mod_section);
-    if !modules.is_empty() && !reexport_section.is_empty() {
-        content.push('\n');
-    }
-    content.push_str(&reexport_section);
+    let content = mod_section;
 
     fs::write(category_file, content)?;
     Ok(())

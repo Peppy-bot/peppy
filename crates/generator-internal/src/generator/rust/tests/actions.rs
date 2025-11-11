@@ -1,7 +1,7 @@
 use super::*;
 
 use config::node::{ExposedAction, SubscribedAction};
-use std::collections::HashMap;
+use std::{collections::HashMap, fs};
 
 // --- Exposes examples
 const EXPOSED_ACTION_EXAMPLE: &str = r#"
@@ -926,10 +926,8 @@ fn compile_lib_with_exposed_and_subscribed_actions() {
         result_response: Some(subscribed_action1_result_response),
     };
 
-    let mut subscribed_action2: SubscribedAction =
+    let subscribed_action2: SubscribedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE2).unwrap();
-    // Reuse the same upstream node so both subscriptions target the same source.
-    subscribed_action2.node = subscribed_action1.node.clone();
     let subscribed_action2_goal_response: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT2).unwrap();
     let subscribed_action2_feedback: MessageFormat =
@@ -989,5 +987,84 @@ fn compile_lib_with_exposed_and_subscribed_actions() {
         clippy_output.status.code(),
         String::from_utf8_lossy(&clippy_output.stdout),
         String::from_utf8_lossy(&clippy_output.stderr)
+    );
+
+    let lib_rs = output_dir.join("src/lib.rs");
+    assert!(
+        lib_rs.exists(),
+        "Expected lib.rs to exist so generated action modules are reachable"
+    );
+    let lib_contents = fs::read_to_string(&lib_rs).expect("failed to read generated lib.rs");
+    assert!(
+        lib_contents.contains("pub mod exposed_actions;"),
+        "Generated lib.rs should re-export the exposed_actions module, got:\n{}",
+        lib_contents
+    );
+    assert!(
+        lib_contents.contains("pub mod subscribed_actions;"),
+        "Generated lib.rs should re-export the subscribed_actions module, got:\n{}",
+        lib_contents
+    );
+
+    let exposed_actions_mod = output_dir.join("src/exposed_actions.rs");
+    assert!(
+        exposed_actions_mod.exists(),
+        "Expected exposed_actions module file so `peppygen::exposed_actions::<action>` resolves"
+    );
+    let exposed_actions_contents =
+        fs::read_to_string(&exposed_actions_mod).expect("failed to read exposed_actions module");
+    assert!(
+        exposed_actions_contents.contains("pub mod move_arm;"),
+        "Expected exposed_actions module to declare the move_arm action, got:\n{}",
+        exposed_actions_contents
+    );
+    assert!(
+        exposed_actions_contents.contains("pub mod rotate_servo_clockwise;"),
+        "Expected exposed_actions module to declare the rotate_servo_clockwise action, got:\n{}",
+        exposed_actions_contents
+    );
+
+    let subscribed_actions_mod = output_dir.join("src/subscribed_actions.rs");
+    assert!(
+        subscribed_actions_mod.exists(),
+        "Expected subscribed_actions module file so `peppygen::subscribed_actions::<action>` resolves"
+    );
+    let subscribed_actions_contents = fs::read_to_string(&subscribed_actions_mod)
+        .expect("failed to read subscribed_actions module");
+    assert!(
+        subscribed_actions_contents.contains("pub mod brain_move_arm;"),
+        "Expected subscribed_actions module to declare the brain_move_arm client, got:\n{}",
+        subscribed_actions_contents
+    );
+    assert!(
+        subscribed_actions_contents.contains("pub mod controller_rotate_servo_clockwise;"),
+        "Expected subscribed_actions module to declare the controller_rotate_servo_clockwise client, got:\n{}",
+        subscribed_actions_contents
+    );
+
+    let expose_move_arm_path = output_dir.join("src/exposed_actions/move_arm.rs");
+    assert!(
+        expose_move_arm_path.exists(),
+        "Expected generated move_arm action module at {:?}",
+        expose_move_arm_path
+    );
+    let expose_rotate_path = output_dir.join("src/exposed_actions/rotate_servo_clockwise.rs");
+    assert!(
+        expose_rotate_path.exists(),
+        "Expected generated rotate_servo_clockwise action module at {:?}",
+        expose_rotate_path
+    );
+    let subscribed_brain_path = output_dir.join("src/subscribed_actions/brain_move_arm.rs");
+    assert!(
+        subscribed_brain_path.exists(),
+        "Expected brain_move_arm subscribed action module at {:?}",
+        subscribed_brain_path
+    );
+    let subscribed_controller_path =
+        output_dir.join("src/subscribed_actions/controller_rotate_servo_clockwise.rs");
+    assert!(
+        subscribed_controller_path.exists(),
+        "Expected controller_rotate_servo_clockwise subscribed action module at {:?}",
+        subscribed_controller_path
     );
 }
