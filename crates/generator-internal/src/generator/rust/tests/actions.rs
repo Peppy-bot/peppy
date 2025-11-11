@@ -224,6 +224,26 @@ fn exposed_action() {
         "expected error_msg field in result response"
     );
     assert_rendered!(
+        rendered.contains("pub struct CancelResponse"),
+        &rendered,
+        "expected cancel response struct"
+    );
+    assert_rendered!(
+        rendered.contains("pub error_message: Option<String>"),
+        &rendered,
+        "expected cancel response to expose optional error_message"
+    );
+    assert_rendered!(
+        rendered.contains("impl CancelResponse"),
+        &rendered,
+        "expected cancel response constructor impl"
+    );
+    assert_rendered!(
+        rendered.contains("pub fn new(accepted: bool, error_message: Option<String>) -> Self"),
+        &rendered,
+        "expected cancel response constructor signature"
+    );
+    assert_rendered!(
         rendered.contains("pub async fn handle_goal_next_request"),
         &rendered,
         "expected goal handler method"
@@ -244,7 +264,7 @@ fn exposed_action() {
         "expected cancel handler method"
     );
     assert_rendered!(
-        rendered.contains("F: Fn() -> crate::Result<()>"),
+        rendered.contains("F: Fn() -> crate::Result<CancelResponse>"),
         &rendered,
         "expected cancel handler signature"
     );
@@ -373,6 +393,21 @@ fn expose_action_without_request_body() {
         rendered.contains("fn handle_result_payload"),
         &rendered,
         "expected helper function for result handler without request body"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct CancelResponse"),
+        &rendered,
+        "expected cancel response struct without request body"
+    );
+    assert_rendered!(
+        rendered.contains("pub async fn handle_cancel_next_request"),
+        &rendered,
+        "expected cancel handler even when request body is missing"
+    );
+    assert_rendered!(
+        rendered.contains("F: Fn() -> crate::Result<CancelResponse>"),
+        &rendered,
+        "expected cancel handler signature with zero parameters"
     );
 
     assert_rendered!(
@@ -561,14 +596,24 @@ fn subscribed_to_action() {
         "expected goal service endpoint literal"
     );
     assert_rendered!(
+        rendered.contains("pub struct CancelResponse"),
+        &rendered,
+        "expected cancel response struct for subscribed action"
+    );
+    assert_rendered!(
+        rendered.contains("pub error_message: Option<String>"),
+        &rendered,
+        "expected cancel response to expose error_message field"
+    );
+    assert_rendered!(
         rendered.contains("pub async fn cancel_goal"),
         &rendered,
         "expected cancel_goal method definition"
     );
     assert_rendered!(
-        rendered.contains("-> crate::Result<()>"),
+        rendered.contains("-> crate::Result<CancelResponse>"),
         &rendered,
-        "expected cancel goal to return unit result"
+        "expected cancel goal to return cancel response struct"
     );
     assert_rendered!(
         rendered.contains("pub async fn on_next_feedback_message"),

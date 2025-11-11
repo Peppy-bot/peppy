@@ -12,8 +12,8 @@ use config::encoding::{CapnpSchemaArtifacts, FunctionParam, MessageFormatMapper}
 use config::{
     consts::PEPPY_NODE_CONFIG_FILE,
     node::{
-        ArraySchema, ExposedAction, ExposedService, ExposedTopic, MessageFormat, QoSProfile,
-        SchemaType, SubscribedAction, SubscribedService, SubscribedTopic, TypeToken,
+        ArraySchema, ExposedAction, ExposedService, ExposedTopic, MessageFormat, PrimitiveSchema,
+        QoSProfile, SchemaType, SubscribedAction, SubscribedService, SubscribedTopic, TypeToken,
     },
 };
 use indexmap::IndexMap;
@@ -351,29 +351,28 @@ impl RustGenerator {
         })
     }
 
-    fn build_action_cancel_method(&self, service_name: &str) -> TokenStream {
-        let service_name_literal = Literal::string(service_name);
-        quote! {
-            pub async fn cancel_goal(
-                messenger: &crate::Messenger,
-                timeout: std::time::Duration,
-            ) -> crate::Result<()> {
-                let namespace = messenger.namespace();
-                let service_name = #service_name_literal;
-                let request_payload = bytes::Bytes::new();
+    fn build_action_cancel_method(
+        &mut self,
+        context: &mut GenerationContext,
+        struct_prefix: &str,
+        service_name: &str,
+        schema_key: &str,
+        response_context_label: Option<&str>,
+    ) -> Result<TokenStream> {
+        let cancel_response_format = cancel_action_response_format();
+        let cancel_response_ident = Ident::new("CancelResponse", Span::call_site());
 
-                let _ = peppylib::ServiceMessenger::poll(
-                    messenger.handle(),
-                    namespace,
-                    service_name,
-                    request_payload,
-                    timeout,
-                )
-                .await?;
-
-                Ok(())
-            }
-        }
+        self.build_action_service_method(
+            context,
+            &Ident::new("cancel_goal", Span::call_site()),
+            struct_prefix,
+            None,
+            Some(&cancel_response_format),
+            service_name,
+            schema_key,
+            Some(&cancel_response_ident),
+            response_context_label,
+        )
     }
 
     fn build_action_feedback_method(
@@ -732,6 +731,7 @@ impl LanguageGenerator for RustGenerator {
             let cancel_schema_prefix = format!("{action_prefix}GoalCancel");
             let cancel_helper_ident =
                 Ident::new("handle_cancel_request_payload", Span::call_site());
+            let cancel_response_format = cancel_action_response_format();
 
             let (cancel_method, cancel_helpers) = self.build_action_service_handler(
                 &cancel_fn_name,
@@ -740,7 +740,7 @@ impl LanguageGenerator for RustGenerator {
                 cancel_struct_prefix,
                 cancel_schema_prefix.as_str(),
                 None,
-                None,
+                Some(&cancel_response_format),
                 &cancel_label,
                 &cancel_service_literal,
                 &mut context,
@@ -1197,11 +1197,17 @@ impl LanguageGenerator for RustGenerator {
         )?;
         methods.push(goal_method);
 
-        let cancel_method = self.build_action_cancel_method(&action_endpoint_name(
-            None,
-            action.name.as_str(),
-            "cancel",
-        ));
+        let cancel_struct_prefix = format!("{action_struct_name}Cancel");
+        let cancel_schema_key = format!("{action_struct_name}_cancel_goal");
+        let cancel_service_name = action_endpoint_name(None, action.name.as_str(), "cancel");
+        let cancel_response_context = Some(format!("{action_context_label} CancelResponse"));
+        let cancel_method = self.build_action_cancel_method(
+            &mut context,
+            &cancel_struct_prefix,
+            &cancel_service_name,
+            &cancel_schema_key,
+            cancel_response_context.as_deref(),
+        )?;
         methods.push(cancel_method);
 
         if let Some(feedback_format) = feedback_format {
@@ -1377,6 +1383,23 @@ fn subscribed_action_module_name(action: &SubscribedAction) -> String {
 
 fn non_empty_message_format<'a>(format: Option<&'a MessageFormat>) -> Option<&'a MessageFormat> {
     format.filter(|format| !format.0.is_empty())
+}
+
+fn cancel_action_response_format() -> MessageFormat {
+    let mut fields = IndexMap::new();
+    fields.insert(
+        String::from("accepted"),
+        SchemaType::Type(TypeToken::Bool),
+    );
+    fields.insert(
+        String::from("error_message"),
+        SchemaType::Primitive(PrimitiveSchema {
+            kind: TypeToken::String,
+            optional: true,
+        }),
+    );
+
+    MessageFormat(fields)
 }
 
 fn action_endpoint_name(custom: Option<&str>, action_name: &str, suffix: &str) -> String {
