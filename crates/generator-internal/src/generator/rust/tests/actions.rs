@@ -494,7 +494,7 @@ fn subscribed_to_action() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     assert_rendered!(
-        rendered.contains("pub struct BrainMoveArmActionGoalResponse"),
+        rendered.contains("pub struct GoalResponse"),
         &rendered,
         "expected goal response struct for subscribed action"
     );
@@ -504,7 +504,7 @@ fn subscribed_to_action() {
         "expected accepted field in goal response"
     );
     assert_rendered!(
-        rendered.contains("pub struct BrainMoveArmActionResultResponse"),
+        rendered.contains("pub struct ResultResponse"),
         &rendered,
         "expected result response struct for subscribed action"
     );
@@ -514,7 +514,7 @@ fn subscribed_to_action() {
         "expected final_position array in result response"
     );
     assert_rendered!(
-        rendered.contains("pub struct BrainMoveArmActionFeedbackMessage"),
+        rendered.contains("pub struct FeedbackMessage"),
         &rendered,
         "expected feedback message struct for subscribed action"
     );
@@ -539,7 +539,7 @@ fn subscribed_to_action() {
         "expected goal parameter desired_position"
     );
     assert_rendered!(
-        rendered.contains("-> crate::Result<BrainMoveArmActionGoalResponse>"),
+        rendered.contains("-> crate::Result<GoalResponse>"),
         &rendered,
         "expected goal method to return goal response struct"
     );
@@ -569,7 +569,7 @@ fn subscribed_to_action() {
         "expected topic subscription for feedback listener"
     );
     assert_rendered!(
-        rendered.contains("fn deserialize_brain_move_arm_feedback_payload"),
+        rendered.contains("fn deserialize_feedback_payload"),
         &rendered,
         "expected feedback payload helper function"
     );
@@ -584,9 +584,24 @@ fn subscribed_to_action() {
         "expected result service endpoint literal"
     );
     assert_rendered!(
-        rendered.contains("-> crate::Result<BrainMoveArmActionResultResponse>"),
+        rendered.contains("-> crate::Result<ResultResponse>"),
         &rendered,
         "expected result method to return result response struct"
+    );
+    assert_rendered!(
+        rendered.contains("String::from(\"brain move_arm GoalResponse\")"),
+        &rendered,
+        "expected goal response context label to include node and action"
+    );
+    assert_rendered!(
+        rendered.contains("String::from(\"brain move_arm ResultResponse\")"),
+        &rendered,
+        "expected result response context label to include node and action"
+    );
+    assert_rendered!(
+        rendered.contains("String::from(\"brain move_arm FeedbackMessage\")"),
+        &rendered,
+        "expected feedback context label to include node and action"
     );
     assert_rendered!(
         rendered.contains("peppylib::ServiceMessenger::poll"),
@@ -663,17 +678,17 @@ fn subscribed_to_two_actions_same_node() {
 
     // move_arm
     assert_rendered!(
-        move_arm.contains("pub struct BrainMoveArmActionGoalResponse"),
+        move_arm.contains("pub struct GoalResponse"),
         move_arm,
         "expected move_arm goal response struct"
     );
     assert_rendered!(
-        move_arm.contains("pub struct BrainMoveArmActionResultResponse"),
+        move_arm.contains("pub struct ResultResponse"),
         move_arm,
         "expected move_arm result response struct"
     );
     assert_rendered!(
-        move_arm.contains("pub struct BrainMoveArmActionFeedbackMessage"),
+        move_arm.contains("pub struct FeedbackMessage"),
         move_arm,
         "expected move_arm feedback message struct"
     );
@@ -698,24 +713,39 @@ fn subscribed_to_two_actions_same_node() {
         "expected move_arm result service literal"
     );
     assert_rendered!(
-        move_arm.contains("fn deserialize_brain_move_arm_feedback_payload"),
+        move_arm.contains("fn deserialize_feedback_payload"),
         move_arm,
         "expected move_arm feedback helper"
+    );
+    assert_rendered!(
+        move_arm.contains("String::from(\"brain move_arm GoalResponse\")"),
+        move_arm,
+        "expected move_arm goal response context label"
+    );
+    assert_rendered!(
+        move_arm.contains("String::from(\"brain move_arm ResultResponse\")"),
+        move_arm,
+        "expected move_arm result response context label"
+    );
+    assert_rendered!(
+        move_arm.contains("String::from(\"brain move_arm FeedbackMessage\")"),
+        move_arm,
+        "expected move_arm feedback context label"
     );
 
     // rotate_servo_clockwise
     assert_rendered!(
-        rotate_servo.contains("pub struct BrainRotateServoClockwiseActionGoalResponse"),
+        rotate_servo.contains("pub struct GoalResponse"),
         rotate_servo,
         "expected rotate_servo_clockwise goal response struct"
     );
     assert_rendered!(
-        rotate_servo.contains("pub struct BrainRotateServoClockwiseActionResultResponse"),
+        rotate_servo.contains("pub struct ResultResponse"),
         rotate_servo,
         "expected rotate_servo_clockwise result response struct"
     );
     assert_rendered!(
-        rotate_servo.contains("pub struct BrainRotateServoClockwiseActionFeedbackMessage"),
+        rotate_servo.contains("pub struct FeedbackMessage"),
         rotate_servo,
         "expected rotate_servo_clockwise feedback message struct"
     );
@@ -730,12 +760,12 @@ fn subscribed_to_two_actions_same_node() {
         "expected rotate_servo_clockwise result service literal"
     );
     assert_rendered!(
-        rotate_servo.contains("fn deserialize_brain_rotate_servo_clockwise_feedback_payload"),
+        rotate_servo.contains("fn deserialize_feedback_payload"),
         rotate_servo,
         "expected rotate_servo_clockwise feedback helper"
     );
     assert_rendered!(
-        rotate_servo.contains("-> crate::Result<BrainRotateServoClockwiseActionGoalResponse>"),
+        rotate_servo.contains("-> crate::Result<GoalResponse>"),
         rotate_servo,
         "expected rotate_servo_clockwise goal helper return type"
     );
@@ -748,6 +778,21 @@ fn subscribed_to_two_actions_same_node() {
         rotate_servo.contains("peppylib::TopicMessenger::subscribe"),
         rotate_servo,
         "expected rotate_servo_clockwise to subscribe for feedback"
+    );
+    assert_rendered!(
+        rotate_servo.contains("String::from(\"brain rotate_servo_clockwise GoalResponse\")"),
+        rotate_servo,
+        "expected rotate_servo goal response context label"
+    );
+    assert_rendered!(
+        rotate_servo.contains("String::from(\"brain rotate_servo_clockwise ResultResponse\")"),
+        rotate_servo,
+        "expected rotate_servo result response context label"
+    );
+    assert_rendered!(
+        rotate_servo.contains("String::from(\"brain rotate_servo_clockwise FeedbackMessage\")"),
+        rotate_servo,
+        "expected rotate_servo feedback context label"
     );
 }
 

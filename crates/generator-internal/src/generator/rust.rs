@@ -189,6 +189,9 @@ impl RustGenerator {
         request_format: Option<&MessageFormat>,
         response_format: Option<&MessageFormat>,
         service_name: &str,
+        schema_key: &str,
+        response_struct_override: Option<&Ident>,
+        response_context_label: Option<&str>,
     ) -> Result<TokenStream> {
         let request_artifacts = map_message_format(request_format)?;
         let response_artifacts = map_message_format(response_format)?;
@@ -198,13 +201,13 @@ impl RustGenerator {
             response_artifacts.as_ref(),
             struct_prefix,
             context,
-            None,
+            response_struct_override,
         )?;
 
         let method_label = method_ident.to_string();
         let method_label_literal = Literal::string(&method_label);
         let request_encoding = self.prepare_message_encoding(
-            &method_label,
+            schema_key,
             struct_prefix,
             request_artifacts.as_ref(),
             &params,
@@ -252,10 +255,12 @@ impl RustGenerator {
 
         let (return_ty, response_tokens, poll_tokens) =
             if let Some(response_artifacts) = response_artifacts.as_ref() {
-                let response_struct_name = format!("{struct_prefix}Response");
-                let response_struct_ident = Ident::new(&response_struct_name, Span::call_site());
+                let response_struct_ident = response_struct_override
+                    .cloned()
+                    .unwrap_or_else(|| Ident::new(&format!("{struct_prefix}Response"), Span::call_site()));
+                let response_struct_name = response_struct_ident.to_string();
 
-                let response_schema_key = format!("{method_label}_response");
+                let response_schema_key = format!("{schema_key}_response");
                 let response_schema = self.register_schema(
                     &response_schema_key,
                     &response_struct_name,
@@ -283,7 +288,10 @@ impl RustGenerator {
                     response_inits.push(quote!(#field_ident: #value_ident));
                 }
 
-                let response_context_literal = Literal::string(&response_struct_name);
+                let response_context_value = response_context_label
+                    .map(str::to_string)
+                    .unwrap_or_else(|| response_struct_name.clone());
+                let response_context_literal = Literal::string(&response_context_value);
 
                 let poll_tokens = quote! {
                     let response_bytes = #poll_call.await?;
@@ -373,16 +381,17 @@ impl RustGenerator {
         action: &SubscribedAction,
         format: &MessageFormat,
         action_struct_name: &str,
+        feedback_context_label: &str,
     ) -> Result<(TokenStream, Vec<TokenStream>)> {
         let format_artifacts = map_message_format(Some(format))?
             .expect("feedback format should always yield encoding artifacts");
 
         let struct_prefix = format!("{action_struct_name}Feedback");
-        let struct_name = format!("{struct_prefix}Message");
-        let struct_ident = Ident::new(&struct_name, Span::call_site());
+        let schema_struct_name = format!("{struct_prefix}Message");
+        let struct_ident = Ident::new("FeedbackMessage", Span::call_site());
 
         let params =
-            collect_function_params(Some(&format_artifacts), None, &struct_name, context, None)?;
+            collect_function_params(Some(&format_artifacts), None, &schema_struct_name, context, None)?;
 
         let fields: Vec<(Ident, TokenStream)> = params
             .iter()
@@ -390,7 +399,7 @@ impl RustGenerator {
             .collect();
         context.add_struct(struct_ident.clone(), fields);
 
-        let schema_key = format!("{struct_name}_payload");
+        let schema_key = format!("{schema_struct_name}_payload");
         let encoding = self
             .prepare_message_encoding(
                 &schema_key,
@@ -404,15 +413,7 @@ impl RustGenerator {
         let topic_name = action_endpoint_name(None, action.name.as_str(), "feedback");
         let topic_literal = Literal::string(&topic_name);
 
-        let node_component = sanitize_component(action.node.as_str());
-        let topic_component = sanitize_component(topic_name.as_str());
-        let helper_name = match (node_component.is_empty(), topic_component.is_empty()) {
-            (true, true) => "deserialize_feedback_payload".to_string(),
-            (true, false) => format!("deserialize_{topic_component}_payload"),
-            (false, true) => format!("deserialize_{node_component}_payload"),
-            (false, false) => format!("deserialize_{node_component}_{topic_component}_payload"),
-        };
-        let helper_fn_ident = Ident::new(&helper_name, Span::call_site());
+        let helper_fn_ident = Ident::new("deserialize_feedback_payload", Span::call_site());
 
         let mut schema_lookup: HashMap<String, (&String, &SchemaType)> = HashMap::new();
         let format_schema = format_artifacts.message_format();
@@ -438,8 +439,8 @@ impl RustGenerator {
                 &quote!(root),
                 original_name,
                 schema,
-                &struct_name,
-                &struct_name,
+                &schema_struct_name,
+                feedback_context_label,
                 &mut names,
             );
             field_statements.append(&mut statements);
@@ -447,7 +448,7 @@ impl RustGenerator {
             field_inits.push(quote!(#field_ident: #value_ident));
         }
 
-        let context_literal = Literal::string(&struct_name);
+        let context_literal = Literal::string(feedback_context_label);
 
         let helper_tokens = quote! {
             fn #helper_fn_ident(payload: &[u8]) -> crate::Result<#struct_ident> {
@@ -1153,6 +1154,8 @@ impl LanguageGenerator for RustGenerator {
         };
         let action_prefix = to_camel_case(&base_component);
         let action_struct_name = format!("{action_prefix}Action");
+        let action_context_label =
+            subscribed_action_context_label(action.node.as_str(), action.name.as_str());
 
         let mut context = GenerationContext::default();
         let mut methods: Vec<TokenStream> = Vec::new();
@@ -1164,6 +1167,17 @@ impl LanguageGenerator for RustGenerator {
         let result_request_format = non_empty_message_format(messages.result_request.as_ref());
         let result_response_format = non_empty_message_format(messages.result_response.as_ref());
 
+        let goal_response_ident = Ident::new("GoalResponse", Span::call_site());
+        let goal_response_override = if goal_response_format.is_some() {
+            Some(&goal_response_ident)
+        } else {
+            None
+        };
+        let goal_response_context = goal_response_format
+            .is_some()
+            .then(|| format!("{action_context_label} GoalResponse"));
+        let goal_schema_key = format!("{action_struct_name}_fire_goal");
+
         let goal_method = self.build_action_service_method(
             &mut context,
             &Ident::new("fire_goal", Span::call_site()),
@@ -1171,6 +1185,9 @@ impl LanguageGenerator for RustGenerator {
             goal_request_format,
             goal_response_format,
             &action_endpoint_name(None, action.name.as_str(), "goal"),
+            &goal_schema_key,
+            goal_response_override,
+            goal_response_context.as_deref(),
         )?;
         methods.push(goal_method);
 
@@ -1182,15 +1199,28 @@ impl LanguageGenerator for RustGenerator {
         methods.push(cancel_method);
 
         if let Some(feedback_format) = feedback_format {
+            let feedback_context_label = format!("{action_context_label} FeedbackMessage");
             let (feedback_method, mut feedback_helpers) = self.build_action_feedback_method(
                 &mut context,
                 action,
                 feedback_format,
                 &action_struct_name,
+                &feedback_context_label,
             )?;
             methods.push(feedback_method);
             helper_items.append(&mut feedback_helpers);
         }
+
+        let result_response_ident = Ident::new("ResultResponse", Span::call_site());
+        let result_response_override = if result_response_format.is_some() {
+            Some(&result_response_ident)
+        } else {
+            None
+        };
+        let result_response_context = result_response_format
+            .is_some()
+            .then(|| format!("{action_context_label} ResultResponse"));
+        let result_schema_key = format!("{action_struct_name}_get_action_result");
 
         let result_method = self.build_action_service_method(
             &mut context,
@@ -1199,6 +1229,9 @@ impl LanguageGenerator for RustGenerator {
             result_request_format,
             result_response_format,
             &action_endpoint_name(None, action.name.as_str(), "result"),
+            &result_schema_key,
+            result_response_override,
+            result_response_context.as_deref(),
         )?;
         methods.push(result_method);
 
@@ -1342,6 +1375,18 @@ fn action_endpoint_name(custom: Option<&str>, action_name: &str, suffix: &str) -
         format!("{trimmed_action}{suffix}")
     } else {
         format!("{trimmed_action}/{suffix}")
+    }
+}
+
+fn subscribed_action_context_label(node: &str, action_name: &str) -> String {
+    let node = node.trim();
+    let action = action_name.trim();
+
+    match (node.is_empty(), action.is_empty()) {
+        (true, true) => String::from("action"),
+        (true, false) => action.to_string(),
+        (false, true) => node.to_string(),
+        (false, false) => format!("{node} {action}"),
     }
 }
 
