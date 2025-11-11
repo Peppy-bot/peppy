@@ -1524,7 +1524,6 @@ fn normalize_snake_case(input: &str) -> String {
 struct GenerationContext {
     structs: Vec<StructDefinition>,
     private_items: Vec<TokenStream>,
-    uses_optional: bool,
 }
 
 impl GenerationContext {
@@ -1540,22 +1539,12 @@ impl GenerationContext {
         self.private_items.push(tokens);
     }
 
-    fn mark_optional(&mut self) {
-        self.uses_optional = true;
-    }
-
     fn wrap_optional_type(&mut self, ty: TokenStream) -> TokenStream {
-        self.mark_optional();
-        quote!(Optional<#ty>)
+        quote!(Option<#ty>)
     }
 
     fn into_tokens(self) -> Vec<TokenStream> {
         let mut items: Vec<TokenStream> = Vec::new();
-        if self.uses_optional {
-            items.push(quote!(
-                pub type Optional<T> = Option<T>;
-            ));
-        }
         items.extend(self.structs.into_iter().map(StructDefinition::into_tokens));
         items.extend(self.private_items);
         items

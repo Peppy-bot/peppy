@@ -219,7 +219,7 @@ fn exposed_action() {
         "expected success field in result response"
     );
     assert_rendered!(
-        rendered.contains("error_msg: Optional<String>"),
+        rendered.contains("error_msg: Option<String>"),
         &rendered,
         "expected error_msg field in result response"
     );
@@ -355,7 +355,7 @@ fn expose_action_without_request_body() {
         "expected result response to expose success field"
     );
     assert_rendered!(
-        rendered.contains("error_msg: Optional<String>"),
+        rendered.contains("error_msg: Option<String>"),
         &rendered,
         "expected result response to expose error message field"
     );
