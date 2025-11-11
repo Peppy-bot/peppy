@@ -1524,6 +1524,7 @@ fn normalize_snake_case(input: &str) -> String {
 struct GenerationContext {
     structs: Vec<StructDefinition>,
     private_items: Vec<TokenStream>,
+    uses_optional: bool,
 }
 
 impl GenerationContext {
@@ -1539,12 +1540,23 @@ impl GenerationContext {
         self.private_items.push(tokens);
     }
 
+    fn mark_optional(&mut self) {
+        self.uses_optional = true;
+    }
+
+    fn wrap_optional_type(&mut self, ty: TokenStream) -> TokenStream {
+        self.mark_optional();
+        quote!(Optional<#ty>)
+    }
+
     fn into_tokens(self) -> Vec<TokenStream> {
-        let mut items: Vec<TokenStream> = self
-            .structs
-            .into_iter()
-            .map(StructDefinition::into_tokens)
-            .collect();
+        let mut items: Vec<TokenStream> = Vec::new();
+        if self.uses_optional {
+            items.push(quote!(
+                pub type Optional<T> = Option<T>;
+            ));
+        }
+        items.extend(self.structs.into_iter().map(StructDefinition::into_tokens));
         items.extend(self.private_items);
         items
     }
@@ -1689,15 +1701,13 @@ fn schema_type_to_tokens(
     field_name: &str,
     context: &mut GenerationContext,
 ) -> TokenStream {
-    match schema {
+    let ty = match schema {
         SchemaType::Type(token) => primitive_type_token(token),
+        SchemaType::Primitive(primitive) => primitive_type_token(&primitive.kind),
         SchemaType::Array(array) => {
-            let item_ty = match array.items.as_ref() {
-                SchemaType::Type(token) => primitive_type_token(token),
-                other => panic!(
-                    "unsupported nested schema type {:?} in array `{field_name}`",
-                    other
-                ),
+            let item_ty = match array.items.as_ref().as_type_token() {
+                Some(token) => primitive_type_token(token),
+                None => panic!("unsupported nested schema type in array `{field_name}`"),
             };
 
             if let Some(length) = array.length {
@@ -1723,6 +1733,12 @@ fn schema_type_to_tokens(
             context.add_struct(struct_ident.clone(), fields);
             quote!(#struct_ident)
         }
+    };
+
+    if schema.is_optional() {
+        context.wrap_optional_type(ty)
+    } else {
+        ty
     }
 }
 
@@ -1856,52 +1872,107 @@ fn generate_field_assignment(
     value_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> TokenStream {
+    generate_field_assignment_inner(
+        builder_expr,
+        field_name,
+        schema,
+        value_expr,
+        names,
+        true,
+        false,
+    )
+}
+
+fn generate_field_assignment_inner(
+    builder_expr: &TokenStream,
+    field_name: &str,
+    schema: &SchemaType,
+    value_expr: &TokenStream,
+    names: &mut NameGenerator,
+    handle_optional: bool,
+    value_is_ref: bool,
+) -> TokenStream {
+    if handle_optional && schema.is_optional() {
+        match schema {
+            SchemaType::Object(_) => {
+                let binding = names.next("value");
+                let inner_expr = quote!(#binding);
+                let inner = generate_field_assignment_inner(
+                    builder_expr,
+                    field_name,
+                    schema,
+                    &inner_expr,
+                    names,
+                    false,
+                    false,
+                );
+                return quote! {
+                    if let Some(#binding) = (#value_expr).cloned() {
+                        #inner
+                    }
+                };
+            }
+            _ => {
+                let binding = names.next("value");
+                let inner_expr = quote!(#binding);
+                let inner = generate_field_assignment_inner(
+                    builder_expr,
+                    field_name,
+                    schema,
+                    &inner_expr,
+                    names,
+                    false,
+                    true,
+                );
+                return quote! {
+                    if let Some(#binding) = (#value_expr).as_ref() {
+                        #inner
+                    }
+                };
+            }
+        }
+    }
+
     let method_component = sanitize_component(field_name);
     let set_method = Ident::new(&format!("set_{method_component}"), Span::call_site());
     let init_method = Ident::new(&format!("init_{method_component}"), Span::call_site());
 
     match schema {
-        SchemaType::Type(token) => match token {
-            TypeToken::Bool
-            | TypeToken::U8
-            | TypeToken::U16
-            | TypeToken::U32
-            | TypeToken::U64
-            | TypeToken::I8
-            | TypeToken::I16
-            | TypeToken::I32
-            | TypeToken::I64
-            | TypeToken::F32
-            | TypeToken::F64 => {
-                quote!(#builder_expr.#set_method(#value_expr);)
-            }
-            TypeToken::String => {
-                quote!(#builder_expr.#set_method(#value_expr.as_str());)
-            }
-            TypeToken::Bytes => {
+        SchemaType::Type(token) => primitive_field_assignment(
+            builder_expr,
+            &set_method,
+            &init_method,
+            value_expr,
+            names,
+            value_is_ref,
+            token,
+        ),
+        SchemaType::Primitive(primitive) => primitive_field_assignment(
+            builder_expr,
+            &set_method,
+            &init_method,
+            value_expr,
+            names,
+            value_is_ref,
+            &primitive.kind,
+        ),
+        SchemaType::Array(array) => {
+            let item_token = array.items.as_ref().as_type_token();
+            if matches!(item_token, Some(TypeToken::U8)) {
                 quote!(#builder_expr.#set_method(#value_expr.as_ref());)
+            } else if let Some(token) = item_token {
+                generate_list_assignment(
+                    builder_expr,
+                    &init_method,
+                    value_expr,
+                    array.length,
+                    token,
+                    names,
+                )
+            } else {
+                panic!("unsupported nested schema type in array `{field_name}`");
             }
-            TypeToken::Time => {
-                generate_time_assignment(builder_expr, &init_method, value_expr, names)
-            }
-        },
-        SchemaType::Array(array) => match array.items.as_ref() {
-            SchemaType::Type(TypeToken::U8) => {
-                quote!(#builder_expr.#set_method(#value_expr.as_ref());)
-            }
-            SchemaType::Type(token) => generate_list_assignment(
-                builder_expr,
-                &init_method,
-                value_expr,
-                array.length,
-                token,
-                names,
-            ),
-            other => panic!(
-                "unsupported nested schema type {:?} in array `{field_name}`",
-                other
-            ),
-        },
+        }
         SchemaType::Object(object) => generate_object_assignment(
             builder_expr,
             &init_method,
@@ -1909,6 +1980,51 @@ fn generate_field_assignment(
             &object.fields,
             names,
         ),
+    }
+}
+
+fn primitive_field_assignment(
+    builder_expr: &TokenStream,
+    set_method: &Ident,
+    init_method: &Ident,
+    value_expr: &TokenStream,
+    names: &mut NameGenerator,
+    value_is_ref: bool,
+    token: &TypeToken,
+) -> TokenStream {
+    match token {
+        TypeToken::Bool
+        | TypeToken::U8
+        | TypeToken::U16
+        | TypeToken::U32
+        | TypeToken::U64
+        | TypeToken::I8
+        | TypeToken::I16
+        | TypeToken::I32
+        | TypeToken::I64
+        | TypeToken::F32
+        | TypeToken::F64 => {
+            let value_tokens = if value_is_ref {
+                quote!(*#value_expr)
+            } else {
+                quote!(#value_expr)
+            };
+            quote!(#builder_expr.#set_method(#value_tokens);)
+        }
+        TypeToken::String => {
+            quote!(#builder_expr.#set_method(#value_expr.as_str());)
+        }
+        TypeToken::Bytes => {
+            quote!(#builder_expr.#set_method(#value_expr.as_ref());)
+        }
+        TypeToken::Time => {
+            let time_expr = if value_is_ref {
+                quote!(*#value_expr)
+            } else {
+                quote!(#value_expr)
+            };
+            generate_time_assignment(builder_expr, init_method, &time_expr, names)
+        }
     }
 }
 
@@ -2216,10 +2332,77 @@ fn generate_field_reader_statements(
     context_label: &str,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
+    generate_field_reader_statements_inner(
+        reader_expr,
+        field_name,
+        schema,
+        struct_prefix,
+        context_label,
+        names,
+        true,
+    )
+}
+
+fn generate_field_reader_statements_inner(
+    reader_expr: &TokenStream,
+    field_name: &str,
+    schema: &SchemaType,
+    struct_prefix: &str,
+    context_label: &str,
+    names: &mut NameGenerator,
+    handle_optional: bool,
+) -> (Vec<TokenStream>, Ident) {
+    if handle_optional && schema.is_optional() {
+        let option_ident = names.next(&format!("{field_name}_opt"));
+        if schema_supports_presence_check(schema) {
+            let has_method = Ident::new(
+                &format!("has_{}", sanitize_component(field_name)),
+                Span::call_site(),
+            );
+            let (inner_statements, value_ident) = generate_field_reader_statements_inner(
+                reader_expr,
+                field_name,
+                schema,
+                struct_prefix,
+                context_label,
+                names,
+                false,
+            );
+            let statements = vec![quote! {
+                let #option_ident = if #reader_expr.reborrow().#has_method() {
+                    #( #inner_statements )*
+                    Some(#value_ident)
+                } else {
+                    None
+                };
+            }];
+            return (statements, option_ident);
+        } else {
+            let (mut statements, value_ident) = generate_field_reader_statements_inner(
+                reader_expr,
+                field_name,
+                schema,
+                struct_prefix,
+                context_label,
+                names,
+                false,
+            );
+            statements.push(quote!(let #option_ident = Some(#value_ident);));
+            return (statements, option_ident);
+        }
+    }
+
     match schema {
         SchemaType::Type(token) => {
             generate_primitive_reader(reader_expr, field_name, token, context_label, names)
         }
+        SchemaType::Primitive(primitive) => generate_primitive_reader(
+            reader_expr,
+            field_name,
+            &primitive.kind,
+            context_label,
+            names,
+        ),
         SchemaType::Array(array) => {
             generate_array_reader(reader_expr, field_name, array, context_label, names)
         }
@@ -2231,6 +2414,20 @@ fn generate_field_reader_statements(
             context_label,
             names,
         ),
+    }
+}
+
+fn schema_supports_presence_check(schema: &SchemaType) -> bool {
+    match schema {
+        SchemaType::Type(token) => matches!(
+            token,
+            TypeToken::String | TypeToken::Bytes | TypeToken::Time
+        ),
+        SchemaType::Primitive(primitive) => matches!(
+            primitive.kind,
+            TypeToken::String | TypeToken::Bytes | TypeToken::Time
+        ),
+        SchemaType::Array(_) | SchemaType::Object(_) => true,
     }
 }
 
@@ -2353,8 +2550,8 @@ fn generate_array_reader(
         &format!("get_{}", sanitize_component(field_name)),
         Span::call_site(),
     );
-    match array.items.as_ref() {
-        SchemaType::Type(TypeToken::U8) => generate_u8_array_reader(
+    match array.items.as_ref().as_type_token() {
+        Some(TypeToken::U8) => generate_u8_array_reader(
             reader_expr,
             field_name,
             &method_ident,
@@ -2362,7 +2559,7 @@ fn generate_array_reader(
             context_label,
             names,
         ),
-        SchemaType::Type(token) => generate_primitive_array_reader(
+        Some(token) => generate_primitive_array_reader(
             reader_expr,
             field_name,
             token,
@@ -2371,10 +2568,7 @@ fn generate_array_reader(
             context_label,
             names,
         ),
-        other => panic!(
-            "unsupported nested schema type {:?} in array `{field_name}`",
-            other
-        ),
+        None => panic!("unsupported nested schema type in array `{field_name}`"),
     }
 }
 
