@@ -98,17 +98,15 @@ impl MessageFormatMapper {
         collect_struct_fields(&ctx, root_struct_id, "", &mut mapping, &mut visited)?;
 
         fn array_schema_to_rust_string(array: &ArraySchema) -> Option<String> {
-            match array.items.as_ref() {
-                SchemaType::Type(token) => {
-                    let (_, rust_type) = type_token_strings(token);
-                    let rendered = match array.length {
-                        Some(length) => format!("[{rust_type}; {length}]"),
-                        None => format!("[{rust_type}]"),
-                    };
-                    Some(rendered)
-                }
-                SchemaType::Array(_) | SchemaType::Object(_) => None,
-            }
+            let Some(token) = array.items.as_ref().as_type_token() else {
+                return None;
+            };
+            let (_, rust_type) = type_token_strings(token);
+            let rendered = match array.length {
+                Some(length) => format!("[{rust_type}; {length}]"),
+                None => format!("[{rust_type}]"),
+            };
+            Some(rendered)
         }
 
         fn override_array_types(
@@ -135,7 +133,7 @@ impl MessageFormatMapper {
                         override_array_types(&next_key, field_schema, mapping);
                     }
                 }
-                SchemaType::Type(_) => {}
+                SchemaType::Type(_) | SchemaType::Primitive(_) => {}
             }
         }
 
@@ -168,6 +166,11 @@ impl MessageFormatMapper {
                 SchemaType::Type(token) => {
                     hash = update(hash, b"type", prime);
                     let (capnp_discriminant, _) = type_token_strings(token);
+                    hash = update(hash, capnp_discriminant.as_bytes(), prime);
+                }
+                SchemaType::Primitive(schema) => {
+                    hash = update(hash, b"type", prime);
+                    let (capnp_discriminant, _) = type_token_strings(&schema.kind);
                     hash = update(hash, capnp_discriminant.as_bytes(), prime);
                 }
                 SchemaType::Array(array) => {
@@ -307,8 +310,12 @@ impl CapnpSchemaGenerator {
                 type_name: self.capnp_type_for_token(token).to_string(),
                 nested: Vec::new(),
             }),
+            SchemaType::Primitive(primitive) => Ok(TypeResolution {
+                type_name: self.capnp_type_for_token(&primitive.kind).to_string(),
+                nested: Vec::new(),
+            }),
             SchemaType::Array(array) => {
-                if matches!(array.items.as_ref(), SchemaType::Type(TypeToken::U8)) {
+                if matches!(array.items.as_ref().as_type_token(), Some(TypeToken::U8)) {
                     return Ok(TypeResolution {
                         type_name: "Data".to_string(),
                         nested: Vec::new(),

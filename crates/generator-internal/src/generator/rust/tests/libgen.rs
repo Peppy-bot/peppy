@@ -207,7 +207,10 @@ const EXPOSED_SERVICE_EXAMPLE: &str = r#"
   },
   response_message_format: {
     enabled: "bool",
-    error_msg: "string"
+    error_msg: {
+      type: "string",
+      optional: true
+    },
   }
 }
 "#;
@@ -229,7 +232,10 @@ const SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE: &str = r#"
 const SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 {
     enabled: "bool",
-    error_msg: "string"
+    error_msg: {
+      type: "string",
+      optional: true
+    },
 }
 "#;
 
@@ -278,10 +284,11 @@ async fn main() -> Result<()> {{
 
     let response =
         uvc_camera_enable_camera::poll(&messenger, Duration::from_secs(5), true).await?;
+    let error_msg = response.error_msg.as_deref().unwrap_or(\"<none>\");
     println!(
         \"enable_camera result: enabled={{}} error={{}}\",
         response.enabled,
-        response.error_msg
+        error_msg
     );
 
     Ok(())
@@ -312,7 +319,10 @@ async fn main() -> Result<()> {{
 
     enable_camera::handle_next_request(&messenger, |request| -> Result<enable_camera::Response> {{
         println!(\"received enable_camera request: {{}}\", request.enable);
-        Ok(enable_camera::Response::new(request.enable, \"handled\".to_owned()))
+        Ok(enable_camera::Response::new(
+            request.enable,
+            Some(\"handled\".to_owned()),
+        ))
     }})
     .await?;
 
@@ -416,7 +426,10 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
   result_service: {
     response_message_format: {
       success: "bool",
-      error_msg: "string",
+      error_msg: {
+        type: "string",
+        optional: true
+      },
       final_position: {
         type: "array",
         items: "i32",
@@ -448,7 +461,10 @@ const SUBSCRIBED_ACTION_FEEDBACK_FORMAT: &str = r#"
 const SUBSCRIBED_ACTION_RESULT_FORMAT: &str = r#"
 {
   success: "bool",
-  error_msg: "string",
+  error_msg: {
+    type: "string",
+    optional: true
+  },
   final_position: {
     type: "array",
     items: "i32",
@@ -531,10 +547,11 @@ async fn main() -> Result<()> {{
     println!(\"feedback new_position={{:?}}\", feedback.new_position);
 
     let result = brain_move_arm::get_action_result(&messenger, Duration::from_secs(5)).await?;
+    let error_msg = result.error_msg.as_deref().unwrap_or(\"<none>\");
     println!(
         \"result success={{}} error={{}} final_position={{:?}}\",
         result.success,
-        result.error_msg,
+        error_msg,
         result.final_position
     );
 
@@ -582,7 +599,11 @@ async fn main() -> Result<()> {{
 
     move_arm::handle_result_next_request(&messenger, || -> Result<move_arm::ResultResponse> {{
         println!(\"server preparing action result\");
-        Ok(move_arm::ResultResponse::new(true, \"completed\".to_owned(), [4, 5, 6]))
+        Ok(move_arm::ResultResponse::new(
+            true,
+            Some(\"completed\".to_owned()),
+            [4, 5, 6],
+        ))
     }})
     .await?;
 

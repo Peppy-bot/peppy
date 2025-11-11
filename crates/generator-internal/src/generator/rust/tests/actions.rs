@@ -33,7 +33,10 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
   result_service: {
     response_message_format: {
       success: "bool",
-      error_msg: "string",
+      error_msg: {
+        type: "string",
+        optional: true
+      },
       final_position: {
         type: "array",
         items: "i32",
@@ -62,7 +65,10 @@ const EXPOSED_ACTION_EXAMPLE2: &str = r#"
   result_service: {
     response_message_format: {
       success: "bool",
-      error_msg: "string"
+      error_msg: {
+        type: "string",
+        optional: true
+      },
     }
   }
 }
@@ -107,7 +113,10 @@ const SUBSCRIBED_ACTION_FEEDBACK_FORMAT1: &str = r#"
 const SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1: &str = r#"
 {
   success: "bool",
-  error_msg: "string",
+  error_msg: {
+    type: "string",
+    optional: true
+  },
   final_position: {
     type: "array",
     items: "i32",
@@ -138,7 +147,10 @@ const SUBSCRIBED_ACTION_FEEDBACK_FORMAT2: &str = r#"
 const SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2: &str = r#"
 {
   success: "bool",
-  error_msg: "string"
+  error_msg: {
+    type: "string",
+    optional: true
+  },
 }
 "#;
 
@@ -207,7 +219,7 @@ fn exposed_action() {
         "expected success field in result response"
     );
     assert_rendered!(
-        rendered.contains("error_msg: String"),
+        rendered.contains("error_msg: Optional<String>"),
         &rendered,
         "expected error_msg field in result response"
     );
@@ -343,7 +355,7 @@ fn expose_action_without_request_body() {
         "expected result response to expose success field"
     );
     assert_rendered!(
-        rendered.contains("error_msg: String"),
+        rendered.contains("error_msg: Optional<String>"),
         &rendered,
         "expected result response to expose error message field"
     );
@@ -669,12 +681,18 @@ fn subscribed_to_two_actions_same_node() {
         .map(|artifact| (artifact.node_name, artifact.code_output))
         .collect();
 
+    let move_arm_module = subscribed_action_module_name(&move_arm_action);
+    let rotate_module = subscribed_action_module_name(&rotate_action);
+
     let move_arm = artifact_map
-        .get("move_arm")
-        .expect("move_arm artifact is present");
-    let rotate_servo = artifact_map
-        .get("rotate_servo_clockwise")
-        .expect("rotate_servo_clockwise artifact is present");
+        .get(&move_arm_module)
+        .unwrap_or_else(|| panic!("move_arm artifact `{}` is present", move_arm_module));
+    let rotate_servo = artifact_map.get(&rotate_module).unwrap_or_else(|| {
+        panic!(
+            "rotate_servo_clockwise artifact `{}` is present",
+            rotate_module
+        )
+    });
 
     // move_arm
     assert_rendered!(

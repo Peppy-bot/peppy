@@ -64,7 +64,10 @@
           },
           response_message_format: {
             enabled: "bool",
-            error_msg: "string" // Won't contain anything if enabled = True
+            error_msg: { // Won't contain anything if enabled = True
+              type: "string",
+              optional: true
+            },
           },
         },
         {

@@ -11,7 +11,10 @@ const EXPOSED_SERVICE_EXAMPLE: &str = r#"
   },
   response_message_format: {
     enabled: "bool",
-    error_msg: "string"
+    error_msg: {
+      type: "string",
+      optional: true
+    }
   }
 }
 "#;
@@ -55,7 +58,10 @@ const SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1: &str = r#"
 const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1: &str = r#"
 {
   enabled: "bool",
-  error_msg: "string"
+  error_msg: {
+    type: "string",
+    optional: true
+  },
 }
 "#;
 
@@ -116,9 +122,9 @@ fn expose_service() {
         "expected bool field in response struct"
     );
     assert_rendered!(
-        rendered.contains("error_msg: String"),
+        rendered.contains("error_msg: Optional<String>"),
         &rendered,
-        "expected string field in response struct"
+        "expected optional string field in response struct"
     );
     assert_rendered!(
         rendered.contains("pub async fn handle_next_request<F>"),
@@ -379,9 +385,9 @@ fn subscribed_to_service() {
         "expected response bool field"
     );
     assert_rendered!(
-        rendered.contains("error_msg: String"),
+        rendered.contains("error_msg: Optional<String>"),
         &rendered,
-        "expected response string field"
+        "expected response optional string field"
     );
     assert_rendered!(
         rendered.contains("pub async fn poll("),
@@ -857,7 +863,7 @@ fn compile_lib_with_exposed_and_subscribed_services() {
         enable_module_contents
     );
     assert!(
-        enable_module_contents.contains("error_msg: String"),
+        enable_module_contents.contains("error_msg: Optional<String>"),
         "Expected generated response struct to include `error_msg` field, got:\n{}",
         enable_module_contents
     );

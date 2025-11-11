@@ -121,13 +121,27 @@ pub enum TypeToken {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MessageFormat(pub IndexMap<String, SchemaType>);
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 // Schema types used inside MessageFormat
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum SchemaType {
     Type(TypeToken),
+    Primitive(PrimitiveSchema),
     Array(ArraySchema),
     Object(ObjectSchema),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PrimitiveSchema {
+    #[serde(rename = "type")]
+    pub kind: TypeToken,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -139,6 +153,8 @@ pub struct ArraySchema {
     pub items: Box<SchemaType>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub length: Option<usize>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -153,6 +169,8 @@ pub struct ObjectSchema {
     pub kind: ObjectKind,
     #[serde(default, flatten)]
     pub fields: IndexMap<String, SchemaType>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -167,7 +185,7 @@ where
 {
     let schema = SchemaType::deserialize(deserializer)?;
     match schema {
-        SchemaType::Type(_) => Ok(Box::new(schema)),
+        SchemaType::Type(_) | SchemaType::Primitive(_) => Ok(Box::new(schema)),
         SchemaType::Array(_) | SchemaType::Object(_) => Err(de::Error::custom(
             "nested arrays or objects are not supported inside array schemas",
         )),
@@ -197,38 +215,68 @@ impl<'de> Visitor<'de> for ObjectSchemaVisitor {
         M: MapAccess<'de>,
     {
         let mut kind: Option<ObjectKind> = None;
+        let mut optional = false;
         let mut fields = IndexMap::<String, SchemaType>::new();
 
         while let Some(key) = map.next_key::<String>()? {
-            if key == "type" {
-                if kind.is_some() {
-                    return Err(de::Error::duplicate_field("type"));
+            match key.as_str() {
+                "type" => {
+                    if kind.is_some() {
+                        return Err(de::Error::duplicate_field("type"));
+                    }
+                    let value: ObjectKind = map.next_value()?;
+                    kind = Some(value);
                 }
-                let value: ObjectKind = map.next_value()?;
-                kind = Some(value);
-            } else {
-                let value: SchemaType = map.next_value()?;
-                match value {
-                    SchemaType::Type(_) => {
-                        if fields.insert(key.clone(), value).is_some() {
+                "optional" => {
+                    optional = map.next_value()?;
+                }
+                _ => {
+                    let value: SchemaType = map.next_value()?;
+                    match value {
+                        SchemaType::Type(_) | SchemaType::Primitive(_) => {
+                            if fields.insert(key.clone(), value).is_some() {
+                                return Err(de::Error::custom(format!(
+                                    "duplicate object field `{}`",
+                                    key
+                                )));
+                            }
+                        }
+                        SchemaType::Array(_) | SchemaType::Object(_) => {
                             return Err(de::Error::custom(format!(
-                                "duplicate object field `{}`",
+                                "nested arrays or objects are not supported for field `{}`",
                                 key
                             )));
                         }
-                    }
-                    SchemaType::Array(_) | SchemaType::Object(_) => {
-                        return Err(de::Error::custom(format!(
-                            "nested arrays or objects are not supported for field `{}`",
-                            key
-                        )));
                     }
                 }
             }
         }
 
         let kind = kind.ok_or_else(|| de::Error::missing_field("type"))?;
-        Ok(ObjectSchema { kind, fields })
+        Ok(ObjectSchema {
+            kind,
+            fields,
+            optional,
+        })
+    }
+}
+
+impl SchemaType {
+    pub fn is_optional(&self) -> bool {
+        match self {
+            SchemaType::Type(_) => false,
+            SchemaType::Primitive(schema) => schema.optional,
+            SchemaType::Array(schema) => schema.optional,
+            SchemaType::Object(schema) => schema.optional,
+        }
+    }
+
+    pub fn as_type_token(&self) -> Option<&TypeToken> {
+        match self {
+            SchemaType::Type(token) => Some(token),
+            SchemaType::Primitive(schema) => Some(&schema.kind),
+            _ => None,
+        }
     }
 }
 
