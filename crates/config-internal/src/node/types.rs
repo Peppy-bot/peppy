@@ -138,22 +138,22 @@ pub enum SchemaType {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PrimitiveSchema {
-    #[serde(rename = "type")]
+    #[serde(rename = "$type")]
     pub kind: TypeToken,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(rename = "$optional", default, skip_serializing_if = "is_false")]
     pub optional: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ArraySchema {
-    #[serde(rename = "type")]
+    #[serde(rename = "$type")]
     pub kind: ArrayKind,
-    #[serde(deserialize_with = "deserialize_array_items")]
+    #[serde(rename = "$items", deserialize_with = "deserialize_array_items")]
     pub items: Box<SchemaType>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "$length", default, skip_serializing_if = "Option::is_none")]
     pub length: Option<usize>,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(rename = "$optional", default, skip_serializing_if = "is_false")]
     pub optional: bool,
 }
 
@@ -165,11 +165,11 @@ pub enum ArrayKind {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ObjectSchema {
-    #[serde(rename = "type")]
+    #[serde(rename = "$type")]
     pub kind: ObjectKind,
     #[serde(default, flatten)]
     pub fields: IndexMap<String, SchemaType>,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(rename = "$optional", default, skip_serializing_if = "is_false")]
     pub optional: bool,
 }
 
@@ -207,7 +207,7 @@ impl<'de> Visitor<'de> for ObjectSchemaVisitor {
     type Value = ObjectSchema;
 
     fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        formatter.write_str("an object schema definition with a type and primitive fields")
+        formatter.write_str("an object schema definition with a $type and primitive fields")
     }
 
     fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
@@ -220,14 +220,14 @@ impl<'de> Visitor<'de> for ObjectSchemaVisitor {
 
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "type" => {
+                "$type" => {
                     if kind.is_some() {
-                        return Err(de::Error::duplicate_field("type"));
+                        return Err(de::Error::duplicate_field("$type"));
                     }
                     let value: ObjectKind = map.next_value()?;
                     kind = Some(value);
                 }
-                "optional" => {
+                "$optional" => {
                     optional = map.next_value()?;
                 }
                 _ => {
@@ -252,7 +252,7 @@ impl<'de> Visitor<'de> for ObjectSchemaVisitor {
             }
         }
 
-        let kind = kind.ok_or_else(|| de::Error::missing_field("type"))?;
+        let kind = kind.ok_or_else(|| de::Error::missing_field("$type"))?;
         Ok(ObjectSchema {
             kind,
             fields,
@@ -669,11 +669,11 @@ mod tests {
     fn type_tokens_in_message_format() {
         // A snippet similar to the camera stream message_format
         let json5 = r#"{
-            header: { type: "object", stamp: "time", frame_id: "u32" },
+            header: { $type: "object", stamp: "time", frame_id: "u32" },
             encoding: "string",
             width: "u32",
             height: "u32",
-            image: { type: "array", items: "u8", length: 3 }
+            image: { $type: "array", $items: "u8", $length: 3 }
         }"#;
 
         let mf: MessageFormat = serde_json5::from_str(json5).unwrap();
@@ -726,7 +726,7 @@ mod tests {
         assert!(out.contains("\"u32\""));
         assert!(out.contains("\"time\""));
         assert!(out.contains("\"string\""));
-        assert!(out.contains("\"type\":\"array\""));
+        assert!(out.contains("\"$type\":\"array\""));
     }
 
     #[test]
@@ -742,7 +742,7 @@ mod tests {
     #[test]
     fn array_schema_requires_type_field() {
         let json5 = r#"{
-            image: { items: "u8", length: 3 }
+            image: { $items: "u8", $length: 3 }
         }"#;
 
         let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
@@ -753,8 +753,8 @@ mod tests {
     fn object_schema_rejects_nested_array() {
         let json5 = r#"{
             header: {
-                type: "object",
-                nested: { type: "array", items: "u8" }
+                $type: "object",
+                nested: { $type: "array", $items: "u8" }
             }
         }"#;
 
@@ -766,8 +766,8 @@ mod tests {
     fn object_schema_rejects_nested_object() {
         let json5 = r#"{
             header: {
-                type: "object",
-                nested: { type: "object", field: "u8" }
+                $type: "object",
+                nested: { $type: "object", field: "u8" }
             }
         }"#;
 
@@ -778,7 +778,7 @@ mod tests {
     #[test]
     fn array_schema_rejects_nested_object() {
         let json5 = r#"{
-            image: { type: "array", items: { type: "object", field: "u8" } }
+            image: { $type: "array", $items: { $type: "object", field: "u8" } }
         }"#;
 
         let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
@@ -788,7 +788,7 @@ mod tests {
     #[test]
     fn array_schema_rejects_nested_array() {
         let json5 = r#"{
-            image: { type: "array", items: { type: "array", items: "u8" } }
+            image: { $type: "array", $items: { $type: "array", $items: "u8" } }
         }"#;
 
         let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);

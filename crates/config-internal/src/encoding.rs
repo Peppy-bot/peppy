@@ -638,7 +638,7 @@ mod tests {
             r#"
             {
               header: {
-                type: "object",
+                $type: "object",
                 stamp: "time",
                 frame_id: "u32",
               },
@@ -646,9 +646,9 @@ mod tests {
               width: "u32",
               height: "u32",
               image: {
-                type: "array",
-                items: "u8",
-                length: 3
+                $type: "array",
+                $items: "u8",
+                $length: 3
               }
             }
             "#,
@@ -762,8 +762,8 @@ mod tests {
             r#"
             {
               image: {
-                type: "array",
-                items: "u8"
+                $type: "array",
+                $items: "u8"
               }
             }
             "#,
@@ -791,9 +791,9 @@ mod tests {
             r#"
             {
               labels: {
-                type: "array",
-                items: "string",
-                length: 3
+                $type: "array",
+                $items: "string",
+                $length: 3
               }
             }
             "#,

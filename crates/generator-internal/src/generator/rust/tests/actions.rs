@@ -11,9 +11,9 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
     request_message_format: {
       arm_id: "u16",
       desired_position: {
-        type: "array",
-        items: "i32",
-        length: 3
+        $type: "array",
+        $items: "i32",
+        $length: 3
       }
     },
     response_message_format: {
@@ -24,9 +24,9 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
     qos_profile: "sensor_data",
     message_format: {
       new_position: {
-        type: "array",
-        items: "i32",
-        length: 3
+        $type: "array",
+        $items: "i32",
+        $length: 3
       }
     }
   },
@@ -34,13 +34,13 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
     response_message_format: {
       success: "bool",
       error_msg: {
-        type: "string",
-        optional: true
+        $type: "string",
+        $optional: true
       },
       final_position: {
-        type: "array",
-        items: "i32",
-        length: 3
+        $type: "array",
+        $items: "i32",
+        $length: 3
       }
     }
   }
@@ -66,8 +66,8 @@ const EXPOSED_ACTION_EXAMPLE2: &str = r#"
     response_message_format: {
       success: "bool",
       error_msg: {
-        type: "string",
-        optional: true
+        $type: "string",
+        $optional: true
       },
     }
   }
@@ -87,9 +87,9 @@ const SUBSCRIBED_ACTION_GOAL_FORMAT1: &str = r#"
 {
   arm_id: "u16",
   desired_position: {
-    type: "array",
-    items: "i32",
-    length: 3
+    $type: "array",
+    $items: "i32",
+    $length: 3
   }
 }
 "#;
@@ -103,9 +103,9 @@ const SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT1: &str = r#"
 const SUBSCRIBED_ACTION_FEEDBACK_FORMAT1: &str = r#"
 {
   new_position: {
-    type: "array",
-    items: "i32",
-    length: 3
+    $type: "array",
+    $items: "i32",
+    $length: 3
   }
 }
 "#;
@@ -114,13 +114,13 @@ const SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1: &str = r#"
 {
   success: "bool",
   error_msg: {
-    type: "string",
-    optional: true
+    $type: "string",
+    $optional: true
   },
   final_position: {
-    type: "array",
-    items: "i32",
-    length: 3
+    $type: "array",
+    $items: "i32",
+    $length: 3
   }
 }
 "#;
@@ -148,8 +148,8 @@ const SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2: &str = r#"
 {
   success: "bool",
   error_msg: {
-    type: "string",
-    optional: true
+    $type: "string",
+    $optional: true
   },
 }
 "#;

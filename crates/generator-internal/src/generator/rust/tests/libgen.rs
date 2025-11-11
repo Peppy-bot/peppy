@@ -15,7 +15,7 @@ const EXPOSED_TOPIC_EXAMPLE: &str = r#"
   qos_profile: "sensor_data",
   message_format: {
     header: {
-    type: "object",
+    $type: "object",
     stamp: "time",
     frame_id: "u32"
   },
@@ -23,9 +23,9 @@ const EXPOSED_TOPIC_EXAMPLE: &str = r#"
     width: "u32",
     height: "u32",
     image: {
-      type: "array",
-      items: "u8",
-      length: 3
+      $type: "array",
+      $items: "u8",
+      $length: 3
     }
   }
 }
@@ -41,7 +41,7 @@ const SUBSCRIBED_TOPIC_EXAMPLE: &str = r#"
 const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
 {
   header: {
-    type: "object",
+    $type: "object",
     stamp: "time",
     frame_id: "u32"
   },
@@ -49,9 +49,9 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
   width: "u32",
   height: "u32",
   image: {
-    type: "array",
-    items: "u8",
-    length: 3
+    $type: "array",
+    $items: "u8",
+    $length: 3
   }
 }
 "#;
@@ -208,8 +208,8 @@ const EXPOSED_SERVICE_EXAMPLE: &str = r#"
   response_message_format: {
     enabled: "bool",
     error_msg: {
-      type: "string",
-      optional: true
+      $type: "string",
+      $optional: true
     },
   }
 }
@@ -233,8 +233,8 @@ const SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 {
     enabled: "bool",
     error_msg: {
-      type: "string",
-      optional: true
+      $type: "string",
+      $optional: true
     },
 }
 "#;
@@ -404,9 +404,9 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
     request_message_format: {
       arm_id: "u16",
       desired_position: {
-        type: "array",
-        items: "i32",
-        length: 3
+        $type: "array",
+        $items: "i32",
+        $length: 3
       }
     },
     response_message_format: {
@@ -417,9 +417,9 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
     qos_profile: "sensor_data",
     message_format: {
       new_position: {
-        type: "array",
-        items: "i32",
-        length: 3
+        $type: "array",
+        $items: "i32",
+        $length: 3
       }
     }
   },
@@ -427,13 +427,13 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
     response_message_format: {
       success: "bool",
       error_msg: {
-        type: "string",
-        optional: true
+        $type: "string",
+        $optional: true
       },
       final_position: {
-        type: "array",
-        items: "i32",
-        length: 3
+        $type: "array",
+        $items: "i32",
+        $length: 3
       }
     }
   }
@@ -451,9 +451,9 @@ const SUBSCRIBED_ACTION_EXAMPLE: &str = r#"
 const SUBSCRIBED_ACTION_FEEDBACK_FORMAT: &str = r#"
 {
   new_position: {
-    type: "array",
-    items: "i32",
-    length: 3
+    $type: "array",
+    $items: "i32",
+    $length: 3
   }
 }
 "#;
@@ -462,13 +462,13 @@ const SUBSCRIBED_ACTION_RESULT_FORMAT: &str = r#"
 {
   success: "bool",
   error_msg: {
-    type: "string",
-    optional: true
+    $type: "string",
+    $optional: true
   },
   final_position: {
-    type: "array",
-    items: "i32",
-    length: 3
+    $type: "array",
+    $items: "i32",
+    $length: 3
   }
 }
 "#;
@@ -477,9 +477,9 @@ const SUBSCRIBED_ACTION_GOAL_FORMAT: &str = r#"
 {
   arm_id: "u16",
   desired_position: {
-    type: "array",
-    items: "i32",
-    length: 3
+    $type: "array",
+    $items: "i32",
+    $length: 3
   }
 }
 "#;
