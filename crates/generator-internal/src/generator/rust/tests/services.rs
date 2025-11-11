@@ -122,7 +122,7 @@ fn expose_service() {
         "expected bool field in response struct"
     );
     assert_rendered!(
-        rendered.contains("error_msg: Optional<String>"),
+        rendered.contains("error_msg: Option<String>"),
         &rendered,
         "expected optional string field in response struct"
     );
@@ -385,7 +385,7 @@ fn subscribed_to_service() {
         "expected response bool field"
     );
     assert_rendered!(
-        rendered.contains("error_msg: Optional<String>"),
+        rendered.contains("error_msg: Option<String>"),
         &rendered,
         "expected response optional string field"
     );
@@ -863,7 +863,7 @@ fn compile_lib_with_exposed_and_subscribed_services() {
         enable_module_contents
     );
     assert!(
-        enable_module_contents.contains("error_msg: Optional<String>"),
+        enable_module_contents.contains("error_msg: Option<String>"),
         "Expected generated response struct to include `error_msg` field, got:\n{}",
         enable_module_contents
     );
