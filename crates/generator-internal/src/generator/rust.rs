@@ -253,82 +253,83 @@ impl RustGenerator {
             )
         };
 
-        let (return_ty, response_tokens, poll_tokens) =
-            if let Some(response_artifacts) = response_artifacts.as_ref() {
-                let response_struct_ident = response_struct_override
-                    .cloned()
-                    .unwrap_or_else(|| Ident::new(&format!("{struct_prefix}Response"), Span::call_site()));
-                let response_struct_name = response_struct_ident.to_string();
+        let (return_ty, response_tokens, poll_tokens) = if let Some(response_artifacts) =
+            response_artifacts.as_ref()
+        {
+            let response_struct_ident = response_struct_override.cloned().unwrap_or_else(|| {
+                Ident::new(&format!("{struct_prefix}Response"), Span::call_site())
+            });
+            let response_struct_name = response_struct_ident.to_string();
 
-                let response_schema_key = format!("{schema_key}_response");
-                let response_schema = self.register_schema(
-                    &response_schema_key,
+            let response_schema_key = format!("{schema_key}_response");
+            let response_schema = self.register_schema(
+                &response_schema_key,
+                &response_struct_name,
+                response_artifacts,
+            )?;
+            let reader_type = response_schema.reader_type_tokens();
+
+            let response_format = response_artifacts.message_format();
+            let mut response_statements = Vec::new();
+            let mut response_inits = Vec::new();
+            let mut names = NameGenerator::new();
+
+            for (field_name, schema) in &response_format.0 {
+                let (mut statements, value_ident) = generate_field_reader_statements(
+                    &quote!(root),
+                    field_name,
+                    schema,
                     &response_struct_name,
-                    response_artifacts,
-                )?;
-                let reader_type = response_schema.reader_type_tokens();
+                    &response_struct_name,
+                    &mut names,
+                );
+                response_statements.append(&mut statements);
+                let field_ident =
+                    Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
+                response_inits.push(quote!(#field_ident: #value_ident));
+            }
 
-                let response_format = response_artifacts.message_format();
-                let mut response_statements = Vec::new();
-                let mut response_inits = Vec::new();
-                let mut names = NameGenerator::new();
+            let response_context_value = response_context_label
+                .map(str::to_string)
+                .unwrap_or_else(|| response_struct_name.clone());
+            let response_context_literal = Literal::string(&response_context_value);
 
-                for (field_name, schema) in &response_format.0 {
-                    let (mut statements, value_ident) = generate_field_reader_statements(
-                        &quote!(root),
-                        field_name,
-                        schema,
-                        &response_struct_name,
-                        &response_struct_name,
-                        &mut names,
-                    );
-                    response_statements.append(&mut statements);
-                    let field_ident =
-                        Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
-                    response_inits.push(quote!(#field_ident: #value_ident));
-                }
+            let poll_tokens = quote! {
+                let response_bytes = #poll_call.await?;
+            };
 
-                let response_context_value = response_context_label
-                    .map(str::to_string)
-                    .unwrap_or_else(|| response_struct_name.clone());
-                let response_context_literal = Literal::string(&response_context_value);
+            let response_tokens = quote! {
+                let mut cursor = std::io::Cursor::new(response_bytes.as_ref());
+                let message_reader = capnp::serialize::read_message(
+                    &mut cursor,
+                    capnp::message::ReaderOptions::new(),
+                )
+                .map_err(|source| crate::Error::CapnpDeserialize {
+                    context: String::from(#response_context_literal),
+                    source,
+                })?;
 
-                let poll_tokens = quote! {
-                    let response_bytes = #poll_call.await?;
-                };
-
-                let response_tokens = quote! {
-                    let mut cursor = std::io::Cursor::new(response_bytes.as_ref());
-                    let message_reader = capnp::serialize::read_message(
-                        &mut cursor,
-                        capnp::message::ReaderOptions::new(),
-                    )
+                let root = message_reader
+                    .get_root::<#reader_type>()
                     .map_err(|source| crate::Error::CapnpDeserialize {
                         context: String::from(#response_context_literal),
                         source,
                     })?;
 
-                    let root = message_reader
-                        .get_root::<#reader_type>()
-                        .map_err(|source| crate::Error::CapnpDeserialize {
-                            context: String::from(#response_context_literal),
-                            source,
-                        })?;
+                #( #response_statements )*
 
-                    #( #response_statements )*
-
-                    Ok(#response_struct_ident {
-                        #( #response_inits ),*
-                    })
-                };
-
-                (quote!(#response_struct_ident), response_tokens, poll_tokens)
-            } else {
-                let poll_tokens = quote! {
-                    let _ = #poll_call.await?;
-                };
-                (quote!(()), quote!(Ok(())), poll_tokens)
+                Ok(#response_struct_ident {
+                    #( #response_inits ),*
+                })
             };
+
+            (quote!(#response_struct_ident), response_tokens, poll_tokens)
+        } else {
+            let poll_tokens = quote! {
+                let _ = #poll_call.await?;
+            };
+            (quote!(()), quote!(Ok(())), poll_tokens)
+        };
 
         let mut fn_params = vec![
             quote!(messenger: &crate::Messenger),
@@ -390,8 +391,13 @@ impl RustGenerator {
         let schema_struct_name = format!("{struct_prefix}Message");
         let struct_ident = Ident::new("FeedbackMessage", Span::call_site());
 
-        let params =
-            collect_function_params(Some(&format_artifacts), None, &schema_struct_name, context, None)?;
+        let params = collect_function_params(
+            Some(&format_artifacts),
+            None,
+            &schema_struct_name,
+            context,
+            None,
+        )?;
 
         let fields: Vec<(Ident, TokenStream)> = params
             .iter()
@@ -1243,8 +1249,9 @@ impl LanguageGenerator for RustGenerator {
             #( #items )*
         };
         let rendered = render_tokens(tokens);
+        let module_label = subscribed_action_module_name(action);
         self.push_section(InterfaceArtifact::from_kind(
-            &action.name,
+            &module_label,
             InterfaceKind::SubscribedAction,
             rendered,
         ));
@@ -1352,6 +1359,18 @@ fn subscribed_service_module_name(service: &SubscribedService) -> String {
         (false, false) => format!("{node_component}_{service_component}"),
         (false, true) => node_component,
         (true, false) => service_component,
+        (true, true) => String::new(),
+    }
+}
+
+fn subscribed_action_module_name(action: &SubscribedAction) -> String {
+    let node_component = sanitize_component(action.node.as_str());
+    let action_component = sanitize_component(action.name.as_str());
+
+    match (node_component.is_empty(), action_component.is_empty()) {
+        (false, false) => format!("{node_component}_{action_component}"),
+        (false, true) => node_component,
+        (true, false) => action_component,
         (true, true) => String::new(),
     }
 }

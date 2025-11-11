@@ -2,7 +2,8 @@ pub mod error;
 mod init;
 mod messaging;
 
-pub mod actions;
+pub mod exposed_actions;
+pub mod subscribed_actions;
 pub mod capnp;
 pub mod exposed_services;
 pub mod subscribed_services;
