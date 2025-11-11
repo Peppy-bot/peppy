@@ -660,7 +660,7 @@ fn subscribed_to_topic_no_node() {
 
 /// This is a long running test
 #[test]
-fn compile_lib_with_exposed_topic_artifact() {
+fn compile_lib_with_exposed_and_subscribed_topics() {
     let temp_dir = TempDir::new().unwrap();
     let exposed_topic1: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
     let exposed_topic2: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE2).unwrap();

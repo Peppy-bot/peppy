@@ -649,7 +649,7 @@ fn subscribed_service_without_response_payload() {
 
 /// This is a long running test
 #[test]
-fn compile_lib_with_exposed_services_artifact() {
+fn compile_lib_with_exposed_and_subscribed_services() {
     let temp_dir = TempDir::new().unwrap();
     let exposed_service1: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let exposed_service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();

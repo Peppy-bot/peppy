@@ -879,18 +879,115 @@ fn subscribed_action_without_feedback() {
         &rendered,
         "expected subscribed actions to still emit result helpers"
     );
+    assert_rendered!(
+        !rendered.contains("pub struct FeedbackMessage"),
+        &rendered,
+        "expected absence of feedback struct when feedback payload is missing"
+    );
+    assert_rendered!(
+        !rendered.contains("pub async fn on_next_feedback_message"),
+        &rendered,
+        "expected generator to skip feedback listener when no feedback payload is provided"
+    );
+    assert_rendered!(
+        !rendered.contains("fn deserialize_feedback_payload"),
+        &rendered,
+        "expected feedback payload helper to be omitted without feedback format"
+    );
+    assert_rendered!(
+        !rendered.contains("peppylib::TopicMessenger::subscribe"),
+        &rendered,
+        "expected generator to avoid topic subscriptions without feedback payloads"
+    );
 }
 
+/// This is a long running test
 #[test]
-fn compile_lib_with_exposed_action_artifact() {
+fn compile_lib_with_exposed_and_subscribed_actions() {
     let temp_dir = TempDir::new().unwrap();
-    let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let action1: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let action2: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
+
+    let subscribed_action1: SubscribedAction =
+        serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+    let subscribed_action1_goal_request: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
+    let subscribed_action1_goal_response: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT1).unwrap();
+    let subscribed_action1_feedback: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
+    let subscribed_action1_result_response: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
+    let subscribed_action1_messages = SubscribedActionMessage {
+        goal_request: Some(subscribed_action1_goal_request),
+        goal_response: Some(subscribed_action1_goal_response),
+        feedback: Some(subscribed_action1_feedback),
+        result_request: None,
+        result_response: Some(subscribed_action1_result_response),
+    };
+
+    let mut subscribed_action2: SubscribedAction =
+        serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE2).unwrap();
+    // Reuse the same upstream node so both subscriptions target the same source.
+    subscribed_action2.node = subscribed_action1.node.clone();
+    let subscribed_action2_goal_response: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT2).unwrap();
+    let subscribed_action2_feedback: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT2).unwrap();
+    let subscribed_action2_result_response: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2).unwrap();
+    let subscribed_action2_messages = SubscribedActionMessage {
+        goal_request: None,
+        goal_response: Some(subscribed_action2_goal_response),
+        feedback: Some(subscribed_action2_feedback),
+        result_request: None,
+        result_response: Some(subscribed_action2_result_response),
+    };
 
     let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
-    generator.add_exposed_action(&action).unwrap();
+    generator.add_exposed_action(&action1).unwrap();
+    generator.add_exposed_action(&action2).unwrap();
+    generator
+        .add_subscribed_action(&subscribed_action1, Some(&subscribed_action1_messages))
+        .unwrap();
+    generator
+        .add_subscribed_action(&subscribed_action2, Some(&subscribed_action2_messages))
+        .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator.build(&output_dir).unwrap();
     fs::remove_file(output_config).unwrap();
 
-    todo!("Finish")
+    let cargo_output = Command::new("cargo")
+        .arg("build")
+        .env("CARGO_NET_OFFLINE", "true")
+        .current_dir(&output_dir)
+        .output()
+        .expect("failed to invoke cargo build on generated crate");
+    assert!(
+        cargo_output.status.success(),
+        "cargo build failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        cargo_output.status.code(),
+        String::from_utf8_lossy(&cargo_output.stdout),
+        String::from_utf8_lossy(&cargo_output.stderr)
+    );
+
+    let clippy_output = Command::new("cargo")
+        .arg("clippy")
+        .arg("--all-targets")
+        .arg("--color")
+        .arg("always")
+        .arg("--")
+        .arg("-D")
+        .arg("warnings")
+        .env("CARGO_NET_OFFLINE", "true")
+        .current_dir(&output_dir)
+        .output()
+        .expect("failed to run cargo clippy on generated crate");
+    assert!(
+        clippy_output.status.success(),
+        "cargo clippy failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        clippy_output.status.code(),
+        String::from_utf8_lossy(&clippy_output.stdout),
+        String::from_utf8_lossy(&clippy_output.stderr)
+    );
 }
