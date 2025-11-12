@@ -1387,10 +1387,7 @@ fn non_empty_message_format<'a>(format: Option<&'a MessageFormat>) -> Option<&'a
 
 fn cancel_action_response_format() -> MessageFormat {
     let mut fields = IndexMap::new();
-    fields.insert(
-        String::from("accepted"),
-        SchemaType::Type(TypeToken::Bool),
-    );
+    fields.insert(String::from("accepted"), SchemaType::Type(TypeToken::Bool));
     fields.insert(
         String::from("error_message"),
         SchemaType::Primitive(PrimitiveSchema {
