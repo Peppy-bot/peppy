@@ -110,7 +110,7 @@
   ],
   logging: {
     min_level: "info",
-    // Will be stored in `.peppy/logs/peppy_root.log` relative to where the `peppy_config.json5` is stored
+    // Will be stored in `.peppy/logs/peppy_root.log` relative to where the `peppy_launcher.json5` is stored
     file_name: "peppy_root.log",
     max_file_size_mb: 100,
     format: "text"

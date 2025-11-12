@@ -18,7 +18,7 @@ fn test_node_repo_resolve() {
 #[test]
 fn test_node_parameter_resolve() {
     todo!(
-        "Test when a node doesn't resolve because the input parameters of the peppy_config.json do not match the input paramters of the node"
+        "Test when a node doesn't resolve because the input parameters of the peppy_launcher.json5 do not match the input paramters of the node"
     )
 }
 

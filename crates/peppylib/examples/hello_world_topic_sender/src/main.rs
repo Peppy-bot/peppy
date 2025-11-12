@@ -8,7 +8,7 @@ async fn main() {
     let topic_name = "hello_msg";
     let qos = QoSProfile::Reliable;
 
-    // Those properties are found in the peppy_config.json5 `deployments` array
+    // Those properties are found in the peppy_launcher.json5 `deployments` array
     let ns = "hello_ns";
 
     // Create a messenger for the sending node.

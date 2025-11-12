@@ -3,21 +3,21 @@ use crate::error::{ParsingError, Result};
 use std::fs;
 use std::path::Path;
 
-/// Parser responsible for extracting `peppy_config.json5` documents
+/// Parser responsible for extracting `peppy_launcher.json5` documents
 pub struct PeppyConfigParser;
 
-const PEPPY_CONFIG_FILE_NAME: &str = "peppy_config.json5";
+const PEPPY_LAUNCHER_FILE_NAME: &str = "peppy_launcher.json5";
 
 impl PeppyConfigParser {
     pub fn from_path(file: impl AsRef<Path>) -> Result<PeppyConfig> {
         let path = file.as_ref();
         let file_name = path.file_name().and_then(|name| name.to_str());
-        if file_name != Some(PEPPY_CONFIG_FILE_NAME) {
+        if file_name != Some(PEPPY_LAUNCHER_FILE_NAME) {
             let found = file_name
                 .map(str::to_owned)
                 .unwrap_or_else(|| path.display().to_string());
             return Err(ParsingError::InvalidFileName {
-                expected: PEPPY_CONFIG_FILE_NAME.to_string(),
+                expected: PEPPY_LAUNCHER_FILE_NAME.to_string(),
                 found,
             }
             .into());
@@ -161,14 +161,14 @@ mod tests {
         assert!(matches!(
             err,
             Error::Parsing(ParsingError::InvalidFileName { ref expected, ref found })
-                if expected == PEPPY_CONFIG_FILE_NAME && found == "peppy.json5"
+                if expected == PEPPY_LAUNCHER_FILE_NAME && found == "peppy.json5"
         ));
     }
 
     #[test]
     fn test_from_path_accepts_correct_file_name() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join(PEPPY_CONFIG_FILE_NAME);
+        let path = dir.path().join(PEPPY_LAUNCHER_FILE_NAME);
         let json5 = r#"{
             deployments: [
                 {

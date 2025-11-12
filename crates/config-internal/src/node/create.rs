@@ -7,7 +7,7 @@ use std::{
 };
 
 #[derive(Template)]
-#[template(path = "peppy_config.json5.j2")]
+#[template(path = "peppy_launcher.json5.j2")]
 struct PeppyConfigTemplate<'a> {
     log_file_name: &'a str,
 }

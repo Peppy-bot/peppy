@@ -17,7 +17,7 @@ async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
 async fn main() {
     let service_name = "hello_service";
 
-    // Those properties are found in the peppy_config.json5 `deployments` array
+    // Those properties are found in the peppy_launcher.json5 `deployments` array
     let namespace = "/hello_ns";
 
     // Create a messenger for the sending node.

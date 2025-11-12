@@ -30,7 +30,7 @@ pub fn init_peppy_config(path: impl AsRef<Path>) -> Result<PathBuf> {
     let path = path.as_ref();
     // Create the directory if it doesn't exist
     fs::create_dir_all(path)?;
-    let peppy_config_path = path.join("peppy_config.json5");
+    let peppy_config_path = path.join("peppy_launcher.json5");
 
     NodeConfigCreator::peppy_config("peppyd")
         .map_err(|e| crate::Error::ExecutionFailed(e.to_string()))?
