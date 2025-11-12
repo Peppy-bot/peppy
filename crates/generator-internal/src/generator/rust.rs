@@ -420,26 +420,15 @@ impl RustGenerator {
 
         let helper_fn_ident = Ident::new("deserialize_feedback_payload", Span::call_site());
 
-        let mut schema_lookup: HashMap<String, (&String, &SchemaType)> = HashMap::new();
         let format_schema = format_artifacts.message_format();
-        for (field_name, schema) in &format_schema.0 {
-            let capnp_key = sanitize_capnp_field_name(field_name);
-            schema_lookup.insert(capnp_key.clone(), (field_name, schema));
-
-            let rust_key = sanitize_component(field_name);
-            schema_lookup
-                .entry(rust_key)
-                .or_insert((field_name, schema));
-        }
+        let schema_lookup = SchemaFieldLookup::new(format_schema);
 
         let mut names = NameGenerator::new();
         let mut field_statements = Vec::new();
         let mut field_inits = Vec::new();
         for param in &params {
             let key = param.ident.to_string();
-            let (original_name, schema) = schema_lookup
-                .get(&key)
-                .unwrap_or_else(|| panic!("missing schema entry for field `{key}`"));
+            let (original_name, schema) = schema_lookup.get(&key);
             let (mut statements, value_ident) = generate_field_reader_statements(
                 &quote!(root),
                 original_name,
@@ -1617,6 +1606,31 @@ fn map_message_format(format: Option<&MessageFormat>) -> Result<Option<CapnpSche
     }
 }
 
+struct SchemaFieldLookup<'a> {
+    entries: HashMap<String, (&'a String, &'a SchemaType)>,
+}
+
+impl<'a> SchemaFieldLookup<'a> {
+    fn new(format: &'a MessageFormat) -> Self {
+        let mut entries = HashMap::with_capacity(format.0.len() * 2);
+        for (name, schema) in &format.0 {
+            let capnp_key = sanitize_capnp_field_name(name);
+            entries.insert(capnp_key, (name, schema));
+
+            let rust_key = sanitize_component(name);
+            entries.entry(rust_key).or_insert((name, schema));
+        }
+        Self { entries }
+    }
+
+    fn get(&self, key: &str) -> (&'a String, &'a SchemaType) {
+        *self
+            .entries
+            .get(key)
+            .unwrap_or_else(|| panic!("missing schema entry for field `{key}`"))
+    }
+}
+
 fn collect_function_params(
     accept_format_artifacts: Option<&CapnpSchemaArtifacts>,
     return_format_artifacts: Option<&CapnpSchemaArtifacts>,
@@ -1674,26 +1688,15 @@ fn collect_function_params(
     };
 
     let format = artifacts.message_format();
+    let schema_lookup = SchemaFieldLookup::new(format);
     let capnp_params = artifacts
         .build_function_params()
         .map_err(Error::MessageEncoding)?;
 
-    let mut schema_lookup: HashMap<String, (&String, &SchemaType)> =
-        HashMap::with_capacity(format.0.len() * 2);
-    for (name, schema) in &format.0 {
-        let capnp_key = sanitize_capnp_field_name(name);
-        schema_lookup.insert(capnp_key.clone(), (name, schema));
-
-        let rust_key = sanitize_component(name);
-        schema_lookup.entry(rust_key).or_insert((name, schema));
-    }
-
     let mut params = Vec::with_capacity(capnp_params.len());
     for param in capnp_params {
         let key = param.ident.to_string();
-        let (original_name, schema) = schema_lookup
-            .get(&key)
-            .unwrap_or_else(|| panic!("missing schema entry for field `{key}`"));
+        let (original_name, schema) = schema_lookup.get(&key);
 
         let ident = Ident::new(&sanitize_component(original_name), Span::call_site());
         let ty = schema_type_to_tokens(schema, struct_prefix, original_name, context);
@@ -2241,26 +2244,14 @@ fn build_subscribed_topic_callback(
     let topic_literal = Literal::string(topic.name.as_str());
     let reader_type = &encoding.reader_type;
     let helper_fn_ident = Ident::new("deseralize_payload", Span::call_site());
-
-    let mut schema_lookup: HashMap<String, (&String, &SchemaType)> = HashMap::new();
-    for (field_name, schema) in &artifacts.message_format().0 {
-        let capnp_key = sanitize_capnp_field_name(field_name);
-        schema_lookup.insert(capnp_key.clone(), (field_name, schema));
-
-        let rust_key = sanitize_component(field_name);
-        schema_lookup
-            .entry(rust_key)
-            .or_insert((field_name, schema));
-    }
+    let schema_lookup = SchemaFieldLookup::new(artifacts.message_format());
 
     let mut names = NameGenerator::new();
     let mut field_statements = Vec::new();
     let mut field_inits = Vec::new();
     for param in params {
         let key = param.ident.to_string();
-        let (original_name, schema) = schema_lookup
-            .get(&key)
-            .unwrap_or_else(|| panic!("missing schema entry for field `{key}`"));
+        let (original_name, schema) = schema_lookup.get(&key);
         let (mut statements, value_ident) = generate_field_reader_statements(
             &quote!(root),
             original_name.as_str(),
@@ -2652,7 +2643,6 @@ fn generate_primitive_array_reader(
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
     let reader_ident = names.next("list");
-    let vec_ident = names.next("values");
     let value_ident = names.next(field_name);
     let field_literal = Literal::string(field_name);
     let context_literal = Literal::string(context_label);
@@ -2670,38 +2660,33 @@ fn generate_primitive_array_reader(
             })?;
     }];
 
-    statements.push(quote! {
-        let mut #vec_ident = Vec::with_capacity(#reader_ident.len() as usize);
-        for value in #reader_ident.iter() {
-            #vec_ident.push(value);
-        }
-    });
-
-    match length {
-        Some(len) => {
-            let len_lit = Literal::usize_unsuffixed(len);
-            statements.push(quote! {
-                if #vec_ident.len() != #len_lit {
-                    let actual = #vec_ident.len();
-                    return Err(crate::Error::InvalidFixedListLength {
-                        field: String::from(#field_literal),
-                        expected: #len_lit,
-                        actual,
-                    });
-                }
-            });
-            statements.push(quote! {
-                let mut #value_ident: [#element_ty; #len_lit] = [#element_ty::default(); #len_lit];
-                for (idx, element) in #vec_ident.into_iter().enumerate() {
-                    #value_ident[idx] = element;
-                }
-            });
-        }
-        None => {
-            statements.push(quote! {
-                let #value_ident = #vec_ident;
-            });
-        }
+    if let Some(len) = length {
+        let len_lit = Literal::usize_unsuffixed(len);
+        statements.push(quote! {
+            if #reader_ident.len() as usize != #len_lit {
+                let actual = #reader_ident.len() as usize;
+                return Err(crate::Error::InvalidFixedListLength {
+                    field: String::from(#field_literal),
+                    expected: #len_lit,
+                    actual,
+                });
+            }
+        });
+        statements.push(quote! {
+            let mut #value_ident: [#element_ty; #len_lit] = [#element_ty::default(); #len_lit];
+            for (idx, element) in #reader_ident.iter().enumerate() {
+                #value_ident[idx] = element;
+            }
+        });
+    } else {
+        let vec_ident = names.next("values");
+        statements.push(quote! {
+            let mut #vec_ident = Vec::with_capacity(#reader_ident.len() as usize);
+            for value in #reader_ident.iter() {
+                #vec_ident.push(value);
+            }
+            let #value_ident = #vec_ident;
+        });
     }
 
     (statements, value_ident)
@@ -3012,12 +2997,7 @@ fn build_request_deserializer(
     };
 
     // Generate field deserialization using schema metadata
-    let mut schema_lookup: HashMap<String, (&String, &SchemaType)> =
-        HashMap::with_capacity(request_format.0.len());
-    for (field_name, schema) in &request_format.0 {
-        let key = sanitize_component(field_name);
-        schema_lookup.insert(key, (field_name, schema));
-    }
+    let schema_lookup = SchemaFieldLookup::new(request_format);
 
     let mut names = NameGenerator::new();
     let mut field_statements = Vec::new();
@@ -3025,9 +3005,7 @@ fn build_request_deserializer(
 
     for param in params {
         let field_key = param.ident.to_string();
-        let (original_name, schema) = schema_lookup
-            .get(&field_key)
-            .unwrap_or_else(|| panic!("missing schema entry for field `{field_key}`"));
+        let (original_name, schema) = schema_lookup.get(&field_key);
 
         let (mut statements, value_ident) = generate_field_reader_statements(
             &quote!(root),
