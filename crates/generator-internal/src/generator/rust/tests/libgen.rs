@@ -770,7 +770,6 @@ async fn main() -> Result<()> {{
         "
 use peppygen::exposed_actions::move_arm;
 use peppygen::{{Messenger, Result}};
-use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<()> {{

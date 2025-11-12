@@ -785,8 +785,10 @@ mod tests {
     #[test]
     fn uses_provided_node_stack() {
         let temp_dir = tempdir().expect("temp dir");
-        let config_path =
-            write_config(temp_dir.path().join("peppy_config.json5"), minimal_config());
+        let config_path = write_config(
+            temp_dir.path().join("peppy_launcher.json5"),
+            minimal_config(),
+        );
 
         let expected_nodes = vec![node_config("alpha", "1.0.0", &[])];
 
@@ -852,7 +854,7 @@ mod tests {
             deployments: Some(deployments),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
 
         let builder =
             LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
@@ -907,7 +909,7 @@ mod tests {
             deployments: Some(deployments),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
 
         let builder =
             LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
@@ -972,7 +974,7 @@ mod tests {
             deployments: Some(deployments),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
 
         let builder =
             LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
@@ -1028,7 +1030,7 @@ mod tests {
             deployments: Some(deployments),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
 
         let builder =
             LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
@@ -1078,7 +1080,7 @@ mod tests {
             deployments: Some(deployments),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
 
         let builder =
             LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
@@ -1137,7 +1139,7 @@ mod tests {
             deployments: Some(deployments),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
 
         let builder =
             LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
@@ -1193,7 +1195,7 @@ mod tests {
             deployments: Some(deployments),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
 
         let builder =
             LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
@@ -1294,7 +1296,7 @@ mod tests {
             deployments: Some(deployments.clone()),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
 
         let alpha_node = node_config("alpha", "1.0.0", &[("beta", "1.0.0")]);
 
@@ -1358,7 +1360,7 @@ mod tests {
             deployments: Some(deployments.clone()),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
 
         let alpha_node = node_config("alpha", "1.0.0", &[("beta", "2.0.0")]);
         let beta_node = node_config("beta", "1.0.0", &[]);
@@ -1423,7 +1425,7 @@ mod tests {
             deployments: Some(deployments.clone()),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
 
         let beta_node = node_config("beta", "2.0.0", &[("alpha", "1.0.0")]);
 
@@ -1494,7 +1496,7 @@ mod tests {
             deployments: Some(deployments.clone()),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
 
         let beta_node = node_config("beta", "2.0.0", &[("alpha", "1.0.0")]);
 
@@ -1579,7 +1581,7 @@ mod tests {
             deployments: Some(deployments),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_config.json5"), config);
+        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
 
         let alpha_node = node_config("alpha", "1.0.0", &[("delta", "1.0.0")]);
         let loader_nodes = vec![alpha_node.clone()];

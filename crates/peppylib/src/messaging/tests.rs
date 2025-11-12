@@ -134,7 +134,7 @@ async fn topic_publish_subscribe() {
     let topic_name = "video_frame";
     let qos = QoSProfile::Reliable;
 
-    // Those properties are found in the peppy_config.json5 `deployments` array
+    // Those properties are found in the peppy_launcher.json5 `deployments` array
     let ns = "/camera/rear";
 
     let payload = Bytes::from_static(b"A message");

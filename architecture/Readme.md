@@ -23,7 +23,7 @@ The following sub commands are available as part of the `peppy` cli:
     - `sync`: Must be run in a folder where `peppy.json5` is present. It interrogate the node stack and check the current node from which the command is run to determine if the node depends on other nodes, it then generates interface code (in Python or Rust) based on the `subscribes_to` and `exposes` definition of the `peppy.json5`. If the current node has a `subscribes_to` and the subscribed node is not present in the node stack, the generated interface raises a warning saying the expected node message format could not be found.
     - `list`: preview of the node stack and where the `peppy.json5` are located.
   
-### The `peppy_config.json5` file
+### The `peppy_launcher.json5` file
 
 The peppy config file is unique and its role is to define things such as deployment and logging.
 
