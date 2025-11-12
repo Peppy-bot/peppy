@@ -117,16 +117,16 @@ async fn main() -> Result<()> {{
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = format!(
         "
-use peppygen::exposed_topics::push_frame::{{emit, MessageHeader}};
+use peppygen::exposed_topics::push_frame;
 use peppygen::{{Messenger, Result}};
 
 #[tokio::main]
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
-    emit(
+    push_frame::emit(
         &messenger,
-        MessageHeader {{
+        push_frame::MessageHeader {{
             stamp: std::time::SystemTime::now(),
             frame_id: 42,
         }},
@@ -592,10 +592,10 @@ async fn main() -> Result<()> {{
     }})
     .await?;
 
+    // Small delay before sending a feedback message
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let feedback_message = [7, 31, 43];
-    println!(\"server emitting feedback message {{:?}}\", feedback_message);
     move_arm::emit_feedback(&messenger, feedback_message).await?;
     println!(\"server emitted feedback message {{:?}}\", feedback_message);
 

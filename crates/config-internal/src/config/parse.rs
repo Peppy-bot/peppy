@@ -1,15 +1,15 @@
-use super::types::PeppyConfig;
+use super::types::PeppyLauncher;
 use crate::error::{ParsingError, Result};
 use std::fs;
 use std::path::Path;
 
 /// Parser responsible for extracting `peppy_launcher.json5` documents
-pub struct PeppyConfigParser;
+pub struct PeppyLauncherParser;
 
 const PEPPY_LAUNCHER_FILE_NAME: &str = "peppy_launcher.json5";
 
-impl PeppyConfigParser {
-    pub fn from_path(file: impl AsRef<Path>) -> Result<PeppyConfig> {
+impl PeppyLauncherParser {
+    pub fn from_path(file: impl AsRef<Path>) -> Result<PeppyLauncher> {
         let path = file.as_ref();
         let file_name = path.file_name().and_then(|name| name.to_str());
         if file_name != Some(PEPPY_LAUNCHER_FILE_NAME) {
@@ -33,9 +33,9 @@ impl PeppyConfigParser {
     }
 
     /// Takes a JSON5 content as parameter
-    pub fn from_content(content: &str) -> Result<PeppyConfig> {
+    pub fn from_content(content: &str) -> Result<PeppyLauncher> {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
-        serde_json5::from_str::<PeppyConfig>(content).map_err(|e| ParsingError::from(e).into())
+        serde_json5::from_str::<PeppyLauncher>(content).map_err(|e| ParsingError::from(e).into())
     }
 }
 
@@ -114,7 +114,7 @@ mod tests {
             logging: { min_level: "info" }
         }"#;
 
-        let cfg = PeppyConfigParser::from_content(json5).unwrap();
+        let cfg = PeppyLauncherParser::from_content(json5).unwrap();
         assert!(cfg.deployments.is_some());
         let deployments = cfg.deployments.unwrap();
         assert_eq!(deployments.len(), 3);
@@ -157,7 +157,7 @@ mod tests {
         let wrong_path = dir.path().join("peppy.json5");
         std::fs::write(&wrong_path, "{}").unwrap();
 
-        let err = PeppyConfigParser::from_path(&wrong_path).unwrap_err();
+        let err = PeppyLauncherParser::from_path(&wrong_path).unwrap_err();
         assert!(matches!(
             err,
             Error::Parsing(ParsingError::InvalidFileName { ref expected, ref found })
@@ -180,7 +180,7 @@ mod tests {
         }"#;
         std::fs::write(&path, json5).unwrap();
 
-        let cfg = PeppyConfigParser::from_path(&path).unwrap();
+        let cfg = PeppyLauncherParser::from_path(&path).unwrap();
         assert!(cfg.deployments.is_some());
     }
 }

@@ -251,6 +251,8 @@ pub fn create_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     let commit = repo.find_commit(commit_id).expect("failed to find commit");
     repo.tag("0.1.0", commit.as_object(), &signature, "0.1.0", false)
         .expect("failed to create tag");
+    repo.tag("v1.0", commit.as_object(), &signature, "v1.0", false)
+        .expect("failed to create v1.0 tag");
 
     repo_path
 }

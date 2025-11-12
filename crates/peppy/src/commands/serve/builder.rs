@@ -5,7 +5,7 @@ use super::CompositeCommand;
 use super::Serve;
 use super::node_watcher_cmd::NodeWatcher;
 use crate::{AppContext, Result};
-use config::peppy_config::{PeppyConfig, PeppyConfigParser};
+use config::peppy_config::{PeppyLauncher, PeppyLauncherParser};
 use pmi::Messenger;
 use pmi::MessengerAdapter;
 use pmi::MockAdapter;
@@ -14,16 +14,16 @@ use tracing::warn;
 
 pub struct ServeCommandBuilder {
     composite_command: CompositeCommand,
-    peppy_config: PeppyConfig,
+    launcher_config: PeppyLauncher,
 }
 
 impl ServeCommandBuilder {
     pub fn new(peppy_config_path: PathBuf) -> Result<Self> {
-        let peppy_config =
-            PeppyConfigParser::from_path(&peppy_config_path).map_err(crate::Error::PeppyConfig)?;
+        let peppy_config = PeppyLauncherParser::from_path(&peppy_config_path)
+            .map_err(crate::Error::PeppyConfig)?;
         Ok(Self {
             composite_command: CompositeCommand::default(),
-            peppy_config,
+            launcher_config: peppy_config,
         })
     }
 

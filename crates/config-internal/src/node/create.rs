@@ -89,7 +89,7 @@ impl NodeConfigCreator {
 mod tests {
     use super::super::types::NodeConfig;
     use super::*;
-    use crate::config::PeppyConfig;
+    use crate::config::PeppyLauncher;
     use std::fs;
     use tempfile::NamedTempFile;
 
@@ -187,8 +187,8 @@ mod tests {
         }"#;
 
         // Normalize and compare canonical JSON5
-        let expected_cfg: PeppyConfig = serde_json5::from_str(expected_json5).unwrap();
-        let actual_cfg: PeppyConfig = serde_json5::from_str(&output).unwrap();
+        let expected_cfg: PeppyLauncher = serde_json5::from_str(expected_json5).unwrap();
+        let actual_cfg: PeppyLauncher = serde_json5::from_str(&output).unwrap();
         let expected_min = serde_json5::to_string(&expected_cfg).unwrap();
         let actual_min = serde_json5::to_string(&actual_cfg).unwrap();
         assert_eq!(actual_min, expected_min);

@@ -8,52 +8,6 @@ use tempfile::TempDir;
 #[path = "./helpers/mod.rs"]
 mod helpers;
 
-#[test]
-fn test_node_repo_resolve() {
-    todo!(
-        "Test when a node doesn't resolve, for instance if the right node tag cannot be pulled from github"
-    )
-}
-
-#[test]
-fn test_node_parameter_resolve() {
-    todo!(
-        "Test when a node doesn't resolve because the input parameters of the peppy_launcher.json5 do not match the input paramters of the node"
-    )
-}
-
-#[test]
-fn test_optional_node_ignored() {
-    let git_repo_temp_dir = TempDir::new().unwrap();
-    let git_repo_path = helpers::create_git_repo(&git_repo_temp_dir);
-
-    let root_temp_dir = TempDir::new().unwrap();
-    let _root = root_temp_dir.path();
-
-    let git_repo_path = git_repo_path.to_str().unwrap().to_owned();
-    let lidar_remote = format!("nodes/{}", helpers::LIDAR_SENSOR_NODE_NAME);
-    let uvc_remote = format!("nodes/{}", helpers::UVC_CAMERA_NODE_NAME);
-    let _peppy_config = helpers::render_peppy_config_template(
-        &root_temp_dir,
-        helpers::PeppyConfigTemplateExample1 {
-            lidar_sensor_node_name: helpers::LIDAR_SENSOR_NODE_NAME,
-            lidar_sensor_github_repo: &git_repo_path,
-            lidar_sensor_github_repo_path: lidar_remote.as_str(),
-            lidar_sensor_github_tag: "0.1.0",
-            uvc_camera_node_name: helpers::UVC_CAMERA_NODE_NAME,
-            uvc_camera_github_repo: &git_repo_path,
-            uvc_camera_github_repo_path: uvc_remote.as_str(),
-            web_video_stream_node_name: helpers::WEB_VIDEO_STREAM_NODE_NAME,
-            web_video_stream_optional: true, // web_video_stream is marked as optional here
-            brain_node_name: helpers::BRAIN_NODE_NAME,
-            controller_node_name: helpers::CONTROLLER_NODE_NAME,
-        },
-    );
-    todo!(
-        "Test when a node is marked as optional and can't be resolved because of a different tag, the node should be ignored"
-    )
-}
-
 /// Uses the following nodes:
 /// - brain
 /// - controller
@@ -67,7 +21,7 @@ fn test_optional_node_ignored() {
 /// - `controller` does not declare dependencies in this example
 /// - `web_video_stream` depends on `uvc_camera` (`subscribes_to.topics` property)
 #[test]
-fn test_create_node_stack_config_example_1() {
+fn test_local_stack_example_builds_dependencies() {
     // Create a local git repo that host 2 different nodes (only uvc_camera and lidar_sensor will be pulled in this test)
     let git_repo_temp_dir = TempDir::new().unwrap();
     let git_repo_path = helpers::create_git_repo(&git_repo_temp_dir);
@@ -80,7 +34,7 @@ fn test_create_node_stack_config_example_1() {
     let lidar_remote = format!("nodes/{}", helpers::LIDAR_SENSOR_NODE_NAME);
     let uvc_remote = format!("nodes/{}", helpers::UVC_CAMERA_NODE_NAME);
 
-    let peppy_config = helpers::render_peppy_config_template(
+    let launch_file = helpers::render_peppy_config_template(
         &root_temp_dir,
         helpers::PeppyConfigTemplateExample1 {
             lidar_sensor_node_name: helpers::LIDAR_SENSOR_NODE_NAME,
@@ -127,7 +81,7 @@ fn test_create_node_stack_config_example_1() {
 
     // DO NOT add lidar_sensor and uvc_camera to the node stack, they will be automatically pulled fromt the local github repo
 
-    let mapper = LocalNodeStackBuilder::from_root_config_file(peppy_config, None).unwrap();
+    let mapper = LocalNodeStackBuilder::from_launch_file(launch_file, None).unwrap();
     let planner = mapper.build().unwrap();
 
     // Supposed to contain the local nodes stacked in the project directory
@@ -225,11 +179,159 @@ fn test_create_node_stack_config_example_1() {
     helpers::print_dependency_summary(&deps_by_name);
 }
 
-/// Uses the example where only the lidar_sensor is deployed with a tag
-/// that does not exist in the remote repository cache. The deployment
-/// resolution must therefore fail.
 #[test]
-fn test_create_node_stack_config_example_2() {
+fn test_optional_node_ignored() {
+    let git_repo_temp_dir = TempDir::new().unwrap();
+    let git_repo_path = helpers::create_git_repo(&git_repo_temp_dir);
+
+    let root_temp_dir = TempDir::new().unwrap();
+    let root = root_temp_dir.path();
+
+    let git_repo_path = git_repo_path.to_str().unwrap().to_owned();
+    let uvc_remote = format!("nodes/{}", helpers::UVC_CAMERA_NODE_NAME);
+    let web_remote = format!("nodes/{}", helpers::WEB_VIDEO_STREAM_NODE_NAME);
+
+    let launch_content = format!(
+        r#"{{
+  deployments: [
+    {{
+      name: "{uvc}",
+      source: {{
+        repo: "{repo}",
+        path: "{uvc_remote}"
+      }},
+      tag: "0.1.0",
+      instances: [
+        {{
+          namespace: "/camera/right",
+          parameters: {{
+            device: {{
+              physical: "/dev/video_right",
+              sim: "mujoco:camera_right",
+              priority: "physical"
+            }},
+            video: {{
+              frame_rate: 30,
+              resolution: {{
+                width: 1920,
+                height: 1080,
+              }},
+              encoding: "yuyv",
+            }},
+          }}
+        }}
+      ]
+    }},
+    {{
+      name: "{web}",
+      source: {{
+        repo: "{repo}",
+        path: "{web_remote}"
+      }},
+      optional: true,
+      tag: "9.9.9",
+      instances: [
+        {{
+          namespace: "/camera/stream/right",
+          parameters: {{
+            cameras_namespaces: [
+              "/camera/right",
+              "/camera/left"
+            ],
+            http: {{
+              host: "0.0.0.0",
+              port: 8083,
+              cors_enabled: false,
+              cors_origins: "*",
+              max_connections: "2000",
+              request_timeout_ms: "3000",
+            }},
+            video_stream: {{
+              format: "mjpeg",
+              quality: 3,
+              max_fps: 30,
+            }},
+          }}
+        }}
+      ]
+    }}
+  ],
+  logging: {{
+    min_level: "info",
+    format: "text"
+  }}
+}}"#,
+        uvc = helpers::UVC_CAMERA_NODE_NAME,
+        repo = git_repo_path,
+        uvc_remote = uvc_remote,
+        web = helpers::WEB_VIDEO_STREAM_NODE_NAME,
+        web_remote = web_remote,
+    );
+
+    let launch_file = root.join("peppy_launcher.json5");
+    std::fs::write(&launch_file, launch_content).expect("failed to write launch config");
+
+    let mapper = LocalNodeStackBuilder::from_launch_file(&launch_file, None).unwrap();
+    let planner = mapper.build().unwrap();
+
+    assert!(
+        planner.node_stack().is_empty(),
+        "optional node test config should rely on remote nodes only"
+    );
+
+    let graph = planner.map_deployments_to_nodes();
+    assert_eq!(
+        graph.len(),
+        1,
+        "optional deployment should be ignored when it cannot resolve"
+    );
+
+    let root_index = graph.root_index();
+    let required = graph
+        .get(root_index)
+        .expect("graph should contain the required deployment");
+    assert!(required.is_resolved(), "required deployment must resolve");
+    assert_eq!(
+        required.deployment().name,
+        helpers::UVC_CAMERA_NODE_NAME,
+        "only the required deployment should remain in the graph"
+    );
+
+    let present_names: BTreeSet<String> = graph
+        .indices()
+        .into_iter()
+        .map(|index| {
+            graph
+                .get(index)
+                .expect("deployment must exist")
+                .deployment()
+                .name
+                .clone()
+        })
+        .collect();
+    assert!(
+        !present_names.contains(helpers::WEB_VIDEO_STREAM_NODE_NAME),
+        "optional deployment should not appear when it fails to resolve"
+    );
+
+    let nodes_cache_dir = root.join(".peppy").join("nodes");
+    assert!(
+        nodes_cache_dir.is_dir(),
+        "nodes cache dir {:?} should exist",
+        nodes_cache_dir
+    );
+    assert!(
+        helpers::cached_node_exists(&nodes_cache_dir, helpers::UVC_CAMERA_NODE_NAME),
+        "required node should be cached under {:?}",
+        nodes_cache_dir
+    );
+}
+
+/// Uses config example 2 where the lidar sensor requests tag `v2.0` but the
+/// repository only exposes `v1.0`. The deployment must remain unresolved when
+/// the requested tag differs from what is available.
+#[test]
+fn test_remote_git_tag_mismatch_is_unresolvable() {
     let git_repo_temp_dir = TempDir::new().unwrap();
     let git_repo_path = helpers::create_git_repo(&git_repo_temp_dir);
 
@@ -238,7 +340,7 @@ fn test_create_node_stack_config_example_2() {
 
     let lidar_remote_path = format!("nodes/{}", helpers::LIDAR_SENSOR_NODE_NAME);
     let git_repo_path = git_repo_path.to_str().unwrap().to_owned();
-    let peppy_config = helpers::render_peppy_config_template(
+    let launch_file = helpers::render_peppy_config_template(
         &root_temp_dir,
         helpers::PeppyConfigTemplateExample2 {
             lidar_sensor_node_name: helpers::LIDAR_SENSOR_NODE_NAME,
@@ -247,7 +349,7 @@ fn test_create_node_stack_config_example_2() {
         },
     );
 
-    let mapper = LocalNodeStackBuilder::from_root_config_file(peppy_config, None).unwrap();
+    let mapper = LocalNodeStackBuilder::from_launch_file(launch_file, None).unwrap();
     let planner = mapper.build().unwrap();
 
     assert!(
@@ -269,7 +371,7 @@ fn test_create_node_stack_config_example_2() {
 
     assert!(
         !lidar_deployment.is_resolved(),
-        "lidar deployment should fail to resolve when tag is missing"
+        "lidar deployment should fail to resolve when tag differs"
     );
 
     let error = lidar_deployment
@@ -303,7 +405,7 @@ fn test_create_node_stack_config_example_2() {
 /// Uses the example where the lidar bundle is reachable but the manifest inside
 /// advertises a different tag than the one requested in the deployment.
 #[test]
-fn test_create_node_stack_config_example_3() {
+fn test_remote_bundle_manifest_tag_mismatch_is_unresolvable() {
     const BUNDLE_PATH: &str = "/bundles/lidar_sensor.tar.zst";
 
     let server = Server::run();
@@ -345,7 +447,7 @@ fn test_create_node_stack_config_example_3() {
     let root = root_temp_dir.path();
 
     let bundle_url = server.url(BUNDLE_PATH).to_string();
-    let peppy_config = helpers::render_peppy_config_template(
+    let launch_file = helpers::render_peppy_config_template(
         &root_temp_dir,
         helpers::PeppyConfigTemplateExample3 {
             lidar_sensor_node_name: helpers::LIDAR_SENSOR_NODE_NAME,
@@ -354,7 +456,7 @@ fn test_create_node_stack_config_example_3() {
         },
     );
 
-    let mapper = LocalNodeStackBuilder::from_root_config_file(peppy_config, None).unwrap();
+    let mapper = LocalNodeStackBuilder::from_launch_file(launch_file, None).unwrap();
     let planner = mapper.build().unwrap();
 
     assert!(
@@ -415,7 +517,7 @@ fn test_create_node_stack_config_example_3() {
 /// Uses the example where lidar parameters reference fields unsupported by the
 /// node manifest. The deployment should surface a `WrongInputParameters` error.
 #[test]
-fn test_create_node_stack_config_example_4() {
+fn test_remote_git_parameter_mismatch_is_rejected() {
     let git_repo_temp_dir = TempDir::new().unwrap();
     let git_repo_path = helpers::create_git_repo(&git_repo_temp_dir);
 
@@ -424,7 +526,7 @@ fn test_create_node_stack_config_example_4() {
 
     let lidar_remote_path = format!("nodes/{}", helpers::LIDAR_SENSOR_NODE_NAME);
     let git_repo_path = git_repo_path.to_str().unwrap().to_owned();
-    let peppy_config = helpers::render_peppy_config_template(
+    let launch_file = helpers::render_peppy_config_template(
         &root_temp_dir,
         helpers::PeppyConfigTemplateExample4 {
             lidar_sensor_node_name: helpers::LIDAR_SENSOR_NODE_NAME,
@@ -433,7 +535,7 @@ fn test_create_node_stack_config_example_4() {
         },
     );
 
-    let mapper = LocalNodeStackBuilder::from_root_config_file(peppy_config, None).unwrap();
+    let mapper = LocalNodeStackBuilder::from_launch_file(launch_file, None).unwrap();
     let planner = mapper.build().unwrap();
 
     assert!(

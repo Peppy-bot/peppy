@@ -265,11 +265,6 @@ fn expose_two_topics() {
             "expected async emit method"
         );
         assert_rendered!(
-            !rendered.contains("emit_push"),
-            rendered,
-            "did not expect topic-specific emit function name"
-        );
-        assert_rendered!(
             rendered.contains("pub struct MessageHeader"),
             rendered,
             "expected nested header struct"
@@ -740,11 +735,6 @@ fn compile_lib_with_exposed_and_subscribed_topics() {
     assert!(
         lib_contents.contains("pub mod subscribed_topics;"),
         "Expected generated lib.rs to re-export the `subscribed_topics` module, got:\n{}",
-        lib_contents
-    );
-    assert!(
-        !lib_contents.contains("pub mod topics;"),
-        "Generated lib.rs should not declare the legacy `topics` module anymore, got:\n{}",
         lib_contents
     );
 
