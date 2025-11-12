@@ -21,7 +21,7 @@ mod helpers;
 /// - `controller` does not declare dependencies in this example
 /// - `web_video_stream` depends on `uvc_camera` (`subscribes_to.topics` property)
 #[test]
-fn test_local_stack_example_builds_dependencies() {
+fn local_stack_example_builds_dependencies() {
     // Create a local git repo that host 2 different nodes (only uvc_camera and lidar_sensor will be pulled in this test)
     let git_repo_temp_dir = TempDir::new().unwrap();
     let git_repo_path = helpers::create_git_repo(&git_repo_temp_dir);
@@ -180,7 +180,7 @@ fn test_local_stack_example_builds_dependencies() {
 }
 
 #[test]
-fn test_optional_node_ignored() {
+fn optional_node_ignored() {
     let git_repo_temp_dir = TempDir::new().unwrap();
     let git_repo_path = helpers::create_git_repo(&git_repo_temp_dir);
 
@@ -331,7 +331,7 @@ fn test_optional_node_ignored() {
 /// repository only exposes `v1.0`. The deployment must remain unresolved when
 /// the requested tag differs from what is available.
 #[test]
-fn test_remote_git_tag_mismatch_is_unresolvable() {
+fn remote_git_tag_mismatch_is_unresolvable() {
     let git_repo_temp_dir = TempDir::new().unwrap();
     let git_repo_path = helpers::create_git_repo(&git_repo_temp_dir);
 
@@ -405,7 +405,7 @@ fn test_remote_git_tag_mismatch_is_unresolvable() {
 /// Uses the example where the lidar bundle is reachable but the manifest inside
 /// advertises a different tag than the one requested in the deployment.
 #[test]
-fn test_remote_bundle_manifest_tag_mismatch_is_unresolvable() {
+fn remote_bundle_manifest_tag_mismatch_is_unresolvable() {
     const BUNDLE_PATH: &str = "/bundles/lidar_sensor.tar.zst";
 
     let server = Server::run();
@@ -517,7 +517,7 @@ fn test_remote_bundle_manifest_tag_mismatch_is_unresolvable() {
 /// Uses the example where lidar parameters reference fields unsupported by the
 /// node manifest. The deployment should surface a `WrongInputParameters` error.
 #[test]
-fn test_remote_git_parameter_mismatch_is_rejected() {
+fn remote_git_parameter_mismatch_is_rejected() {
     let git_repo_temp_dir = TempDir::new().unwrap();
     let git_repo_path = helpers::create_git_repo(&git_repo_temp_dir);
 
