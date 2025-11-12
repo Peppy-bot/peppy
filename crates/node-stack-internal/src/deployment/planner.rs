@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use config::AnyType;
 use config::FSNodeConfigWatcher;
 use config::node::NodeConfig;
-use config::peppy_config::{Deployment, DeploymentNodeSource, PeppyConfig, PeppyConfigParser};
+use config::peppy_config::{Deployment, DeploymentNodeSource, PeppyLauncher, PeppyLauncherParser};
 use petgraph::{
     Direction,
     stable_graph::{NodeIndex, StableDiGraph},
@@ -50,11 +50,11 @@ impl DeploymentSourceResolver for DefaultDeploymentResolver {
 pub struct LocalNodeStackBuilder {
     nodes_cache_dir: PathBuf,
     root_dir: PathBuf,
-    peppy_config_file: PathBuf,
+    launch_file: PathBuf,
 }
 
 pub struct DeploymentPlanner {
-    peppy_config: PeppyConfig,
+    peppy_launcher: PeppyLauncher,
     nodes_cache_dir: PathBuf,
     node_stack: Vec<NodeConfig>,
     resolver: Box<dyn DeploymentSourceResolver>,
@@ -107,22 +107,22 @@ impl DeploymentGraph {
 /// Given a deployment list, finds the corresponding nodes required by
 impl LocalNodeStackBuilder {
     /// # Arguments
-    /// * `peppy_config_file` - Path to the peppy config file
+    /// * `launch_file` - Path to the peppy launch file
     /// * `nodes_cache_dir` - The dir where nodes are cached (the ones that are pulled remotely or pushed with `peppy push`). Provide `None` to default to `.peppy/nodes`
-    pub fn from_root_config_file(
-        peppy_config_file: impl AsRef<Path>,
+    pub fn from_launch_file(
+        launch_file: impl AsRef<Path>,
         nodes_cache_dir: Option<PathBuf>,
     ) -> Result<Self> {
-        let peppy_config_file = PathBuf::from(peppy_config_file.as_ref());
+        let launch_file = PathBuf::from(launch_file.as_ref());
 
-        let root_dir_canon = peppy_config_file
+        let root_dir_canon = launch_file
             .canonicalize()?
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
 
         if !root_dir_canon.exists() {
-            return Err(Error::FileNotFound(peppy_config_file.clone()));
+            return Err(Error::FileNotFound(launch_file.clone()));
         }
 
         let nodes_cache_dir_canon = match nodes_cache_dir {
@@ -133,18 +133,18 @@ impl LocalNodeStackBuilder {
         Ok(Self {
             nodes_cache_dir: nodes_cache_dir_canon,
             root_dir: root_dir_canon,
-            peppy_config_file,
+            launch_file,
         })
     }
 
-    fn load_peppy_config(&self) -> Result<PeppyConfig> {
-        let path = &self.peppy_config_file;
+    fn load_peppy_config(&self) -> Result<PeppyLauncher> {
+        let path = &self.launch_file;
 
         if !path.exists() || !path.is_file() {
             return Err(Error::FileNotFound(path.clone()));
         }
 
-        PeppyConfigParser::from_path(&self.peppy_config_file).map_err(Error::Config)
+        PeppyLauncherParser::from_path(&self.launch_file).map_err(Error::Config)
     }
 
     fn load_nodes_from_fs(root_dir: &Path) -> Result<Vec<NodeConfig>> {
@@ -184,12 +184,12 @@ impl LocalNodeStackBuilder {
 
 impl DeploymentPlanner {
     fn new(
-        peppy_config: PeppyConfig,
+        peppy_launcher: PeppyLauncher,
         nodes_cache_dir: impl AsRef<Path>,
         node_stack: Vec<NodeConfig>,
     ) -> Self {
         Self {
-            peppy_config,
+            peppy_launcher,
             nodes_cache_dir: nodes_cache_dir.as_ref().to_owned(),
             node_stack,
             resolver: Box::new(DefaultDeploymentResolver),
@@ -211,7 +211,7 @@ impl DeploymentPlanner {
     }
 
     fn collect_deployment_entries(&mut self) -> Vec<NodeEntry> {
-        let deployments = self.peppy_config.deployments.take().unwrap_or_default();
+        let deployments = self.peppy_launcher.deployments.take().unwrap_or_default();
 
         let mut entries = Vec::new();
 
@@ -557,7 +557,7 @@ mod tests {
     use config::{
         node::{NodeConfig, NodeConfigParser},
         peppy_config::{
-            Deployment, DeploymentNodeSource, GitRemoteSpec, HttpRemoteSpec, PeppyConfig,
+            Deployment, DeploymentNodeSource, GitRemoteSpec, HttpRemoteSpec, PeppyLauncher,
         },
     };
     use git2::{ObjectType, Repository, Signature};
@@ -663,15 +663,15 @@ mod tests {
         }
     }
 
-    fn minimal_config() -> PeppyConfig {
-        PeppyConfig {
+    fn minimal_config() -> PeppyLauncher {
+        PeppyLauncher {
             deployments: Some(Vec::new()),
             logging: None,
         }
     }
 
-    fn write_config(path: PathBuf, config: PeppyConfig) -> PathBuf {
-        let content = serde_json5::to_string(&config).expect("serialize config");
+    fn write_config(path: PathBuf, launcher_config: PeppyLauncher) -> PathBuf {
+        let content = serde_json5::to_string(&launcher_config).expect("serialize config");
         fs::create_dir_all(path.parent().expect("dir")).expect("create config directory");
         fs::write(&path, content).expect("write config");
         path
@@ -785,15 +785,14 @@ mod tests {
     #[test]
     fn uses_provided_node_stack() {
         let temp_dir = tempdir().expect("temp dir");
-        let config_path = write_config(
+        let launch_file = write_config(
             temp_dir.path().join("peppy_launcher.json5"),
             minimal_config(),
         );
 
         let expected_nodes = vec![node_config("alpha", "1.0.0", &[])];
 
-        let builder =
-            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
         let planner = builder
             .build_with_nodes(expected_nodes.clone())
             .expect("planner");
@@ -850,14 +849,16 @@ mod tests {
             false,
         )];
 
-        let config = PeppyConfig {
+        let launcher_config = PeppyLauncher {
             deployments: Some(deployments),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
+        let launch_file = write_config(
+            temp_dir.path().join("peppy_launcher.json5"),
+            launcher_config,
+        );
 
-        let builder =
-            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
         let planner = builder.build_with_nodes(Vec::new()).expect("planner");
 
         let graph = planner.map_deployments_to_nodes();
@@ -905,14 +906,16 @@ mod tests {
             false,
         )];
 
-        let config = PeppyConfig {
+        let launcher_config = PeppyLauncher {
             deployments: Some(deployments),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
+        let launch_file = write_config(
+            temp_dir.path().join("peppy_launcher.json5"),
+            launcher_config,
+        );
 
-        let builder =
-            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
         let planner = builder.build_with_nodes(Vec::new()).expect("planner");
 
         let graph = planner.map_deployments_to_nodes();
@@ -970,14 +973,16 @@ mod tests {
             false,
         )];
 
-        let config = PeppyConfig {
+        let launcher_config = PeppyLauncher {
             deployments: Some(deployments),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
+        let launch_file = write_config(
+            temp_dir.path().join("peppy_launcher.json5"),
+            launcher_config,
+        );
 
-        let builder =
-            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
         let planner = builder.build_with_nodes(Vec::new()).expect("planner");
 
         let graph = planner.map_deployments_to_nodes();
@@ -1026,14 +1031,16 @@ mod tests {
             false,
         )];
 
-        let config = PeppyConfig {
+        let launcher_config = PeppyLauncher {
             deployments: Some(deployments),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
+        let launch_file = write_config(
+            temp_dir.path().join("peppy_launcher.json5"),
+            launcher_config,
+        );
 
-        let builder =
-            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
         let planner = builder.build_with_nodes(Vec::new()).expect("planner");
 
         let graph = planner.map_deployments_to_nodes();
@@ -1076,14 +1083,16 @@ mod tests {
             false,
         )];
 
-        let config = PeppyConfig {
+        let launcher_config = PeppyLauncher {
             deployments: Some(deployments),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
+        let launch_file = write_config(
+            temp_dir.path().join("peppy_launcher.json5"),
+            launcher_config,
+        );
 
-        let builder =
-            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
         let planner = builder.build_with_nodes(Vec::new()).expect("planner");
 
         let graph = planner.map_deployments_to_nodes();
@@ -1135,14 +1144,16 @@ mod tests {
             false,
         )];
 
-        let config = PeppyConfig {
+        let launcher_config = PeppyLauncher {
             deployments: Some(deployments),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
+        let launch_file = write_config(
+            temp_dir.path().join("peppy_launcher.json5"),
+            launcher_config,
+        );
 
-        let builder =
-            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
         let planner = builder.build_with_nodes(Vec::new()).expect("planner");
 
         let graph = planner.map_deployments_to_nodes();
@@ -1191,14 +1202,16 @@ mod tests {
             false,
         )];
 
-        let config = PeppyConfig {
+        let launcher_config = PeppyLauncher {
             deployments: Some(deployments),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
+        let launch_file = write_config(
+            temp_dir.path().join("peppy_launcher.json5"),
+            launcher_config,
+        );
 
-        let builder =
-            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
         let planner = builder.build_with_nodes(Vec::new()).expect("planner");
 
         let graph = planner.map_deployments_to_nodes();
@@ -1242,8 +1255,7 @@ mod tests {
         repo.tag("1.0.0", &commit, &signature, "tag", true)
             .expect("retag commit");
 
-        let builder =
-            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
         let planner = builder.build_with_nodes(Vec::new()).expect("planner");
 
         let graph = planner.map_deployments_to_nodes();
@@ -1292,19 +1304,21 @@ mod tests {
             ),
         ];
 
-        let config = PeppyConfig {
+        let launcher_config = PeppyLauncher {
             deployments: Some(deployments.clone()),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
+        let launch_file = write_config(
+            temp_dir.path().join("peppy_launcher.json5"),
+            launcher_config,
+        );
 
         let alpha_node = node_config("alpha", "1.0.0", &[("beta", "1.0.0")]);
 
         let loader_nodes = vec![alpha_node.clone()];
         let resolver = StaticResolver::new(vec![alpha_node]);
 
-        let builder =
-            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
         let planner = builder
             .build_with_nodes(loader_nodes.clone())
             .expect("planner")
@@ -1356,11 +1370,11 @@ mod tests {
             ),
         ];
 
-        let config = PeppyConfig {
+        let config = PeppyLauncher {
             deployments: Some(deployments.clone()),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
+        let launch_file = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
 
         let alpha_node = node_config("alpha", "1.0.0", &[("beta", "2.0.0")]);
         let beta_node = node_config("beta", "1.0.0", &[]);
@@ -1368,8 +1382,7 @@ mod tests {
         let loader_nodes = vec![alpha_node.clone(), beta_node.clone()];
         let resolver = StaticResolver::new(vec![alpha_node, beta_node]);
 
-        let builder =
-            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
         let planner = builder
             .build_with_nodes(loader_nodes)
             .expect("planner")
@@ -1421,19 +1434,18 @@ mod tests {
             ),
         ];
 
-        let config = PeppyConfig {
+        let config = PeppyLauncher {
             deployments: Some(deployments.clone()),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
+        let launch_file = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
 
         let beta_node = node_config("beta", "2.0.0", &[("alpha", "1.0.0")]);
 
         let loader_nodes = vec![beta_node.clone()];
         let resolver = StaticResolver::new(vec![beta_node]);
 
-        let builder =
-            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
         let planner = builder
             .build_with_nodes(loader_nodes)
             .expect("planner")
@@ -1492,19 +1504,18 @@ mod tests {
             ),
         ];
 
-        let config = PeppyConfig {
+        let config = PeppyLauncher {
             deployments: Some(deployments.clone()),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
+        let launch_file = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
 
         let beta_node = node_config("beta", "2.0.0", &[("alpha", "1.0.0")]);
 
         let loader_nodes = vec![beta_node.clone()];
         let resolver = StaticResolver::new(vec![beta_node]);
 
-        let builder =
-            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
         let planner = builder
             .build_with_nodes(loader_nodes)
             .expect("planner")
@@ -1577,18 +1588,17 @@ mod tests {
             false,
         )];
 
-        let config = PeppyConfig {
+        let config = PeppyLauncher {
             deployments: Some(deployments),
             logging: None,
         };
-        let config_path = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
+        let launch_file = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
 
         let alpha_node = node_config("alpha", "1.0.0", &[("delta", "1.0.0")]);
         let loader_nodes = vec![alpha_node.clone()];
         let resolver = StaticResolver::new(vec![alpha_node]);
 
-        let builder =
-            LocalNodeStackBuilder::from_root_config_file(&config_path, None).expect("builder");
+        let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
         let planner = builder
             .build_with_nodes(loader_nodes.clone())
             .expect("planner")

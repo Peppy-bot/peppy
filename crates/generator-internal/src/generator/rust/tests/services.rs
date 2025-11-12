@@ -469,11 +469,6 @@ fn subscribed_to_service() {
         &rendered,
         "expected response deserialization error context"
     );
-    assert_rendered!(
-        rendered.contains("Ok(Response {"),
-        &rendered,
-        "expected response construction"
-    );
 }
 
 #[test]

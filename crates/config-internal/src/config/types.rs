@@ -17,7 +17,7 @@ pub const CURRENT_SCHEMA_VERSION: SchemaVersion = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PeppyConfig {
+pub struct PeppyLauncher {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployments: Option<Vec<Deployment>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

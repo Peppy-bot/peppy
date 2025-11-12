@@ -1,4 +1,4 @@
-// In this example, the lidar sensor uses tag 2.0.0, which is not available on Github
+// In this example, the lidar sensor requests tag v2.0 while the repository only contains v1.0
 {
   deployments: [
     {
@@ -7,7 +7,7 @@
         repo: "{{ lidar_sensor_github_repo }}",
         path: "{{ lidar_sensor_github_repo_path }}"
       },
-      tag: "2.0.0",
+      tag: "v2.0",
       instances: [
         {
           namespace: "/lidar",

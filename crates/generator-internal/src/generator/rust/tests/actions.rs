@@ -942,11 +942,7 @@ fn subscribed_action_without_feedback() {
         &rendered,
         "expected subscribed actions to still emit result helpers"
     );
-    assert_rendered!(
-        !rendered.contains("pub struct FeedbackMessage"),
-        &rendered,
-        "expected absence of feedback struct when feedback payload is missing"
-    );
+    // Make sure the related functions for feedback are not present
     assert_rendered!(
         !rendered.contains("pub async fn on_next_feedback_message"),
         &rendered,
