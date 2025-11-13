@@ -616,3 +616,11 @@ fn remote_git_parameter_mismatch_is_rejected() {
         nodes_cache_dir
     );
 }
+
+#[test]
+fn dynamically_add_node_to_node_stack() {
+    todo!(
+        "Find a way to create a singleton out of DeploymentPlanner (or DeploymentSourceResolver?) and add the ability to dynamically add nodes to it"
+    )
+    // DeploymentPlanner should also have a function that returns a given subscribed/exposed topic/service/action with its associated message_format
+}

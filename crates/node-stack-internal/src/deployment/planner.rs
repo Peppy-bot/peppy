@@ -4,7 +4,8 @@ mod tests;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use super::types::DeploymentMap;
+use super::DeploymentMap;
+use super::NodeStack;
 use super::{git::resolve_remote_git, local::resolve_local_deployment, url::resolve_remote_url};
 use crate::error::{Error, Result};
 use config::AnyType;
@@ -21,7 +22,7 @@ pub trait DeploymentSourceResolver: Send + Sync {
         &self,
         nodes_cache_dir: &Path,
         deployment: &Deployment,
-        node_stack: &[NodeConfig],
+        node_stack: &NodeStack,
     ) -> Result<DeploymentMap>;
 }
 
@@ -33,7 +34,7 @@ impl DeploymentSourceResolver for DefaultDeploymentResolver {
         &self,
         nodes_cache_dir: &Path,
         deployment: &Deployment,
-        node_stack: &[NodeConfig],
+        node_stack: &NodeStack,
     ) -> Result<DeploymentMap> {
         match deployment.source.as_ref() {
             Some(DeploymentNodeSource::Local(_)) => {
@@ -56,10 +57,10 @@ pub struct LocalNodeStackBuilder {
     launch_file: PathBuf,
 }
 
-pub struct DeploymentPlanner {
+pub struct LauncherPlanner {
     peppy_launcher: PeppyLauncher,
     nodes_cache_dir: PathBuf,
-    node_stack: Vec<NodeConfig>,
+    node_stack: NodeStack,
     resolver: Box<dyn DeploymentSourceResolver>,
 }
 
@@ -150,7 +151,7 @@ impl LocalNodeStackBuilder {
         PeppyLauncherParser::from_path(&self.launch_file).map_err(Error::Config)
     }
 
-    fn load_nodes_from_fs(root_dir: &Path) -> Result<Vec<NodeConfig>> {
+    fn load_nodes_from_fs(root_dir: &Path) -> Result<NodeStack> {
         let watcher = FSNodeConfigWatcher::new(root_dir)?;
         let state_snapshot = watcher.subscribe().borrow().clone();
 
@@ -159,13 +160,13 @@ impl LocalNodeStackBuilder {
             local_node_configs.push(node_config);
         }
 
-        Ok(local_node_configs)
+        Ok(NodeStack::from_configs(local_node_configs))
     }
 
-    fn finish(self, node_stack: Vec<NodeConfig>) -> Result<DeploymentPlanner> {
+    fn finish(self, node_stack: NodeStack) -> Result<LauncherPlanner> {
         let peppy_config = self.load_peppy_launcher()?;
 
-        Ok(DeploymentPlanner::new(
+        Ok(LauncherPlanner::new(
             peppy_config,
             self.nodes_cache_dir,
             node_stack,
@@ -174,22 +175,22 @@ impl LocalNodeStackBuilder {
 
     /// Create the initial node stack based on the peppy config and its
     /// children in the same folder using the filesystem-backed loader.
-    pub fn build(self) -> Result<DeploymentPlanner> {
+    pub fn build(self) -> Result<LauncherPlanner> {
         let local_node_configs = Self::load_nodes_from_fs(&self.root_dir)?;
         self.finish(local_node_configs)
     }
 
     /// Same as [`Self::build`] but allows providing the node stack directly.
-    pub fn build_with_nodes(self, node_stack: Vec<NodeConfig>) -> Result<DeploymentPlanner> {
+    pub fn build_with_nodes(self, node_stack: NodeStack) -> Result<LauncherPlanner> {
         self.finish(node_stack)
     }
 }
 
-impl DeploymentPlanner {
+impl LauncherPlanner {
     fn new(
         peppy_launcher: PeppyLauncher,
         nodes_cache_dir: impl AsRef<Path>,
-        node_stack: Vec<NodeConfig>,
+        node_stack: NodeStack,
     ) -> Self {
         Self {
             peppy_launcher,
@@ -204,7 +205,7 @@ impl DeploymentPlanner {
         self
     }
 
-    pub fn node_stack(&self) -> &[NodeConfig] {
+    pub fn node_stack(&self) -> &NodeStack {
         &self.node_stack
     }
 
@@ -245,12 +246,11 @@ impl DeploymentPlanner {
                             Some(DeploymentNodeSource::Local(_))
                         ) {
                             let node = map.node_source().node().clone();
-                            let already_present = self.node_stack.iter().any(|existing| {
-                                existing.manifest.name == node.manifest.name
-                                    && existing.manifest.tag == node.manifest.tag
-                            });
-                            if !already_present {
-                                self.node_stack.push(node);
+                            if !self
+                                .node_stack
+                                .contains(node.manifest.name.as_str(), &node.manifest.tag)
+                            {
+                                self.node_stack.push_config(node);
                             }
                         }
                     }

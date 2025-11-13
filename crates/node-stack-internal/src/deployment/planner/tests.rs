@@ -1,4 +1,5 @@
 use super::*;
+use crate::deployment::NodeStack;
 use crate::deployment::types::ResolvedNodeSource;
 use config::{
     node::{NodeConfig, NodeConfigParser},
@@ -39,7 +40,7 @@ impl DeploymentSourceResolver for StaticResolver {
         &self,
         _nodes_cache_dir: &Path,
         deployment: &Deployment,
-        _node_stack: &[NodeConfig],
+        _node_stack: &NodeStack,
     ) -> Result<DeploymentMap> {
         let node = self
             .nodes
@@ -240,22 +241,25 @@ fn uses_provided_node_stack() {
 
     let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
     let planner = builder
-        .build_with_nodes(expected_nodes.clone())
+        .build_with_nodes(NodeStack::from_configs(expected_nodes.clone()))
         .expect("planner");
 
     let stack = planner.node_stack();
     assert_eq!(stack.len(), expected_nodes.len());
 
     // Vec<(String, String)> = Vec<(node_name, node_tag)>
-    let actual_manifests: Vec<(String, String)> = stack
-        .iter()
-        .map(|node| {
-            (
-                node.manifest.name.as_str().to_owned(),
-                node.manifest.tag.clone(),
-            )
-        })
-        .collect();
+    let actual_manifests: Vec<(String, String)> = stack.with_nodes(|nodes| {
+        nodes
+            .iter()
+            .map(|node| {
+                let config = node.config();
+                (
+                    config.manifest.name.as_str().to_owned(),
+                    config.manifest.tag.clone(),
+                )
+            })
+            .collect()
+    });
     let expected_manifests: Vec<(String, String)> = expected_nodes
         .iter()
         .map(|node| {
@@ -303,7 +307,9 @@ fn http_bundle_is_downloaded_and_resolved() {
     );
 
     let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
-    let planner = builder.build_with_nodes(Vec::new()).expect("planner");
+    let planner = builder
+        .build_with_nodes(NodeStack::from_configs(Vec::new()))
+        .expect("planner");
 
     let graph = planner.map_deployments_to_nodes();
 
@@ -358,7 +364,9 @@ fn http_bundle_is_downloaded_and_name_not_resolved() {
     );
 
     let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
-    let planner = builder.build_with_nodes(Vec::new()).expect("planner");
+    let planner = builder
+        .build_with_nodes(NodeStack::from_configs(Vec::new()))
+        .expect("planner");
 
     let graph = planner.map_deployments_to_nodes();
 
@@ -423,7 +431,9 @@ fn http_bundle_is_downloaded_and_tag_not_resolved() {
     );
 
     let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
-    let planner = builder.build_with_nodes(Vec::new()).expect("planner");
+    let planner = builder
+        .build_with_nodes(NodeStack::from_configs(Vec::new()))
+        .expect("planner");
 
     let graph = planner.map_deployments_to_nodes();
 
@@ -481,7 +491,9 @@ fn git_repo_is_cloned_and_resolved() {
     );
 
     let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
-    let planner = builder.build_with_nodes(Vec::new()).expect("planner");
+    let planner = builder
+        .build_with_nodes(NodeStack::from_configs(Vec::new()))
+        .expect("planner");
 
     let graph = planner.map_deployments_to_nodes();
 
@@ -533,7 +545,9 @@ fn git_repo_is_cloned_and_name_not_resolved() {
     );
 
     let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
-    let planner = builder.build_with_nodes(Vec::new()).expect("planner");
+    let planner = builder
+        .build_with_nodes(NodeStack::from_configs(Vec::new()))
+        .expect("planner");
 
     let graph = planner.map_deployments_to_nodes();
 
@@ -594,7 +608,9 @@ fn git_repo_is_cloned_and_tag_not_resolved() {
     );
 
     let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
-    let planner = builder.build_with_nodes(Vec::new()).expect("planner");
+    let planner = builder
+        .build_with_nodes(NodeStack::from_configs(Vec::new()))
+        .expect("planner");
 
     let graph = planner.map_deployments_to_nodes();
 
@@ -652,7 +668,9 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
     );
 
     let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
-    let planner = builder.build_with_nodes(Vec::new()).expect("planner");
+    let planner = builder
+        .build_with_nodes(NodeStack::from_configs(Vec::new()))
+        .expect("planner");
 
     let graph = planner.map_deployments_to_nodes();
 
@@ -696,7 +714,9 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
         .expect("retag commit");
 
     let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
-    let planner = builder.build_with_nodes(Vec::new()).expect("planner");
+    let planner = builder
+        .build_with_nodes(NodeStack::from_configs(Vec::new()))
+        .expect("planner");
 
     let graph = planner.map_deployments_to_nodes();
     assert_eq!(
@@ -760,7 +780,7 @@ fn optional_dependency_missing_is_unresolved() {
 
     let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
     let planner = builder
-        .build_with_nodes(loader_nodes.clone())
+        .build_with_nodes(NodeStack::from_configs(loader_nodes))
         .expect("planner")
         .with_resolver(resolver);
 
@@ -824,7 +844,7 @@ fn optional_dependency_with_wrong_tag_is_unresolved() {
 
     let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
     let planner = builder
-        .build_with_nodes(loader_nodes)
+        .build_with_nodes(NodeStack::from_configs(loader_nodes))
         .expect("planner")
         .with_resolver(resolver);
 
@@ -887,7 +907,7 @@ fn required_optional_dependency_surfaces_error() {
 
     let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
     let planner = builder
-        .build_with_nodes(loader_nodes)
+        .build_with_nodes(NodeStack::from_configs(loader_nodes))
         .expect("planner")
         .with_resolver(resolver);
 
@@ -957,7 +977,7 @@ fn unresolved_deployments_remain_in_graph() {
 
     let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
     let planner = builder
-        .build_with_nodes(loader_nodes)
+        .build_with_nodes(NodeStack::from_configs(loader_nodes))
         .expect("planner")
         .with_resolver(resolver);
 
@@ -1040,7 +1060,7 @@ fn missing_dependency_becomes_unresolved_node() {
 
     let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
     let planner = builder
-        .build_with_nodes(loader_nodes.clone())
+        .build_with_nodes(NodeStack::from_configs(loader_nodes))
         .expect("planner")
         .with_resolver(resolver);
 
