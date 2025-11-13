@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
-    sync::{Arc, OnceLock, RwLock},
+    sync::{Arc, RwLock},
 };
 
 use crate::error::{Error, Result};
@@ -299,12 +299,6 @@ fn dependency_keys(node: &NodeConfig) -> Vec<NodeKey> {
     deps.into_iter().collect()
 }
 
-static GLOBAL_NODE_STACK: OnceLock<Arc<RwLock<NodeStackInner>>> = OnceLock::new();
-
-fn shared_stack() -> &'static Arc<RwLock<NodeStackInner>> {
-    GLOBAL_NODE_STACK.get_or_init(|| Arc::new(RwLock::new(NodeStackInner::new())))
-}
-
 #[derive(Clone)]
 pub struct NodeStack {
     shared: Arc<RwLock<NodeStackInner>>,
@@ -312,14 +306,14 @@ pub struct NodeStack {
 
 impl Default for NodeStack {
     fn default() -> Self {
-        Self::global()
+        Self::new()
     }
 }
 
 impl NodeStack {
-    pub fn global() -> Self {
+    pub fn new() -> Self {
         Self {
-            shared: shared_stack().clone(),
+            shared: Arc::new(RwLock::new(NodeStackInner::new())),
         }
     }
 
@@ -329,9 +323,9 @@ impl NodeStack {
     }
 
     pub fn from_instances(nodes: Vec<NodeInstance>) -> Self {
-        let stack = Self::global();
-        stack.replace(nodes);
-        stack
+        Self {
+            shared: Arc::new(RwLock::new(NodeStackInner::from_instances(nodes))),
+        }
     }
 
     pub fn replace(&self, nodes: Vec<NodeInstance>) {
