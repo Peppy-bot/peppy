@@ -12,7 +12,7 @@ fn dynamically_add_node_to_node_stack() {
             interfaces: {
                 subscribes_to: {
                     topics: [
-                        { node: "lidar", name: "lidar_topic", tag: "1.0.0" }
+                        { node: "lidar", name: "push_lidar_object", tag: "1.0.0" }
                     ]
                 }
             }
@@ -23,7 +23,30 @@ fn dynamically_add_node_to_node_stack() {
     let dependency: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
-            manifest: { name: "lidar", tag: "1.0.0" }
+            manifest: { name: "lidar", tag: "1.0.0" },
+            interfaces: {
+                exposes: {
+                    topics: [
+                        {
+                            name: "push_lidar_object",
+                            qos_profile: "sensor_data",
+                            message_format: {
+                                header: {
+                                    $type: "object",
+                                    stamp: "time",
+                                    frame_id: "u32",
+                                },
+                                x: "f32",
+                                y: "f32",
+                                z: "f32",
+                                intensity: "f32",
+                                return_type: "u8",
+                                classification: "u8",
+                            },
+                        }
+                    ]
+                }
+            }
         }"#,
     )
     .expect("valid dependency node config");

@@ -37,6 +37,17 @@ pub enum Error {
     NodeNotFound(String),
     #[error("The node name `{0}` or tag `{1}` could not be found")]
     NoMatchingNode(String, String),
+    #[error(
+        "`{dependant}`:{dependant_tag} expects {interface_kind} `{interface_name}` from `{dependency}`:{dependency_tag}, but it is not exposed"
+    )]
+    MissingInterface {
+        dependant: String,
+        dependant_tag: String,
+        dependency: String,
+        dependency_tag: String,
+        interface_kind: String,
+        interface_name: String,
+    },
 
     // -- deployment errors
     // {0}: node_name + tag, {1}: Reason

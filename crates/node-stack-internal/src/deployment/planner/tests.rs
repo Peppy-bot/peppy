@@ -56,41 +56,46 @@ impl DeploymentSourceResolver for StaticResolver {
 }
 
 fn node_config(name: &str, tag: &str, deps: &[(&str, &str)]) -> NodeConfig {
-    let content = if deps.is_empty() {
-        format!(
-            r#"{{
-                    schema_version: 1,
-                    manifest: {{ name: "{name}", tag: "{tag}" }}
-                }}"#,
-            name = name,
-            tag = tag
-        )
-    } else {
-        let topics = deps
-            .iter()
-            .map(|(dep_name, dep_tag)| {
-                format!(
-                    "{{ node: \"{dep_name}\", name: \"{dep_name}_topic\", tag: \"{dep_tag}\" }}"
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
+    let topics = deps
+        .iter()
+        .map(|(dep_name, dep_tag)| {
+            format!(
+                "{{ node: \"{dep_name}\", name: \"{dep_name}_topic\", tag: \"{dep_tag}\" }}",
+                dep_name = dep_name,
+                dep_tag = dep_tag
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
 
+    let subscribes_block = if deps.is_empty() {
+        String::new()
+    } else {
         format!(
-            r#"{{
-                    schema_version: 1,
-                    manifest: {{ name: "{name}", tag: "{tag}" }},
-                    interfaces: {{
+            ",
                         subscribes_to: {{
                             topics: [ {topics} ]
-                        }}
-                    }}
-                }}"#,
-            name = name,
-            tag = tag,
+                        }}",
             topics = topics
         )
     };
+
+    let content = format!(
+        r#"{{
+                schema_version: 1,
+                manifest: {{ name: "{name}", tag: "{tag}" }},
+                interfaces: {{
+                    exposes: {{
+                        topics: [
+                            {{ name: "{name}_topic", qos_profile: "standard" }}
+                        ]
+                    }}{subscribes}
+                }}
+            }}"#,
+        name = name,
+        tag = tag,
+        subscribes = subscribes_block
+    );
 
     NodeConfigParser::from_content(&content).expect("parse node config")
 }
@@ -1086,4 +1091,78 @@ fn missing_dependency_becomes_unresolved_node() {
         message.contains("dependency declared but missing"),
         "unexpected error message: {message}"
     );
+}
+
+#[test]
+fn dependant_fails_when_dependency_missing_topic_interface() {
+    let temp_dir = tempdir().expect("temp dir");
+
+    let deployments = vec![
+        deployment(
+            "brain",
+            "1.0.0",
+            Some(DeploymentNodeSource::Local(PathBuf::from("./brain"))),
+            false,
+        ),
+        deployment(
+            "lidar",
+            "1.0.0",
+            Some(DeploymentNodeSource::Local(PathBuf::from("./lidar"))),
+            false,
+        ),
+    ];
+
+    let config = PeppyLauncher {
+        deployments: Some(deployments.clone()),
+        logging: None,
+    };
+    let launch_file = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
+
+    let brain_node = node_config("brain", "1.0.0", &[("lidar", "1.0.0")]);
+    let lidar_node: NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: { name: "lidar", tag: "1.0.0" }
+        }"#,
+    )
+    .expect("valid lidar node without exposes");
+
+    let loader_nodes = vec![brain_node.clone(), lidar_node.clone()];
+    let resolver = StaticResolver::new(vec![brain_node, lidar_node]);
+
+    let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
+    let planner = builder
+        .build_with_nodes(NodeStack::from_configs(loader_nodes))
+        .expect("planner")
+        .with_resolver(resolver);
+
+    let graph = planner.map_deployments_to_nodes();
+    assert_eq!(
+        graph.len(),
+        2,
+        "both deployments should remain in the graph"
+    );
+
+    let root = graph.root_index();
+    let brain_map = graph.get(root).expect("brain deployment present");
+    assert_eq!(brain_map.deployment().name, "brain");
+    assert!(
+        !brain_map.is_resolved(),
+        "brain should fail to resolve without exposed lidar topic"
+    );
+    let error = brain_map.error().expect("brain error surfaces");
+    let Error::MissingInterface {
+        dependant,
+        dependency,
+        interface_kind,
+        interface_name,
+        ..
+    } = error
+    else {
+        panic!("unexpected error type: {error:?}");
+    };
+    assert_eq!(dependant, "brain");
+    assert_eq!(dependency, "lidar");
+    assert_eq!(interface_kind, "topic");
+    assert_eq!(interface_name, "lidar_topic");
 }
