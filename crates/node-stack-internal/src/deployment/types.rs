@@ -140,10 +140,166 @@ impl From<&NodeInstance> for NodeKey {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum InterfaceKind {
+    Topic,
+    Service,
+    Action,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct InterfaceRequirement {
+    kind: InterfaceKind,
+    name: String,
+}
+
+impl InterfaceRequirement {
+    fn new(kind: InterfaceKind, name: &str) -> Self {
+        Self {
+            kind,
+            name: name.trim().to_owned(),
+        }
+    }
+
+    pub(super) fn kind(&self) -> InterfaceKind {
+        self.kind
+    }
+
+    pub(super) fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct DependencySpec {
+    pub(super) node_name: String,
+    pub(super) node_tag: String,
+    pub(super) interface: InterfaceRequirement,
+}
+
+pub(super) fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
+    let Some(subscriptions) = node.interfaces.subscribes_to.as_ref() else {
+        return Vec::new();
+    };
+
+    let mut specs: HashMap<(String, String), HashSet<InterfaceRequirement>> = HashMap::new();
+
+    if let Some(topics) = subscriptions.topics.as_ref() {
+        for topic in topics {
+            let Some(node_name) = topic.node.as_deref() else {
+                continue;
+            };
+            let node_name = node_name.trim();
+            if node_name.is_empty() {
+                continue;
+            }
+
+            let interface_name = topic.name.trim();
+            if interface_name.is_empty() {
+                continue;
+            }
+
+            let requirement = InterfaceRequirement::new(InterfaceKind::Topic, interface_name);
+            let tag = topic.tag.trim().to_owned();
+            specs
+                .entry((node_name.to_owned(), tag))
+                .or_default()
+                .insert(requirement);
+        }
+    }
+
+    if let Some(services) = subscriptions.services.as_ref() {
+        for service in services {
+            let node_name = service.node.trim();
+            if node_name.is_empty() {
+                continue;
+            }
+
+            let interface_name = service.name.trim();
+            if interface_name.is_empty() {
+                continue;
+            }
+
+            let requirement = InterfaceRequirement::new(InterfaceKind::Service, interface_name);
+            let tag = service.tag.trim().to_owned();
+            specs
+                .entry((node_name.to_owned(), tag))
+                .or_default()
+                .insert(requirement);
+        }
+    }
+
+    if let Some(actions) = subscriptions.actions.as_ref() {
+        for action in actions {
+            let node_name = action.node.trim();
+            if node_name.is_empty() {
+                continue;
+            }
+
+            let interface_name = action.name.trim();
+            if interface_name.is_empty() {
+                continue;
+            }
+
+            let requirement = InterfaceRequirement::new(InterfaceKind::Action, interface_name);
+            let tag = action.tag.trim().to_owned();
+            specs
+                .entry((node_name.to_owned(), tag))
+                .or_default()
+                .insert(requirement);
+        }
+    }
+
+    specs
+        .into_iter()
+        .flat_map(|((name, tag), requirements)| {
+            requirements
+                .into_iter()
+                .map(move |interface| DependencySpec {
+                    node_name: name.clone(),
+                    node_tag: tag.clone(),
+                    interface,
+                })
+        })
+        .collect()
+}
+
+pub(super) fn exposes_interface(node: &NodeConfig, requirement: &InterfaceRequirement) -> bool {
+    let Some(exposes) = node.interfaces.exposes.as_ref() else {
+        return false;
+    };
+
+    match requirement.kind() {
+        InterfaceKind::Topic => exposes.topics.as_ref().map_or(false, |topics| {
+            topics
+                .iter()
+                .any(|topic| topic.name.trim() == requirement.name())
+        }),
+        InterfaceKind::Service => exposes.services.as_ref().map_or(false, |services| {
+            services
+                .iter()
+                .any(|service| service.name.trim() == requirement.name())
+        }),
+        InterfaceKind::Action => exposes.actions.as_ref().map_or(false, |actions| {
+            actions
+                .iter()
+                .any(|action| action.name.trim() == requirement.name())
+        }),
+    }
+}
+
+pub(super) fn interface_kind_label(kind: InterfaceKind) -> &'static str {
+    match kind {
+        InterfaceKind::Topic => "topic",
+        InterfaceKind::Service => "service",
+        InterfaceKind::Action => "action",
+    }
+}
+
 struct NodeStackInner {
     graph: StableDiGraph<NodeInstance, ()>,
     key_to_index: HashMap<NodeKey, NodeIndex>,
-    pending_dependents: HashMap<NodeKey, Vec<NodeIndex>>,
+    pending_requirements: HashMap<NodeKey, Vec<PendingRequirement>>,
 }
 
 impl NodeStackInner {
@@ -151,7 +307,7 @@ impl NodeStackInner {
         Self {
             graph: StableDiGraph::default(),
             key_to_index: HashMap::new(),
-            pending_dependents: HashMap::new(),
+            pending_requirements: HashMap::new(),
         }
     }
 
@@ -175,22 +331,7 @@ impl NodeStackInner {
         };
 
         self.rewire_dependencies(index);
-        self.attach_pending_dependents(&key);
-    }
-
-    fn attach_pending_dependents(&mut self, key: &NodeKey) {
-        let Some(index) = self.key_to_index.get(key).copied() else {
-            return;
-        };
-
-        if let Some(mut dependants) = self.pending_dependents.remove(key) {
-            dependants.retain(|dep_index| dep_index != &index);
-            for dependant in dependants {
-                if self.graph.find_edge(dependant, index).is_none() {
-                    self.graph.add_edge(dependant, index, ());
-                }
-            }
-        }
+        self.resolve_pending_requirements(&key);
     }
 
     fn rewire_dependencies(&mut self, index: NodeIndex) {
@@ -206,20 +347,94 @@ impl NodeStackInner {
     }
 
     fn attach_dependencies(&mut self, index: NodeIndex) {
-        let Some(node) = self.graph.node_weight(index) else {
+        let requirements = if let Some(node) = self.graph.node_weight(index) {
+            dependency_requirements(node.config())
+        } else {
             return;
         };
-        for dep_key in dependency_keys(node.config()) {
-            if let Some(&dependency_index) = self.key_to_index.get(&dep_key) {
-                if self.graph.find_edge(index, dependency_index).is_none() {
-                    self.graph.add_edge(index, dependency_index, ());
-                }
-            } else {
-                let waiting = self.pending_dependents.entry(dep_key).or_default();
-                if !waiting.iter().any(|existing| *existing == index) {
-                    waiting.push(index);
-                }
+        self.clear_pending_requirements_for(index);
+        for requirement in requirements {
+            if !self.try_attach_requirement(index, &requirement) {
+                self.register_pending_requirement(requirement, index);
             }
+        }
+    }
+
+    fn clear_pending_requirements_for(&mut self, dependant: NodeIndex) {
+        self.pending_requirements.retain(|_, pending| {
+            pending.retain(|req| req.dependant != dependant);
+            !pending.is_empty()
+        });
+    }
+
+    fn register_pending_requirement(
+        &mut self,
+        requirement: DependencyRequirement,
+        dependant: NodeIndex,
+    ) {
+        let entry = self
+            .pending_requirements
+            .entry(requirement.key.clone())
+            .or_default();
+        if entry.iter().any(|pending| {
+            pending.dependant == dependant && pending.interface == requirement.interface
+        }) {
+            return;
+        }
+        entry.push(PendingRequirement {
+            dependant,
+            interface: requirement.interface,
+        });
+    }
+
+    fn try_attach_requirement(
+        &mut self,
+        dependant_index: NodeIndex,
+        requirement: &DependencyRequirement,
+    ) -> bool {
+        let Some(&dependency_index) = self.key_to_index.get(&requirement.key) else {
+            return false;
+        };
+        let Some(dependency_node) = self.graph.node_weight(dependency_index) else {
+            return false;
+        };
+
+        if exposes_interface(dependency_node.config(), &requirement.interface) {
+            if self
+                .graph
+                .find_edge(dependant_index, dependency_index)
+                .is_none()
+            {
+                self.graph.add_edge(dependant_index, dependency_index, ());
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    fn resolve_pending_requirements(&mut self, key: &NodeKey) {
+        if !self.key_to_index.contains_key(key) {
+            return;
+        }
+
+        let Some(mut pending) = self.pending_requirements.remove(key) else {
+            return;
+        };
+
+        let mut remaining = Vec::new();
+        for requirement in pending.drain(..) {
+            let dependency_requirement = DependencyRequirement {
+                key: key.clone(),
+                interface: requirement.interface.clone(),
+            };
+            if !self.try_attach_requirement(requirement.dependant, &dependency_requirement) {
+                remaining.push(requirement);
+            }
+        }
+
+        if !remaining.is_empty() {
+            self.pending_requirements.insert(key.clone(), remaining);
         }
     }
 
@@ -269,34 +484,26 @@ impl NodeStackInner {
     }
 }
 
-fn dependency_keys(node: &NodeConfig) -> Vec<NodeKey> {
-    let Some(subscriptions) = node.interfaces.subscribes_to.as_ref() else {
-        return Vec::new();
-    };
+#[derive(Clone, Debug)]
+struct DependencyRequirement {
+    key: NodeKey,
+    interface: InterfaceRequirement,
+}
 
-    let mut deps: HashSet<NodeKey> = HashSet::new();
+#[derive(Clone, Debug)]
+struct PendingRequirement {
+    dependant: NodeIndex,
+    interface: InterfaceRequirement,
+}
 
-    if let Some(topics) = subscriptions.topics.as_ref() {
-        for topic in topics {
-            if let Some(node_name) = topic.node.as_deref() {
-                deps.insert(NodeKey::new(node_name, &topic.tag));
-            }
-        }
-    }
-
-    if let Some(services) = subscriptions.services.as_ref() {
-        for service in services {
-            deps.insert(NodeKey::new(&service.node, &service.tag));
-        }
-    }
-
-    if let Some(actions) = subscriptions.actions.as_ref() {
-        for action in actions {
-            deps.insert(NodeKey::new(&action.node, &action.tag));
-        }
-    }
-
-    deps.into_iter().collect()
+fn dependency_requirements(node: &NodeConfig) -> Vec<DependencyRequirement> {
+    collect_dependency_specs(node)
+        .into_iter()
+        .map(|spec| DependencyRequirement {
+            key: NodeKey::new(&spec.node_name, &spec.node_tag),
+            interface: spec.interface,
+        })
+        .collect()
 }
 
 #[derive(Clone)]

@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 
 use super::DeploymentMap;
 use super::NodeStack;
+use super::types::{
+    InterfaceRequirement, collect_dependency_specs, exposes_interface, interface_kind_label,
+};
 use super::{git::resolve_remote_git, local::resolve_local_deployment, url::resolve_remote_url};
 use crate::error::{Error, Result};
 use config::AnyType;
@@ -210,7 +213,8 @@ impl LauncherPlanner {
     }
 
     pub fn map_deployments_to_nodes(mut self) -> DeploymentGraph {
-        let nodes = self.collect_deployment_entries();
+        let mut nodes = self.collect_deployment_entries();
+        Self::validate_dependency_interfaces(&mut nodes);
         Self::build_deployment_graph(nodes)
     }
 
@@ -282,6 +286,53 @@ impl LauncherPlanner {
         }
 
         entries
+    }
+
+    fn validate_dependency_interfaces(entries: &mut [NodeEntry]) {
+        let mut resolved_nodes: HashMap<(String, String), NodeConfig> = HashMap::new();
+
+        for entry in entries.iter() {
+            if entry.map.is_resolved() {
+                resolved_nodes.insert(entry.key.clone(), entry.map.node_source().node().clone());
+            }
+        }
+
+        for entry in entries.iter_mut() {
+            if !entry.map.is_resolved() {
+                continue;
+            }
+
+            if let Some(error) = Self::missing_interface_error(entry, &resolved_nodes) {
+                let deployment = entry.map.deployment().clone();
+                entry.map = DeploymentMap::unresolved(deployment, error);
+            }
+        }
+    }
+
+    fn missing_interface_error(
+        entry: &NodeEntry,
+        resolved_nodes: &HashMap<(String, String), NodeConfig>,
+    ) -> Option<Error> {
+        for dependency in &entry.dependencies {
+            let Some(node) = resolved_nodes.get(&dependency.key) else {
+                continue;
+            };
+
+            for requirement in &dependency.requirements {
+                if !exposes_interface(node, requirement) {
+                    return Some(Error::MissingInterface {
+                        dependant: entry.key.0.clone(),
+                        dependant_tag: entry.key.1.clone(),
+                        dependency: dependency.key.0.clone(),
+                        dependency_tag: dependency.key.1.clone(),
+                        interface_kind: interface_kind_label(requirement.kind()).to_string(),
+                        interface_name: requirement.name().to_owned(),
+                    });
+                }
+            }
+        }
+
+        None
     }
 
     fn build_deployment_graph(nodes: Vec<NodeEntry>) -> DeploymentGraph {
@@ -433,46 +484,20 @@ impl LauncherPlanner {
             return Vec::new();
         }
 
-        let node = map.node_source().node();
-        let Some(subscriptions) = node.interfaces.subscribes_to.as_ref() else {
-            return Vec::new();
-        };
+        let specs = collect_dependency_specs(map.node_source().node());
+        let mut grouped: HashMap<(String, String), HashSet<InterfaceRequirement>> = HashMap::new();
 
-        let mut dependencies: HashSet<(String, String)> = HashSet::new();
-
-        let mut register_dependency = |name: &str, tag: &str| {
-            let name = name.trim();
-            let tag = tag.trim();
-            if name.is_empty() || tag.is_empty() {
-                return;
-            }
-
-            dependencies.insert((name.to_string(), tag.to_string()));
-        };
-
-        if let Some(topics) = subscriptions.topics.as_ref() {
-            for topic in topics {
-                if let Some(node) = topic.node.as_deref() {
-                    register_dependency(node, &topic.tag);
-                }
-            }
+        for spec in specs {
+            let key = (spec.node_name, spec.node_tag);
+            grouped.entry(key).or_default().insert(spec.interface);
         }
 
-        if let Some(services) = subscriptions.services.as_ref() {
-            for service in services {
-                register_dependency(&service.node, &service.tag);
-            }
-        }
-
-        if let Some(actions) = subscriptions.actions.as_ref() {
-            for action in actions {
-                register_dependency(&action.node, &action.tag);
-            }
-        }
-
-        dependencies
+        grouped
             .into_iter()
-            .map(|key| DependencyRef { key })
+            .map(|(key, requirements)| DependencyRef {
+                key,
+                requirements: requirements.into_iter().collect(),
+            })
             .collect()
     }
 
@@ -551,4 +576,5 @@ struct NodeEntry {
 #[derive(Clone)]
 struct DependencyRef {
     key: (String, String),
+    requirements: Vec<InterfaceRequirement>,
 }
