@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use httptest::{Expectation, Server, matchers::request, responders::status_code};
-use node_stack::{LocalNodeStackBuilder, NodeStackError};
+use node_stack::{LocalNodeStackBuilder, NodeStack, NodeStackError};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
@@ -619,8 +619,82 @@ fn remote_git_parameter_mismatch_is_rejected() {
 
 #[test]
 fn dynamically_add_node_to_node_stack() {
-    todo!(
-        "Find a way to create a singleton out of DeploymentPlanner (or DeploymentSourceResolver?) and add the ability to dynamically add nodes to it"
-    )
-    // DeploymentPlanner should also have a function that returns a given subscribed/exposed topic/service/action with its associated message_format
+    let dependent = node_with_dependencies("brain", "1.0.0", &[("lidar", "1.0.0")]);
+    let dependency = node_with_dependencies("lidar", "1.0.0", &[]);
+
+    let stack = NodeStack::from_configs(vec![dependent]);
+    assert_eq!(stack.len(), 1, "stack should start with a single node");
+    assert!(
+        stack.dependencies_of("brain", "1.0.0").is_empty(),
+        "dependency edge is deferred until the dependency is registered"
+    );
+
+    stack.push_config(dependency);
+    assert_eq!(stack.len(), 2, "stack should include the newly added node");
+
+    let deps = stack
+        .dependencies_of("brain", "1.0.0")
+        .into_iter()
+        .map(|node| {
+            (
+                node.config().manifest.name.as_str().to_owned(),
+                node.config().manifest.tag.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        deps,
+        vec![("lidar".to_string(), "1.0.0".to_string())],
+        "adding a node should satisfy pending dependency edges"
+    );
+
+    let dependants = stack
+        .dependents_of("lidar", "1.0.0")
+        .into_iter()
+        .map(|node| node.config().manifest.name.as_str().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        dependants,
+        vec!["brain"],
+        "dependency insertion should also update inverse relationships"
+    );
+
+    stack.replace(Vec::new());
+}
+
+fn node_with_dependencies(
+    name: &str,
+    tag: &str,
+    dependencies: &[(&str, &str)],
+) -> config::node::NodeConfig {
+    if dependencies.is_empty() {
+        return serde_json5::from_str(&format!(
+            r#"{{
+                schema_version: 1,
+                manifest: {{ name: "{name}", tag: "{tag}" }}
+            }}"#,
+        ))
+        .expect("valid node config");
+    }
+
+    let topics = dependencies
+        .iter()
+        .map(|(dep_name, dep_tag)| {
+            format!(r#"{{ node: "{dep_name}", name: "{dep_name}_topic", tag: "{dep_tag}" }}"#)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let content = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{ name: "{name}", tag: "{tag}" }},
+            interfaces: {{
+                subscribes_to: {{
+                    topics: [ {topics} ]
+                }}
+            }}
+        }}"#
+    );
+    serde_json5::from_str(&content).expect("valid node config")
 }
