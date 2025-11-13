@@ -27,8 +27,8 @@
       actions: [
         {
           node: "my_action_robot_controller", // Will look for that node name
-          tag: "0.1.0", // On that particular tag/version
           name: "move_right_arm", // With this action name
+          tag: "0.1.0", // On that particular tag/version
         }
       ],
     },
