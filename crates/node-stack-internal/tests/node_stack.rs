@@ -659,7 +659,6 @@ fn dynamically_add_node_to_node_stack() {
         "dependency insertion should also update inverse relationships"
     );
 
-    stack.replace(Vec::new());
 }
 
 fn node_with_dependencies(
