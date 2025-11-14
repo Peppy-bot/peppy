@@ -68,13 +68,6 @@ pub fn deployment(
     }
 }
 
-pub fn minimal_config() -> PeppyLauncher {
-    PeppyLauncher {
-        deployments: Some(Vec::new()),
-        logging: None,
-    }
-}
-
 pub fn write_config(path: PathBuf, launcher_config: PeppyLauncher) -> PathBuf {
     let content = serde_json5::to_string(&launcher_config).expect("serialize config");
     fs::create_dir_all(path.parent().expect("dir")).expect("create config directory");

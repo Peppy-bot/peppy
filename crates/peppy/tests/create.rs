@@ -2,10 +2,12 @@ use tempfile::TempDir;
 
 use peppy::node::{Language, NodeName, create};
 
+mod helpers;
+
 #[test]
 fn test_create_command_default_directory() {
     let temp_dir = TempDir::new().unwrap();
-    super::helpers::setup(temp_dir.path());
+    helpers::setup(temp_dir.path());
 
     let node_name = "test_node";
     let result = create::create(
@@ -30,7 +32,7 @@ fn test_create_command_default_directory() {
 #[test]
 fn test_create_command_with_to_dir() {
     let temp_dir = TempDir::new().unwrap();
-    super::helpers::setup(temp_dir.path());
+    helpers::setup(temp_dir.path());
 
     let node_name = "test_node";
     let target_path = temp_dir.path().join(node_name);

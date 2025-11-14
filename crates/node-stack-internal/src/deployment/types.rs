@@ -550,14 +550,6 @@ impl NodeStack {
         guard.contains(&NodeKey::new(name, tag))
     }
 
-    pub fn with_nodes<R>(&self, f: impl FnOnce(&[NodeInstance]) -> R) -> R {
-        let snapshot = {
-            let guard = self.shared.read().expect("node stack poisoned");
-            guard.nodes_snapshot()
-        };
-        f(&snapshot)
-    }
-
     pub fn find(&self, name: &str, tag: &str) -> Option<NodeInstance> {
         let guard = self.shared.read().expect("node stack poisoned");
         guard.find(&NodeKey::new(name, tag))
