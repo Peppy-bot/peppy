@@ -8,7 +8,7 @@ use tempfile::TempDir;
 #[path = "./helpers/config.rs"]
 mod helper_config;
 
-/// Uses the following nodes:
+/// Launches the following nodes:
 /// - brain
 /// - controller
 /// - lidar_sensor

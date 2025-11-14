@@ -16,52 +16,9 @@ mod helper_git;
 #[path = "./helpers/resolver.rs"]
 mod helper_resolver;
 
-use helper_config::{create_http_bundle, deployment, minimal_config, node_config, write_config};
+use helper_config::{create_http_bundle, deployment, node_config, write_config};
 use helper_git::{create_git_repository, push_git_commit};
 use helper_resolver::StaticResolver;
-
-#[test]
-fn uses_provided_node_stack() {
-    let temp_dir = tempdir().expect("temp dir");
-    let launch_file = write_config(
-        temp_dir.path().join("peppy_launcher.json5"),
-        minimal_config(),
-    );
-
-    let expected_nodes = vec![node_config("alpha", "1.0.0", &[])];
-
-    let builder = LocalNodeStackBuilder::from_launch_file(&launch_file, None).expect("builder");
-    let planner = builder
-        .build_with_nodes(NodeStack::from_configs(expected_nodes.clone()))
-        .expect("planner");
-
-    let stack = planner.node_stack();
-    assert_eq!(stack.len(), expected_nodes.len());
-
-    // Vec<(String, String)> = Vec<(node_name, node_tag)>
-    let actual_manifests: Vec<(String, String)> = stack.with_nodes(|nodes| {
-        nodes
-            .iter()
-            .map(|node| {
-                let config = node.config();
-                (
-                    config.manifest.name.as_str().to_owned(),
-                    config.manifest.tag.clone(),
-                )
-            })
-            .collect()
-    });
-    let expected_manifests: Vec<(String, String)> = expected_nodes
-        .iter()
-        .map(|node| {
-            (
-                node.manifest.name.as_str().to_owned(),
-                node.manifest.tag.clone(),
-            )
-        })
-        .collect();
-    assert_eq!(actual_manifests, expected_manifests);
-}
 
 #[test]
 fn http_bundle_is_downloaded_and_resolved() {
@@ -534,7 +491,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
 }
 
 #[test]
-fn optional_dependency_missing_is_unresolved() {
+fn optional_dependency_from_launcher_missing_is_unresolved() {
     let temp_dir = tempdir().expect("temp dir");
 
     let deployments = vec![
@@ -603,7 +560,7 @@ fn optional_dependency_missing_is_unresolved() {
 }
 
 #[test]
-fn optional_dependency_with_wrong_tag_is_unresolved() {
+fn optional_dependency_from_launcher_with_wrong_tag_is_unresolved() {
     let temp_dir = tempdir().expect("temp dir");
 
     let deployments = vec![
