@@ -2,7 +2,7 @@
 mod tests;
 
 use super::types::{InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage};
-use crate::error::{Error, Result};
+use crate::error::Result;
 use config::node::{
     ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
     SubscribedService, SubscribedTopic,
@@ -74,12 +74,8 @@ impl LanguageGenerator for PythonGenerator {
     fn add_subscribed_topic(
         &mut self,
         topic: &SubscribedTopic,
-        arguments: Vec<MessageFormat>,
+        _arguments: MessageFormat,
     ) -> Result<()> {
-        if arguments.is_empty() {
-            return Err(Error::SubscriberTopicMessageFormatMissing(topic.name.clone()));
-        }
-        let _ = arguments;
         self.push_section(InterfaceArtifact::from_kind(
             &topic.name,
             InterfaceKind::SubscribedTopic,

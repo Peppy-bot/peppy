@@ -16,6 +16,8 @@ pub enum Error {
     // -- Subscriber errors
     #[error("missing topic message format for subscriber `{0}`")]
     SubscriberTopicMessageFormatMissing(String),
+    #[error("subscribed topic `{0}` must specify a node")]
+    SubscriberTopicNodeMissing(String),
     #[error("missing service message format for subscriber `{0}`")]
     SubscriberServiceMessageFormatMissing(String),
     #[error("missing action message format for subscriber `{0}`")]

@@ -33,6 +33,7 @@ const EXPOSED_TOPIC_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE: &str = r#"
 {
+  node: "uvc_camera",
   name: "push_frame",
   tag: "0.1.0"
 }
@@ -77,7 +78,7 @@ fn topics_communication() {
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
     let (mut generator, output_dir2, user_node_subscriber) = init_test_env(&temp_dir_proj2);
     generator
-        .add_subscribed_topic(&subscribed_topic, vec![subscribed_format])
+        .add_subscribed_topic(&subscribed_topic, subscribed_format)
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir2);
     generator.build(&output_dir2).unwrap();
@@ -85,7 +86,7 @@ fn topics_communication() {
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = format!(
         "
-use peppygen::subscribed_topics::push_frame::on_next_message_received;
+use peppygen::subscribed_topics::uvc_camera_push_frame::on_next_message_received;
 use peppygen::{{Messenger, Result}};
 
 #[tokio::main]

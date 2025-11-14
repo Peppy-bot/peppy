@@ -350,12 +350,8 @@ pub struct ExposedAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubscribedTopic {
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_subscribed_topic_node"
-    )]
-    pub node: Option<String>,
+    #[serde(deserialize_with = "deserialize_subscribed_topic_node")]
+    pub node: String,
     #[serde(deserialize_with = "deserialize_subscribed_topic_name")]
     pub name: String,
     #[serde(default)]
@@ -412,17 +408,11 @@ impl Default for ActionServiceEndpoint {
     }
 }
 
-fn deserialize_subscribed_topic_node<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+fn deserialize_subscribed_topic_node<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let value = Option::<String>::deserialize(deserializer)?;
-    match value {
-        Some(raw) => validate_non_empty_identifier(&raw, "SubscribedTopic.node")
-            .map(Some)
-            .map_err(de::Error::custom),
-        None => Ok(None),
-    }
+    deserialize_non_empty_identifier(deserializer, "SubscribedTopic.node")
 }
 
 fn deserialize_subscribed_topic_name<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -570,17 +560,15 @@ mod tests {
     }
 
     #[test]
-    fn subscribed_topic_node_is_optional_but_validated() {
+    fn subscribed_topic_node_is_required() {
         let valid = r#"{ node: "uvc_camera", name: "stream" }"#;
         let topic: SubscribedTopic =
             serde_json5::from_str(valid).expect("valid topic should parse");
-        assert_eq!(topic.node.as_deref(), Some("uvc_camera"));
+        assert_eq!(topic.node, "uvc_camera");
         assert_eq!(topic.name, "stream");
 
         let without_node = r#"{ name: "stream" }"#;
-        let topic: SubscribedTopic =
-            serde_json5::from_str(without_node).expect("topic without node should parse");
-        assert!(topic.node.is_none());
+        assert!(serde_json5::from_str::<SubscribedTopic>(without_node).is_err());
 
         let missing_node = r#"{ node: "", name: "stream" }"#;
         assert!(serde_json5::from_str::<SubscribedTopic>(missing_node).is_err());
@@ -600,7 +588,7 @@ mod tests {
         let trimmed = r#"{ node: " uvc_camera ", name: " stream " }"#;
         let topic: SubscribedTopic =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
-        assert_eq!(topic.node.as_deref(), Some("uvc_camera"));
+        assert_eq!(topic.node, "uvc_camera");
         assert_eq!(topic.name, "stream");
     }
 
