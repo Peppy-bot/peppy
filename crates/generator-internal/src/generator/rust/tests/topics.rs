@@ -515,6 +515,10 @@ fn subscribed_to_two_topics_same_node() {
     }
 }
 
+/// Topics are the only entities that can subscribe to a particular topic name without specifying the `node` attribute.
+/// Since the topic does not point to a specific node, the `message_format` cannot be
+/// determined in advance. In that case the generated code simply return the payload it received from any topic with the same name.
+/// The decoding step is also skipped and left to the user.
 #[test]
 fn subscribed_to_topic_no_node() {
     // Here we don't use a node name so any node in the network with a topic named "stream" is gonna be captured
@@ -525,29 +529,10 @@ fn subscribed_to_topic_no_node() {
         }
         "#;
     let topic: SubscribedTopic = serde_json5::from_str(topic).unwrap();
-    let format = r#"
-        {
-            header: {
-                $type: "object",
-                stamp: "time",
-                frame_id: "u32"
-            },
-            encoding: "string",
-            width: "u32",
-            height: "u32",
-            image: {
-                $type: "array",
-                $items: "u8",
-                $length: 3
-            }
-        }
-        "#;
-    let format: MessageFormat = serde_json5::from_str(format).unwrap();
 
     let mut generator = RustGenerator::new();
-    generator
-        .add_subscribed_topic(&topic, Some(&format))
-        .unwrap();
+    // No message_format is expected here
+    generator.add_subscribed_topic(&topic, None).unwrap();
     let artifacts: Vec<String> = generator
         .into_artifacts()
         .into_iter()
@@ -562,44 +547,19 @@ fn subscribed_to_topic_no_node() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     assert_rendered!(
-        rendered.contains("pub struct Message"),
-        &rendered,
-        "expected return struct definition"
-    );
-    assert_rendered!(
-        rendered.contains("pub struct MessageHeader"),
-        &rendered,
-        "expected nested struct definition"
-    );
-    assert_rendered!(
-        rendered.contains("image: [u8; 3]"),
-        &rendered,
-        "expected array element type"
-    );
-    assert_rendered!(
         rendered.contains("pub async fn on_next_message_received("),
         &rendered,
-        "expected async subscriber method"
+        "expected subscriber method to be generated"
     );
     assert_rendered!(
-        rendered.contains("messenger: &crate::Messenger"),
+        rendered.contains("-> crate::Result<bytes::Bytes>"),
         &rendered,
-        "expected messenger reference parameter"
+        "expected raw payload return type"
     );
     assert_rendered!(
-        rendered.contains("deseralize_payload(message.payload.as_ref())"),
+        rendered.contains("Ok(message.payload)"),
         &rendered,
-        "expected helper payload deserializer invocation"
-    );
-    assert_rendered!(
-        rendered.contains("fn deseralize_payload("),
-        &rendered,
-        "expected private payload deserializer function"
-    );
-    assert_rendered!(
-        rendered.contains("-> crate::Result<Message>"),
-        &rendered,
-        "expected subscriber return type"
+        "expected payload to be returned directly"
     );
     assert_rendered!(
         rendered.contains("peppylib::TopicMessenger::subscribe("),
@@ -609,47 +569,32 @@ fn subscribed_to_topic_no_node() {
     assert_rendered!(
         rendered.contains("messenger.handle()"),
         &rendered,
-        "expected messenger handle to be passed to subscription helper"
+        "expected messenger handle to be used in subscription"
     );
     assert_rendered!(
-        rendered.contains("let namespace = messenger.namespace();"),
+        rendered.contains("messenger.namespace()"),
         &rendered,
-        "expected namespace lookup via messenger helper"
-    );
-    assert_rendered!(
-        rendered.contains("capnp::serialize::read_message"),
-        &rendered,
-        "expected capnp deserialization"
-    );
-    assert_rendered!(
-        rendered.contains("crate::Error::TopicSubscribe"),
-        &rendered,
-        "expected explicit topic subscribe error variant"
-    );
-    assert_rendered!(
-        rendered.contains("crate::Error::SubscriptionClosed"),
-        &rendered,
-        "expected explicit subscription closed error variant"
-    );
-    assert_rendered!(
-        rendered.contains("crate::Error::CapnpDeserialize"),
-        &rendered,
-        "expected explicit capnp deserialize error variant"
-    );
-    assert_rendered!(
-        rendered.contains("crate::Error::CapnpField"),
-        &rendered,
-        "expected explicit capnp field access error variant"
-    );
-    assert_rendered!(
-        rendered.contains("crate::Error::InvalidFixedBytes"),
-        &rendered,
-        "expected explicit fixed-size byte validation error variant"
+        "expected namespace lookup via messenger"
     );
     assert_rendered!(
         rendered.contains("let qos = peppylib::config::QoSProfile::Standard;"),
         &rendered,
-        "expected qos initialization"
+        "expected default QoS selection"
+    );
+    assert_rendered!(
+        !rendered.contains("deseralize_payload"),
+        &rendered,
+        "did not expect payload deserializer when message format is unknown"
+    );
+    assert_rendered!(
+        !rendered.contains("capnp::serialize::read_message"),
+        &rendered,
+        "did not expect capnp deserialization when returning raw payload"
+    );
+    assert_rendered!(
+        !rendered.contains("pub struct Message"),
+        &rendered,
+        "did not expect typed message struct when format is unavailable"
     );
 }
 

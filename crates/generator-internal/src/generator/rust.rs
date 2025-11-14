@@ -823,10 +823,14 @@ impl LanguageGenerator for RustGenerator {
     fn add_subscribed_topic(
         &mut self,
         topic: &SubscribedTopic,
-        arguments: Option<&MessageFormat>,
+        message_format: Option<&MessageFormat>,
     ) -> Result<()> {
-        let format_artifacts = map_message_format(arguments)?
-            .ok_or_else(|| Error::SubscriberTopicMessageFormatMissing(topic.name.clone()))?;
+        let format_artifacts = map_message_format(message_format)?;
+        if format_artifacts.is_none() && topic.node.is_some() {
+            return Err(Error::SubscriberTopicMessageFormatMissing(
+                topic.name.clone(),
+            ));
+        }
 
         let node_component = sanitize_component(topic.node.as_deref().unwrap_or(""));
         let topic_component = sanitize_component(topic.name.as_str());
@@ -867,54 +871,66 @@ impl LanguageGenerator for RustGenerator {
         let callback_fn_name = String::from("on_next_message_received");
         let callback_fn_ident = Ident::new(&callback_fn_name, Span::call_site());
 
-        let mut context = GenerationContext::default();
-        let params = collect_function_params(
-            Some(&format_artifacts),
-            None,
-            &message_struct_name,
-            &mut context,
-            None,
-        )?;
+        let rendered = match format_artifacts {
+            Some(format_artifacts) => {
+                let mut context = GenerationContext::default();
+                let params = collect_function_params(
+                    Some(&format_artifacts),
+                    None,
+                    &message_struct_name,
+                    &mut context,
+                    None,
+                )?;
 
-        let args_struct_ident = Ident::new(&message_struct_name, Span::call_site());
-        let args_fields: Vec<(Ident, TokenStream)> = params
-            .iter()
-            .map(|param| (param.ident.clone(), param.ty.clone()))
-            .collect();
-        context.add_struct(args_struct_ident.clone(), args_fields);
+                let args_struct_ident = Ident::new(&message_struct_name, Span::call_site());
+                let args_fields: Vec<(Ident, TokenStream)> = params
+                    .iter()
+                    .map(|param| (param.ident.clone(), param.ty.clone()))
+                    .collect();
+                context.add_struct(args_struct_ident.clone(), args_fields);
 
-        let schema_key = if !topic_component.is_empty() {
-            format!("on_next_{topic_component}_message")
-        } else if !node_component.is_empty() {
-            format!("on_next_{node_component}_message")
-        } else {
-            format!("{module_component}_message")
+                let schema_key = if !topic_component.is_empty() {
+                    format!("on_next_{topic_component}_message")
+                } else if !node_component.is_empty() {
+                    format!("on_next_{node_component}_message")
+                } else {
+                    format!("{module_component}_message")
+                };
+
+                let encoding = self
+                    .prepare_message_encoding(
+                        &schema_key,
+                        &struct_prefix,
+                        Some(&format_artifacts),
+                        &params,
+                    )?
+                    .expect("message encoding spec should exist when message format is provided");
+                let method_tokens = build_subscribed_topic_callback(
+                    &callback_fn_ident,
+                    &args_struct_ident,
+                    &params,
+                    &format_artifacts,
+                    &encoding,
+                    topic,
+                    &message_struct_name,
+                );
+                let mut items = context.into_tokens();
+                items.push(method_tokens);
+
+                let tokens: TokenStream = quote! {
+                    #( #items )*
+                };
+                render_tokens(tokens)
+            }
+            None => {
+                let method_tokens =
+                    build_untyped_subscribed_topic_callback(&callback_fn_ident, topic);
+                let tokens: TokenStream = quote! {
+                    #method_tokens
+                };
+                render_tokens(tokens)
+            }
         };
-
-        let encoding = self
-            .prepare_message_encoding(
-                &schema_key,
-                &struct_prefix,
-                Some(&format_artifacts),
-                &params,
-            )?
-            .expect("message encoding spec should exist when message format is provided");
-        let method_tokens = build_subscribed_topic_callback(
-            &callback_fn_ident,
-            &args_struct_ident,
-            &params,
-            &format_artifacts,
-            &encoding,
-            topic,
-            &message_struct_name,
-        );
-        let mut items = context.into_tokens();
-        items.push(method_tokens);
-
-        let tokens: TokenStream = quote! {
-            #( #items )*
-        };
-        let rendered = render_tokens(tokens);
 
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
@@ -2320,6 +2336,44 @@ fn build_subscribed_topic_callback(
             Ok(#args_struct_ident {
                 #( #field_inits ),*
             })
+        }
+    }
+}
+
+fn build_untyped_subscribed_topic_callback(
+    fn_name: &Ident,
+    topic: &SubscribedTopic,
+) -> TokenStream {
+    let topic_literal = Literal::string(topic.name.as_str());
+
+    quote! {
+        pub async fn #fn_name(messenger: &crate::Messenger) -> crate::Result<bytes::Bytes> {
+            let topic_name = #topic_literal;
+            let namespace = messenger.namespace();
+            let qos = peppylib::config::QoSProfile::Standard;
+
+            let message = {
+                let mut subscription = peppylib::TopicMessenger::subscribe(
+                    messenger.handle(),
+                    namespace,
+                    topic_name,
+                    qos,
+                )
+                .await
+                .map_err(|source| crate::Error::TopicSubscribe {
+                    topic_name: topic_name.to_string(),
+                    namespace: namespace.to_string(),
+                    source,
+                })?;
+                subscription
+                    .on_next_message()
+                    .await
+                    .ok_or_else(|| crate::Error::SubscriptionClosed {
+                        topic_name: topic_name.to_string(),
+                    })?
+            };
+
+            Ok(message.payload)
         }
     }
 }
