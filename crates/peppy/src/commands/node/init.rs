@@ -2,7 +2,7 @@ mod factory;
 mod python;
 mod rust;
 
-use super::Language;
+use super::PackageManager;
 use super::types::NodeName;
 use crate::{AppContext, Error, Result};
 use factory::{NodeContext, create_factory};
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 pub struct NodeBuilder {
     to_dir: PathBuf,
     node_name: NodeName,
-    lang: Language,
+    lang: PackageManager,
     description: Option<String>,
     full: bool,
 }
@@ -22,7 +22,7 @@ impl NodeBuilder {
         Self {
             to_dir: ctx.root_dir.clone(),
             node_name,
-            lang: Language::Rust,
+            lang: PackageManager::Rust,
             description: None,
             full: false,
         }
@@ -35,7 +35,7 @@ impl NodeBuilder {
         self
     }
 
-    pub fn lang(mut self, lang: Language) -> Self {
+    pub fn lang(mut self, lang: PackageManager) -> Self {
         self.lang = lang;
         self
     }
@@ -51,7 +51,7 @@ impl NodeBuilder {
     }
 
     pub fn build(self) -> Result<()> {
-        create(
+        init_project(
             self.to_dir,
             self.node_name,
             self.lang,
@@ -63,10 +63,10 @@ impl NodeBuilder {
 }
 
 /// Creates a new node and updates the peppy.json5 configuration file where the command is run
-pub fn create(
+pub fn init_project(
     to_dir: impl AsRef<Path>,
     node_name: NodeName,
-    language: Language,
+    language: PackageManager,
     description: Option<&str>,
     full: bool,
 ) -> Result<()> {
@@ -113,7 +113,7 @@ mod tests {
             NodeName::new(node_name).unwrap(),
             temp_dir.path(),
             "Test node",
-            Language::Rust,
+            PackageManager::Rust,
         );
         let factory = create_factory(ctx);
 
@@ -136,10 +136,10 @@ mod tests {
         fs::create_dir(&existing_dir).unwrap();
 
         // Try to create a node with the same name
-        let result = create(
+        let result = init_project(
             temp_dir.path(),
             NodeName::new(node_name).unwrap(),
-            Language::Python,
+            PackageManager::Python,
             Some("Test node"),
             false,
         );
@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn test_create_gitignore_python() {
-        use crate::commands::node::create::factory::{NodeContext, NodeFactory, PythonNodeFactory};
+        use super::factory::{NodeContext, NodeFactory, PythonNodeFactory};
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -161,7 +161,7 @@ mod tests {
             NodeName::new("py_node").unwrap(),
             temp_dir.path(),
             "desc",
-            Language::Python,
+            PackageManager::Python,
         );
         let factory = PythonNodeFactory::new(ctx);
 
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn test_create_gitignore_rust() {
-        use crate::commands::node::create::factory::{NodeContext, NodeFactory, RustNodeFactory};
+        use super::factory::{NodeContext, NodeFactory, RustNodeFactory};
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -185,7 +185,7 @@ mod tests {
             NodeName::new("rs_node").unwrap(),
             temp_dir.path(),
             "desc",
-            Language::Rust,
+            PackageManager::Rust,
         );
         let factory = RustNodeFactory::new(ctx);
 

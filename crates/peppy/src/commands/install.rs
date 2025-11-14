@@ -8,25 +8,25 @@ use crate::{AppContext, Error, Result};
 use config::node::NodeConfigCreator;
 use tracing::info;
 
-pub struct InitCommand {
+pub struct InstallCommand {
     pub node_name: String,
     pub in_dir: Option<PathBuf>,
+    pub launcher_file: Option<PathBuf>,
 }
 
-impl Command for InitCommand {
+impl Command for InstallCommand {
     fn execute(self, ctx: &AppContext) -> Result<()> {
         let current_dir = if let Some(in_dir) = self.in_dir {
             in_dir
         } else {
             ctx.root_dir.clone()
         };
-        init_peppy_config(&current_dir)
-            .map_err(|e| crate::Error::ExecutionFailed(e.to_string()))?;
+        install_peppyd(&current_dir).map_err(|e| crate::Error::ExecutionFailed(e.to_string()))?;
         Ok(())
     }
 }
 
-pub fn init_peppy_config(path: impl AsRef<Path>) -> Result<PathBuf> {
+pub fn install_peppyd(path: impl AsRef<Path>) -> Result<PathBuf> {
     let path = path.as_ref();
     // Create the directory if it doesn't exist
     fs::create_dir_all(path)?;

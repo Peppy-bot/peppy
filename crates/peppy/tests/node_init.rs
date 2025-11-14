@@ -1,19 +1,19 @@
 use tempfile::TempDir;
 
-use peppy::node::{Language, NodeName, create};
+use peppy::node::{NodeName, PackageManager, init};
 
 mod helpers;
 
 #[test]
-fn test_create_command_default_directory() {
+fn test_init_command_default_directory() {
     let temp_dir = TempDir::new().unwrap();
     helpers::setup(temp_dir.path());
 
     let node_name = "test_node";
-    let result = create::create(
+    let result = init::init_project(
         temp_dir.path(),
         NodeName::new(node_name).unwrap(),
-        Language::Rust,
+        PackageManager::Rust,
         None,
         false,
     );
@@ -36,10 +36,10 @@ fn test_create_command_with_to_dir() {
 
     let node_name = "test_node";
     let target_path = temp_dir.path().join(node_name);
-    let result = create::create(
+    let result = init::init_project(
         temp_dir.path(),
         NodeName::new(node_name).unwrap(),
-        Language::Rust,
+        PackageManager::Rust,
         None,
         false,
     );
