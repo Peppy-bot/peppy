@@ -77,7 +77,7 @@ fn topics_communication() {
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
     let (mut generator, output_dir2, user_node_subscriber) = init_test_env(&temp_dir_proj2);
     generator
-        .add_subscribed_topic(&subscribed_topic, Some(&subscribed_format))
+        .add_subscribed_topic(&subscribed_topic, vec![subscribed_format])
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir2);
     generator.build(&output_dir2).unwrap();

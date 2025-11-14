@@ -286,7 +286,7 @@ fn subscribed_to_topic() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_subscribed_topic(&topic, Some(&format))
+        .add_subscribed_topic(&topic, vec![format])
         .unwrap();
     let artifacts: Vec<String> = generator
         .into_artifacts()
@@ -435,10 +435,10 @@ fn subscribed_to_two_topics_same_node() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_subscribed_topic(&video_topic, Some(&video_format))
+        .add_subscribed_topic(&video_topic, vec![video_format])
         .unwrap();
     generator
-        .add_subscribed_topic(&sound_topic, Some(&sound_format))
+        .add_subscribed_topic(&sound_topic, vec![sound_format])
         .unwrap();
     let artifacts: Vec<String> = generator
         .into_artifacts()
@@ -516,23 +516,54 @@ fn subscribed_to_two_topics_same_node() {
 }
 
 /// Topics are the only entities that can subscribe to a particular topic name without specifying the `node` attribute.
-/// Since the topic does not point to a specific node, the `message_format` cannot be
-/// determined in advance. In that case the generated code simply return the payload it received from any topic with the same name.
-/// The decoding step is also skipped and left to the user.
+/// Since the topic does not point to a specific node, the `message_format` cannot be determined in advance.
+/// In that case the generated code simply generates all functions known to have the same `topic` name.
 #[test]
 fn subscribed_to_topic_no_node() {
     // Here we don't use a node name so any node in the network with a topic named "stream" is gonna be captured
     let topic = r#"
         {
             name: "stream",
-            tag: "0.1.0"
+            tag: "0.1.0" // Tag can be specified here, but will be ignored
         }
         "#;
     let topic: SubscribedTopic = serde_json5::from_str(topic).unwrap();
+    let format1: &str = r#"
+    {
+        header: {
+            $type: "object",
+            stamp: "time",
+            frame_id: "u32"
+        },
+        encoding: "string",
+        width: "u32",
+        height: "u32",
+        image: {
+            $type: "array",
+            $items: "u8",
+            $length: 3
+        }
+    }
+    "#;
+    let format1: MessageFormat = serde_json5::from_str(format1).unwrap();
+
+    let format2: &str = r#"
+    {
+        width: "u32",
+        height: "u32",
+        image: {
+            $type: "array",
+            $items: "u8",
+            $length: 3
+        }
+    }
+    "#;
+    let format2: MessageFormat = serde_json5::from_str(format2).unwrap();
 
     let mut generator = RustGenerator::new();
-    // No message_format is expected here
-    generator.add_subscribed_topic(&topic, None).unwrap();
+    generator
+        .add_subscribed_topic(&topic, vec![format1, format2])
+        .unwrap();
     let artifacts: Vec<String> = generator
         .into_artifacts()
         .into_iter()
@@ -547,54 +578,64 @@ fn subscribed_to_topic_no_node() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     assert_rendered!(
-        rendered.contains("pub async fn on_next_message_received("),
+        rendered.contains("pub struct Message1"),
         &rendered,
-        "expected subscriber method to be generated"
+        "expected first typed message struct"
     );
     assert_rendered!(
-        rendered.contains("-> crate::Result<bytes::Bytes>"),
+        rendered.contains("pub struct Message1Header"),
         &rendered,
-        "expected raw payload return type"
+        "expected nested header struct for first schema"
     );
     assert_rendered!(
-        rendered.contains("Ok(message.payload)"),
+        rendered.contains("pub struct Message2"),
         &rendered,
-        "expected payload to be returned directly"
+        "expected second typed message struct"
     );
     assert_rendered!(
-        rendered.contains("peppylib::TopicMessenger::subscribe("),
+        rendered.contains("pub async fn on_next_message_received_1("),
         &rendered,
-        "expected subscription helper invocation"
+        "expected subscriber for first schema"
     );
     assert_rendered!(
-        rendered.contains("messenger.handle()"),
+        rendered.contains("pub async fn on_next_message_received_2("),
         &rendered,
-        "expected messenger handle to be used in subscription"
+        "expected subscriber for second schema"
     );
     assert_rendered!(
-        rendered.contains("messenger.namespace()"),
+        rendered.contains("fn deseralize_payload_1("),
         &rendered,
-        "expected namespace lookup via messenger"
+        "expected helper for first schema"
     );
     assert_rendered!(
-        rendered.contains("let qos = peppylib::config::QoSProfile::Standard;"),
+        rendered.contains("fn deseralize_payload_2("),
         &rendered,
-        "expected default QoS selection"
+        "expected helper for second schema"
     );
     assert_rendered!(
-        !rendered.contains("deseralize_payload"),
+        rendered.contains("-> crate::Result<Message1>"),
         &rendered,
-        "did not expect payload deserializer when message format is unknown"
+        "expected typed return for first schema"
     );
     assert_rendered!(
-        !rendered.contains("capnp::serialize::read_message"),
+        rendered.contains("-> crate::Result<Message2>"),
         &rendered,
-        "did not expect capnp deserialization when returning raw payload"
+        "expected typed return for second schema"
     );
     assert_rendered!(
-        !rendered.contains("pub struct Message"),
+        rendered.contains("peppylib::TopicMessenger::subscribe"),
         &rendered,
-        "did not expect typed message struct when format is unavailable"
+        "expected subscription helper usage"
+    );
+    assert_rendered!(
+        rendered.contains("capnp::serialize::read_message"),
+        &rendered,
+        "expected capnp deserialization in all variants"
+    );
+    assert_rendered!(
+        !rendered.contains("-> crate::Result<bytes::Bytes>"),
+        &rendered,
+        "expected typed payloads instead of raw bytes"
     );
 }
 
@@ -617,10 +658,10 @@ fn compile_lib_with_exposed_and_subscribed_topics() {
     generator.add_exposed_topic(&exposed_topic1).unwrap();
     generator.add_exposed_topic(&exposed_topic2).unwrap();
     generator
-        .add_subscribed_topic(&subscribed_topic1, Some(&subscribed_format1))
+        .add_subscribed_topic(&subscribed_topic1, vec![subscribed_format1])
         .unwrap();
     generator
-        .add_subscribed_topic(&subscribed_topic2, Some(&subscribed_format2))
+        .add_subscribed_topic(&subscribed_topic2, vec![subscribed_format2])
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator.build(&output_dir).unwrap();
