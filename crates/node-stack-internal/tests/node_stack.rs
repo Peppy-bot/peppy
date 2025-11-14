@@ -109,7 +109,8 @@ fn dynamically_add_node_to_node_stack_matching_topic_no_node() {
                 subscribes_to: {
                     topics: [
                         {
-                          name: "push_lidar_object", 
+                          // No node is specified here, the message can come from any node
+                          name: "push_frame", 
                           tag: "1.0.0" 
                         }
                     ]
@@ -119,18 +120,18 @@ fn dynamically_add_node_to_node_stack_matching_topic_no_node() {
     )
     .expect("valid dependent node config");
 
-    let dependency: config::node::NodeConfig = serde_json5::from_str(
+    let dependency1: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
             manifest: { 
-              name: "lidar", 
+              name: "chest_camera", 
               tag: "1.0.0" 
             },
             interfaces: {
                 exposes: {
                     topics: [
                         {
-                          name: "push_lidar_object",
+                          name: "push_frame",
                           qos_profile: "sensor_data",
                           message_format: {
                             header: {
@@ -138,12 +139,46 @@ fn dynamically_add_node_to_node_stack_matching_topic_no_node() {
                               stamp: "time",
                               frame_id: "u32",
                             },
-                            x: "f32",
-                            y: "f32",
-                            z: "f32",
-                            intensity: "f32",
-                            return_type: "u8",
-                            classification: "u8",
+                            encoding: "string", // "rgb8", "bgr8", "yuyv", "mjpeg"
+                            width: "u32",
+                            height: "u32",
+                            image: {
+                              $type: "array",
+                              $items: "u8",
+                              $length: 3
+                            },
+                          }
+                        }
+                    ]
+                }
+            }
+        }"#,
+    )
+    .expect("valid dependency node config");
+
+    let dependency2: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: { 
+              name: "wrist_camera", 
+              tag: "1.0.0" 
+            },
+            interfaces: {
+                exposes: {
+                    topics: [
+                        {
+                          // Same topic name
+                          name: "push_frame",
+                          qos_profile: "sensor_data",
+                          // But a different message format for this one
+                          message_format: {
+                            width: "u32",
+                            height: "u32",
+                            image: {
+                              $type: "array",
+                              $items: "u8",
+                              $length: 3
+                            },
                           },
                         }
                     ]
@@ -160,35 +195,14 @@ fn dynamically_add_node_to_node_stack_matching_topic_no_node() {
         "dependency edge is deferred until the dependency is registered"
     );
 
-    stack.push_config(dependency);
-    assert_eq!(stack.len(), 2, "stack should include the newly added node");
+    stack.push_config(dependency1);
+    stack.push_config(dependency2);
+    assert_eq!(stack.len(), 3, "stack should include the newly added node");
 
-    let deps = stack
-        .dependencies_of("brain", "1.0.0")
-        .into_iter()
-        .map(|node| {
-            (
-                node.config().manifest.name.as_str().to_owned(),
-                node.config().manifest.tag.clone(),
-            )
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        deps,
-        vec![("lidar".to_string(), "1.0.0".to_string())],
-        "adding a node should satisfy pending dependency edges"
-    );
-
-    let dependants = stack
-        .dependents_of("lidar", "1.0.0")
-        .into_iter()
-        .map(|node| node.config().manifest.name.as_str().to_owned())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        dependants,
-        vec!["brain"],
-        "dependency insertion should also update inverse relationships"
-    );
+    // TODO: Also fix this in the `generator-internal`
+    todo!(
+        "There should be no dependency for the brain since it's unable to tell what is the message format of the incoming topic"
+    )
 }
 
 #[test]
