@@ -823,43 +823,30 @@ impl LanguageGenerator for RustGenerator {
     fn add_subscribed_topic(
         &mut self,
         topic: &SubscribedTopic,
-        message_formats: Vec<MessageFormat>,
+        arguments: MessageFormat,
     ) -> Result<()> {
-        if message_formats.is_empty() {
-            return Err(Error::SubscriberTopicMessageFormatMissing(topic.name.clone()));
-        }
+        let node_name = topic.node.as_str();
 
-        let node_component = sanitize_component(topic.node.as_deref().unwrap_or(""));
+        let node_component = sanitize_component(node_name);
         let topic_component = sanitize_component(topic.name.as_str());
 
-        if topic.node.is_some() {
-            debug_assert!(
-                !node_component.is_empty(),
-                "SubscribedTopic.node should be validated as non-empty"
-            );
-        }
+        debug_assert!(
+            !node_component.is_empty(),
+            "SubscribedTopic.node should be validated as non-empty"
+        );
         debug_assert!(
             !topic_component.is_empty(),
             "SubscribedTopic.name should be validated as non-empty"
         );
 
-        let node_prefix = if node_component.is_empty() {
-            String::new()
-        } else {
-            to_camel_case(&node_component)
-        };
+        let node_prefix = to_camel_case(&node_component);
         let topic_prefix = to_camel_case(&topic_component);
-        let mut base_struct_prefix = format!("{node_prefix}{topic_prefix}");
-        if base_struct_prefix.is_empty() {
-            base_struct_prefix = String::from("Topic");
+        let mut struct_prefix = format!("{node_prefix}{topic_prefix}");
+        if struct_prefix.is_empty() {
+            struct_prefix = String::from("Topic");
         }
 
-        let mut module_label = match (node_component.is_empty(), topic_component.is_empty()) {
-            (false, false) => format!("{}_{}", topic.node.as_deref().unwrap(), topic.name.as_str()),
-            (false, true) => topic.node.clone().unwrap_or_default(),
-            (true, false) => topic.name.clone(),
-            (true, true) => String::from("topic"),
-        };
+        let mut module_label = format!("{}_{}", node_name, topic.name.as_str());
         if module_label.trim().is_empty() {
             module_label = String::from("topic");
         }
@@ -868,7 +855,7 @@ impl LanguageGenerator for RustGenerator {
             module_component = String::from("topic");
         }
 
-        let schema_key_base = if !topic_component.is_empty() {
+        let schema_key = if !topic_component.is_empty() {
             format!("on_next_{topic_component}_message")
         } else if !node_component.is_empty() {
             format!("on_next_{node_component}_message")
@@ -876,83 +863,49 @@ impl LanguageGenerator for RustGenerator {
             format!("{module_component}_message")
         };
 
-        let total_variants = message_formats.len();
-        let mut items: Vec<TokenStream> = Vec::new();
-        for (index, format) in message_formats.iter().enumerate() {
-            let variant_suffix = if total_variants == 1 {
-                None
-            } else {
-                Some(index + 1)
-            };
+        let format_artifacts = map_message_format(Some(&arguments))?
+            .expect("message encoding spec should exist when message format is provided");
 
-            let message_struct_name = match variant_suffix {
-                Some(idx) => format!("Message{idx}"),
-                None => String::from("Message"),
-            };
-            let args_struct_ident = Ident::new(&message_struct_name, Span::call_site());
+        let mut context = GenerationContext::default();
+        let message_struct_name = String::from("Message");
+        let params = collect_function_params(
+            Some(&format_artifacts),
+            None,
+            &message_struct_name,
+            &mut context,
+            None,
+        )?;
 
-            let callback_fn_name = match variant_suffix {
-                Some(idx) => format!("on_next_message_received_{idx}"),
-                None => String::from("on_next_message_received"),
-            };
-            let callback_fn_ident = Ident::new(&callback_fn_name, Span::call_site());
+        let args_struct_ident = Ident::new(&message_struct_name, Span::call_site());
+        let args_fields: Vec<(Ident, TokenStream)> = params
+            .iter()
+            .map(|param| (param.ident.clone(), param.ty.clone()))
+            .collect();
+        context.add_struct(args_struct_ident.clone(), args_fields);
 
-            let helper_fn_name = match variant_suffix {
-                Some(idx) => format!("deseralize_payload_{idx}"),
-                None => String::from("deseralize_payload"),
-            };
-            let helper_fn_ident = Ident::new(&helper_fn_name, Span::call_site());
+        let callback_fn_ident = Ident::new("on_next_message_received", Span::call_site());
+        let helper_fn_ident = Ident::new("deseralize_payload", Span::call_site());
 
-            let struct_prefix = match variant_suffix {
-                Some(idx) => format!("{base_struct_prefix}{idx}"),
-                None => base_struct_prefix.clone(),
-            };
-
-            let format_artifacts = map_message_format(Some(format))?
-                .expect("message encoding spec should exist when message format is provided");
-
-            let mut context = GenerationContext::default();
-            let params = collect_function_params(
+        let encoding = self
+            .prepare_message_encoding(
+                &schema_key,
+                &struct_prefix,
                 Some(&format_artifacts),
-                None,
-                &message_struct_name,
-                &mut context,
-                None,
-            )?;
-
-            let args_fields: Vec<(Ident, TokenStream)> = params
-                .iter()
-                .map(|param| (param.ident.clone(), param.ty.clone()))
-                .collect();
-            context.add_struct(args_struct_ident.clone(), args_fields);
-
-            let schema_key = match variant_suffix {
-                Some(idx) => format!("{schema_key_base}_{idx}"),
-                None => schema_key_base.clone(),
-            };
-
-            let encoding = self
-                .prepare_message_encoding(
-                    &schema_key,
-                    &struct_prefix,
-                    Some(&format_artifacts),
-                    &params,
-                )?
-                .expect("message encoding spec should exist when message format is provided");
-            let method_tokens = build_subscribed_topic_callback(
-                &callback_fn_ident,
-                &helper_fn_ident,
-                &args_struct_ident,
                 &params,
-                &format_artifacts,
-                &encoding,
-                topic,
-                &message_struct_name,
-            );
-            let mut variant_items = context.into_tokens();
-            variant_items.push(method_tokens);
-            items.extend(variant_items);
-        }
+            )?
+            .expect("message encoding spec should exist when message format is provided");
+        let method_tokens = build_subscribed_topic_callback(
+            &callback_fn_ident,
+            &helper_fn_ident,
+            &args_struct_ident,
+            &params,
+            &format_artifacts,
+            &encoding,
+            topic,
+            &message_struct_name,
+        );
+        let mut items = context.into_tokens();
+        items.push(method_tokens);
 
         let tokens: TokenStream = quote! {
             #( #items )*
@@ -2366,7 +2319,6 @@ fn build_subscribed_topic_callback(
         }
     }
 }
-
 
 fn generate_field_reader_statements(
     reader_expr: &TokenStream,

@@ -186,10 +186,7 @@ pub(super) fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec>
 
     if let Some(topics) = subscriptions.topics.as_ref() {
         for topic in topics {
-            let Some(node_name) = topic.node.as_deref() else {
-                continue;
-            };
-            let node_name = node_name.trim();
+            let node_name = topic.node.trim();
             if node_name.is_empty() {
                 continue;
             }
