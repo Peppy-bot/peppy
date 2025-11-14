@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use tracing::error;
 
 use config::consts::AppEnv;
-use peppy::{AppContext, Command, PEPPY_NODE_CONFIG_FILE, init, node, serve, service};
+use peppy::{AppContext, Command, PEPPY_NODE_CONFIG_FILE, install, node, serve, service};
 
 #[derive(Parser)]
 #[command(name = "peppy")]
@@ -15,13 +15,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    // Create the initial peppy.json5 node in the current directory and install the peppy daemon if not already present
-    Init {
+    // Install the peppy daemon system-wide
+    Install {
         /// Name of the node to initialize
         node_name: String,
         /// Optional target directory (defaults to current directory)
         #[arg(long)]
         in_dir: Option<PathBuf>,
+        /// If provided, the daemon will use this launcher file to fire up the nodes
+        #[arg(long)]
+        launcher_file: Option<PathBuf>,
     },
     /// Node-related commands
     Node {
@@ -67,9 +70,16 @@ fn main() {
     let app_ctx = AppContext::default();
 
     let result = match cli.command {
-        Commands::Init { node_name, in_dir } => {
-            init::InitCommand { node_name, in_dir }.execute(&app_ctx)
+        Commands::Install {
+            node_name,
+            in_dir,
+            launcher_file,
+        } => install::InstallCommand {
+            node_name,
+            in_dir,
+            launcher_file,
         }
+        .execute(&app_ctx),
         Commands::Serve {
             engine,
             config_path,

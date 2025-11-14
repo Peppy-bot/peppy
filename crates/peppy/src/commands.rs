@@ -1,4 +1,4 @@
-pub mod init;
+pub mod install;
 pub mod node;
 pub mod serve;
 pub mod service;

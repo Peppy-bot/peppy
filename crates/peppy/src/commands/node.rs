@@ -10,23 +10,25 @@ use tracing::info;
 use super::{Command, Error as CommandError};
 use crate::AppContext;
 
-use create::NodeBuilder;
+use init::NodeBuilder;
 
-pub mod create;
+pub mod init;
 pub use types::NodeName;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
-pub enum Language {
-    Python,
+pub enum PackageManager {
     #[default]
-    Rust,
+    Rust, // Defaults to Cargo
+    Python, // Defaults to uv
+    Cargo,
+    Uv,
 }
 
-impl fmt::Display for Language {
+impl fmt::Display for PackageManager {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Language::Python => write!(f, "python"),
-            Language::Rust => write!(f, "rust"),
+            PackageManager::Python | PackageManager::Uv => write!(f, "uv"),
+            PackageManager::Rust | PackageManager::Cargo => write!(f, "cargo"),
         }
     }
 }
@@ -47,8 +49,8 @@ pub enum NodeCommands {
         #[arg(long)]
         to_dir: Option<PathBuf>,
         /// Programming language for the node, either `rust` or `python`
-        #[arg(long, value_enum, default_value_t = Language::Rust)]
-        lang: Language,
+        #[arg(long, value_enum, default_value_t = PackageManager::Rust)]
+        lang: PackageManager,
     },
     /// Runs a specific node
     Run {

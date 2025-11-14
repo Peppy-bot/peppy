@@ -1,6 +1,6 @@
 use super::super::types::NodeName;
-use super::Language;
-use crate::commands::node::create::{python, rust};
+use super::PackageManager;
+use super::{python, rust};
 use crate::{Error, Result};
 use askama::Template;
 use config::node::NodeConfigCreator;
@@ -48,7 +48,7 @@ pub trait NodeFactory {
 /// Bundles common data needed to create a node
 #[derive(Clone)]
 pub struct NodeContext {
-    pub language: Language,
+    pub language: PackageManager,
     pub node_name: NodeName,
     pub node_path: PathBuf,
     pub description: String,
@@ -59,7 +59,7 @@ impl NodeContext {
         node_name: NodeName,
         node_path: impl AsRef<Path>,
         description: impl Into<String>,
-        language: Language,
+        language: PackageManager,
     ) -> Self {
         Self {
             language,
@@ -147,8 +147,8 @@ impl NodeFactory for RustNodeFactory {
 /// Creates a factory for the specified language
 pub fn create_factory(ctx: NodeContext) -> Box<dyn NodeFactory> {
     match ctx.language {
-        Language::Python => Box::new(PythonNodeFactory::new(ctx)),
-        Language::Rust => Box::new(RustNodeFactory::new(ctx)),
+        PackageManager::Python | PackageManager::Uv => Box::new(PythonNodeFactory::new(ctx)),
+        PackageManager::Rust | PackageManager::Cargo => Box::new(RustNodeFactory::new(ctx)),
     }
 }
 
