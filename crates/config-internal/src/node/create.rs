@@ -58,7 +58,7 @@ impl NodeConfigCreator {
         Ok(Self { redered_template })
     }
 
-    pub fn peppy_config(log_file_name: &str) -> Result<Self> {
+    pub fn launcher_config(log_file_name: &str) -> Result<Self> {
         let log_file_name = format!("{}.log", log_file_name);
         // Default command can be parameterized later
         let tpl = PeppyConfigTemplate {
@@ -167,7 +167,7 @@ mod tests {
     #[test]
     fn test_peppy_config_content_validation() {
         let log_file_name = "root_log";
-        let template = NodeConfigCreator::peppy_config(log_file_name).unwrap();
+        let template = NodeConfigCreator::launcher_config(log_file_name).unwrap();
 
         // Write to a temporary file and read back the content
         let temp_file = NamedTempFile::new().unwrap();

@@ -1,8 +1,10 @@
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 use tracing::error;
 
 use config::consts::AppEnv;
-use peppy::{AppContext, Command, node, service};
+use peppy::{AppContext, Command, launch, node, service};
 
 #[derive(Parser)]
 #[command(name = "peppy")]
@@ -14,7 +16,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Commands related to the peppy service (running in systemd/launchctl)
+    /// Related to the peppy service (running in systemd/launchctl)
     Service {
         #[command(subcommand)]
         command: service::ServiceCommands,
@@ -23,6 +25,11 @@ enum Commands {
     Node {
         #[command(subcommand)]
         command: node::NodeCommands,
+    },
+    /// Launches a deployment, replacing the current node Stack
+    Launch {
+        /// Path to the peppy launcher configuration file
+        launch_file: PathBuf,
     },
 }
 
@@ -49,6 +56,7 @@ fn main() {
     let result = match cli.command {
         Commands::Service { command } => service::ServiceCommand { command }.execute(&app_ctx),
         Commands::Node { command } => node::NodeCommand { command }.execute(&app_ctx),
+        Commands::Launch { launch_file } => launch::LaunchCommand { launch_file }.execute(&app_ctx),
     };
 
     if let Err(e) = result {
