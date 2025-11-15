@@ -22,13 +22,7 @@ pub enum ServiceCommands {
         config_path: Option<PathBuf>,
     },
     // Install the peppy daemon system-wide
-    Install {
-        /// Name of the node to initialize
-        node_name: String,
-        /// Optional target directory (defaults to current directory)
-        #[arg(long)]
-        in_dir: Option<PathBuf>,
-    },
+    Install {},
 }
 
 pub struct ServiceCommand {
@@ -57,9 +51,7 @@ impl Command for ServiceCommand {
                 }
                 .execute(&app_ctx)
             }
-            ServiceCommands::Install { node_name, in_dir } => {
-                super::install::InstallCommand { node_name, in_dir }.execute(app_ctx)
-            }
+            ServiceCommands::Install {} => super::install::InstallCommand {}.execute(app_ctx),
         }
     }
 }

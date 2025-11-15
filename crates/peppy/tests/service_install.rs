@@ -1,19 +1,44 @@
+use std::fs;
+
 use peppy::install::install_peppy_daemon;
 
-// Can be run from the command line with:
-// cargo run --manifest-path <path_to_root_Cargo.toml> -- init <node_name>
 #[test]
-fn test_init_peppy_command() {
+fn test_install_peppy_command() {
     use tempfile::TempDir;
 
     let temp_dir = TempDir::new().unwrap();
-    let non_existent_path = temp_dir.path().join("new_folder");
+    let override_dir = temp_dir.path().join("peppy_service");
 
-    assert!(!non_existent_path.exists());
+    assert!(!override_dir.exists());
 
-    let peppy_config_path = install_peppy_daemon(&non_existent_path).unwrap();
+    let service_path = install_peppy_daemon(Some(override_dir.clone())).unwrap();
 
-    assert!(non_existent_path.exists());
-    assert!(peppy_config_path.exists());
-    assert_eq!(peppy_config_path.file_name().unwrap(), "peppy.json5");
+    assert!(override_dir.exists());
+    assert!(service_path.exists());
+    assert!(
+        service_path.starts_with(&override_dir),
+        "service path should be created inside the override directory"
+    );
+
+    let contents = fs::read_to_string(&service_path).expect("service definition readable");
+    let current_exe = std::env::current_exe().unwrap();
+    let working_dir_hint = current_exe
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "/".into());
+    assert!(
+        contents.contains(&working_dir_hint),
+        "service definition should mention working directory {working_dir_hint}"
+    );
+    let exec_hint = current_exe.display().to_string();
+    assert!(
+        contents.contains(&exec_hint),
+        "service definition should mention executable {exec_hint}"
+    );
+
+    #[cfg(target_os = "linux")]
+    assert_eq!(service_path.file_name().unwrap(), "peppy-daemon.service");
+
+    #[cfg(target_os = "macos")]
+    assert_eq!(service_path.file_name().unwrap(), "bot.peppy.daemon.plist");
 }
