@@ -20,8 +20,7 @@ derive_more = { version = "2", features = ["from"] }
 rayon = "1.11.0"
 service-manager = "0.8.0"
 ipnet = "2.11"
-netdev = "0.37"
-easy-tree = "0.2.0"
+netdev = "0.39"
 
 [dev-dependencies]
 tempfile = "3.8"

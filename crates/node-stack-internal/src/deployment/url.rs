@@ -122,18 +122,18 @@ fn should_refresh(cache_dir: &Path, expected_checksum: Option<&str>) -> bool {
 fn download_bundle(url: &str, destination: &Path, checksum: Option<&str>) -> Result<()> {
     let parsed_checksum = checksum.map(parse_checksum).transpose()?;
 
-    let response = ureq::get(url).call().map_err(|err| match err {
-        HttpError::Status(code, _) => Error::HttpDownload {
+    let response = ureq::get(url).call().map_err(|err| {
+        let reason = match err {
+            HttpError::StatusCode(code) => format!("unexpected status code {code}"),
+            other => other.to_string(),
+        };
+        Error::HttpDownload {
             url: url.to_string(),
-            reason: format!("unexpected status code {code}"),
-        },
-        HttpError::Transport(transport) => Error::HttpDownload {
-            url: url.to_string(),
-            reason: transport.to_string(),
-        },
+            reason,
+        }
     })?;
 
-    let mut reader = response.into_reader();
+    let mut reader = response.into_body().into_reader();
     let mut file = fs::File::create(destination)?;
     let mut buffer = [0u8; 8 * 1024];
     let mut sha256 = parsed_checksum
