@@ -1,4 +1,4 @@
-use peppy::install::install_peppyd;
+use peppy::install::install_peppy_daemon;
 
 // Can be run from the command line with:
 // cargo run --manifest-path <path_to_root_Cargo.toml> -- init <node_name>
@@ -11,7 +11,7 @@ fn test_init_peppy_command() {
 
     assert!(!non_existent_path.exists());
 
-    let peppy_config_path = install_peppyd(&non_existent_path).unwrap();
+    let peppy_config_path = install_peppy_daemon(&non_existent_path).unwrap();
 
     assert!(non_existent_path.exists());
     assert!(peppy_config_path.exists());

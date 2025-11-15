@@ -11,7 +11,6 @@ use tracing::info;
 pub struct InstallCommand {
     pub node_name: String,
     pub in_dir: Option<PathBuf>,
-    pub launcher_file: Option<PathBuf>,
 }
 
 impl Command for InstallCommand {
@@ -21,12 +20,13 @@ impl Command for InstallCommand {
         } else {
             ctx.root_dir.clone()
         };
-        install_peppyd(&current_dir).map_err(|e| crate::Error::ExecutionFailed(e.to_string()))?;
+        install_peppy_daemon(&current_dir)
+            .map_err(|e| crate::Error::ExecutionFailed(e.to_string()))?;
         Ok(())
     }
 }
 
-pub fn install_peppyd(path: impl AsRef<Path>) -> Result<PathBuf> {
+pub fn install_peppy_daemon(path: impl AsRef<Path>) -> Result<PathBuf> {
     let path = path.as_ref();
     // Create the directory if it doesn't exist
     fs::create_dir_all(path)?;
