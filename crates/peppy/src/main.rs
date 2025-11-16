@@ -56,7 +56,10 @@ fn main() {
     let result = match cli.command {
         Commands::Service { command } => service::ServiceCommand { command }.execute(&app_ctx),
         Commands::Node { command } => node::NodeCommand { command }.execute(&app_ctx),
-        Commands::Launch { launch_file } => launch::LaunchCommand { launch_file }.execute(&app_ctx),
+        Commands::Launch { launch_file } => launch::LaunchCommand {
+            launcher_config_path: launch_file,
+        }
+        .execute(&app_ctx),
     };
 
     if let Err(e) = result {

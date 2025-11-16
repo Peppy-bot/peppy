@@ -3,9 +3,8 @@ use std::path::PathBuf;
 
 use super::CompositeCommand;
 use super::Serve;
-use super::node_watcher_cmd::NodeWatcher;
 use crate::{AppContext, Result};
-use config::peppy_config::{PeppyLauncher, PeppyLauncherParser};
+use node_stack::NodeStack;
 use pmi::Messenger;
 use pmi::MessengerAdapter;
 use pmi::MockAdapter;
@@ -14,25 +13,13 @@ use tracing::warn;
 
 pub struct ServeCommandBuilder {
     composite_command: CompositeCommand,
-    launcher_config: PeppyLauncher,
 }
 
 impl ServeCommandBuilder {
-    pub fn new(peppy_config_path: PathBuf) -> Result<Self> {
-        let peppy_config = PeppyLauncherParser::from_path(&peppy_config_path)
-            .map_err(crate::Error::PeppyConfig)?;
+    pub fn new() -> Result<Self> {
         Ok(Self {
             composite_command: CompositeCommand::default(),
-            launcher_config: peppy_config,
         })
-    }
-
-    /// When a change is detected on one of the peppy.json5 file, it sends a signal to the rest of the program that the configuration of
-    /// a node has been updated
-    pub fn with_node_watcher(mut self, ctx: &AppContext) -> Self {
-        let watcher = Box::new(NodeWatcher::new(ctx));
-        self.composite_command = self.composite_command.add_async_command(watcher);
-        self
     }
 
     /// The messaging router (Zenoh/MQTT etc...) is reponsible for message passing between the nodes and between the nodes and the peppy program
@@ -54,17 +41,8 @@ impl ServeCommandBuilder {
         self
     }
 
-    /// When the node_watcher detects a change, peppygen generates the new interfaces for the clients to use.
-    /// peppygen does not depend on `node_watcher`, it's only one of the components that can receive a signal
-    /// for code generation. Another process that can do this is `peppy node sync <path_to_config>` when nodes
-    /// are outside the peppy config root folder and its children.
-    pub fn with_peppygen(mut self, ctx: &AppContext) -> Self {
-        // let generator = Box::new(
-        //     InterfacesGenerator::new(ctx, self.peppy_config.interfaces.clone())
-        //         .expect("Failed to create peppygen"),
-        // );
-        // self.composite_command = self.composite_command.add_async_command(generator);
-        todo!("Finish");
+    pub fn with_node_stack(self, ctx: &AppContext) -> Self {
+        ctx.set_node_stack(NodeStack::new());
         self
     }
 

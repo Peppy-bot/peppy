@@ -1,7 +1,4 @@
-use std::path::PathBuf;
-
 use clap::Subcommand;
-use config::consts::PEPPY_NODE_CONFIG_FILE;
 
 use super::{Command, Error as CommandError};
 use crate::AppContext;
@@ -15,11 +12,7 @@ pub enum ServiceCommands {
     Serve {
         /// Messaging engine to use (zenoh by default)
         #[arg(long, default_value = "zenoh")]
-        engine: String,
-
-        /// Config file(s) for the selected messaging engine. Will use a default configuration if not provided
-        #[arg(long)]
-        config_path: Option<PathBuf>,
+        messaging_engine: String,
     },
     // Install the peppy daemon system-wide
     Install {},
@@ -37,19 +30,8 @@ impl Command for ServiceCommand {
                     "Set PEPPY_ENV=PROD in the systemd/launchctl env var when the service is installed"
                 );
             }
-            ServiceCommands::Serve {
-                engine,
-                config_path,
-            } => {
-                let config_path = match config_path {
-                    Some(pth) => pth,
-                    None => app_ctx.root_dir.join(PEPPY_NODE_CONFIG_FILE),
-                };
-                super::serve::ServeCommand {
-                    engine,
-                    root_config_path: config_path,
-                }
-                .execute(&app_ctx)
+            ServiceCommands::Serve { messaging_engine } => {
+                super::serve::ServeCommand { messaging_engine }.execute(&app_ctx)
             }
             ServiceCommands::Install {} => super::install::InstallCommand {}.execute(app_ctx),
         }

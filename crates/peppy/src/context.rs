@@ -1,13 +1,16 @@
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 use config::NodeIndexState;
+use node_stack::NodeStack;
 use tokio::sync::broadcast;
 
 pub const DEFAULT_CHANNEL_CAPACITY: usize = 64;
 
 pub struct AppContext {
-    broadcaster: broadcast::Sender<AppEvent>,
     pub root_dir: PathBuf,
+    node_stack: RwLock<Option<NodeStack>>,
+    broadcaster: broadcast::Sender<AppEvent>,
 }
 
 impl AppContext {
@@ -16,6 +19,7 @@ impl AppContext {
         Self {
             broadcaster,
             root_dir: PathBuf::from(root_dir.as_ref()),
+            node_stack: RwLock::new(None),
         }
     }
 
@@ -25,6 +29,21 @@ impl AppContext {
 
     pub fn subscribe(&self) -> broadcast::Receiver<AppEvent> {
         self.broadcaster.subscribe()
+    }
+
+    pub fn node_stack(&self) -> Option<NodeStack> {
+        self.node_stack
+            .read()
+            .expect("node stack lock poisoned")
+            .clone()
+    }
+
+    pub fn set_node_stack(&self, node_stack: NodeStack) {
+        *self.node_stack.write().expect("node stack lock poisoned") = Some(node_stack);
+    }
+
+    pub fn reset_node_stack(&self) {
+        *self.node_stack.write().expect("node stack lock poisoned") = None;
     }
 }
 
