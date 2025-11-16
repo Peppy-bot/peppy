@@ -5,6 +5,11 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+#[cfg(unix)]
+use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 /// Facade around the Cap'n Proto CLI binary.
 /// Provides helpers to locate the binary bundled with the crate or built at compile time
 /// and exposes higher-level operations such as compiling schemas.
@@ -139,7 +144,7 @@ impl CapnpFacade {
         }
 
         if let Some(path) = Self::bundled_capnp_binary() {
-            return Ok(path);
+            return Self::validate_path(path);
         }
 
         Err(Error::Encoding(
@@ -149,6 +154,7 @@ impl CapnpFacade {
 
     fn validate_path(path: PathBuf) -> Result<PathBuf> {
         if path.exists() {
+            Self::ensure_executable(&path)?;
             Ok(path)
         } else {
             Err(Error::Encoding(format!(
@@ -156,6 +162,37 @@ impl CapnpFacade {
                 path.display()
             )))
         }
+    }
+
+    fn ensure_executable(path: &Path) -> Result<()> {
+        #[cfg(unix)]
+        {
+            let metadata = fs::metadata(path).map_err(|err| {
+                Error::Encoding(format!(
+                    "failed to inspect capnp binary at {}: {err}",
+                    path.display()
+                ))
+            })?;
+
+            if metadata.is_file() {
+                let mut permissions = metadata.permissions();
+                let current_mode = permissions.mode();
+                if current_mode & 0o111 == 0 {
+                    permissions.set_mode(current_mode | 0o755);
+                    fs::set_permissions(path, permissions).map_err(|err| {
+                        Error::Encoding(format!(
+                            "failed to mark capnp binary at {} executable: {err}",
+                            path.display()
+                        ))
+                    })?;
+                }
+            }
+        }
+
+        #[cfg(not(unix))]
+        let _ = path;
+
+        Ok(())
     }
 
     fn bundled_capnp_binary() -> Option<PathBuf> {
