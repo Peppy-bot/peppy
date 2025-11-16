@@ -1,6 +1,5 @@
 mod builder;
 mod messenger_cmd;
-mod node_watcher_cmd;
 mod peppygen_cmd;
 
 use std::future::Future;
@@ -60,13 +59,10 @@ pub struct Serve {
 }
 
 /// The serve command is the command that runs as a daemon in systemd and maintains a "node stack" (a graph representation of nodes)
+/// It's installed using the `install` command.
 /// It operates as follow:
 /// 1. Starts a zenohd separate process
-/// 2. Open up the `peppy.json5` on disk where it's launched (or specified with `--node-config`)
-/// 3. Look for the `deployments` key inside `peppy.json5`
-/// 4. Starting from the `peppy.json5` root configuration file, look for all the nodes in the children folders and create the initial node stack
-/// 5. If `deployments` is present, resolve the dependencies based on the initial node stack.
-/// 6. If the non-optional `deployments` cannot be resolved, the `serve` command terminates with an error.
+/// 2. Creates an internal "node stack" (a graph of nodes that depends on each other)
 impl Serve {
     pub fn new(composite_command: CompositeCommand) -> Self {
         Self { composite_command }
@@ -74,7 +70,7 @@ impl Serve {
 
     pub fn execute(self) -> Result<()> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all() // enable I/O and time drivers
+            .enable_all()
             .build()?;
 
         let futures = self.composite_command.execute()?;
@@ -101,17 +97,15 @@ impl Serve {
 }
 
 pub struct ServeCommand {
-    pub engine: String,
-    pub root_config_path: PathBuf,
+    pub messaging_engine: String,
 }
 
 impl Command for ServeCommand {
     fn execute(self, ctx: &AppContext) -> Result<()> {
         // TODO: Only one instance of `serve` can run on a given machine (prod or dev included). Check the port and PID to make sure there isn't more than one instance running
-        let executor = ServeCommandBuilder::new(self.root_config_path)?
-            .with_node_watcher(ctx)
-            .with_messaging_router(self.engine)
-            .with_peppygen(ctx)
+        let executor = ServeCommandBuilder::new()?
+            .with_messaging_router(self.messaging_engine)
+            .with_node_stack(ctx)
             .build();
 
         if let Err(e) = executor.execute() {

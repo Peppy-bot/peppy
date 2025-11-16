@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 pub struct NodeBuilder {
     to_dir: PathBuf,
     node_name: NodeName,
-    lang: PackageManager,
+    package_manager: PackageManager,
     description: Option<String>,
     full: bool,
 }
@@ -22,7 +22,7 @@ impl NodeBuilder {
         Self {
             to_dir: ctx.root_dir.clone(),
             node_name,
-            lang: PackageManager::Rust,
+            package_manager: PackageManager::Rust,
             description: None,
             full: false,
         }
@@ -36,7 +36,7 @@ impl NodeBuilder {
     }
 
     pub fn lang(mut self, lang: PackageManager) -> Self {
-        self.lang = lang;
+        self.package_manager = lang;
         self
     }
 
@@ -54,7 +54,7 @@ impl NodeBuilder {
         init_project(
             self.to_dir,
             self.node_name,
-            self.lang,
+            self.package_manager,
             self.description.as_deref(),
             self.full,
         )?;
