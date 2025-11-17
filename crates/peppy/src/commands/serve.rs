@@ -1,5 +1,6 @@
 mod builder;
-mod messenger_cmd;
+mod commands_listener;
+mod messaging_router;
 mod pid_lock;
 
 use std::future::Future;
@@ -187,8 +188,7 @@ impl Command for ServeCommand {
                 let reset_requested = prompt_existing_instance()?;
                 info!(
                     existing_pid = pid,
-                    reset_requested,
-                    "Existing peppy instance detected"
+                    reset_requested, "Existing peppy instance detected"
                 );
                 return Err(Error::ExecutionFailed(format!(
                     "Serve command already running (PID {pid})"
@@ -199,6 +199,7 @@ impl Command for ServeCommand {
 
         let executor = ServeCommandBuilder::new()?
             .with_messaging_router(self.messaging_engine)
+            .with_commands_listener()
             .with_node_stack(ctx)
             .build();
 

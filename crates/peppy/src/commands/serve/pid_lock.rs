@@ -2,7 +2,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use config::consts::{app_env, AppEnv};
+use config::consts::{AppEnv, app_env};
 
 pub const PID_FILE_ENV: &str = "PEPPY_SERVE_PID_FILE";
 
@@ -64,10 +64,7 @@ impl PidLock {
     }
 
     fn try_create_lock(path: &Path, pid: u32) -> Result<(), io::Error> {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(path)?;
+        let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
         write!(file, "{}", pid)?;
         file.sync_all()?;
         Ok(())
