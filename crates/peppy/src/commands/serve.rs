@@ -1,15 +1,14 @@
 mod builder;
 mod messenger_cmd;
-mod peppygen_cmd;
 
 use std::future::Future;
-use std::path::PathBuf;
 use std::pin::Pin;
-use tokio::task::JoinHandle;
+use tokio::sync::oneshot;
+use tokio::task::{JoinError, JoinSet};
 use tracing::{error, info};
 
 use super::Command;
-use crate::{AppContext, Result};
+use crate::{AppContext, Error, Result};
 
 use builder::ServeCommandBuilder;
 
@@ -19,8 +18,23 @@ pub trait ServeSyncCommand: Send + Sync {
 
 pub type ServeFuture = Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>;
 
+pub struct ServeAsyncHandle {
+    future: ServeFuture,
+    ready: Option<oneshot::Receiver<()>>,
+}
+
+impl ServeAsyncHandle {
+    pub fn new(future: ServeFuture, ready: Option<oneshot::Receiver<()>>) -> Self {
+        Self { future, ready }
+    }
+
+    fn into_parts(self) -> (ServeFuture, Option<oneshot::Receiver<()>>) {
+        (self.future, self.ready)
+    }
+}
+
 pub trait ServeAsyncCommand: Send + Sync {
-    fn run(self: Box<Self>) -> ServeFuture;
+    fn run(self: Box<Self>) -> ServeAsyncHandle;
 }
 
 #[derive(Default)]
@@ -40,12 +54,12 @@ impl CompositeCommand {
         self
     }
 
-    pub fn execute(self) -> Result<Vec<ServeFuture>> {
+    pub fn execute(self) -> Result<Vec<ServeAsyncHandle>> {
         for command in self.commands {
             command.execute()?;
         }
 
-        let mut futures: Vec<ServeFuture> = Vec::new();
+        let mut futures: Vec<ServeAsyncHandle> = Vec::new();
         for async_command in self.async_commands {
             futures.push(async_command.run());
         }
@@ -64,6 +78,14 @@ pub struct Serve {
 /// 1. Starts a zenohd separate process
 /// 2. Creates an internal "node stack" (a graph of nodes that depends on each other)
 impl Serve {
+    fn log_task_result(result: std::result::Result<Result<()>, JoinError>) {
+        match result {
+            Err(e) => error!("Task panicked: {:?}", e),
+            Ok(Err(e)) => error!("Command error: {}", e),
+            Ok(Ok(())) => info!("Handle finished"),
+        }
+    }
+
     pub fn new(composite_command: CompositeCommand) -> Self {
         Self { composite_command }
     }
@@ -73,25 +95,57 @@ impl Serve {
             .enable_all()
             .build()?;
 
-        let futures = self.composite_command.execute()?;
+        let handles = self.composite_command.execute()?;
 
-        let mut handles: Vec<JoinHandle<Result<()>>> = Vec::with_capacity(futures.len());
-        for fut in futures {
-            handles.push(runtime.spawn(fut));
-        }
-
-        // Block on all async tasks
         info!("Running serve command...");
         runtime.block_on(async move {
+            let mut join_set = JoinSet::new();
+            let mut readiness = Vec::new();
             for handle in handles {
-                match handle.await {
-                    Err(e) => error!("Task panicked: {:?}", e),
-                    Ok(Err(e)) => error!("Command error: {}", e),
-                    Ok(Ok(())) => {}
+                let (future, ready) = handle.into_parts();
+                if let Some(rx) = ready {
+                    readiness.push(rx);
+                }
+                join_set.spawn(future);
+            }
+
+            for ready in readiness {
+                ready
+                    .await
+                    .map_err(|_| Error::ExecutionFailed("Serve handler dropped before signaling readiness".into()))?;
+            }
+
+            info!("Serve command initialized!");
+
+            loop {
+                tokio::select! {
+                    result = join_set.join_next() => {
+                        match result {
+                            Some(result) => Self::log_task_result(result),
+                            None => {
+                                info!("All serve handlers completed. Exiting...");
+                                break;
+                            }
+                        }
+                    }
+                    signal = tokio::signal::ctrl_c() => {
+                        match signal {
+                            Ok(_) => info!("Shutdown signal received. Waiting for serve handlers to finish..."),
+                            Err(e) => {
+                                return Err(Error::ExecutionFailed(format!("Failed to listen for shutdown signal: {}", e)));
+                            }
+                        }
+                        break;
+                    }
                 }
             }
-        });
 
+            while let Some(result) = join_set.join_next().await {
+                Self::log_task_result(result);
+            }
+
+            Ok::<(), Error>(())
+        })?;
         Ok(())
     }
 }

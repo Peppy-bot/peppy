@@ -1,136 +1,74 @@
 use std::thread;
 use std::time::Duration;
 
-use peppy::serve::{CompositeCommand, Serve, ServeAsyncCommand, ServeFuture};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use peppy::serve::{CompositeCommand, Serve, ServeCommand};
+use peppy::{AppContext, Command};
 
-struct TestAsyncCommand {
-    should_succeed: bool,
-}
-
-impl ServeAsyncCommand for TestAsyncCommand {
-    fn run(self: Box<Self>) -> ServeFuture {
-        let should_succeed = self.should_succeed;
-        Box::pin(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            if should_succeed {
-                Ok(())
-            } else {
-                Err(peppy::Error::ExecutionFailed("Test error".to_string()))
-            }
-        })
-    }
+fn trigger_ctrl_c_signal() {
+    // Safety: libc::raise is available on all supported platforms and delivers SIGINT to this process.
+    let result = unsafe { libc::raise(libc::SIGINT) };
+    assert_eq!(result, 0, "raising SIGINT should succeed");
 }
 
 #[test]
-fn test_serve_command_with_multiple_async_commands() {
-    let composite = CompositeCommand::default()
-        .add_async_command(Box::new(TestAsyncCommand {
-            should_succeed: true,
-        }))
-        .add_async_command(Box::new(TestAsyncCommand {
-            should_succeed: true,
-        }))
-        .add_async_command(Box::new(TestAsyncCommand {
-            should_succeed: true,
-        }));
+fn test_serve_command() {
+    let ctx = AppContext::default();
+    assert!(
+        ctx.node_stack().is_none(),
+        "node stack should not be initialized before serve runs"
+    );
 
-    let serve = Serve::new(composite);
+    let signal_thread = thread::spawn(|| {
+        thread::sleep(Duration::from_millis(200));
+        trigger_ctrl_c_signal();
+    });
 
-    let handle = thread::spawn(move || serve.execute());
+    ServeCommand {
+        messaging_engine: "mock".to_string(),
+    }
+    .execute(&ctx)
+    .expect("serve command executes with mock messaging engine");
 
-    thread::sleep(Duration::from_millis(500));
-
-    let _ = handle
+    signal_thread
         .join()
-        .expect("Serve command should handle multiple async commands");
-}
+        .expect("signal thread should complete without panic");
 
-#[test]
-fn test_serve_command_with_graceful_shutdown() {
-    struct LongRunningCommand {
-        running: Arc<AtomicBool>,
-        shutdown_called: Arc<AtomicBool>,
-    }
-
-    impl ServeAsyncCommand for LongRunningCommand {
-        fn run(self: Box<Self>) -> ServeFuture {
-            let running = self.running.clone();
-            let shutdown_called = self.shutdown_called.clone();
-
-            Box::pin(async move {
-                running.store(true, Ordering::SeqCst);
-
-                // Simulate waiting for Ctrl+C
-                tokio::signal::ctrl_c().await.map_err(|e| {
-                    peppy::Error::ExecutionFailed(format!("Failed to listen for ctrl-c: {}", e))
-                })?;
-
-                // Simulate shutdown behavior
-                shutdown_called.store(true, Ordering::SeqCst);
-                Ok(())
-            })
-        }
-    }
-
-    let running = Arc::new(AtomicBool::new(false));
-    let shutdown_called = Arc::new(AtomicBool::new(false));
-
-    let composite = CompositeCommand::default().add_async_command(Box::new(LongRunningCommand {
-        running: running.clone(),
-        shutdown_called: shutdown_called.clone(),
-    }));
-
-    let serve = Serve::new(composite);
-
-    // Spawn the serve command in a separate thread
-    let handle = thread::spawn(move || serve.execute());
-
-    // Wait for the command to start running
-    thread::sleep(Duration::from_millis(100));
-    assert!(running.load(Ordering::SeqCst), "Command should be running");
-
-    // Send SIGINT to trigger graceful shutdown
-    #[cfg(unix)]
-    {
-        // Use nix crate's safe API to send signal (if available in dependencies)
-        // Or spawn a child process to send the signal
-        use std::process::{Command, Stdio};
-        let pid = std::process::id();
-        Command::new("kill")
-            .args(["-INT", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .expect("Failed to send SIGINT");
-    }
-
-    #[cfg(not(unix))]
-    {
-        // On non-Unix platforms, we can't easily send SIGINT
-        // The test will just verify the command starts correctly
-    }
-
-    // Wait a bit for the signal to be processed
-    thread::sleep(Duration::from_millis(200));
-
-    // Join the thread and verify it completed successfully
-    let result = handle.join().expect("Thread should not panic");
     assert!(
-        result.is_ok(),
-        "Serve command should complete successfully after SIGINT"
-    );
-
-    // Verify shutdown was called
-    assert!(
-        shutdown_called.load(Ordering::SeqCst),
-        "Shutdown should have been called after SIGINT"
+        ctx.node_stack().is_some(),
+        "node stack should be initialized by ServeCommand"
     );
 }
 
 #[test]
-fn test_messenger_mock_command_with_shutdown() {
+fn manual_ctrl_c_works() {
+    if std::env::var("PEPPY_SERVE_TEST_CHILD").is_ok() {
+        return;
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let signal_thread = thread::spawn(|| {
+        thread::sleep(Duration::from_millis(100));
+        trigger_ctrl_c_signal();
+    });
+
+    runtime.block_on(async {
+        tokio::signal::ctrl_c().await.unwrap();
+    });
+
+    signal_thread.join().unwrap();
+}
+
+#[test]
+fn test_serve_command_replace_existing_process() {
+    todo!("Finish")
+}
+
+#[test]
+fn test_messenger_engine_stops_with_shutdown() {
     use pmi::Messenger;
     use pmi::MockAdapter;
 
