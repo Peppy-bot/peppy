@@ -1,0 +1,10 @@
+[package]
+name = "common-internal"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+pmi = { path = "../pmi-internal" }
+config = { path = "../config-internal" }
+tempfile = "3.23"

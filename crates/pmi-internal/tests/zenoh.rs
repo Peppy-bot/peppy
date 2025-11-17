@@ -69,11 +69,11 @@ mod zenoh_tests {
 
         let updated_config = format!(
             r#"{{
-                    "listen": {{
-                        "endpoints": {{
-                            "router": ["{protocol}/{host}:{wrong_port}"]
-                        }}
+                  "listen": {{
+                    "endpoints": {{
+                      "router": ["{protocol}/{host}:{wrong_port}"]
                     }}
+                  }}
                 }}"#
         );
         fs::write(&zenohd_config_path, updated_config).expect("Failed to overwrite config");

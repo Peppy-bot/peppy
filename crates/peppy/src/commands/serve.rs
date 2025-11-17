@@ -82,7 +82,7 @@ impl Serve {
         match result {
             Err(e) => error!("Task panicked: {:?}", e),
             Ok(Err(e)) => error!("Command error: {}", e),
-            Ok(Ok(())) => info!("Handle finished"),
+            Ok(Ok(())) => {}
         }
     }
 
@@ -116,7 +116,6 @@ impl Serve {
             }
 
             info!("Serve command initialized!");
-
             loop {
                 tokio::select! {
                     result = join_set.join_next() => {
@@ -130,7 +129,10 @@ impl Serve {
                     }
                     signal = tokio::signal::ctrl_c() => {
                         match signal {
-                            Ok(_) => info!("Shutdown signal received. Waiting for serve handlers to finish..."),
+                            Ok(_) => {
+                                info!("Shutdown signal received");
+                                info!("Waiting for serve handlers to finish...");
+                            }
                             Err(e) => {
                                 return Err(Error::ExecutionFailed(format!("Failed to listen for shutdown signal: {}", e)));
                             }
