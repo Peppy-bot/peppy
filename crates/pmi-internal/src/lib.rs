@@ -7,6 +7,8 @@ mod error;
 mod types;
 #[cfg(feature = "zenoh")]
 mod zenohd;
+#[cfg(feature = "zenoh")]
+pub mod zenohd_support;
 
 // Exports for users of the lib
 pub use encoding::{Encoder, EncodingBackend, EncodingFormat};
@@ -23,3 +25,5 @@ pub use adapters::mock::MockAdapter;
 pub use adapters::zenoh::{ZenohAdapter, ZenohClientConfigTemplate};
 #[cfg(feature = "zenoh")]
 pub use zenohd::facade::{ZenohNetProtocol, ZenohRouterConfigTemplate};
+#[cfg(feature = "zenoh")]
+pub use zenohd_support::start_zenohd_process;

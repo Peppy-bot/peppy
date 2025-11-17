@@ -244,20 +244,9 @@ impl ZenohdFacade {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, net::TcpListener};
+    use crate::zenohd_support::{pick_free_tcp_port, write_zenohd_config};
 
     use super::*;
-
-    fn pick_free_tcp_port() -> Option<u16> {
-        (0..10).find_map(|_| {
-            TcpListener::bind(("127.0.0.1", 0)).ok().and_then(|sock| {
-                let port = sock.local_addr().ok()?.port();
-                // Drop socket to free port for messaging router
-                drop(sock);
-                Some(port)
-            })
-        })
-    }
 
     #[test]
     fn test_zenohd_facade_creation_default_config() {
@@ -267,28 +256,11 @@ mod tests {
 
     #[test]
     fn test_zenohd_facade_creation_with_config() {
-        // Create a temporary directory that will be cleaned up automatically
-        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
-        let zenohd_config_path = temp_dir.path().join("test_zenoh_config.json5");
-
         // Store the expected host and port in separate variables
         let expected_host = "127.0.0.1";
         let expected_port = config::consts::DEFAULT_ZENOH_PORT;
-        let expected_protocol = "tcp";
-
-        // Write config directly in the test, inspired by the template
-        let config_content = format!(
-            r#"{{
-            "listen": {{
-                "endpoints": {{
-                    "router": ["{}/{expected_host}:{expected_port}"]
-                }}
-            }}
-        }}"#,
-            expected_protocol
-        );
-
-        fs::write(&zenohd_config_path, config_content).expect("Failed to write test config");
+        let (_temp_dir, zenohd_config_path) =
+            write_zenohd_config(expected_host, expected_port).expect("Failed to write test config");
 
         // Create facade with the config file
         let facade = ZenohdFacade::new(Some(zenohd_config_path.clone()));
@@ -307,22 +279,9 @@ mod tests {
     #[test]
     fn test_zenohd_router_lifecycle() {
         // Create a config with a random port to avoid conflicts
-        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
-        let zenohd_config_path = temp_dir.path().join("test_zenoh_config.json5");
-
-        let port = pick_free_tcp_port().unwrap();
-        let config_content = format!(
-            r#"{{
-            "listen": {{
-                "endpoints": {{
-                    "router": ["tcp/127.0.0.1:{}"]
-                }}
-            }}
-        }}"#,
-            port
-        );
-
-        fs::write(&zenohd_config_path, config_content).expect("Failed to write test config");
+        let port = pick_free_tcp_port();
+        let (_temp_dir, zenohd_config_path) =
+            write_zenohd_config("127.0.0.1", port).expect("Failed to write test config");
 
         let mut facade =
             ZenohdFacade::new(Some(zenohd_config_path.clone())).expect("Failed to create facade");

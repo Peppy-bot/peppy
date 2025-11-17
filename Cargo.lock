@@ -438,15 +438,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "common-internal"
-version = "0.0.1"
-dependencies = [
- "config",
- "pmi",
- "tempfile",
-]
-
-[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

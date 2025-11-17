@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(all(test, feature = "zenoh"))]
 mod tests;
 
 use crate::error::{Error, Result};

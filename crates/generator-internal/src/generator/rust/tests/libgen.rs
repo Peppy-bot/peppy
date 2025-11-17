@@ -8,6 +8,11 @@ use pmi::MessengerBackend;
 use std::{fs, thread, time::Duration};
 use tempfile::TempDir;
 
+fn start_router_for_tests(rt: &tokio::runtime::Runtime) -> (pmi::Messenger, TempDir, String, u16) {
+    rt.block_on(peppylib::start_zenohd_process("127.0.0.1", None))
+        .expect("failed to start zenoh router for test")
+}
+
 // --- Topics exposes and its corresponding subscriber
 const EXPOSED_TOPIC_EXAMPLE: &str = r#"
 {
@@ -67,7 +72,7 @@ fn topics_communication() {
         .expect("failed to create tokio runtime");
 
     let (mut router, _dir, router_host, router_port) = rt
-        .block_on(peppylib::start_zenohd_process())
+        .block_on(peppylib::start_zenohd_process("127.0.0.1", None))
         .expect("failed to start zenoh router for test");
 
     // --- Subscriber project
@@ -249,7 +254,7 @@ fn services_communication() {
         .expect("failed to create tokio runtime");
 
     let (mut router, _dir, router_host, router_port) = rt
-        .block_on(peppylib::start_zenohd_process())
+        .block_on(peppylib::start_zenohd_process("127.0.0.1", None))
         .expect("failed to start zenoh router for test");
 
     // --- Subscriber (client) project
@@ -500,7 +505,7 @@ fn actions_communication() {
         .expect("failed to create tokio runtime");
 
     let (mut router, _dir, router_host, router_port) = rt
-        .block_on(peppylib::start_zenohd_process())
+        .block_on(peppylib::start_zenohd_process("127.0.0.1", None))
         .expect("failed to start zenoh router for test");
 
     // --- Subscriber (client) project
@@ -695,9 +700,7 @@ fn actions_communication_cancel_goal() {
         .build()
         .expect("failed to create tokio runtime");
 
-    let (mut router, _dir, router_host, router_port) = rt
-        .block_on(peppylib::start_zenohd_process())
-        .expect("failed to start zenoh router for test");
+    let (mut router, _dir, router_host, router_port) = start_router_for_tests(&rt);
 
     // --- Subscriber (client) project
     let temp_dir_subscriber = TempDir::new().unwrap();
