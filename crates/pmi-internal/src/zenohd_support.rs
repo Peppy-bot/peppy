@@ -18,7 +18,8 @@ fn map_io_error(error: std::io::Error) -> PeppyMessagingInterfaceError {
     PeppyMessagingInterfaceError::BackendError(error.to_string())
 }
 
-fn allocate_candidate_port() -> u16 {
+/// Returns a TCP port from the test range [40000, 65000).
+pub fn pick_free_tcp_port() -> u16 {
     loop {
         let current = NEXT_PORT.load(Ordering::Relaxed);
         let candidate = if current >= PORT_END as u32 {
@@ -34,11 +35,6 @@ fn allocate_candidate_port() -> u16 {
             return candidate as u16;
         }
     }
-}
-
-/// Returns a TCP port from the test range [40000, 65000).
-pub fn pick_free_tcp_port() -> u16 {
-    allocate_candidate_port()
 }
 
 /// Writes a zenohd configuration file bound to `host:port`, keeping the temporary directory alive.
