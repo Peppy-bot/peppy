@@ -54,7 +54,7 @@ struct TestRouterContext {
 
 impl TestRouterContext {
     async fn start() -> Self {
-        let (router, temp_dir, host, port) = crate::start_zenohd_process()
+        let (router, temp_dir, host, port) = crate::start_zenohd_process("127.0.0.1", None)
             .await
             .expect("failed to start zenoh router for tests");
         Self {

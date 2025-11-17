@@ -1,36 +1,7 @@
-use std::fs;
-
-use pmi::{
-    Messenger, MessengerAdapter, MessengerBackend, PeppyMessagingInterfaceError, ZenohAdapter,
-};
-use tempfile::TempDir;
+use pmi::start_zenohd_process;
 use tokio::signal;
 
 pub const DEFAULT_ZENOH_PORT: u16 = 7448;
-
-async fn try_start_zenohd_instance(
-    host: &str,
-    port: u16,
-) -> Result<(Messenger, TempDir, String, u16), PeppyMessagingInterfaceError> {
-    let temp_dir = TempDir::new()?;
-    let zenohd_config_path = temp_dir.path().join("test_zenoh_config.json5");
-
-    let config_content = format!(
-        r#"{{
-              "listen": {{
-                "endpoints": {{
-                  "router": ["tcp/{host}:{port}"]
-                }}
-              }}
-            }}"#
-    );
-
-    fs::write(&zenohd_config_path, config_content)?;
-    let adapter = ZenohAdapter::from_zenohd_config(Some(&zenohd_config_path))?;
-    let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
-    messenger.start_router().await?;
-    Ok((messenger, temp_dir, String::from(host), port))
-}
 
 #[tokio::main]
 async fn main() {
@@ -39,7 +10,7 @@ async fn main() {
 
     println!("Starting zenohd router on tcp/{host}:{port}…");
     let (mut messenger, temp_dir, router_host, router_port) =
-        match try_start_zenohd_instance(host, port).await {
+        match start_zenohd_process(host, Some(port)).await {
             Ok(result) => result,
             Err(error) => {
                 panic!("failed to start zenohd router on tcp/{host}:{port}: {error:?}");

@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 pmi = { path = "../../../pmi-internal" }
-tempfile = "3"
 tokio = { version = "1.47.0", features = ["rt-multi-thread", "macros", "signal"] }
 
 [workspace]
