@@ -1,7 +1,9 @@
 mod builder;
 mod messenger_cmd;
+mod pid_lock;
 
 use std::future::Future;
+use std::io::{self, Write};
 use std::pin::Pin;
 use tokio::sync::oneshot;
 use tokio::task::{JoinError, JoinSet};
@@ -11,6 +13,13 @@ use super::Command;
 use crate::{AppContext, Error, Result};
 
 use builder::ServeCommandBuilder;
+use pid_lock::{PidLock, PidLockError};
+
+pub use pid_lock::PID_FILE_ENV;
+
+const EXISTING_INSTANCE_PROMPT: &str =
+    "An instance of peppy already exists on this machine. Reset the node stack? [y/n] ";
+pub const PROMPT_ANSWER_ENV: &str = "PEPPY_SERVE_PROMPT_ANSWER";
 
 pub trait ServeSyncCommand: Send + Sync {
     fn execute(&self) -> Result<()>;
@@ -110,9 +119,23 @@ impl Serve {
             }
 
             for ready in readiness {
-                ready
-                    .await
-                    .map_err(|_| Error::ExecutionFailed("Serve handler dropped before signaling readiness".into()))?;
+                if ready.await.is_err() {
+                    let join_result = join_set.join_next().await;
+                    let err = match join_result {
+                        Some(Ok(Ok(()))) => Error::ExecutionFailed(
+                            "Serve handler exited before signaling readiness".into(),
+                        ),
+                        Some(Ok(Err(e))) => e,
+                        Some(Err(join_err)) => Error::ExecutionFailed(format!(
+                            "Serve handler panicked before signaling readiness: {}",
+                            join_err
+                        )),
+                        None => Error::ExecutionFailed(
+                            "Serve handler dropped before signaling readiness".into(),
+                        ),
+                    };
+                    return Err(err);
+                }
             }
 
             info!("Serve command initialized!");
@@ -158,15 +181,53 @@ pub struct ServeCommand {
 
 impl Command for ServeCommand {
     fn execute(self, ctx: &AppContext) -> Result<()> {
-        // TODO: Only one instance of `serve` can run on a given machine (prod or dev included). Check the port and PID to make sure there isn't more than one instance running
+        let _pid_lock = match PidLock::acquire() {
+            Ok(lock) => lock,
+            Err(PidLockError::AlreadyRunning(pid)) => {
+                let reset_requested = prompt_existing_instance()?;
+                info!(
+                    existing_pid = pid,
+                    reset_requested,
+                    "Existing peppy instance detected"
+                );
+                return Err(Error::ExecutionFailed(format!(
+                    "Serve command already running (PID {pid})"
+                )));
+            }
+            Err(PidLockError::Io(err)) => return Err(err.into()),
+        };
+
         let executor = ServeCommandBuilder::new()?
             .with_messaging_router(self.messaging_engine)
             .with_node_stack(ctx)
             .build();
 
-        if let Err(e) = executor.execute() {
-            error!("Serve command failed: {}", e);
+        match executor.execute() {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                error!("Serve command failed: {}", e);
+                Err(e)
+            }
         }
-        Ok(())
     }
+}
+
+fn prompt_existing_instance() -> Result<bool> {
+    if let Ok(value) = std::env::var(PROMPT_ANSWER_ENV) {
+        return Ok(matches!(
+            value.trim().to_lowercase().as_str(),
+            "y" | "yes" | "true" | "1"
+        ));
+    }
+
+    print!("{}", EXISTING_INSTANCE_PROMPT);
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+
+    Ok(matches!(
+        input.trim().to_lowercase().as_str(),
+        "y" | "yes" | "true" | "1"
+    ))
 }
