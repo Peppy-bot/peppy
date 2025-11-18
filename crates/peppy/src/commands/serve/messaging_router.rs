@@ -28,6 +28,11 @@ impl ServeAsyncCommand for MessagingRouter {
                     .start_router()
                     .await
                     .map_err(Error::PeppyMessagingInterface)?;
+                messenger
+                    .start_session()
+                    .await
+                    .map_err(Error::PeppyMessagingInterface)?;
+                info!("Messaging session initialized");
             }
 
             let _ = ready_tx.send(());
