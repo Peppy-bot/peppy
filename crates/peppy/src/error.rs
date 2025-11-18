@@ -12,6 +12,7 @@ pub enum Error {
     // -- serve
     UnsupportedEngine,
     MissingEngineConfig,
+    MissingMessagingRouter,
 
     // -- commands
     ExecutionFailed(String),

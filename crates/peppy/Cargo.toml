@@ -9,12 +9,13 @@ config = { path = "../config-internal" }
 peppylib = { path = "../peppylib" }
 generator = { path = "../generator-internal" }
 node-stack = { path = "../node-stack-internal" }
+master-node = { path = "../master-node-internal" }
 bytes = "1"
 askama = "0.14.0"
 # https://docs.rs/quote/latest/quote/
 clap = { version = "4.5.42", features = ["derive"] }
 tokio = { version = "1.47.0", features = ["signal"] }
-tracing = "0.1.41"
+tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 derive_more = { version = "2", features = ["from"] }
 rayon = "1.11.0"
