@@ -3,16 +3,15 @@ use std::sync::Arc;
 
 use super::CompositeCommand;
 use super::Serve;
-use super::commands_listener::CommandsListener;
+use super::commands_listener::MasterNode;
 use super::messaging_router::MessagingRouter;
-use crate::{AppContext, Result};
+use crate::{AppContext, Error, Result};
 use node_stack::NodeStack;
 use pmi::Messenger;
 use pmi::MessengerAdapter;
 use pmi::MockAdapter;
 use pmi::ZenohAdapter;
 use tokio::sync::Mutex;
-use tracing::info;
 use tracing::warn;
 
 pub struct ServeCommandBuilder {
@@ -49,16 +48,16 @@ impl ServeCommandBuilder {
         self
     }
 
-    pub fn with_commands_listener(mut self) -> Self {
+    pub fn with_master_node(mut self) -> Result<Self> {
         if let Some(messenger) = &self.messenger {
             self.composite_command = self
                 .composite_command
-                .add_async_command(Box::new(CommandsListener::new(Arc::clone(messenger))));
-            info!("Commands listener started!");
+                .add_async_command(Box::new(MasterNode::new(Arc::clone(messenger))));
+            Ok(self)
         } else {
-            warn!("Commands listener requires a messaging router; skipping");
+            warn!("Commands listener requires a messaging router");
+            Err(Error::MissingMessagingRouter)
         }
-        self
     }
 
     pub fn with_node_stack(self, ctx: &AppContext) -> Self {

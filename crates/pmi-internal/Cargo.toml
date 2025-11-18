@@ -12,7 +12,7 @@ json5 = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_json5 = "0.2"
-tokio = { version = "1.47.0", features = ["sync", "rt"] }
+tokio = { version = "1.47", features = ["sync", "rt"] }
 tracing = "0.1.41"
 derive_more = { version = "2", features = ["from"] }
 capnp = "0.23" # ROS 2 uses CDR (Common Data Representation) for message serialization/deserialization

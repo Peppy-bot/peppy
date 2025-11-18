@@ -1,0 +1,13 @@
+[package]
+name = "master-node"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+pmi = { path = "../pmi-internal", features = ["zenoh"] }
+config = { path = "../config-internal" }
+peppylib = { path = "../peppylib" }
+thiserror = "2.0"
+tokio = { version = "1.47", features = ["sync", "rt"] }
+tracing = "0.1"
