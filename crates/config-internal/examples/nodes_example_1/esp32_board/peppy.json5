@@ -18,8 +18,7 @@
       "flash_firmware_exec",
       "flash",
       "--compile",
-      "--namespace ${PEPPY_NAMESPACE}", // The heap doesn't exist in no_std envs, so this flag need to be set at compilation time
-      "--instance_id ${PEPPY_INSTANCE_ID}", // This one is also pretty mandatory
+      "--instance_id ${PEPPY_INSTANCE_ID}", // The heap doesn't exist in no_std envs, so this flag need to be set at compilation time
       "--to_device ${ESP32_DEVICE}" // This is an extra var that can be defined in the deployments
     ]
   },
