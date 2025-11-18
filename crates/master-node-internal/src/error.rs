@@ -1,3 +1,4 @@
+use peppylib::PeppyError;
 use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -10,4 +11,7 @@ pub enum Error {
 
     #[error(transparent)]
     PeppyMessagingInterface(#[from] pmi::PeppyMessagingInterfaceError),
+
+    #[error(transparent)]
+    Peppylib(#[from] PeppyError),
 }

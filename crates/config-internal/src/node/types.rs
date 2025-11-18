@@ -305,10 +305,10 @@ pub struct SubscribesTo {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum QoSProfile {
+    SensorData,
     #[default]
     Standard,
     Reliable,
-    SensorData,
     Critical,
 }
 

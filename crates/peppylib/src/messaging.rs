@@ -396,6 +396,10 @@ impl ActionMessenger {
 }
 
 impl MessengerHandle {
+    pub fn from_shared(messenger: Arc<Mutex<Messenger>>) -> Self {
+        Self { messenger }
+    }
+
     pub async fn new() -> Result<Self> {
         let adapter = ZenohAdapter::default();
         Self::from_adapter(adapter).await
