@@ -9,7 +9,7 @@
       tag: "{{ lidar_sensor_github_tag }}",
       instances: [
         {
-          namespace: "/lidar",
+          instance_id: "lidar_1",
           parameters: {
             device: {
               physical: "/dev/lidar1",
@@ -38,7 +38,7 @@
       tag: "0.1.0",
       instances: [
         {
-          namespace: "/camera/right",
+          instance_id: "camera_right",
           parameters: {
             device: {
               physical: "/dev/video_right",
@@ -56,7 +56,7 @@
           }
         },
         {
-          namespace: "/camera/left",
+          instance_id: "camera_left",
           parameters: {
             device: {
               physical: "/dev/video_left",
@@ -84,11 +84,11 @@
       optional: {{ web_video_stream_optional }},
       instances: [
         {
-          namespace: "/camera/stream/right",
+          instance_id: "stream_1",
           parameters: {
-            cameras_namespaces: [
-              "/camera/right",
-              "/camera/left"
+            camera_instance_ids: [
+              "camera_right",
+              "camera_left"
             ],
             http: {
               host: "0.0.0.0",
@@ -113,7 +113,7 @@
       tag: "0.1.0",
       instances: [
         {
-          namespace: "/brain",
+          instance_id: "the_brain",
           parameters: {}
         }
       ]
@@ -124,7 +124,7 @@
       tag: "0.1.0",
       instances: [
         {
-          namespace: "/controller",
+          instance_id: "the_nervous_system",
           parameters: {}
         }
       ]

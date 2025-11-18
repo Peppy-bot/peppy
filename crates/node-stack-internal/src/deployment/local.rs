@@ -109,11 +109,7 @@ mod tests {
                 name: "uvc_camera",
                 source: "file:///tmp/peppy_node",
                 tag: "0.1.0",
-                instances: [
-                    {
-                        namespace: "/"
-                    }
-                ]
+                instances: []
             }"#,
         )
         .expect("valid deployment json5")

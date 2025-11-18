@@ -8,7 +8,7 @@
       optional: false, // false by default
       instances: [
         {
-          namespace: "/",
+          instance_id: "the_brain",
           parameters: {}
         }
       ],
@@ -19,7 +19,7 @@
       tag: "0.1.0",
       instances: [
         {
-          namespace: "/",
+          instance_id: "the_nervous_system",
           parameters: {}
         }
       ]

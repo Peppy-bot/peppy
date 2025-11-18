@@ -203,7 +203,7 @@ fn optional_node_ignored() {
       tag: "0.1.0",
       instances: [
         {{
-          namespace: "/camera/right",
+          instance_id: "camera_right",
           parameters: {{
             device: {{
               physical: "/dev/video_right",
@@ -232,11 +232,11 @@ fn optional_node_ignored() {
       tag: "9.9.9",
       instances: [
         {{
-          namespace: "/camera/stream/right",
+          instance_id: "video_stream1",
           parameters: {{
-            cameras_namespaces: [
-              "/camera/right",
-              "/camera/left"
+            camera_instance_ids: [
+              "camera_right",
+              "camera_left"
             ],
             http: {{
               host: "0.0.0.0",

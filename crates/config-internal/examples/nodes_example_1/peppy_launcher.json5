@@ -23,8 +23,7 @@
       // One instance is going to emit on ns /camera/front/stream and another on /camera/rear/stream
       instances: [
         {
-          // This namespace is set in the `PEPPY_NAMESPACE` env var before launching the node instance
-          namespace: "/camera/front",
+          instance_id: "camera_front",
           parameters: {
             device: {
               physical: "/dev/video_right",
@@ -42,8 +41,7 @@
           }
         },
         {
-          // This is a separate instance, so a different `PEPPY_NAMESPACE` value
-          namespace: "/camera/rear",
+          instance_id: "camera_rear",
           parameters: {
             device: {
               physical: "/dev/video_left",
@@ -69,12 +67,12 @@
       optional: true, // false by default. If set to `false`, do not prevent `peppy serve` from starting if the node cannot be found in the node stack
       instances: [
         {
-          namespace: "/camera/stream/right",
+          instance_id: "video_stream1",
           parameters: {
-            // When given in parameters, a single instance can take in multiple streams
-            cameras_namespaces: [
-              "/camera/right",
-              "/camera/left"
+            // Listen to all the instances with this ID
+            camera_instance_ids: [
+              "camera_front",
+              "camera_rear"
             ],
             http: {
               host: "0.0.0.0",
@@ -98,7 +96,7 @@
       tag: "0.1.0",
       instances: [
         {
-          namespace: "/boards",
+          instance_id: "esp32_1",
           // Some vars such as `PEPPY_NAMESPACE` are automatically passed onto the instance
           env_vars: {
             ESP32_DEVICE: "/dev/tty.usbmodem585A0076841"
