@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use config::node::QoSProfile;
 use pmi::{Messenger, MessengerBackend};
-use rand::{seq::SliceRandom, thread_rng};
+use rand::seq::SliceRandom;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -184,7 +184,8 @@ async fn topic_publish_reliable_5000hz_messages() {
     let expected_topic = super::build_full_namespace(ns, topic_name);
     let message_count = 5000;
     let mut message_ids: Vec<u32> = (0..message_count as u32).collect();
-    message_ids.shuffle(&mut thread_rng());
+    let mut rng = rand::rng();
+    message_ids.shuffle(&mut rng);
 
     for &message_id in &message_ids {
         let payload = Bytes::from(message_id.to_le_bytes().to_vec());
@@ -653,7 +654,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
             caller_requests.push((caller_name, requests));
         }
 
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         caller_requests.shuffle(&mut rng);
 
         let mut handles = Vec::with_capacity(caller_count);
@@ -696,7 +697,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
 
         let mut verification_indices: Vec<usize> = (0..results.len()).collect();
         let original_indices = verification_indices.clone();
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         verification_indices.shuffle(&mut rng);
         if verification_indices == original_indices {
             verification_indices.rotate_left(1);
@@ -1265,7 +1266,7 @@ async fn single_action_communication_multiple_polls() {
 
     let total_clients = cases.len();
     let mut shuffled_cases = cases.as_ref().clone();
-    let mut rng = thread_rng();
+    let mut rng = rand::rng();
     shuffled_cases.shuffle(&mut rng);
 
     let mut client_handles = Vec::with_capacity(total_clients);
