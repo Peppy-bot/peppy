@@ -1,14 +1,12 @@
+use crate::{Error, Result};
 use config::{
     node::{Manifest, Name, NodeConfig},
     peppy_config::CURRENT_SCHEMA_VERSION,
 };
 use names_generator2::get_random;
+use pmi::{Messenger, MessengerBackend, SubscriberQoS};
 use rand::rng;
 use std::sync::Arc;
-use tracing::warn;
-
-use crate::{Error, Result};
-use pmi::{Messenger, MessengerBackend, SubscriberQoS};
 use tokio::sync::Mutex;
 use tracing::info;
 
@@ -48,7 +46,8 @@ impl MasterNode {
     }
 
     pub async fn start(&self) -> Result<()> {
-        info!("Starting commands listener...");
+        let node_name = self.node_config.manifest.name.as_str();
+        info!("Starting the master node as {}...", node_name);
 
         let mut subscription = {
             let messenger = self.messenger.lock().await;
@@ -61,38 +60,27 @@ impl MasterNode {
         }
         .map_err(Error::PeppyMessagingInterface)?;
 
-        let shutdown_signal = tokio::signal::ctrl_c();
-        tokio::pin!(shutdown_signal);
-
         loop {
-            tokio::select! {
-                ctrl_c_result = &mut shutdown_signal => {
-                    ctrl_c_result.map_err(Error::from)?;
-                    break;
-                }
-                maybe_message = subscription.on_next_message() => {
-                    match maybe_message {
-                        Some(message) => {
-                            let payload = String::from_utf8_lossy(message.payload.as_ref());
-                            let command = payload.trim();
+            match subscription.on_next_message().await {
+                Some(message) => {
+                    let payload = String::from_utf8_lossy(message.payload.as_ref());
+                    let command = payload.trim();
 
-                            match command {
-                                "ping" => info!("Received 'ping' command over {}", message.topic),
-                                "status" => info!("Would respond with status for {}", message.topic),
-                                "shutdown" => info!("Received 'shutdown' command (toy example)"),
-                                other => info!("Received unhandled command '{}'", other),
-                            }
-                        }
-                        None => {
-                            info!("Command subscription closed; no longer listening for messages");
-                            break;
-                        }
+                    match command {
+                        "ping" => info!("Received 'ping' command over {}", message.topic),
+                        "status" => info!("Would respond with status for {}", message.topic),
+                        "shutdown" => info!("Received 'shutdown' command (toy example)"),
+                        other => info!("Received unhandled command '{}'", other),
                     }
+                }
+                None => {
+                    info!("Command subscription closed; no longer listening for messages");
+                    break;
                 }
             }
         }
 
-        info!("Shutting down commands listener...");
+        info!("Shutting down master node...");
         Ok(())
     }
 }
