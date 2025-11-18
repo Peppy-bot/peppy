@@ -1786,8 +1786,10 @@ name = "master-node"
 version = "0.0.1"
 dependencies = [
  "config",
+ "names-generator2",
  "peppylib",
  "pmi",
+ "rand 0.9.2",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
@@ -1843,6 +1845,15 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "names-generator2"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46a13b38887b58405b12645dc3ec9f6a28dfc89c39485effb1e0755f2ddf2196"
+dependencies = [
+ "rand_core 0.9.3",
 ]
 
 [[package]]

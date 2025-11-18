@@ -1,5 +1,5 @@
 mod builder;
-mod commands_listener;
+mod master_node;
 mod messaging_router;
 mod pid_lock;
 
@@ -202,7 +202,7 @@ impl Command for ServeCommand {
             .with_messaging_router(self.messaging_engine)
             .with_master_node()?
             .with_node_stack(ctx)
-            .build();
+            .build()?;
 
         match executor.execute() {
             Ok(()) => Ok(()),

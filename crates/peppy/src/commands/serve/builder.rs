@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use super::CompositeCommand;
 use super::Serve;
-use super::commands_listener::MasterNode;
+use super::master_node::MasterNodeRunner;
 use super::messaging_router::MessagingRouter;
 use crate::{AppContext, Error, Result};
 use node_stack::NodeStack;
@@ -17,6 +17,8 @@ use tracing::warn;
 pub struct ServeCommandBuilder {
     composite_command: CompositeCommand,
     messenger: Option<Arc<Mutex<Messenger>>>,
+    node_stack: NodeStack,
+    master_node_requested: bool,
 }
 
 impl ServeCommandBuilder {
@@ -24,6 +26,8 @@ impl ServeCommandBuilder {
         Ok(Self {
             composite_command: CompositeCommand::default(),
             messenger: None,
+            node_stack: NodeStack::new(),
+            master_node_requested: false,
         })
     }
 
@@ -49,23 +53,29 @@ impl ServeCommandBuilder {
     }
 
     pub fn with_master_node(mut self) -> Result<Self> {
-        if let Some(messenger) = &self.messenger {
-            self.composite_command = self
-                .composite_command
-                .add_async_command(Box::new(MasterNode::new(Arc::clone(messenger))));
-            Ok(self)
-        } else {
-            warn!("Commands listener requires a messaging router");
-            Err(Error::MissingMessagingRouter)
-        }
+        self.master_node_requested = true;
+        Ok(self)
     }
 
     pub fn with_node_stack(self, ctx: &AppContext) -> Self {
-        ctx.set_node_stack(NodeStack::new());
+        ctx.set_node_stack(self.node_stack.clone());
         self
     }
 
-    pub fn build(self) -> Serve {
-        Serve::new(self.composite_command)
+    pub fn build(mut self) -> Result<Serve> {
+        if self.master_node_requested {
+            if let Some(messenger) = &self.messenger {
+                let master_node = MasterNodeRunner::new(Arc::clone(messenger));
+                self.node_stack.push_config(master_node.config().clone());
+                self.composite_command = self
+                    .composite_command
+                    .add_async_command(Box::new(master_node));
+            } else {
+                warn!("Commands listener requires a messaging router");
+                return Err(Error::MissingMessagingRouter);
+            }
+        }
+
+        Ok(Serve::new(self.composite_command))
     }
 }

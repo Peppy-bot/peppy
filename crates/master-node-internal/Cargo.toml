@@ -8,6 +8,8 @@ edition.workspace = true
 pmi = { path = "../pmi-internal", features = ["zenoh"] }
 config = { path = "../config-internal" }
 peppylib = { path = "../peppylib" }
+names-generator2 = "0.2"
+rand = "0.9"
 thiserror = "2.0"
 tokio = { version = "1.47", features = ["sync", "rt"] }
 tracing = "0.1"
