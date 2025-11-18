@@ -3,5 +3,5 @@ mod commands;
 mod error;
 mod node;
 
-use error::{Error, Result};
+pub use error::{Error, Result};
 pub use node::MasterNode;

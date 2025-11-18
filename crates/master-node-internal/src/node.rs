@@ -1,10 +1,11 @@
-use crate::{Error, Result};
+use crate::Result;
 use config::{
-    node::{Manifest, Name, NodeConfig},
+    node::{Manifest, Name, NodeConfig, QoSProfile},
     peppy_config::CURRENT_SCHEMA_VERSION,
 };
 use names_generator2::get_random;
-use pmi::{Messenger, MessengerBackend, SubscriberQoS};
+use peppylib::{MessengerHandle, TopicMessenger};
+use pmi::Messenger;
 use rand::rng;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -14,7 +15,7 @@ const MASTER_NODE_TAG: &str = "internal";
 
 pub struct MasterNode {
     node_config: NodeConfig,
-    messenger: Arc<Mutex<Messenger>>,
+    messenger: MessengerHandle,
 }
 
 impl MasterNode {
@@ -35,6 +36,8 @@ impl MasterNode {
             logging: None,
         };
 
+        let messenger = MessengerHandle::from_shared(messenger);
+
         Self {
             node_config,
             messenger,
@@ -49,16 +52,13 @@ impl MasterNode {
         let node_name = self.node_config.manifest.name.as_str();
         info!("Starting the master node as {}...", node_name);
 
-        let mut subscription = {
-            let messenger = self.messenger.lock().await;
-            messenger
-                .subscribe(
-                    config::consts::PEPPYD_COMMANDS_TOPIC,
-                    SubscriberQoS::Standard,
-                )
-                .await
-        }
-        .map_err(Error::PeppyMessagingInterface)?;
+        let mut subscription = TopicMessenger::subscribe(
+            &self.messenger,
+            config::consts::MASTER_NODE_TOPIC_NAMESPACE,
+            config::consts::MASTER_NODE_CMD_TOPIC_NAME,
+            QoSProfile::Critical,
+        )
+        .await?;
 
         loop {
             match subscription.on_next_message().await {
