@@ -1,10 +1,15 @@
-use crate::{common::NodeParameters, error::ParsingError, node::Logging};
+use crate::{
+    common::NodeParameters,
+    error::{DUPLICATE_INSTANCE_ID_ERROR_PREFIX, ParsingError},
+    node::Logging,
+};
 use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer},
     ser::{self, Serializer},
 };
 use std::{
+    collections::HashSet,
     convert::TryFrom,
     path::{Path, PathBuf},
     str::FromStr,
@@ -33,6 +38,7 @@ pub struct Deployment {
     pub tag: String,
     #[serde(default)]
     pub optional: bool,
+    #[serde(deserialize_with = "deserialize_instances")]
     pub instances: Vec<DeploymentInstance>,
 }
 
@@ -42,6 +48,23 @@ pub struct DeploymentInstance {
     pub instance_id: InstanceID,
     #[serde(default)]
     pub parameters: NodeParameters,
+}
+
+fn deserialize_instances<'de, D>(deserializer: D) -> Result<Vec<DeploymentInstance>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let instances = Vec::<DeploymentInstance>::deserialize(deserializer)?;
+    let mut seen = HashSet::new();
+    for instance in &instances {
+        let id = instance.instance_id.as_str();
+        if !seen.insert(id.to_owned()) {
+            return Err(de::Error::custom(format!(
+                "{DUPLICATE_INSTANCE_ID_ERROR_PREFIX}{id}"
+            )));
+        }
+    }
+    Ok(instances)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -467,5 +490,24 @@ mod tests {
         let round_trip: DeploymentNodeSource =
             serde_json5::from_str(&serialized).expect("re-parse serialized http deployment source");
         assert_eq!(round_trip, source);
+    }
+
+    #[test]
+    fn duplicate_instance_ids_are_rejected() {
+        let duplicate_instances = r#"{
+            name: "uvc_camera",
+            tag: "0.1.0",
+            instances: [
+                { instance_id: "camera_front" },
+                { instance_id: "camera_front" }
+            ]
+        }"#;
+
+        let err = serde_json5::from_str::<Deployment>(duplicate_instances)
+            .expect_err("expected duplicate instance_id rejection");
+        let ParsingError::DuplicateInstanceId(duplicate) = ParsingError::from(err) else {
+            panic!("expected duplicate instance id error");
+        };
+        assert_eq!(duplicate, "camera_front");
     }
 }
