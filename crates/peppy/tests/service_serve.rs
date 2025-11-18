@@ -170,9 +170,12 @@ fn test_serve_command() {
         .join()
         .expect("signal thread should complete without panic");
 
+    let node_stack = ctx
+        .node_stack()
+        .expect("node stack should be initialized by ServeCommand");
     assert!(
-        ctx.node_stack().is_some(),
-        "node stack should be initialized by ServeCommand"
+        node_stack.contains("master-node", "internal"),
+        "node stack should register the master node"
     );
 
     let logs = log_capture.logs();
