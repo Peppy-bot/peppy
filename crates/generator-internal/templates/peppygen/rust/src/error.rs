@@ -1,5 +1,6 @@
 use capnp::Error as CapnpError;
 use peppylib::PeppyError;
+use std::env::VarError;
 use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -70,6 +71,12 @@ pub enum Error {
     },
     #[error("message format for `{context}` is not available in the generator")]
     MessageFormatUnavailable { context: String },
+    #[error("failed to read `{var}` from the environment")]
+    MissingInstanceIdEnvVar {
+        var: &'static str,
+        #[source]
+        source: VarError,
+    },
     #[error(transparent)]
     Messaging(#[from] PeppyError),
 }
