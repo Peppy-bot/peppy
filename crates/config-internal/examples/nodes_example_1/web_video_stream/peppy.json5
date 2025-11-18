@@ -15,7 +15,7 @@
   },
   // The input parameters of the current node
   parameters: {
-    cameras_namespaces: {
+    camera_instance_ids: {
       type: "array",
       items: "string"
     },

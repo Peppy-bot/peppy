@@ -115,9 +115,7 @@ mod tests {
                     name: "bad_deployment",
                     tag: "0.1.0",
                     source: "",
-                    instances: [
-                        { namespace: "/" }
-                    ]
+                    instances: []
                 }
             ]
         }"#;

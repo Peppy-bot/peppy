@@ -39,7 +39,7 @@ pub struct Deployment {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeploymentInstance {
-    pub namespace: Namespace,
+    pub instance_id: InstanceID,
     #[serde(default)]
     pub parameters: NodeParameters,
 }
@@ -309,9 +309,9 @@ impl GitRemoteSpec {
 /// Validated namespace. Same as Name but allows '/'.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
-pub struct Namespace(String);
+pub struct InstanceID(String);
 
-impl Namespace {
+impl InstanceID {
     pub fn new<S: Into<String>>(s: S) -> Result<Self, ParsingError> {
         Self::try_from(s.into())
     }
@@ -325,7 +325,7 @@ impl Namespace {
     }
 }
 
-impl TryFrom<String> for Namespace {
+impl TryFrom<String> for InstanceID {
     type Error = ParsingError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
@@ -334,15 +334,15 @@ impl TryFrom<String> for Namespace {
                 "Namespace cannot be empty".to_string(),
             ));
         }
-        if value.chars().all(Namespace::is_valid_char) {
-            return Ok(Namespace(value));
+        if value.chars().all(InstanceID::is_valid_char) {
+            return Ok(InstanceID(value));
         }
         Err(ParsingError::InvalidNamespace(value))
     }
 }
 
-impl From<Namespace> for String {
-    fn from(v: Namespace) -> Self {
+impl From<InstanceID> for String {
+    fn from(v: InstanceID) -> Self {
         v.0
     }
 }
@@ -353,13 +353,13 @@ mod tests {
 
     #[test]
     fn namespace_validation() {
-        assert!(Namespace::new("/").is_ok());
-        assert!(Namespace::new("/robot").is_ok());
-        assert!(Namespace::new("/robot/camera_v1").is_ok());
+        assert!(InstanceID::new("/").is_ok());
+        assert!(InstanceID::new("/robot").is_ok());
+        assert!(InstanceID::new("/robot/camera_v1").is_ok());
 
-        assert!(Namespace::new("").is_err()); // empty not permitted
-        assert!(Namespace::new("/Robot").is_err()); // capital
-        assert!(Namespace::new("/robot$cam").is_err()); // special
+        assert!(InstanceID::new("").is_err()); // empty not permitted
+        assert!(InstanceID::new("/Robot").is_err()); // capital
+        assert!(InstanceID::new("/robot$cam").is_err()); // special
     }
 
     #[test]
@@ -434,7 +434,7 @@ mod tests {
             r#"{
                 name: "controller",
                 tag: "0.1.0",
-                instances: [{ namespace: "/" }]
+                instances: []
             }"#,
         )
         .unwrap();

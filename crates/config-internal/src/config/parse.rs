@@ -60,7 +60,7 @@ mod tests {
                     source: "file://tmp/peppy.json5",
                     instances: [
                         {
-                            namespace: "/camera/front",
+                            instance_id: "camera_front",
                             parameters: {
                                 device: { physical: "/dev/video_front", sim: "mujoco:camera_front", priority: "physical" },
                                 video: {
@@ -71,7 +71,7 @@ mod tests {
                             }
                         },
                         {
-                            namespace: "/camera/rear",
+                            instance_id: "camera_rear",
                             parameters: {
                                 device: { physical: "/dev/video_rear", sim: "mujoco:camera_rear", priority: "sim" },
                                 video: {
@@ -89,7 +89,7 @@ mod tests {
                     source: "https://github.com/Peppy/web_video_stream.git",
                     instances: [
                         {
-                            namespace: "/video",
+                            instance_id: "web_video1",
                             parameters: {
                                 http: { host: "localhost", port: 8081, max_connections: 1000, request_timeout_ms: 5000 },
                                 video_stream: { format: "mjpeg", quality: 75, max_fps: 30 }
@@ -103,7 +103,7 @@ mod tests {
                     tag: "0.1.0",
                     instances: [
                         {
-                            namespace: "/",
+                            instance_id: "web_server_1",
                             parameters: {
                                 http: { host: "0.0.0.0", port: 8080, max_connections: 500, request_timeout_ms: 5000 }
                             }
@@ -174,7 +174,7 @@ mod tests {
                 {
                     name: "uvc_camera",
                     tag: "0.1.0",
-                    instances: [ { namespace: "/" } ]
+                    instances: []
                 }
             ]
         }"#;
