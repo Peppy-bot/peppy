@@ -409,6 +409,186 @@ async fn main() -> Result<()> {{
     });
 }
 
+#[test]
+fn services_communication_multiple_expose_instances_same_service() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("failed to create tokio runtime");
+
+    let (mut router, _dir, router_host, router_port) = rt
+        .block_on(peppylib::start_zenohd_process("127.0.0.1", None))
+        .expect("failed to start zenoh router for test");
+
+    // --- Subscriber (client) project
+    let temp_dir_subscriber = TempDir::new().unwrap();
+    let subscribed_service: SubscribedService =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE).unwrap();
+    let subscribed_request_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap();
+    let subscribed_response_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE).unwrap();
+    let (mut generator, output_dir_subscriber, user_node_subscriber) =
+        init_test_env(&temp_dir_subscriber);
+    generator
+        .add_subscribed_service(
+            &subscribed_service,
+            Some(&subscribed_request_format),
+            Some(&subscribed_response_format),
+        )
+        .unwrap();
+    let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
+    generator.build(&output_dir_subscriber).unwrap();
+    fs::remove_file(output_config).unwrap();
+    init_cargo_user_node(&user_node_subscriber);
+    let subscriber_main = format!(
+        "
+use peppygen::subscribed_services::uvc_camera_enable_camera;
+use peppygen::{{Messenger, Result}};
+use std::time::Duration;
+
+#[tokio::main]
+async fn main() -> Result<()> {{
+    let messenger = Messenger::connect(\"{}\", {}).await?;
+
+    let response =
+        uvc_camera_enable_camera::poll(&messenger, Duration::from_secs(5), true).await?;
+    let error_msg = response.error_msg.as_deref().unwrap_or(\"<none>\");
+    println!(
+        \"enable_camera result: enabled={{}} error={{}}\",
+        response.enabled,
+        error_msg
+    );
+
+    Ok(())
+}}
+",
+        router_host, router_port
+    );
+    let main_file = user_node_subscriber.join("src").join("main.rs");
+    fs::write(main_file, subscriber_main).expect("failed to write subscriber main");
+
+    // --- Exposer (server) project
+    let exposer_main = format!(
+        "
+use peppygen::exposed_services::enable_camera;
+use peppygen::{{Messenger, Result}};
+
+#[tokio::main]
+async fn main() -> Result<()> {{
+    let messenger = Messenger::connect(\"{}\", {}).await?;
+
+    enable_camera::handle_next_request(&messenger, |request| -> Result<enable_camera::Response> {{
+        println!(\"received enable_camera request: {{}}\", request.enable);
+        Ok(enable_camera::Response::new(
+            request.enable,
+            Some(\"handled\".to_owned()),
+        ))
+    }})
+    .await?;
+
+    println!(\"enable_camera handler finished\");
+
+    Ok(())
+}}
+",
+        router_host, router_port
+    );
+
+    // --- Exposer 1
+    let temp_dir_exposer1 = TempDir::new().unwrap();
+    let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
+    let (mut generator, output_dir_exposer1, user_node_exposer1) =
+        init_test_env(&temp_dir_exposer1);
+    generator.add_exposed_service(&exposed_service).unwrap();
+    let output_config = copy_config_to_output(&user_node_exposer1, &output_dir_exposer1);
+    generator.build(&output_dir_exposer1).unwrap();
+    fs::remove_file(output_config).unwrap();
+    init_cargo_user_node(&user_node_exposer1);
+    let main_file = user_node_exposer1.join("src").join("main.rs");
+    fs::write(main_file, &exposer_main).expect("failed to write exposer main 1");
+
+    // --- Exposer 2
+    let temp_dir_exposer2 = TempDir::new().unwrap();
+    let exposed_service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
+    let (mut generator, output_dir_exposer2, user_node_exposer2) =
+        init_test_env(&temp_dir_exposer2);
+    generator.add_exposed_service(&exposed_service2).unwrap();
+    let output_config = copy_config_to_output(&user_node_exposer2, &output_dir_exposer2);
+    generator.build(&output_dir_exposer2).unwrap();
+    fs::remove_file(output_config).unwrap();
+    init_cargo_user_node(&user_node_exposer2);
+    let main_file = user_node_exposer2.join("src").join("main.rs");
+    fs::write(main_file, &exposer_main).expect("failed to write exposer main 2");
+
+    // Compilation + execution
+    compile_project(&user_node_subscriber);
+    compile_project(&user_node_exposer1);
+    compile_project(&user_node_exposer2);
+
+    let exposer_dir1 = user_node_exposer1.clone();
+    let exposer_thread1 =
+        thread::spawn(move || run_cargo_run(&exposer_dir1, Some(Duration::from_secs(10)), &[]));
+
+    let exposer_dir2 = user_node_exposer2.clone();
+    let exposer_thread2 =
+        thread::spawn(move || run_cargo_run(&exposer_dir2, Some(Duration::from_secs(10)), &[]));
+
+    // Give the exposer a moment to start listening before the subscriber sends a request.
+    thread::sleep(Duration::from_secs(1));
+
+    let subscriber_dir = user_node_subscriber.clone();
+    let subscriber_thread =
+        thread::spawn(move || run_cargo_run(&subscriber_dir, Some(Duration::from_secs(10)), &[]));
+
+    let exposer_output1 = exposer_thread1.join().expect("exposer thread panicked");
+    let exposer_output2 = exposer_thread2.join().expect("exposer thread panicked");
+    let subscriber_output = subscriber_thread
+        .join()
+        .expect("subscriber thread panicked");
+
+    let subscriber_stdout = String::from_utf8_lossy(&subscriber_output.stdout).into_owned();
+    let subscriber_stderr = String::from_utf8_lossy(&subscriber_output.stderr).into_owned();
+    assert!(
+        subscriber_output.status.success(),
+        "subscriber cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        subscriber_output.status.code(),
+        subscriber_stdout,
+        subscriber_stderr
+    );
+    assert!(
+        subscriber_stdout.contains("enable_camera result: enabled=true error=handled"),
+        "subscriber did not receive expected service response.\nstdout:\n{}\nstderr:\n{}",
+        subscriber_stdout,
+        subscriber_stderr
+    );
+
+    let exposer_stdout = String::from_utf8_lossy(&exposer_output1.stdout).into_owned();
+    let exposer_stderr = String::from_utf8_lossy(&exposer_output1.stderr).into_owned();
+    assert!(
+        exposer_output1.status.success(),
+        "exposer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        exposer_output1.status.code(),
+        exposer_stdout,
+        exposer_stderr
+    );
+    assert!(
+        exposer_stdout.contains("received enable_camera request: true")
+            && exposer_stdout.contains("enable_camera handler finished"),
+        "exposer did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
+        exposer_stdout,
+        exposer_stderr
+    );
+
+    rt.block_on(async {
+        router
+            .stop_router()
+            .await
+            .expect("failed to stop zenoh router");
+    });
+}
+
 // --- Actions
 const EXPOSED_ACTION_EXAMPLE: &str = r#"
 {
