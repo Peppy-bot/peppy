@@ -182,6 +182,11 @@ fn expose_service() {
         "expected generic helper for handling request payloads"
     );
     assert_rendered!(
+        rendered.contains("service_instance_id: &str"),
+        &rendered,
+        "expected handler helper to accept service instance id"
+    );
+    assert_rendered!(
         rendered.contains("let (instance_id, request_data) = deserialize_request(payload)?;"),
         &rendered,
         "expected helper to destructure instance_id from deserializer"
@@ -195,6 +200,28 @@ fn expose_service() {
         rendered.contains("let response = handler(instance_id, request_data)?;"),
         &rendered,
         "expected handler result to be captured with instance context"
+    );
+    assert_rendered!(
+        rendered.contains(
+            "&handler,\n                        service_instance_id.as_str(),\n                    )"
+        ),
+        &rendered,
+        "expected helper invocation to forward service instance id"
+    );
+    assert_rendered!(
+        rendered.contains("response_root.set_instance_id(service_instance_id);"),
+        &rendered,
+        "expected response payload to include service instance id"
+    );
+    assert_rendered!(
+        rendered.contains("let service_instance_id = std::env::var(\"PEPPY_INSTANCE_ID\")"),
+        &rendered,
+        "expected service handler to resolve instance id from environment"
+    );
+    assert_rendered!(
+        rendered.contains("crate::Error::MissingInstanceIdEnvVar"),
+        &rendered,
+        "expected service handler to surface missing instance id errors"
     );
     assert_rendered!(
         rendered.contains("bytes::Bytes::from(buffer)"),
@@ -246,6 +273,18 @@ fn expose_service_without_request_body() {
         rendered.contains("fn handle_request_payload"),
         &rendered,
         "expected generic helper function even without request payload"
+    );
+    assert_rendered!(
+        rendered.contains("service_instance_id: &str"),
+        &rendered,
+        "expected payload helper signature to include service instance id"
+    );
+    assert_rendered!(
+        rendered.contains(
+            "&handler,\n                        service_instance_id.as_str(),\n                    )"
+        ),
+        &rendered,
+        "expected helper invocation to forward service instance id even without request fields"
     );
 }
 
@@ -960,6 +999,35 @@ fn compile_lib_with_exposed_and_subscribed_services() {
     assert!(
         enable_module_contents.contains("fn handle_request_payload"),
         "Expected generated helper to convert handler output to bytes, got:\n{}",
+        enable_module_contents
+    );
+    assert!(
+        enable_module_contents.contains("service_instance_id: &str"),
+        "Expected payload helper to accept service instance id, got:\n{}",
+        enable_module_contents
+    );
+    assert!(
+        enable_module_contents.contains(
+            "&handler,\n                        service_instance_id.as_str(),\n                    )"
+        ),
+        "Expected helper invocation to forward service instance id, got:\n{}",
+        enable_module_contents
+    );
+    assert!(
+        enable_module_contents.contains("response_root.set_instance_id(service_instance_id);"),
+        "Expected response payload to set service instance id, got:\n{}",
+        enable_module_contents
+    );
+    assert!(
+        enable_module_contents.contains(
+            "let service_instance_id = std::env::var(\"PEPPY_INSTANCE_ID\")"
+        ),
+        "Expected handler to resolve service instance id from environment, got:\n{}",
+        enable_module_contents
+    );
+    assert!(
+        enable_module_contents.contains("crate::Error::MissingInstanceIdEnvVar"),
+        "Expected handler to propagate missing instance id errors, got:\n{}",
         enable_module_contents
     );
     assert!(
