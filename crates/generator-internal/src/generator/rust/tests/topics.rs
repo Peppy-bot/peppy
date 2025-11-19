@@ -137,6 +137,11 @@ fn expose_topic() {
         "expected fixed-size array setter"
     );
     assert_rendered!(
+        rendered.contains("root.set_instance_id(instance_id.as_str());"),
+        &rendered,
+        "expected instance id setter"
+    );
+    assert_rendered!(
         rendered.contains("root.reborrow().init_header();"),
         &rendered,
         "expected nested header initialization"
@@ -160,6 +165,11 @@ fn expose_topic() {
         rendered.contains("header: MessageHeader"),
         &rendered,
         "expected structured header argument"
+    );
+    assert_rendered!(
+        !rendered.contains("instance_id: String"),
+        &rendered,
+        "expected instance id to be resolved at runtime"
     );
     assert_rendered!(
         rendered.contains("image: [u8; 3]"),
@@ -200,6 +210,16 @@ fn expose_topic() {
         rendered.contains("let qos = peppylib::config::QoSProfile::SensorData;"),
         &rendered,
         "expected qos profile literal"
+    );
+    assert_rendered!(
+        rendered.contains("std::env::var(\"PEPPY_INSTANCE_ID\")"),
+        &rendered,
+        "expected instance id env lookup"
+    );
+    assert_rendered!(
+        rendered.contains("crate::Error::MissingInstanceIdEnvVar"),
+        &rendered,
+        "expected instance id error mapping"
     );
     assert_rendered!(
         rendered.contains("peppylib::TopicMessenger::emit("),
@@ -365,9 +385,14 @@ fn subscribed_to_topic() {
         "expected private payload deserializer function"
     );
     assert_rendered!(
-        rendered.contains("-> crate::Result<Message>"),
+        rendered.contains("-> crate::Result<(String, Message)>"),
         &rendered,
-        "expected subscriber return type"
+        "expected subscriber return type including instance id"
+    );
+    assert_rendered!(
+        rendered.contains("Ok(("),
+        &rendered,
+        "expected tuple return inside payload helper"
     );
     assert_rendered!(
         rendered.contains("peppylib::TopicMessenger::subscribe("),

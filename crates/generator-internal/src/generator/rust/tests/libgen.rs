@@ -98,10 +98,10 @@ use peppygen::{{Messenger, Result}};
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
-    let frame = on_next_message_received(&messenger).await?;
+    let (instance_id, frame) = on_next_message_received(&messenger).await?;
     println!(
-        \"got {{}}x{{}} frame encoded as {{}}\",
-        frame.width, frame.height, frame.encoding
+        \"got {{}}x{{}} frame encoded as {{}} from {{}}\",
+        frame.width, frame.height, frame.encoding, &instance_id
     );
 
     Ok(())
@@ -113,6 +113,7 @@ async fn main() -> Result<()> {{
     fs::write(main_file, &subscriber_main).expect("failed to write main file");
 
     // --- Exposer project
+    let exposer_instance_name = "test_instance";
     let temp_dir_proj1 = TempDir::new().unwrap();
     let exposed_topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
     let (mut generator, output_dir1, user_node_exposer) = init_test_env(&temp_dir_proj1);
@@ -157,13 +158,19 @@ async fn main() -> Result<()> {{
 
     let subscriber_dir = user_node_subscriber.clone();
     let subscriber_thread =
-        thread::spawn(move || run_cargo_run(&subscriber_dir, Some(Duration::from_secs(5))));
+        thread::spawn(move || run_cargo_run(&subscriber_dir, Some(Duration::from_secs(5)), &[]));
 
     // Give the subscriber a moment to connect before emitting frames.
     thread::sleep(Duration::from_millis(500));
 
     let exposer_dir = user_node_exposer.clone();
-    let exposer_thread = thread::spawn(move || run_cargo_run(&exposer_dir, None));
+    let exposer_thread = thread::spawn(move || {
+        run_cargo_run(
+            &exposer_dir,
+            Some(Duration::from_secs(5)),
+            &[("PEPPY_INSTANCE_ID", exposer_instance_name)],
+        )
+    });
 
     let subscriber_output = subscriber_thread
         .join()
@@ -347,14 +354,14 @@ async fn main() -> Result<()> {{
 
     let exposer_dir = user_node_exposer.clone();
     let exposer_thread =
-        thread::spawn(move || run_cargo_run(&exposer_dir, Some(Duration::from_secs(10))));
+        thread::spawn(move || run_cargo_run(&exposer_dir, Some(Duration::from_secs(10)), &[]));
 
     // Give the exposer a moment to start listening before the subscriber sends a request.
     thread::sleep(Duration::from_millis(500));
 
     let subscriber_dir = user_node_subscriber.clone();
     let subscriber_thread =
-        thread::spawn(move || run_cargo_run(&subscriber_dir, Some(Duration::from_secs(10))));
+        thread::spawn(move || run_cargo_run(&subscriber_dir, Some(Duration::from_secs(10)), &[]));
 
     let exposer_output = exposer_thread.join().expect("exposer thread panicked");
     let subscriber_output = subscriber_thread
@@ -632,14 +639,14 @@ async fn main() -> Result<()> {{
 
     let exposer_dir = user_node_exposer.clone();
     let exposer_thread =
-        thread::spawn(move || run_cargo_run(&exposer_dir, Some(Duration::from_secs(15))));
+        thread::spawn(move || run_cargo_run(&exposer_dir, Some(Duration::from_secs(15)), &[]));
 
     // Give the exposer a moment to start listening for goals before firing one.
     thread::sleep(Duration::from_millis(500));
 
     let subscriber_dir = user_node_subscriber.clone();
     let subscriber_thread =
-        thread::spawn(move || run_cargo_run(&subscriber_dir, Some(Duration::from_secs(15))));
+        thread::spawn(move || run_cargo_run(&subscriber_dir, Some(Duration::from_secs(15)), &[]));
 
     let exposer_output = exposer_thread.join().expect("exposer thread panicked");
     let subscriber_output = subscriber_thread
@@ -816,13 +823,13 @@ async fn main() -> Result<()> {{
 
     let exposer_dir = user_node_exposer.clone();
     let exposer_thread =
-        thread::spawn(move || run_cargo_run(&exposer_dir, Some(Duration::from_secs(15))));
+        thread::spawn(move || run_cargo_run(&exposer_dir, Some(Duration::from_secs(15)), &[]));
 
     thread::sleep(Duration::from_millis(500));
 
     let subscriber_dir = user_node_subscriber.clone();
     let subscriber_thread =
-        thread::spawn(move || run_cargo_run(&subscriber_dir, Some(Duration::from_secs(15))));
+        thread::spawn(move || run_cargo_run(&subscriber_dir, Some(Duration::from_secs(15)), &[]));
 
     let exposer_output = exposer_thread.join().expect("exposer thread panicked");
     let subscriber_output = subscriber_thread
