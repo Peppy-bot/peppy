@@ -1,6 +1,7 @@
 #[cfg(feature = "zenoh")]
 #[test]
 fn test_with_zenoh_feature() {
+    use bytes::Bytes;
     use pmi::{
         Message, PeppyMessagingInterfaceError, SubscriberQoS, ZenohClientConfigTemplate,
         ZenohNetProtocol,
@@ -8,9 +9,9 @@ fn test_with_zenoh_feature() {
 
     assert!(cfg!(feature = "zenoh"), "zenoh feature should be enabled");
 
-    let message = Message::new("test/topic", b"test payload");
-    assert_eq!(message.topic, "test/topic");
-    assert_eq!(&message.payload[..], b"test payload");
+    let message = Message::new("test/topic", Bytes::from_static(b"test payload"));
+    assert_eq!(message.identifier(), "test/topic");
+    assert_eq!(&message.payload()[..], b"test payload");
 
     let qos = SubscriberQoS::Standard;
     assert_eq!(qos.channel_size(), 128);
@@ -42,7 +43,7 @@ fn test_without_zenoh_feature() {
         "zenoh feature should be disabled for this test"
     );
 
-    let message = Message::new("test/topic", b"test payload");
+    let message = Message::new("test/topic", Bytes::from_static(b"test payload"));
     assert_eq!(message.topic, "test/topic");
     assert_eq!(&message.payload[..], b"test payload");
 

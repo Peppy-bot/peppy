@@ -67,8 +67,8 @@ impl MasterNode {
                     let command = payload.trim();
 
                     match command {
-                        "ping" => info!("Received 'ping' command over {}", message.topic),
-                        "status" => info!("Would respond with status for {}", message.topic),
+                        "ping" => info!("Received 'ping' command over {}", message.key_expr),
+                        "status" => info!("Would respond with status for {}", message.key_expr),
                         "shutdown" => info!("Received 'shutdown' command (toy example)"),
                         other => info!("Received unhandled command '{}'", other),
                     }

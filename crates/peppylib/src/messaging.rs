@@ -156,14 +156,14 @@ impl ServiceEndpoint {
     }
 
     fn build_request_context(&self, request: Message) -> Option<(ServiceRequestContext, String)> {
-        let Message { topic, payload } = request;
+        let identifier = request.identifier();
 
-        if !topic.starts_with(&self.request_topic_prefix) {
-            error!(%topic, "service received request on unexpected topic");
+        if !identifier.starts_with(&self.request_topic_prefix) {
+            error!(%identifier, "service received request on unexpected topic");
             return None;
         }
 
-        let request_id = topic
+        let request_id = identifier
             .strip_prefix(&self.request_topic_prefix)
             .and_then(|rest| rest.split('/').next())
             .filter(|segment| !segment.is_empty())
@@ -174,13 +174,8 @@ impl ServiceEndpoint {
             .map(|id| format!("{}/{}", self.response_topic_base, id))
             .unwrap_or_else(|| self.response_topic_base.clone());
 
-        let message = Message {
-            topic: self.request_topic_base.clone(),
-            payload,
-        };
-
         let context = ServiceRequestContext {
-            message,
+            message: request,
             request_id,
         };
 
@@ -196,7 +191,7 @@ impl ServiceEndpoint {
         topic: String,
         payload: Bytes,
     ) -> Result<()> {
-        let response = Message { topic, payload };
+        let response = Message::new(&topic, payload);
         let mut messenger = messenger.lock().await;
         messenger
             .publish(response, PublisherQoS::Standard)
@@ -228,10 +223,7 @@ impl TopicPublisher {
     }
 
     pub async fn publish(&self, payload: Bytes) -> Result<()> {
-        let message = Message {
-            topic: self.topic.clone(),
-            payload,
-        };
+        let message = Message::new(&self.topic, payload);
         let mut messenger = self.messenger.lock().await;
         messenger
             .publish(message, self.qos)
@@ -268,24 +260,26 @@ pub struct ActionCreation {
 impl TopicMessenger {
     pub async fn subscribe(
         messenger: &MessengerHandle,
-        namespace: &str,
-        topic_name: &str,
+        to_node_name: &str,
+        to_topic: &str,
+        to_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
         messenger
-            .receive_topic_msg(namespace, topic_name, qos)
+            .receive_topic_msg(to_node_name, to_topic, to_instance_id, qos)
             .await
     }
 
     pub async fn emit(
         messenger: &MessengerHandle,
-        namespace: &str,
-        topic_name: &str,
+        to_node_name: &str,
+        to_topic: &str,
+        as_instance_id: &str,
         qos: QoSProfile,
         payload: Bytes,
     ) -> Result<()> {
         messenger
-            .emit_topic_message(namespace, topic_name, qos, payload)
+            .emit_topic_message(to_node_name, to_topic, as_instance_id, qos, payload)
             .await
     }
 }
@@ -332,8 +326,15 @@ impl ActionMessenger {
         let feedback_topic = format!("{action_name}/feedback");
         let goal_service_name = format!("{action_name}/goal");
 
+        let feedback_node_name = todo!("Finish");
+        let feedback_instance_id = todo!("Finish");
         let feedback_subscription = messenger
-            .receive_topic_msg(namespace, &feedback_topic, feedback_qos)
+            .receive_topic_msg(
+                feedback_node_name,
+                &feedback_topic,
+                feedback_instance_id,
+                feedback_qos,
+            )
             .await?;
 
         let goal_response = messenger
@@ -429,16 +430,21 @@ impl MessengerHandle {
 
     async fn receive_topic_msg(
         &self,
-        namespace: &str,
-        topic_name: &str,
+        from_node_name: &str,
+        from_topic: &str,
+        from_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        let topic_path = build_full_namespace(namespace, topic_name);
+        let instance_id = match from_instance_id {
+            Some(id) => id,
+            None => "**",
+        };
+        let key_expr = format!("topic/{}/{}/{}", from_node_name, from_topic, instance_id);
         let subscriber_qos = map_node_qos_to_subscriber_qos(qos);
 
         let subscription = {
             let messenger = self.messenger.lock().await;
-            messenger.subscribe(&topic_path, subscriber_qos).await
+            messenger.subscribe(&key_expr, subscriber_qos).await
         }
         .map_err(Error::PeppyMessagingInterface)?;
 
@@ -447,16 +453,18 @@ impl MessengerHandle {
 
     async fn emit_topic_message(
         &self,
-        namespace: &str,
-        topic_name: &str,
+        to_node_name: &str,
+        to_topic: &str,
+        as_instance_id: &str,
         qos: QoSProfile,
         payload: Bytes,
     ) -> Result<()> {
-        let full_ns = build_full_namespace(namespace, topic_name);
-        let msg = Message {
-            topic: full_ns,
-            payload,
-        };
+        // Uses the zenoh key expression ID matching to save bytes on sending the node ID on the other side
+        let key_expr = format!(
+            "topic/{}/{}/<ID:{}>",
+            to_node_name, to_topic, as_instance_id
+        );
+        let msg = Message::new(&key_expr, payload);
 
         let publisher_qos = map_node_qos_to_publisher_qos(qos);
 
@@ -521,10 +529,7 @@ impl MessengerHandle {
             let mut messenger = self.messenger.lock().await;
             messenger
                 .publish(
-                    Message {
-                        topic: request_topic.clone(),
-                        payload: request_payload,
-                    },
+                    Message::new(&request_topic, request_payload),
                     PublisherQoS::Standard,
                 )
                 .await
@@ -561,7 +566,7 @@ impl MessengerHandle {
             }
         };
 
-        Ok(response.payload)
+        Ok(response.payload())
     }
 
     async fn expose_action(&self, namespace: &str, action_name: &str) -> Result<ActionCreation> {

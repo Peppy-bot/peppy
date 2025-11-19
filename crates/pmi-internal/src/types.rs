@@ -120,16 +120,24 @@ impl Drop for Subscription {
 /// Core message structure
 #[derive(Clone)]
 pub struct Message {
-    pub topic: String,
-    pub payload: bytes::Bytes,
+    identifier: String,
+    payload: bytes::Bytes,
 }
 
 impl Message {
-    pub fn new(topic: &str, payload: &[u8]) -> Self {
+    pub fn new(identifier: &str, payload: bytes::Bytes) -> Self {
         Self {
-            topic: topic.to_string(),
-            payload: bytes::Bytes::from(payload.to_vec()),
+            identifier: identifier.to_string(),
+            payload,
         }
+    }
+
+    pub fn identifier(&self) -> &str {
+        &self.identifier
+    }
+
+    pub fn payload(&self) -> &bytes::Bytes {
+        &self.payload
     }
 }
 
