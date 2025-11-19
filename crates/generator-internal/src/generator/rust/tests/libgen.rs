@@ -332,7 +332,7 @@ async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
     enable_camera::handle_next_request(&messenger, |instance_id, request| -> Result<enable_camera::Response> {{
-        println!(\"received enable_camera request from {{}}, : enable = {{}}\", instance_id, request.enable);
+        println!(\"received enable_camera request from {{}}: enable = {{}}\", instance_id, request.enable);
         Ok(enable_camera::Response::new(
             request.enable,
             Some(\"handled\".to_owned()),
@@ -361,11 +361,12 @@ async fn main() -> Result<()> {{
     thread::sleep(Duration::from_millis(500));
 
     let subscriber_dir = user_node_subscriber.clone();
+    let subscriber_instance_id = "test_instance";
     let subscriber_thread = thread::spawn(move || {
         run_cargo_run(
             &subscriber_dir,
             Some(Duration::from_secs(5)),
-            &[("PEPPY_INSTANCE_ID", "test_instance")],
+            &[("PEPPY_INSTANCE_ID", subscriber_instance_id)],
         )
     });
 
@@ -399,8 +400,12 @@ async fn main() -> Result<()> {{
         exposer_stdout,
         exposer_stderr
     );
+    let expected_request_log = format!(
+        "received enable_camera request from {}: enable = true",
+        subscriber_instance_id
+    );
     assert!(
-        exposer_stdout.contains("received enable_camera request: true")
+        exposer_stdout.contains(&expected_request_log)
             && exposer_stdout.contains("enable_camera handler finished"),
         "exposer did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
         exposer_stdout,
@@ -580,7 +585,7 @@ async fn main() -> Result<()> {{
         exposer_stderr
     );
     assert!(
-        exposer_stdout.contains("received enable_camera request: true")
+        exposer_stdout.contains("received enable_camera request for")
             && exposer_stdout.contains("enable_camera handler finished"),
         "exposer did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
         exposer_stdout,
