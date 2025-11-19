@@ -132,9 +132,9 @@ fn expose_service() {
         "expected async service handler with generic naming"
     );
     assert_rendered!(
-        rendered.contains("F: Fn(Request) -> crate::Result<Response>"),
+        rendered.contains("F: Fn(String, Request) -> crate::Result<Response>"),
         &rendered,
-        "expected Fn trait bound for handler"
+        "expected Fn trait bound for handler that includes instance_id"
     );
     assert_rendered!(
         rendered.contains("pub struct Request"),
@@ -167,9 +167,9 @@ fn expose_service() {
         "expected request deserializer helper function"
     );
     assert_rendered!(
-        rendered.contains("-> crate::Result<Request>"),
+        rendered.contains("-> crate::Result<(String, Request)>"),
         &rendered,
-        "expected request deserializer to return request struct"
+        "expected request deserializer to return instance_id with request struct"
     );
     assert_rendered!(
         rendered.contains("fn handle_request_payload"),
@@ -177,14 +177,19 @@ fn expose_service() {
         "expected generic helper for handling request payloads"
     );
     assert_rendered!(
-        rendered.contains("handler(request_data)?"),
+        rendered.contains("let (instance_id, request_data) = deserialize_request(payload)?;"),
         &rendered,
-        "expected handler callback invocation with deserialized parameter"
+        "expected helper to destructure instance_id from deserializer"
     );
     assert_rendered!(
-        rendered.contains("let response = handler(request_data)?;"),
+        rendered.contains("handler(instance_id, request_data)?"),
         &rendered,
-        "expected handler result to be captured"
+        "expected handler callback invocation with instance_id parameter"
+    );
+    assert_rendered!(
+        rendered.contains("let response = handler(instance_id, request_data)?;"),
+        &rendered,
+        "expected handler result to be captured with instance context"
     );
     assert_rendered!(
         rendered.contains("bytes::Bytes::from(buffer)"),
@@ -228,9 +233,9 @@ fn expose_service_without_request_body() {
         "expected response impl block for service without request body"
     );
     assert_rendered!(
-        rendered.contains("F: Fn() -> crate::Result<Response>"),
+        rendered.contains("F: Fn(String) -> crate::Result<Response>"),
         &rendered,
-        "expected handler to take no parameters"
+        "expected handler to take only instance_id parameter"
     );
     assert_rendered!(
         rendered.contains("fn handle_request_payload"),
@@ -291,9 +296,9 @@ fn expose_two_services() {
         "expected async handler for enable_camera"
     );
     assert_rendered!(
-        enable_rendered.contains("F: Fn(Request) -> crate::Result<Response>"),
+        enable_rendered.contains("F: Fn(String, Request) -> crate::Result<Response>"),
         enable_rendered,
-        "expected handler signature for enable_camera"
+        "expected handler signature for enable_camera to include instance_id"
     );
     assert_rendered!(
         enable_rendered.contains("fn deserialize_request("),
@@ -322,9 +327,9 @@ fn expose_two_services() {
         "expected get_lidar_info to omit response struct"
     );
     assert_rendered!(
-        lidar_rendered.contains("F: Fn(Request) -> crate::Result<()>"),
+        lidar_rendered.contains("F: Fn(String, Request) -> crate::Result<()>"),
         lidar_rendered,
-        "expected handler signature for get_lidar_info"
+        "expected handler signature for get_lidar_info to include instance_id"
     );
     assert_rendered!(
         lidar_rendered.contains("fn deserialize_request("),

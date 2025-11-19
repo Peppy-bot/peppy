@@ -295,8 +295,9 @@ use std::time::Duration;
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
+    let request = uvc_camera_enable_camera::Request::new(true);
     let response =
-        uvc_camera_enable_camera::poll(&messenger, Duration::from_secs(5), true).await?;
+        uvc_camera_enable_camera::poll(&messenger, Duration::from_secs(5), None, request).await?;
     let error_msg = response.error_msg.as_deref().unwrap_or(\"<none>\");
     println!(
         \"enable_camera result: enabled={{}} error={{}}\",
@@ -330,8 +331,8 @@ use peppygen::{{Messenger, Result}};
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
-    enable_camera::handle_next_request(&messenger, |request| -> Result<enable_camera::Response> {{
-        println!(\"received enable_camera request: {{}}\", request.enable);
+    enable_camera::handle_next_request(&messenger, |instance_id, request| -> Result<enable_camera::Response> {{
+        println!(\"received enable_camera request for {{}}: {{}}\", instance_id, request.enable);
         Ok(enable_camera::Response::new(
             request.enable,
             Some(\"handled\".to_owned()),
@@ -354,14 +355,14 @@ async fn main() -> Result<()> {{
 
     let exposer_dir = user_node_exposer.clone();
     let exposer_thread =
-        thread::spawn(move || run_cargo_run(&exposer_dir, Some(Duration::from_secs(10)), &[]));
+        thread::spawn(move || run_cargo_run(&exposer_dir, Some(Duration::from_secs(5)), &[]));
 
     // Give the exposer a moment to start listening before the subscriber sends a request.
     thread::sleep(Duration::from_millis(500));
 
     let subscriber_dir = user_node_subscriber.clone();
     let subscriber_thread =
-        thread::spawn(move || run_cargo_run(&subscriber_dir, Some(Duration::from_secs(10)), &[]));
+        thread::spawn(move || run_cargo_run(&subscriber_dir, Some(Duration::from_secs(5)), &[]));
 
     let exposer_output = exposer_thread.join().expect("exposer thread panicked");
     let subscriber_output = subscriber_thread
@@ -479,8 +480,8 @@ use peppygen::{{Messenger, Result}};
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
-    enable_camera::handle_next_request(&messenger, |request| -> Result<enable_camera::Response> {{
-        println!(\"received enable_camera request: {{}}\", request.enable);
+    enable_camera::handle_next_request(&messenger, |instance_id, request| -> Result<enable_camera::Response> {{
+        println!(\"received enable_camera request for {{}}: {{}}\", instance_id, request.enable);
         Ok(enable_camera::Response::new(
             request.enable,
             Some(\"handled\".to_owned()),
@@ -543,7 +544,7 @@ async fn main() -> Result<()> {{
         thread::spawn(move || run_cargo_run(&subscriber_dir, Some(Duration::from_secs(10)), &[]));
 
     let exposer_output1 = exposer_thread1.join().expect("exposer thread panicked");
-    let exposer_output2 = exposer_thread2.join().expect("exposer thread panicked");
+    let _exposer_output2 = exposer_thread2.join().expect("exposer thread panicked");
     let subscriber_output = subscriber_thread
         .join()
         .expect("subscriber thread panicked");
