@@ -3,11 +3,15 @@ use crate::types::{PublisherQoS, SubscriberQoS};
 use crate::{Message, MessengerBackend, Subscription};
 use crate::{ZenohNetProtocol, zenohd};
 use askama::Template;
+use bytes::Bytes;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::{collections::HashMap, env, sync::Arc};
 use tracing::{debug, info};
+use zenoh::bytes::ZBytes;
 use zenoh::qos::{CongestionControl, Priority};
+use zenoh::sample::SampleFields;
 
 #[derive(Template)]
 #[template(path = "zenoh/default_client_config.json5.j2")]
@@ -208,7 +212,8 @@ impl MessengerBackend for ZenohAdapter {
     }
 
     async fn publish(&mut self, message: Message, qos: PublisherQoS) -> Result<()> {
-        let publisher = if let Some(pub_ref) = self.publishers.get(&message.topic) {
+        let identifier = message.identifier().to_string();
+        let publisher = if let Some(pub_ref) = self.publishers.get(identifier.as_str()) {
             Arc::clone(pub_ref)
         } else {
             let session = self.session.as_ref().ok_or_else(|| {
@@ -225,7 +230,7 @@ impl MessengerBackend for ZenohAdapter {
 
             let new_publisher = Arc::new(
                 session
-                    .declare_publisher(message.topic.clone())
+                    .declare_publisher(identifier.clone())
                     .congestion_control(congestion_control)
                     .priority(priority)
                     .express(express)
@@ -233,7 +238,7 @@ impl MessengerBackend for ZenohAdapter {
                     .map_err(|e| {
                         Error::PublisherCreationError(format!(
                             "Failed to create publisher for topic '{}': {}",
-                            message.topic, e
+                            identifier, e
                         ))
                     })?,
             );
@@ -257,13 +262,13 @@ impl MessengerBackend for ZenohAdapter {
                 })?;
 
             self.publishers
-                .insert(message.topic.clone(), Arc::clone(&new_publisher));
+                .insert(identifier.clone(), Arc::clone(&new_publisher));
             new_publisher
         };
 
         // Publish the message payload
         publisher
-            .put(message.payload)
+            .put(message.payload().as_ref())
             .await
             .map_err(|e| Error::PublishError {
                 topic: e.to_string(),
@@ -291,14 +296,15 @@ impl MessengerBackend for ZenohAdapter {
             loop {
                 match subscriber.recv_async().await {
                     Ok(sample) => {
-                        // Get the raw bytes from the sample
-                        let payload_bytes = sample.payload().to_bytes();
+                        let SampleFields {
+                            key_expr, payload, ..
+                        } = sample.into();
 
-                        // Create a Message object with topic and payload as bytes::Bytes
-                        let message = Message {
-                            topic: sample.key_expr().as_str().to_string(),
-                            payload: bytes::Bytes::from(payload_bytes.into_owned()),
-                        };
+                        // Convert the Zenoh payload into bytes::Bytes
+                        let payload_bytes = zbytes_to_bytes(payload);
+
+                        // Create a Message object with topic and payload
+                        let message = Message::new(key_expr.as_str(), payload_bytes);
 
                         // Send the Message on the tx channel
                         if let Err(e) = tx.send(message).await {
@@ -384,5 +390,12 @@ impl MessengerBackend for ZenohAdapter {
             .ok_or(Error::ZenohDConfigurationNotFound)?;
         zenohd.stop_router()?;
         Ok(())
+    }
+}
+
+fn zbytes_to_bytes(payload: ZBytes) -> Bytes {
+    match payload.to_bytes() {
+        Cow::Borrowed(slice) => Bytes::copy_from_slice(slice),
+        Cow::Owned(vec) => Bytes::from(vec),
     }
 }

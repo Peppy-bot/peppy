@@ -1,5 +1,6 @@
 #[cfg(feature = "zenoh")]
 mod zenoh_tests {
+    use bytes::Bytes;
     use pmi::{
         Message, Messenger, MessengerBackend, PublisherQoS, SubscriberQoS,
         zenohd_support::{pick_free_tcp_port, prepare_zenohd_test_router},
@@ -72,7 +73,10 @@ mod zenoh_tests {
 
         let publish_err = messenger
             .publish(
-                Message::new("test/topic", b"port mismatch should fail"),
+                Message::new(
+                    "test/topic",
+                    Bytes::from_static(b"port mismatch should fail"),
+                ),
                 PublisherQoS::Standard,
             )
             .await
@@ -103,7 +107,7 @@ mod zenoh_tests {
             .expect("Failed to start router");
 
         // Attempt to publish without starting session - should fail
-        let msg = Message::new("test/topic", b"This should fail");
+        let msg = Message::new("test/topic", Bytes::from_static(b"This should fail"));
         let result = messenger.publish(msg, PublisherQoS::Standard).await;
         assert!(
             result.is_err(),
@@ -135,7 +139,7 @@ mod zenoh_tests {
             .expect("Failed to subscribe");
 
         // Publish a message
-        let msg = Message::new("test/topic", b"Hello World");
+        let msg = Message::new("test/topic", Bytes::from_static(b"Hello World"));
         messenger
             .publish(msg.clone(), PublisherQoS::Standard)
             .await
@@ -143,8 +147,8 @@ mod zenoh_tests {
 
         // Verify subscriber receives the message
         let received = sub.rx.recv().await.expect("Failed to receive message");
-        assert_eq!(received.topic, "test/topic");
-        assert_eq!(received.payload, msg.payload);
+        assert_eq!(received.identifier(), "test/topic");
+        assert_eq!(received.payload(), msg.payload());
 
         messenger.stop_router().await.expect("Failed to shutdown");
     }
@@ -174,8 +178,8 @@ mod zenoh_tests {
             .expect("Failed to subscribe to topic2");
 
         // Publish to different topics
-        let msg1 = Message::new("test/topic1", b"Message for topic1");
-        let msg2 = Message::new("test/topic2", b"Message for topic2");
+        let msg1 = Message::new("test/topic1", Bytes::from_static(b"Message for topic1"));
+        let msg2 = Message::new("test/topic2", Bytes::from_static(b"Message for topic2"));
 
         messenger
             .publish(msg1.clone(), PublisherQoS::Standard)
@@ -188,12 +192,12 @@ mod zenoh_tests {
 
         // Verify each subscriber receives only its topic's message
         let received1 = sub1.rx.recv().await.expect("Failed to receive on topic1");
-        assert_eq!(received1.topic, "test/topic1");
-        assert_eq!(received1.payload, msg1.payload);
+        assert_eq!(received1.identifier(), "test/topic1");
+        assert_eq!(received1.payload(), msg1.payload());
 
         let received2 = sub2.rx.recv().await.expect("Failed to receive on topic2");
-        assert_eq!(received2.topic, "test/topic2");
-        assert_eq!(received2.payload, msg2.payload);
+        assert_eq!(received2.identifier(), "test/topic2");
+        assert_eq!(received2.payload(), msg2.payload());
 
         messenger.stop_router().await.expect("Failed to shutdown");
     }
@@ -218,9 +222,9 @@ mod zenoh_tests {
             .expect("Failed to subscribe");
 
         // Publish multiple messages to the same topic
-        let msg1 = Message::new("test/topic", b"First message");
-        let msg2 = Message::new("test/topic", b"Second message");
-        let msg3 = Message::new("test/topic", b"Third message");
+        let msg1 = Message::new("test/topic", Bytes::from_static(b"First message"));
+        let msg2 = Message::new("test/topic", Bytes::from_static(b"Second message"));
+        let msg3 = Message::new("test/topic", Bytes::from_static(b"Third message"));
 
         messenger
             .publish(msg1.clone(), PublisherQoS::Standard)
@@ -237,13 +241,13 @@ mod zenoh_tests {
 
         // Verify all messages are received in order
         let received1 = sub.rx.recv().await.expect("Failed to receive msg1");
-        assert_eq!(received1.payload, msg1.payload);
+        assert_eq!(received1.payload(), msg1.payload());
 
         let received2 = sub.rx.recv().await.expect("Failed to receive msg2");
-        assert_eq!(received2.payload, msg2.payload);
+        assert_eq!(received2.payload(), msg2.payload());
 
         let received3 = sub.rx.recv().await.expect("Failed to receive msg3");
-        assert_eq!(received3.payload, msg3.payload);
+        assert_eq!(received3.payload(), msg3.payload());
 
         messenger.stop_router().await.expect("Failed to shutdown");
     }
@@ -263,7 +267,7 @@ mod zenoh_tests {
             .expect("Failed to start session");
 
         // Publish a message before any subscription
-        let early_msg = Message::new("test/topic", b"Early message");
+        let early_msg = Message::new("test/topic", Bytes::from_static(b"Early message"));
         messenger
             .publish(early_msg.clone(), PublisherQoS::Standard)
             .await
@@ -276,7 +280,10 @@ mod zenoh_tests {
             .expect("Failed to create late subscription");
 
         // Publish a new message
-        let new_msg = Message::new("test/topic", b"New message for late subscriber");
+        let new_msg = Message::new(
+            "test/topic",
+            Bytes::from_static(b"New message for late subscriber"),
+        );
         messenger
             .publish(new_msg.clone(), PublisherQoS::Standard)
             .await
@@ -284,8 +291,8 @@ mod zenoh_tests {
 
         // Late subscriber should only receive the new message, not the early one
         let received = late_sub.rx.recv().await.expect("Failed to receive message");
-        assert_eq!(received.topic, "test/topic");
-        assert_eq!(received.payload, new_msg.payload);
+        assert_eq!(received.identifier(), "test/topic");
+        assert_eq!(received.payload(), new_msg.payload());
 
         messenger.stop_router().await.expect("Failed to shutdown");
     }

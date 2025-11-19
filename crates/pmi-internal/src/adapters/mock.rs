@@ -48,7 +48,7 @@ impl MessengerBackend for MockAdapter {
     async fn publish(&mut self, message: Message, _qos: PublisherQoS) -> Result<()> {
         if !self.is_session_connected {
             return Err(Error::PublishError {
-                topic: message.topic.clone(),
+                topic: message.identifier().to_string(),
             });
         }
 
@@ -56,7 +56,7 @@ impl MessengerBackend for MockAdapter {
         {
             let mut messages = self.messages.lock().unwrap();
             messages
-                .entry(message.topic.clone())
+                .entry(message.identifier().to_string())
                 .or_default()
                 .push(message.clone());
         }
@@ -66,7 +66,7 @@ impl MessengerBackend for MockAdapter {
             let subscriptions = self.subscriptions.lock().unwrap();
             let mut matched = Vec::new();
             for (pattern, senders) in subscriptions.iter() {
-                if Self::topic_matches(pattern, &message.topic) {
+                if Self::topic_matches(pattern, message.identifier()) {
                     matched.extend(senders.iter().cloned());
                 }
             }
@@ -169,6 +169,8 @@ impl MockAdapter {
 // Those tests purpose is to test the behaviour of a real messaging system and check if they map to the behaviour of the mock
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
+
     use super::*;
     use crate::types::{MessengerAdapter, PublisherQoS, SubscriberQoS};
     use crate::{Message, Messenger, MessengerBackend};
@@ -208,7 +210,7 @@ mod tests {
         assert!(mock.is_session_connected);
 
         // Test publish - should work when connected
-        let test_message = Message::new("test_topic", &[1, 2, 3]);
+        let test_message = Message::new("test_topic", Bytes::copy_from_slice(&[1, 2, 3]));
         assert!(
             mock.publish(test_message, PublisherQoS::Standard)
                 .await
@@ -241,7 +243,7 @@ mod tests {
         let mut subscription = subscription.unwrap();
 
         // Test publish
-        let message = Message::new("test/topic", b"test payload");
+        let message = Message::new("test/topic", Bytes::from_static(b"test payload"));
         assert!(
             messenger
                 .publish(message.clone(), PublisherQoS::Standard)
@@ -253,8 +255,8 @@ mod tests {
         let received = subscription.rx.recv().await;
         assert!(received.is_some());
         let received_msg = received.unwrap();
-        assert_eq!(received_msg.topic, message.topic);
-        assert_eq!(received_msg.payload, message.payload);
+        assert_eq!(received_msg.identifier(), message.identifier());
+        assert_eq!(received_msg.payload(), message.payload());
 
         // Test shutdown
         assert!(messenger.stop_session().await.is_ok());
@@ -309,7 +311,7 @@ mod tests {
         let mut messenger = create_test_messenger();
 
         // Test publishing before start_session should fail
-        let early_message = Message::new("topic/early", b"too_early");
+        let early_message = Message::new("topic/early", Bytes::from_static(b"too_early"));
         assert!(
             messenger
                 .publish(early_message, PublisherQoS::Standard)
@@ -322,9 +324,9 @@ mod tests {
 
         // Test publishing multiple messages
         let messages = vec![
-            Message::new("topic/1", b"payload1"),
-            Message::new("topic/2", b"payload2"),
-            Message::new("topic/3", b"payload3"),
+            Message::new("topic/1", Bytes::from_static(b"payload1")),
+            Message::new("topic/2", Bytes::from_static(b"payload2")),
+            Message::new("topic/3", Bytes::from_static(b"payload3")),
         ];
 
         for message in messages {

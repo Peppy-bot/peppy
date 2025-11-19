@@ -135,20 +135,35 @@ async fn topic_publish_subscribe() {
     let qos = QoSProfile::Reliable;
 
     // Those properties are found in the peppy_launcher.json5 `deployments` array
-    let ns = "/camera/rear";
+    let node_name = "uvc_camera";
+    let topic = "image_frame";
+    let instance_id = "test_instance";
 
     let payload = Bytes::from_static(b"A message");
 
     let sender_handle = router.topic_messenger().await;
     let receiver_handle = router.topic_messenger().await;
 
-    let mut subscription = TopicMessenger::subscribe(&receiver_handle, ns, topic_name, qos.clone())
-        .await
-        .expect("Should subscribe to the topic");
+    let mut subscription = TopicMessenger::subscribe(
+        &receiver_handle,
+        &node_name,
+        &topic,
+        Some(&instance_id),
+        qos.clone(),
+    )
+    .await
+    .expect("Should subscribe to the topic");
 
-    TopicMessenger::emit(&sender_handle, ns, topic_name, qos, payload.clone())
-        .await
-        .expect("Should send the payload");
+    TopicMessenger::emit(
+        &sender_handle,
+        &node_name,
+        &topic,
+        &instance_id,
+        qos,
+        payload.clone(),
+    )
+    .await
+    .expect("Should send the payload");
 
     let received = subscription
         .rx
@@ -157,8 +172,8 @@ async fn topic_publish_subscribe() {
         .expect("Should receive the published message");
 
     let expected_topic = super::build_full_namespace(ns, topic_name);
-    assert_eq!(received.topic, expected_topic);
-    assert_eq!(received.payload, payload);
+    assert_eq!(received.identifier(), expected_topic);
+    assert_eq!(received.payload(), &payload);
 
     router.shutdown().await;
 }
@@ -202,9 +217,9 @@ async fn topic_publish_reliable_5000hz_messages() {
             .expect("Timed out waiting for a message")
             .expect("Subscription closed before receiving all messages");
 
-        assert_eq!(message.topic, expected_topic);
+        assert_eq!(message.identifier(), expected_topic);
 
-        let payload = message.payload.as_ref();
+        let payload = message.payload();
         assert_eq!(
             payload.len(),
             std::mem::size_of::<u32>(),
@@ -268,8 +283,8 @@ async fn service_communication() {
             let handler = service.handle_next_request(|request| {
                 let response_payload = response_payload.clone();
                 async move {
-                    assert_eq!(request.message.topic, expected_request_topic);
-                    assert_eq!(request.message.payload, request_payload);
+                    assert_eq!(request.message.identifier(), expected_request_topic);
+                    assert_eq!(request.message.payload(), &request_payload);
                     call_count.fetch_add(1, Ordering::SeqCst);
                     Ok(response_payload)
                 }
@@ -402,7 +417,7 @@ async fn service_communication_fails_timeout() {
 
                 let handled = service
                     .handle_next_request(|request| async move {
-                        assert_eq!(request.message.topic, expected_request_topic);
+                        assert_eq!(request.message.identifier(), expected_request_topic);
                         call_count.fetch_add(1, Ordering::SeqCst);
                         tokio::time::sleep(response_delay).await;
                         Ok(response_payload)
@@ -521,7 +536,7 @@ async fn service_handle_request_processes_multiple_messages() {
                     let call_count = Arc::clone(&call_count);
                     async move {
                         call_count.fetch_add(1, Ordering::SeqCst);
-                        Ok(request.message.payload.clone())
+                        Ok(request.message.payload())
                     }
                 }) => result,
                 _ = shutdown_rx => Ok(()),
@@ -611,9 +626,9 @@ async fn single_service_communication_multiple_polls_and_callers() {
 
                 let handle = service
                     .spawn_next_request_handler(move |request| async move {
-                        assert_eq!(request.message.topic, expected_request_topic);
+                        assert_eq!(request.message.key_expr, expected_request_topic);
                         call_count.fetch_add(1, Ordering::SeqCst);
-                        Ok(request.message.payload.clone())
+                        Ok(request.message.payload())
                     })
                     .await
                     .expect("service should receive expected number of requests")
@@ -783,8 +798,8 @@ async fn action_communication() {
                     let expected_goal_payload = goal_payload_server.clone();
                     let expected_goal_response_payload = goal_response_payload_server.clone();
                     async move {
-                        assert_eq!(request.message.topic, expected_goal_topic);
-                        assert_eq!(request.message.payload, expected_goal_payload);
+                        assert_eq!(request.message.identifier(), expected_goal_topic);
+                        assert_eq!(request.message.payload(), &expected_goal_payload);
                         Ok(expected_goal_response_payload)
                     }
                 })
@@ -809,8 +824,8 @@ async fn action_communication() {
                     let expected_payload = result_request_payload_server.clone();
                     let response_payload = result_payload_server.clone();
                     async move {
-                        assert_eq!(request.message.topic, expected_topic);
-                        assert_eq!(request.message.payload, expected_payload);
+                        assert_eq!(request.message.identifier(), expected_topic);
+                        assert_eq!(request.message.payload(), &expected_payload);
                         Ok(response_payload)
                     }
                 })
@@ -859,8 +874,8 @@ async fn action_communication() {
             .await
             .expect("caller should receive feedback");
 
-        assert_eq!(feedback_message.topic, expected_feedback_topic);
-        assert_eq!(feedback_message.payload, feedback_payload);
+        assert_eq!(feedback_message.identifier(), expected_feedback_topic);
+        assert_eq!(feedback_message.payload(), &feedback_payload);
 
         // Finally, request the result using the same handle and ensure the server replies.
         let result_response = ActionMessenger::poll_result(
@@ -933,8 +948,8 @@ async fn action_communication_goal_cancelled() {
                     let expected_goal_payload = goal_payload_server.clone();
                     let expected_goal_response_payload = goal_response_payload_server.clone();
                     async move {
-                        assert_eq!(request.message.topic, expected_goal_topic);
-                        assert_eq!(request.message.payload, expected_goal_payload);
+                        assert_eq!(request.message.identifier(), expected_goal_topic);
+                        assert_eq!(request.message.payload(), &expected_goal_payload);
                         Ok(expected_goal_response_payload)
                     }
                 })
@@ -975,9 +990,9 @@ async fn action_communication_goal_cancelled() {
                     let expected_topic = expected_cancel_topic.clone();
                     let response_payload = cancel_response_payload_server.clone();
                     async move {
-                        assert_eq!(request.message.topic, expected_topic);
+                        assert_eq!(request.message.identifier(), expected_topic);
                         assert!(
-                            request.message.payload.is_empty(),
+                            request.message.payload().is_empty(),
                             "cancel service should receive empty payload"
                         );
                         Ok(response_payload)
@@ -1028,8 +1043,8 @@ async fn action_communication_goal_cancelled() {
         .await
         .expect("caller should receive initial feedback");
 
-    assert_eq!(first_feedback.topic, expected_feedback_topic);
-    assert_eq!(first_feedback.payload, feedback_payload);
+    assert_eq!(first_feedback.identifier(), expected_feedback_topic);
+    assert_eq!(first_feedback.payload(), &feedback_payload);
 
     let second_feedback = tokio::time::timeout(
         Duration::from_millis(200),
@@ -1039,8 +1054,8 @@ async fn action_communication_goal_cancelled() {
     .expect("feedback stream should continue delivering updates before cancellation")
     .expect("feedback stream closed unexpectedly before cancellation");
 
-    assert_eq!(second_feedback.topic, expected_feedback_topic);
-    assert_eq!(second_feedback.payload, feedback_payload);
+    assert_eq!(second_feedback.identifier(), expected_feedback_topic);
+    assert_eq!(second_feedback.payload(), &feedback_payload);
 
     let cancel_response =
         ActionMessenger::cancel_goal(&caller_handle, &goal_handle, Duration::from_millis(500))
@@ -1051,7 +1066,8 @@ async fn action_communication_goal_cancelled() {
 
     while let Ok(message) = goal_handle.feedback_mut().rx.try_recv() {
         assert_eq!(
-            message.topic, expected_feedback_topic,
+            message.identifier(),
+            expected_feedback_topic,
             "feedback from unexpected topic while draining"
         );
     }
@@ -1066,7 +1082,8 @@ async fn action_communication_goal_cancelled() {
         Ok(None) => {}
         Ok(Some(message)) => panic!(
             "expected no feedback after cancellation, received topic '{}' with payload {:?}",
-            message.topic, message.payload
+            message.identifier(),
+            message.payload()
         ),
     }
 
@@ -1159,9 +1176,9 @@ async fn single_action_communication_multiple_polls() {
                         let feedback_publisher = Arc::clone(&feedback_publisher);
 
                         async move {
-                            assert_eq!(request.message.topic, expected_goal_topic);
+                            assert_eq!(request.message.identifier(), expected_goal_topic);
 
-                            let payload = request.message.payload.clone();
+                            let payload = request.message.payload();
                             let payload_str = std::str::from_utf8(&payload)
                                 .expect("goal payload should be valid UTF-8");
 
@@ -1181,7 +1198,7 @@ async fn single_action_communication_multiple_polls() {
                                 });
 
                             assert_eq!(
-                                payload, case.goal,
+                                payload, &case.goal,
                                 "goal payload for `{client_id}` should match expected value"
                             );
 
@@ -1215,9 +1232,9 @@ async fn single_action_communication_multiple_polls() {
                         let cases = Arc::clone(&cases);
 
                         async move {
-                            assert_eq!(request.message.topic, expected_result_topic);
+                            assert_eq!(request.message.identifier(), expected_result_topic);
 
-                            let payload = request.message.payload.clone();
+                            let payload = request.message.payload();
                             let payload_str = std::str::from_utf8(&payload)
                                 .expect("result payload should be valid UTF-8");
 
@@ -1232,7 +1249,7 @@ async fn single_action_communication_multiple_polls() {
                             });
 
                             assert_eq!(
-                                payload, case.result_request,
+                                payload, &case.result_request,
                                 "result request payload for `{client_id}` should match expected value"
                             );
 
@@ -1306,11 +1323,12 @@ async fn single_action_communication_multiple_polls() {
                     .expect("caller should receive feedback message");
 
                 assert_eq!(
-                    feedback_message.topic, expected_feedback_topic,
+                    feedback_message.identifier(),
+                    expected_feedback_topic,
                     "feedback should be published on the expected topic"
                 );
 
-                if feedback_message.payload == case.feedback {
+                if feedback_message.payload() == &case.feedback {
                     feedback_matched = true;
                     break;
                 }
