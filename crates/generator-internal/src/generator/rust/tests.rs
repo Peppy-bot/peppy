@@ -92,15 +92,24 @@ fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
     fs::write(&cargo_toml_path, updated_manifest).expect("failed to write user node Cargo.toml");
 }
 
-fn run_cargo_run(dir: &std::path::Path, timeout: Option<Duration>) -> std::process::Output {
-    let mut child = Command::new("cargo")
+fn run_cargo_run(
+    dir: &std::path::Path,
+    timeout: Option<Duration>,
+    env_vars: &[(&str, &str)],
+) -> std::process::Output {
+    let mut command = Command::new("cargo");
+    command
         .arg("run")
         .env("CARGO_NET_OFFLINE", "true")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .current_dir(dir)
-        .spawn()
-        .expect("failed to spawn cargo run");
+        .current_dir(dir);
+
+    for &(key, value) in env_vars {
+        command.env(key, value);
+    }
+
+    let mut child = command.spawn().expect("failed to spawn cargo run");
     let start = Instant::now();
     loop {
         if let Some(limit) = timeout {

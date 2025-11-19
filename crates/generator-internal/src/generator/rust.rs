@@ -555,7 +555,11 @@ impl LanguageGenerator for RustGenerator {
         let struct_prefix = String::from("Message");
 
         let mut context = GenerationContext::default();
-        let format_artifacts = map_message_format(topic.message_format.as_ref())?;
+        let extended_format = topic
+            .message_format
+            .as_ref()
+            .map(topic_message_format_with_instance_id);
+        let format_artifacts = map_message_format(extended_format.as_ref())?;
         let params = collect_function_params(
             format_artifacts.as_ref(),
             None,
@@ -863,18 +867,25 @@ impl LanguageGenerator for RustGenerator {
             format!("{module_component}_message")
         };
 
-        let format_artifacts = map_message_format(Some(&arguments))?
+        let extended_arguments = topic_message_format_with_instance_id(&arguments);
+        let format_artifacts = map_message_format(Some(&extended_arguments))?
             .expect("message encoding spec should exist when message format is provided");
 
         let mut context = GenerationContext::default();
         let message_struct_name = String::from("Message");
-        let params = collect_function_params(
+        let mut params = collect_function_params(
             Some(&format_artifacts),
             None,
             &message_struct_name,
             &mut context,
             None,
         )?;
+        let encoding_params = params.clone();
+        let instance_id_index = params
+            .iter()
+            .position(|param| param.ident.to_string() == "instance_id")
+            .expect("instance_id field should exist for subscribed topic format");
+        let instance_id_param = params.remove(instance_id_index);
 
         let args_struct_ident = Ident::new(&message_struct_name, Span::call_site());
         let args_fields: Vec<(Ident, TokenStream)> = params
@@ -891,7 +902,7 @@ impl LanguageGenerator for RustGenerator {
                 &schema_key,
                 &struct_prefix,
                 Some(&format_artifacts),
-                &params,
+                &encoding_params,
             )?
             .expect("message encoding spec should exist when message format is provided");
         let method_tokens = build_subscribed_topic_callback(
@@ -899,6 +910,7 @@ impl LanguageGenerator for RustGenerator {
             &helper_fn_ident,
             &args_struct_ident,
             &params,
+            &instance_id_param,
             &format_artifacts,
             &encoding,
             topic,
@@ -1602,6 +1614,15 @@ fn map_message_format(format: Option<&MessageFormat>) -> Result<Option<CapnpSche
     }
 }
 
+fn topic_message_format_with_instance_id(format: &MessageFormat) -> MessageFormat {
+    let mut extended = format.clone();
+    extended
+        .0
+        .entry(String::from("instance_id"))
+        .or_insert_with(|| SchemaType::Type(TypeToken::String));
+    extended
+}
+
 struct SchemaFieldLookup<'a> {
     entries: HashMap<String, (&'a String, &'a SchemaType)>,
 }
@@ -2156,15 +2177,43 @@ fn build_topic_emit(
     topic: &ExposedTopic,
     label: &str,
 ) -> TokenStream {
-    let param_tokens = function_param_tokens(params);
-    let method_signature = if param_tokens.is_empty() {
+    let mut method_param_tokens = Vec::new();
+    let mut instance_id_ident = None;
+    for param in params {
+        if param.ident.to_string() == "instance_id" {
+            if instance_id_ident.is_none() {
+                instance_id_ident = Some(param.ident.clone());
+            }
+            continue;
+        }
+        let ident = &param.ident;
+        let ty = &param.ty;
+        method_param_tokens.push(quote!(#ident: #ty));
+    }
+
+    let method_signature = if method_param_tokens.is_empty() {
         quote!(messenger: &crate::Messenger)
     } else {
-        quote!(messenger: &crate::Messenger, #(#param_tokens),*)
+        quote!(messenger: &crate::Messenger, #(#method_param_tokens),*)
     };
     let topic_literal = Literal::string(topic.name.as_str());
     let qos_tokens = qos_profile_tokens(&topic.qos_profile);
     let label_literal = Literal::string(label);
+    let instance_id_stmt = instance_id_ident
+        .as_ref()
+        .map(|ident| {
+            let ident = ident.clone();
+            let env_var_literal = Literal::string("PEPPY_INSTANCE_ID");
+            quote! {
+                let #ident = std::env::var(#env_var_literal).map_err(|source| {
+                    crate::Error::MissingInstanceIdEnvVar {
+                        var: #env_var_literal,
+                        source,
+                    }
+                })?;
+            }
+        })
+        .unwrap_or_else(TokenStream::new);
 
     match encoding {
         Some(spec) => {
@@ -2175,6 +2224,7 @@ fn build_topic_emit(
             quote! {
                 #[allow(clippy::too_many_arguments)]
                 pub async fn #method_ident(#method_signature) -> crate::Result<()> {
+                    #instance_id_stmt
                     let mut message = capnp::message::Builder::new_default();
                     {
                         let mut #root_ident = message.init_root::<#builder_type>();
@@ -2217,6 +2267,7 @@ fn build_topic_emit(
             quote! {
                 #[allow(clippy::too_many_arguments)]
                 pub async fn #method_ident(#method_signature) -> crate::Result<()> {
+                    #instance_id_stmt
                     let _ = messenger;
                     #(#ignore_params)*
                     Err(crate::Error::MessageFormatUnavailable {
@@ -2233,6 +2284,7 @@ fn build_subscribed_topic_callback(
     helper_fn_ident: &Ident,
     args_struct_ident: &Ident,
     params: &[FunctionParam],
+    instance_id_param: &FunctionParam,
     artifacts: &CapnpSchemaArtifacts,
     encoding: &MessageEncodingSpec,
     topic: &SubscribedTopic,
@@ -2261,10 +2313,21 @@ fn build_subscribed_topic_callback(
         field_inits.push(quote!(#field_ident: #value_ident));
     }
 
+    let instance_key = instance_id_param.ident.to_string();
+    let (instance_name, instance_schema) = schema_lookup.get(&instance_key);
+    let (instance_id_statements, instance_value_ident) = generate_field_reader_statements(
+        &quote!(root),
+        instance_name.as_str(),
+        instance_schema,
+        struct_prefix,
+        struct_prefix,
+        &mut names,
+    );
+
     let context_literal = Literal::string(struct_prefix);
 
     quote! {
-        pub async fn #fn_name(messenger: &crate::Messenger) -> crate::Result<#args_struct_ident> {
+        pub async fn #fn_name(messenger: &crate::Messenger) -> crate::Result<(String, #args_struct_ident)> {
             let topic_name = #topic_literal;
             let namespace = messenger.namespace();
             let qos = peppylib::config::QoSProfile::Standard;
@@ -2293,7 +2356,7 @@ fn build_subscribed_topic_callback(
             #helper_fn_ident(message.payload.as_ref())
         }
 
-        fn #helper_fn_ident(payload: &[u8]) -> crate::Result<#args_struct_ident> {
+        fn #helper_fn_ident(payload: &[u8]) -> crate::Result<(String, #args_struct_ident)> {
             let mut cursor = std::io::Cursor::new(payload);
             let message_reader = capnp::serialize::read_message(
                 &mut cursor,
@@ -2311,11 +2374,13 @@ fn build_subscribed_topic_callback(
                     source,
                 })?;
 
+            #(#instance_id_statements)*
             #(#field_statements)*
 
-            Ok(#args_struct_ident {
+            let message = #args_struct_ident {
                 #( #field_inits ),*
-            })
+            };
+            Ok((#instance_value_ident, message))
         }
     }
 }
