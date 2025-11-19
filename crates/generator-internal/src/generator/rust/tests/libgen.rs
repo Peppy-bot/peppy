@@ -332,7 +332,7 @@ async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
     enable_camera::handle_next_request(&messenger, |instance_id, request| -> Result<enable_camera::Response> {{
-        println!(\"received enable_camera request for {{}}: {{}}\", instance_id, request.enable);
+        println!(\"received enable_camera request from {{}}, : enable = {{}}\", instance_id, request.enable);
         Ok(enable_camera::Response::new(
             request.enable,
             Some(\"handled\".to_owned()),
@@ -361,8 +361,13 @@ async fn main() -> Result<()> {{
     thread::sleep(Duration::from_millis(500));
 
     let subscriber_dir = user_node_subscriber.clone();
-    let subscriber_thread =
-        thread::spawn(move || run_cargo_run(&subscriber_dir, Some(Duration::from_secs(5)), &[]));
+    let subscriber_thread = thread::spawn(move || {
+        run_cargo_run(
+            &subscriber_dir,
+            Some(Duration::from_secs(5)),
+            &[("PEPPY_INSTANCE_ID", "test_instance")],
+        )
+    });
 
     let exposer_output = exposer_thread.join().expect("exposer thread panicked");
     let subscriber_output = subscriber_thread
