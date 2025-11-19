@@ -1035,7 +1035,6 @@ dependencies = [
  "capnp",
  "config",
  "indexmap 2.12.0",
- "names-generator2",
  "peppylib",
  "pmi",
  "prettyplease",

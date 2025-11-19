@@ -159,6 +159,7 @@ impl RustGenerator {
                 format: return_artifacts.message_format(),
                 struct_ident: Ident::new(&response_struct_prefix, Span::call_site()),
                 builder_type: schema_info.builder_type_tokens(),
+                include_service_instance_id: false,
             })
         } else {
             None
@@ -540,6 +541,7 @@ struct ServiceResponseSpec<'a> {
     format: &'a MessageFormat,
     struct_ident: Ident,
     builder_type: TokenStream,
+    include_service_instance_id: bool,
 }
 
 impl LanguageGenerator for RustGenerator {
@@ -621,10 +623,15 @@ impl LanguageGenerator for RustGenerator {
         let request_wire_format = topic_message_format_with_instance_id(&base_request_format);
         let request_wire_artifacts = map_message_format(Some(&request_wire_format))?
             .expect("request format should produce schema artifacts");
-        let return_format_artifacts = map_message_format(service.response_message_format.as_ref())?;
+        let response_format = service.response_message_format.clone();
+        let response_struct_artifacts = map_message_format(response_format.as_ref())?;
+        let response_wire_format = response_format
+            .as_ref()
+            .map(topic_message_format_with_instance_id);
+        let response_wire_artifacts = map_message_format(response_wire_format.as_ref())?;
         let wire_params = collect_function_params(
             Some(&request_wire_artifacts),
-            return_format_artifacts.as_ref(),
+            response_struct_artifacts.as_ref(),
             &struct_prefix,
             &mut context,
             Some(&generic_response_ident),
@@ -651,7 +658,7 @@ impl LanguageGenerator for RustGenerator {
             None
         };
 
-        let response_spec = if let Some(return_artifacts) = return_format_artifacts.as_ref() {
+        let response_spec = if let Some(return_artifacts) = response_wire_artifacts.as_ref() {
             let response_prefix = format!("{struct_prefix}Response");
             let schema_key = format!("{fn_name_str}_response");
             let schema_info =
@@ -660,6 +667,7 @@ impl LanguageGenerator for RustGenerator {
                 format: return_artifacts.message_format(),
                 struct_ident: generic_response_ident.clone(),
                 builder_type: schema_info.builder_type_tokens(),
+                include_service_instance_id: true,
             })
         } else {
             None
@@ -2965,6 +2973,18 @@ fn build_exposed_service_method(
 
     let service_name = service_name_literal;
 
+    let needs_service_instance_id = response_spec
+        .map(|spec| spec.include_service_instance_id)
+        .unwrap_or(false);
+    let service_instance_param_ident = if needs_service_instance_id {
+        Some(Ident::new("service_instance_id", Span::call_site()))
+    } else {
+        None
+    };
+    let service_instance_call_arg = service_instance_param_ident
+        .as_ref()
+        .map(|_| quote!(service_instance_id.as_str()));
+
     let instance_binding_ident =
         instance_id_param.map(|_| Ident::new("instance_id", Span::call_site()));
     let (request_pattern, handler_request_args): (TokenStream, Vec<TokenStream>) =
@@ -2995,8 +3015,12 @@ fn build_exposed_service_method(
         quote!(handler(#(#handler_request_args),*))
     };
 
-    let response_serialization =
-        build_response_serialization_code(response_spec, label, &callback_call);
+    let response_serialization = build_response_serialization_code(
+        response_spec,
+        label,
+        &callback_call,
+        service_instance_param_ident.as_ref(),
+    );
     let handler_helper_name = handler_helper_name_override.cloned().unwrap_or_else(|| {
         Ident::new(
             &format!("{}_handle_request_payload", fn_name),
@@ -3036,8 +3060,13 @@ fn build_exposed_service_method(
         } else {
             request_pattern.clone()
         };
+        let helper_params = if let Some(instance_ident) = service_instance_param_ident.as_ref() {
+            quote!(payload: &[u8], handler: &F, #instance_ident: &str)
+        } else {
+            quote!(payload: &[u8], handler: &F)
+        };
         let helper_fn = quote! {
-            fn #handler_helper_name<F>(payload: &[u8], handler: &F) -> crate::Result<bytes::Bytes>
+            fn #handler_helper_name<F>(#helper_params) -> crate::Result<bytes::Bytes>
             where
                 F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
             {
@@ -3050,8 +3079,13 @@ fn build_exposed_service_method(
         };
         helper_tokens.push(helper_fn);
     } else {
+        let helper_params = if let Some(instance_ident) = service_instance_param_ident.as_ref() {
+            quote!(handler: &F, #instance_ident: &str)
+        } else {
+            quote!(handler: &F)
+        };
         let helper_fn = quote! {
-            fn #handler_helper_name<F>(handler: &F) -> crate::Result<bytes::Bytes>
+            fn #handler_helper_name<F>(#helper_params) -> crate::Result<bytes::Bytes>
             where
                 F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
             {
@@ -3070,12 +3104,44 @@ fn build_exposed_service_method(
     };
 
     let helper_call_tokens = if encoding.is_some() {
-        quote!({
-            let payload = #request_context_ident.message.payload;
-            #handler_helper_name(payload.as_ref(), &handler)
-        })
+        let service_instance_arg = service_instance_call_arg.clone();
+        if let Some(arg) = service_instance_arg {
+            quote!({
+                let payload = #request_context_ident.message.payload;
+                #handler_helper_name(payload.as_ref(), &handler, #arg)
+            })
+        } else {
+            quote!({
+                let payload = #request_context_ident.message.payload;
+                #handler_helper_name(payload.as_ref(), &handler)
+            })
+        }
     } else {
-        quote!(#handler_helper_name(&handler))
+        let service_instance_arg = service_instance_call_arg.clone();
+        if let Some(arg) = service_instance_arg {
+            quote!(#handler_helper_name(&handler, #arg))
+        } else {
+            quote!(#handler_helper_name(&handler))
+        }
+    };
+
+    let service_instance_env_stmt = if needs_service_instance_id {
+        let env_var_literal = Literal::string("PEPPY_INSTANCE_ID");
+        quote! {
+            let service_instance_id = std::env::var(#env_var_literal).map_err(|source| {
+                crate::Error::MissingInstanceIdEnvVar {
+                    var: #env_var_literal,
+                    source,
+                }
+            })?;
+        }
+    } else {
+        TokenStream::new()
+    };
+    let service_instance_clone_stmt = if needs_service_instance_id {
+        quote!(let service_instance_id = service_instance_id.clone();)
+    } else {
+        TokenStream::new()
     };
 
     let method = quote! {
@@ -3086,6 +3152,7 @@ fn build_exposed_service_method(
         where
             F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
         {
+            #service_instance_env_stmt
             let namespace = messenger.namespace();
             let service_name = #service_name;
 
@@ -3098,6 +3165,7 @@ fn build_exposed_service_method(
 
             service
                 .handle_next_request(move |#request_context_ident| {
+                    #service_instance_clone_stmt
                     async move {
                         #helper_call_tokens.map_err(|error| {
                             peppylib::PeppyError::Io(std::io::Error::other(error.to_string()))
@@ -3377,6 +3445,7 @@ fn build_response_serialization_code(
     response_spec: Option<&ServiceResponseSpec>,
     label: &str,
     callback_call: &TokenStream,
+    service_instance_ident: Option<&Ident>,
 ) -> TokenStream {
     let Some(spec) = response_spec else {
         return quote!({
@@ -3392,8 +3461,16 @@ fn build_response_serialization_code(
     let mut assignments = Vec::new();
     let mut names = NameGenerator::new();
     let response_ident = Ident::new("response", Span::call_site());
+    let include_service_instance_id = spec.include_service_instance_id;
 
     for (field_name, schema) in &format.0 {
+        if include_service_instance_id && field_name == "instance_id" {
+            let instance_ident = service_instance_ident
+                .expect("service instance identifier should be available when required");
+            assignments.push(quote!(#builder_ident.set_instance_id(#instance_ident);));
+            continue;
+        }
+
         let field_ident = Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
         let value_expr = quote!(#response_ident.#field_ident);
         assignments.push(generate_field_assignment(
