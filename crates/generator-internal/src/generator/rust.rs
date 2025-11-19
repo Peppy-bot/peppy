@@ -939,7 +939,17 @@ impl LanguageGenerator for RustGenerator {
         request_arguments: Option<&MessageFormat>,
         response_arguments: Option<&MessageFormat>,
     ) -> Result<()> {
-        let request_artifacts = map_message_format(request_arguments)?;
+        let request_arguments_with_instance_id = if let Some(args) = request_arguments {
+            Some(topic_message_format_with_instance_id(args))
+        } else {
+            let empty = MessageFormat(IndexMap::new());
+            Some(topic_message_format_with_instance_id(&empty))
+        };
+        let request_artifacts = map_message_format(
+            request_arguments_with_instance_id
+                .as_ref()
+                .or(request_arguments),
+        )?;
         let response_artifacts = map_message_format(response_arguments)?;
 
         let service_ident = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
@@ -973,6 +983,24 @@ impl LanguageGenerator for RustGenerator {
             Some(&generic_response_ident),
         )?;
 
+        let instance_id_param_index = params
+            .iter()
+            .position(|param| param.ident.to_string() == "instance_id");
+
+        let mut request_struct_params = params.clone();
+        if let Some(index) = instance_id_param_index {
+            request_struct_params.remove(index);
+        }
+
+        let request_struct_ident = Ident::new("Request", Span::call_site());
+        if !request_struct_params.is_empty() {
+            let fields = request_struct_params
+                .iter()
+                .map(|param| (param.ident.clone(), param.ty.clone()))
+                .collect();
+            context.add_struct(request_struct_ident.clone(), fields);
+        }
+
         let request_encoding = self.prepare_message_encoding(
             &method_label,
             &struct_prefix,
@@ -986,11 +1014,17 @@ impl LanguageGenerator for RustGenerator {
             let builder_type = &spec.builder_type;
             let assignments = &spec.assignments;
 
+            let unpacking = request_struct_params.iter().map(|p| {
+                let ident = &p.ident;
+                quote!(let #ident = request.#ident;)
+            });
+
             quote! {
                 let request_payload = {
                     let mut message = capnp::message::Builder::new_default();
                     {
                         let mut root = message.init_root::<#builder_type>();
+                        #( #unpacking )*
                         #( #assignments )*
                     }
                     let mut buffer = Vec::new();
@@ -1016,7 +1050,7 @@ impl LanguageGenerator for RustGenerator {
             peppylib::ServiceMessenger::poll(
                 messenger.handle(),
                 namespace,
-                service_name,
+                &service_name,
                 request_payload,
                 timeout,
             )
@@ -1099,13 +1133,27 @@ impl LanguageGenerator for RustGenerator {
         let mut fn_param_tokens = vec![
             quote!(messenger: &crate::Messenger),
             quote!(timeout: std::time::Duration),
+            quote!(target_instance_id: Option<String>),
         ];
-        fn_param_tokens.extend(function_param_tokens(&params));
+        if !request_struct_params.is_empty() {
+            fn_param_tokens.push(quote!(request: #request_struct_ident));
+        }
 
         let function_token = quote! {
             pub async fn #method_ident(#(#fn_param_tokens),*) -> crate::Result<#return_ty> {
+                let instance_id = std::env::var("PEPPY_INSTANCE_ID")
+                    .map_err(|source| {
+                        crate::Error::MissingInstanceIdEnvVar {
+                            var: "PEPPY_INSTANCE_ID",
+                            source,
+                        }
+                    })?;
                 let namespace = messenger.namespace();
                 let service_name = #service_name_literal;
+                let service_name = match target_instance_id {
+                    Some(instance_id) => format!("{}/{}", &service_name, &instance_id),
+                    None => format!("{}/**", &service_name),
+                };
 
                 #request_payload_tokens
 
