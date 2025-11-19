@@ -202,13 +202,6 @@ fn expose_service() {
         "expected handler result to be captured with instance context"
     );
     assert_rendered!(
-        rendered.contains(
-            "&handler,\n                        service_instance_id.as_str(),\n                    )"
-        ),
-        &rendered,
-        "expected helper invocation to forward service instance id"
-    );
-    assert_rendered!(
         rendered.contains("response_root.set_instance_id(service_instance_id);"),
         &rendered,
         "expected response payload to include service instance id"
@@ -278,13 +271,6 @@ fn expose_service_without_request_body() {
         rendered.contains("service_instance_id: &str"),
         &rendered,
         "expected payload helper signature to include service instance id"
-    );
-    assert_rendered!(
-        rendered.contains(
-            "&handler,\n                        service_instance_id.as_str(),\n                    )"
-        ),
-        &rendered,
-        "expected helper invocation to forward service instance id even without request fields"
     );
 }
 
@@ -489,9 +475,9 @@ fn subscribed_to_service() {
         "expected request parameter"
     );
     assert_rendered!(
-        rendered.contains("-> crate::Result<Response>"),
+        rendered.contains("-> crate::Result<(String, Response)>"),
         &rendered,
-        "expected generic result return type"
+        "expected poll helper to return instance id with response"
     );
     assert_rendered!(
         rendered.contains("let service_name = \"enable_camera\";"),
@@ -549,6 +535,11 @@ fn subscribed_to_service() {
         "expected response deserialization"
     );
     assert_rendered!(
+        rendered.contains("field: String::from(\"instance_id\"),"),
+        &rendered,
+        "expected response deserializer to reference instance id field"
+    );
+    assert_rendered!(
         rendered.contains("root.reborrow().get_enabled()"),
         &rendered,
         "expected response field reader for bool"
@@ -562,6 +553,11 @@ fn subscribed_to_service() {
         rendered.contains("context: String::from(\"uvc_camera enable_camera response\")"),
         &rendered,
         "expected response deserialization error context"
+    );
+    assert_rendered!(
+        rendered.contains("Ok(("),
+        &rendered,
+        "expected poll helper to return tuple containing instance id"
     );
 }
 
@@ -622,7 +618,7 @@ fn subscribed_to_two_services_same_node() {
         "expected request parameter for `enable_camera`"
     );
     assert_rendered!(
-        enable_rendered.contains("-> crate::Result<Response>"),
+        enable_rendered.contains("-> crate::Result<(String, Response)>"),
         enable_rendered,
         "expected return type for `enable_camera` poll helper"
     );
@@ -652,9 +648,9 @@ fn subscribed_to_two_services_same_node() {
         "expected response context for `enable_camera`"
     );
     assert_rendered!(
-        enable_rendered.contains("Ok(Response {"),
+        enable_rendered.contains("Ok(("),
         enable_rendered,
-        "expected response construction for `enable_camera`"
+        "expected tuple construction for `enable_camera` response"
     );
 
     assert_rendered!(
@@ -683,7 +679,7 @@ fn subscribed_to_two_services_same_node() {
         "expected poll helper for `get_camera_info`"
     );
     assert_rendered!(
-        camera_rendered.contains("-> crate::Result<Response>"),
+        camera_rendered.contains("-> crate::Result<(String, Response)>"),
         camera_rendered,
         "expected return type for `get_camera_info` poll helper"
     );
@@ -703,9 +699,9 @@ fn subscribed_to_two_services_same_node() {
         "expected response context for `get_camera_info`"
     );
     assert_rendered!(
-        camera_rendered.contains("Ok(Response {"),
+        camera_rendered.contains("Ok(("),
         camera_rendered,
-        "expected response construction for `get_camera_info`"
+        "expected tuple construction for `get_camera_info` response"
     );
 }
 
@@ -1007,21 +1003,13 @@ fn compile_lib_with_exposed_and_subscribed_services() {
         enable_module_contents
     );
     assert!(
-        enable_module_contents.contains(
-            "&handler,\n                        service_instance_id.as_str(),\n                    )"
-        ),
-        "Expected helper invocation to forward service instance id, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
         enable_module_contents.contains("response_root.set_instance_id(service_instance_id);"),
         "Expected response payload to set service instance id, got:\n{}",
         enable_module_contents
     );
     assert!(
-        enable_module_contents.contains(
-            "let service_instance_id = std::env::var(\"PEPPY_INSTANCE_ID\")"
-        ),
+        enable_module_contents
+            .contains("let service_instance_id = std::env::var(\"PEPPY_INSTANCE_ID\")"),
         "Expected handler to resolve service instance id from environment, got:\n{}",
         enable_module_contents
     );

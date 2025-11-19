@@ -974,6 +974,9 @@ impl LanguageGenerator for RustGenerator {
                 .or(request_arguments),
         )?;
         let response_artifacts = map_message_format(response_arguments)?;
+        let response_wire_format = response_arguments
+            .map(topic_message_format_with_instance_id);
+        let response_wire_artifacts = map_message_format(response_wire_format.as_ref())?;
 
         let service_ident = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
         let service_name_component = service_ident.to_string();
@@ -1106,6 +1109,9 @@ impl LanguageGenerator for RustGenerator {
 
         let (return_ty, response_tokens, poll_tokens) =
             if let Some(response_artifacts) = response_artifacts.as_ref() {
+                let response_wire_artifacts = response_wire_artifacts
+                    .as_ref()
+                    .expect("wire response format should exist when response format is provided");
                 let response_struct_name = format!("{struct_prefix}Response");
                 let response_struct_ident = generic_response_ident.clone();
 
@@ -1113,18 +1119,21 @@ impl LanguageGenerator for RustGenerator {
                 let response_schema = self.register_schema(
                     &response_schema_key,
                     &response_struct_name,
-                    response_artifacts,
+                    response_wire_artifacts,
                 )?;
                 let response_reader_type = response_schema.reader_type_tokens();
 
                 let response_format = response_artifacts.message_format();
+                let schema_lookup =
+                    SchemaFieldLookup::new(response_wire_artifacts.message_format());
                 let mut response_statements = Vec::new();
                 let mut response_inits = Vec::new();
                 let mut name_gen = NameGenerator::new();
-                for (field_name, schema) in &response_format.0 {
+                for (field_name, _) in &response_format.0 {
+                    let (original_name, schema) = schema_lookup.get(field_name);
                     let (mut statements, value_ident) = generate_field_reader_statements(
                         &quote!(root),
-                        field_name.as_str(),
+                        original_name.as_str(),
                         schema,
                         &response_struct_name,
                         &response_context_label,
@@ -1135,6 +1144,16 @@ impl LanguageGenerator for RustGenerator {
                         Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
                     response_inits.push(quote!(#field_ident: #value_ident));
                 }
+
+                let (instance_name, instance_schema) = schema_lookup.get("instance_id");
+                let (instance_statements, instance_value_ident) = generate_field_reader_statements(
+                    &quote!(root),
+                    instance_name.as_str(),
+                    instance_schema,
+                    &response_struct_name,
+                    &response_context_label,
+                    &mut name_gen,
+                );
 
                 let response_context_literal = Literal::string(&response_context_label);
 
@@ -1160,14 +1179,18 @@ impl LanguageGenerator for RustGenerator {
                             source,
                         })?;
 
+                    #( #instance_statements )*
                     #( #response_statements )*
 
-                    Ok(#response_struct_ident {
-                        #( #response_inits ),*
-                    })
+                    Ok((
+                        #instance_value_ident,
+                        #response_struct_ident {
+                            #( #response_inits ),*
+                        },
+                    ))
                 };
 
-                (quote!(#response_struct_ident), response_tokens, poll_tokens)
+                (quote!((String, #response_struct_ident)), response_tokens, poll_tokens)
             } else {
                 let poll_tokens = quote! {
                     let _ = #poll_call.await?;
