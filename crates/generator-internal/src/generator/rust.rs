@@ -170,6 +170,8 @@ impl RustGenerator {
             handler_helper_name_override,
             None,
             &params,
+            &params,
+            None,
             encoding.as_ref(),
             accept_format_artifacts
                 .as_ref()
@@ -612,10 +614,16 @@ impl LanguageGenerator for RustGenerator {
         let generic_deserializer_ident = Ident::new("deserialize_request", Span::call_site());
 
         let mut context = GenerationContext::default();
-        let accept_format_artifacts = map_message_format(service.request_message_format.as_ref())?;
+        let base_request_format = service
+            .request_message_format
+            .clone()
+            .unwrap_or_else(|| MessageFormat(IndexMap::new()));
+        let request_wire_format = topic_message_format_with_instance_id(&base_request_format);
+        let request_wire_artifacts = map_message_format(Some(&request_wire_format))?
+            .expect("request format should produce schema artifacts");
         let return_format_artifacts = map_message_format(service.response_message_format.as_ref())?;
-        let params = collect_function_params(
-            accept_format_artifacts.as_ref(),
+        let wire_params = collect_function_params(
+            Some(&request_wire_artifacts),
             return_format_artifacts.as_ref(),
             &struct_prefix,
             &mut context,
@@ -624,17 +632,24 @@ impl LanguageGenerator for RustGenerator {
         let encoding = self.prepare_message_encoding(
             &fn_name_str,
             &struct_prefix,
-            accept_format_artifacts.as_ref(),
-            &params,
+            Some(&request_wire_artifacts),
+            &wire_params,
         )?;
 
-        let request_struct_ident =
-            if let Some((ident, tokens)) = build_request_struct_with_name("Request", &params) {
-                context.add_private_struct(tokens);
-                Some(ident)
-            } else {
-                None
-            };
+        let mut handler_params = wire_params.clone();
+        let instance_id_param_index = handler_params
+            .iter()
+            .position(|param| param.ident.to_string() == "instance_id");
+        let instance_id_param = instance_id_param_index.map(|index| handler_params.remove(index));
+
+        let request_struct_ident = if let Some((ident, tokens)) =
+            build_request_struct_with_name("Request", &handler_params)
+        {
+            context.add_private_struct(tokens);
+            Some(ident)
+        } else {
+            None
+        };
 
         let response_spec = if let Some(return_artifacts) = return_format_artifacts.as_ref() {
             let response_prefix = format!("{struct_prefix}Response");
@@ -656,11 +671,11 @@ impl LanguageGenerator for RustGenerator {
             Some(&generic_handler_ident),
             Some(&generic_helper_ident),
             Some(&generic_deserializer_ident),
-            &params,
+            &wire_params,
+            &handler_params,
+            instance_id_param.as_ref(),
             encoding.as_ref(),
-            accept_format_artifacts
-                .as_ref()
-                .map(|art| art.message_format()),
+            Some(request_wire_artifacts.message_format()),
             &fn_name_str,
             &service_name_literal,
             request_struct_ident.as_ref(),
@@ -2886,7 +2901,9 @@ fn build_exposed_service_method(
     handler_fn_name_override: Option<&Ident>,
     handler_helper_name_override: Option<&Ident>,
     request_deserializer_name_override: Option<&Ident>,
-    params: &[FunctionParam],
+    wire_params: &[FunctionParam],
+    handler_params: &[FunctionParam],
+    instance_id_param: Option<&FunctionParam>,
     encoding: Option<&MessageEncodingSpec>,
     request_format: Option<&MessageFormat>,
     label: &str,
@@ -2902,11 +2919,15 @@ fn build_exposed_service_method(
     });
 
     // Build callback parameter signature (just types, no names for Fn trait bounds)
-    let callback_param_types: Vec<TokenStream> = if let Some(request_struct) = request_struct {
-        vec![quote!(#request_struct)]
+    let mut callback_param_types: Vec<TokenStream> = Vec::new();
+    if let Some(instance_param) = instance_id_param {
+        callback_param_types.push(instance_param.ty.clone());
+    }
+    if let Some(request_struct) = request_struct {
+        callback_param_types.push(quote!(#request_struct));
     } else {
-        params.iter().map(|p| p.ty.clone()).collect()
-    };
+        callback_param_types.extend(handler_params.iter().map(|p| p.ty.clone()));
+    }
 
     // Determine response type
     let response_ty = response_spec
@@ -2919,20 +2940,34 @@ fn build_exposed_service_method(
 
     let service_name = service_name_literal;
 
-    let param_idents: Vec<&Ident> = params.iter().map(|p| &p.ident).collect();
-    let (params_pattern, callback_call) = if request_struct.is_some() {
-        let binding_ident = Ident::new("request_data", Span::call_site());
-        (quote!(#binding_ident), quote!(handler(#binding_ident)))
-    } else if param_idents.is_empty() {
-        (quote!(()), quote!(handler()))
-    } else if param_idents.len() == 1 {
-        let ident = param_idents[0];
-        (quote!((#ident,)), quote!(handler(#ident)))
+    let instance_binding_ident =
+        instance_id_param.map(|_| Ident::new("instance_id", Span::call_site()));
+    let (request_pattern, handler_request_args): (TokenStream, Vec<TokenStream>) =
+        if request_struct.is_some() {
+            let binding_ident = Ident::new("request_data", Span::call_site());
+            (quote!(#binding_ident), vec![quote!(#binding_ident)])
+        } else if handler_params.is_empty() {
+            (quote!(()), Vec::new())
+        } else if handler_params.len() == 1 {
+            let ident = &handler_params[0].ident;
+            (quote!((#ident,)), vec![quote!(#ident)])
+        } else {
+            let idents: Vec<&Ident> = handler_params.iter().map(|p| &p.ident).collect();
+            let args = idents.iter().map(|ident| quote!(#ident)).collect();
+            (quote!((#(#idents),*)), args)
+        };
+    let callback_call = if let Some(instance_ident) = instance_binding_ident.as_ref() {
+        let mut handler_args = Vec::with_capacity(handler_request_args.len() + 1);
+        handler_args.push(quote!(#instance_ident));
+        handler_args.extend(handler_request_args.iter().cloned());
+        quote!(handler(#(#handler_args),*))
+    } else if handler_request_args.is_empty() {
+        quote!(handler())
+    } else if handler_request_args.len() == 1 {
+        let arg = &handler_request_args[0];
+        quote!(handler(#arg))
     } else {
-        (
-            quote!((#(#param_idents),*)),
-            quote!(handler(#(#param_idents),*)),
-        )
+        quote!(handler(#(#handler_request_args),*))
     };
 
     let response_serialization =
@@ -2962,18 +2997,26 @@ fn build_exposed_service_method(
             &request_deserializer_name,
             request_spec,
             request_format,
-            params,
+            wire_params,
+            handler_params,
             label,
             request_struct,
+            instance_id_param,
         );
         helper_tokens.push(request_deserializer);
 
+        let deserializer_pattern = if let Some(instance_ident) = instance_binding_ident.as_ref() {
+            let request_pattern = request_pattern.clone();
+            quote!((#instance_ident, #request_pattern))
+        } else {
+            request_pattern.clone()
+        };
         let helper_fn = quote! {
             fn #handler_helper_name<F>(payload: &[u8], handler: &F) -> crate::Result<bytes::Bytes>
             where
                 F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
             {
-                let #params_pattern = #request_deserializer_name(payload)?;
+                let #deserializer_pattern = #request_deserializer_name(payload)?;
 
                 let response_payload = #response_serialization;
 
@@ -3085,94 +3128,202 @@ fn build_request_deserializer(
     deserializer_fn_name: &Ident,
     request_spec: &MessageEncodingSpec,
     request_format: &MessageFormat,
-    params: &[FunctionParam],
+    wire_params: &[FunctionParam],
+    handler_params: &[FunctionParam],
     label: &str,
     request_struct: Option<&Ident>,
+    instance_id_param: Option<&FunctionParam>,
 ) -> TokenStream {
-    let reader_type = &request_spec.reader_type;
-    let context_literal = Literal::string(label);
+    if let Some(instance_param) = instance_id_param {
+        let reader_type = &request_spec.reader_type;
+        let context_literal = Literal::string(label);
+        let instance_ty = &instance_param.ty;
 
-    // Build return type as tuple or struct if available
-    let return_ty = if let Some(request_struct) = request_struct {
-        quote!(#request_struct)
-    } else if params.is_empty() {
-        quote!(())
-    } else if params.len() == 1 {
-        let ty = &params[0].ty;
-        quote!((#ty,))
-    } else {
-        let types: Vec<&TokenStream> = params.iter().map(|p| &p.ty).collect();
-        quote!((#(#types),*))
-    };
+        // Build return type for request data
+        let request_return_ty = if let Some(request_struct) = request_struct {
+            quote!(#request_struct)
+        } else if handler_params.is_empty() {
+            quote!(())
+        } else if handler_params.len() == 1 {
+            let ty = &handler_params[0].ty;
+            quote!((#ty,))
+        } else {
+            let types: Vec<&TokenStream> = handler_params.iter().map(|p| &p.ty).collect();
+            quote!((#(#types),*))
+        };
+        let return_ty = quote!((#instance_ty, #request_return_ty));
 
-    // Generate field deserialization using schema metadata
-    let schema_lookup = SchemaFieldLookup::new(request_format);
+        // Generate field deserialization using schema metadata
+        let schema_lookup = SchemaFieldLookup::new(request_format);
 
-    let mut names = NameGenerator::new();
-    let mut field_statements = Vec::new();
-    let mut value_idents = Vec::new();
+        let mut names = NameGenerator::new();
+        let mut field_statements = Vec::new();
+        let mut handler_value_map: HashMap<String, Ident> = HashMap::new();
+        let mut instance_value_ident = None;
+        let instance_field_key = instance_param.ident.to_string();
 
-    for param in params {
-        let field_key = param.ident.to_string();
-        let (original_name, schema) = schema_lookup.get(&field_key);
+        for param in wire_params {
+            let field_key = param.ident.to_string();
+            let (original_name, schema) = schema_lookup.get(&field_key);
 
-        let (mut statements, value_ident) = generate_field_reader_statements(
-            &quote!(root),
-            original_name.as_str(),
-            schema,
-            label,
-            label,
-            &mut names,
-        );
-        field_statements.append(&mut statements);
-        value_idents.push(value_ident);
-    }
+            let (mut statements, value_ident) = generate_field_reader_statements(
+                &quote!(root),
+                original_name.as_str(),
+                schema,
+                label,
+                label,
+                &mut names,
+            );
+            field_statements.append(&mut statements);
 
-    let return_expr = if let Some(request_struct) = request_struct {
-        let field_assignments: Vec<TokenStream> = params
+            if field_key == instance_field_key {
+                instance_value_ident = Some(value_ident);
+            } else {
+                handler_value_map.insert(field_key, value_ident);
+            }
+        }
+
+        let instance_value_ident =
+            instance_value_ident.expect("instance_id should be present in service requests");
+        let mut ordered_request_values: Vec<Ident> = handler_params
             .iter()
-            .zip(value_idents.iter())
-            .map(|(param, value_ident)| {
-                let field_ident = &param.ident;
-                quote!(#field_ident: #value_ident)
+            .map(|param| {
+                let key = param.ident.to_string();
+                handler_value_map
+                    .get(&key)
+                    .unwrap_or_else(|| panic!("missing field `{key}` in request payload"))
+                    .clone()
             })
             .collect();
-        quote!(#request_struct { #( #field_assignments ),* })
-    } else if value_idents.is_empty() {
-        quote!(())
-    } else if value_idents.len() == 1 {
-        let ident = &value_idents[0];
-        quote!((#ident,))
+
+        let request_expr = if let Some(request_struct) = request_struct {
+            let field_assignments: Vec<TokenStream> = handler_params
+                .iter()
+                .zip(ordered_request_values.iter())
+                .map(|(param, value_ident)| {
+                    let field_ident = &param.ident;
+                    quote!(#field_ident: #value_ident)
+                })
+                .collect();
+            quote!(#request_struct { #( #field_assignments ),* })
+        } else if ordered_request_values.is_empty() {
+            quote!(())
+        } else if ordered_request_values.len() == 1 {
+            let ident = ordered_request_values
+                .pop()
+                .expect("request value missing despite length check");
+            quote!((#ident,))
+        } else {
+            quote!((#(#ordered_request_values),*))
+        };
+
+        quote! {
+            fn #deserializer_fn_name(payload: &[u8]) -> crate::Result<#return_ty> {
+                let mut cursor = std::io::Cursor::new(payload);
+                let message_reader = capnp::serialize::read_message(
+                        &mut cursor,
+                        capnp::message::ReaderOptions::new(),
+                    )
+                    .map_err(|source| crate::Error::CapnpDeserialize {
+                        context: String::from(#context_literal),
+                        source,
+                    })?;
+
+                let root = message_reader
+                    .get_root::<#reader_type>()
+                    .map_err(|source| crate::Error::CapnpDeserialize {
+                        context: String::from(#context_literal),
+                        source,
+                    })?;
+
+                #(#field_statements)*
+
+                Ok((#instance_value_ident, #request_expr))
+            }
+        }
     } else {
-        quote!((#(#value_idents),*))
-    };
+        let reader_type = &request_spec.reader_type;
+        let context_literal = Literal::string(label);
 
-    quote! {
-        fn #deserializer_fn_name(payload: &[u8]) -> crate::Result<#return_ty> {
-            let mut cursor = std::io::Cursor::new(payload);
-            let message_reader = capnp::serialize::read_message(
-                    &mut cursor,
-                    capnp::message::ReaderOptions::new(),
-                )
-                .map_err(|source| crate::Error::CapnpDeserialize {
-                    context: String::from(#context_literal),
-                    source,
-                })?;
+        let return_ty = if let Some(request_struct) = request_struct {
+            quote!(#request_struct)
+        } else if handler_params.is_empty() {
+            quote!(())
+        } else if handler_params.len() == 1 {
+            let ty = &handler_params[0].ty;
+            quote!((#ty,))
+        } else {
+            let types: Vec<&TokenStream> = handler_params.iter().map(|p| &p.ty).collect();
+            quote!((#(#types),*))
+        };
 
-            let root = message_reader
-                .get_root::<#reader_type>()
-                .map_err(|source| crate::Error::CapnpDeserialize {
-                    context: String::from(#context_literal),
-                    source,
-                })?;
+        let schema_lookup = SchemaFieldLookup::new(request_format);
 
-            #(#field_statements)*
+        let mut names = NameGenerator::new();
+        let mut field_statements = Vec::new();
+        let mut value_idents = Vec::new();
 
-            Ok(#return_expr)
+        for param in wire_params {
+            let field_key = param.ident.to_string();
+            let (original_name, schema) = schema_lookup.get(&field_key);
+
+            let (mut statements, value_ident) = generate_field_reader_statements(
+                &quote!(root),
+                original_name.as_str(),
+                schema,
+                label,
+                label,
+                &mut names,
+            );
+            field_statements.append(&mut statements);
+            value_idents.push(value_ident);
+        }
+
+        let request_expr = if let Some(request_struct) = request_struct {
+            let field_assignments: Vec<TokenStream> = handler_params
+                .iter()
+                .zip(value_idents.iter())
+                .map(|(param, value_ident)| {
+                    let field_ident = &param.ident;
+                    quote!(#field_ident: #value_ident)
+                })
+                .collect();
+            quote!(#request_struct { #( #field_assignments ),* })
+        } else if value_idents.is_empty() {
+            quote!(())
+        } else if value_idents.len() == 1 {
+            let ident = &value_idents[0];
+            quote!((#ident,))
+        } else {
+            quote!((#(#value_idents),*))
+        };
+
+        quote! {
+            fn #deserializer_fn_name(payload: &[u8]) -> crate::Result<#return_ty> {
+                let mut cursor = std::io::Cursor::new(payload);
+                let message_reader = capnp::serialize::read_message(
+                        &mut cursor,
+                        capnp::message::ReaderOptions::new(),
+                    )
+                    .map_err(|source| crate::Error::CapnpDeserialize {
+                        context: String::from(#context_literal),
+                        source,
+                    })?;
+
+                let root = message_reader
+                    .get_root::<#reader_type>()
+                    .map_err(|source| crate::Error::CapnpDeserialize {
+                        context: String::from(#context_literal),
+                        source,
+                    })?;
+
+                #(#field_statements)*
+
+                Ok(#request_expr)
+            }
         }
     }
 }
-
 fn build_response_serialization_code(
     response_spec: Option<&ServiceResponseSpec>,
     label: &str,
