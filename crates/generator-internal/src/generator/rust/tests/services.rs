@@ -147,6 +147,11 @@ fn expose_service() {
         "expected public request field for enable_camera"
     );
     assert_rendered!(
+        rendered.contains("impl Request {"),
+        &rendered,
+        "expected request struct impl block"
+    );
+    assert_rendered!(
         rendered.contains("peppylib::ServiceMessenger::listen"),
         &rendered,
         "expected service listen call through peppylib helper"
@@ -286,6 +291,11 @@ fn expose_two_services() {
         "expected request struct for enable_camera"
     );
     assert_rendered!(
+        enable_rendered.contains("impl Request {"),
+        enable_rendered,
+        "expected request struct impl for enable_camera"
+    );
+    assert_rendered!(
         enable_rendered.contains("pub struct Response"),
         enable_rendered,
         "expected response struct for enable_camera"
@@ -320,6 +330,11 @@ fn expose_two_services() {
         lidar_rendered.contains("pub struct Request"),
         lidar_rendered,
         "expected request struct for get_lidar_info"
+    );
+    assert_rendered!(
+        lidar_rendered.contains("impl Request {"),
+        lidar_rendered,
+        "expected request struct impl for get_lidar_info"
     );
     assert_rendered!(
         !lidar_rendered.contains("pub struct Response"),
@@ -403,6 +418,11 @@ fn subscribed_to_service() {
         rendered.contains("pub enable: bool"),
         &rendered,
         "expected request struct field"
+    );
+    assert_rendered!(
+        rendered.contains("impl Request {"),
+        &rendered,
+        "expected request struct impl block"
     );
     assert_rendered!(
         rendered.contains("pub async fn poll("),
@@ -898,6 +918,16 @@ fn compile_lib_with_exposed_and_subscribed_services() {
         enable_module_contents
     );
     assert!(
+        enable_module_contents.contains("pub struct Request"),
+        "Expected generated service module to define request struct, got:\n{}",
+        enable_module_contents
+    );
+    assert!(
+        enable_module_contents.contains("impl Request {"),
+        "Expected generated service module to define request struct impl, got:\n{}",
+        enable_module_contents
+    );
+    assert!(
         enable_module_contents.contains("pub async fn handle_next_request<F>("),
         "Expected generated service module to expose async handler, got:\n{}",
         enable_module_contents
@@ -950,6 +980,11 @@ fn compile_lib_with_exposed_and_subscribed_services() {
     assert!(
         lidar_module_contents.contains("pub struct Request"),
         "Expected generated module to define request struct for get_lidar_info, got:\n{}",
+        lidar_module_contents
+    );
+    assert!(
+        lidar_module_contents.contains("impl Request {"),
+        "Expected generated module to define request struct impl for get_lidar_info, got:\n{}",
         lidar_module_contents
     );
     assert!(

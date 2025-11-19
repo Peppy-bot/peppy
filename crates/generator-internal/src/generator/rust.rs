@@ -1014,6 +1014,31 @@ impl LanguageGenerator for RustGenerator {
                 .map(|param| (param.ident.clone(), param.ty.clone()))
                 .collect();
             context.add_struct(request_struct_ident.clone(), fields);
+            let ctor_params: Vec<TokenStream> = request_struct_params
+                .iter()
+                .map(|param| {
+                    let ident = &param.ident;
+                    let ty = &param.ty;
+                    quote!(#ident: #ty)
+                })
+                .collect();
+            let ctor_bindings: Vec<TokenStream> = request_struct_params
+                .iter()
+                .map(|param| {
+                    let ident = &param.ident;
+                    quote!(#ident)
+                })
+                .collect();
+            let ctor_tokens = quote! {
+                impl #request_struct_ident {
+                    pub fn new(#(#ctor_params),*) -> Self {
+                        Self {
+                            #( #ctor_bindings ),*
+                        }
+                    }
+                }
+            };
+            context.add_private_struct(ctor_tokens);
         }
 
         let request_encoding = self.prepare_message_encoding(
@@ -3105,11 +3130,35 @@ fn build_request_struct_with_name(
             quote!(pub #ident: #ty)
         })
         .collect();
+    let ctor_params: Vec<TokenStream> = params
+        .iter()
+        .map(|param| {
+            let ident = &param.ident;
+            let ty = &param.ty;
+            quote!(#ident: #ty)
+        })
+        .collect();
+    let ctor_bindings: Vec<TokenStream> = params
+        .iter()
+        .map(|param| {
+            let ident = &param.ident;
+            quote!(#ident)
+        })
+        .collect();
 
     let tokens = quote! {
         #[derive(Debug, Clone)]
+        #[allow(dead_code)]
         pub struct #ident {
             #( #field_tokens ),*
+        }
+
+        impl #ident {
+            pub fn new(#(#ctor_params),*) -> Self {
+                Self {
+                    #( #ctor_bindings ),*
+                }
+            }
         }
     };
 
