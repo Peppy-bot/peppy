@@ -390,6 +390,16 @@ fn subscribed_to_service() {
         "expected response optional string field"
     );
     assert_rendered!(
+        rendered.contains("pub struct Request"),
+        &rendered,
+        "expected request struct"
+    );
+    assert_rendered!(
+        rendered.contains("pub enable: bool"),
+        &rendered,
+        "expected request struct field"
+    );
+    assert_rendered!(
         rendered.contains("pub async fn poll("),
         &rendered,
         "expected async poll helper signature"
@@ -405,6 +415,16 @@ fn subscribed_to_service() {
         "expected timeout parameter"
     );
     assert_rendered!(
+        rendered.contains("target_instance_id: Option<String>"),
+        &rendered,
+        "expected target_instance_id parameter"
+    );
+    assert_rendered!(
+        rendered.contains("request: Request"),
+        &rendered,
+        "expected request parameter"
+    );
+    assert_rendered!(
         rendered.contains("-> crate::Result<Response>"),
         &rendered,
         "expected generic result return type"
@@ -415,9 +435,19 @@ fn subscribed_to_service() {
         "expected service name literal"
     );
     assert_rendered!(
+        rendered.contains("let service_name = match target_instance_id {"),
+        &rendered,
+        "expected service name matching"
+    );
+    assert_rendered!(
         rendered.contains("capnp::message::Builder::new_default"),
         &rendered,
         "expected capnp message builder"
+    );
+    assert_rendered!(
+        rendered.contains("let enable = request.enable;"),
+        &rendered,
+        "expected request field unpacking"
     );
     assert_rendered!(
         rendered.contains("root.set_enable(enable);"),

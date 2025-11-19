@@ -253,7 +253,7 @@ const SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 "#;
 
 #[test]
-fn services_communication() {
+fn services_communication_no_target_instance_id() {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
