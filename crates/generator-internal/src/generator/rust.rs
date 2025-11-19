@@ -1192,7 +1192,7 @@ impl LanguageGenerator for RustGenerator {
                 let service_name = #service_name_literal;
                 let service_name = match target_instance_id {
                     Some(instance_id) => format!("{}/{}", &service_name, &instance_id),
-                    None => format!("{}/**", &service_name),
+                    None => service_name.to_string(),
                 };
 
                 #request_payload_tokens
