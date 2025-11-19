@@ -296,11 +296,12 @@ async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
     let request = uvc_camera_enable_camera::Request::new(true);
-    let response =
+    let (instance_id, response) =
         uvc_camera_enable_camera::poll(&messenger, Duration::from_secs(5), None, request).await?;
     let error_msg = response.error_msg.as_deref().unwrap_or(\"<none>\");
     println!(
-        \"enable_camera result: enabled={{}} error={{}}\",
+        \"enable_camera result: service_id={{}} enabled={{}} error={{}}\",
+        &instance_id,
         response.enabled,
         error_msg
     );
@@ -354,14 +355,20 @@ async fn main() -> Result<()> {{
     compile_project(&user_node_exposer);
 
     let exposer_dir = user_node_exposer.clone();
-    let exposer_thread =
-        thread::spawn(move || run_cargo_run(&exposer_dir, Some(Duration::from_secs(5)), &[]));
+    let exposer_instance_id = "the_exposer";
+    let exposer_thread = thread::spawn(move || {
+        run_cargo_run(
+            &exposer_dir,
+            Some(Duration::from_secs(5)),
+            &[("PEPPY_INSTANCE_ID", exposer_instance_id)],
+        )
+    });
 
     // Give the exposer a moment to start listening before the subscriber sends a request.
     thread::sleep(Duration::from_millis(500));
 
     let subscriber_dir = user_node_subscriber.clone();
-    let subscriber_instance_id = "test_instance";
+    let subscriber_instance_id = "the_subscriber";
     let subscriber_thread = thread::spawn(move || {
         run_cargo_run(
             &subscriber_dir,
@@ -384,9 +391,14 @@ async fn main() -> Result<()> {{
         subscriber_stdout,
         subscriber_stderr
     );
+    let expected_subscriber_log = format!(
+        "enable_camera result: service_id={} enabled=true error=handled",
+        exposer_instance_id
+    );
     assert!(
-        subscriber_stdout.contains("enable_camera result: enabled=true error=handled"),
-        "subscriber did not receive expected service response.\nstdout:\n{}\nstderr:\n{}",
+        subscriber_stdout.contains(&expected_subscriber_log),
+        "subscriber did not receive expected service response (expected log: {}).\nstdout:\n{}\nstderr:\n{}",
+        expected_subscriber_log,
         subscriber_stdout,
         subscriber_stderr
     );
