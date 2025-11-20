@@ -25,7 +25,8 @@ fn current_timestamp() -> String {
 }
 
 fn payload_as_text(request: &ServiceRequestContext) -> String {
-    String::from_utf8_lossy(request.message.payload.as_ref()).to_string()
+    let payload = request.message().payload();
+    String::from_utf8_lossy(payload.as_bytes().as_ref()).to_string()
 }
 
 async fn handle_goal_request(
@@ -81,7 +82,7 @@ async fn handle_cancel_request(request: ServiceRequestContext) -> PeppyResult<By
             .magenta()
     );
 
-    if !request.message.payload.is_empty() {
+    if !request.message().payload().is_empty() {
         let timestamp = current_timestamp();
         println!(
             "{}",

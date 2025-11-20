@@ -26,14 +26,16 @@ fn current_timestamp() -> String {
 }
 
 fn payload_as_text(request: &ServiceRequestContext) -> String {
-    String::from_utf8_lossy(request.message.payload().as_ref()).to_string()
+    let payload = request.message().payload();
+    String::from_utf8_lossy(payload.as_bytes().as_ref()).to_string()
 }
 
 async fn handle_request(request: ServiceRequestContext) -> PeppyResult<Bytes> {
     let payload_text = payload_as_text(&request);
+    let instance_id = request.message().instance_id().unwrap_or("unknown");
 
     println!(
-        "[{}] Received request with payload `{payload_text}`",
+        "[{}] Received request with payload `{payload_text}` from `{instance_id}`",
         current_timestamp()
     );
 
@@ -64,7 +66,7 @@ fn handle_service_result(result: PeppyResult<bool>) -> bool {
 async fn main() {
     // Create a messenger for the receiving node.
     let receiver_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
-    let instance_id = format!("{}_emitter", get_random(rng()));
+    let instance_id = format!("{}_listener", get_random(rng()));
 
     let mut service =
         ServiceMessenger::listen(&receiver_handle, NODE_NAME, SERVICE_NAME, &instance_id)

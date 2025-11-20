@@ -61,6 +61,7 @@ async fn receive_feedback(handle: &mut ActionGoalHandle, goal_label: &str) {
 #[tokio::main]
 async fn main() {
     let sender_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
+    let as_instance_id = "action_client";
 
     println!(
         "{}",
@@ -70,6 +71,7 @@ async fn main() {
     );
     let mut goal_handle = ActionMessenger::send_goal(
         &sender_handle,
+        as_instance_id,
         NAMESPACE,
         ACTION_NAME,
         Bytes::from_static(b"Hello from the action client"),
@@ -91,6 +93,7 @@ async fn main() {
 
     let result_payload = ActionMessenger::poll_result(
         &sender_handle,
+        as_instance_id,
         &goal_handle,
         Bytes::from_static(b"request result after completion"),
         GOAL_TIMEOUT,
@@ -111,6 +114,7 @@ async fn main() {
     println!("{}", "[GOAL] Sending cancellable goal...".bold().green());
     let mut cancellable_goal_handle = ActionMessenger::send_goal(
         &sender_handle,
+        as_instance_id,
         NAMESPACE,
         ACTION_NAME,
         Bytes::from_static(b"This goal will be cancelled"),
@@ -136,6 +140,7 @@ async fn main() {
 
     let cancel_response = ActionMessenger::cancel_goal(
         &sender_handle,
+        as_instance_id,
         &cancellable_goal_handle,
         CANCEL_TIMEOUT,
     )
@@ -158,6 +163,7 @@ async fn main() {
 
     match ActionMessenger::poll_result(
         &sender_handle,
+        as_instance_id,
         &cancellable_goal_handle,
         Bytes::from_static(b"result request after cancel"),
         GOAL_TIMEOUT,

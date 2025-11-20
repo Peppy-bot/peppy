@@ -249,8 +249,10 @@ impl RustGenerator {
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 messenger.handle(),
+                "default_client",
                 namespace,
                 service_name,
+                None,
                 request_payload,
                 timeout,
             )
@@ -1099,8 +1101,10 @@ impl LanguageGenerator for RustGenerator {
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 messenger.handle(),
+                "default_client",
                 namespace,
                 &service_name,
+                None,
                 request_payload,
                 timeout,
             )

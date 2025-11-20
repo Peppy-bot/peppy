@@ -222,14 +222,14 @@ impl Payload {
     }
 
     #[cfg(feature = "zenoh")]
-    pub(crate) fn from_zbytes(zbytes: ZBytes) -> Self {
+    pub fn from_zbytes(zbytes: ZBytes) -> Self {
         Self {
             inner: PayloadInner::Zenoh(zbytes),
         }
     }
 
     #[cfg(feature = "zenoh")]
-    pub(crate) fn into_zbytes(self) -> ZBytes {
+    pub fn into_zbytes(self) -> ZBytes {
         match self.inner {
             PayloadInner::Bytes(b) => ZBytes::from(b),
             PayloadInner::Zenoh(z) => z,
@@ -295,7 +295,8 @@ impl RawMessage {
 
     fn extract_instance_id(key_expr: &str) -> Option<String> {
         let re = Regex::new(r"<INSTANCE_ID:([^>]+)>").ok()?;
-        re.captures(key_expr)
+        re.captures_iter(key_expr)
+            .last()
             .and_then(|captures| captures.get(1))
             .map(|value| value.as_str().to_string())
     }

@@ -262,13 +262,17 @@ async fn topic_publish_reliable_5000hz_messages() {
 async fn service_communication() {
     let router = TestRouterContext::start().await;
 
-    let service_name = "enable_camera";
-    let namespace = "/camera";
+    // Listener instance
+    let listener_node_name = "camera";
+    let listener_service_name = "enable_camera";
+    let listener_instance_id = "caller_instance";
+
+    // Caller instance
+    let caller_instance_id = "caller_instance";
 
     let request_payload = Bytes::from_static(b"enable=true");
     let response_payload = Bytes::from_static(b"ack");
     let call_count = Arc::new(AtomicUsize::new(0));
-    let service_instance_id = "test_service_instance";
 
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
 
@@ -277,15 +281,14 @@ async fn service_communication() {
         let service_expose_handle = router.service_messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
-            namespace,
-            service_name,
-            service_instance_id,
+            listener_node_name,
+            listener_service_name,
+            listener_instance_id,
         )
         .await
         .expect("service should start");
 
-        let service_root = super::build_full_namespace(namespace, service_name);
-        let expected_request_topic = format!("{service_root}/**/request");
+        let expected_request_topic = ""; // TODO complete
 
         let request_payload = request_payload.clone();
         let response_payload = response_payload.clone();
@@ -295,8 +298,9 @@ async fn service_communication() {
             let handler = service.handle_next_request(|request| {
                 let response_payload = response_payload.clone();
                 async move {
-                    assert_eq!(request.message.identifier(), expected_request_topic);
-                    assert_eq!(request.message.payload(), &request_payload);
+                    assert_eq!(request.message().key_expr(), expected_request_topic);
+                    assert_eq!(request.message().instance_id(), Some(caller_instance_id));
+                    assert_eq!(request.message().payload(), &request_payload);
                     call_count.fetch_add(1, Ordering::SeqCst);
                     Ok(response_payload)
                 }
@@ -324,15 +328,18 @@ async fn service_communication() {
         let caller_handle = router.service_messenger().await;
         let response = ServiceMessenger::poll(
             &caller_handle,
-            namespace,
-            service_name,
+            caller_instance_id,
+            listener_node_name,
+            listener_service_name,
+            Some(listener_node_name), // Poll that specific node
             request_payload.clone(),
             Duration::from_secs(1),
         )
         .await
         .expect("caller should receive response");
 
-        assert_eq!(response, response_payload);
+        assert_eq!(response.payload().to_bytes(), response_payload);
+        assert_eq!(response.instance_id().unwrap(), listener_instance_id);
     }
 
     // Ensure the service callback was called exactly once
@@ -356,35 +363,43 @@ async fn service_communication_fails_not_started() {
 
     let service_name = "enable_camera";
     let namespace = "/camera";
+    let caller_instance_id = "caller_instance";
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     let err = {
         let caller_handle = router.service_messenger().await;
 
-        ServiceMessenger::poll(
+        let result = ServiceMessenger::poll(
             &caller_handle,
+            caller_instance_id,
             namespace,
             service_name,
+            None,
             Bytes::from_static(b"enable=true"),
             Duration::from_secs(1),
         )
-        .await
-        .expect_err("service call should fail when service is not started")
+        .await;
+
+        let Err(err) = result else {
+            panic!("service call should fail when service is not started");
+        };
+
+        err
     };
 
-    match err {
-        Error::ServiceUnreachable {
-            namespace: err_namespace,
-            service_name: err_service_name,
-        } => {
-            assert_eq!(err_namespace, namespace);
-            assert_eq!(err_service_name, service_name);
-        }
-        other => panic!(
+    let Error::ServiceUnreachable {
+        namespace: err_namespace,
+        service_name: err_service_name,
+    } = err
+    else {
+        panic!(
             "expected ServiceUnreachable error, received unexpected error: {:?}",
-            other
-        ),
-    }
+            err
+        );
+    };
+
+    assert_eq!(err_namespace, namespace);
+    assert_eq!(err_service_name, service_name);
 
     router.shutdown().await;
 }
@@ -395,7 +410,7 @@ async fn service_communication_fails_timeout() {
 
     let service_name = "enable_camera";
     let namespace = "/camera";
-
+    let caller_instance_id = "caller_instance";
     let response_payload = Bytes::from_static(b"ack");
     let call_count = Arc::new(AtomicUsize::new(0));
     let service_instance_id = "test_service_instance";
@@ -405,7 +420,9 @@ async fn service_communication_fails_timeout() {
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task = {
         let service_root = super::build_full_namespace(namespace, service_name);
-        let expected_request_topic = format!("{service_root}/**/request");
+        let expected_request_topic = format!(
+            "{service_root}/<INSTANCE_ID:{service_instance_id}>/request/<INSTANCE_ID:{caller_instance_id}>"
+        );
         let response_delay = Duration::from_millis(200);
 
         let service_expose_handle = router.service_messenger().await;
@@ -435,7 +452,7 @@ async fn service_communication_fails_timeout() {
 
                 let handled = service
                     .handle_next_request(|request| async move {
-                        assert_eq!(request.message.identifier(), expected_request_topic);
+                        assert_eq!(request.message().key_expr(), expected_request_topic);
                         call_count.fetch_add(1, Ordering::SeqCst);
                         tokio::time::sleep(response_delay).await;
                         Ok(response_payload)
@@ -467,29 +484,38 @@ async fn service_communication_fails_timeout() {
 
         let success_response = ServiceMessenger::poll(
             &caller_handle,
+            caller_instance_id,
             namespace,
             service_name,
+            None,
             request_payload.clone(),
             caller_success_timeout,
         )
         .await
         .expect("caller should receive response before timeout");
-        assert_eq!(success_response, response_payload);
+        assert_eq!(success_response.payload().to_bytes(), response_payload);
         assert_eq!(
             call_count.load(Ordering::SeqCst),
             1,
             "service should have processed the successful request exactly once"
         );
 
-        ServiceMessenger::poll(
+        let result = ServiceMessenger::poll(
             &caller_handle,
+            caller_instance_id,
             namespace,
             service_name,
+            None,
             request_payload,
             caller_failure_timeout,
         )
-        .await
-        .expect_err("service call should fail when response exceeds timeout")
+        .await;
+
+        let Err(err) = result else {
+            panic!("service call should fail when response exceeds timeout");
+        };
+
+        err
     };
 
     let Error::ServiceTimeout {
@@ -530,6 +556,7 @@ async fn service_handle_request_processes_multiple_messages() {
     let expected_requests = 500;
     let call_count = Arc::new(AtomicUsize::new(0));
     let service_instance_id = "test_service_instance";
+    let caller_instance_id = "caller_instance";
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
@@ -559,7 +586,7 @@ async fn service_handle_request_processes_multiple_messages() {
                     let call_count = Arc::clone(&call_count);
                     async move {
                         call_count.fetch_add(1, Ordering::SeqCst);
-                        Ok(request.message.payload().clone())
+                        Ok(request.message().payload().to_bytes())
                     }
                 }) => result,
                 _ = shutdown_rx => Ok(()),
@@ -579,15 +606,18 @@ async fn service_handle_request_processes_multiple_messages() {
             let request_payload = Bytes::from(format!("enable=true;request={i}").into_bytes());
             let response = ServiceMessenger::poll(
                 &caller_handle,
+                caller_instance_id,
                 namespace,
                 service_name,
+                None,
                 request_payload.clone(),
                 Duration::from_secs(2),
             )
             .await
             .expect("caller should receive response");
             assert_eq!(
-                response, request_payload,
+                response.payload().to_bytes(),
+                request_payload,
                 "response should match the originating request payload"
             );
         }
@@ -640,9 +670,6 @@ async fn single_service_communication_multiple_polls_and_callers() {
 
         let service_root = super::build_full_namespace(namespace, service_name);
 
-        let expected_request_topic = format!("{service_root}/**/request");
-        let expected_request_topic = expected_request_topic.clone();
-
         let call_count = Arc::clone(&call_count);
 
         tokio::spawn(async move {
@@ -650,14 +677,22 @@ async fn single_service_communication_multiple_polls_and_callers() {
             service_ready_tx.send(()).unwrap();
 
             for _ in 0..total_requests {
-                let expected_request_topic = expected_request_topic.clone();
+                let service_root = service_root.clone();
+                let service_instance_id = service_instance_id.to_string();
                 let call_count = Arc::clone(&call_count);
 
                 let handle = service
                     .spawn_next_request_handler(move |request| async move {
-                        let identifier = request.message.identifier().to_string();
-                        let payload = request.message.payload().clone();
-                        assert_eq!(identifier, expected_request_topic);
+                        let identifier = request.message().key_expr().to_string();
+                        let payload = request.message().payload().to_bytes();
+                        let caller_id = request
+                            .message()
+                            .instance_id()
+                            .unwrap_or("missing_caller_instance");
+                        let expected_identifier = format!(
+                            "{service_root}/<INSTANCE_ID:{service_instance_id}>/request/<INSTANCE_ID:{caller_id}>"
+                        );
+                        assert_eq!(identifier, expected_identifier);
                         call_count.fetch_add(1, Ordering::SeqCst);
                         Ok(payload)
                     })
@@ -714,8 +749,10 @@ async fn single_service_communication_multiple_polls_and_callers() {
                 for (request_idx, request_payload) in requests {
                     let response = ServiceMessenger::poll(
                         &caller_handle,
+                        &caller_id,
                         namespace,
                         service_name,
+                        None,
                         request_payload.clone(),
                         Duration::from_secs(1),
                     )
@@ -760,7 +797,8 @@ async fn single_service_communication_multiple_polls_and_callers() {
                 "stored request payload should match expected value for `{caller_id}` request {request_idx}"
             );
             assert_eq!(
-                response, &expected_payload,
+                response.payload().to_bytes(),
+                expected_payload,
                 "response for `{caller_id}` request {request_idx} should match the originating request payload"
             );
         }
@@ -797,6 +835,7 @@ async fn action_communication() {
     let feedback_payload = Bytes::from_static(b"progress=50");
     let result_payload = Bytes::from_static(b"done");
     let result_request_payload = Bytes::from_static(b"goal=right_arm");
+    let caller_instance_id = "action_client";
 
     // Launch a background task that plays the role of the action server.
     let (action_ready_tx, action_ready_rx) = oneshot::channel();
@@ -816,8 +855,10 @@ async fn action_communication() {
                 .expect("action should start");
 
             let action_root = super::build_full_namespace(namespace, action_name);
-            let expected_goal_topic = format!("{action_root}/goal/**/request");
-            let expected_result_topic = format!("{action_root}/result/**/request");
+            let expected_goal_topic =
+                format!("{action_root}/goal/**/request/<INSTANCE_ID:{caller_instance_id}>");
+            let expected_result_topic =
+                format!("{action_root}/result/**/request/<INSTANCE_ID:{caller_instance_id}>");
 
             let _ = action_ready_tx.send(());
 
@@ -829,8 +870,8 @@ async fn action_communication() {
                     let expected_goal_payload = goal_payload_server.clone();
                     let expected_goal_response_payload = goal_response_payload_server.clone();
                     async move {
-                        assert_eq!(request.message.identifier(), expected_goal_topic);
-                        assert_eq!(request.message.payload(), &expected_goal_payload);
+                        assert_eq!(request.message().key_expr(), expected_goal_topic);
+                        assert_eq!(request.message().payload(), &expected_goal_payload);
                         Ok(expected_goal_response_payload)
                     }
                 })
@@ -855,8 +896,8 @@ async fn action_communication() {
                     let expected_payload = result_request_payload_server.clone();
                     let response_payload = result_payload_server.clone();
                     async move {
-                        assert_eq!(request.message.identifier(), expected_topic);
-                        assert_eq!(request.message.payload(), &expected_payload);
+                        assert_eq!(request.message().key_expr(), expected_topic);
+                        assert_eq!(request.message().payload(), &expected_payload);
                         Ok(response_payload)
                     }
                 })
@@ -883,6 +924,7 @@ async fn action_communication() {
         // Client sends the goal and obtains the handle carrying goal response + feedback sub.
         let mut goal_handle = ActionMessenger::send_goal(
             &caller_handle,
+            caller_instance_id,
             namespace,
             action_name,
             goal_payload,
@@ -892,7 +934,10 @@ async fn action_communication() {
         .await
         .expect("caller should send goal");
 
-        assert_eq!(goal_handle.goal_response(), &goal_response_payload);
+        assert_eq!(
+            goal_handle.goal_response().payload().to_bytes(),
+            goal_response_payload
+        );
 
         let expected_feedback_topic =
             super::build_full_namespace(namespace, &format!("{action_name}/feedback"));
@@ -911,6 +956,7 @@ async fn action_communication() {
         // Finally, request the result using the same handle and ensure the server replies.
         let result_response = ActionMessenger::poll_result(
             &caller_handle,
+            caller_instance_id,
             &goal_handle,
             result_request_payload,
             Duration::from_millis(500),
@@ -918,7 +964,7 @@ async fn action_communication() {
         .await
         .expect("caller should receive result");
 
-        assert_eq!(result_response, result_payload);
+        assert_eq!(result_response.payload().to_bytes(), result_payload);
     }
 
     server_task
@@ -941,6 +987,7 @@ async fn action_communication_goal_cancelled() {
     let feedback_payload = Bytes::from_static(b"progress=50");
     let result_request_payload = Bytes::from_static(b"goal=right_arm");
     let cancel_response_payload = Bytes::from_static(b"cancelled");
+    let caller_instance_id = "action_client";
 
     let (action_ready_tx, action_ready_rx) = oneshot::channel();
 
@@ -966,8 +1013,10 @@ async fn action_communication_goal_cancelled() {
             } = action;
 
             let action_root = super::build_full_namespace(namespace, action_name);
-            let expected_goal_topic = format!("{action_root}/goal/**/request");
-            let expected_cancel_topic = format!("{action_root}/cancel/**/request");
+            let expected_goal_topic =
+                format!("{action_root}/goal/**/request/<INSTANCE_ID:{caller_instance_id}>");
+            let expected_cancel_topic =
+                format!("{action_root}/cancel/**/request/<INSTANCE_ID:{caller_instance_id}>");
 
             if let Some(tx) = action_ready_tx {
                 let _ = tx.send(());
@@ -979,8 +1028,8 @@ async fn action_communication_goal_cancelled() {
                     let expected_goal_payload = goal_payload_server.clone();
                     let expected_goal_response_payload = goal_response_payload_server.clone();
                     async move {
-                        assert_eq!(request.message.identifier(), expected_goal_topic);
-                        assert_eq!(request.message.payload(), &expected_goal_payload);
+                        assert_eq!(request.message().key_expr(), expected_goal_topic);
+                        assert_eq!(request.message().payload(), &expected_goal_payload);
                         Ok(expected_goal_response_payload)
                     }
                 })
@@ -1021,9 +1070,9 @@ async fn action_communication_goal_cancelled() {
                     let expected_topic = expected_cancel_topic.clone();
                     let response_payload = cancel_response_payload_server.clone();
                     async move {
-                        assert_eq!(request.message.identifier(), expected_topic);
+                        assert_eq!(request.message().key_expr(), expected_topic);
                         assert!(
-                            request.message.payload().is_empty(),
+                            request.message().payload().is_empty(),
                             "cancel service should receive empty payload"
                         );
                         Ok(response_payload)
@@ -1053,6 +1102,7 @@ async fn action_communication_goal_cancelled() {
 
     let mut goal_handle = ActionMessenger::send_goal(
         &caller_handle,
+        caller_instance_id,
         namespace,
         action_name,
         goal_payload,
@@ -1062,7 +1112,10 @@ async fn action_communication_goal_cancelled() {
     .await
     .expect("caller should send goal");
 
-    assert_eq!(goal_handle.goal_response(), &goal_response_payload);
+    assert_eq!(
+        goal_handle.goal_response().payload().to_bytes(),
+        goal_response_payload
+    );
 
     let expected_feedback_topic =
         super::build_full_namespace(namespace, &format!("{action_name}/feedback"));
@@ -1088,12 +1141,19 @@ async fn action_communication_goal_cancelled() {
     assert_eq!(second_feedback.key_expr(), expected_feedback_topic);
     assert_eq!(second_feedback.payload(), &feedback_payload);
 
-    let cancel_response =
-        ActionMessenger::cancel_goal(&caller_handle, &goal_handle, Duration::from_millis(500))
-            .await
-            .expect("caller should receive cancel acknowledgement");
+    let cancel_response = ActionMessenger::cancel_goal(
+        &caller_handle,
+        caller_instance_id,
+        &goal_handle,
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("caller should receive cancel acknowledgement");
 
-    assert_eq!(cancel_response, cancel_response_payload);
+    assert_eq!(
+        cancel_response.payload().to_bytes(),
+        cancel_response_payload
+    );
 
     while let Ok(message) = goal_handle.feedback_mut().rx.try_recv() {
         assert_eq!(
@@ -1103,29 +1163,32 @@ async fn action_communication_goal_cancelled() {
         );
     }
 
-    match tokio::time::timeout(
+    let post_cancel_feedback = tokio::time::timeout(
         Duration::from_millis(200),
         goal_handle.feedback_mut().rx.recv(),
     )
-    .await
-    {
-        Err(_) => {}
-        Ok(None) => {}
-        Ok(Some(message)) => panic!(
+    .await;
+
+    if let Ok(Some(message)) = post_cancel_feedback {
+        panic!(
             "expected no feedback after cancellation, received topic '{}' with payload {:?}",
             message.key_expr(),
             message.payload()
-        ),
+        );
     }
 
     let err = ActionMessenger::poll_result(
         &caller_handle,
+        caller_instance_id,
         &goal_handle,
         result_request_payload,
         Duration::from_millis(200),
     )
-    .await
-    .expect_err("action result should time out after cancellation");
+    .await;
+
+    let Err(err) = err else {
+        panic!("action result should time out after cancellation");
+    };
 
     let Error::ActionResultUnreachable {
         namespace: err_namespace,
@@ -1178,8 +1241,6 @@ async fn single_action_communication_multiple_polls() {
                 .expect("action should start");
 
             let action_root = super::build_full_namespace(namespace, action_name);
-            let expected_goal_topic = format!("{action_root}/goal/**/request");
-            let expected_result_topic = format!("{action_root}/result/**/request");
             let crate::messaging::ActionCreation {
                 mut goal_service,
                 cancel_service: _,
@@ -1196,21 +1257,28 @@ async fn single_action_communication_multiple_polls() {
 
             let mut goal_handlers = Vec::with_capacity(client_total);
             for _ in 0..client_total {
-                let expected_goal_topic = expected_goal_topic.clone();
+                let action_root = action_root.clone();
                 let cases = Arc::clone(&cases);
                 let feedback_publisher = Arc::clone(&feedback_publisher);
 
                 let handler = goal_service
                     .spawn_next_request_handler(move |request| {
-                        let expected_goal_topic = expected_goal_topic.clone();
+                        let action_root = action_root.clone();
                         let cases = Arc::clone(&cases);
                         let feedback_publisher = Arc::clone(&feedback_publisher);
 
                         async move {
-                            assert_eq!(request.message.identifier(), expected_goal_topic);
+                            let caller_id = request
+                                .message()
+                                .instance_id()
+                                .unwrap_or("missing_caller_instance");
+                            let expected_goal_topic =
+                                format!("{action_root}/goal/**/request/<INSTANCE_ID:{caller_id}>");
+                            assert_eq!(request.message().key_expr(), expected_goal_topic);
 
-                            let payload = request.message.payload();
-                            let payload_str = std::str::from_utf8(&payload)
+                            let payload = request.message().payload();
+                            let payload_bytes = payload.as_bytes();
+                            let payload_str = std::str::from_utf8(payload_bytes.as_ref())
                                 .expect("goal payload should be valid UTF-8");
 
                             let client_id = payload_str
@@ -1254,19 +1322,27 @@ async fn single_action_communication_multiple_polls() {
 
             let mut result_handlers = Vec::with_capacity(client_total);
             for _ in 0..client_total {
-                let expected_result_topic = expected_result_topic.clone();
+                let action_root = action_root.clone();
                 let cases = Arc::clone(&cases);
 
                 let handler = result_service
                     .spawn_next_request_handler(move |request| {
-                        let expected_result_topic = expected_result_topic.clone();
+                        let action_root = action_root.clone();
                         let cases = Arc::clone(&cases);
 
                         async move {
-                            assert_eq!(request.message.identifier(), expected_result_topic);
+                            let caller_id = request
+                                .message()
+                                .instance_id()
+                                .unwrap_or("missing_caller_instance");
+                            let expected_result_topic = format!(
+                                "{action_root}/result/**/request/<INSTANCE_ID:{caller_id}>"
+                            );
+                            assert_eq!(request.message().key_expr(), expected_result_topic);
 
-                            let payload = request.message.payload();
-                            let payload_str = std::str::from_utf8(&payload)
+                            let payload = request.message().payload();
+                            let payload_bytes = payload.as_bytes();
+                            let payload_str = std::str::from_utf8(payload_bytes.as_ref())
                                 .expect("result payload should be valid UTF-8");
 
                             let client_id = payload_str
@@ -1328,6 +1404,7 @@ async fn single_action_communication_multiple_polls() {
 
             let mut goal_handle = ActionMessenger::send_goal(
                 &caller_handle,
+                &case.client_id,
                 namespace,
                 action_name,
                 case.goal.clone(),
@@ -1338,8 +1415,8 @@ async fn single_action_communication_multiple_polls() {
             .expect("caller should send goal");
 
             assert_eq!(
-                goal_handle.goal_response(),
-                &case.goal_response,
+                goal_handle.goal_response().payload().to_bytes(),
+                case.goal_response.clone(),
                 "goal response should match expected payload for `{}`",
                 case.client_id
             );
@@ -1373,6 +1450,7 @@ async fn single_action_communication_multiple_polls() {
 
             let result_response = ActionMessenger::poll_result(
                 &caller_handle,
+                &case.client_id,
                 &goal_handle,
                 case.result_request.clone(),
                 Duration::from_millis(1000),
@@ -1381,7 +1459,8 @@ async fn single_action_communication_multiple_polls() {
             .expect("caller should receive result response");
 
             assert_eq!(
-                result_response, case.result_response,
+                result_response.payload().to_bytes(),
+                case.result_response.clone(),
                 "result response should match expected payload for `{}`",
                 case.client_id
             );
