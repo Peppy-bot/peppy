@@ -1,4 +1,4 @@
-use pmi::start_zenohd_process;
+use pmi::{MessengerBackend, start_zenohd_process};
 use tokio::signal;
 
 pub const DEFAULT_ZENOH_PORT: u16 = 7448;
