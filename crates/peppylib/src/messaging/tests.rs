@@ -465,6 +465,148 @@ async fn service_communication_poll_no_specific_node() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn service_communication_poll_wrong_node() {
+    let router = TestRouterContext::start().await;
+
+    // Listener instance
+    let listener_node_name = "camera";
+    let listener_service_name = "enable_camera";
+    let listener_instance_id = "listener_instance";
+
+    // Caller instance
+    let caller_instance_id = "caller_instance";
+
+    let request_payload = Bytes::from_static(b"enable=true");
+    let response_payload = Bytes::from_static(b"ack");
+    let call_count = Arc::new(AtomicUsize::new(0));
+
+    let (service_ready_tx, service_ready_rx) = oneshot::channel();
+
+    // The exposed service has its own dedicated scope (emulates running on its own instance)
+    let service_task = {
+        let service_expose_handle = router.service_messenger().await;
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            listener_node_name,
+            listener_service_name,
+            listener_instance_id,
+        )
+        .await
+        .expect("service should start");
+
+        let service_root = super::build_full_namespace(listener_node_name, listener_service_name);
+        let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
+        let expected_request_topic = format!(
+            "{service_root}/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
+        );
+
+        let request_payload = request_payload.clone();
+        let response_payload = response_payload.clone();
+        let call_count = Arc::clone(&call_count);
+
+        tokio::spawn(async move {
+            let handler = service.handle_next_request(|request| {
+                let response_payload = response_payload.clone();
+                async move {
+                    assert_eq!(request.message().key_expr(), expected_request_topic);
+                    assert_eq!(request.message().instance_id(), Some(caller_instance_id));
+                    assert_eq!(request.message().payload(), &request_payload);
+                    call_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(response_payload)
+                }
+            });
+
+            service_ready_tx.send(()).unwrap();
+            let handled = handler
+                .await
+                .expect("service should receive exactly one request");
+
+            assert!(
+                handled,
+                "service subscription closed before handling request"
+            );
+
+            Ok::<(), Error>(())
+        })
+    };
+
+    // The caller node has its own scope (emulates a separate node running on a different instance)
+    {
+        service_ready_rx
+            .await
+            .expect("service should signal readiness");
+        let caller_handle = router.service_messenger().await;
+        let err = {
+            let result = ServiceMessenger::poll(
+                &caller_handle,
+                caller_instance_id,
+                listener_node_name,
+                listener_service_name,
+                Some("wrong_node"), // Use a wrong node name here
+                request_payload.clone(),
+                Duration::from_secs(1),
+            )
+            .await;
+
+            let Err(err) = result else {
+                panic!("service call should fail when targeting the wrong node");
+            };
+
+            err
+        };
+
+        let Error::ServiceTimeout {
+            instance_id: err_instance_id,
+            service_name: err_service_name,
+        } = &err
+        else {
+            panic!(
+                "expected ServiceTimeout error, received unexpected error: {:?}",
+                err
+            );
+        };
+
+        assert_eq!(err_instance_id.as_str(), "wrong_node");
+        assert_eq!(err_service_name.as_str(), listener_service_name);
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            0,
+            "service should not be called when targeting the wrong instance"
+        );
+
+        // Retry with the correct listener instance to let the service handle a request
+        let response = ServiceMessenger::poll(
+            &caller_handle,
+            caller_instance_id,
+            listener_node_name,
+            listener_service_name,
+            Some(listener_instance_id),
+            request_payload.clone(),
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("caller should receive response after targeting the correct node");
+
+        assert_eq!(response.payload().to_bytes(), response_payload);
+        assert_eq!(response.instance_id().unwrap(), listener_instance_id);
+    }
+
+    // Ensure the service callback was called exactly once
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        1,
+        "service callback should have been called exactly once"
+    );
+
+    service_task
+        .await
+        .expect("service task panicked")
+        .expect("service task returned error");
+
+    router.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn service_communication_fails_not_started() {
     let router = TestRouterContext::start().await;
 
@@ -495,7 +637,7 @@ async fn service_communication_fails_not_started() {
     };
 
     let Error::ServiceUnreachable {
-        namespace: err_namespace,
+        instance_id: err_instance_id,
         service_name: err_service_name,
     } = err
     else {
@@ -505,7 +647,7 @@ async fn service_communication_fails_not_started() {
         );
     };
 
-    assert_eq!(err_namespace, namespace);
+    assert_eq!(err_instance_id, super::INSTANCE_ID_WILDCARD);
     assert_eq!(err_service_name, service_name);
 
     router.shutdown().await;
@@ -626,7 +768,7 @@ async fn service_communication_fails_timeout() {
     };
 
     let Error::ServiceTimeout {
-        namespace: err_namespace,
+        instance_id: err_instance_id,
         service_name: err_service_name,
     } = &err
     else {
@@ -636,7 +778,7 @@ async fn service_communication_fails_timeout() {
         );
     };
 
-    assert_eq!(err_namespace.as_str(), namespace);
+    assert_eq!(err_instance_id.as_str(), super::INSTANCE_ID_WILDCARD);
     assert_eq!(err_service_name.as_str(), service_name);
 
     service_task
@@ -1298,7 +1440,7 @@ async fn action_communication_goal_cancelled() {
     };
 
     let Error::ActionResultUnreachable {
-        namespace: err_namespace,
+        instance_id: err_instance_id,
         action_name: err_action_name,
     } = &err
     else {
@@ -1308,7 +1450,7 @@ async fn action_communication_goal_cancelled() {
         );
     };
 
-    assert_eq!(err_namespace, namespace);
+    assert_eq!(err_instance_id, super::INSTANCE_ID_WILDCARD);
     assert_eq!(err_action_name, action_name);
 
     server_task
