@@ -1,3 +1,4 @@
+use std::fmt;
 use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -21,24 +22,48 @@ pub enum Error {
     PeppyMessagingInterface(#[from] pmi::PeppyMessagingInterfaceError),
 
     // -- topics/services/actions errors
-    #[error("service '{service_name}' for instance '{instance_id}' is unreachable")]
+    #[error(
+        "service '{service_name}'{instance_suffix} is unreachable",
+        instance_suffix = InstanceSuffix(.instance_id.as_deref())
+    )]
     ServiceUnreachable {
-        instance_id: String,
+        instance_id: Option<String>,
         service_name: String,
     },
-    #[error("service '{service_name}' for instance '{instance_id}' has timed out")]
+    #[error(
+        "service '{service_name}'{instance_suffix} has timed out",
+        instance_suffix = InstanceSuffix(.instance_id.as_deref())
+    )]
     ServiceTimeout {
-        instance_id: String,
+        instance_id: Option<String>,
         service_name: String,
     },
-    #[error("action '{action_name}' for instance '{instance_id}' has timed out waiting for result")]
+    #[error(
+        "action '{action_name}'{instance_suffix} has timed out waiting for result",
+        instance_suffix = InstanceSuffix(.instance_id.as_deref())
+    )]
     ActionResultTimeout {
-        instance_id: String,
+        instance_id: Option<String>,
         action_name: String,
     },
-    #[error("action '{action_name}' for instance '{instance_id}' is unreachable for result")]
+    #[error(
+        "action '{action_name}'{instance_suffix} is unreachable for result",
+        instance_suffix = InstanceSuffix(.instance_id.as_deref())
+    )]
     ActionResultUnreachable {
-        instance_id: String,
+        instance_id: Option<String>,
         action_name: String,
     },
+}
+
+struct InstanceSuffix<'a>(Option<&'a str>);
+
+impl fmt::Display for InstanceSuffix<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(instance_id) = self.0 {
+            write!(f, " for instance '{instance_id}'")
+        } else {
+            Ok(())
+        }
+    }
 }

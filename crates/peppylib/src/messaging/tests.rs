@@ -275,6 +275,9 @@ async fn service_communication_poll_specific_node() {
     let call_count = Arc::new(AtomicUsize::new(0));
 
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
+    let service_wait_timeout = Duration::from_millis(1500);
+    let service_task_timeout = service_wait_timeout + Duration::from_millis(500);
+    let service_ready_timeout = Duration::from_secs(1);
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task = {
@@ -311,9 +314,10 @@ async fn service_communication_poll_specific_node() {
             });
 
             service_ready_tx.send(()).unwrap();
-            let handled = handler
+            let handled = tokio::time::timeout(service_wait_timeout, handler)
                 .await
-                .expect("service should receive exactly one request");
+                .expect("service handler timed out");
+            let handled = handled.expect("service should receive exactly one request");
 
             assert!(
                 handled,
@@ -326,8 +330,9 @@ async fn service_communication_poll_specific_node() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        service_ready_rx
+        tokio::time::timeout(service_ready_timeout, service_ready_rx)
             .await
+            .expect("service should signal readiness before timeout")
             .expect("service should signal readiness");
         let caller_handle = router.service_messenger().await;
         let response = ServiceMessenger::poll(
@@ -353,12 +358,15 @@ async fn service_communication_poll_specific_node() {
         "service callback should have been called exactly once"
     );
 
-    service_task
+    tokio::time::timeout(service_task_timeout, service_task)
         .await
+        .expect("service task should finish within timeout")
         .expect("service task panicked")
         .expect("service task returned error");
 
-    router.shutdown().await;
+    tokio::time::timeout(service_task_timeout, router.shutdown())
+        .await
+        .expect("router shutdown timed out");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -378,6 +386,9 @@ async fn service_communication_poll_no_specific_node() {
     let call_count = Arc::new(AtomicUsize::new(0));
 
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
+    let service_wait_timeout = Duration::from_millis(1500);
+    let service_task_timeout = service_wait_timeout + Duration::from_millis(500);
+    let service_ready_timeout = Duration::from_secs(1);
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task = {
@@ -414,9 +425,10 @@ async fn service_communication_poll_no_specific_node() {
             });
 
             service_ready_tx.send(()).unwrap();
-            let handled = handler
+            let handled = tokio::time::timeout(service_wait_timeout, handler)
                 .await
-                .expect("service should receive exactly one request");
+                .expect("service handler timed out");
+            let handled = handled.expect("service should receive exactly one request");
 
             assert!(
                 handled,
@@ -429,8 +441,9 @@ async fn service_communication_poll_no_specific_node() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        service_ready_rx
+        tokio::time::timeout(service_ready_timeout, service_ready_rx)
             .await
+            .expect("service should signal readiness before timeout")
             .expect("service should signal readiness");
         let caller_handle = router.service_messenger().await;
         let response = ServiceMessenger::poll(
@@ -456,12 +469,15 @@ async fn service_communication_poll_no_specific_node() {
         "service callback should have been called exactly once"
     );
 
-    service_task
+    tokio::time::timeout(service_task_timeout, service_task)
         .await
+        .expect("service task should finish within timeout")
         .expect("service task panicked")
         .expect("service task returned error");
 
-    router.shutdown().await;
+    tokio::time::timeout(service_task_timeout, router.shutdown())
+        .await
+        .expect("router shutdown timed out");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -520,22 +536,15 @@ async fn service_communication_poll_wrong_node() {
             });
 
             service_ready_tx.send(()).unwrap();
-            let handled =
-                tokio::time::timeout(service_wait_timeout, handler).await;
+            let handled = tokio::time::timeout(service_wait_timeout, handler).await;
 
-            match handled {
-                Ok(handled) => {
-                    let handled = handled
-                        .expect("service should receive exactly one request");
+            if let Ok(handled) = handled {
+                let handled = handled.expect("service should receive exactly one request");
 
-                    assert!(
-                        handled,
-                        "service subscription closed before handling request"
-                    );
-                }
-                Err(_) => {
-                    // Wrong-node requests should not arrive; timing out keeps the test from hanging.
-                }
+                assert!(
+                    handled,
+                    "service subscription closed before handling request"
+                );
             }
 
             Ok::<(), Error>(())
@@ -579,7 +588,7 @@ async fn service_communication_poll_wrong_node() {
             );
         };
 
-        assert_eq!(err_instance_id.as_str(), "wrong_node");
+        assert_eq!(err_instance_id.as_deref(), Some("wrong_node"));
         assert_eq!(err_service_name.as_str(), listener_service_name);
         assert_eq!(
             call_count.load(Ordering::SeqCst),
@@ -610,8 +619,11 @@ async fn service_communication_poll_wrong_node() {
 async fn service_communication_fails_not_started() {
     let router = TestRouterContext::start().await;
 
-    let service_name = "enable_camera";
-    let namespace = "/camera";
+    // Listener instance
+    let listener_node_name = "camera";
+    let listener_service_name = "enable_camera";
+
+    // Caller instance
     let caller_instance_id = "caller_instance";
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
@@ -621,8 +633,8 @@ async fn service_communication_fails_not_started() {
         let result = ServiceMessenger::poll(
             &caller_handle,
             caller_instance_id,
-            namespace,
-            service_name,
+            listener_node_name,
+            listener_service_name,
             None,
             Bytes::from_static(b"enable=true"),
             Duration::from_secs(1),
@@ -647,8 +659,8 @@ async fn service_communication_fails_not_started() {
         );
     };
 
-    assert_eq!(err_instance_id, super::INSTANCE_ID_WILDCARD);
-    assert_eq!(err_service_name, service_name);
+    assert_eq!(err_instance_id, None);
+    assert_eq!(err_service_name, listener_service_name);
 
     router.shutdown().await;
 }
@@ -665,6 +677,9 @@ async fn service_communication_fails_timeout() {
     let service_instance_id = "test_service_instance";
 
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
+    let service_wait_timeout = Duration::from_millis(1500);
+    let service_task_timeout = service_wait_timeout * 2 + Duration::from_millis(500);
+    let service_ready_timeout = Duration::from_secs(1);
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task = {
@@ -699,15 +714,18 @@ async fn service_communication_fails_timeout() {
                 let call_count = Arc::clone(&call_count);
                 let response_delay = response_delay;
 
-                let handled = service
-                    .handle_next_request(|request| async move {
+                let handled = tokio::time::timeout(
+                    service_wait_timeout,
+                    service.handle_next_request(|request| async move {
                         assert_eq!(request.message().key_expr(), expected_request_topic);
                         call_count.fetch_add(1, Ordering::SeqCst);
                         tokio::time::sleep(response_delay).await;
                         Ok(response_payload)
-                    })
-                    .await
-                    .expect("service should receive expected number of requests");
+                    }),
+                )
+                .await
+                .expect("service handler timed out")
+                .expect("service should receive expected number of requests");
 
                 assert!(
                     handled,
@@ -719,8 +737,9 @@ async fn service_communication_fails_timeout() {
         })
     };
 
-    service_ready_rx
+    tokio::time::timeout(service_ready_timeout, service_ready_rx)
         .await
+        .expect("service should signal readiness before timeout")
         .expect("service should signal readiness");
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
@@ -778,11 +797,12 @@ async fn service_communication_fails_timeout() {
         );
     };
 
-    assert_eq!(err_instance_id.as_str(), super::INSTANCE_ID_WILDCARD);
+    assert!(err_instance_id.is_none());
     assert_eq!(err_service_name.as_str(), service_name);
 
-    service_task
+    tokio::time::timeout(service_task_timeout, service_task)
         .await
+        .expect("service task should finish within timeout")
         .expect("service task panicked")
         .expect("service task returned error");
 
@@ -792,7 +812,9 @@ async fn service_communication_fails_timeout() {
         "service should have processed both requests"
     );
 
-    router.shutdown().await;
+    tokio::time::timeout(service_task_timeout, router.shutdown())
+        .await
+        .expect("router shutdown timed out");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -1450,7 +1472,7 @@ async fn action_communication_goal_cancelled() {
         );
     };
 
-    assert_eq!(err_instance_id, super::INSTANCE_ID_WILDCARD);
+    assert!(err_instance_id.is_none());
     assert_eq!(err_action_name, action_name);
 
     server_task
