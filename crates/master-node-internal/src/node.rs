@@ -4,7 +4,7 @@ use config::{
     peppy_config::CURRENT_SCHEMA_VERSION,
 };
 use names_generator2::get_random;
-use peppylib::{MessengerHandle, TopicMessenger};
+use peppylib::{MessengerHandle, ServiceMessenger};
 use pmi::Messenger;
 use rand::rng;
 use std::sync::Arc;
@@ -52,33 +52,35 @@ impl MasterNode {
         let node_name = self.node_config.manifest.name.as_str();
         info!("Starting the master node as {}...", node_name);
 
-        let mut subscription = TopicMessenger::subscribe(
-            &self.messenger,
-            config::consts::MASTER_NODE_TOPIC_NAMESPACE,
-            config::consts::MASTER_NODE_CMD_TOPIC_NAME,
-            QoSProfile::Critical,
-        )
-        .await?;
+        // TODO: Finish exposing the service
+        // let mut subscription = ServiceMessenger::subscribe(
+        //     &self.messenger,
+        //     config::consts::MASTER_NODE_NAME,
+        //     config::consts::MASTER_NODE_TOPIC_NAME,
+        //     None,
+        //     QoSProfile::Critical,
+        // )
+        // .await?;
 
-        loop {
-            match subscription.on_next_message().await {
-                Some(message) => {
-                    let payload = String::from_utf8_lossy(message.payload.as_ref());
-                    let command = payload.trim();
+        // loop {
+        //     match subscription.on_next_message().await {
+        //         Some(message) => {
+        //             let payload = String::from_utf8_lossy(message.payload());
+        //             let command = payload.trim();
 
-                    match command {
-                        "ping" => info!("Received 'ping' command over {}", message.key_expr),
-                        "status" => info!("Would respond with status for {}", message.key_expr),
-                        "shutdown" => info!("Received 'shutdown' command (toy example)"),
-                        other => info!("Received unhandled command '{}'", other),
-                    }
-                }
-                None => {
-                    info!("Command subscription closed; no longer listening for messages");
-                    break;
-                }
-            }
-        }
+        //             match command {
+        //                 "ping" => info!("Received 'ping' command over {}", message.identifier()),
+        //                 "status" => info!("Would respond with status for {}", message.identifier()),
+        //                 "shutdown" => info!("Received 'shutdown' command (toy example)"),
+        //                 other => info!("Received unhandled command '{}'", other),
+        //             }
+        //         }
+        //         None => {
+        //             info!("Command subscription closed; no longer listening for messages");
+        //             break;
+        //         }
+        //     }
+        // }
 
         info!("Shutting down master node...");
         Ok(())

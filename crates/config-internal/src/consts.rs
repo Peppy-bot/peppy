@@ -1,5 +1,5 @@
-pub const MASTER_NODE_TOPIC_NAMESPACE: &str = "master_node";
-pub const MASTER_NODE_CMD_TOPIC_NAME: &str = "command";
+pub const MASTER_NODE_NAME: &str = "master_node";
+pub const MASTER_NODE_TOPIC_NAME: &str = "command";
 pub const PEPPY_NODE_CONFIG_FILE: &str = "peppy.json5";
 // 7447 is the default port but we avoid using it to avoid conflicts with other services using Zenoh
 pub const DEFAULT_ZENOH_PORT: u16 = 7448;

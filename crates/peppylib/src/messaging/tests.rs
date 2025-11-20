@@ -136,7 +136,7 @@ async fn topic_publish_subscribe() {
 
     // Those properties are found in the peppy_launcher.json5 `deployments` array
     let node_name = "uvc_camera";
-    let topic = "image_frame";
+    let topic = "video_frame";
     let instance_id = "test_instance";
 
     let payload = Bytes::from_static(b"A message");
@@ -182,21 +182,24 @@ async fn topic_publish_subscribe() {
 async fn topic_publish_reliable_5000hz_messages() {
     let router = TestRouterContext::start().await;
 
-    let topic_name = "video_frame";
-    // This should not let any message be discarded
+    let node_name = "uvc_camera";
+    let topic = "video_frame";
+    let instance_id = "test_instance";
     let qos = QoSProfile::Reliable;
-
-    // Those properties are found in the `deployments` array
-    let ns = "/camera/rear";
 
     let sender_handle = router.topic_messenger().await;
     let receiver_handle = router.topic_messenger().await;
 
-    let mut subscription = TopicMessenger::subscribe(&receiver_handle, ns, topic_name, qos.clone())
-        .await
-        .expect("Should subscribe to the topic");
+    let mut subscription = TopicMessenger::subscribe(
+        &receiver_handle,
+        &node_name,
+        &topic,
+        Some(&instance_id),
+        qos.clone(),
+    )
+    .await
+    .expect("Should subscribe to the topic");
 
-    let expected_topic = super::build_full_namespace(ns, topic_name);
     let message_count = 5000;
     let mut message_ids: Vec<u32> = (0..message_count as u32).collect();
     let mut rng = rand::rng();
@@ -204,9 +207,16 @@ async fn topic_publish_reliable_5000hz_messages() {
 
     for &message_id in &message_ids {
         let payload = Bytes::from(message_id.to_le_bytes().to_vec());
-        TopicMessenger::emit(&sender_handle, ns, topic_name, qos.clone(), payload)
-            .await
-            .expect("Should send the payload");
+        TopicMessenger::emit(
+            &sender_handle,
+            &node_name,
+            &topic,
+            &instance_id,
+            qos.clone(),
+            payload,
+        )
+        .await
+        .expect("Should send the payload");
     }
 
     let mut received_ids = Vec::with_capacity(message_count);
@@ -217,7 +227,8 @@ async fn topic_publish_reliable_5000hz_messages() {
             .expect("Timed out waiting for a message")
             .expect("Subscription closed before receiving all messages");
 
-        assert_eq!(message.identifier(), expected_topic);
+        todo!("Finish");
+        // assert_eq!(message.identifier(), expected_topic);
 
         let payload = message.payload();
         assert_eq!(
@@ -536,7 +547,7 @@ async fn service_handle_request_processes_multiple_messages() {
                     let call_count = Arc::clone(&call_count);
                     async move {
                         call_count.fetch_add(1, Ordering::SeqCst);
-                        Ok(request.message.payload())
+                        Ok(request.message.payload().clone())
                     }
                 }) => result,
                 _ = shutdown_rx => Ok(()),
@@ -626,9 +637,9 @@ async fn single_service_communication_multiple_polls_and_callers() {
 
                 let handle = service
                     .spawn_next_request_handler(move |request| async move {
-                        assert_eq!(request.message.key_expr, expected_request_topic);
+                        assert_eq!(request.message.identifier(), expected_request_topic);
                         call_count.fetch_add(1, Ordering::SeqCst);
-                        Ok(request.message.payload())
+                        Ok(request.message.payload().clone())
                     })
                     .await
                     .expect("service should receive expected number of requests")
