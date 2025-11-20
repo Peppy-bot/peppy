@@ -3,13 +3,13 @@ use crate::types::{PublisherQoS, RawMessage, SubscriberQoS};
 use crate::{Message, MessengerBackend, Subscription};
 use crate::{ZenohNetProtocol, zenohd};
 use askama::Template;
-use bytes::Bytes;
+
 use serde_json::Value;
-use std::borrow::Cow;
+
 use std::path::{Path, PathBuf};
 use std::{collections::HashMap, env, sync::Arc};
 use tracing::{debug, info};
-use zenoh::bytes::ZBytes;
+
 use zenoh::qos::{CongestionControl, Priority};
 use zenoh::sample::SampleFields;
 
@@ -300,14 +300,9 @@ impl MessengerBackend for ZenohAdapter {
                             key_expr, payload, ..
                         } = sample.into();
 
-                        // Convert the Zenoh payload into bytes::Bytes
-                        let payload_bytes = zbytes_to_bytes(payload);
-
                         let key_expr = key_expr.as_str();
-                        // TODO: Construct RawMessage directly with RawMessage::from_zbytes
-
                         // Create a Message object with topic and payload
-                        let message = RawMessage::new(key_expr, payload_bytes);
+                        let message = RawMessage::from_zbytes(key_expr, payload);
 
                         // Send the Message on the tx channel
                         if let Err(e) = tx.send(message).await {
@@ -393,12 +388,5 @@ impl MessengerBackend for ZenohAdapter {
             .ok_or(Error::ZenohDConfigurationNotFound)?;
         zenohd.stop_router()?;
         Ok(())
-    }
-}
-
-fn zbytes_to_bytes(payload: ZBytes) -> Bytes {
-    match payload.to_bytes() {
-        Cow::Borrowed(slice) => Bytes::copy_from_slice(slice),
-        Cow::Owned(vec) => Bytes::from(vec),
     }
 }
