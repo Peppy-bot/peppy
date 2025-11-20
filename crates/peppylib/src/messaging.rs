@@ -475,12 +475,12 @@ impl ActionMessenger {
             )
             .await
             .map_err(|err| match err {
-                Error::ServiceTimeout { .. } => Error::ActionResultTimeout {
-                    namespace: handle.namespace.clone(),
+                Error::ServiceTimeout { instance_id, .. } => Error::ActionResultTimeout {
+                    instance_id,
                     action_name: handle.action_name.clone(),
                 },
-                Error::ServiceUnreachable { .. } => Error::ActionResultUnreachable {
-                    namespace: handle.namespace.clone(),
+                Error::ServiceUnreachable { instance_id, .. } => Error::ActionResultUnreachable {
+                    instance_id,
                     action_name: handle.action_name.clone(),
                 },
                 other => other,
@@ -609,6 +609,7 @@ impl MessengerHandle {
     ) -> Result<RawMessage> {
         let service_root = build_full_namespace(node_name, service_name);
         let target_instance_segment = instance_id.and_then(format_instance_segment);
+        let target_instance_id = instance_id.unwrap_or(INSTANCE_ID_WILDCARD).to_string();
         let caller_instance_segment = format_instance_segment(as_instance_id)
             .unwrap_or_else(|| INSTANCE_ID_WILDCARD.to_string());
 
@@ -667,12 +668,12 @@ impl MessengerHandle {
 
                 if has_matching_subscribers {
                     return Err(Error::ServiceTimeout {
-                        namespace: node_name.to_string(),
+                        instance_id: target_instance_id,
                         service_name: service_name.to_string(),
                     });
                 } else {
                     return Err(Error::ServiceUnreachable {
-                        namespace: node_name.to_string(),
+                        instance_id: target_instance_id,
                         service_name: service_name.to_string(),
                     });
                 }

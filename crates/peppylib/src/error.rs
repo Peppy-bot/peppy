@@ -21,24 +21,24 @@ pub enum Error {
     PeppyMessagingInterface(#[from] pmi::PeppyMessagingInterfaceError),
 
     // -- topics/services/actions errors
-    #[error("service '{service_name}' in namespace '{namespace}' is unreachable")]
+    #[error("service '{service_name}' for instance '{instance_id}' is unreachable")]
     ServiceUnreachable {
-        namespace: String,
+        instance_id: String,
         service_name: String,
     },
-    #[error("service '{service_name}' in namespace '{namespace}' has timed out")]
+    #[error("service '{service_name}' for instance '{instance_id}' has timed out")]
     ServiceTimeout {
-        namespace: String,
+        instance_id: String,
         service_name: String,
     },
-    #[error("action '{action_name}' in namespace '{namespace}' has timed out waiting for result")]
+    #[error("action '{action_name}' for instance '{instance_id}' has timed out waiting for result")]
     ActionResultTimeout {
-        namespace: String,
+        instance_id: String,
         action_name: String,
     },
-    #[error("action '{action_name}' in namespace '{namespace}' is unreachable for result")]
+    #[error("action '{action_name}' for instance '{instance_id}' is unreachable for result")]
     ActionResultUnreachable {
-        namespace: String,
+        instance_id: String,
         action_name: String,
     },
 }
