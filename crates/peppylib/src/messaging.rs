@@ -297,15 +297,14 @@ pub struct ActionCreation {
 }
 
 impl TopicMessenger {
-    pub async fn subscribe(
+    pub async fn listen(
         messenger: &MessengerHandle,
-        from_node_name: &str,
-        from_topic: &str,
-        from_instance_id: Option<&str>,
+        as_node_name: &str,
+        as_topic: &str,
         qos: QoSProfile,
     ) -> Result<Subscription> {
         messenger
-            .receive_topic_msg(from_node_name, from_topic, from_instance_id, qos)
+            .receive_topic_msg(as_node_name, as_topic, qos)
             .await
     }
 
@@ -471,16 +470,9 @@ impl MessengerHandle {
         &self,
         from_node_name: &str,
         from_topic: &str,
-        from_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        let key_expr = match from_instance_id {
-            Some(instance_id) if instance_id != INSTANCE_ID_WILDCARD => format!(
-                "topic/{}/{}/<INSTANCE_ID:{}>",
-                from_node_name, from_topic, instance_id
-            ),
-            _ => format!("topic/{}/{}/**", from_node_name, from_topic),
-        };
+        let key_expr = format!("topic/{}/{}/**", from_node_name, from_topic);
         let subscriber_qos = map_node_qos_to_subscriber_qos(qos);
 
         let subscription = {
