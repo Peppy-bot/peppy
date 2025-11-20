@@ -181,6 +181,54 @@ async fn topic_publish_subscribe() {
     router.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn topic_subscribe_without_instance_filter() {
+    let router = TestRouterContext::start().await;
+
+    let qos = QoSProfile::Reliable;
+
+    let node_name = "uvc_camera";
+    let topic = "video_frame";
+    let instance_id = "test_instance";
+
+    let payload = Bytes::from_static(b"A message for any instance");
+
+    let receiver_handle = router.topic_messenger().await;
+
+    let mut subscription =
+        TopicMessenger::subscribe(&receiver_handle, &node_name, &topic, None, qos.clone())
+            .await
+            .expect("Should subscribe to the topic without filtering by instance id");
+
+    let sender_handle = router.topic_messenger().await;
+    TopicMessenger::emit(
+        &sender_handle,
+        &node_name,
+        &topic,
+        &instance_id,
+        qos,
+        payload.clone(),
+    )
+    .await
+    .expect("Should send the payload");
+
+    let received = tokio::time::timeout(Duration::from_secs(2), subscription.rx.recv())
+        .await
+        .expect("Timed out waiting for published message")
+        .expect("Should receive the published message");
+
+    let expected_topic = format!(
+        "topic/{}/{}/<INSTANCE_ID:{}>",
+        node_name, topic, instance_id
+    );
+
+    assert_eq!(received.key_expr(), expected_topic);
+    assert_eq!(received.instance_id().unwrap(), instance_id);
+    assert_eq!(received.payload(), &payload);
+
+    router.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn topic_publish_reliable_5000hz_messages() {
     let router = TestRouterContext::start().await;
@@ -280,18 +328,24 @@ async fn service_communication() {
     let request_payload = Bytes::from_static(b"enable=true");
     let response_payload = Bytes::from_static(b"ack");
     let call_count = Arc::new(AtomicUsize::new(0));
+    let service_instance_id = "test_service_instance";
 
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task = {
         let service_expose_handle = router.service_messenger().await;
-        let mut service = ServiceMessenger::listen(&service_expose_handle, namespace, service_name)
-            .await
-            .expect("service should start");
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            namespace,
+            service_name,
+            service_instance_id,
+        )
+        .await
+        .expect("service should start");
 
         let service_root = super::build_full_namespace(namespace, service_name);
-        let expected_request_topic = format!("{service_root}/request");
+        let expected_request_topic = format!("{service_root}/**/request");
 
         let request_payload = request_payload.clone();
         let response_payload = response_payload.clone();
@@ -404,19 +458,25 @@ async fn service_communication_fails_timeout() {
 
     let response_payload = Bytes::from_static(b"ack");
     let call_count = Arc::new(AtomicUsize::new(0));
+    let service_instance_id = "test_service_instance";
 
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task = {
         let service_root = super::build_full_namespace(namespace, service_name);
-        let expected_request_topic = format!("{service_root}/request");
+        let expected_request_topic = format!("{service_root}/**/request");
         let response_delay = Duration::from_millis(200);
 
         let service_expose_handle = router.service_messenger().await;
-        let mut service = ServiceMessenger::listen(&service_expose_handle, namespace, service_name)
-            .await
-            .expect("service should start");
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            namespace,
+            service_name,
+            service_instance_id,
+        )
+        .await
+        .expect("service should start");
 
         let expected_request_topic = expected_request_topic.clone();
         let response_payload = response_payload.clone();
@@ -529,6 +589,7 @@ async fn service_handle_request_processes_multiple_messages() {
     let namespace = "/camera";
     let expected_requests = 500;
     let call_count = Arc::new(AtomicUsize::new(0));
+    let service_instance_id = "test_service_instance";
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
@@ -540,10 +601,14 @@ async fn service_handle_request_processes_multiple_messages() {
         tokio::spawn(async move {
             let service_expose_handle = connect_service_messenger(&host, port).await;
 
-            let mut service =
-                ServiceMessenger::listen(&service_expose_handle, namespace, service_name)
-                    .await
-                    .expect("service should start");
+            let mut service = ServiceMessenger::listen(
+                &service_expose_handle,
+                namespace,
+                service_name,
+                service_instance_id,
+            )
+            .await
+            .expect("service should start");
 
             if let Some(tx) = service_ready_tx {
                 let _ = tx.send(());
@@ -616,6 +681,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
     let requests_per_caller = 5;
     let total_requests = caller_count * requests_per_caller;
     let call_count = Arc::new(AtomicUsize::new(0));
+    let service_instance_id = "test_service_instance";
 
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
 
@@ -623,13 +689,18 @@ async fn single_service_communication_multiple_polls_and_callers() {
     let service_task: tokio::task::JoinHandle<Result<(), Error>> = {
         let service_expose_handle = router.service_messenger().await;
 
-        let mut service = ServiceMessenger::listen(&service_expose_handle, namespace, service_name)
-            .await
-            .expect("service should start");
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            namespace,
+            service_name,
+            service_instance_id,
+        )
+        .await
+        .expect("service should start");
 
         let service_root = super::build_full_namespace(namespace, service_name);
 
-        let expected_request_topic = format!("{service_root}/request");
+        let expected_request_topic = format!("{service_root}/**/request");
         let expected_request_topic = expected_request_topic.clone();
 
         let call_count = Arc::clone(&call_count);
@@ -805,8 +876,8 @@ async fn action_communication() {
                 .expect("action should start");
 
             let action_root = super::build_full_namespace(namespace, action_name);
-            let expected_goal_topic = format!("{action_root}/goal/request");
-            let expected_result_topic = format!("{action_root}/result/request");
+            let expected_goal_topic = format!("{action_root}/goal/**/request");
+            let expected_result_topic = format!("{action_root}/result/**/request");
 
             let _ = action_ready_tx.send(());
 
@@ -955,8 +1026,8 @@ async fn action_communication_goal_cancelled() {
             } = action;
 
             let action_root = super::build_full_namespace(namespace, action_name);
-            let expected_goal_topic = format!("{action_root}/goal/request");
-            let expected_cancel_topic = format!("{action_root}/cancel/request");
+            let expected_goal_topic = format!("{action_root}/goal/**/request");
+            let expected_cancel_topic = format!("{action_root}/cancel/**/request");
 
             if let Some(tx) = action_ready_tx {
                 let _ = tx.send(());
@@ -1167,8 +1238,8 @@ async fn single_action_communication_multiple_polls() {
                 .expect("action should start");
 
             let action_root = super::build_full_namespace(namespace, action_name);
-            let expected_goal_topic = format!("{action_root}/goal/request");
-            let expected_result_topic = format!("{action_root}/result/request");
+            let expected_goal_topic = format!("{action_root}/goal/**/request");
+            let expected_result_topic = format!("{action_root}/result/**/request");
             let crate::messaging::ActionCreation {
                 mut goal_service,
                 cancel_service: _,

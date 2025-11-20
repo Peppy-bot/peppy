@@ -22,6 +22,8 @@ use tracing::error;
 
 pub use pmi::Subscription;
 
+const INSTANCE_ID_WILDCARD: &str = "**";
+
 pub struct MessengerHandle {
     messenger: Arc<Mutex<Messenger>>,
 }
@@ -68,6 +70,10 @@ pub fn build_full_namespace(namespace: &str, message_type_name: &str) -> String 
         .join("/")
 }
 
+fn format_instance_segment(instance_id: &str) -> Option<String> {
+    (instance_id != INSTANCE_ID_WILDCARD).then(|| format!("<INSTANCE_ID:{instance_id}>"))
+}
+
 pub struct TopicMessenger;
 
 pub struct ServiceMessenger;
@@ -77,8 +83,8 @@ pub struct ActionMessenger;
 pub struct ServiceEndpoint {
     messenger: Arc<Mutex<Messenger>>,
     subscription: Subscription,
-    request_topic_base: String,
-    request_topic_prefix: String,
+    service_root: String,
+    instance_id: String,
     response_topic_base: String,
 }
 
@@ -160,14 +166,37 @@ impl ServiceEndpoint {
         request: RawMessage,
     ) -> Option<(ServiceRequestContext, String)> {
         let identifier = request.key_expr().to_string();
+        let received_instance_id = request.instance_id().map(str::to_string);
+        if self.instance_id != INSTANCE_ID_WILDCARD {
+            if let Some(request_instance_id) = received_instance_id.as_deref() {
+                if request_instance_id != self.instance_id
+                    && request_instance_id != INSTANCE_ID_WILDCARD
+                {
+                    error!(
+                        %identifier,
+                        expected = %self.instance_id,
+                        received = %request_instance_id,
+                        "service received request for different instance"
+                    );
+                    return None;
+                }
+            }
+        }
 
-        if !identifier.starts_with(&self.request_topic_prefix) {
+        let request_prefix = match received_instance_id.as_deref() {
+            Some(instance_id) => {
+                format!("{}/<INSTANCE_ID:{instance_id}>/request/", self.service_root)
+            }
+            None => format!("{}/**/request/", self.service_root),
+        };
+
+        if !identifier.starts_with(&request_prefix) {
             error!(%identifier, "service received request on unexpected topic");
             return None;
         }
 
         let request_id = identifier
-            .strip_prefix(&self.request_topic_prefix)
+            .strip_prefix(&request_prefix)
             .and_then(|rest| rest.split('/').next())
             .filter(|segment| !segment.is_empty())
             .map(str::to_string);
@@ -177,7 +206,13 @@ impl ServiceEndpoint {
             .map(|id| format!("{}/{}", self.response_topic_base, id))
             .unwrap_or_else(|| self.response_topic_base.clone());
 
-        let message = Message::new(&identifier, request.into_payload().into_bytes());
+        let message_identifier = match received_instance_id.as_deref() {
+            Some(instance_id) => {
+                format!("{}/<INSTANCE_ID:{instance_id}>/request", self.service_root)
+            }
+            None => format!("{}/**/request", self.service_root),
+        };
+        let message = Message::new(&message_identifier, request.into_payload().into_bytes());
         let context = ServiceRequestContext {
             message,
             request_id,
@@ -291,10 +326,13 @@ impl TopicMessenger {
 impl ServiceMessenger {
     pub async fn listen(
         messenger: &MessengerHandle,
-        namespace: &str,
+        as_node_name: &str,
         service_name: &str,
+        as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
-        messenger.expose_service(namespace, service_name).await
+        messenger
+            .expose_service(as_node_name, service_name, as_instance_id)
+            .await
     }
 
     pub async fn poll(
@@ -436,14 +474,13 @@ impl MessengerHandle {
         from_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        let instance_id = match from_instance_id {
-            Some(id) => id,
-            None => "**",
+        let key_expr = match from_instance_id {
+            Some(instance_id) if instance_id != INSTANCE_ID_WILDCARD => format!(
+                "topic/{}/{}/<INSTANCE_ID:{}>",
+                from_node_name, from_topic, instance_id
+            ),
+            _ => format!("topic/{}/{}/**", from_node_name, from_topic),
         };
-        let key_expr = format!(
-            "topic/{}/{}/<INSTANCE_ID:{}>",
-            from_node_name, from_topic, instance_id
-        );
         let subscriber_qos = map_node_qos_to_subscriber_qos(qos);
 
         let subscription = {
@@ -479,16 +516,32 @@ impl MessengerHandle {
             .map_err(Error::PeppyMessagingInterface)
     }
 
-    async fn expose_service(&self, namespace: &str, service_name: &str) -> Result<ServiceEndpoint> {
-        let service_root = build_full_namespace(namespace, service_name);
-        self.create_service_endpoint(service_root).await
+    async fn expose_service(
+        &self,
+        as_node_name: &str,
+        service_name: &str,
+        as_instance_id: &str,
+    ) -> Result<ServiceEndpoint> {
+        let key_expr = build_full_namespace(as_node_name, service_name);
+        self.create_service_endpoint(key_expr, as_instance_id).await
     }
 
-    async fn create_service_endpoint(&self, service_root: String) -> Result<ServiceEndpoint> {
-        let request_topic_base = format!("{service_root}/request");
-        let request_topic_prefix = format!("{request_topic_base}/");
-        let request_subscription_topic = format!("{request_topic_base}/**");
-        let response_topic_base = format!("{service_root}/response");
+    async fn create_service_endpoint(
+        &self,
+        key_expr: String,
+        as_instance_id: &str,
+    ) -> Result<ServiceEndpoint> {
+        let service_root = key_expr;
+        let request_subscription_topic = match format_instance_segment(as_instance_id) {
+            Some(instance_segment) => {
+                format!("{service_root}/{instance_segment}/request/**")
+            }
+            None => format!("{service_root}/**/request/**"),
+        };
+        let response_topic_base = match format_instance_segment(as_instance_id) {
+            Some(instance_segment) => format!("{service_root}/{instance_segment}/response"),
+            None => format!("{service_root}/**/response"),
+        };
 
         let subscription = {
             let messenger = self.messenger.lock().await;
@@ -501,8 +554,8 @@ impl MessengerHandle {
         Ok(ServiceEndpoint {
             messenger: Arc::clone(&self.messenger),
             subscription,
-            request_topic_base,
-            request_topic_prefix,
+            service_root,
+            instance_id: as_instance_id.to_string(),
             response_topic_base,
         })
     }
@@ -518,8 +571,18 @@ impl MessengerHandle {
 
         let request_id = generate_request_id();
 
-        let request_topic = format!("{service_root}/request/{request_id}");
-        let response_topic = format!("{service_root}/response/{request_id}");
+        let request_topic = match format_instance_segment(INSTANCE_ID_WILDCARD) {
+            Some(instance_segment) => {
+                format!("{service_root}/{instance_segment}/request/{request_id}")
+            }
+            None => format!("{service_root}/**/request/{request_id}"),
+        };
+        let response_topic = match format_instance_segment(INSTANCE_ID_WILDCARD) {
+            Some(instance_segment) => {
+                format!("{service_root}/{instance_segment}/response/{request_id}")
+            }
+            None => format!("{service_root}/**/response/{request_id}"),
+        };
 
         let mut response_subscription = {
             let messenger = self.messenger.lock().await;
@@ -581,9 +644,15 @@ impl MessengerHandle {
         let result_service_root = format!("{action_root}/result");
         let feedback_topic = format!("{action_root}/feedback");
 
-        let goal_service = self.create_service_endpoint(goal_service_root).await?;
-        let cancel_service = self.create_service_endpoint(cancel_service_root).await?;
-        let result_service = self.create_service_endpoint(result_service_root).await?;
+        let goal_service = self
+            .create_service_endpoint(goal_service_root, INSTANCE_ID_WILDCARD)
+            .await?;
+        let cancel_service = self
+            .create_service_endpoint(cancel_service_root, INSTANCE_ID_WILDCARD)
+            .await?;
+        let result_service = self
+            .create_service_endpoint(result_service_root, INSTANCE_ID_WILDCARD)
+            .await?;
 
         let feedback_publisher = TopicPublisher {
             messenger: Arc::clone(&self.messenger),

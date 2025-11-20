@@ -7,6 +7,7 @@ use tokio::signal;
 
 const SERVICE_NAME: &str = "hello_service";
 const NAMESPACE: &str = "/hello_ns";
+const SERVICE_INSTANCE_ID: &str = "example_service_instance";
 
 async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
     MessengerHandle::from_host_port(host, port)
@@ -63,7 +64,12 @@ async fn main() {
     // Create a messenger for the receiving node.
     let receiver_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
 
-    let mut service = ServiceMessenger::listen(&receiver_handle, NAMESPACE, SERVICE_NAME)
+    let mut service = ServiceMessenger::listen(
+        &receiver_handle,
+        NAMESPACE,
+        SERVICE_NAME,
+        SERVICE_INSTANCE_ID,
+    )
         .await
         .expect("Should expose the service");
 

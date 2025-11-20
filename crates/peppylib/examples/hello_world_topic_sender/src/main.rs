@@ -1,7 +1,9 @@
 use bytes::Bytes;
 use config::consts::DEFAULT_ZENOH_PORT;
 use config::node::QoSProfile;
+use names_generator2::get_random;
 use peppylib::{MessengerHandle, TopicMessenger};
+use rand::rng;
 
 #[tokio::main]
 async fn main() {
@@ -9,7 +11,8 @@ async fn main() {
     let qos = QoSProfile::Reliable;
 
     // Those properties are found in the peppy_launcher.json5 `deployments` array
-    let ns = "hello_ns";
+    let node_name = "hello_node";
+    let instance_id = format!("{}_emitter", get_random(rng()));
 
     // Create a messenger for the sending node.
     let host = "127.0.0.1";
@@ -24,9 +27,16 @@ async fn main() {
 
     let payload = Bytes::from_static(b"Hello world");
 
-    println!("Sending payload...");
-    TopicMessenger::emit(&sender_handle, ns, topic_name, qos, payload)
-        .await
-        .expect("Should send the payload");
+    println!("Sending payload as {instance_id}...");
+    TopicMessenger::emit(
+        &sender_handle,
+        node_name,
+        topic_name,
+        &instance_id,
+        qos,
+        payload,
+    )
+    .await
+    .expect("Should send the payload");
     println!("Payload sent");
 }

@@ -3151,7 +3151,7 @@ fn build_exposed_service_method(
         }
     };
 
-    let service_instance_env_stmt = if needs_service_instance_id {
+    let service_instance_env_stmt = {
         let env_var_literal = Literal::string("PEPPY_INSTANCE_ID");
         quote! {
             let service_instance_id = std::env::var(#env_var_literal).map_err(|source| {
@@ -3161,8 +3161,6 @@ fn build_exposed_service_method(
                 }
             })?;
         }
-    } else {
-        TokenStream::new()
     };
     let service_instance_clone_stmt = if needs_service_instance_id {
         quote!(let service_instance_id = service_instance_id.clone();)
@@ -3186,6 +3184,7 @@ fn build_exposed_service_method(
                 messenger.handle(),
                 namespace,
                 service_name,
+                service_instance_id.as_str(),
             )
             .await?;
 

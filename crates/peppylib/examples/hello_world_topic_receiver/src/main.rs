@@ -1,6 +1,8 @@
 use config::consts::DEFAULT_ZENOH_PORT;
 use config::node::QoSProfile;
+use names_generator2::get_random;
 use peppylib::{MessengerHandle, TopicMessenger};
+use rand::rng;
 use tokio::signal;
 
 #[tokio::main]
@@ -9,7 +11,8 @@ async fn main() {
     let qos = QoSProfile::Reliable;
 
     // Those properties are found in the peppy_launcher.json5 `deployments` array
-    let ns = "/hello_ns";
+    let node_name = "hello_node";
+    let instance_id = format!("{}_subscriber", get_random(rng()));
 
     // Create a messenger for the receiving node.
     let host = "127.0.0.1";
@@ -20,11 +23,15 @@ async fn main() {
             panic!("failed to create messenger on {host}:{port}: {error:?}.\n Did you start a zenohd server with the `zenohd_simple` example?")
         });
 
-    let mut subscription = TopicMessenger::subscribe(&receiver_handle, ns, topic_name, qos)
-        .await
-        .expect("Should subscribe to the topic");
+    let mut subscription =
+        TopicMessenger::subscribe(&receiver_handle, node_name, topic_name, None, qos)
+            .await
+            .expect("Should subscribe to the topic");
 
-    println!("Waiting for payload... Press CTRL+C to stop.");
+    println!(
+        "Waiting for payload as instance {}... Press CTRL+C to stop.",
+        instance_id
+    );
 
     loop {
         tokio::select! {
@@ -35,9 +42,14 @@ async fn main() {
             maybe_msg = subscription.on_next_message() => {
                 match maybe_msg {
                     Some(received) => {
-                        let payload = String::from_utf8_lossy(&received.payload);
+                        let payload_bytes = received.payload().as_bytes();
+                        let payload = String::from_utf8_lossy(payload_bytes.as_ref());
                         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-                        println!("[{timestamp}] Received `{payload}` from topic `{}`", received.topic);
+                        println!(
+                            "[{timestamp}] Received `{payload}` from instance_id `{}` with key_expr `{}`",
+                            received.instance_id().unwrap_or("<unknown>"),
+                            received.key_expr()
+                        );
                     }
                     None => {
                         println!("Subscription closed by sender.");
