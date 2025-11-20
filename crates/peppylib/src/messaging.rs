@@ -444,7 +444,6 @@ impl MessengerHandle {
             "topic/{}/{}/<INSTANCE_ID:{}>",
             from_node_name, from_topic, instance_id
         );
-        eprintln!("subscriber = {}", &key_expr);
         let subscriber_qos = map_node_qos_to_subscriber_qos(qos);
 
         let subscription = {
@@ -469,7 +468,6 @@ impl MessengerHandle {
             "topic/{}/{}/<INSTANCE_ID:{}>",
             to_node_name, to_topic, as_instance_id
         );
-        eprintln!("emitter = {}", &key_expr);
         let msg = Message::new(&key_expr, payload);
 
         let publisher_qos = map_node_qos_to_publisher_qos(qos);

@@ -169,6 +169,12 @@ async fn topic_publish_subscribe() {
         .expect("Timed out waiting for published message")
         .expect("Should receive the published message");
 
+    let expected_topic = format!(
+        "topic/{}/{}/<INSTANCE_ID:{}>",
+        node_name, topic, instance_id
+    );
+
+    assert_eq!(received.key_expr(), expected_topic);
     assert_eq!(received.instance_id().unwrap(), instance_id);
     assert_eq!(received.payload(), &payload);
 
@@ -202,11 +208,6 @@ async fn topic_publish_reliable_5000hz_messages() {
     let mut rng = rand::rng();
     message_ids.shuffle(&mut rng);
 
-    let expected_topic = format!(
-        "topic/{}/{}/<INSTANCE_ID:{}>",
-        node_name, topic, instance_id
-    );
-
     for &message_id in &message_ids {
         let payload = Bytes::from(message_id.to_le_bytes().to_vec());
         TopicMessenger::emit(
@@ -221,15 +222,19 @@ async fn topic_publish_reliable_5000hz_messages() {
         .expect("Should send the payload");
     }
 
-    let mut received_ids: Vec<u32> = Vec::with_capacity(message_count);
+    let expected_key_expr = format!(
+        "topic/{}/{}/<INSTANCE_ID:{}>",
+        node_name, topic, instance_id
+    );
 
+    let mut received_ids: Vec<u32> = Vec::with_capacity(message_count);
     for _ in 0..message_count {
         let message = tokio::time::timeout(Duration::from_secs(2), subscription.rx.recv())
             .await
             .expect("Timed out waiting for a message")
             .expect("Subscription closed before receiving all messages");
 
-        assert_eq!(message.key_expr(), expected_topic);
+        assert_eq!(message.key_expr(), expected_key_expr);
 
         let payload = message.payload();
         let payload_bytes = payload.as_bytes();
