@@ -132,75 +132,20 @@ async fn topic_publish_subscribe() {
     let router = TestRouterContext::start().await;
 
     let qos = QoSProfile::Reliable;
-
-    // Those properties are found in the peppy_launcher.json5 `deployments` array
     let node_name = "uvc_camera";
     let topic = "video_frame";
-    let instance_id = "test_instance";
 
     let payload = Bytes::from_static(b"A message");
 
     let sender_handle = router.topic_messenger().await;
     let receiver_handle = router.topic_messenger().await;
 
-    let mut subscription = TopicMessenger::subscribe(
-        &receiver_handle,
-        &node_name,
-        &topic,
-        Some(&instance_id),
-        qos.clone(),
-    )
-    .await
-    .expect("Should subscribe to the topic");
-
-    TopicMessenger::emit(
-        &sender_handle,
-        &node_name,
-        &topic,
-        &instance_id,
-        qos,
-        payload.clone(),
-    )
-    .await
-    .expect("Should send the payload");
-
-    let received = tokio::time::timeout(Duration::from_secs(2), subscription.rx.recv())
-        .await
-        .expect("Timed out waiting for published message")
-        .expect("Should receive the published message");
-
-    let expected_topic = format!(
-        "topic/{}/{}/<INSTANCE_ID:{}>",
-        node_name, topic, instance_id
-    );
-
-    assert_eq!(received.key_expr(), expected_topic);
-    assert_eq!(received.instance_id().unwrap(), instance_id);
-    assert_eq!(received.payload(), &payload);
-
-    router.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn topic_subscribe_without_instance_filter() {
-    let router = TestRouterContext::start().await;
-
-    let qos = QoSProfile::Reliable;
-
-    let node_name = "uvc_camera";
-    let topic = "video_frame";
-    let instance_id = "test_instance";
-
-    let payload = Bytes::from_static(b"A message for any instance");
-
-    let receiver_handle = router.topic_messenger().await;
-
     let mut subscription =
-        TopicMessenger::subscribe(&receiver_handle, &node_name, &topic, None, qos.clone())
+        TopicMessenger::listen(&receiver_handle, &node_name, &topic, qos.clone())
             .await
-            .expect("Should subscribe to the topic without filtering by instance id");
+            .expect("Should subscribe to the topic");
 
-    let sender_handle = router.topic_messenger().await;
+    let instance_id = "emitter_instance";
     TopicMessenger::emit(
         &sender_handle,
         &node_name,
@@ -235,23 +180,18 @@ async fn topic_publish_reliable_5000hz_messages() {
 
     let node_name = "uvc_camera";
     let topic = "video_frame";
-    let instance_id = "test_instance";
     let qos = QoSProfile::Reliable;
 
     let sender_handle = router.topic_messenger().await;
     let receiver_handle = router.topic_messenger().await;
 
-    let mut subscription = TopicMessenger::subscribe(
-        &receiver_handle,
-        &node_name,
-        &topic,
-        Some(&instance_id),
-        qos.clone(),
-    )
-    .await
-    .expect("Should subscribe to the topic");
+    let mut subscription =
+        TopicMessenger::listen(&receiver_handle, &node_name, &topic, qos.clone())
+            .await
+            .expect("Should subscribe to the topic");
 
     let message_count = 5000;
+    let instance_id = "emitter_instance";
     let mut message_ids: Vec<u32> = (0..message_count as u32).collect();
     let mut rng = rand::rng();
     message_ids.shuffle(&mut rng);
