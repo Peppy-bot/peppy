@@ -6,7 +6,7 @@ use bytes::Bytes;
 use config::node::QoSProfile;
 use pmi::{
     Message, Messenger, MessengerAdapter, MessengerBackend, PeppyMessagingInterfaceError,
-    PublisherQoS, SubscriberQoS, ZenohAdapter, ZenohNetProtocol,
+    PublisherQoS, RawMessage, SubscriberQoS, ZenohAdapter, ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -155,8 +155,11 @@ impl ServiceEndpoint {
         Ok(None)
     }
 
-    fn build_request_context(&self, request: Message) -> Option<(ServiceRequestContext, String)> {
-        let identifier = request.identifier();
+    fn build_request_context(
+        &self,
+        request: RawMessage,
+    ) -> Option<(ServiceRequestContext, String)> {
+        let identifier = request.key_expr().to_string();
 
         if !identifier.starts_with(&self.request_topic_prefix) {
             error!(%identifier, "service received request on unexpected topic");
@@ -174,8 +177,9 @@ impl ServiceEndpoint {
             .map(|id| format!("{}/{}", self.response_topic_base, id))
             .unwrap_or_else(|| self.response_topic_base.clone());
 
+        let message = Message::new(&identifier, request.into_payload().into_bytes());
         let context = ServiceRequestContext {
-            message: request,
+            message,
             request_id,
         };
 
@@ -323,19 +327,16 @@ impl ActionMessenger {
         feedback_qos: QoSProfile,
         goal_timeout: Duration,
     ) -> Result<ActionGoalHandle> {
-        let feedback_topic = format!("{action_name}/feedback");
+        let action_root = build_full_namespace(namespace, action_name);
+        let feedback_topic = format!("{action_root}/feedback");
         let goal_service_name = format!("{action_name}/goal");
 
-        let feedback_node_name = todo!("Finish");
-        let feedback_instance_id = todo!("Finish");
-        let feedback_subscription = messenger
-            .receive_topic_msg(
-                feedback_node_name,
-                &feedback_topic,
-                feedback_instance_id,
-                feedback_qos,
-            )
-            .await?;
+        let feedback_subscription = {
+            let subscriber_qos = map_node_qos_to_subscriber_qos(feedback_qos);
+            let messenger = messenger.messenger.lock().await;
+            messenger.subscribe(&feedback_topic, subscriber_qos).await
+        }
+        .map_err(Error::PeppyMessagingInterface)?;
 
         let goal_response = messenger
             .poll_service(namespace, &goal_service_name, goal_payload, goal_timeout)
@@ -439,7 +440,11 @@ impl MessengerHandle {
             Some(id) => id,
             None => "**",
         };
-        let key_expr = format!("topic/{}/{}/{}", from_node_name, from_topic, instance_id);
+        let key_expr = format!(
+            "topic/{}/{}/<INSTANCE_ID:{}>",
+            from_node_name, from_topic, instance_id
+        );
+        eprintln!("subscriber = {}", &key_expr);
         let subscriber_qos = map_node_qos_to_subscriber_qos(qos);
 
         let subscription = {
@@ -461,9 +466,10 @@ impl MessengerHandle {
     ) -> Result<()> {
         // Uses the zenoh key expression ID matching to save bytes on sending the node ID on the other side
         let key_expr = format!(
-            "topic/{}/{}/<ID:{}>",
+            "topic/{}/{}/<INSTANCE_ID:{}>",
             to_node_name, to_topic, as_instance_id
         );
+        eprintln!("emitter = {}", &key_expr);
         let msg = Message::new(&key_expr, payload);
 
         let publisher_qos = map_node_qos_to_publisher_qos(qos);
@@ -566,7 +572,7 @@ impl MessengerHandle {
             }
         };
 
-        Ok(response.payload().clone())
+        Ok(response.into_payload().into_bytes())
     }
 
     async fn expose_action(&self, namespace: &str, action_name: &str) -> Result<ActionCreation> {

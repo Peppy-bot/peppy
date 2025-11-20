@@ -2397,6 +2397,7 @@ dependencies = [
  "config",
  "derive_more",
  "json5",
+ "regex",
  "serde",
  "serde_json",
  "serde_json5",

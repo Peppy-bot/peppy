@@ -147,7 +147,7 @@ mod zenoh_tests {
 
         // Verify subscriber receives the message
         let received = sub.rx.recv().await.expect("Failed to receive message");
-        assert_eq!(received.identifier(), "test/topic");
+        assert_eq!(received.instance_id(), None);
         assert_eq!(received.payload(), msg.payload());
 
         messenger.stop_router().await.expect("Failed to shutdown");
@@ -192,11 +192,11 @@ mod zenoh_tests {
 
         // Verify each subscriber receives only its topic's message
         let received1 = sub1.rx.recv().await.expect("Failed to receive on topic1");
-        assert_eq!(received1.identifier(), "test/topic1");
+        assert_eq!(received1.instance_id(), None);
         assert_eq!(received1.payload(), msg1.payload());
 
         let received2 = sub2.rx.recv().await.expect("Failed to receive on topic2");
-        assert_eq!(received2.identifier(), "test/topic2");
+        assert_eq!(received2.instance_id(), None);
         assert_eq!(received2.payload(), msg2.payload());
 
         messenger.stop_router().await.expect("Failed to shutdown");
@@ -291,7 +291,7 @@ mod zenoh_tests {
 
         // Late subscriber should only receive the new message, not the early one
         let received = late_sub.rx.recv().await.expect("Failed to receive message");
-        assert_eq!(received.identifier(), "test/topic");
+        assert_eq!(received.instance_id(), None);
         assert_eq!(received.payload(), new_msg.payload());
 
         messenger.stop_router().await.expect("Failed to shutdown");
