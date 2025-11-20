@@ -1,7 +1,12 @@
 use bytes::Bytes;
 use config::consts::DEFAULT_ZENOH_PORT;
+use names_generator2::get_random;
 use peppylib::{MessengerHandle, ServiceMessenger};
+use rand::rng;
 use std::time::Duration;
+
+const POLL_SERVICE_NAME: &str = "hello_service";
+const POLL_NODE_NAME: &str = "hello_node";
 
 async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
     MessengerHandle::from_host_port(host, port)
@@ -15,21 +20,19 @@ async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
 
 #[tokio::main]
 async fn main() {
-    let service_name = "hello_service";
-
-    // Those properties are found in the peppy_launcher.json5 `deployments` array
-    let namespace = "/hello_ns";
-
     // Create a messenger for the sending node.
     let sender_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
+    let as_instance_id = format!("{}_caller", get_random(rng()));
 
     let request_payload = Bytes::from_static(b"Hello service");
 
-    println!("Sending service request...");
+    println!("Sending service request as instance_id {as_instance_id}...");
     let response = ServiceMessenger::poll(
         &sender_handle,
-        namespace,
-        service_name,
+        &as_instance_id,
+        POLL_NODE_NAME,
+        POLL_SERVICE_NAME,
+        None, // We don't need to point to a particular instance, any would work
         request_payload,
         Duration::from_secs(3),
     )

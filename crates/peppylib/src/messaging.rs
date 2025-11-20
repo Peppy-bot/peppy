@@ -166,26 +166,11 @@ impl ServiceEndpoint {
         request: RawMessage,
     ) -> Option<(ServiceRequestContext, String)> {
         let identifier = request.key_expr().to_string();
-        let received_instance_id = request.instance_id().map(str::to_string);
-        if self.instance_id != INSTANCE_ID_WILDCARD {
-            if let Some(request_instance_id) = received_instance_id.as_deref() {
-                if request_instance_id != self.instance_id
-                    && request_instance_id != INSTANCE_ID_WILDCARD
-                {
-                    error!(
-                        %identifier,
-                        expected = %self.instance_id,
-                        received = %request_instance_id,
-                        "service received request for different instance"
-                    );
-                    return None;
-                }
-            }
-        }
+        let service_instance_segment = format_instance_segment(self.instance_id.as_str());
 
-        let request_prefix = match received_instance_id.as_deref() {
-            Some(instance_id) => {
-                format!("{}/<INSTANCE_ID:{instance_id}>/request/", self.service_root)
+        let request_prefix = match &service_instance_segment {
+            Some(instance_segment) => {
+                format!("{}/{instance_segment}/request/", self.service_root)
             }
             None => format!("{}/**/request/", self.service_root),
         };
@@ -195,28 +180,40 @@ impl ServiceEndpoint {
             return None;
         }
 
-        let request_id = identifier
-            .strip_prefix(&request_prefix)
-            .and_then(|rest| rest.split('/').next())
+        let remainder = match identifier.strip_prefix(&request_prefix) {
+            Some(rest) => rest,
+            None => return None,
+        };
+        let mut remainder_parts = remainder.split('/').filter(|segment| !segment.is_empty());
+
+        let caller_segment = match remainder_parts.next().map(str::to_string) {
+            Some(segment) => segment,
+            None => {
+                error!(%identifier, "service received request without caller instance segment");
+                return None;
+            }
+        };
+        let request_id = remainder_parts
+            .next()
             .filter(|segment| !segment.is_empty())
             .map(str::to_string);
 
-        let response_topic = request_id
-            .as_ref()
-            .map(|id| format!("{}/{}", self.response_topic_base, id))
-            .unwrap_or_else(|| self.response_topic_base.clone());
+        let response_topic = match request_id.as_ref() {
+            Some(id) => format!("{}/{}/{}", self.response_topic_base, caller_segment, id),
+            None => self.response_topic_base.clone(),
+        };
 
-        let message_identifier = match received_instance_id.as_deref() {
-            Some(instance_id) => {
-                format!("{}/<INSTANCE_ID:{instance_id}>/request", self.service_root)
+        let message_identifier = match service_instance_segment.as_deref() {
+            Some(instance_segment) => {
+                format!(
+                    "{}/{instance_segment}/request/{caller_segment}",
+                    self.service_root
+                )
             }
-            None => format!("{}/**/request", self.service_root),
+            None => format!("{}/**/request/{caller_segment}", self.service_root),
         };
-        let message = Message::new(&message_identifier, request.into_payload().into_bytes());
-        let context = ServiceRequestContext {
-            message,
-            request_id,
-        };
+        let message = RawMessage::new(&message_identifier, request.into_payload());
+        let context = ServiceRequestContext::new(message, request_id);
 
         Some((context, response_topic))
     }
@@ -240,11 +237,22 @@ impl ServiceEndpoint {
 }
 
 pub struct ServiceRequestContext {
-    pub message: Message,
+    message: RawMessage,
     request_id: Option<String>,
 }
 
 impl ServiceRequestContext {
+    pub fn new(message: RawMessage, request_id: Option<String>) -> Self {
+        Self {
+            message,
+            request_id,
+        }
+    }
+
+    pub fn message(&self) -> &RawMessage {
+        &self.message
+    }
+
     pub fn request_id(&self) -> Option<&str> {
         self.request_id.as_deref()
     }
@@ -274,12 +282,12 @@ impl TopicPublisher {
 pub struct ActionGoalHandle {
     namespace: String,
     action_name: String,
-    goal_response: Bytes,
+    goal_response: RawMessage,
     feedback: Subscription,
 }
 
 impl ActionGoalHandle {
-    pub fn goal_response(&self) -> &Bytes {
+    pub fn goal_response(&self) -> &RawMessage {
         &self.goal_response
     }
 
@@ -337,13 +345,22 @@ impl ServiceMessenger {
 
     pub async fn poll(
         messenger: &MessengerHandle,
-        namespace: &str,
+        as_instance_id: &str,
+        node_name: &str,
         service_name: &str,
+        instance_id: Option<&str>,
         request_payload: Bytes,
         response_timeout: Duration,
-    ) -> Result<Bytes> {
+    ) -> Result<RawMessage> {
         messenger
-            .poll_service(namespace, service_name, request_payload, response_timeout)
+            .poll_service(
+                node_name,
+                service_name,
+                instance_id,
+                as_instance_id,
+                request_payload,
+                response_timeout,
+            )
             .await
     }
 }
@@ -359,6 +376,7 @@ impl ActionMessenger {
 
     pub async fn send_goal(
         messenger: &MessengerHandle,
+        as_instance_id: &str,
         namespace: &str,
         action_name: &str,
         goal_payload: Bytes,
@@ -377,7 +395,14 @@ impl ActionMessenger {
         .map_err(Error::PeppyMessagingInterface)?;
 
         let goal_response = messenger
-            .poll_service(namespace, &goal_service_name, goal_payload, goal_timeout)
+            .poll_service(
+                namespace,
+                &goal_service_name,
+                None,
+                as_instance_id,
+                goal_payload,
+                goal_timeout,
+            )
             .await?;
 
         Ok(ActionGoalHandle {
@@ -390,15 +415,18 @@ impl ActionMessenger {
 
     pub async fn cancel_goal(
         messenger: &MessengerHandle,
+        as_instance_id: &str,
         handle: &ActionGoalHandle,
         cancel_timeout: Duration,
-    ) -> Result<Bytes> {
+    ) -> Result<RawMessage> {
         let cancel_service_name = format!("{}/cancel", handle.action_name);
 
         messenger
             .poll_service(
                 &handle.namespace,
                 &cancel_service_name,
+                None,
+                as_instance_id,
                 Bytes::new(),
                 cancel_timeout,
             )
@@ -407,16 +435,19 @@ impl ActionMessenger {
 
     pub async fn poll_result(
         messenger: &MessengerHandle,
+        as_instance_id: &str,
         handle: &ActionGoalHandle,
         result_request_payload: Bytes,
         result_timeout: Duration,
-    ) -> Result<Bytes> {
+    ) -> Result<RawMessage> {
         let result_service_name = format!("{}/result", handle.action_name);
 
         messenger
             .poll_service(
                 &handle.namespace,
                 &result_service_name,
+                None,
+                as_instance_id,
                 result_request_payload,
                 result_timeout,
             )
@@ -555,27 +586,28 @@ impl MessengerHandle {
 
     async fn poll_service(
         &self,
-        namespace: &str,
+        node_name: &str,
         service_name: &str,
+        instance_id: Option<&str>,
+        as_instance_id: &str,
         request_payload: Bytes,
         response_timeout: Duration,
-    ) -> Result<Bytes> {
-        let service_root = build_full_namespace(namespace, service_name);
+    ) -> Result<RawMessage> {
+        let service_root = build_full_namespace(node_name, service_name);
+        let target_instance_id = instance_id.unwrap_or(INSTANCE_ID_WILDCARD);
+        let service_instance_segment = format_instance_segment(target_instance_id)
+            .unwrap_or_else(|| INSTANCE_ID_WILDCARD.to_string());
+        let caller_instance_segment = format_instance_segment(as_instance_id)
+            .unwrap_or_else(|| INSTANCE_ID_WILDCARD.to_string());
 
         let request_id = generate_request_id();
 
-        let request_topic = match format_instance_segment(INSTANCE_ID_WILDCARD) {
-            Some(instance_segment) => {
-                format!("{service_root}/{instance_segment}/request/{request_id}")
-            }
-            None => format!("{service_root}/**/request/{request_id}"),
-        };
-        let response_topic = match format_instance_segment(INSTANCE_ID_WILDCARD) {
-            Some(instance_segment) => {
-                format!("{service_root}/{instance_segment}/response/{request_id}")
-            }
-            None => format!("{service_root}/**/response/{request_id}"),
-        };
+        let request_topic = format!(
+            "{service_root}/{service_instance_segment}/request/{caller_instance_segment}/{request_id}"
+        );
+        let response_topic = format!(
+            "{service_root}/{service_instance_segment}/response/{caller_instance_segment}/{request_id}"
+        );
 
         let mut response_subscription = {
             let messenger = self.messenger.lock().await;
@@ -614,19 +646,19 @@ impl MessengerHandle {
 
                 if has_matching_subscribers {
                     return Err(Error::ServiceTimeout {
-                        namespace: namespace.to_string(),
+                        namespace: node_name.to_string(),
                         service_name: service_name.to_string(),
                     });
                 } else {
                     return Err(Error::ServiceUnreachable {
-                        namespace: namespace.to_string(),
+                        namespace: node_name.to_string(),
                         service_name: service_name.to_string(),
                     });
                 }
             }
         };
 
-        Ok(response.into_payload().into_bytes())
+        Ok(response)
     }
 
     async fn expose_action(&self, namespace: &str, action_name: &str) -> Result<ActionCreation> {
