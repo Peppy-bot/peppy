@@ -259,13 +259,13 @@ async fn topic_publish_reliable_5000hz_messages() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn service_communication() {
+async fn service_communication_poll_specific_node() {
     let router = TestRouterContext::start().await;
 
     // Listener instance
     let listener_node_name = "camera";
     let listener_service_name = "enable_camera";
-    let listener_instance_id = "caller_instance";
+    let listener_instance_id = "listener_instance";
 
     // Caller instance
     let caller_instance_id = "caller_instance";
@@ -288,7 +288,11 @@ async fn service_communication() {
         .await
         .expect("service should start");
 
-        let expected_request_topic = ""; // TODO complete
+        let service_root = super::build_full_namespace(listener_node_name, listener_service_name);
+        let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
+        let expected_request_topic = format!(
+            "{service_root}/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
+        );
 
         let request_payload = request_payload.clone();
         let response_payload = response_payload.clone();
@@ -331,7 +335,7 @@ async fn service_communication() {
             caller_instance_id,
             listener_node_name,
             listener_service_name,
-            Some(listener_node_name), // Poll that specific node
+            Some(listener_instance_id),
             request_payload.clone(),
             Duration::from_secs(1),
         )
