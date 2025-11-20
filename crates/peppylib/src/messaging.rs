@@ -260,13 +260,13 @@ pub struct ActionCreation {
 impl TopicMessenger {
     pub async fn subscribe(
         messenger: &MessengerHandle,
-        to_node_name: &str,
-        to_topic: &str,
-        to_instance_id: Option<&str>,
+        from_node_name: &str,
+        from_topic: &str,
+        from_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
         messenger
-            .receive_topic_msg(to_node_name, to_topic, to_instance_id, qos)
+            .receive_topic_msg(from_node_name, from_topic, from_instance_id, qos)
             .await
     }
 
@@ -566,7 +566,7 @@ impl MessengerHandle {
             }
         };
 
-        Ok(response.payload())
+        Ok(response.payload().clone())
     }
 
     async fn expose_action(&self, namespace: &str, action_name: &str) -> Result<ActionCreation> {
