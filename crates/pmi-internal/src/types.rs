@@ -293,6 +293,16 @@ impl RawMessage {
         }
     }
 
+    #[cfg(feature = "zenoh")]
+    pub fn from_zbytes(key_expr: &str, zbytes: ZBytes) -> Self {
+        let instance_id = RawMessage::extract_instance_id(key_expr);
+        Self {
+            key_expr: key_expr.to_string(),
+            instance_id,
+            payload: Payload::from_zbytes(zbytes),
+        }
+    }
+
     fn extract_instance_id(key_expr: &str) -> Option<String> {
         let re = Regex::new(r"<INSTANCE_ID:([^>]+)>").ok()?;
         re.captures_iter(key_expr)

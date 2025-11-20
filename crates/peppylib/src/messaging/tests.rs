@@ -669,12 +669,16 @@ async fn service_communication_fails_not_started() {
 async fn service_communication_fails_timeout() {
     let router = TestRouterContext::start().await;
 
-    let service_name = "enable_camera";
-    let namespace = "/camera";
+    // Listener instance
+    let listener_node_name = "camera";
+    let listener_service_name = "enable_camera";
+    let listener_instance_id = "listener_instance";
+
+    // Caller instance
     let caller_instance_id = "caller_instance";
+
     let response_payload = Bytes::from_static(b"ack");
     let call_count = Arc::new(AtomicUsize::new(0));
-    let service_instance_id = "test_service_instance";
 
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
     let service_wait_timeout = Duration::from_millis(1500);
@@ -683,23 +687,23 @@ async fn service_communication_fails_timeout() {
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task = {
-        let service_root = super::build_full_namespace(namespace, service_name);
-        let expected_request_topic = format!(
-            "{service_root}/<INSTANCE_ID:{service_instance_id}>/request/<INSTANCE_ID:{caller_instance_id}>"
+        let service_root = super::build_full_namespace(listener_node_name, listener_service_name);
+        let expected_request_key_expr = format!(
+            "{service_root}/<INSTANCE_ID:{listener_instance_id}>/request/<INSTANCE_ID:{caller_instance_id}>"
         );
         let response_delay = Duration::from_millis(200);
 
         let service_expose_handle = router.service_messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
-            namespace,
-            service_name,
-            service_instance_id,
+            listener_node_name,
+            listener_service_name,
+            listener_instance_id,
         )
         .await
         .expect("service should start");
 
-        let expected_request_topic = expected_request_topic.clone();
+        let expected_request_topic = expected_request_key_expr.clone();
         let response_payload = response_payload.clone();
         let call_count = Arc::clone(&call_count);
         let response_delay = response_delay;
@@ -753,8 +757,8 @@ async fn service_communication_fails_timeout() {
         let success_response = ServiceMessenger::poll(
             &caller_handle,
             caller_instance_id,
-            namespace,
-            service_name,
+            listener_node_name,
+            listener_service_name,
             None,
             request_payload.clone(),
             caller_success_timeout,
@@ -771,8 +775,8 @@ async fn service_communication_fails_timeout() {
         let result = ServiceMessenger::poll(
             &caller_handle,
             caller_instance_id,
-            namespace,
-            service_name,
+            listener_node_name,
+            listener_service_name,
             None,
             request_payload,
             caller_failure_timeout,
@@ -798,7 +802,7 @@ async fn service_communication_fails_timeout() {
     };
 
     assert!(err_instance_id.is_none());
-    assert_eq!(err_service_name.as_str(), service_name);
+    assert_eq!(err_service_name.as_str(), listener_service_name);
 
     tokio::time::timeout(service_task_timeout, service_task)
         .await
