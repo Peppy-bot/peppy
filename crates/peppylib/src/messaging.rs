@@ -168,17 +168,35 @@ impl ServiceEndpoint {
         let identifier = request.key_expr().to_string();
         let service_instance_segment = format_instance_segment(self.instance_id.as_str());
 
-        let request_prefix = match &service_instance_segment {
-            Some(instance_segment) => {
-                format!("{}/{instance_segment}/request/", self.service_root)
-            }
-            None => format!("{}/**/request/", self.service_root),
-        };
+        let specific_prefix = service_instance_segment
+            .as_ref()
+            .map(|instance_segment| format!("{}/{instance_segment}/request/", self.service_root));
+        let direct_prefix = format!("{}/request/", self.service_root);
+        let wildcard_prefix = format!("{}/**/request/", self.service_root);
 
-        if !identifier.starts_with(&request_prefix) {
+        let matched_prefix = specific_prefix
+            .as_ref()
+            .filter(|prefix| identifier.starts_with(*prefix))
+            .map(String::as_str)
+            .or_else(|| {
+                if identifier.starts_with(&direct_prefix) {
+                    Some(direct_prefix.as_str())
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                if identifier.starts_with(&wildcard_prefix) {
+                    Some(wildcard_prefix.as_str())
+                } else {
+                    None
+                }
+            });
+
+        let Some(request_prefix) = matched_prefix else {
             error!(%identifier, "service received request on unexpected topic");
             return None;
-        }
+        };
 
         let remainder = match identifier.strip_prefix(&request_prefix) {
             Some(rest) => rest,
@@ -556,12 +574,7 @@ impl MessengerHandle {
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
         let service_root = key_expr;
-        let request_subscription_topic = match format_instance_segment(as_instance_id) {
-            Some(instance_segment) => {
-                format!("{service_root}/{instance_segment}/request/**")
-            }
-            None => format!("{service_root}/**/request/**"),
-        };
+        let request_subscription_topic = format!("{service_root}/**/request/**");
         let response_topic_base = match format_instance_segment(as_instance_id) {
             Some(instance_segment) => format!("{service_root}/{instance_segment}/response"),
             None => format!("{service_root}/**/response"),
@@ -594,20 +607,30 @@ impl MessengerHandle {
         response_timeout: Duration,
     ) -> Result<RawMessage> {
         let service_root = build_full_namespace(node_name, service_name);
-        let target_instance_id = instance_id.unwrap_or(INSTANCE_ID_WILDCARD);
-        let service_instance_segment = format_instance_segment(target_instance_id)
-            .unwrap_or_else(|| INSTANCE_ID_WILDCARD.to_string());
+        let target_instance_segment = instance_id.and_then(format_instance_segment);
         let caller_instance_segment = format_instance_segment(as_instance_id)
             .unwrap_or_else(|| INSTANCE_ID_WILDCARD.to_string());
 
         let request_id = generate_request_id();
 
-        let request_topic = format!(
-            "{service_root}/{service_instance_segment}/request/{caller_instance_segment}/{request_id}"
-        );
-        let response_topic = format!(
-            "{service_root}/{service_instance_segment}/response/{caller_instance_segment}/{request_id}"
-        );
+        let (request_topic, response_topic) = match &target_instance_segment {
+            Some(instance_segment) => (
+                format!(
+                    "{service_root}/{instance_segment}/request/{caller_instance_segment}/{request_id}"
+                ),
+                format!(
+                    "{service_root}/{instance_segment}/response/{caller_instance_segment}/{request_id}"
+                ),
+            ),
+            None => (
+                format!(
+                    "{service_root}/**/request/{caller_instance_segment}/{request_id}"
+                ),
+                format!(
+                    "{service_root}/**/response/{caller_instance_segment}/{request_id}"
+                ),
+            ),
+        };
 
         let mut response_subscription = {
             let messenger = self.messenger.lock().await;
