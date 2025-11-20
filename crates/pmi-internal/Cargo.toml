@@ -20,6 +20,7 @@ tempfile = "3"
 
 # Optional deps
 zenoh = { version = "1.5", optional = true }
+regex = "1.12.2"
 
 [dev-dependencies]
 tokio = { version = "1.47", features = ["sync", "rt", "macros", "time", "test-util"] }

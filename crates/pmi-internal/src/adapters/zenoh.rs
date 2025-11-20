@@ -1,9 +1,10 @@
 use crate::error::{Error, Result};
-use crate::types::{PublisherQoS, SubscriberQoS};
+use crate::types::{PublisherQoS, RawMessage, SubscriberQoS};
 use crate::{Message, MessengerBackend, Subscription};
 use crate::{ZenohNetProtocol, zenohd};
 use askama::Template;
 use bytes::Bytes;
+use regex::Regex;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -303,8 +304,9 @@ impl MessengerBackend for ZenohAdapter {
                         // Convert the Zenoh payload into bytes::Bytes
                         let payload_bytes = zbytes_to_bytes(payload);
 
+                        let key_expr = key_expr.as_str();
                         // Create a Message object with topic and payload
-                        let message = Message::new(key_expr.as_str(), payload_bytes);
+                        let message = RawMessage::new(key_expr, payload_bytes);
 
                         // Send the Message on the tx channel
                         if let Err(e) = tx.send(message).await {

@@ -131,7 +131,6 @@ fn build_topic_path_removes_redundant_separators() {
 async fn topic_publish_subscribe() {
     let router = TestRouterContext::start().await;
 
-    let topic_name = "video_frame";
     let qos = QoSProfile::Reliable;
 
     // Those properties are found in the peppy_launcher.json5 `deployments` array
@@ -165,14 +164,12 @@ async fn topic_publish_subscribe() {
     .await
     .expect("Should send the payload");
 
-    let received = subscription
-        .rx
-        .recv()
+    let received = tokio::time::timeout(Duration::from_secs(2), subscription.rx.recv())
         .await
+        .expect("Timed out waiting for published message")
         .expect("Should receive the published message");
 
-    let expected_topic = super::build_full_namespace(ns, topic_name);
-    assert_eq!(received.identifier(), expected_topic);
+    assert_eq!(received.instance_id().unwrap(), instance_id);
     assert_eq!(received.payload(), &payload);
 
     router.shutdown().await;
@@ -205,6 +202,11 @@ async fn topic_publish_reliable_5000hz_messages() {
     let mut rng = rand::rng();
     message_ids.shuffle(&mut rng);
 
+    let expected_topic = format!(
+        "topic/{}/{}/<INSTANCE_ID:{}>",
+        node_name, topic, instance_id
+    );
+
     for &message_id in &message_ids {
         let payload = Bytes::from(message_id.to_le_bytes().to_vec());
         TopicMessenger::emit(
@@ -219,7 +221,7 @@ async fn topic_publish_reliable_5000hz_messages() {
         .expect("Should send the payload");
     }
 
-    let mut received_ids = Vec::with_capacity(message_count);
+    let mut received_ids: Vec<u32> = Vec::with_capacity(message_count);
 
     for _ in 0..message_count {
         let message = tokio::time::timeout(Duration::from_secs(2), subscription.rx.recv())
@@ -227,18 +229,18 @@ async fn topic_publish_reliable_5000hz_messages() {
             .expect("Timed out waiting for a message")
             .expect("Subscription closed before receiving all messages");
 
-        todo!("Finish");
-        // assert_eq!(message.identifier(), expected_topic);
+        assert_eq!(message.key_expr(), expected_topic);
 
         let payload = message.payload();
+        let payload_bytes = payload.as_bytes();
         assert_eq!(
-            payload.len(),
+            payload_bytes.len(),
             std::mem::size_of::<u32>(),
             "Payload should encode the message index"
         );
 
         let mut id_bytes = [0u8; std::mem::size_of::<u32>()];
-        id_bytes.copy_from_slice(payload);
+        id_bytes.copy_from_slice(payload_bytes.as_ref());
         let received_id = u32::from_le_bytes(id_bytes);
 
         received_ids.push(received_id);
@@ -637,9 +639,11 @@ async fn single_service_communication_multiple_polls_and_callers() {
 
                 let handle = service
                     .spawn_next_request_handler(move |request| async move {
-                        assert_eq!(request.message.identifier(), expected_request_topic);
+                        let identifier = request.message.identifier().to_string();
+                        let payload = request.message.payload().clone();
+                        assert_eq!(identifier, expected_request_topic);
                         call_count.fetch_add(1, Ordering::SeqCst);
-                        Ok(request.message.payload().clone())
+                        Ok(payload)
                     })
                     .await
                     .expect("service should receive expected number of requests")
@@ -885,7 +889,7 @@ async fn action_communication() {
             .await
             .expect("caller should receive feedback");
 
-        assert_eq!(feedback_message.identifier(), expected_feedback_topic);
+        assert_eq!(feedback_message.key_expr(), expected_feedback_topic);
         assert_eq!(feedback_message.payload(), &feedback_payload);
 
         // Finally, request the result using the same handle and ensure the server replies.
@@ -1054,7 +1058,7 @@ async fn action_communication_goal_cancelled() {
         .await
         .expect("caller should receive initial feedback");
 
-    assert_eq!(first_feedback.identifier(), expected_feedback_topic);
+    assert_eq!(first_feedback.key_expr(), expected_feedback_topic);
     assert_eq!(first_feedback.payload(), &feedback_payload);
 
     let second_feedback = tokio::time::timeout(
@@ -1065,7 +1069,7 @@ async fn action_communication_goal_cancelled() {
     .expect("feedback stream should continue delivering updates before cancellation")
     .expect("feedback stream closed unexpectedly before cancellation");
 
-    assert_eq!(second_feedback.identifier(), expected_feedback_topic);
+    assert_eq!(second_feedback.key_expr(), expected_feedback_topic);
     assert_eq!(second_feedback.payload(), &feedback_payload);
 
     let cancel_response =
@@ -1077,7 +1081,7 @@ async fn action_communication_goal_cancelled() {
 
     while let Ok(message) = goal_handle.feedback_mut().rx.try_recv() {
         assert_eq!(
-            message.identifier(),
+            message.key_expr(),
             expected_feedback_topic,
             "feedback from unexpected topic while draining"
         );
@@ -1093,7 +1097,7 @@ async fn action_communication_goal_cancelled() {
         Ok(None) => {}
         Ok(Some(message)) => panic!(
             "expected no feedback after cancellation, received topic '{}' with payload {:?}",
-            message.identifier(),
+            message.key_expr(),
             message.payload()
         ),
     }
@@ -1334,7 +1338,7 @@ async fn single_action_communication_multiple_polls() {
                     .expect("caller should receive feedback message");
 
                 assert_eq!(
-                    feedback_message.identifier(),
+                    feedback_message.key_expr(),
                     expected_feedback_topic,
                     "feedback should be published on the expected topic"
                 );

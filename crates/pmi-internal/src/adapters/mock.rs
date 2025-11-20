@@ -1,5 +1,7 @@
 use super::super::error::{Error, Result};
-use super::super::types::{Message, MessengerBackend, PublisherQoS, SubscriberQoS, Subscription};
+use super::super::types::{
+    Message, MessengerBackend, PublisherQoS, RawMessage, SubscriberQoS, Subscription,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -10,7 +12,7 @@ pub struct MockAdapter {
     // Store published messages by topic
     pub messages: Arc<Mutex<HashMap<String, Vec<Message>>>>,
     // Store active subscriptions
-    pub subscriptions: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<Message>>>>>,
+    pub subscriptions: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<RawMessage>>>>>,
 }
 
 impl Default for MockAdapter {
@@ -52,11 +54,13 @@ impl MessengerBackend for MockAdapter {
             });
         }
 
+        let topic = message.identifier().to_string();
+
         // Store the message
         {
             let mut messages = self.messages.lock().unwrap();
             messages
-                .entry(message.identifier().to_string())
+                .entry(topic.clone())
                 .or_default()
                 .push(message.clone());
         }
@@ -66,7 +70,7 @@ impl MessengerBackend for MockAdapter {
             let subscriptions = self.subscriptions.lock().unwrap();
             let mut matched = Vec::new();
             for (pattern, senders) in subscriptions.iter() {
-                if Self::topic_matches(pattern, message.identifier()) {
+                if Self::topic_matches(pattern, &topic) {
                     matched.extend(senders.iter().cloned());
                 }
             }
@@ -75,7 +79,7 @@ impl MessengerBackend for MockAdapter {
 
         for sender in senders {
             // Ignore send errors (subscriber might have dropped)
-            let _ = sender.send(message.clone()).await;
+            let _ = sender.send(Self::to_raw_message(&message)).await;
         }
 
         Ok(())
@@ -105,7 +109,7 @@ impl MessengerBackend for MockAdapter {
             let mut matched = Vec::new();
             for (msg_topic, msgs) in messages.iter() {
                 if Self::topic_matches(topic, msg_topic) {
-                    matched.extend(msgs.iter().cloned());
+                    matched.extend(msgs.iter().map(Self::to_raw_message));
                 }
             }
             matched
@@ -164,6 +168,11 @@ impl MockAdapter {
             pattern == topic
         }
     }
+
+    fn to_raw_message(message: &Message) -> RawMessage {
+        let identifier = message.identifier();
+        RawMessage::new(&identifier, message.payload().clone())
+    }
 }
 
 // Those tests purpose is to test the behaviour of a real messaging system and check if they map to the behaviour of the mock
@@ -210,7 +219,7 @@ mod tests {
         assert!(mock.is_session_connected);
 
         // Test publish - should work when connected
-        let test_message = Message::new("test_topic", Bytes::copy_from_slice(&[1, 2, 3]));
+        let test_message = Message::new("test_topic", &[1, 2, 3]);
         assert!(
             mock.publish(test_message, PublisherQoS::Standard)
                 .await
@@ -243,7 +252,7 @@ mod tests {
         let mut subscription = subscription.unwrap();
 
         // Test publish
-        let message = Message::new("test/topic", Bytes::from_static(b"test payload"));
+        let message = Message::new("test/topic", b"test payload");
         assert!(
             messenger
                 .publish(message.clone(), PublisherQoS::Standard)
@@ -255,7 +264,7 @@ mod tests {
         let received = subscription.rx.recv().await;
         assert!(received.is_some());
         let received_msg = received.unwrap();
-        assert_eq!(received_msg.identifier(), message.identifier());
+        assert_eq!(received_msg.instance_id(), None);
         assert_eq!(received_msg.payload(), message.payload());
 
         // Test shutdown
@@ -311,7 +320,7 @@ mod tests {
         let mut messenger = create_test_messenger();
 
         // Test publishing before start_session should fail
-        let early_message = Message::new("topic/early", Bytes::from_static(b"too_early"));
+        let early_message = Message::new("topic/early", b"too_early");
         assert!(
             messenger
                 .publish(early_message, PublisherQoS::Standard)
