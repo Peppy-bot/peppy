@@ -323,14 +323,15 @@ impl TopicMessenger {
 }
 
 impl ServiceMessenger {
+    /// Listening as a service is a 2 way stream, so the process that exposes the service needs to provide its instance_id
     pub async fn listen(
         messenger: &MessengerHandle,
         as_node_name: &str,
-        service_name: &str,
+        as_service_name: &str,
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
         messenger
-            .expose_service(as_node_name, service_name, as_instance_id)
+            .expose_service(as_node_name, as_service_name, as_instance_id)
             .await
     }
 
@@ -511,10 +512,10 @@ impl MessengerHandle {
     async fn expose_service(
         &self,
         as_node_name: &str,
-        service_name: &str,
+        as_service_name: &str,
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
-        let key_expr = build_full_namespace(as_node_name, service_name);
+        let key_expr = build_full_namespace(as_node_name, as_service_name);
         self.create_service_endpoint(key_expr, as_instance_id).await
     }
 
