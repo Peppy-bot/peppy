@@ -826,12 +826,16 @@ async fn service_handle_request_processes_multiple_messages() {
     let router = TestRouterContext::start().await;
     let (host, port) = router.connection_target();
 
-    let service_name = "enable_camera";
-    let namespace = "/camera";
+    // Listener instance
+    let listener_node_name = "camera";
+    let listener_service_name = "enable_camera";
+    let listener_instance_id = "listener_instance";
+
+    // Caller instance
+    let caller_instance_id = "caller_instance";
+
     let expected_requests = 500;
     let call_count = Arc::new(AtomicUsize::new(0));
-    let service_instance_id = "test_service_instance";
-    let caller_instance_id = "caller_instance";
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
@@ -845,9 +849,9 @@ async fn service_handle_request_processes_multiple_messages() {
 
             let mut service = ServiceMessenger::listen(
                 &service_expose_handle,
-                namespace,
-                service_name,
-                service_instance_id,
+                listener_node_name,
+                listener_service_name,
+                listener_instance_id,
             )
             .await
             .expect("service should start");
@@ -882,9 +886,9 @@ async fn service_handle_request_processes_multiple_messages() {
             let response = ServiceMessenger::poll(
                 &caller_handle,
                 caller_instance_id,
-                namespace,
-                service_name,
-                None,
+                listener_node_name,
+                listener_service_name,
+                Some(listener_instance_id),
                 request_payload.clone(),
                 Duration::from_secs(2),
             )
@@ -918,15 +922,16 @@ async fn single_service_communication_multiple_polls_and_callers() {
     let router = TestRouterContext::start().await;
     let (host, port) = router.connection_target();
 
-    let service_name = "enable_camera";
-    let namespace = "/camera";
+    // Listener instance
+    let listener_node_name = "camera";
+    let listener_service_name = "enable_camera";
+    let listener_instance_id = "listener_instance";
 
     // TODO: 500 callers saturate Zenohd, it shouldn't
     let caller_count = 100;
     let requests_per_caller = 5;
     let total_requests = caller_count * requests_per_caller;
     let call_count = Arc::new(AtomicUsize::new(0));
-    let service_instance_id = "test_service_instance";
 
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
 
@@ -936,14 +941,14 @@ async fn single_service_communication_multiple_polls_and_callers() {
 
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
-            namespace,
-            service_name,
-            service_instance_id,
+            listener_node_name,
+            listener_service_name,
+            listener_instance_id,
         )
         .await
         .expect("service should start");
 
-        let service_root = super::build_full_namespace(namespace, service_name);
+        let service_root = super::build_full_namespace(listener_node_name, listener_service_name);
 
         let call_count = Arc::clone(&call_count);
 
@@ -953,7 +958,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
 
             for _ in 0..total_requests {
                 let service_root = service_root.clone();
-                let service_instance_id = service_instance_id.to_string();
+                let listener_instance_id = listener_instance_id.to_string();
                 let call_count = Arc::clone(&call_count);
 
                 let handle = service
@@ -965,7 +970,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
                             .instance_id()
                             .unwrap_or("missing_caller_instance");
                         let expected_identifier = format!(
-                            "{service_root}/<INSTANCE_ID:{service_instance_id}>/request/<INSTANCE_ID:{caller_id}>"
+                            "{service_root}/<INSTANCE_ID:{listener_instance_id}>/request/<INSTANCE_ID:{caller_id}>"
                         );
                         assert_eq!(identifier, expected_identifier);
                         call_count.fetch_add(1, Ordering::SeqCst);
@@ -1025,9 +1030,9 @@ async fn single_service_communication_multiple_polls_and_callers() {
                     let response = ServiceMessenger::poll(
                         &caller_handle,
                         &caller_id,
-                        namespace,
-                        service_name,
-                        None,
+                        listener_node_name,
+                        listener_service_name,
+                        Some(listener_instance_id),
                         request_payload.clone(),
                         Duration::from_secs(1),
                     )
