@@ -7,7 +7,9 @@ edition = "2024"
 peppylib = { path = "../.." }
 config = { path = "../../../config-internal" }
 tokio = { version = "1.47.0", features = ["rt-multi-thread", "macros"] }
-bytes = "1.10.1"
+bytes = "1"
 colored = "3"
+rand = "0.9"
+names-generator2 = "0.2.0"
 
 [workspace]

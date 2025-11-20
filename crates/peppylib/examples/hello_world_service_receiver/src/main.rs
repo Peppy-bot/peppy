@@ -1,13 +1,14 @@
 use bytes::Bytes;
 use chrono::Local;
 use config::consts::DEFAULT_ZENOH_PORT;
+use names_generator2::get_random;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
+use rand::rng;
 use tokio::signal;
 
 const SERVICE_NAME: &str = "hello_service";
 const NODE_NAME: &str = "hello_node";
-const SERVICE_INSTANCE_ID: &str = "example_service_instance";
 
 async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
     MessengerHandle::from_host_port(host, port)
@@ -25,7 +26,7 @@ fn current_timestamp() -> String {
 }
 
 fn payload_as_text(request: &ServiceRequestContext) -> String {
-    String::from_utf8_lossy(request.message.payload.as_ref()).to_string()
+    String::from_utf8_lossy(request.message.payload().as_ref()).to_string()
 }
 
 async fn handle_request(request: ServiceRequestContext) -> PeppyResult<Bytes> {
@@ -63,12 +64,14 @@ fn handle_service_result(result: PeppyResult<bool>) -> bool {
 async fn main() {
     // Create a messenger for the receiving node.
     let receiver_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
+    let instance_id = format!("{}_emitter", get_random(rng()));
 
-    let mut service = ServiceMessenger::listen(&receiver_handle, NODE_NAME, SERVICE_NAME, None)
-        .await
-        .expect("Should expose the service");
+    let mut service =
+        ServiceMessenger::listen(&receiver_handle, NODE_NAME, SERVICE_NAME, &instance_id)
+            .await
+            .expect("Should expose the service");
 
-    println!("Waiting for service requests... Press CTRL+C to stop.");
+    println!("Waiting for service requests as instance_id {instance_id}... Press CTRL+C to stop.");
     loop {
         tokio::select! {
             _ = signal::ctrl_c() => {

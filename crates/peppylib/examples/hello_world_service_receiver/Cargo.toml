@@ -9,6 +9,7 @@ config = { path = "../../../config-internal" }
 tokio = { version = "1.47.0", features = ["rt-multi-thread", "macros"] }
 chrono = { version = "0.4" }
 names-generator2 = "0.2.0"
+rand = "0.9"
 bytes = "1"
 
 [workspace]
