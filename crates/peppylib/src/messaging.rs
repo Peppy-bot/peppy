@@ -167,6 +167,9 @@ impl ServiceEndpoint {
     ) -> Option<(ServiceRequestContext, String)> {
         let identifier = request.key_expr().to_string();
         let service_instance_segment = format_instance_segment(self.instance_id.as_str());
+        let response_instance_segment = service_instance_segment
+            .clone()
+            .unwrap_or_else(|| format!("<INSTANCE_ID:{}>", self.instance_id));
 
         let specific_prefix = service_instance_segment
             .as_ref()
@@ -220,6 +223,7 @@ impl ServiceEndpoint {
             Some(id) => format!("{}/{}/{}", self.response_topic_base, caller_segment, id),
             None => self.response_topic_base.clone(),
         };
+        let response_topic = format!("{response_topic}/{response_instance_segment}");
 
         let message_identifier = match service_instance_segment.as_deref() {
             Some(instance_segment) => {
@@ -575,10 +579,7 @@ impl MessengerHandle {
     ) -> Result<ServiceEndpoint> {
         let service_root = key_expr;
         let request_subscription_topic = format!("{service_root}/**/request/**");
-        let response_topic_base = match format_instance_segment(as_instance_id) {
-            Some(instance_segment) => format!("{service_root}/{instance_segment}/response"),
-            None => format!("{service_root}/**/response"),
-        };
+        let response_topic_base = format!("{service_root}/response");
 
         let subscription = {
             let messenger = self.messenger.lock().await;
@@ -613,23 +614,20 @@ impl MessengerHandle {
 
         let request_id = generate_request_id();
 
-        let (request_topic, response_topic) = match &target_instance_segment {
-            Some(instance_segment) => (
-                format!(
-                    "{service_root}/{instance_segment}/request/{caller_instance_segment}/{request_id}"
-                ),
-                format!(
-                    "{service_root}/{instance_segment}/response/{caller_instance_segment}/{request_id}"
-                ),
+        let request_topic = match &target_instance_segment {
+            Some(instance_segment) => format!(
+                "{service_root}/{instance_segment}/request/{caller_instance_segment}/{request_id}"
             ),
-            None => (
-                format!(
-                    "{service_root}/**/request/{caller_instance_segment}/{request_id}"
-                ),
-                format!(
-                    "{service_root}/**/response/{caller_instance_segment}/{request_id}"
-                ),
+            None => format!("{service_root}/**/request/{caller_instance_segment}/{request_id}"),
+        };
+
+        let response_topic = match &target_instance_segment {
+            Some(instance_segment) => format!(
+                "{service_root}/response/{caller_instance_segment}/{request_id}/{instance_segment}"
             ),
+            None => {
+                format!("{service_root}/response/{caller_instance_segment}/{request_id}/*")
+            }
         };
 
         let mut response_subscription = {

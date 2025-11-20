@@ -39,6 +39,8 @@ async fn main() {
     .await
     .expect("Service call should succeed");
 
-    let response_text = String::from_utf8_lossy(response.as_ref());
-    println!("Received response: `{response_text}`");
+    let response_bytes = response.payload().as_bytes();
+    let response_text = String::from_utf8_lossy(response_bytes.as_ref());
+    let from_service_instance_id = response.instance_id().unwrap_or("unknown");
+    println!("Received response from {from_service_instance_id} instance_id: `{response_text}`");
 }
