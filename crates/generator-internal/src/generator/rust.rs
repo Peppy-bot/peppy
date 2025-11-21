@@ -2969,10 +2969,7 @@ fn build_exposed_service_method(
         .as_ref()
         .map(|_| quote!(service_instance_id.as_str()));
 
-    let request_has_instance_id = request_format
-        .map(|format| format.0.contains_key("instance_id"))
-        .unwrap_or(false);
-    let instance_from_request_context = instance_id_param.is_some() && !request_has_instance_id;
+    let instance_from_request_context = instance_id_param.is_some();
 
     let instance_binding_ident =
         instance_id_param.map(|_| Ident::new("instance_id", Span::call_site()));
@@ -3139,14 +3136,16 @@ fn build_exposed_service_method(
 
         if instance_from_request_context {
             quote!({
-                let payload = #request_context_ident.message().payload().as_bytes();
-                let instance_id = #request_context_ident
-                    .message()
-                    .instance_id()
-                    .map(str::to_string)
-                    .ok_or_else(|| crate::Error::MissingInstanceId {
-                        key_expr: #request_context_ident.message().key_expr().to_string(),
-                    })?;
+                let message = #request_context_ident.message();
+                let payload = message.payload().as_bytes();
+                let instance_id = if let Some(value) = message.instance_id() {
+                    value.to_string()
+                } else {
+                    let error = crate::Error::MissingInstanceId {
+                        key_expr: message.key_expr().to_string(),
+                    };
+                    return Err(peppylib::PeppyError::Io(std::io::Error::other(error.to_string())));
+                };
                 #handler_helper_name(#(#helper_args),*)
             })
         } else {
@@ -3168,13 +3167,16 @@ fn build_exposed_service_method(
 
         if instance_from_request_context {
             quote!({
-                let instance_id = #request_context_ident
-                    .message()
-                    .instance_id()
-                    .map(str::to_string)
-                    .ok_or_else(|| crate::Error::MissingInstanceId {
-                        key_expr: #request_context_ident.message().key_expr().to_string(),
-                    })?;
+                let message = #request_context_ident.message();
+                let payload = message.payload().as_bytes();
+                let instance_id = if let Some(value) = message.instance_id() {
+                    value.to_string()
+                } else {
+                    let error = crate::Error::MissingInstanceId {
+                        key_expr: message.key_expr().to_string(),
+                    };
+                    return Err(peppylib::PeppyError::Io(std::io::Error::other(error.to_string())));
+                };
                 #handler_helper_name(#(#helper_args),*)
             })
         } else {
