@@ -79,6 +79,8 @@ pub enum Error {
         #[source]
         source: VarError,
     },
+    #[error("missing instance id in {key_expr}")]
+    MissingInstanceId { key_expr: String },
     #[error(transparent)]
     Messaging(#[from] PeppyError),
 }
