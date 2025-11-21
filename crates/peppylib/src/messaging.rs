@@ -302,8 +302,9 @@ impl TopicPublisher {
 }
 
 pub struct ActionGoalHandle {
-    namespace: String,
+    node_name: String,
     action_name: String,
+    target_instance_id: Option<String>,
     goal_response: RawMessage,
     feedback: Subscription,
 }
@@ -409,8 +410,13 @@ impl ActionMessenger {
         feedback_qos: QoSProfile,
         goal_timeout: Duration,
     ) -> Result<ActionGoalHandle> {
-        let action_root = build_full_namespace(namespace, action_name);
-        let feedback_topic = format!("{action_root}/feedback");
+        let action_root = build_full_namespace(node_name, action_name);
+        let feedback_topic = match instance_id {
+            Some(target_instance_id) => {
+                format!("{action_root}/feedback/<INSTANCE_ID:{target_instance_id}>")
+            }
+            None => format!("{action_root}/feedback/**"),
+        };
         let goal_service_name = format!("{action_name}/goal");
 
         let feedback_subscription = {
@@ -422,9 +428,9 @@ impl ActionMessenger {
 
         let goal_response = messenger
             .poll_service(
-                namespace,
+                node_name,
                 &goal_service_name,
-                None,
+                instance_id,
                 as_instance_id,
                 goal_payload,
                 goal_timeout,
@@ -432,8 +438,9 @@ impl ActionMessenger {
             .await?;
 
         Ok(ActionGoalHandle {
-            namespace: namespace.to_string(),
+            node_name: node_name.to_string(),
             action_name: action_name.to_string(),
+            target_instance_id: instance_id.map(|id| id.to_string()),
             goal_response,
             feedback: feedback_subscription,
         })
@@ -449,9 +456,9 @@ impl ActionMessenger {
 
         messenger
             .poll_service(
-                &handle.namespace,
+                &handle.node_name,
                 &cancel_service_name,
-                None,
+                handle.target_instance_id.as_deref(),
                 as_instance_id,
                 Bytes::new(),
                 cancel_timeout,
@@ -470,9 +477,9 @@ impl ActionMessenger {
 
         messenger
             .poll_service(
-                &handle.namespace,
+                &handle.node_name,
                 &result_service_name,
-                None,
+                handle.target_instance_id.as_deref(),
                 as_instance_id,
                 result_request_payload,
                 result_timeout,
@@ -693,21 +700,21 @@ impl MessengerHandle {
         as_action_name: &str,
         as_instance_id: &str,
     ) -> Result<ActionCreation> {
-        let action_root = build_full_namespace(node_name, action_name);
+        let action_root = build_full_namespace(as_node_name, as_action_name);
 
         let goal_service_root = format!("{action_root}/goal");
         let cancel_service_root = format!("{action_root}/cancel");
         let result_service_root = format!("{action_root}/result");
-        let feedback_topic = format!("{action_root}/feedback");
+        let feedback_topic = format!("{action_root}/feedback/<INSTANCE_ID:{as_instance_id}>");
 
         let goal_service = self
-            .create_service_endpoint(goal_service_root, INSTANCE_ID_WILDCARD)
+            .create_service_endpoint(goal_service_root, as_instance_id)
             .await?;
         let cancel_service = self
-            .create_service_endpoint(cancel_service_root, INSTANCE_ID_WILDCARD)
+            .create_service_endpoint(cancel_service_root, as_instance_id)
             .await?;
         let result_service = self
-            .create_service_endpoint(result_service_root, INSTANCE_ID_WILDCARD)
+            .create_service_endpoint(result_service_root, as_instance_id)
             .await?;
 
         let feedback_publisher = TopicPublisher {

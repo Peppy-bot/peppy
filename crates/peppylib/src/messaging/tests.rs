@@ -259,7 +259,7 @@ async fn topic_publish_reliable_5000hz_messages() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn service_communication_poll_specific_node() {
+async fn service_communication_poll_specific_instance_id() {
     let router = TestRouterContext::start().await;
 
     // Listener instance
@@ -370,7 +370,7 @@ async fn service_communication_poll_specific_node() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn service_communication_poll_no_specific_node() {
+async fn service_communication_poll_no_instance_id_target() {
     let router = TestRouterContext::start().await;
 
     // Listener instance
@@ -1144,10 +1144,13 @@ async fn action_communication() {
             .expect("action should start");
 
             let action_root = super::build_full_namespace(listener_node_name, listener_action_name);
-            let expected_goal_topic =
-                format!("{action_root}/goal/**/request/<INSTANCE_ID:{caller_instance_id}>");
-            let expected_result_topic =
-                format!("{action_root}/result/**/request/<INSTANCE_ID:{caller_instance_id}>");
+            let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
+            let expected_goal_topic = format!(
+                "{action_root}/goal/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
+            );
+            let expected_result_topic = format!(
+                "{action_root}/result/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
+            );
 
             let _ = action_ready_tx.send(());
 
@@ -1229,9 +1232,176 @@ async fn action_communication() {
             goal_response_payload
         );
 
-        let expected_feedback_topic = super::build_full_namespace(
+        let expected_feedback_topic = format!(
+            "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
+            super::build_full_namespace(listener_node_name, listener_action_name)
+        );
+
+        // Consume one feedback update from the action server.
+        let feedback_message = goal_handle
+            .feedback_mut()
+            .rx
+            .recv()
+            .await
+            .expect("caller should receive feedback");
+
+        assert_eq!(feedback_message.key_expr(), expected_feedback_topic);
+        assert_eq!(feedback_message.payload(), &feedback_payload);
+
+        // Finally, request the result using the same handle and ensure the server replies.
+        let result_response = ActionMessenger::poll_result(
+            &caller_handle,
+            caller_instance_id,
+            &goal_handle,
+            result_request_payload,
+            Duration::from_millis(500),
+        )
+        .await
+        .expect("caller should receive result");
+
+        assert_eq!(result_response.payload().to_bytes(), result_payload);
+    }
+
+    server_task
+        .await
+        .expect("action handler task panicked")
+        .expect("action handler returned error");
+
+    router.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn action_communication_no_instance_id_target() {
+    let router = TestRouterContext::start().await;
+
+    // Listener instance
+    let listener_node_name = "controller";
+    let listener_action_name = "move_right_arm";
+    let listener_instance_id = "listener_instance";
+
+    // Caller instance
+    let caller_instance_id = "caller_instance";
+
+    let goal_payload = Bytes::from_static(b"arm=right;pos=1,2,3");
+    let goal_response_payload = Bytes::from_static(b"accepted");
+    let feedback_payload = Bytes::from_static(b"progress=50");
+    let result_payload = Bytes::from_static(b"done");
+    let result_request_payload = Bytes::from_static(b"goal=right_arm");
+
+    // Launch a background task that plays the role of the action server.
+    let (action_ready_tx, action_ready_rx) = oneshot::channel();
+
+    let server_task = {
+        let goal_payload_server = goal_payload.clone();
+        let goal_response_payload_server = goal_response_payload.clone();
+        let feedback_payload_server = feedback_payload.clone();
+        let result_payload_server = result_payload.clone();
+        let result_request_payload_server = result_request_payload.clone();
+
+        let action_handle = router.action_messenger().await;
+
+        tokio::spawn(async move {
+            let mut action = ActionMessenger::listen(
+                &action_handle,
+                listener_node_name,
+                listener_action_name,
+                listener_instance_id,
+            )
+            .await
+            .expect("action should start");
+
+            let action_root = super::build_full_namespace(listener_node_name, listener_action_name);
+            let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
+            let expected_goal_topic = format!(
+                "{action_root}/goal/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
+            );
+            let expected_result_topic = format!(
+                "{action_root}/result/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
+            );
+
+            let _ = action_ready_tx.send(());
+
+            // Wait for the client to send a goal request
+            let handled_goal = action
+                .goal_service
+                .handle_next_request(move |request| {
+                    let expected_goal_topic = expected_goal_topic.clone();
+                    let expected_goal_payload = goal_payload_server.clone();
+                    let expected_goal_response_payload = goal_response_payload_server.clone();
+                    async move {
+                        assert_eq!(request.message().key_expr(), expected_goal_topic);
+                        assert_eq!(request.message().payload(), &expected_goal_payload);
+                        Ok(expected_goal_response_payload)
+                    }
+                })
+                .await
+                .expect("action should receive goal request");
+
+            assert!(
+                handled_goal,
+                "goal subscription closed before handling request"
+            );
+
+            action
+                .feedback_publisher
+                .publish(feedback_payload_server.clone())
+                .await
+                .expect("action should publish feedback");
+
+            let handled_result = action
+                .result_service
+                .handle_next_request(move |request| {
+                    let expected_topic = expected_result_topic.clone();
+                    let expected_payload = result_request_payload_server.clone();
+                    let response_payload = result_payload_server.clone();
+                    async move {
+                        assert_eq!(request.message().key_expr(), expected_topic);
+                        assert_eq!(request.message().payload(), &expected_payload);
+                        Ok(response_payload)
+                    }
+                })
+                .await
+                .expect("action should receive result request");
+
+            assert!(
+                handled_result,
+                "result subscription closed before handling request"
+            );
+
+            Ok::<(), Error>(())
+        })
+    };
+
+    action_ready_rx
+        .await
+        .expect("action server should signal readiness");
+
+    // The caller node has its own scope (emulates a separate node running on a different instance)
+    {
+        let caller_handle = router.action_messenger().await;
+
+        // Client sends the goal and obtains the handle carrying goal response + feedback sub.
+        let mut goal_handle = ActionMessenger::send_goal(
+            &caller_handle,
+            caller_instance_id,
             listener_node_name,
-            &format!("{listener_action_name}/feedback"),
+            listener_action_name,
+            None,
+            goal_payload,
+            QoSProfile::Reliable,
+            Duration::from_millis(1000),
+        )
+        .await
+        .expect("caller should send goal");
+
+        assert_eq!(
+            goal_handle.goal_response().payload().to_bytes(),
+            goal_response_payload
+        );
+
+        let expected_feedback_topic = format!(
+            "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
+            super::build_full_namespace(listener_node_name, listener_action_name)
         );
 
         // Consume one feedback update from the action server.
@@ -1271,15 +1441,19 @@ async fn action_communication() {
 async fn action_communication_goal_cancelled() {
     let router = TestRouterContext::start().await;
 
-    let action_name = "move_right_arm";
-    let namespace = "/control";
+    // Listener instance
+    let listener_node_name = "camera";
+    let listener_action_name = "enable_camera";
+    let listener_instance_id = "listener_instance";
+
+    // Caller instance
+    let caller_instance_id = "caller_instance";
 
     let goal_payload = Bytes::from_static(b"arm=right;pos=1,2,3");
     let goal_response_payload = Bytes::from_static(b"accepted");
     let feedback_payload = Bytes::from_static(b"progress=50");
     let result_request_payload = Bytes::from_static(b"goal=right_arm");
     let cancel_response_payload = Bytes::from_static(b"cancelled");
-    let caller_instance_id = "action_client";
 
     let (action_ready_tx, action_ready_rx) = oneshot::channel();
 
@@ -1293,9 +1467,14 @@ async fn action_communication_goal_cancelled() {
         let action_ready_tx = Some(action_ready_tx);
 
         tokio::spawn(async move {
-            let action = ActionMessenger::listen(&action_handle, namespace, action_name)
-                .await
-                .expect("action should start");
+            let action = ActionMessenger::listen(
+                &action_handle,
+                listener_node_name,
+                listener_action_name,
+                listener_instance_id,
+            )
+            .await
+            .expect("action should start");
 
             let crate::messaging::ActionCreation {
                 mut goal_service,
@@ -1304,11 +1483,14 @@ async fn action_communication_goal_cancelled() {
                 ..
             } = action;
 
-            let action_root = super::build_full_namespace(namespace, action_name);
-            let expected_goal_topic =
-                format!("{action_root}/goal/**/request/<INSTANCE_ID:{caller_instance_id}>");
-            let expected_cancel_topic =
-                format!("{action_root}/cancel/**/request/<INSTANCE_ID:{caller_instance_id}>");
+            let action_root = super::build_full_namespace(listener_node_name, listener_action_name);
+            let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
+            let expected_goal_topic = format!(
+                "{action_root}/goal/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
+            );
+            let expected_cancel_topic = format!(
+                "{action_root}/cancel/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
+            );
 
             if let Some(tx) = action_ready_tx {
                 let _ = tx.send(());
@@ -1395,8 +1577,9 @@ async fn action_communication_goal_cancelled() {
     let mut goal_handle = ActionMessenger::send_goal(
         &caller_handle,
         caller_instance_id,
-        namespace,
-        action_name,
+        listener_node_name,
+        listener_action_name,
+        Some(listener_instance_id),
         goal_payload,
         QoSProfile::Reliable,
         Duration::from_millis(1000),
@@ -1409,8 +1592,10 @@ async fn action_communication_goal_cancelled() {
         goal_response_payload
     );
 
-    let expected_feedback_topic =
-        super::build_full_namespace(namespace, &format!("{action_name}/feedback"));
+    let expected_feedback_topic = format!(
+        "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
+        super::build_full_namespace(listener_node_name, listener_action_name)
+    );
 
     let first_feedback = goal_handle
         .feedback_mut()
@@ -1494,7 +1679,7 @@ async fn action_communication_goal_cancelled() {
     };
 
     assert!(err_instance_id.is_none());
-    assert_eq!(err_action_name, action_name);
+    assert_eq!(err_action_name, listener_action_name);
 
     server_task
         .await
@@ -1509,8 +1694,12 @@ async fn single_action_communication_multiple_polls() {
     let router = TestRouterContext::start().await;
     let (host, port) = router.connection_target();
 
-    let action_name = "move_right_arm";
-    let namespace = "/control";
+    // Listener instance
+    let listener_node_name = "camera";
+    let listener_action_name = "enable_camera";
+    let listener_instance_id = "listener_instance";
+
+    // Caller instance
     let caller_prefix = "the_brain";
 
     const CLIENT_COUNT: usize = 8;
@@ -1528,11 +1717,16 @@ async fn single_action_communication_multiple_polls() {
         let cases = Arc::clone(&cases);
 
         tokio::spawn(async move {
-            let action = ActionMessenger::listen(&action_handle, namespace, action_name)
-                .await
-                .expect("action should start");
+            let action = ActionMessenger::listen(
+                &action_handle,
+                listener_node_name,
+                listener_action_name,
+                listener_instance_id,
+            )
+            .await
+            .expect("action should start");
 
-            let action_root = super::build_full_namespace(namespace, action_name);
+            let action_root = super::build_full_namespace(listener_node_name, listener_action_name);
             let crate::messaging::ActionCreation {
                 mut goal_service,
                 cancel_service: _,
@@ -1564,8 +1758,9 @@ async fn single_action_communication_multiple_polls() {
                                 .message()
                                 .instance_id()
                                 .unwrap_or("missing_caller_instance");
-                            let expected_goal_topic =
-                                format!("{action_root}/goal/**/request/<INSTANCE_ID:{caller_id}>");
+                            let expected_goal_topic = format!(
+                                "{action_root}/goal/<INSTANCE_ID:{listener_instance_id}>/request/<INSTANCE_ID:{caller_id}>"
+                            );
                             assert_eq!(request.message().key_expr(), expected_goal_topic);
 
                             let payload = request.message().payload();
@@ -1628,7 +1823,7 @@ async fn single_action_communication_multiple_polls() {
                                 .instance_id()
                                 .unwrap_or("missing_caller_instance");
                             let expected_result_topic = format!(
-                                "{action_root}/result/**/request/<INSTANCE_ID:{caller_id}>"
+                                "{action_root}/result/<INSTANCE_ID:{listener_instance_id}>/request/<INSTANCE_ID:{caller_id}>"
                             );
                             assert_eq!(request.message().key_expr(), expected_result_topic);
 
@@ -1677,8 +1872,10 @@ async fn single_action_communication_multiple_polls() {
         .await
         .expect("action server should signal readiness");
 
-    let expected_feedback_topic =
-        super::build_full_namespace(namespace, &format!("{action_name}/feedback"));
+    let expected_feedback_topic = format!(
+        "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
+        super::build_full_namespace(listener_node_name, listener_action_name)
+    );
 
     let total_clients = cases.len();
     let mut shuffled_cases = cases.as_ref().clone();
@@ -1697,8 +1894,9 @@ async fn single_action_communication_multiple_polls() {
             let mut goal_handle = ActionMessenger::send_goal(
                 &caller_handle,
                 &case.client_id,
-                namespace,
-                action_name,
+                listener_node_name,
+                listener_action_name,
+                None,
                 case.goal.clone(),
                 QoSProfile::Reliable,
                 Duration::from_millis(1000),
