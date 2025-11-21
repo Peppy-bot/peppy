@@ -1,14 +1,16 @@
 use bytes::Bytes;
 use colored::Colorize;
 use config::{consts::DEFAULT_ZENOH_PORT, node::QoSProfile};
+use names_generator2::get_random;
 use peppylib::messaging::ActionGoalHandle;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError};
+use rand::rng;
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
 
+const NODE_NAME: &str = "hello_node";
 const ACTION_NAME: &str = "hello_action";
-const NAMESPACE: &str = "/hello_ns";
-const ACTION_INSTANCE_ID: &str = "hello_action_server";
+
 const FEEDBACK_TIMEOUT: Duration = Duration::from_secs(5);
 const GOAL_TIMEOUT: Duration = Duration::from_secs(3);
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(3);
@@ -32,10 +34,12 @@ async fn receive_feedback(handle: &mut ActionGoalHandle, goal_label: &str) {
 
     match feedback_result {
         Ok(Some(message)) => {
-            let feedback_text = String::from_utf8_lossy(message.payload.as_ref());
+            let feedback_bytes = message.payload().as_bytes();
+            let feedback_text = String::from_utf8_lossy(feedback_bytes.as_ref());
+            let instance_id = message.instance_id().unwrap_or("unknown");
             println!(
                 "{}",
-                format!("[FEEDBACK] Received feedback for {goal_label}: `{feedback_text}`")
+                format!("[FEEDBACK] Received feedback for {goal_label} from {instance_id}: `{feedback_text}`")
                     .bold()
                     .yellow()
             );
@@ -62,28 +66,29 @@ async fn receive_feedback(handle: &mut ActionGoalHandle, goal_label: &str) {
 #[tokio::main]
 async fn main() {
     let sender_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
-    let as_instance_id = "action_client";
+    let as_instance_id = format!("{}_listener", get_random(rng()));
 
     println!(
         "{}",
-        format!("[GOAL] Sending goal to `{ACTION_NAME}` action...")
+        format!("[GOAL] Sending goal to `{ACTION_NAME}` action as {as_instance_id}...")
             .bold()
             .green()
     );
     let mut goal_handle = ActionMessenger::send_goal(
         &sender_handle,
-        as_instance_id,
-        NAMESPACE,
+        &as_instance_id,
+        NODE_NAME,
         ACTION_NAME,
-        Some(ACTION_INSTANCE_ID),
+        None, // Binds with the first action that is found
         Bytes::from_static(b"Hello from the action client"),
         QoSProfile::Reliable,
         GOAL_TIMEOUT,
     )
-        .await
-        .expect("Action goal should succeed");
+    .await
+    .expect("Action goal should succeed");
 
-    let goal_response_text = String::from_utf8_lossy(goal_handle.goal_response().as_ref());
+    let goal_response_bytes = goal_handle.goal_response().payload().as_bytes();
+    let goal_response_text = String::from_utf8_lossy(goal_response_bytes.as_ref());
     println!(
         "{}",
         format!("[GOAL] Received goal response: `{goal_response_text}`")
@@ -95,14 +100,15 @@ async fn main() {
 
     let result_payload = ActionMessenger::poll_result(
         &sender_handle,
-        as_instance_id,
+        &as_instance_id,
         &goal_handle,
         Bytes::from_static(b"request result after completion"),
         GOAL_TIMEOUT,
     )
-        .await
-        .expect("Action result should be available");
-    let result_text = String::from_utf8_lossy(result_payload.as_ref());
+    .await
+    .expect("Action result should be available");
+    let result_bytes = result_payload.payload().as_bytes();
+    let result_text = String::from_utf8_lossy(result_bytes.as_ref());
     println!(
         "{}",
         format!("[RESULT] Received result: `{result_text}`")
@@ -116,19 +122,19 @@ async fn main() {
     println!("{}", "[GOAL] Sending cancellable goal...".bold().green());
     let mut cancellable_goal_handle = ActionMessenger::send_goal(
         &sender_handle,
-        as_instance_id,
-        NAMESPACE,
+        &as_instance_id,
+        NODE_NAME,
         ACTION_NAME,
-        Some(ACTION_INSTANCE_ID),
+        None, // Binds with the first action that is found
         Bytes::from_static(b"This goal will be cancelled"),
         QoSProfile::Reliable,
         GOAL_TIMEOUT,
     )
-        .await
-        .expect("Cancellable action goal should succeed");
+    .await
+    .expect("Cancellable action goal should succeed");
 
-    let cancel_goal_response =
-        String::from_utf8_lossy(cancellable_goal_handle.goal_response().as_ref());
+    let cancel_goal_response_bytes = cancellable_goal_handle.goal_response().payload().as_bytes();
+    let cancel_goal_response = String::from_utf8_lossy(cancel_goal_response_bytes.as_ref());
     println!(
         "{}",
         format!("[GOAL] Received goal response: `{cancel_goal_response}`")
@@ -143,13 +149,14 @@ async fn main() {
 
     let cancel_response = ActionMessenger::cancel_goal(
         &sender_handle,
-        as_instance_id,
+        &as_instance_id,
         &cancellable_goal_handle,
         CANCEL_TIMEOUT,
     )
-        .await
-        .expect("Cancel request should succeed");
-    let cancel_text = String::from_utf8_lossy(cancel_response.as_ref());
+    .await
+    .expect("Cancel request should succeed");
+    let cancel_bytes = cancel_response.payload().as_bytes();
+    let cancel_text = String::from_utf8_lossy(cancel_bytes.as_ref());
     println!(
         "{}",
         format!("[CANCEL] Received cancel response: `{cancel_text}`")
@@ -166,15 +173,16 @@ async fn main() {
 
     match ActionMessenger::poll_result(
         &sender_handle,
-        as_instance_id,
+        &as_instance_id,
         &cancellable_goal_handle,
         Bytes::from_static(b"result request after cancel"),
         GOAL_TIMEOUT,
     )
-        .await
+    .await
     {
         Ok(result_payload) => {
-            let result_text = String::from_utf8_lossy(result_payload.as_ref());
+            let result_bytes = result_payload.payload().as_bytes();
+            let result_text = String::from_utf8_lossy(result_bytes.as_ref());
             panic!(
                 "Received result `{result_text}` even though the goal was cancelled. \
                  The action should stop responding to this goal."
