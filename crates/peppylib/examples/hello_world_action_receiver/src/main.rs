@@ -2,13 +2,14 @@ use bytes::Bytes;
 use chrono::Local;
 use colored::Colorize;
 use config::consts::DEFAULT_ZENOH_PORT;
+use names_generator2::get_random;
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
+use rand::rng;
 use tokio::signal;
 
+const NODE_NAME: &str = "hello_node";
 const ACTION_NAME: &str = "hello_action";
-const NAMESPACE: &str = "/hello_ns";
-const ACTION_INSTANCE_ID: &str = "hello_action_server";
 
 async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
     MessengerHandle::from_host_port(host, port)
@@ -35,12 +36,13 @@ async fn handle_goal_request(
     feedback_publisher: &TopicPublisher,
 ) -> PeppyResult<Bytes> {
     let request_id = request.request_id().unwrap_or("unknown");
+    let instance_id = request.message().instance_id().unwrap_or("unknown");
     let payload_text = payload_as_text(&request);
 
     let timestamp = current_timestamp();
     println!(
         "{}",
-        format!("[GOAL] [{timestamp}] Received goal `{request_id}` with payload `{payload_text}`")
+        format!("[GOAL] [{timestamp}] Received goal `{request_id}` from `{instance_id}` with payload `{payload_text}`")
             .bold()
             .green()
     );
@@ -110,13 +112,14 @@ async fn handle_cancel_request(request: ServiceRequestContext) -> PeppyResult<By
 
 async fn handle_result_request(request: ServiceRequestContext) -> PeppyResult<Bytes> {
     let request_id = request.request_id().unwrap_or("unknown");
+    let instance_id = request.message().instance_id().unwrap_or("unknown");
     let payload_text = payload_as_text(&request);
 
     let timestamp = current_timestamp();
     println!(
         "{}",
         format!(
-            "[RESULT] [{timestamp}] Received result request `{request_id}` with payload `{payload_text}`"
+            "[RESULT] [{timestamp}] Received result request `{request_id}` from `{instance_id}` with payload `{payload_text}`"
         )
         .bold()
         .cyan()
@@ -139,19 +142,16 @@ async fn handle_result_request(request: ServiceRequestContext) -> PeppyResult<By
 #[tokio::main]
 async fn main() {
     let receiver_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
+    let as_instance_id = format!("{}_listener", get_random(rng()));
 
-    let mut action = ActionMessenger::listen(
-        &receiver_handle,
-        NAMESPACE,
-        ACTION_NAME,
-        ACTION_INSTANCE_ID,
-    )
-    .await
-    .expect("Should expose the action");
+    let mut action =
+        ActionMessenger::listen(&receiver_handle, NODE_NAME, ACTION_NAME, &as_instance_id)
+            .await
+            .expect("Should expose the action");
 
     println!(
         "{}",
-        "[ACTION] Waiting for action goals... Press CTRL+C to stop."
+        format!("[ACTION] Waiting for action goals as {as_instance_id}... Press CTRL+C to stop.")
             .bold()
             .white()
     );
