@@ -1107,15 +1107,19 @@ async fn single_service_communication_multiple_polls_and_callers() {
 async fn action_communication() {
     let router = TestRouterContext::start().await;
 
-    let action_name = "move_right_arm";
-    let namespace = "/control";
+    // Listener instance
+    let listener_node_name = "controller";
+    let listener_action_name = "move_right_arm";
+    let listener_instance_id = "listener_instance";
+
+    // Caller instance
+    let caller_instance_id = "caller_instance";
 
     let goal_payload = Bytes::from_static(b"arm=right;pos=1,2,3");
     let goal_response_payload = Bytes::from_static(b"accepted");
     let feedback_payload = Bytes::from_static(b"progress=50");
     let result_payload = Bytes::from_static(b"done");
     let result_request_payload = Bytes::from_static(b"goal=right_arm");
-    let caller_instance_id = "action_client";
 
     // Launch a background task that plays the role of the action server.
     let (action_ready_tx, action_ready_rx) = oneshot::channel();
@@ -1130,11 +1134,16 @@ async fn action_communication() {
         let action_handle = router.action_messenger().await;
 
         tokio::spawn(async move {
-            let mut action = ActionMessenger::listen(&action_handle, namespace, action_name)
-                .await
-                .expect("action should start");
+            let mut action = ActionMessenger::listen(
+                &action_handle,
+                listener_node_name,
+                listener_action_name,
+                listener_instance_id,
+            )
+            .await
+            .expect("action should start");
 
-            let action_root = super::build_full_namespace(namespace, action_name);
+            let action_root = super::build_full_namespace(listener_node_name, listener_action_name);
             let expected_goal_topic =
                 format!("{action_root}/goal/**/request/<INSTANCE_ID:{caller_instance_id}>");
             let expected_result_topic =
@@ -1205,8 +1214,9 @@ async fn action_communication() {
         let mut goal_handle = ActionMessenger::send_goal(
             &caller_handle,
             caller_instance_id,
-            namespace,
-            action_name,
+            listener_node_name,
+            listener_action_name,
+            Some(listener_instance_id),
             goal_payload,
             QoSProfile::Reliable,
             Duration::from_millis(1000),
@@ -1219,8 +1229,10 @@ async fn action_communication() {
             goal_response_payload
         );
 
-        let expected_feedback_topic =
-            super::build_full_namespace(namespace, &format!("{action_name}/feedback"));
+        let expected_feedback_topic = super::build_full_namespace(
+            listener_node_name,
+            &format!("{listener_action_name}/feedback"),
+        );
 
         // Consume one feedback update from the action server.
         let feedback_message = goal_handle
