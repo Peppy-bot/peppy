@@ -167,7 +167,12 @@ fn expose_service() {
         "expected error when caller instance_id is absent"
     );
     assert_rendered!(
-        rendered.contains("request_context.message().payload().as_bytes()"),
+        rendered.contains("let message = request_context.message();"),
+        &rendered,
+        "expected request message binding"
+    );
+    assert_rendered!(
+        rendered.contains("let payload = message.payload().as_bytes();"),
         &rendered,
         "expected request payload to be pulled from the request context"
     );
@@ -1045,7 +1050,12 @@ fn compile_lib_with_exposed_and_subscribed_services() {
         enable_module_contents
     );
     assert!(
-        enable_module_contents.contains("request_context.message().payload().as_bytes()"),
+        enable_module_contents.contains("let message = request_context.message();"),
+        "Expected generated handler to bind request message, got:\n{}",
+        enable_module_contents
+    );
+    assert!(
+        enable_module_contents.contains("let payload = message.payload().as_bytes();"),
         "Expected generated handler to deserialize request payload from the context, got:\n{}",
         enable_module_contents
     );
