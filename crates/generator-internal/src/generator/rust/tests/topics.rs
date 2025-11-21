@@ -137,11 +137,6 @@ fn expose_topic() {
         "expected fixed-size array setter"
     );
     assert_rendered!(
-        rendered.contains("root.set_instance_id(instance_id.as_str());"),
-        &rendered,
-        "expected instance id setter"
-    );
-    assert_rendered!(
         rendered.contains("root.reborrow().init_header();"),
         &rendered,
         "expected nested header initialization"
@@ -165,6 +160,11 @@ fn expose_topic() {
         rendered.contains("header: MessageHeader"),
         &rendered,
         "expected structured header argument"
+    );
+    assert_rendered!(
+        !rendered.contains("set_instance_id"),
+        &rendered,
+        "expected instance id to be excluded from payload"
     );
     assert_rendered!(
         !rendered.contains("instance_id: String"),
@@ -220,6 +220,16 @@ fn expose_topic() {
         rendered.contains("crate::Error::MissingInstanceIdEnvVar"),
         &rendered,
         "expected instance id error mapping"
+    );
+    assert_rendered!(
+        rendered.contains("messenger.node_name()"),
+        &rendered,
+        "expected node name to be used when emitting"
+    );
+    assert_rendered!(
+        rendered.contains("&instance_id"),
+        &rendered,
+        "expected instance id to be passed to emitter"
     );
     assert_rendered!(
         rendered.contains("peppylib::TopicMessenger::emit("),
@@ -375,7 +385,12 @@ fn subscribed_to_topic() {
         "expected messenger reference parameter"
     );
     assert_rendered!(
-        rendered.contains("deseralize_payload(message.payload.as_ref())"),
+        rendered.contains("message.payload().as_bytes()"),
+        &rendered,
+        "expected payload extraction from received message"
+    );
+    assert_rendered!(
+        rendered.contains("deseralize_payload(payload.as_ref())"),
         &rendered,
         "expected helper payload deserializer invocation"
     );
@@ -390,12 +405,17 @@ fn subscribed_to_topic() {
         "expected subscriber return type including instance id"
     );
     assert_rendered!(
-        rendered.contains("Ok(("),
+        rendered.contains("message.instance_id().unwrap_or(\"\").to_string()"),
         &rendered,
-        "expected tuple return inside payload helper"
+        "expected instance id to come from message metadata"
     );
     assert_rendered!(
-        rendered.contains("peppylib::TopicMessenger::subscribe("),
+        rendered.contains("Ok((instance_id, message))"),
+        &rendered,
+        "expected tuple return with instance id and message"
+    );
+    assert_rendered!(
+        rendered.contains("peppylib::TopicMessenger::listen("),
         &rendered,
         "expected subscription helper invocation"
     );
@@ -405,9 +425,9 @@ fn subscribed_to_topic() {
         "expected messenger handle to be passed to subscription helper"
     );
     assert_rendered!(
-        rendered.contains("let namespace = messenger.namespace();"),
+        rendered.contains("let namespace = \"uvc_camera\";"),
         &rendered,
-        "expected namespace lookup via messenger helper"
+        "expected namespace to use subscribed node name"
     );
     assert_rendered!(
         rendered.contains("capnp::serialize::read_message"),
@@ -525,9 +545,9 @@ fn subscribed_to_two_topics_same_node() {
             "expected messenger parameter"
         );
         assert_rendered!(
-            rendered.contains("messenger.namespace()"),
+            rendered.contains("let namespace = \"uvc_camera\";"),
             rendered,
-            "expected namespace resolution via messenger"
+            "expected namespace resolution via literal node name"
         );
         assert_rendered!(
             rendered.contains(expectation.topic_literal),
