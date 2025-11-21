@@ -8,6 +8,7 @@ use tokio::signal;
 
 const ACTION_NAME: &str = "hello_action";
 const NAMESPACE: &str = "/hello_ns";
+const ACTION_INSTANCE_ID: &str = "hello_action_server";
 
 async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
     MessengerHandle::from_host_port(host, port)
@@ -139,9 +140,14 @@ async fn handle_result_request(request: ServiceRequestContext) -> PeppyResult<By
 async fn main() {
     let receiver_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
 
-    let mut action = ActionMessenger::listen(&receiver_handle, NAMESPACE, ACTION_NAME)
-        .await
-        .expect("Should expose the action");
+    let mut action = ActionMessenger::listen(
+        &receiver_handle,
+        NAMESPACE,
+        ACTION_NAME,
+        ACTION_INSTANCE_ID,
+    )
+    .await
+    .expect("Should expose the action");
 
     println!(
         "{}",

@@ -8,6 +8,7 @@ use tokio::time::{sleep, timeout};
 
 const ACTION_NAME: &str = "hello_action";
 const NAMESPACE: &str = "/hello_ns";
+const ACTION_INSTANCE_ID: &str = "hello_action_server";
 const FEEDBACK_TIMEOUT: Duration = Duration::from_secs(5);
 const GOAL_TIMEOUT: Duration = Duration::from_secs(3);
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(3);
@@ -74,6 +75,7 @@ async fn main() {
         as_instance_id,
         NAMESPACE,
         ACTION_NAME,
+        Some(ACTION_INSTANCE_ID),
         Bytes::from_static(b"Hello from the action client"),
         QoSProfile::Reliable,
         GOAL_TIMEOUT,
@@ -117,6 +119,7 @@ async fn main() {
         as_instance_id,
         NAMESPACE,
         ACTION_NAME,
+        Some(ACTION_INSTANCE_ID),
         Bytes::from_static(b"This goal will be cancelled"),
         QoSProfile::Reliable,
         GOAL_TIMEOUT,
