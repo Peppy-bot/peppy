@@ -122,9 +122,9 @@ async fn connect_action_messenger(host: &str, port: u16) -> MessengerHandle {
 }
 
 #[test]
-fn build_topic_path_removes_redundant_separators() {
-    let path = super::build_full_namespace("/camera/rear/", "/video_frame");
-    assert_eq!(path, "camera/rear/video_frame");
+fn build_key_expr_removes_redundant_separators() {
+    let path = super::build_key_expr("/service", "/camera/rear/", "/video_frame");
+    assert_eq!(path, "service/camera/rear/video_frame");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -291,7 +291,8 @@ async fn service_communication_poll_specific_instance_id() {
         .await
         .expect("service should start");
 
-        let service_root = super::build_full_namespace(listener_node_name, listener_service_name);
+        let service_root =
+            super::build_key_expr("service", listener_node_name, listener_service_name);
         let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
         let expected_request_topic = format!(
             "{service_root}/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
@@ -402,7 +403,8 @@ async fn service_communication_poll_no_instance_id_target() {
         .await
         .expect("service should start");
 
-        let service_root = super::build_full_namespace(listener_node_name, listener_service_name);
+        let service_root =
+            super::build_key_expr("service", listener_node_name, listener_service_name);
         let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
         let expected_request_topic = format!(
             "{service_root}/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
@@ -513,7 +515,8 @@ async fn service_communication_poll_wrong_node() {
         .await
         .expect("service should start");
 
-        let service_root = super::build_full_namespace(listener_node_name, listener_service_name);
+        let service_root =
+            super::build_key_expr("service", listener_node_name, listener_service_name);
         let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
         let expected_request_topic = format!(
             "{service_root}/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
@@ -687,7 +690,8 @@ async fn service_communication_fails_timeout() {
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task = {
-        let service_root = super::build_full_namespace(listener_node_name, listener_service_name);
+        let service_root =
+            super::build_key_expr("service", listener_node_name, listener_service_name);
         let expected_request_key_expr = format!(
             "{service_root}/<INSTANCE_ID:{listener_instance_id}>/request/<INSTANCE_ID:{caller_instance_id}>"
         );
@@ -801,7 +805,11 @@ async fn service_communication_fails_timeout() {
         );
     };
 
-    assert!(err_instance_id.is_none());
+    assert_eq!(
+        err_instance_id.as_deref(),
+        Some(listener_instance_id),
+        "should report unreachable target instance"
+    );
     assert_eq!(err_service_name.as_str(), listener_service_name);
 
     tokio::time::timeout(service_task_timeout, service_task)
@@ -948,7 +956,8 @@ async fn single_service_communication_multiple_polls_and_callers() {
         .await
         .expect("service should start");
 
-        let service_root = super::build_full_namespace(listener_node_name, listener_service_name);
+        let service_root =
+            super::build_key_expr("service", listener_node_name, listener_service_name);
 
         let call_count = Arc::clone(&call_count);
 
@@ -1143,7 +1152,8 @@ async fn action_communication() {
             .await
             .expect("action should start");
 
-            let action_root = super::build_full_namespace(listener_node_name, listener_action_name);
+            let action_root =
+                super::build_key_expr("action", listener_node_name, listener_action_name);
             let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
             let expected_goal_topic = format!(
                 "{action_root}/goal/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
@@ -1234,7 +1244,7 @@ async fn action_communication() {
 
         let expected_feedback_topic = format!(
             "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
-            super::build_full_namespace(listener_node_name, listener_action_name)
+            super::build_key_expr("action", listener_node_name, listener_action_name)
         );
 
         // Consume one feedback update from the action server.
@@ -1310,7 +1320,8 @@ async fn action_communication_no_instance_id_target() {
             .await
             .expect("action should start");
 
-            let action_root = super::build_full_namespace(listener_node_name, listener_action_name);
+            let action_root =
+                super::build_key_expr("action", listener_node_name, listener_action_name);
             let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
             let expected_goal_topic = format!(
                 "{action_root}/goal/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
@@ -1401,7 +1412,7 @@ async fn action_communication_no_instance_id_target() {
 
         let expected_feedback_topic = format!(
             "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
-            super::build_full_namespace(listener_node_name, listener_action_name)
+            super::build_key_expr("action", listener_node_name, listener_action_name)
         );
 
         // Consume one feedback update from the action server.
@@ -1483,7 +1494,8 @@ async fn action_communication_goal_cancelled() {
                 ..
             } = action;
 
-            let action_root = super::build_full_namespace(listener_node_name, listener_action_name);
+            let action_root =
+                super::build_key_expr("action", listener_node_name, listener_action_name);
             let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
             let expected_goal_topic = format!(
                 "{action_root}/goal/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
@@ -1594,7 +1606,7 @@ async fn action_communication_goal_cancelled() {
 
     let expected_feedback_topic = format!(
         "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
-        super::build_full_namespace(listener_node_name, listener_action_name)
+        super::build_key_expr("action", listener_node_name, listener_action_name)
     );
 
     let first_feedback = goal_handle
@@ -1678,7 +1690,11 @@ async fn action_communication_goal_cancelled() {
         );
     };
 
-    assert!(err_instance_id.is_none());
+    assert_eq!(
+        err_instance_id.as_deref(),
+        Some(listener_instance_id),
+        "should report unreachable targeted action instance"
+    );
     assert_eq!(err_action_name, listener_action_name);
 
     server_task
@@ -1726,7 +1742,8 @@ async fn single_action_communication_multiple_polls() {
             .await
             .expect("action should start");
 
-            let action_root = super::build_full_namespace(listener_node_name, listener_action_name);
+            let action_root =
+                super::build_key_expr("action", listener_node_name, listener_action_name);
             let crate::messaging::ActionCreation {
                 mut goal_service,
                 cancel_service: _,
@@ -1874,7 +1891,7 @@ async fn single_action_communication_multiple_polls() {
 
     let expected_feedback_topic = format!(
         "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
-        super::build_full_namespace(listener_node_name, listener_action_name)
+        super::build_key_expr("action", listener_node_name, listener_action_name)
     );
 
     let total_clients = cases.len();
