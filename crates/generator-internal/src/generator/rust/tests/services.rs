@@ -1060,6 +1060,11 @@ fn compile_lib_with_exposed_and_subscribed_services() {
         enable_module_contents
     );
     assert!(
+        enable_module_contents.contains("instance_id: String"),
+        "Expected payload helper to accept caller instance id, got:\n{}",
+        enable_module_contents
+    );
+    assert!(
         enable_module_contents
             .contains("let service_instance_id = std::env::var(\"PEPPY_INSTANCE_ID\")"),
         "Expected handler to resolve service instance id from environment, got:\n{}",

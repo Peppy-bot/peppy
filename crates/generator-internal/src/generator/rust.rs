@@ -2969,6 +2969,11 @@ fn build_exposed_service_method(
         .as_ref()
         .map(|_| quote!(service_instance_id.as_str()));
 
+    let request_has_instance_id = request_format
+        .map(|format| format.0.contains_key("instance_id"))
+        .unwrap_or(false);
+    let instance_from_request_context = instance_id_param.is_some() && !request_has_instance_id;
+
     let instance_binding_ident =
         instance_id_param.map(|_| Ident::new("instance_id", Span::call_site()));
     let (request_pattern, handler_request_args): (TokenStream, Vec<TokenStream>) =
@@ -3022,10 +3027,6 @@ fn build_exposed_service_method(
             });
 
     let mut helper_tokens = Vec::new();
-    let request_has_instance_id = request_format
-        .map(|format| format.0.contains_key("instance_id"))
-        .unwrap_or(false);
-    let instance_from_request_context = instance_id_param.is_some() && !request_has_instance_id;
 
     if let Some(request_spec) = encoding {
         let request_format =
