@@ -390,17 +390,21 @@ impl ServiceMessenger {
 impl ActionMessenger {
     pub async fn listen(
         messenger: &MessengerHandle,
-        namespace: &str,
-        action_name: &str,
+        as_node_name: &str,
+        as_action_name: &str,
+        as_instance_id: &str,
     ) -> Result<ActionCreation> {
-        messenger.expose_action(namespace, action_name).await
+        messenger
+            .expose_action(as_node_name, as_action_name, as_instance_id)
+            .await
     }
 
     pub async fn send_goal(
         messenger: &MessengerHandle,
         as_instance_id: &str,
-        namespace: &str,
+        node_name: &str,
         action_name: &str,
+        instance_id: Option<&str>,
         goal_payload: Bytes,
         feedback_qos: QoSProfile,
         goal_timeout: Duration,
@@ -683,8 +687,13 @@ impl MessengerHandle {
         Ok(response)
     }
 
-    async fn expose_action(&self, namespace: &str, action_name: &str) -> Result<ActionCreation> {
-        let action_root = build_full_namespace(namespace, action_name);
+    async fn expose_action(
+        &self,
+        as_node_name: &str,
+        as_action_name: &str,
+        as_instance_id: &str,
+    ) -> Result<ActionCreation> {
+        let action_root = build_full_namespace(node_name, action_name);
 
         let goal_service_root = format!("{action_root}/goal");
         let cancel_service_root = format!("{action_root}/cancel");
