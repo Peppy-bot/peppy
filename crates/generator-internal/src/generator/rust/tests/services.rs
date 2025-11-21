@@ -162,49 +162,39 @@ fn expose_service() {
         "expected generated handler to schedule request handling through ServiceMessenger"
     );
     assert_rendered!(
+        rendered.contains("crate::Error::MissingInstanceId"),
+        &rendered,
+        "expected error when caller instance_id is absent"
+    );
+    assert_rendered!(
         rendered.contains("request_context.message().payload().as_bytes()"),
         &rendered,
         "expected request payload to be pulled from the request context"
     );
     assert_rendered!(
-        rendered.contains("fn deserialize_request"),
+        rendered.contains("fn deserialize_request(payload: &[u8]) -> crate::Result<Request>"),
         &rendered,
-        "expected request deserializer helper function"
+        "expected request deserializer helper returning Request"
     );
     assert_rendered!(
-        rendered.contains("-> crate::Result<(String, Request)>"),
-        &rendered,
-        "expected request deserializer to return instance_id with request struct"
-    );
-    assert_rendered!(
-        rendered.contains("fn handle_request_payload"),
+        rendered.contains("fn handle_request_payload<F>("),
         &rendered,
         "expected generic helper for handling request payloads"
     );
     assert_rendered!(
-        rendered.contains("service_instance_id: &str"),
+        rendered.contains("instance_id: String"),
         &rendered,
-        "expected handler helper to accept service instance id"
+        "expected handler helper to accept caller instance id"
     );
     assert_rendered!(
-        rendered.contains("let (instance_id, request_data) = deserialize_request(payload)?;"),
+        rendered.contains("let request_data = deserialize_request(payload)?;"),
         &rendered,
-        "expected helper to destructure instance_id from deserializer"
-    );
-    assert_rendered!(
-        rendered.contains("handler(instance_id, request_data)?"),
-        &rendered,
-        "expected handler callback invocation with instance_id parameter"
+        "expected helper to deserialize request payload"
     );
     assert_rendered!(
         rendered.contains("let response = handler(instance_id, request_data)?;"),
         &rendered,
         "expected handler result to be captured with instance context"
-    );
-    assert_rendered!(
-        rendered.contains("response_root.set_instance_id(service_instance_id);"),
-        &rendered,
-        "expected response payload to include service instance id"
     );
     assert_rendered!(
         rendered.contains("let service_instance_id = std::env::var(\"PEPPY_INSTANCE_ID\")"),
@@ -268,9 +258,9 @@ fn expose_service_without_request_body() {
         "expected generic helper function even without request payload"
     );
     assert_rendered!(
-        rendered.contains("service_instance_id: &str"),
+        rendered.contains("instance_id: String"),
         &rendered,
-        "expected payload helper signature to include service instance id"
+        "expected payload helper signature to include caller instance id"
     );
 }
 
@@ -520,24 +510,34 @@ fn subscribed_to_service() {
         "expected request serialization error context"
     );
     assert_rendered!(
+        rendered.contains("let instance_id = std::env::var(\"PEPPY_INSTANCE_ID\")"),
+        &rendered,
+        "expected poll helper to resolve caller instance id from environment"
+    );
+    assert_rendered!(
         rendered.contains("peppylib::ServiceMessenger::poll("),
         &rendered,
         "expected poll helper invocation"
     );
     assert_rendered!(
-        rendered.contains("timeout,\n        )\n        .await?"),
+        rendered.contains("response_message\n        .instance_id()"),
         &rendered,
-        "expected poll timeout to use function parameter"
+        "expected response instance id to be read from message context"
+    );
+    assert_rendered!(
+        rendered.contains("service response missing instance_id"),
+        &rendered,
+        "expected response instance id error handling"
+    );
+    assert_rendered!(
+        rendered.contains("response_message.payload().as_bytes()"),
+        &rendered,
+        "expected response payload to be read from message context"
     );
     assert_rendered!(
         rendered.contains("capnp::serialize::read_message"),
         &rendered,
         "expected response deserialization"
-    );
-    assert_rendered!(
-        rendered.contains("field: String::from(\"instance_id\"),"),
-        &rendered,
-        "expected response deserializer to reference instance id field"
     );
     assert_rendered!(
         rendered.contains("root.reborrow().get_enabled()"),
@@ -636,6 +636,11 @@ fn subscribed_to_two_services_same_node() {
         enable_rendered.contains("context: String::from(\"poll uvc_camera enable_camera\")"),
         enable_rendered,
         "expected request context for `enable_camera`"
+    );
+    assert_rendered!(
+        enable_rendered.contains("response_message\n        .instance_id()"),
+        enable_rendered,
+        "expected response instance id to be read from message context for `enable_camera`"
     );
     assert_rendered!(
         enable_rendered.contains("capnp::serialize::read_message"),
@@ -933,6 +938,16 @@ fn compile_lib_with_exposed_and_subscribed_services() {
         subscriber_module_contents
     );
     assert!(
+        subscriber_module_contents.contains("response_message\n        .instance_id()"),
+        "Enable_camera subscriber module should read service instance id from message context, got:\n{}",
+        subscriber_module_contents
+    );
+    assert!(
+        subscriber_module_contents.contains("service response missing instance_id"),
+        "Enable_camera subscriber module should surface missing instance id errors, got:\n{}",
+        subscriber_module_contents
+    );
+    assert!(
         enable_module_contents.contains("pub struct Response"),
         "Expected generated service module to define response struct, got:\n{}",
         enable_module_contents
@@ -995,16 +1010,6 @@ fn compile_lib_with_exposed_and_subscribed_services() {
     assert!(
         enable_module_contents.contains("fn handle_request_payload"),
         "Expected generated helper to convert handler output to bytes, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains("service_instance_id: &str"),
-        "Expected payload helper to accept service instance id, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains("response_root.set_instance_id(service_instance_id);"),
-        "Expected response payload to set service instance id, got:\n{}",
         enable_module_contents
     );
     assert!(
