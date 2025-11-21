@@ -1,6 +1,6 @@
 pub struct Messenger {
     messenger: peppylib::MessengerHandle,
-    namespace: String,
+    node_name: String,
 }
 
 impl Messenger {
@@ -8,23 +8,25 @@ impl Messenger {
         let messenger = peppylib::MessengerHandle::from_host_port(host, port)
             .await
             .map_err(crate::Error::Messaging)?;
-        let namespace = std::env::var("PEPPY_NAMESPACE")
-            .map(|value| {
-                if value.trim().is_empty() {
-                    "/".to_string()
-                } else {
-                    value
-                }
-            })
-            .unwrap_or_else(|_| "/".to_string());
+        let node_name = std::env::var("PEPPY_NODE_NAME").map_err(|source| {
+            crate::Error::MissingInstanceIdEnvVar {
+                var: "PEPPY_NODE_NAME",
+                source,
+            }
+        })?;
+
+        // TODO: Maybe use peppy::commands::node::NodeName?
+        if !node_name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return Err(crate::Error::InvalidNodeName { node_name });
+        }
         Ok(Self {
             messenger,
-            namespace,
+            node_name,
         })
     }
 
-    pub fn namespace(&self) -> &str {
-        self.namespace.as_str()
+    pub fn node_name(&self) -> &str {
+        self.node_name.as_str()
     }
 
     pub fn handle(&self) -> &peppylib::MessengerHandle {

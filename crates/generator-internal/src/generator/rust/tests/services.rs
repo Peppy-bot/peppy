@@ -162,7 +162,7 @@ fn expose_service() {
         "expected generated handler to schedule request handling through ServiceMessenger"
     );
     assert_rendered!(
-        rendered.contains("request_context.message.payload"),
+        rendered.contains("request_context.message().payload().as_bytes()"),
         &rendered,
         "expected request payload to be pulled from the request context"
     );
@@ -983,7 +983,7 @@ fn compile_lib_with_exposed_and_subscribed_services() {
         enable_module_contents
     );
     assert!(
-        enable_module_contents.contains("request_context.message.payload"),
+        enable_module_contents.contains("request_context.message().payload().as_bytes()"),
         "Expected generated handler to deserialize request payload from the context, got:\n{}",
         enable_module_contents
     );

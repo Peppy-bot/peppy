@@ -195,6 +195,7 @@ impl RustGenerator {
         schema_key: &str,
         response_struct_override: Option<&Ident>,
         response_context_label: Option<&str>,
+        namespace: &str,
     ) -> Result<TokenStream> {
         let request_artifacts = map_message_format(request_format)?;
         let response_artifacts = map_message_format(response_format)?;
@@ -209,6 +210,7 @@ impl RustGenerator {
 
         let method_label = method_ident.to_string();
         let method_label_literal = Literal::string(&method_label);
+        let namespace_literal = Literal::string(namespace);
         let request_encoding = self.prepare_message_encoding(
             schema_key,
             struct_prefix,
@@ -344,7 +346,7 @@ impl RustGenerator {
 
         Ok(quote! {
             pub async fn #method_ident(#(#fn_params),*) -> crate::Result<#return_ty> {
-                let namespace = messenger.namespace();
+                let namespace = #namespace_literal;
                 let service_name = #service_name_literal;
 
                 #request_payload_tokens
@@ -363,6 +365,7 @@ impl RustGenerator {
         service_name: &str,
         schema_key: &str,
         response_context_label: Option<&str>,
+        namespace: &str,
     ) -> Result<TokenStream> {
         let cancel_response_format = cancel_action_response_format();
         let cancel_response_ident = Ident::new("CancelResponse", Span::call_site());
@@ -377,6 +380,7 @@ impl RustGenerator {
             schema_key,
             Some(&cancel_response_ident),
             response_context_label,
+            namespace,
         )
     }
 
@@ -422,6 +426,7 @@ impl RustGenerator {
 
         let topic_name = action_endpoint_name(None, action.name.as_str(), "feedback");
         let topic_literal = Literal::string(&topic_name);
+        let namespace_literal = Literal::string(action.node.as_str());
 
         let helper_fn_ident = Ident::new("deserialize_feedback_payload", Span::call_site());
 
@@ -482,11 +487,11 @@ impl RustGenerator {
                 messenger: &crate::Messenger,
             ) -> crate::Result<#struct_ident> {
                 let topic_name = #topic_literal;
-                let namespace = messenger.namespace();
+                let namespace = #namespace_literal;
                 let qos = peppylib::config::QoSProfile::Standard;
 
                 let message = {
-                    let mut subscription = peppylib::TopicMessenger::subscribe(
+                    let mut subscription = peppylib::TopicMessenger::listen(
                         messenger.handle(),
                         namespace,
                         topic_name,
@@ -506,7 +511,8 @@ impl RustGenerator {
                         })?
                 };
 
-                #helper_fn_ident(message.payload.as_ref())
+                let payload = message.payload().as_bytes();
+                #helper_fn_ident(payload.as_ref())
             }
         };
 
@@ -561,11 +567,7 @@ impl LanguageGenerator for RustGenerator {
         let struct_prefix = String::from("Message");
 
         let mut context = GenerationContext::default();
-        let extended_format = topic
-            .message_format
-            .as_ref()
-            .map(topic_message_format_with_instance_id);
-        let format_artifacts = map_message_format(extended_format.as_ref())?;
+        let format_artifacts = map_message_format(topic.message_format.as_ref())?;
         let params = collect_function_params(
             format_artifacts.as_ref(),
             None,
@@ -892,13 +894,12 @@ impl LanguageGenerator for RustGenerator {
             format!("{module_component}_message")
         };
 
-        let extended_arguments = topic_message_format_with_instance_id(&arguments);
-        let format_artifacts = map_message_format(Some(&extended_arguments))?
+        let format_artifacts = map_message_format(Some(&arguments))?
             .expect("message encoding spec should exist when message format is provided");
 
         let mut context = GenerationContext::default();
         let message_struct_name = String::from("Message");
-        let mut params = collect_function_params(
+        let params = collect_function_params(
             Some(&format_artifacts),
             None,
             &message_struct_name,
@@ -906,11 +907,6 @@ impl LanguageGenerator for RustGenerator {
             None,
         )?;
         let encoding_params = params.clone();
-        let instance_id_index = params
-            .iter()
-            .position(|param| param.ident.to_string() == "instance_id")
-            .expect("instance_id field should exist for subscribed topic format");
-        let instance_id_param = params.remove(instance_id_index);
 
         let args_struct_ident = Ident::new(&message_struct_name, Span::call_site());
         let args_fields: Vec<(Ident, TokenStream)> = params
@@ -935,7 +931,6 @@ impl LanguageGenerator for RustGenerator {
             &helper_fn_ident,
             &args_struct_ident,
             &params,
-            &instance_id_param,
             &format_artifacts,
             &encoding,
             topic,
@@ -1207,6 +1202,7 @@ impl LanguageGenerator for RustGenerator {
 
         let mut service_tokens = context.into_tokens();
         let service_name_literal = Literal::string(service.name.as_str());
+        let namespace_literal = Literal::string(service.node.as_str());
 
         let mut fn_param_tokens = vec![
             quote!(messenger: &crate::Messenger),
@@ -1226,7 +1222,7 @@ impl LanguageGenerator for RustGenerator {
                             source,
                         }
                     })?;
-                let namespace = messenger.namespace();
+                let namespace = #namespace_literal;
                 let service_name = #service_name_literal;
                 let service_name = match target_instance_id {
                     Some(instance_id) => format!("{}/{}", &service_name, &instance_id),
@@ -1317,6 +1313,7 @@ impl LanguageGenerator for RustGenerator {
             &goal_schema_key,
             goal_response_override,
             goal_response_context.as_deref(),
+            action.node.as_str(),
         )?;
         methods.push(goal_method);
 
@@ -1330,6 +1327,7 @@ impl LanguageGenerator for RustGenerator {
             &cancel_service_name,
             &cancel_schema_key,
             cancel_response_context.as_deref(),
+            action.node.as_str(),
         )?;
         methods.push(cancel_method);
 
@@ -1367,6 +1365,7 @@ impl LanguageGenerator for RustGenerator {
             &result_schema_key,
             result_response_override,
             result_response_context.as_deref(),
+            action.node.as_str(),
         )?;
         methods.push(result_method);
 
@@ -2304,12 +2303,8 @@ fn build_topic_emit(
     label: &str,
 ) -> TokenStream {
     let mut method_param_tokens = Vec::new();
-    let mut instance_id_ident = None;
     for param in params {
         if param.ident.to_string() == "instance_id" {
-            if instance_id_ident.is_none() {
-                instance_id_ident = Some(param.ident.clone());
-            }
             continue;
         }
         let ident = &param.ident;
@@ -2325,21 +2320,16 @@ fn build_topic_emit(
     let topic_literal = Literal::string(topic.name.as_str());
     let qos_tokens = qos_profile_tokens(&topic.qos_profile);
     let label_literal = Literal::string(label);
-    let instance_id_stmt = instance_id_ident
-        .as_ref()
-        .map(|ident| {
-            let ident = ident.clone();
-            let env_var_literal = Literal::string("PEPPY_INSTANCE_ID");
-            quote! {
-                let #ident = std::env::var(#env_var_literal).map_err(|source| {
-                    crate::Error::MissingInstanceIdEnvVar {
-                        var: #env_var_literal,
-                        source,
-                    }
-                })?;
+    let instance_id_ident = Ident::new("instance_id", Span::call_site());
+    let env_var_literal = Literal::string("PEPPY_INSTANCE_ID");
+    let instance_id_stmt = quote! {
+        let #instance_id_ident = std::env::var(#env_var_literal).map_err(|source| {
+            crate::Error::MissingInstanceIdEnvVar {
+                var: #env_var_literal,
+                source,
             }
-        })
-        .unwrap_or_else(TokenStream::new);
+        })?;
+    };
 
     match encoding {
         Some(spec) => {
@@ -2371,8 +2361,9 @@ fn build_topic_emit(
 
                     peppylib::TopicMessenger::emit(
                         messenger.handle(),
-                        messenger.namespace(),
+                        messenger.node_name(),
                         topic_name,
+                        &#instance_id_ident,
                         qos,
                         payload,
                     )
@@ -2394,6 +2385,7 @@ fn build_topic_emit(
                 #[allow(clippy::too_many_arguments)]
                 pub async fn #method_ident(#method_signature) -> crate::Result<()> {
                     #instance_id_stmt
+                    let _ = #instance_id_ident;
                     let _ = messenger;
                     #(#ignore_params)*
                     Err(crate::Error::MessageFormatUnavailable {
@@ -2410,13 +2402,13 @@ fn build_subscribed_topic_callback(
     helper_fn_ident: &Ident,
     args_struct_ident: &Ident,
     params: &[FunctionParam],
-    instance_id_param: &FunctionParam,
     artifacts: &CapnpSchemaArtifacts,
     encoding: &MessageEncodingSpec,
     topic: &SubscribedTopic,
     struct_prefix: &str,
 ) -> TokenStream {
     let topic_literal = Literal::string(topic.name.as_str());
+    let namespace_literal = Literal::string(topic.node.as_str());
     let reader_type = &encoding.reader_type;
     let schema_lookup = SchemaFieldLookup::new(artifacts.message_format());
 
@@ -2439,27 +2431,16 @@ fn build_subscribed_topic_callback(
         field_inits.push(quote!(#field_ident: #value_ident));
     }
 
-    let instance_key = instance_id_param.ident.to_string();
-    let (instance_name, instance_schema) = schema_lookup.get(&instance_key);
-    let (instance_id_statements, instance_value_ident) = generate_field_reader_statements(
-        &quote!(root),
-        instance_name.as_str(),
-        instance_schema,
-        struct_prefix,
-        struct_prefix,
-        &mut names,
-    );
-
     let context_literal = Literal::string(struct_prefix);
 
     quote! {
         pub async fn #fn_name(messenger: &crate::Messenger) -> crate::Result<(String, #args_struct_ident)> {
             let topic_name = #topic_literal;
-            let namespace = messenger.namespace();
+            let namespace = #namespace_literal;
             let qos = peppylib::config::QoSProfile::Standard;
 
             let message = {
-                let mut subscription = peppylib::TopicMessenger::subscribe(
+                let mut subscription = peppylib::TopicMessenger::listen(
                     messenger.handle(),
                     namespace,
                     topic_name,
@@ -2479,10 +2460,13 @@ fn build_subscribed_topic_callback(
                     })?
             };
 
-            #helper_fn_ident(message.payload.as_ref())
+            let payload = message.payload().as_bytes();
+            let instance_id = message.instance_id().unwrap_or("").to_string();
+            let message = #helper_fn_ident(payload.as_ref())?;
+            Ok((instance_id, message))
         }
 
-        fn #helper_fn_ident(payload: &[u8]) -> crate::Result<(String, #args_struct_ident)> {
+        fn #helper_fn_ident(payload: &[u8]) -> crate::Result<#args_struct_ident> {
             let mut cursor = std::io::Cursor::new(payload);
             let message_reader = capnp::serialize::read_message(
                 &mut cursor,
@@ -2500,13 +2484,11 @@ fn build_subscribed_topic_callback(
                     source,
                 })?;
 
-            #(#instance_id_statements)*
             #(#field_statements)*
 
-            let message = #args_struct_ident {
+            Ok(#args_struct_ident {
                 #( #field_inits ),*
-            };
-            Ok((#instance_value_ident, message))
+            })
         }
     }
 }
@@ -3137,12 +3119,12 @@ fn build_exposed_service_method(
         let service_instance_arg = service_instance_call_arg.clone();
         if let Some(arg) = service_instance_arg {
             quote!({
-                let payload = #request_context_ident.message.payload;
+                let payload = #request_context_ident.message().payload().as_bytes();
                 #handler_helper_name(payload.as_ref(), &handler, #arg)
             })
         } else {
             quote!({
-                let payload = #request_context_ident.message.payload;
+                let payload = #request_context_ident.message().payload().as_bytes();
                 #handler_helper_name(payload.as_ref(), &handler)
             })
         }
@@ -3181,7 +3163,7 @@ fn build_exposed_service_method(
             F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
         {
             #service_instance_env_stmt
-            let namespace = messenger.namespace();
+            let namespace = messenger.node_name();
             let service_name = #service_name;
 
             let mut service = peppylib::ServiceMessenger::listen(

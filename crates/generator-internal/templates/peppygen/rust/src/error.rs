@@ -7,6 +7,8 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("invalid node name `{node_name}`. Unauthorized characters found")]
+    InvalidNodeName { node_name: String },
     #[error("failed to create messenger for topic `{topic_name}` on {host}:{port}")]
     TopicMessengerConnect {
         topic_name: String,

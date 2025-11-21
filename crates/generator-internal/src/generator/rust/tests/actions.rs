@@ -621,7 +621,7 @@ fn subscribed_to_action() {
         "expected feedback listener method definition"
     );
     assert_rendered!(
-        rendered.contains("peppylib::TopicMessenger::subscribe"),
+        rendered.contains("peppylib::TopicMessenger::listen"),
         &rendered,
         "expected topic subscription for feedback listener"
     );
@@ -838,7 +838,7 @@ fn subscribed_to_two_actions_same_node() {
         "expected rotate_servo_clockwise to poll service endpoints"
     );
     assert_rendered!(
-        rotate_servo.contains("peppylib::TopicMessenger::subscribe"),
+        rotate_servo.contains("peppylib::TopicMessenger::listen"),
         rotate_servo,
         "expected rotate_servo_clockwise to subscribe for feedback"
     );
@@ -954,7 +954,7 @@ fn subscribed_action_without_feedback() {
         "expected feedback payload helper to be omitted without feedback format"
     );
     assert_rendered!(
-        !rendered.contains("peppylib::TopicMessenger::subscribe"),
+        !rendered.contains("peppylib::TopicMessenger::listen"),
         &rendered,
         "expected generator to avoid topic subscriptions without feedback payloads"
     );
