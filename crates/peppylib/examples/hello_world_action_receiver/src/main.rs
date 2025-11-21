@@ -7,6 +7,8 @@ use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use rand::rng;
 use tokio::signal;
+use tokio::sync::Mutex;
+use std::sync::Arc;
 
 const NODE_NAME: &str = "hello_node";
 const ACTION_NAME: &str = "hello_action";
@@ -156,6 +158,7 @@ async fn main() {
             .white()
     );
 
+    let active_caller_instance = Arc::new(Mutex::new(None::<String>));
     let mut awaiting_followup = false;
     let mut shutting_down = false;
     while !shutting_down {
@@ -174,9 +177,18 @@ async fn main() {
                 }
                 result = action.goal_service.handle_next_request({
                     let feedback_publisher = feedback_publisher;
+                    let active_caller_instance = Arc::clone(&active_caller_instance);
                     move |request| {
                         let feedback_publisher = feedback_publisher;
-                        handle_goal_request(request, feedback_publisher)
+                        let active_caller_instance = Arc::clone(&active_caller_instance);
+                        async move {
+                            {
+                                let mut active_instance = active_caller_instance.lock().await;
+                                *active_instance =
+                                    request.message().instance_id().map(str::to_string);
+                            }
+                            handle_goal_request(request, feedback_publisher).await
+                        }
                     }
                 }) => result,
             };
@@ -215,9 +227,45 @@ async fn main() {
                 }
                 cancel_result = action
                     .cancel_service
-                    .handle_next_request(handle_cancel_request) => {
+                    .handle_next_request({
+                        let active_caller_instance = Arc::clone(&active_caller_instance);
+                        move |request| {
+                            let active_caller_instance = Arc::clone(&active_caller_instance);
+                            async move {
+                                let caller_instance =
+                                    request.message().instance_id().map(str::to_string);
+                                let matches_active_goal = {
+                                    let active_instance = active_caller_instance.lock().await;
+                                    match (&*active_instance, &caller_instance) {
+                                        (Some(active), Some(caller)) => active == caller,
+                                        _ => false,
+                                    }
+                                };
+
+                                if !matches_active_goal {
+                                    println!(
+                                        "{}",
+                                        "[CANCEL] Ignoring cancel request for inactive goal."
+                                            .bold()
+                                            .magenta()
+                                    );
+                                    return Ok(Bytes::from_static(
+                                        b"cancel ignored: no active goal for caller",
+                                    ));
+                                }
+
+                                let response = handle_cancel_request(request).await?;
+                                let mut active_instance = active_caller_instance.lock().await;
+                                *active_instance = None;
+                                Ok(response)
+                            }
+                        }
+                    }) => {
                         match cancel_result {
-                            Ok(true) => awaiting_followup = false,
+                            Ok(true) => {
+                                let still_waiting = active_caller_instance.lock().await.is_some();
+                                awaiting_followup = still_waiting;
+                            }
                             Ok(false) => {
                                 println!(
                                     "{}",
@@ -240,9 +288,45 @@ async fn main() {
                     }
                 result_result = action
                     .result_service
-                    .handle_next_request(handle_result_request) => {
+                    .handle_next_request({
+                        let active_caller_instance = Arc::clone(&active_caller_instance);
+                        move |request| {
+                            let active_caller_instance = Arc::clone(&active_caller_instance);
+                            async move {
+                                let caller_instance =
+                                    request.message().instance_id().map(str::to_string);
+                                let matches_active_goal = {
+                                    let active_instance = active_caller_instance.lock().await;
+                                    match (&*active_instance, &caller_instance) {
+                                        (Some(active), Some(caller)) => active == caller,
+                                        _ => false,
+                                    }
+                                };
+
+                                if !matches_active_goal {
+                                    println!(
+                                        "{}",
+                                        "[RESULT] Ignoring result request for inactive goal."
+                                            .bold()
+                                            .cyan()
+                                    );
+                                    return Ok(Bytes::from_static(
+                                        b"result ignored: no active goal for caller",
+                                    ));
+                                }
+
+                                let response = handle_result_request(request).await?;
+                                let mut active_instance = active_caller_instance.lock().await;
+                                *active_instance = None;
+                                Ok(response)
+                            }
+                        }
+                    }) => {
                         match result_result {
-                            Ok(true) => awaiting_followup = false,
+                            Ok(true) => {
+                                let still_waiting = active_caller_instance.lock().await.is_some();
+                                awaiting_followup = still_waiting;
+                            }
                             Ok(false) => {
                                 println!(
                                     "{}",
