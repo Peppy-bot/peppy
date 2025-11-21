@@ -61,8 +61,8 @@ fn generate_request_id() -> String {
     format!("{:x}", result)[..16].to_string() // Use first 16 hex chars for compactness
 }
 
-pub fn build_full_namespace(namespace: &str, message_type_name: &str) -> String {
-    [namespace, message_type_name]
+pub fn build_key_expr(message_type: &str, node_name: &str, message_type_name: &str) -> String {
+    [message_type, node_name, message_type_name]
         .into_iter()
         .flat_map(|part| part.split('/'))
         .filter(|segment| !segment.is_empty())
@@ -377,6 +377,7 @@ impl ServiceMessenger {
     ) -> Result<RawMessage> {
         messenger
             .poll_service(
+                "service",
                 node_name,
                 service_name,
                 instance_id,
@@ -410,7 +411,7 @@ impl ActionMessenger {
         feedback_qos: QoSProfile,
         goal_timeout: Duration,
     ) -> Result<ActionGoalHandle> {
-        let action_root = build_full_namespace(node_name, action_name);
+        let action_root = build_key_expr("action", node_name, action_name);
         let feedback_topic = match instance_id {
             Some(target_instance_id) => {
                 format!("{action_root}/feedback/<INSTANCE_ID:{target_instance_id}>")
@@ -428,6 +429,7 @@ impl ActionMessenger {
 
         let goal_response = messenger
             .poll_service(
+                "action",
                 node_name,
                 &goal_service_name,
                 instance_id,
@@ -456,6 +458,7 @@ impl ActionMessenger {
 
         messenger
             .poll_service(
+                "action",
                 &handle.node_name,
                 &cancel_service_name,
                 handle.target_instance_id.as_deref(),
@@ -477,6 +480,7 @@ impl ActionMessenger {
 
         messenger
             .poll_service(
+                "action",
                 &handle.node_name,
                 &result_service_name,
                 handle.target_instance_id.as_deref(),
@@ -579,7 +583,7 @@ impl MessengerHandle {
         as_service_name: &str,
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
-        let key_expr = build_full_namespace(as_node_name, as_service_name);
+        let key_expr = build_key_expr("service", as_node_name, as_service_name);
         self.create_service_endpoint(key_expr, as_instance_id).await
     }
 
@@ -611,6 +615,7 @@ impl MessengerHandle {
 
     async fn poll_service(
         &self,
+        message_type: &str,
         node_name: &str,
         service_name: &str,
         instance_id: Option<&str>,
@@ -618,7 +623,7 @@ impl MessengerHandle {
         request_payload: Bytes,
         response_timeout: Duration,
     ) -> Result<RawMessage> {
-        let service_root = build_full_namespace(node_name, service_name);
+        let service_root = build_key_expr(message_type, node_name, service_name);
         let target_instance_segment = instance_id.and_then(format_instance_segment);
         let target_instance_id = instance_id.map(|id| id.to_string());
         let caller_instance_segment = format_instance_segment(as_instance_id)
@@ -700,7 +705,7 @@ impl MessengerHandle {
         as_action_name: &str,
         as_instance_id: &str,
     ) -> Result<ActionCreation> {
-        let action_root = build_full_namespace(as_node_name, as_action_name);
+        let action_root = build_key_expr("action", as_node_name, as_action_name);
 
         let goal_service_root = format!("{action_root}/goal");
         let cancel_service_root = format!("{action_root}/cancel");
