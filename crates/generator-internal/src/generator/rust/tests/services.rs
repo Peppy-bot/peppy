@@ -470,14 +470,36 @@ fn subscribed_to_service() {
         "expected poll helper to return instance id with response"
     );
     assert_rendered!(
+        rendered.contains(
+            "/// Ignores the target_instance_id argument if it has already been set by a deployment"
+        ),
+        &rendered,
+        "expected poll helper docstring describing target instance precedence"
+    );
+    assert_rendered!(
+        rendered.contains("let node_name = \"uvc_camera\";"),
+        &rendered,
+        "expected node name literal"
+    );
+    assert_rendered!(
         rendered.contains("let service_name = \"enable_camera\";"),
         &rendered,
         "expected service name literal"
     );
     assert_rendered!(
-        rendered.contains("let service_name = match target_instance_id {"),
+        rendered.contains("PEPPY_{}_{}_TARGET_INSTANCE_ID"),
         &rendered,
-        "expected service name matching"
+        "expected deployment target instance override environment variable"
+    );
+    assert_rendered!(
+        rendered.contains("let final_target_instance_id"),
+        &rendered,
+        "expected final target instance selection"
+    );
+    assert_rendered!(
+        rendered.contains("final_target_instance_id.as_deref()"),
+        &rendered,
+        "expected poll helper to forward target instance id to ServiceMessenger"
     );
     assert_rendered!(
         rendered.contains("capnp::message::Builder::new_default"),
@@ -525,9 +547,14 @@ fn subscribed_to_service() {
         "expected response instance id to be read from message context"
     );
     assert_rendered!(
-        rendered.contains("service response missing instance_id"),
+        rendered.contains("crate::Error::MissingInstanceId"),
         &rendered,
         "expected response instance id error handling"
+    );
+    assert_rendered!(
+        rendered.contains("response_message.key_expr().to_string()"),
+        &rendered,
+        "expected missing instance id errors to reference the response key expression"
     );
     assert_rendered!(
         rendered.contains("response_message.payload().as_bytes()"),
@@ -938,13 +965,33 @@ fn compile_lib_with_exposed_and_subscribed_services() {
         subscriber_module_contents
     );
     assert!(
+        subscriber_module_contents.contains("PEPPY_{}_{}_TARGET_INSTANCE_ID"),
+        "Enable_camera subscriber module should allow deployment target overrides, got:\n{}",
+        subscriber_module_contents
+    );
+    assert!(
+        subscriber_module_contents.contains("let final_target_instance_id"),
+        "Enable_camera subscriber module should resolve final target instance id, got:\n{}",
+        subscriber_module_contents
+    );
+    assert!(
+        subscriber_module_contents.contains("final_target_instance_id.as_deref()"),
+        "Enable_camera subscriber module should forward target instance id to ServiceMessenger, got:\n{}",
+        subscriber_module_contents
+    );
+    assert!(
         subscriber_module_contents.contains("response_message\n        .instance_id()"),
         "Enable_camera subscriber module should read service instance id from message context, got:\n{}",
         subscriber_module_contents
     );
     assert!(
-        subscriber_module_contents.contains("service response missing instance_id"),
+        subscriber_module_contents.contains("crate::Error::MissingInstanceId"),
         "Enable_camera subscriber module should surface missing instance id errors, got:\n{}",
+        subscriber_module_contents
+    );
+    assert!(
+        subscriber_module_contents.contains("response_message.key_expr().to_string()"),
+        "Enable_camera subscriber module should report missing instance id with response key expr, got:\n{}",
         subscriber_module_contents
     );
     assert!(

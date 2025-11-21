@@ -1079,107 +1079,106 @@ impl LanguageGenerator for RustGenerator {
             peppylib::ServiceMessenger::poll(
                 messenger.handle(),
                 instance_id.as_str(),
-                namespace,
-                &service_name,
-                None,
+                node_name,
+                service_name,
+                final_target_instance_id.as_deref(),
                 request_payload,
                 timeout,
             )
         };
 
-        let (return_ty, response_tokens, poll_tokens) = if let Some(response_artifacts) =
-            response_artifacts.as_ref()
-        {
-            let response_struct_name = format!("{struct_prefix}Response");
-            let response_struct_ident = generic_response_ident.clone();
+        let (return_ty, response_tokens, poll_tokens) =
+            if let Some(response_artifacts) = response_artifacts.as_ref() {
+                let response_struct_name = format!("{struct_prefix}Response");
+                let response_struct_ident = generic_response_ident.clone();
 
-            let response_schema_key = format!("{method_label}_response");
-            let response_schema = self.register_schema(
-                &response_schema_key,
-                &response_struct_name,
-                response_artifacts,
-            )?;
-            let response_reader_type = response_schema.reader_type_tokens();
-
-            let response_format = response_artifacts.message_format();
-            let schema_lookup = SchemaFieldLookup::new(response_format);
-            let mut response_statements = Vec::new();
-            let mut response_inits = Vec::new();
-            let mut name_gen = NameGenerator::new();
-            for (field_name, _) in &response_format.0 {
-                let (original_name, schema) = schema_lookup.get(field_name);
-                let (mut statements, value_ident) = generate_field_reader_statements(
-                    &quote!(root),
-                    original_name.as_str(),
-                    schema,
+                let response_schema_key = format!("{method_label}_response");
+                let response_schema = self.register_schema(
+                    &response_schema_key,
                     &response_struct_name,
-                    &response_context_label,
-                    &mut name_gen,
-                );
-                response_statements.append(&mut statements);
-                let field_ident =
-                    Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
-                response_inits.push(quote!(#field_ident: #value_ident));
-            }
+                    response_artifacts,
+                )?;
+                let response_reader_type = response_schema.reader_type_tokens();
 
-            let response_context_literal = Literal::string(&response_context_label);
+                let response_format = response_artifacts.message_format();
+                let schema_lookup = SchemaFieldLookup::new(response_format);
+                let mut response_statements = Vec::new();
+                let mut response_inits = Vec::new();
+                let mut name_gen = NameGenerator::new();
+                for (field_name, _) in &response_format.0 {
+                    let (original_name, schema) = schema_lookup.get(field_name);
+                    let (mut statements, value_ident) = generate_field_reader_statements(
+                        &quote!(root),
+                        original_name.as_str(),
+                        schema,
+                        &response_struct_name,
+                        &response_context_label,
+                        &mut name_gen,
+                    );
+                    response_statements.append(&mut statements);
+                    let field_ident =
+                        Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
+                    response_inits.push(quote!(#field_ident: #value_ident));
+                }
 
-            let poll_tokens = quote! {
-                let response_message = #poll_call.await?;
-            };
+                let response_context_literal = Literal::string(&response_context_label);
 
-            let response_tokens = quote! {
-                let response_instance_id = response_message
-                    .instance_id()
-                    .map(str::to_string)
-                    .ok_or_else(|| {
-                        crate::Error::Messaging(peppylib::PeppyError::Io(std::io::Error::other(
-                            "service response missing instance_id",
-                        )))
-                    })?;
+                let poll_tokens = quote! {
+                    let response_message = #poll_call.await?;
+                };
 
-                let mut cursor = std::io::Cursor::new(response_message.payload().as_bytes());
-                let message_reader = capnp::serialize::read_message(
-                    &mut cursor,
-                    capnp::message::ReaderOptions::new(),
-                )
-                .map_err(|source| crate::Error::CapnpDeserialize {
-                    context: String::from(#response_context_literal),
-                    source,
-                })?;
+                let response_tokens = quote! {
+                    let response_instance_id = response_message
+                        .instance_id()
+                        .map(str::to_string)
+                        .ok_or_else(|| {
+                            crate::Error::MissingInstanceId {
+                                key_expr: response_message.key_expr().to_string(),
+                            }
+                        })?;
 
-                let root = message_reader
-                    .get_root::<#response_reader_type>()
+                    let mut cursor = std::io::Cursor::new(response_message.payload().as_bytes());
+                    let message_reader = capnp::serialize::read_message(
+                        &mut cursor,
+                        capnp::message::ReaderOptions::new(),
+                    )
                     .map_err(|source| crate::Error::CapnpDeserialize {
                         context: String::from(#response_context_literal),
                         source,
                     })?;
 
-                #( #response_statements )*
+                    let root = message_reader
+                        .get_root::<#response_reader_type>()
+                        .map_err(|source| crate::Error::CapnpDeserialize {
+                            context: String::from(#response_context_literal),
+                            source,
+                        })?;
 
-                Ok((
-                    response_instance_id,
-                    #response_struct_ident {
-                        #( #response_inits ),*
-                    },
-                ))
-            };
+                    #( #response_statements )*
 
-            (
-                quote!((String, #response_struct_ident)),
-                response_tokens,
-                poll_tokens,
-            )
-        } else {
-            let poll_tokens = quote! {
-                let _ = #poll_call.await?;
+                    Ok((
+                        response_instance_id,
+                        #response_struct_ident {
+                            #( #response_inits ),*
+                        },
+                    ))
+                };
+
+                (
+                    quote!((String, #response_struct_ident)),
+                    response_tokens,
+                    poll_tokens,
+                )
+            } else {
+                let poll_tokens = quote! {
+                    let _ = #poll_call.await?;
+                };
+                (quote!(()), quote!(Ok(())), poll_tokens)
             };
-            (quote!(()), quote!(Ok(())), poll_tokens)
-        };
 
         let mut service_tokens = context.into_tokens();
         let service_name_literal = Literal::string(service.name.as_str());
-        let namespace_literal = Literal::string(service.node.as_str());
+        let node_name_literal = Literal::string(service.node.as_str());
 
         let mut fn_param_tokens = vec![
             quote!(messenger: &crate::Messenger),
@@ -1191,7 +1190,11 @@ impl LanguageGenerator for RustGenerator {
         }
 
         let function_token = quote! {
+            /// Ignores the target_instance_id argument if it has already been set by a deployment
             pub async fn #method_ident(#(#fn_param_tokens),*) -> crate::Result<#return_ty> {
+                let node_name = #node_name_literal;
+                let service_name = #service_name_literal;
+
                 let instance_id = std::env::var("PEPPY_INSTANCE_ID")
                     .map_err(|source| {
                         crate::Error::MissingInstanceIdEnvVar {
@@ -1199,12 +1202,13 @@ impl LanguageGenerator for RustGenerator {
                             source,
                         }
                     })?;
-                let namespace = #namespace_literal;
-                let service_name = #service_name_literal;
-                let service_name = match target_instance_id {
-                    Some(instance_id) => format!("{}/{}", &service_name, &instance_id),
-                    None => service_name.to_string(),
-                };
+                let deployment_target_instance_id = std::env::var(format!(
+                    "PEPPY_{}_{}_TARGET_INSTANCE_ID",
+                    &node_name, &service_name
+                ))
+                .ok();
+                let final_target_instance_id =
+                    deployment_target_instance_id.or(target_instance_id);
 
                 #request_payload_tokens
 
@@ -3021,8 +3025,7 @@ fn build_exposed_service_method(
     let request_has_instance_id = request_format
         .map(|format| format.0.contains_key("instance_id"))
         .unwrap_or(false);
-    let instance_from_request_context =
-        instance_id_param.is_some() && !request_has_instance_id;
+    let instance_from_request_context = instance_id_param.is_some() && !request_has_instance_id;
 
     if let Some(request_spec) = encoding {
         let request_format =
@@ -3123,8 +3126,7 @@ fn build_exposed_service_method(
     };
 
     let helper_call_tokens = if encoding.is_some() {
-        let mut helper_args: Vec<TokenStream> =
-            vec![quote!(payload.as_ref()), quote!(&handler)];
+        let mut helper_args: Vec<TokenStream> = vec![quote!(payload.as_ref()), quote!(&handler)];
 
         if instance_from_request_context {
             helper_args.push(quote!(instance_id));
