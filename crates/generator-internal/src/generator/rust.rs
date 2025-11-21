@@ -3138,18 +3138,15 @@ fn build_exposed_service_method(
 
         if instance_from_request_context {
             quote!({
-                let result: crate::Result<_> = (|| {
-                    let payload = #request_context_ident.message().payload().as_bytes();
-                    let instance_id = #request_context_ident
-                        .message()
-                        .instance_id()
-                        .map(str::to_string)
-                        .ok_or_else(|| crate::Error::MissingInstanceId {
-                            key_expr: #request_context_ident.message().key_expr().to_string(),
-                        })?;
-                    #handler_helper_name(#(#helper_args),*)
-                })();
-                result
+                let payload = #request_context_ident.message().payload().as_bytes();
+                let instance_id = #request_context_ident
+                    .message()
+                    .instance_id()
+                    .map(str::to_string)
+                    .ok_or_else(|| crate::Error::MissingInstanceId {
+                        key_expr: #request_context_ident.message().key_expr().to_string(),
+                    })?;
+                #handler_helper_name(#(#helper_args),*)
             })
         } else {
             quote!({
@@ -3170,17 +3167,14 @@ fn build_exposed_service_method(
 
         if instance_from_request_context {
             quote!({
-                let result: crate::Result<_> = (|| {
-                    let instance_id = #request_context_ident
-                        .message()
-                        .instance_id()
-                        .map(str::to_string)
-                        .ok_or_else(|| crate::Error::MissingInstanceId {
-                            key_expr: #request_context_ident.message().key_expr().to_string(),
-                        })?;
-                    #handler_helper_name(#(#helper_args),*)
-                })();
-                result
+                let instance_id = #request_context_ident
+                    .message()
+                    .instance_id()
+                    .map(str::to_string)
+                    .ok_or_else(|| crate::Error::MissingInstanceId {
+                        key_expr: #request_context_ident.message().key_expr().to_string(),
+                    })?;
+                #handler_helper_name(#(#helper_args),*)
             })
         } else {
             quote!(#handler_helper_name(#(#helper_args),*))
