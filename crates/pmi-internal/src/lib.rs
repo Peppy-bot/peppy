@@ -14,8 +14,8 @@ pub mod zenohd_support;
 pub use encoding::{Encoder, EncodingBackend, EncodingFormat};
 pub use error::Error as PeppyMessagingInterfaceError;
 pub use types::{
-    Message, Messenger, MessengerAdapter, MessengerBackend, PublisherQoS, ReceivedMessage,
-    SenderMessage, SubscriberQoS, Subscription,
+    Message, Messenger, MessengerAdapter, MessengerBackend, PublisherQoS, SubscriberQoS,
+    Subscription, TopicMessage,
 };
 
 pub use adapters::mock::MockAdapter;

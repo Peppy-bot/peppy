@@ -6,7 +6,7 @@ use bytes::Bytes;
 use config::node::QoSProfile;
 use pmi::{
     Message, Messenger, MessengerAdapter, MessengerBackend, PeppyMessagingInterfaceError,
-    PublisherQoS, ReceivedMessage, SenderMessage, SubscriberQoS, ZenohAdapter, ZenohNetProtocol,
+    PublisherQoS, SubscriberQoS, Subscription, TopicMessage, ZenohAdapter, ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -20,8 +20,6 @@ use tokio::{
     time::{Duration, timeout},
 };
 use tracing::error;
-
-pub use pmi::Subscription;
 
 const INSTANCE_ID_WILDCARD: &str = "**";
 
@@ -169,7 +167,7 @@ impl ServiceEndpoint {
 
     fn build_request_context(
         &self,
-        request: ReceivedMessage,
+        request: TopicMessage,
     ) -> Result<(ServiceRequestContext, String)> {
         let identifier = request.key_expr().to_string();
         let service_instance_segment = format_instance_segment(self.instance_id.as_str());
@@ -262,7 +260,7 @@ impl ServiceEndpoint {
             }
             None => format!("{}/**/request/{caller_segment}", self.service_root),
         };
-        let message = SenderMessage::new(&message_identifier, request.into_payload())?;
+        let message = TopicMessage::new(&message_identifier, request.into_payload())?;
         let context = ServiceRequestContext::new(message, request_id);
 
         Ok((context, response_topic))
@@ -287,19 +285,19 @@ impl ServiceEndpoint {
 }
 
 pub struct ServiceRequestContext {
-    message: SenderMessage,
+    message: TopicMessage,
     request_id: Option<String>,
 }
 
 impl ServiceRequestContext {
-    pub fn new(message: SenderMessage, request_id: Option<String>) -> Self {
+    pub fn new(message: TopicMessage, request_id: Option<String>) -> Self {
         Self {
             message,
             request_id,
         }
     }
 
-    pub fn message(&self) -> &SenderMessage {
+    pub fn message(&self) -> &TopicMessage {
         &self.message
     }
 
@@ -343,12 +341,12 @@ pub struct ActionGoalHandle {
     node_name: String,
     action_name: String,
     target_instance_id: Option<String>,
-    goal_response: ReceivedMessage,
+    goal_response: TopicMessage,
     feedback: Subscription,
 }
 
 impl ActionGoalHandle {
-    pub fn goal_response(&self) -> &ReceivedMessage {
+    pub fn goal_response(&self) -> &TopicMessage {
         &self.goal_response
     }
 
@@ -412,7 +410,7 @@ impl ServiceMessenger {
         instance_id: Option<&str>,
         request_payload: Bytes,
         response_timeout: Duration,
-    ) -> Result<ReceivedMessage> {
+    ) -> Result<TopicMessage> {
         messenger
             .poll_service(
                 "service",
@@ -491,7 +489,7 @@ impl ActionMessenger {
         as_instance_id: &str,
         handle: &ActionGoalHandle,
         cancel_timeout: Duration,
-    ) -> Result<ReceivedMessage> {
+    ) -> Result<TopicMessage> {
         let cancel_service_name = format!("{}/cancel", handle.action_name);
 
         messenger
@@ -513,7 +511,7 @@ impl ActionMessenger {
         handle: &ActionGoalHandle,
         result_request_payload: Bytes,
         result_timeout: Duration,
-    ) -> Result<ReceivedMessage> {
+    ) -> Result<TopicMessage> {
         let result_service_name = format!("{}/result", handle.action_name);
 
         messenger
@@ -660,7 +658,7 @@ impl MessengerHandle {
         as_instance_id: &str,
         request_payload: Bytes,
         response_timeout: Duration,
-    ) -> Result<ReceivedMessage> {
+    ) -> Result<TopicMessage> {
         let service_root = build_key_expr(message_type, node_name, service_name);
         let target_instance_segment = instance_id.and_then(format_instance_segment);
         let target_instance_id = instance_id.map(|id| id.to_string());
