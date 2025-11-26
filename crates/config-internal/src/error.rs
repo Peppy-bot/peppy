@@ -17,8 +17,11 @@ pub enum ParsingError {
     // -- node_config
     #[error("Invalid name: {0}")]
     InvalidName(String),
-    #[error("Invalid namespace: {0}")]
-    InvalidNamespace(String),
+
+    #[error("Invalid instance id: {0}, allowed characters: {1}")]
+    InvalidInstanceId(String, String),
+    #[error("Empty instance id")]
+    EmptyInstanceId,
 
     // -- types
     #[error("Invalid scalar type {0}: {1}")]
