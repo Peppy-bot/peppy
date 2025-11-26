@@ -335,6 +335,9 @@ impl GitRemoteSpec {
 pub struct InstanceID(String);
 
 impl InstanceID {
+    pub const ALLOWED_CHARS: &'static str =
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
+
     pub fn new<S: Into<String>>(s: S) -> Result<Self, ParsingError> {
         Self::try_from(s.into())
     }
@@ -344,7 +347,7 @@ impl InstanceID {
     }
 
     fn is_valid_char(c: char) -> bool {
-        c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-' || c == '/'
+        Self::ALLOWED_CHARS.contains(c)
     }
 }
 
@@ -353,14 +356,15 @@ impl TryFrom<String> for InstanceID {
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         if value.is_empty() {
-            return Err(ParsingError::InvalidNamespace(
-                "Namespace cannot be empty".to_string(),
-            ));
+            return Err(ParsingError::EmptyInstanceId);
         }
         if value.chars().all(InstanceID::is_valid_char) {
             return Ok(InstanceID(value));
         }
-        Err(ParsingError::InvalidNamespace(value))
+        Err(ParsingError::InvalidInstanceId(
+            value,
+            InstanceID::ALLOWED_CHARS.to_string(),
+        ))
     }
 }
 
@@ -376,13 +380,24 @@ mod tests {
 
     #[test]
     fn namespace_validation() {
-        assert!(InstanceID::new("/").is_ok());
-        assert!(InstanceID::new("/robot").is_ok());
-        assert!(InstanceID::new("/robot/camera_v1").is_ok());
+        assert!(InstanceID::new("robot").is_ok());
+        assert!(InstanceID::new("camera_v1").is_ok());
 
         assert!(InstanceID::new("").is_err()); // empty not permitted
-        assert!(InstanceID::new("/Robot").is_err()); // capital
-        assert!(InstanceID::new("/robot$cam").is_err()); // special
+        assert!(InstanceID::new("/").is_err()); // slash not permitted
+        assert!(InstanceID::new("/robot").is_err()); // slash not permitted
+        assert!(InstanceID::new("Robot").is_ok()); // capital now allowed
+        assert!(InstanceID::new("robot$cam").is_err()); // special
+    }
+
+    #[test]
+    fn namespace_error_message() {
+        let err = InstanceID::new("Invalid!").unwrap_err();
+        if let ParsingError::InvalidInstanceId(_, msg) = err {
+            assert_eq!(msg, InstanceID::ALLOWED_CHARS);
+        } else {
+            panic!("Expected InvalidInstanceId error");
+        }
     }
 
     #[test]
