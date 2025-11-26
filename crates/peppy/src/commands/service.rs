@@ -13,6 +13,9 @@ pub enum ServiceCommands {
         /// Messaging engine to use (zenoh by default)
         #[arg(long, default_value = "zenoh")]
         messaging_engine: String,
+        /// Optional name for the master node
+        #[arg(long)]
+        master_name: Option<String>,
     },
     // Install the peppy daemon system-wide
     Install {},
@@ -30,9 +33,14 @@ impl Command for ServiceCommand {
                     "Set PEPPY_ENV=PROD in the systemd/launchctl env var when the service is installed"
                 );
             }
-            ServiceCommands::Serve { messaging_engine } => {
-                super::serve::ServeCommand { messaging_engine }.execute(&app_ctx)
+            ServiceCommands::Serve {
+                messaging_engine,
+                master_name,
+            } => super::serve::ServeCommand {
+                messaging_engine,
+                master_name,
             }
+            .execute(&app_ctx),
             ServiceCommands::Install {} => super::install::InstallCommand {}.execute(app_ctx),
         }
     }

@@ -179,6 +179,7 @@ impl Serve {
 
 pub struct ServeCommand {
     pub messaging_engine: String,
+    pub master_name: Option<String>,
 }
 
 impl Command for ServeCommand {
@@ -200,7 +201,7 @@ impl Command for ServeCommand {
 
         let executor = ServeCommandBuilder::new()?
             .with_messaging_router(self.messaging_engine)
-            .with_master_node()?
+            .with_master_node(self.master_name)?
             .with_node_stack(ctx)
             .build()?;
 

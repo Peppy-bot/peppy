@@ -19,8 +19,11 @@ pub struct MasterNode {
 }
 
 impl MasterNode {
-    pub fn new(messenger: Arc<Mutex<Messenger>>) -> Self {
-        let manifest_name = Name::new(get_random(rng())).unwrap();
+    pub fn new(messenger: Arc<Mutex<Messenger>>, node_name: Option<&str>) -> Self {
+        let manifest_name = match node_name {
+            Some(name) => Name::new(name).unwrap(),
+            None => Name::new(get_random(rng())).unwrap(),
+        };
 
         let node_config = NodeConfig {
             schema_version: CURRENT_SCHEMA_VERSION,
