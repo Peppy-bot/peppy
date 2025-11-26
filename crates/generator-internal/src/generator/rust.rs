@@ -1128,14 +1128,7 @@ impl LanguageGenerator for RustGenerator {
                 };
 
                 let response_tokens = quote! {
-                    let response_instance_id = response_message
-                        .instance_id()
-                        .map(str::to_string)
-                        .ok_or_else(|| {
-                            crate::Error::MissingInstanceId {
-                                key_expr: response_message.key_expr().to_string(),
-                            }
-                        })?;
+                    let response_instance_id = response_message.instance_id().to_string();
 
                     let mut cursor = std::io::Cursor::new(response_message.payload().as_bytes());
                     let message_reader = capnp::serialize::read_message(
@@ -1203,8 +1196,7 @@ impl LanguageGenerator for RustGenerator {
                         }
                     })?;
                 let deployment_target_instance_id = std::env::var(format!(
-                    "PEPPY_{}_{}_TARGET_INSTANCE_ID",
-                    &node_name, &service_name
+                    "PEPPY_{}_{}_TARGET_INSTANCE_ID", &node_name, &service_name
                 ))
                 .ok();
                 let final_target_instance_id =
@@ -3138,14 +3130,7 @@ fn build_exposed_service_method(
             quote!({
                 let message = #request_context_ident.message();
                 let payload = message.payload().as_bytes();
-                let instance_id = if let Some(value) = message.instance_id() {
-                    value.to_string()
-                } else {
-                    let error = crate::Error::MissingInstanceId {
-                        key_expr: message.key_expr().to_string(),
-                    };
-                    return Err(peppylib::PeppyError::Io(std::io::Error::other(error.to_string())));
-                };
+                let instance_id = message.instance_id().to_string();
                 #handler_helper_name(#(#helper_args),*)
             })
         } else {
@@ -3169,14 +3154,7 @@ fn build_exposed_service_method(
             quote!({
                 let message = #request_context_ident.message();
                 let payload = message.payload().as_bytes();
-                let instance_id = if let Some(value) = message.instance_id() {
-                    value.to_string()
-                } else {
-                    let error = crate::Error::MissingInstanceId {
-                        key_expr: message.key_expr().to_string(),
-                    };
-                    return Err(peppylib::PeppyError::Io(std::io::Error::other(error.to_string())));
-                };
+                let instance_id = message.instance_id().to_string();
                 #handler_helper_name(#(#helper_args),*)
             })
         } else {
