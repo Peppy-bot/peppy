@@ -4,6 +4,9 @@ pub const PEPPY_NODE_CONFIG_FILE: &str = "peppy.json5";
 // 7447 is the default port but we avoid using it to avoid conflicts with other services using Zenoh
 pub const DEFAULT_ZENOH_PORT: u16 = 7448;
 
+pub const ALLOWED_CONFIG_CHARS: &str =
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
+
 // Application runtime environment (dev/prod) tracked internally.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppEnv {
