@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::types::{PublisherQoS, ReceivedMessage, SubscriberQoS};
+use crate::types::{PublisherQoS, SubscriberQoS, TopicMessage};
 use crate::{Message, MessengerBackend, Subscription};
 use crate::{ZenohNetProtocol, zenohd};
 use askama::Template;
@@ -302,7 +302,7 @@ impl MessengerBackend for ZenohAdapter {
 
                         let key_expr = key_expr.as_str();
                         // Create a ResponseMessage object with topic and payload
-                        match ReceivedMessage::from_zbytes(key_expr, payload) {
+                        match TopicMessage::from_zbytes(key_expr, payload) {
                             Ok(message) => {
                                 if let Err(e) = tx.send(message).await {
                                     tracing::error!("Failed to send message: {}", e);

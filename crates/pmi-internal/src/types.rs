@@ -96,20 +96,20 @@ pub trait MessengerBackend {
 /// Handles message receiving and cleanup
 pub struct Subscription {
     // stream of messages; could be tokio::sync::mpsc::Receiver or a Stream
-    pub rx: tokio::sync::mpsc::Receiver<ReceivedMessage>,
+    pub rx: tokio::sync::mpsc::Receiver<TopicMessage>,
     // Handle to abort the background task when subscription is dropped
     abort_handle: tokio::task::AbortHandle,
 }
 
 impl Subscription {
     pub fn new(
-        rx: tokio::sync::mpsc::Receiver<ReceivedMessage>,
+        rx: tokio::sync::mpsc::Receiver<TopicMessage>,
         abort_handle: tokio::task::AbortHandle,
     ) -> Self {
         Self { rx, abort_handle }
     }
 
-    pub async fn on_next_message(&mut self) -> Option<ReceivedMessage> {
+    pub async fn on_next_message(&mut self) -> Option<TopicMessage> {
         self.rx.recv().await
     }
 }
@@ -277,30 +277,46 @@ impl PartialEq<Payload> for bytes::Bytes {
     }
 }
 
-pub struct SenderMessage {
+/// Envelope for messages travelling through the transport layer.
+pub struct TopicMessage {
     key_expr: String,
     instance_id: String,
     payload: Payload,
 }
 
-impl SenderMessage {
+impl TopicMessage {
     pub fn new(key_expr: &str, payload: impl Into<Payload>) -> Result<Self> {
-        let instance_id = extract_instance_id(key_expr)?;
+        let instance_id = TopicMessage::extract_instance_id(key_expr)?;
         Ok(Self {
             key_expr: key_expr.to_string(),
-            instance_id: instance_id,
+            instance_id,
             payload: payload.into(),
         })
     }
 
     #[cfg(feature = "zenoh")]
     pub fn from_zbytes(key_expr: &str, zbytes: ZBytes) -> Result<Self> {
-        let instance_id = extract_instance_id(key_expr)?;
+        let instance_id = TopicMessage::extract_instance_id(key_expr)?;
         Ok(Self {
             key_expr: key_expr.to_string(),
             instance_id,
             payload: Payload::from_zbytes(zbytes),
         })
+    }
+
+    fn extract_instance_id(key_expr: &str) -> Result<String> {
+        let re = Regex::new(r"<INSTANCE_ID:([^>]+)>")
+            .map_err(|err| Error::InstanceIdExtractionError(err.to_string()))?;
+
+        let captures = re
+            .captures_iter(key_expr)
+            .last()
+            .ok_or_else(|| Error::InstanceIdNotFound(key_expr.to_string()))?;
+
+        captures
+            .get(1)
+            .map(|value| value.as_str().to_string())
+            .ok_or_else(|| Error::InstanceIdExtractionError(key_expr.to_string()))
     }
 
     pub fn instance_id(&self) -> &str {
@@ -322,68 +338,6 @@ impl SenderMessage {
     pub fn key_expr(&self) -> &str {
         &self.key_expr
     }
-}
-
-pub struct ReceivedMessage {
-    key_expr: String,
-    instance_id: String,
-    payload: Payload,
-}
-
-impl ReceivedMessage {
-    pub fn new(key_expr: &str, payload: impl Into<Payload>) -> Result<Self> {
-        let instance_id = extract_instance_id(key_expr)?;
-        Ok(Self {
-            key_expr: key_expr.to_string(),
-            instance_id: instance_id,
-            payload: payload.into(),
-        })
-    }
-
-    #[cfg(feature = "zenoh")]
-    pub fn from_zbytes(key_expr: &str, zbytes: ZBytes) -> Result<Self> {
-        let instance_id = extract_instance_id(key_expr)?;
-        Ok(Self {
-            key_expr: key_expr.to_string(),
-            instance_id,
-            payload: Payload::from_zbytes(zbytes),
-        })
-    }
-
-    pub fn instance_id(&self) -> &str {
-        &self.instance_id
-    }
-
-    pub fn payload(&self) -> &Payload {
-        &self.payload
-    }
-
-    pub fn into_payload(self) -> Payload {
-        self.payload
-    }
-
-    pub fn into_parts(self) -> (String, Payload) {
-        (self.instance_id, self.payload)
-    }
-
-    pub fn key_expr(&self) -> &str {
-        &self.key_expr
-    }
-}
-
-fn extract_instance_id(key_expr: &str) -> Result<String> {
-    let re = Regex::new(r"<INSTANCE_ID:([^>]+)>")
-        .map_err(|err| Error::InstanceIdExtractionError(err.to_string()))?;
-
-    let captures = re
-        .captures_iter(key_expr)
-        .last()
-        .ok_or_else(|| Error::InstanceIdNotFound(key_expr.to_string()))?;
-
-    captures
-        .get(1)
-        .map(|value| value.as_str().to_string())
-        .ok_or_else(|| Error::InstanceIdExtractionError(key_expr.to_string()))
 }
 
 /// Dispatches the Messenger calls to the appropriate backend without using the heap

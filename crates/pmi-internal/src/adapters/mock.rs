@@ -1,6 +1,6 @@
 use super::super::error::{Error, Result};
 use super::super::types::{
-    Message, MessengerBackend, PublisherQoS, ReceivedMessage, SubscriberQoS, Subscription,
+    Message, MessengerBackend, PublisherQoS, SubscriberQoS, Subscription, TopicMessage,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -12,7 +12,7 @@ pub struct MockAdapter {
     // Store published messages by topic
     pub messages: Arc<Mutex<HashMap<String, Vec<Message>>>>,
     // Store active subscriptions
-    pub subscriptions: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<ReceivedMessage>>>>>,
+    pub subscriptions: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<TopicMessage>>>>>,
 }
 
 impl Default for MockAdapter {
@@ -173,9 +173,9 @@ impl MockAdapter {
         }
     }
 
-    fn to_response_message(message: &Message) -> Result<ReceivedMessage> {
+    fn to_response_message(message: &Message) -> Result<TopicMessage> {
         let identifier = message.identifier();
-        ReceivedMessage::new(identifier, message.payload().clone())
+        TopicMessage::new(identifier, message.payload().clone())
     }
 }
 
