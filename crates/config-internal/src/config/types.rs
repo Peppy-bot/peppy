@@ -1,6 +1,6 @@
 use crate::{
     common::NodeParameters,
-    error::{DUPLICATE_INSTANCE_ID_ERROR_PREFIX, ParsingError},
+    error::{Error as ConfigError, ParsingError},
     node::Logging,
 };
 use serde::{
@@ -59,8 +59,8 @@ where
     for instance in &instances {
         let id = instance.instance_id.as_str();
         if !seen.insert(id.to_owned()) {
-            return Err(de::Error::custom(format!(
-                "{DUPLICATE_INSTANCE_ID_ERROR_PREFIX}{id}"
+            return Err(de::Error::custom(ConfigError::DuplicateInstanceIdSerde(
+                id.to_owned(),
             )));
         }
     }

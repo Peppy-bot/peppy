@@ -1,7 +1,5 @@
 use thiserror::Error;
 
-pub(crate) const DUPLICATE_INSTANCE_ID_ERROR_PREFIX: &str = "Duplicate instance id: ";
-
 pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, Error, Clone)]
@@ -50,8 +48,7 @@ impl From<serde_json5::Error> for ParsingError {
             serde_json5::Error::Message { msg, .. } => {
                 if let Some(detail) = msg.strip_prefix("Invalid deployment source: ") {
                     ParsingError::InvalidDeploymentSource(detail.to_string())
-                } else if let Some(duplicate) = msg.strip_prefix(DUPLICATE_INSTANCE_ID_ERROR_PREFIX)
-                {
+                } else if let Some(duplicate) = msg.strip_prefix("Duplicate instance id: ") {
                     ParsingError::DuplicateInstanceId(duplicate.to_string())
                 } else {
                     ParsingError::CannotParseConfig(msg)
@@ -74,6 +71,8 @@ pub enum Error {
     Parsing(#[from] ParsingError),
     #[error("Serialize error: {0}")]
     Serialize(String),
+    #[error("Duplicate instance id: {0}")]
+    DuplicateInstanceIdSerde(String),
 
     // -- Domain specific
     #[error("Unsupported language")]
