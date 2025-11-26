@@ -12,8 +12,8 @@ pub struct MasterNodeRunner {
 }
 
 impl MasterNodeRunner {
-    pub fn new(messenger: Arc<Mutex<Messenger>>) -> Self {
-        let master_node = MasterNode::new(messenger);
+    pub fn new(messenger: Arc<Mutex<Messenger>>, master_name: Option<String>) -> Self {
+        let master_node = MasterNode::new(messenger, master_name.as_deref());
         Self { master_node }
     }
 

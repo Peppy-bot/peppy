@@ -19,6 +19,7 @@ pub struct ServeCommandBuilder {
     messenger: Option<Arc<Mutex<Messenger>>>,
     node_stack: NodeStack,
     master_node_requested: bool,
+    master_node_name: Option<String>,
 }
 
 impl ServeCommandBuilder {
@@ -28,6 +29,7 @@ impl ServeCommandBuilder {
             messenger: None,
             node_stack: NodeStack::new(),
             master_node_requested: false,
+            master_node_name: None,
         })
     }
 
@@ -52,8 +54,9 @@ impl ServeCommandBuilder {
         self
     }
 
-    pub fn with_master_node(mut self) -> Result<Self> {
+    pub fn with_master_node(mut self, master_name: Option<String>) -> Result<Self> {
         self.master_node_requested = true;
+        self.master_node_name = master_name;
         Ok(self)
     }
 
@@ -65,7 +68,8 @@ impl ServeCommandBuilder {
     pub fn build(mut self) -> Result<Serve> {
         if self.master_node_requested {
             if let Some(messenger) = &self.messenger {
-                let master_node = MasterNodeRunner::new(Arc::clone(messenger));
+                let master_node =
+                    MasterNodeRunner::new(Arc::clone(messenger), self.master_node_name.clone());
                 self.node_stack.push_config(master_node.config().clone());
                 self.composite_command = self
                     .composite_command
