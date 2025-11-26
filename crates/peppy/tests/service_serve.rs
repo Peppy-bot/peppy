@@ -162,6 +162,7 @@ fn test_serve_command() {
 
     ServeCommand {
         messaging_engine: "mock".to_string(),
+        master_name: None,
     }
     .execute(&ctx)
     .expect("serve command executes with mock messaging engine");
@@ -210,6 +211,7 @@ fn test_serve_command_replace_existing_stack() {
     let serve_thread = thread::spawn(move || {
         ServeCommand {
             messaging_engine: "zenoh".to_string(),
+            master_name: None,
         }
         .execute(&ctx_for_thread)
         .expect("initial serve command should start");
@@ -225,6 +227,7 @@ fn test_serve_command_replace_existing_stack() {
         let _prompt_guard = EnvVarGuard::set(PROMPT_ANSWER_ENV, "y");
         ServeCommand {
             messaging_engine: "zenoh".to_string(),
+            master_name: None,
         }
         .execute(&ctx)
     };

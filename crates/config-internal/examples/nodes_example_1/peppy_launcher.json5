@@ -69,8 +69,8 @@
         {
           instance_id: "video_stream1",
           parameters: {
-            // Listen to all the instances with this ID
-            camera_instance_ids: [
+            // Listen to all the instances with this ID, it's up to the writer of the node to implement the filtering
+            camera_instances_id_filter: [
               "camera_front",
               "camera_rear"
             ],
