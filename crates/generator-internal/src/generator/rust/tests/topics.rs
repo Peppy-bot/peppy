@@ -405,7 +405,7 @@ fn subscribed_to_topic() {
         "expected subscriber return type including instance id"
     );
     assert_rendered!(
-        rendered.contains("message.instance_id().unwrap_or(\"\").to_string()"),
+        rendered.contains("message.instance_id().to_string()"),
         &rendered,
         "expected instance id to come from message metadata"
     );

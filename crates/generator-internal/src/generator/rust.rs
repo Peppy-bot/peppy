@@ -2433,7 +2433,7 @@ fn build_subscribed_topic_callback(
             };
 
             let payload = message.payload().as_bytes();
-            let instance_id = message.instance_id().unwrap_or("").to_string();
+            let instance_id = message.instance_id().to_string();
             let message = #helper_fn_ident(payload.as_ref())?;
             Ok((instance_id, message))
         }
