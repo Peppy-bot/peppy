@@ -32,7 +32,7 @@ fn payload_as_text(request: &ServiceRequestContext) -> String {
 
 async fn handle_request(request: ServiceRequestContext) -> PeppyResult<Bytes> {
     let payload_text = payload_as_text(&request);
-    let instance_id = request.message().instance_id().unwrap_or("unknown");
+    let instance_id = request.message().instance_id();
 
     println!(
         "[{}] Received request with payload `{payload_text}` from `{instance_id}`",
