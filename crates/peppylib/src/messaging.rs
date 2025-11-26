@@ -10,6 +10,7 @@ use pmi::{
 };
 use sha2::{Digest, Sha256};
 use std::{
+    fmt,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -95,13 +96,15 @@ impl ServiceEndpoint {
         F: FnOnce(ServiceRequestContext) -> Fut,
         Fut: std::future::Future<Output = Result<Bytes>>,
     {
-        if let Some((context, response_topic)) = self.next_request().await? {
-            let response_payload = handler(context).await?;
-            self.publish_response(response_topic, response_payload)
-                .await?;
-            Ok(true)
-        } else {
-            Ok(false)
+        match self.next_request().await {
+            Ok((context, response_topic)) => {
+                let response_payload = handler(context).await?;
+                self.publish_response(response_topic, response_payload)
+                    .await?;
+                Ok(true)
+            }
+            Err(Error::ServiceRequestStreamClosed) => Ok(false),
+            Err(err) => Err(err),
         }
     }
 
@@ -112,8 +115,10 @@ impl ServiceEndpoint {
         Fut: std::future::Future<Output = Result<Bytes>>,
     {
         loop {
-            let Some((context, response_topic)) = self.next_request().await? else {
-                break;
+            let (context, response_topic) = match self.next_request().await {
+                Ok(value) => value,
+                Err(Error::ServiceRequestStreamClosed) => break,
+                Err(err) => return Err(err),
             };
             let response_payload = handler(context).await?;
             self.publish_response(response_topic, response_payload)
@@ -133,8 +138,10 @@ impl ServiceEndpoint {
         F: FnOnce(ServiceRequestContext) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<Bytes>> + Send + 'static,
     {
-        let Some((context, response_topic)) = self.next_request().await? else {
-            return Ok(None);
+        let (context, response_topic) = match self.next_request().await {
+            Ok(value) => value,
+            Err(Error::ServiceRequestStreamClosed) => return Ok(None),
+            Err(err) => return Err(err),
         };
 
         let messenger = Arc::clone(&self.messenger);
@@ -151,20 +158,19 @@ impl ServiceEndpoint {
         Ok(Some(task))
     }
 
-    async fn next_request(&mut self) -> Result<Option<(ServiceRequestContext, String)>> {
+    async fn next_request(&mut self) -> Result<(ServiceRequestContext, String)> {
         while let Some(request) = self.subscription.rx.recv().await {
-            if let Some((context, response_topic)) = self.build_request_context(request) {
-                return Ok(Some((context, response_topic)));
-            }
+            let (context, response_topic) = self.build_request_context(request)?;
+            return Ok((context, response_topic));
         }
 
-        Ok(None)
+        Err(Error::ServiceRequestStreamClosed)
     }
 
     fn build_request_context(
         &self,
         request: ReceivedMessage,
-    ) -> Option<(ServiceRequestContext, String)> {
+    ) -> Result<(ServiceRequestContext, String)> {
         let identifier = request.key_expr().to_string();
         let service_instance_segment = format_instance_segment(self.instance_id.as_str());
         let response_instance_segment = service_instance_segment
@@ -176,6 +182,15 @@ impl ServiceEndpoint {
             .map(|instance_segment| format!("{}/{instance_segment}/request/", self.service_root));
         let direct_prefix = format!("{}/request/", self.service_root);
         let wildcard_prefix = format!("{}/**/request/", self.service_root);
+        let expected_prefixes = {
+            let mut prefixes = Vec::new();
+            if let Some(prefix) = specific_prefix.as_ref() {
+                prefixes.push(prefix.as_str());
+            }
+            prefixes.push(direct_prefix.as_str());
+            prefixes.push(wildcard_prefix.as_str());
+            prefixes.join(" or ")
+        };
 
         let matched_prefix = specific_prefix
             .as_ref()
@@ -196,22 +211,35 @@ impl ServiceEndpoint {
                 }
             });
 
-        let Some(request_prefix) = matched_prefix else {
-            error!(%identifier, "service received request on unexpected topic");
-            return None;
-        };
+        let request_prefix = matched_prefix.ok_or_else(|| {
+            let reason =
+                format!("unexpected request topic; expected to start with {expected_prefixes}");
+            error!(%identifier, %reason, "service received invalid request");
+            Error::InvalidServiceRequest {
+                identifier: identifier.clone(),
+                reason,
+            }
+        })?;
 
-        let remainder = match identifier.strip_prefix(&request_prefix) {
-            Some(rest) => rest,
-            None => return None,
-        };
+        let remainder = identifier.strip_prefix(&request_prefix).ok_or_else(|| {
+            let reason =
+                "request topic is missing the expected prefix after validation".to_string();
+            error!(%identifier, %reason, "service received invalid request");
+            Error::InvalidServiceRequest {
+                identifier: identifier.clone(),
+                reason,
+            }
+        })?;
         let mut remainder_parts = remainder.split('/').filter(|segment| !segment.is_empty());
 
         let caller_segment = match remainder_parts.next().map(str::to_string) {
             Some(segment) => segment,
             None => {
                 error!(%identifier, "service received request without caller instance segment");
-                return None;
+                return Err(Error::InvalidServiceRequest {
+                    identifier,
+                    reason: "missing caller instance segment".to_string(),
+                });
             }
         };
         let request_id = remainder_parts
@@ -234,10 +262,10 @@ impl ServiceEndpoint {
             }
             None => format!("{}/**/request/{caller_segment}", self.service_root),
         };
-        let message = SenderMessage::new(&message_identifier, request.into_payload());
+        let message = SenderMessage::new(&message_identifier, request.into_payload())?;
         let context = ServiceRequestContext::new(message, request_id);
 
-        Some((context, response_topic))
+        Ok((context, response_topic))
     }
 
     async fn publish_response(&self, topic: String, payload: Bytes) -> Result<()> {
@@ -277,6 +305,16 @@ impl ServiceRequestContext {
 
     pub fn request_id(&self) -> Option<&str> {
         self.request_id.as_deref()
+    }
+}
+
+impl fmt::Debug for ServiceRequestContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ServiceRequestContext")
+            .field("message_key", &self.message.key_expr())
+            .field("instance_id", &self.message.instance_id())
+            .field("request_id", &self.request_id)
+            .finish()
     }
 }
 
