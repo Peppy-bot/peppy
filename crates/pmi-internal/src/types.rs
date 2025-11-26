@@ -279,68 +279,13 @@ impl PartialEq<Payload> for bytes::Bytes {
 
 pub struct SenderMessage {
     key_expr: String,
-    instance_id: Option<String>,
-    payload: Payload,
-}
-
-impl SenderMessage {
-    pub fn new(key_expr: &str, payload: impl Into<Payload>) -> Self {
-        let instance_id = SenderMessage::extract_instance_id(key_expr);
-        Self {
-            key_expr: key_expr.to_string(),
-            instance_id: instance_id,
-            payload: payload.into(),
-        }
-    }
-
-    #[cfg(feature = "zenoh")]
-    pub fn from_zbytes(key_expr: &str, zbytes: ZBytes) -> Self {
-        let instance_id = SenderMessage::extract_instance_id(key_expr);
-        Self {
-            key_expr: key_expr.to_string(),
-            instance_id,
-            payload: Payload::from_zbytes(zbytes),
-        }
-    }
-
-    fn extract_instance_id(key_expr: &str) -> Option<String> {
-        let re = Regex::new(r"<INSTANCE_ID:([^>]+)>").ok()?;
-        re.captures_iter(key_expr)
-            .last()
-            .and_then(|captures| captures.get(1))
-            .map(|value| value.as_str().to_string())
-    }
-
-    pub fn instance_id(&self) -> Option<&str> {
-        self.instance_id.as_deref()
-    }
-
-    pub fn payload(&self) -> &Payload {
-        &self.payload
-    }
-
-    pub fn into_payload(self) -> Payload {
-        self.payload
-    }
-
-    pub fn into_parts(self) -> (Option<String>, Payload) {
-        (self.instance_id, self.payload)
-    }
-
-    pub fn key_expr(&self) -> &str {
-        &self.key_expr
-    }
-}
-
-pub struct ReceivedMessage {
-    key_expr: String,
     instance_id: String,
     payload: Payload,
 }
 
-impl ReceivedMessage {
+impl SenderMessage {
     pub fn new(key_expr: &str, payload: impl Into<Payload>) -> Result<Self> {
-        let instance_id = ReceivedMessage::extract_instance_id(key_expr)?;
+        let instance_id = extract_instance_id(key_expr)?;
         Ok(Self {
             key_expr: key_expr.to_string(),
             instance_id: instance_id,
@@ -350,27 +295,12 @@ impl ReceivedMessage {
 
     #[cfg(feature = "zenoh")]
     pub fn from_zbytes(key_expr: &str, zbytes: ZBytes) -> Result<Self> {
-        let instance_id = ReceivedMessage::extract_instance_id(key_expr)?;
+        let instance_id = extract_instance_id(key_expr)?;
         Ok(Self {
             key_expr: key_expr.to_string(),
             instance_id,
             payload: Payload::from_zbytes(zbytes),
         })
-    }
-
-    fn extract_instance_id(key_expr: &str) -> Result<String> {
-        let re = Regex::new(r"<INSTANCE_ID:([^>]+)>")
-            .map_err(|err| Error::InstanceIdExtractionError(err.to_string()))?;
-
-        let captures = re
-            .captures_iter(key_expr)
-            .last()
-            .ok_or_else(|| Error::InstanceIdNotFound(key_expr.to_string()))?;
-
-        captures
-            .get(1)
-            .map(|value| value.as_str().to_string())
-            .ok_or_else(|| Error::InstanceIdExtractionError(key_expr.to_string()))
     }
 
     pub fn instance_id(&self) -> &str {
@@ -392,6 +322,68 @@ impl ReceivedMessage {
     pub fn key_expr(&self) -> &str {
         &self.key_expr
     }
+}
+
+pub struct ReceivedMessage {
+    key_expr: String,
+    instance_id: String,
+    payload: Payload,
+}
+
+impl ReceivedMessage {
+    pub fn new(key_expr: &str, payload: impl Into<Payload>) -> Result<Self> {
+        let instance_id = extract_instance_id(key_expr)?;
+        Ok(Self {
+            key_expr: key_expr.to_string(),
+            instance_id: instance_id,
+            payload: payload.into(),
+        })
+    }
+
+    #[cfg(feature = "zenoh")]
+    pub fn from_zbytes(key_expr: &str, zbytes: ZBytes) -> Result<Self> {
+        let instance_id = extract_instance_id(key_expr)?;
+        Ok(Self {
+            key_expr: key_expr.to_string(),
+            instance_id,
+            payload: Payload::from_zbytes(zbytes),
+        })
+    }
+
+    pub fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+
+    pub fn payload(&self) -> &Payload {
+        &self.payload
+    }
+
+    pub fn into_payload(self) -> Payload {
+        self.payload
+    }
+
+    pub fn into_parts(self) -> (String, Payload) {
+        (self.instance_id, self.payload)
+    }
+
+    pub fn key_expr(&self) -> &str {
+        &self.key_expr
+    }
+}
+
+fn extract_instance_id(key_expr: &str) -> Result<String> {
+    let re = Regex::new(r"<INSTANCE_ID:([^>]+)>")
+        .map_err(|err| Error::InstanceIdExtractionError(err.to_string()))?;
+
+    let captures = re
+        .captures_iter(key_expr)
+        .last()
+        .ok_or_else(|| Error::InstanceIdNotFound(key_expr.to_string()))?;
+
+    captures
+        .get(1)
+        .map(|value| value.as_str().to_string())
+        .ok_or_else(|| Error::InstanceIdExtractionError(key_expr.to_string()))
 }
 
 /// Dispatches the Messenger calls to the appropriate backend without using the heap

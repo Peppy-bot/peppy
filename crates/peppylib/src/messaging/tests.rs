@@ -307,7 +307,7 @@ async fn service_communication_poll_specific_instance_id() {
                 let response_payload = response_payload.clone();
                 async move {
                     assert_eq!(request.message().key_expr(), expected_request_topic);
-                    assert_eq!(request.message().instance_id(), Some(caller_instance_id));
+                    assert_eq!(request.message().instance_id(), caller_instance_id);
                     assert_eq!(request.message().payload(), &request_payload);
                     call_count.fetch_add(1, Ordering::SeqCst);
                     Ok(response_payload)
@@ -419,7 +419,7 @@ async fn service_communication_poll_no_instance_id_target() {
                 let response_payload = response_payload.clone();
                 async move {
                     assert_eq!(request.message().key_expr(), expected_request_topic);
-                    assert_eq!(request.message().instance_id(), Some(caller_instance_id));
+                    assert_eq!(request.message().instance_id(), caller_instance_id);
                     assert_eq!(request.message().payload(), &request_payload);
                     call_count.fetch_add(1, Ordering::SeqCst);
                     Ok(response_payload)
@@ -531,7 +531,7 @@ async fn service_communication_poll_wrong_node() {
                 let response_payload = response_payload.clone();
                 async move {
                     assert_eq!(request.message().key_expr(), expected_request_topic);
-                    assert_eq!(request.message().instance_id(), Some(caller_instance_id));
+                    assert_eq!(request.message().instance_id(), caller_instance_id);
                     assert_eq!(request.message().payload(), &request_payload);
                     call_count.fetch_add(1, Ordering::SeqCst);
                     Ok(response_payload)
@@ -974,10 +974,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
                     .spawn_next_request_handler(move |request| async move {
                         let identifier = request.message().key_expr().to_string();
                         let payload = request.message().payload().to_bytes();
-                        let caller_id = request
-                            .message()
-                            .instance_id()
-                            .unwrap_or("missing_caller_instance");
+                        let caller_id = request.message().instance_id();
                         let expected_identifier = format!(
                             "{service_root}/<INSTANCE_ID:{listener_instance_id}>/request/<INSTANCE_ID:{caller_id}>"
                         );
@@ -1771,10 +1768,7 @@ async fn single_action_communication_multiple_polls() {
                         let feedback_publisher = Arc::clone(&feedback_publisher);
 
                         async move {
-                            let caller_id = request
-                                .message()
-                                .instance_id()
-                                .unwrap_or("missing_caller_instance");
+                            let caller_id = request.message().instance_id();
                             let expected_goal_topic = format!(
                                 "{action_root}/goal/<INSTANCE_ID:{listener_instance_id}>/request/<INSTANCE_ID:{caller_id}>"
                             );
@@ -1835,10 +1829,7 @@ async fn single_action_communication_multiple_polls() {
                         let cases = Arc::clone(&cases);
 
                         async move {
-                            let caller_id = request
-                                .message()
-                                .instance_id()
-                                .unwrap_or("missing_caller_instance");
+                            let caller_id = request.message().instance_id();
                             let expected_result_topic = format!(
                                 "{action_root}/result/<INSTANCE_ID:{listener_instance_id}>/request/<INSTANCE_ID:{caller_id}>"
                             );

@@ -21,6 +21,12 @@ pub enum Error {
     #[error(transparent)]
     PeppyMessagingInterface(#[from] pmi::PeppyMessagingInterfaceError),
 
+    #[error("invalid service request '{identifier}': {reason}")]
+    InvalidServiceRequest { identifier: String, reason: String },
+
+    #[error("service request stream closed unexpectedly")]
+    ServiceRequestStreamClosed,
+
     // -- topics/services/actions errors
     #[error(
         "service '{service_name}'{instance_suffix} is unreachable",
