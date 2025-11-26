@@ -24,6 +24,8 @@ pub enum Error {
     UnsupportedEngine,
     ZenohdError(String),
     ZenohDConfigurationNotFound,
+    InstanceIdNotFound(String),
+    InstanceIdExtractionError(String),
 
     // Encoding
     UnsupportedEncoding(String),

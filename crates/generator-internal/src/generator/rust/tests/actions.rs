@@ -156,6 +156,7 @@ const SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2: &str = r#"
 
 #[test]
 fn exposed_action() {
+    // TODO: finish fixing
     let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new();

@@ -1,5 +1,5 @@
 use super::adapters::mock::MockAdapter;
-use super::error::Result;
+use super::error::{Error, Result};
 use regex::Regex;
 #[cfg(feature = "zenoh")]
 use std::borrow::Cow;
@@ -96,20 +96,20 @@ pub trait MessengerBackend {
 /// Handles message receiving and cleanup
 pub struct Subscription {
     // stream of messages; could be tokio::sync::mpsc::Receiver or a Stream
-    pub rx: tokio::sync::mpsc::Receiver<RawMessage>,
+    pub rx: tokio::sync::mpsc::Receiver<ReceivedMessage>,
     // Handle to abort the background task when subscription is dropped
     abort_handle: tokio::task::AbortHandle,
 }
 
 impl Subscription {
     pub fn new(
-        rx: tokio::sync::mpsc::Receiver<RawMessage>,
+        rx: tokio::sync::mpsc::Receiver<ReceivedMessage>,
         abort_handle: tokio::task::AbortHandle,
     ) -> Self {
         Self { rx, abort_handle }
     }
 
-    pub async fn on_next_message(&mut self) -> Option<RawMessage> {
+    pub async fn on_next_message(&mut self) -> Option<ReceivedMessage> {
         self.rx.recv().await
     }
 }
@@ -277,15 +277,15 @@ impl PartialEq<Payload> for bytes::Bytes {
     }
 }
 
-pub struct RawMessage {
+pub struct SenderMessage {
     key_expr: String,
     instance_id: Option<String>,
     payload: Payload,
 }
 
-impl RawMessage {
+impl SenderMessage {
     pub fn new(key_expr: &str, payload: impl Into<Payload>) -> Self {
-        let instance_id = RawMessage::extract_instance_id(key_expr);
+        let instance_id = SenderMessage::extract_instance_id(key_expr);
         Self {
             key_expr: key_expr.to_string(),
             instance_id: instance_id,
@@ -295,7 +295,7 @@ impl RawMessage {
 
     #[cfg(feature = "zenoh")]
     pub fn from_zbytes(key_expr: &str, zbytes: ZBytes) -> Self {
-        let instance_id = RawMessage::extract_instance_id(key_expr);
+        let instance_id = SenderMessage::extract_instance_id(key_expr);
         Self {
             key_expr: key_expr.to_string(),
             instance_id,
@@ -324,6 +324,68 @@ impl RawMessage {
     }
 
     pub fn into_parts(self) -> (Option<String>, Payload) {
+        (self.instance_id, self.payload)
+    }
+
+    pub fn key_expr(&self) -> &str {
+        &self.key_expr
+    }
+}
+
+pub struct ReceivedMessage {
+    key_expr: String,
+    instance_id: String,
+    payload: Payload,
+}
+
+impl ReceivedMessage {
+    pub fn new(key_expr: &str, payload: impl Into<Payload>) -> Result<Self> {
+        let instance_id = ReceivedMessage::extract_instance_id(key_expr)?;
+        Ok(Self {
+            key_expr: key_expr.to_string(),
+            instance_id: instance_id,
+            payload: payload.into(),
+        })
+    }
+
+    #[cfg(feature = "zenoh")]
+    pub fn from_zbytes(key_expr: &str, zbytes: ZBytes) -> Result<Self> {
+        let instance_id = ReceivedMessage::extract_instance_id(key_expr)?;
+        Ok(Self {
+            key_expr: key_expr.to_string(),
+            instance_id,
+            payload: Payload::from_zbytes(zbytes),
+        })
+    }
+
+    fn extract_instance_id(key_expr: &str) -> Result<String> {
+        let re = Regex::new(r"<INSTANCE_ID:([^>]+)>")
+            .map_err(|err| Error::InstanceIdExtractionError(err.to_string()))?;
+
+        let captures = re
+            .captures_iter(key_expr)
+            .last()
+            .ok_or_else(|| Error::InstanceIdNotFound(key_expr.to_string()))?;
+
+        captures
+            .get(1)
+            .map(|value| value.as_str().to_string())
+            .ok_or_else(|| Error::InstanceIdExtractionError(key_expr.to_string()))
+    }
+
+    pub fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+
+    pub fn payload(&self) -> &Payload {
+        &self.payload
+    }
+
+    pub fn into_payload(self) -> Payload {
+        self.payload
+    }
+
+    pub fn into_parts(self) -> (String, Payload) {
         (self.instance_id, self.payload)
     }
 
