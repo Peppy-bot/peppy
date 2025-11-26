@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::types::{PublisherQoS, RawMessage, SubscriberQoS};
+use crate::types::{PublisherQoS, ReceivedMessage, SubscriberQoS};
 use crate::{Message, MessengerBackend, Subscription};
 use crate::{ZenohNetProtocol, zenohd};
 use askama::Template;
@@ -301,13 +301,21 @@ impl MessengerBackend for ZenohAdapter {
                         } = sample.into();
 
                         let key_expr = key_expr.as_str();
-                        // Create a Message object with topic and payload
-                        let message = RawMessage::from_zbytes(key_expr, payload);
-
-                        // Send the Message on the tx channel
-                        if let Err(e) = tx.send(message).await {
-                            tracing::error!("Failed to send message: {}", e);
-                            break;
+                        // Create a ResponseMessage object with topic and payload
+                        match ReceivedMessage::from_zbytes(key_expr, payload) {
+                            Ok(message) => {
+                                if let Err(e) = tx.send(message).await {
+                                    tracing::error!("Failed to send message: {}", e);
+                                    break;
+                                }
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    %key_expr,
+                                    %err,
+                                    "Failed to build ResponseMessage from sample"
+                                );
+                            }
                         }
                     }
                     Err(e) => {

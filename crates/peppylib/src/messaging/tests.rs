@@ -168,7 +168,7 @@ async fn topic_publish_subscribe() {
     );
 
     assert_eq!(received.key_expr(), expected_topic);
-    assert_eq!(received.instance_id().unwrap(), instance_id);
+    assert_eq!(received.instance_id(), instance_id);
     assert_eq!(received.payload(), &payload);
 
     router.shutdown().await;
@@ -349,7 +349,7 @@ async fn service_communication_poll_specific_instance_id() {
         .expect("caller should receive response");
 
         assert_eq!(response.payload().to_bytes(), response_payload);
-        assert_eq!(response.instance_id().unwrap(), listener_instance_id);
+        assert_eq!(response.instance_id(), listener_instance_id);
     }
 
     // Ensure the service callback was called exactly once
@@ -461,7 +461,7 @@ async fn service_communication_poll_no_instance_id_target() {
         .expect("caller should receive response");
 
         assert_eq!(response.payload().to_bytes(), response_payload);
-        assert_eq!(response.instance_id().unwrap(), listener_instance_id);
+        assert_eq!(response.instance_id(), listener_instance_id);
     }
 
     // Ensure the service callback was called exactly once
