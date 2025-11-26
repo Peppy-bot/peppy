@@ -40,7 +40,7 @@ async fn main() {
                         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
                         println!(
                             "[{timestamp}] Received `{payload}` from instance_id `{}` with key_expr `{}`",
-                            received.instance_id().unwrap_or("<unknown>"),
+                            received.instance_id(),
                             received.key_expr()
                         );
                     }

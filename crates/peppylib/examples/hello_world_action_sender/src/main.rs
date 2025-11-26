@@ -36,7 +36,7 @@ async fn receive_feedback(handle: &mut ActionGoalHandle, goal_label: &str) {
         Ok(Some(message)) => {
             let feedback_bytes = message.payload().as_bytes();
             let feedback_text = String::from_utf8_lossy(feedback_bytes.as_ref());
-            let instance_id = message.instance_id().unwrap_or("unknown");
+            let instance_id = message.instance_id();
             println!(
                 "{}",
                 format!("[FEEDBACK] Received feedback for {goal_label} from {instance_id}: `{feedback_text}`")

@@ -41,6 +41,6 @@ async fn main() {
 
     let response_bytes = response.payload().as_bytes();
     let response_text = String::from_utf8_lossy(response_bytes.as_ref());
-    let from_service_instance_id = response.instance_id().unwrap_or("unknown");
+    let from_service_instance_id = response.instance_id();
     println!("Received response from {from_service_instance_id} instance_id: `{response_text}`");
 }

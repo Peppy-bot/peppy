@@ -240,16 +240,24 @@ impl ServiceEndpoint {
                 });
             }
         };
-        let request_id = remainder_parts
+        let request_id = match remainder_parts
             .next()
             .filter(|segment| !segment.is_empty())
-            .map(str::to_string);
-
-        let response_topic = match request_id.as_ref() {
-            Some(id) => format!("{}/{}/{}", self.response_topic_base, caller_segment, id),
-            None => self.response_topic_base.clone(),
+            .map(str::to_string)
+        {
+            Some(id) => id,
+            None => {
+                error!(%identifier, "service received request without request id segment");
+                return Err(Error::InvalidServiceRequest {
+                    identifier,
+                    reason: "missing request id segment".to_string(),
+                });
+            }
         };
-        let response_topic = format!("{response_topic}/{response_instance_segment}");
+        let response_topic = format!(
+            "{}/{}/{}/{}",
+            self.response_topic_base, caller_segment, request_id, response_instance_segment
+        );
 
         let message_identifier = match service_instance_segment.as_deref() {
             Some(instance_segment) => {
@@ -286,11 +294,11 @@ impl ServiceEndpoint {
 
 pub struct ServiceRequestContext {
     message: TopicMessage,
-    request_id: Option<String>,
+    request_id: String,
 }
 
 impl ServiceRequestContext {
-    pub fn new(message: TopicMessage, request_id: Option<String>) -> Self {
+    pub fn new(message: TopicMessage, request_id: String) -> Self {
         Self {
             message,
             request_id,
@@ -301,8 +309,8 @@ impl ServiceRequestContext {
         &self.message
     }
 
-    pub fn request_id(&self) -> Option<&str> {
-        self.request_id.as_deref()
+    pub fn request_id(&self) -> &str {
+        &self.request_id
     }
 }
 
