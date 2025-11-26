@@ -29,6 +29,8 @@ pub struct NodeConfig {
 #[serde(try_from = "String", into = "String")]
 pub struct Name(String);
 
+use crate::consts::ALLOWED_CONFIG_CHARS;
+
 impl Name {
     pub fn new<S: Into<String>>(s: S) -> Result<Self, ParsingError> {
         Self::try_from(s.into())
@@ -39,7 +41,7 @@ impl Name {
     }
 
     fn is_valid_char(c: char) -> bool {
-        c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-'
+        ALLOWED_CONFIG_CHARS.contains(c)
     }
 }
 
@@ -48,14 +50,21 @@ impl TryFrom<String> for Name {
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         if value.is_empty() {
-            return Err(ParsingError::InvalidName(
-                "Name cannot be empty".to_string(),
-            ));
+            let err = crate::error::StructuredError::EmptyInstanceId;
+            let msg =
+                serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
+            return Err(ParsingError::Structured(msg));
         }
         if value.chars().all(Name::is_valid_char) {
             return Ok(Name(value));
         }
-        Err(ParsingError::InvalidName(value))
+        let err = crate::error::StructuredError::InvalidInstanceId {
+            id: value,
+            allowed: ALLOWED_CONFIG_CHARS.to_string(),
+        };
+        let msg =
+            serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
+        Err(ParsingError::Structured(msg))
     }
 }
 
@@ -554,7 +563,7 @@ mod tests {
         assert!(Name::new("my_node-1").is_ok());
 
         assert!(Name::new("").is_err()); // empty not permitted
-        assert!(Name::new("Node").is_err()); // capital
+        assert!(Name::new("Node").is_ok()); // capital letters allowed
         assert!(Name::new("node/").is_err()); // slash not allowed
         assert!(Name::new("node@!").is_err()); // specials not allowed
     }

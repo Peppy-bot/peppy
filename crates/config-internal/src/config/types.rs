@@ -1,8 +1,4 @@
-use crate::{
-    common::NodeParameters,
-    error::{Error as ConfigError, ParsingError},
-    node::Logging,
-};
+use crate::{common::NodeParameters, error::ParsingError, node::Logging};
 use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer},
@@ -32,6 +28,7 @@ pub struct PeppyLauncher {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Deployment {
+    #[serde(deserialize_with = "deserialize_name")]
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<DeploymentNodeSource>,
@@ -59,12 +56,48 @@ where
     for instance in &instances {
         let id = instance.instance_id.as_str();
         if !seen.insert(id.to_owned()) {
-            return Err(de::Error::custom(ConfigError::DuplicateInstanceIdSerde(
-                id.to_owned(),
-            )));
+            if !seen.insert(id.to_owned()) {
+                let err = crate::error::StructuredError::DuplicateInstanceId(id.to_owned());
+                let msg = serde_json5::to_string(&err)
+                    .unwrap_or_else(|_| "serialization error".to_string());
+                return Err(de::Error::custom(msg));
+            }
         }
     }
     Ok(instances)
+}
+
+fn deserialize_name<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let name = String::deserialize(deserializer)?;
+    if name.is_empty() {
+        if name.is_empty() {
+            let err = crate::error::StructuredError::InvalidName {
+                name: "Name cannot be empty".to_string(),
+                allowed: crate::consts::ALLOWED_CONFIG_CHARS.to_string(),
+            };
+            let msg =
+                serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
+            return Err(de::Error::custom(msg));
+        }
+    }
+    if !name
+        .chars()
+        .all(|c| crate::consts::ALLOWED_CONFIG_CHARS.contains(c))
+    {
+        {
+            let err = crate::error::StructuredError::InvalidName {
+                name,
+                allowed: crate::consts::ALLOWED_CONFIG_CHARS.to_string(),
+            };
+            let msg =
+                serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
+            return Err(de::Error::custom(msg));
+        }
+    }
+    Ok(name)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,16 +138,24 @@ impl DeploymentNodeSource {
     fn from_string(value: String) -> Result<Self, ParsingError> {
         let trimmed = value.trim();
         if trimmed.is_empty() {
-            return Err(ParsingError::InvalidDeploymentSource(
-                "source cannot be empty".to_string(),
-            ));
+            if trimmed.is_empty() {
+                let err = crate::error::StructuredError::InvalidDeploymentSource(
+                    "source cannot be empty".to_string(),
+                );
+                let msg = serde_json5::to_string(&err)
+                    .unwrap_or_else(|_| "serialization error".to_string());
+                return Err(ParsingError::Structured(msg));
+            }
         }
 
         if let Some(rest) = trimmed.strip_prefix(Self::FILE_SCHEME) {
             if rest.is_empty() {
-                return Err(ParsingError::InvalidDeploymentSource(
+                let err = crate::error::StructuredError::InvalidDeploymentSource(
                     "file path cannot be empty".to_string(),
-                ));
+                );
+                let msg = serde_json5::to_string(&err)
+                    .unwrap_or_else(|_| "serialization error".to_string());
+                return Err(ParsingError::Structured(msg));
             }
             return Ok(DeploymentNodeSource::Local(PathBuf::from(rest)));
         }
@@ -130,9 +171,12 @@ impl DeploymentNodeSource {
 
     fn from_git_fields(repo: String, path: Option<String>) -> Result<Self, ParsingError> {
         if repo.trim().is_empty() {
-            return Err(ParsingError::InvalidDeploymentSource(
+            let err = crate::error::StructuredError::InvalidDeploymentSource(
                 "git repo cannot be empty".to_string(),
-            ));
+            );
+            let msg =
+                serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
+            return Err(ParsingError::Structured(msg));
         }
 
         Ok(DeploymentNodeSource::Git(GitRemoteSpec {
@@ -159,9 +203,12 @@ impl DeploymentNodeSource {
             .unwrap_or_else(|| (value.trim(), None));
 
         if repo_raw.is_empty() {
-            return Err(ParsingError::InvalidDeploymentSource(
+            let err = crate::error::StructuredError::InvalidDeploymentSource(
                 "git repo cannot be empty".to_string(),
-            ));
+            );
+            let msg =
+                serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
+            return Err(ParsingError::Structured(msg));
         }
 
         let path = Self::normalize_git_path(path_raw.map(|segment| segment.to_owned()));
@@ -294,15 +341,21 @@ impl HttpRemoteSpec {
     pub fn new(bundle_url: String, checksum: Option<String>) -> Result<Self, ParsingError> {
         let trimmed = bundle_url.trim();
         if trimmed.is_empty() {
-            return Err(ParsingError::InvalidDeploymentSource(
+            let err = crate::error::StructuredError::InvalidDeploymentSource(
                 "http bundle url cannot be empty".to_string(),
-            ));
+            );
+            let msg =
+                serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
+            return Err(ParsingError::Structured(msg));
         }
 
         if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
-            return Err(ParsingError::InvalidDeploymentSource(
+            let err = crate::error::StructuredError::InvalidDeploymentSource(
                 "http bundle url must start with http:// or https://".to_string(),
-            ));
+            );
+            let msg =
+                serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
+            return Err(ParsingError::Structured(msg));
         }
 
         Ok(Self {
@@ -334,10 +387,9 @@ impl GitRemoteSpec {
 #[serde(try_from = "String", into = "String")]
 pub struct InstanceID(String);
 
-impl InstanceID {
-    pub const ALLOWED_CHARS: &'static str =
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
+use crate::consts::ALLOWED_CONFIG_CHARS;
 
+impl InstanceID {
     pub fn new<S: Into<String>>(s: S) -> Result<Self, ParsingError> {
         Self::try_from(s.into())
     }
@@ -347,7 +399,7 @@ impl InstanceID {
     }
 
     fn is_valid_char(c: char) -> bool {
-        Self::ALLOWED_CHARS.contains(c)
+        ALLOWED_CONFIG_CHARS.contains(c)
     }
 }
 
@@ -363,7 +415,7 @@ impl TryFrom<String> for InstanceID {
         }
         Err(ParsingError::InvalidInstanceId(
             value,
-            InstanceID::ALLOWED_CHARS.to_string(),
+            ALLOWED_CONFIG_CHARS.to_string(),
         ))
     }
 }
@@ -394,7 +446,7 @@ mod tests {
     fn namespace_error_message() {
         let err = InstanceID::new("Invalid!").unwrap_err();
         if let ParsingError::InvalidInstanceId(_, msg) = err {
-            assert_eq!(msg, InstanceID::ALLOWED_CHARS);
+            assert_eq!(msg, crate::consts::ALLOWED_CONFIG_CHARS);
         } else {
             panic!("Expected InvalidInstanceId error");
         }
@@ -524,5 +576,38 @@ mod tests {
             panic!("expected duplicate instance id error");
         };
         assert_eq!(duplicate, "camera_front");
+    }
+
+    #[test]
+    fn deployment_name_validation() {
+        let valid = r#"{
+            name: "valid_name-1",
+            tag: "0.1.0",
+            instances: []
+        }"#;
+        assert!(serde_json5::from_str::<Deployment>(valid).is_ok());
+
+        let invalid_char = r#"{
+            name: "invalid!",
+            tag: "0.1.0",
+            instances: []
+        }"#;
+        let err = serde_json5::from_str::<Deployment>(invalid_char).expect_err("should fail");
+        println!("Error: {:?}", err);
+        let ParsingError::InvalidName(_, msg) = ParsingError::from(err) else {
+            panic!("expected InvalidName error");
+        };
+        assert_eq!(msg, crate::consts::ALLOWED_CONFIG_CHARS);
+
+        let empty = r#"{
+            name: "",
+            tag: "0.1.0",
+            instances: []
+        }"#;
+        let err = serde_json5::from_str::<Deployment>(empty).expect_err("should fail");
+        let ParsingError::InvalidName(name, _) = ParsingError::from(err) else {
+            panic!("expected InvalidName error");
+        };
+        assert_eq!(name, "Name cannot be empty");
     }
 }
