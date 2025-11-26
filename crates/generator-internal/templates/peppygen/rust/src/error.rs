@@ -25,10 +25,10 @@ pub enum Error {
         #[source]
         source: PeppyError,
     },
-    #[error("failed to subscribe to topic `{topic_name}` in namespace `{namespace}`")]
+    #[error("failed to subscribe to topic `{topic_name}` in node `{node_name}`")]
     TopicSubscribe {
         topic_name: String,
-        namespace: String,
+        node_name: String,
         #[source]
         source: PeppyError,
     },

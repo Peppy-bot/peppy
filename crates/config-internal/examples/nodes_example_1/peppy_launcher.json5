@@ -97,7 +97,7 @@
       instances: [
         {
           instance_id: "esp32_1",
-          // Some vars such as `PEPPY_NAMESPACE` are automatically passed onto the instance
+          // Some vars such as `PEPPY_DEVICE` are automatically passed onto the instance
           env_vars: {
             ESP32_DEVICE: "/dev/tty.usbmodem585A0076841"
           },

@@ -425,9 +425,9 @@ fn subscribed_to_topic() {
         "expected messenger handle to be passed to subscription helper"
     );
     assert_rendered!(
-        rendered.contains("let namespace = \"uvc_camera\";"),
+        rendered.contains("let node_name = \"uvc_camera\";"),
         &rendered,
-        "expected namespace to use subscribed node name"
+        "expected node_name to use subscribed node name"
     );
     assert_rendered!(
         rendered.contains("capnp::serialize::read_message"),
@@ -545,9 +545,9 @@ fn subscribed_to_two_topics_same_node() {
             "expected messenger parameter"
         );
         assert_rendered!(
-            rendered.contains("let namespace = \"uvc_camera\";"),
+            rendered.contains("let node_name = \"uvc_camera\";"),
             rendered,
-            "expected namespace resolution via literal node name"
+            "expected node_name resolution via literal node name"
         );
         assert_rendered!(
             rendered.contains(expectation.topic_literal),
