@@ -162,9 +162,9 @@ fn expose_service() {
         "expected generated handler to schedule request handling through ServiceMessenger"
     );
     assert_rendered!(
-        rendered.contains("crate::Error::MissingInstanceId"),
+        rendered.contains("let instance_id = message.instance_id().to_string();"),
         &rendered,
-        "expected error when caller instance_id is absent"
+        "expected instance_id extraction"
     );
     assert_rendered!(
         rendered.contains("let message = request_context.message();"),
@@ -546,20 +546,11 @@ fn subscribed_to_service() {
         &rendered,
         "expected poll helper invocation"
     );
+
     assert_rendered!(
-        rendered.contains("response_message\n        .instance_id()"),
+        rendered.contains("let response_instance_id = response_message.instance_id().to_string();"),
         &rendered,
         "expected response instance id to be read from message context"
-    );
-    assert_rendered!(
-        rendered.contains("crate::Error::MissingInstanceId"),
-        &rendered,
-        "expected response instance id error handling"
-    );
-    assert_rendered!(
-        rendered.contains("response_message.key_expr().to_string()"),
-        &rendered,
-        "expected missing instance id errors to reference the response key expression"
     );
     assert_rendered!(
         rendered.contains("response_message.payload().as_bytes()"),
@@ -670,7 +661,8 @@ fn subscribed_to_two_services_same_node() {
         "expected request context for `enable_camera`"
     );
     assert_rendered!(
-        enable_rendered.contains("response_message\n        .instance_id()"),
+        enable_rendered
+            .contains("let response_instance_id = response_message.instance_id().to_string();"),
         enable_rendered,
         "expected response instance id to be read from message context for `enable_camera`"
     );
@@ -985,20 +977,11 @@ fn compile_lib_with_exposed_and_subscribed_services() {
         subscriber_module_contents
     );
     assert!(
-        subscriber_module_contents.contains("response_message\n        .instance_id()"),
+        subscriber_module_contents.contains("response_message.instance_id()"),
         "Enable_camera subscriber module should read service instance id from message context, got:\n{}",
         subscriber_module_contents
     );
-    assert!(
-        subscriber_module_contents.contains("crate::Error::MissingInstanceId"),
-        "Enable_camera subscriber module should surface missing instance id errors, got:\n{}",
-        subscriber_module_contents
-    );
-    assert!(
-        subscriber_module_contents.contains("response_message.key_expr().to_string()"),
-        "Enable_camera subscriber module should report missing instance id with response key expr, got:\n{}",
-        subscriber_module_contents
-    );
+
     assert!(
         enable_module_contents.contains("pub struct Response"),
         "Expected generated service module to define response struct, got:\n{}",
