@@ -159,7 +159,7 @@ mod tests {
     use tempfile::TempDir;
     use tokio::time::timeout;
 
-    fn write_config(dir: &Path, name: &str, _namespace: &str) -> PathBuf {
+    fn write_config(dir: &Path, name: &str) -> PathBuf {
         let path = dir.join(PEPPY_NODE_CONFIG_FILE);
         let json5 = format!(
             r#"{{
@@ -180,12 +180,12 @@ mod tests {
         let temp = TempDir::new().unwrap();
 
         // config 1
-        let base = write_config(temp.path(), "base_node", "/base");
+        let base = write_config(temp.path(), "base_node");
 
         // nested config
         let nested_dir = temp.path().join("nested");
         fs::create_dir(&nested_dir).unwrap();
-        let nested = write_config(&nested_dir, "nested_node", "/nested");
+        let nested = write_config(&nested_dir, "nested_node");
 
         let watcher = FSNodeConfigWatcher::new(temp.path()).expect("watcher init");
         let rx = watcher.subscribe();
@@ -227,7 +227,7 @@ mod tests {
     #[tokio::test]
     async fn test_invalid_modify_sets_error_state() {
         let temp = TempDir::new().unwrap();
-        let config_path = write_config(temp.path(), "ok", "/ns");
+        let config_path = write_config(temp.path(), "ok");
 
         let watcher = FSNodeConfigWatcher::new(temp.path()).expect("watcher init");
         let mut rx = watcher.subscribe();
@@ -271,7 +271,7 @@ mod tests {
         let handle = watcher.start().await.expect("start background");
 
         // Create a new config
-        let created = write_config(temp.path(), "multi_sub", "/ns");
+        let created = write_config(temp.path(), "multi_sub");
 
         // Both subscribers should receive the update
         timeout(Duration::from_secs(1), rx1.changed())
@@ -287,7 +287,7 @@ mod tests {
         assert!(rx2.borrow().contains_key(&created));
 
         // Modify the config with a new valid name
-        write_config(temp.path(), "multi_sub_v2", "/ns");
+        write_config(temp.path(), "multi_sub_v2");
 
         // Both subscribers should receive the modification
         timeout(Duration::from_secs(1), rx1.changed())
@@ -345,7 +345,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_delete_recreate_updates_state() {
         let temp = TempDir::new().unwrap();
-        let config_path = write_config(temp.path(), "first", "/ns");
+        let config_path = write_config(temp.path(), "first");
 
         let watcher = FSNodeConfigWatcher::new(temp.path()).expect("watcher init");
         let mut rx = watcher.subscribe();
@@ -375,7 +375,7 @@ mod tests {
         ));
 
         // Recreate the file with a new valid name and expect Ok again
-        write_config(temp.path(), "second", "/ns");
+        write_config(temp.path(), "second");
         timeout(Duration::from_secs(1), rx.changed())
             .await
             .expect("state change expected after recreate")

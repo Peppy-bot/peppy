@@ -382,7 +382,6 @@ impl GitRemoteSpec {
     }
 }
 
-/// Validated namespace. Same as Name but allows '/'.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct InstanceID(String);
@@ -431,7 +430,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn namespace_validation() {
+    fn instance_id_validation() {
         assert!(InstanceID::new("robot").is_ok());
         assert!(InstanceID::new("camera_v1").is_ok());
 
@@ -443,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn namespace_error_message() {
+    fn instance_id_error_message() {
         let err = InstanceID::new("Invalid!").unwrap_err();
         if let ParsingError::InvalidInstanceId(_, msg) = err {
             assert_eq!(msg, crate::consts::ALLOWED_CONFIG_CHARS);
