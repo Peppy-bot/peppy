@@ -1,7 +1,9 @@
-use config::consts::{DEFAULT_ZENOH_PORT, MASTER_NODE_NAME};
+use config::consts::DEFAULT_ZENOH_PORT;
 use config::node::QoSProfile;
 use peppylib::{MessengerHandle, TopicMessenger};
 use tokio::signal;
+
+const MASTER_NODE_NAME: &str = "master_node";
 
 #[tokio::main]
 async fn main() {

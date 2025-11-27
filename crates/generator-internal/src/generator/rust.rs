@@ -3196,6 +3196,7 @@ fn build_exposed_service_method(
 
             let mut service = peppylib::ServiceMessenger::listen(
                 messenger.handle(),
+                messenger.master_node(),
                 node_name,
                 service_name,
                 service_instance_id.as_str(),

@@ -417,12 +417,13 @@ pub struct ActionCreation {
 impl TopicMessenger {
     pub async fn subscribe(
         messenger: &MessengerHandle,
+        as_master_node: &str,
         as_node_name: &str,
         as_topic: &str,
         qos: QoSProfile,
     ) -> Result<Subscription> {
         messenger
-            .receive_topic_msg(as_node_name, as_topic, qos)
+            .receive_topic_msg(as_master_node, as_node_name, as_topic, qos)
             .await
     }
 
@@ -452,12 +453,18 @@ impl ServiceMessenger {
     /// Listening as a service is a 2 way stream, so the process that exposes the service needs to provide its instance_id
     pub async fn listen(
         messenger: &MessengerHandle,
+        as_master_node: &str,
         as_node_name: &str,
         as_service_name: &str,
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
         messenger
-            .expose_service(as_node_name, as_service_name, as_instance_id)
+            .expose_service(
+                as_master_node,
+                as_node_name,
+                as_service_name,
+                as_instance_id,
+            )
             .await
     }
 
@@ -489,12 +496,13 @@ impl ServiceMessenger {
 impl ActionMessenger {
     pub async fn listen(
         messenger: &MessengerHandle,
+        as_master_node: &str,
         as_node_name: &str,
         as_action_name: &str,
         as_instance_id: &str,
     ) -> Result<ActionCreation> {
         messenger
-            .expose_action(as_node_name, as_action_name, as_instance_id)
+            .expose_action(as_master_node, as_node_name, as_action_name, as_instance_id)
             .await
     }
 
@@ -630,11 +638,12 @@ impl MessengerHandle {
 
     async fn receive_topic_msg(
         &self,
+        as_master_node: &str,
         as_node_name: &str,
         as_topic: &str,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        let key_expr = format!("**/topic/{}/{}/**", as_node_name, as_topic);
+        let key_expr = format!("{as_master_node}/topic/{as_node_name}/{as_topic}/**");
         let subscriber_qos = map_node_qos_to_subscriber_qos(qos);
 
         let subscription = {
@@ -673,21 +682,24 @@ impl MessengerHandle {
 
     async fn expose_service(
         &self,
+        as_master_node: &str,
         as_node_name: &str,
         as_service_name: &str,
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
         let key_expr = build_key_expr("service", as_node_name, as_service_name);
-        self.create_service_endpoint(key_expr, as_instance_id).await
+        self.create_service_endpoint(as_master_node, key_expr, as_instance_id)
+            .await
     }
 
     async fn create_service_endpoint(
         &self,
+        master_node: &str,
         key_expr: String,
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
         let service_root = key_expr;
-        let request_subscription_topic = format!("**/{service_root}/**/request/**");
+        let request_subscription_topic = format!("{master_node}/{service_root}/**/request/**");
 
         let subscription = {
             let messenger = self.messenger.lock().await;
@@ -795,6 +807,7 @@ impl MessengerHandle {
 
     async fn expose_action(
         &self,
+        as_master_node: &str,
         as_node_name: &str,
         as_action_name: &str,
         as_instance_id: &str,
@@ -808,13 +821,13 @@ impl MessengerHandle {
             format!("{action_root}/feedback/<INSTANCE_ID:{as_instance_id}>");
 
         let goal_service = self
-            .create_service_endpoint(goal_service_root, as_instance_id)
+            .create_service_endpoint(as_master_node, goal_service_root, as_instance_id)
             .await?;
         let cancel_service = self
-            .create_service_endpoint(cancel_service_root, as_instance_id)
+            .create_service_endpoint(as_master_node, cancel_service_root, as_instance_id)
             .await?;
         let result_service = self
-            .create_service_endpoint(result_service_root, as_instance_id)
+            .create_service_endpoint(as_master_node, result_service_root, as_instance_id)
             .await?;
 
         let feedback_publisher = TopicPublisher {
