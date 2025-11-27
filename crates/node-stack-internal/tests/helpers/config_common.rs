@@ -60,7 +60,7 @@ pub fn deployment(
     optional: bool,
 ) -> Deployment {
     Deployment {
-        name: name.to_string(),
+        name: config::peppy_config::Name::new(name).unwrap(),
         source,
         tag: tag.to_string(),
         optional,

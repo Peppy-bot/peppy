@@ -11,7 +11,9 @@ use crate::error::{Error, Result};
 use config::AnyType;
 use config::FSNodeConfigWatcher;
 use config::node::NodeConfig;
-use config::peppy_config::{Deployment, DeploymentNodeSource, PeppyLauncher, PeppyLauncherParser};
+use config::peppy_config::{
+    Deployment, DeploymentNodeSource, Name, PeppyLauncher, PeppyLauncherParser,
+};
 use petgraph::{
     Direction,
     stable_graph::{NodeIndex, StableDiGraph},
@@ -232,7 +234,7 @@ impl LauncherPlanner {
                             map.node_source().node(),
                         ) {
                             let deployment = map.deployment().clone();
-                            let key = (deployment.name.clone(), deployment.tag.clone());
+                            let key = (deployment.name.to_string(), deployment.tag.clone());
                             let map = DeploymentMap::unresolved(deployment, err);
                             entries.push(NodeEntry {
                                 key,
@@ -258,7 +260,10 @@ impl LauncherPlanner {
 
                     let dependencies = Self::collect_dependencies(&map);
 
-                    let key = (map.deployment().name.clone(), map.deployment().tag.clone());
+                    let key = (
+                        map.deployment().name.to_string(),
+                        map.deployment().tag.clone(),
+                    );
 
                     entries.push(NodeEntry {
                         key,
@@ -274,7 +279,7 @@ impl LauncherPlanner {
                     );
                     let map = DeploymentMap::unresolved(deployment.clone(), unresolved_error);
                     entries.push(NodeEntry {
-                        key: (deployment.name.clone(), deployment.tag.clone()),
+                        key: (deployment.name.to_string(), deployment.tag.clone()),
                         map,
                         dependencies: Vec::new(),
                     });
@@ -424,8 +429,11 @@ impl LauncherPlanner {
                         identifier.clone(),
                         "dependency declared but missing from peppy_config".to_string(),
                     );
+                    let Ok(name) = Name::new(dep_name.clone()) else {
+                        continue;
+                    };
                     let unresolved_deployment = Deployment {
-                        name: dep_name.clone(),
+                        name,
                         source: None,
                         tag: dep_tag.clone(),
                         optional: true,
@@ -449,8 +457,11 @@ impl LauncherPlanner {
                         identifier.clone(),
                         "dependency declared but missing from peppy_config".to_string(),
                     );
+                    let Ok(name) = Name::new(dep_name.clone()) else {
+                        continue;
+                    };
                     let unresolved_deployment = Deployment {
-                        name: dep_name.clone(),
+                        name,
                         source: None,
                         tag: dep_tag.clone(),
                         optional: false,

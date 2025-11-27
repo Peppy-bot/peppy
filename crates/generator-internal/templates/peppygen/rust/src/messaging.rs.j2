@@ -1,6 +1,7 @@
 pub struct Messenger {
-    messenger: peppylib::MessengerHandle,
+    master_node_name: String,
     node_name: String,
+    messenger: peppylib::MessengerHandle,
 }
 
 impl Messenger {
@@ -14,14 +15,14 @@ impl Messenger {
                 source,
             }
         })?;
+        let master_node_name = "{{ master_node_name }}";
 
-        // TODO: Maybe use peppy::commands::node::NodeName?
-        if !node_name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            return Err(crate::Error::InvalidNodeName { node_name });
-        }
+        // Using NodeName allows the node_name to be checked for valid characters
+        let node_name = peppylib::config::NodeName::new(node_name)?;
         Ok(Self {
+            node_name, // TODO: Turn node_name into a String
+            master_node_name,
             messenger,
-            node_name,
         })
     }
 

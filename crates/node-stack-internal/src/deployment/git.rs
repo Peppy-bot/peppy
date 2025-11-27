@@ -104,26 +104,26 @@ pub fn resolve_remote_git(
 
     let repo_dir = build_repo_cache_path(nodes_cache_dir, &spec.repo);
     let repo = ensure_repository(&repo_dir, &spec.repo)
-        .map_err(|_| Error::NodeNotFound(deployment.name.clone()))?;
+        .map_err(|_| Error::NodeNotFound(deployment.name.to_string()))?;
 
-    fetch_repository(&repo).map_err(|_| Error::NodeNotFound(deployment.name.clone()))?;
+    fetch_repository(&repo).map_err(|_| Error::NodeNotFound(deployment.name.to_string()))?;
 
     let commit = find_commit_for_tag(&repo, &deployment.tag)
-        .map_err(|_| Error::NodeNotFound(deployment.name.clone()))?;
+        .map_err(|_| Error::NodeNotFound(deployment.name.to_string()))?;
     let tree = commit
         .tree()
-        .map_err(|_| Error::NodeNotFound(deployment.name.clone()))?;
+        .map_err(|_| Error::NodeNotFound(deployment.name.to_string()))?;
 
     let config_path = node_config_path(&spec);
     let content = read_blob_from_tree(&repo, &tree, &config_path)
-        .map_err(|_| Error::NodeNotFound(deployment.name.clone()))?;
+        .map_err(|_| Error::NodeNotFound(deployment.name.to_string()))?;
 
     let node = NodeConfigParser::from_content(&content)?;
 
-    if node.manifest.name.as_str() != deployment.name || node.manifest.tag != deployment.tag {
+    if deployment.name != node.manifest.name.as_str() || deployment.tag != node.manifest.tag {
         return Err(Error::NoMatchingNode(
-            deployment.name.clone(),
-            deployment.tag.clone(),
+            deployment.name.to_string(),
+            deployment.name.to_string(),
         ));
     }
 
@@ -135,7 +135,7 @@ pub fn resolve_remote_git(
 mod tests {
     use super::*;
     use crate::error::Error;
-    use config::peppy_config::{DeploymentNodeSource, HttpRemoteSpec};
+    use config::peppy_config::{DeploymentNodeSource, HttpRemoteSpec, Name};
     use git2::{ObjectType, Repository, Signature};
     use tempfile::TempDir;
 
@@ -159,7 +159,7 @@ mod tests {
 
     fn sample_remote_deployment(source: DeploymentNodeSource) -> Deployment {
         Deployment {
-            name: "uvc_camera".to_string(),
+            name: Name::new("uvc_camera").unwrap(),
             source: Some(source),
             tag: "0.1.0".to_string(),
             optional: false,
@@ -301,7 +301,7 @@ mod tests {
             .expect_err("http remote should fail");
 
         match err {
-            Error::NodeNotFound(name) => assert_eq!(name, deployment.name),
+            Error::NodeNotFound(name) => assert_eq!(name, deployment.name.to_string()),
             other => panic!("unexpected error: {other:?}"),
         }
     }

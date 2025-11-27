@@ -91,9 +91,11 @@ fn load_manifest_inner(dir: &Path, deployment: &Deployment) -> Result<NodeConfig
 
     let node = NodeConfigParser::from_path(&manifest_path)?;
 
-    if node.manifest.name.as_str() != deployment.name || node.manifest.tag != deployment.tag {
+    if node.manifest.name.as_str() != deployment.name.as_str()
+        || node.manifest.tag != deployment.tag
+    {
         return Err(Error::NoMatchingNode(
-            deployment.name.clone(),
+            deployment.name.to_string(),
             deployment.tag.clone(),
         ));
     }

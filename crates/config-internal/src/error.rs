@@ -17,11 +17,10 @@ pub enum ParsingError {
     // -- node_config
     #[error("Invalid name: {0}, allowed characters: {1}")]
     InvalidName(String, String),
-
-    #[error("Invalid instance id: {0}, allowed characters: {1}")]
-    InvalidInstanceId(String, String),
-    #[error("Empty instance id")]
-    EmptyInstanceId,
+    #[error("Empty name")]
+    EmptyName,
+    #[error("Duplicate name: {0}")]
+    DuplicateName(String),
 
     // -- types
     #[error("Invalid scalar type {0}: {1}")]
@@ -41,8 +40,6 @@ pub enum ParsingError {
     // -- deployments
     #[error("Invalid deployment source: {0}")]
     InvalidDeploymentSource(String),
-    #[error("Duplicate instance id: {0}")]
-    DuplicateInstanceId(String),
 
     #[error("{0}")]
     Structured(String),
@@ -51,10 +48,9 @@ pub enum ParsingError {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum StructuredError {
     InvalidDeploymentSource(String),
-    DuplicateInstanceId(String),
+    DuplicateName(String),
     InvalidName { name: String, allowed: String },
-    InvalidInstanceId { id: String, allowed: String },
-    EmptyInstanceId,
+    EmptyName,
 }
 
 impl From<serde_json5::Error> for ParsingError {
@@ -67,16 +63,11 @@ impl From<serde_json5::Error> for ParsingError {
                         StructuredError::InvalidDeploymentSource(detail) => {
                             ParsingError::InvalidDeploymentSource(detail)
                         }
-                        StructuredError::DuplicateInstanceId(id) => {
-                            ParsingError::DuplicateInstanceId(id)
-                        }
+                        StructuredError::DuplicateName(id) => ParsingError::DuplicateName(id),
                         StructuredError::InvalidName { name, allowed } => {
                             ParsingError::InvalidName(name, allowed)
                         }
-                        StructuredError::InvalidInstanceId { id, allowed } => {
-                            ParsingError::InvalidInstanceId(id, allowed)
-                        }
-                        StructuredError::EmptyInstanceId => ParsingError::EmptyInstanceId,
+                        StructuredError::EmptyName => ParsingError::EmptyName,
                     }
                 } else {
                     // Fallback for standard serde errors or unparseable messages
@@ -141,14 +132,14 @@ mod tests {
             panic!("Expected InvalidDeploymentSource, got {:?}", err);
         }
 
-        // DuplicateInstanceId
-        let json = serde_json5::to_string(&StructuredError::DuplicateInstanceId("id1".to_string()))
-            .unwrap();
+        // DuplicateName
+        let json =
+            serde_json5::to_string(&StructuredError::DuplicateName("id1".to_string())).unwrap();
         let err = ParsingError::from(make_err(&json));
-        if let ParsingError::DuplicateInstanceId(id) = err {
+        if let ParsingError::DuplicateName(id) = err {
             assert_eq!(id, "id1");
         } else {
-            panic!("Expected DuplicateInstanceId, got {:?}", err);
+            panic!("Expected DuplicateName, got {:?}", err);
         }
 
         // InvalidName
@@ -165,25 +156,11 @@ mod tests {
             panic!("Expected InvalidName, got {:?}", err);
         }
 
-        // InvalidInstanceId
-        let json = serde_json5::to_string(&StructuredError::InvalidInstanceId {
-            id: "bad_id".to_string(),
-            allowed: "a-z".to_string(),
-        })
-        .unwrap();
+        // EmptyName
+        let json = serde_json5::to_string(&StructuredError::EmptyName).unwrap();
         let err = ParsingError::from(make_err(&json));
-        if let ParsingError::InvalidInstanceId(id, allowed) = err {
-            assert_eq!(id, "bad_id");
-            assert_eq!(allowed, "a-z");
-        } else {
-            panic!("Expected InvalidInstanceId, got {:?}", err);
-        }
-
-        // EmptyInstanceId
-        let json = serde_json5::to_string(&StructuredError::EmptyInstanceId).unwrap();
-        let err = ParsingError::from(make_err(&json));
-        if !matches!(err, ParsingError::EmptyInstanceId) {
-            panic!("Expected EmptyInstanceId, got {:?}", err);
+        if !matches!(err, ParsingError::EmptyName) {
+            panic!("Expected EmptyName, got {:?}", err);
         }
     }
 

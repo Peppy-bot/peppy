@@ -28,8 +28,7 @@ pub struct PeppyLauncher {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Deployment {
-    #[serde(deserialize_with = "deserialize_name")]
-    pub name: String,
+    pub name: Name,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<DeploymentNodeSource>,
     pub tag: String,
@@ -42,7 +41,7 @@ pub struct Deployment {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeploymentInstance {
-    pub instance_id: InstanceID,
+    pub instance_id: Name,
     #[serde(default)]
     pub parameters: NodeParameters,
 }
@@ -57,7 +56,7 @@ where
         let id = instance.instance_id.as_str();
         if !seen.insert(id.to_owned()) {
             if !seen.insert(id.to_owned()) {
-                let err = crate::error::StructuredError::DuplicateInstanceId(id.to_owned());
+                let err = crate::error::StructuredError::DuplicateName(id.to_owned());
                 let msg = serde_json5::to_string(&err)
                     .unwrap_or_else(|_| "serialization error".to_string());
                 return Err(de::Error::custom(msg));
@@ -65,39 +64,6 @@ where
         }
     }
     Ok(instances)
-}
-
-fn deserialize_name<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let name = String::deserialize(deserializer)?;
-    if name.is_empty() {
-        if name.is_empty() {
-            let err = crate::error::StructuredError::InvalidName {
-                name: "Name cannot be empty".to_string(),
-                allowed: crate::consts::ALLOWED_CONFIG_CHARS.to_string(),
-            };
-            let msg =
-                serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
-            return Err(de::Error::custom(msg));
-        }
-    }
-    if !name
-        .chars()
-        .all(|c| crate::consts::ALLOWED_CONFIG_CHARS.contains(c))
-    {
-        {
-            let err = crate::error::StructuredError::InvalidName {
-                name,
-                allowed: crate::consts::ALLOWED_CONFIG_CHARS.to_string(),
-            };
-            let msg =
-                serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
-            return Err(de::Error::custom(msg));
-        }
-    }
-    Ok(name)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -382,13 +348,13 @@ impl GitRemoteSpec {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct InstanceID(String);
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(into = "String")]
+pub struct Name(String);
 
 use crate::consts::ALLOWED_CONFIG_CHARS;
 
-impl InstanceID {
+impl Name {
     pub fn new<S: Into<String>>(s: S) -> Result<Self, ParsingError> {
         Self::try_from(s.into())
     }
@@ -402,26 +368,95 @@ impl InstanceID {
     }
 }
 
-impl TryFrom<String> for InstanceID {
+impl TryFrom<String> for Name {
     type Error = ParsingError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         if value.is_empty() {
-            return Err(ParsingError::EmptyInstanceId);
+            return Err(ParsingError::EmptyName);
         }
-        if value.chars().all(InstanceID::is_valid_char) {
-            return Ok(InstanceID(value));
+        if value.chars().all(Name::is_valid_char) {
+            return Ok(Name(value));
         }
-        Err(ParsingError::InvalidInstanceId(
+        Err(ParsingError::InvalidName(
             value,
             ALLOWED_CONFIG_CHARS.to_string(),
         ))
     }
 }
 
-impl From<InstanceID> for String {
-    fn from(v: InstanceID) -> Self {
+impl<'de> Deserialize<'de> for Name {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Name::try_from(s).map_err(|err| {
+            let structured = match err {
+                ParsingError::EmptyName => crate::error::StructuredError::EmptyName,
+                ParsingError::InvalidName(name, allowed) => {
+                    crate::error::StructuredError::InvalidName { name, allowed }
+                }
+                _ => return de::Error::custom(err.to_string()),
+            };
+            let msg = serde_json5::to_string(&structured)
+                .unwrap_or_else(|_| "serialization error".to_string());
+            de::Error::custom(msg)
+        })
+    }
+}
+
+impl From<Name> for String {
+    fn from(v: Name) -> Self {
         v.0
+    }
+}
+
+impl std::fmt::Display for Name {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl AsRef<str> for Name {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl PartialEq<&str> for Name {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<Name> for &str {
+    fn eq(&self, other: &Name) -> bool {
+        *self == other.0
+    }
+}
+
+impl PartialEq<String> for Name {
+    fn eq(&self, other: &String) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<Name> for String {
+    fn eq(&self, other: &Name) -> bool {
+        *self == other.0
+    }
+}
+
+impl PartialOrd for Name {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Name {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.cmp(&other.0)
     }
 }
 
@@ -430,24 +465,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn instance_id_validation() {
-        assert!(InstanceID::new("robot").is_ok());
-        assert!(InstanceID::new("camera_v1").is_ok());
+    fn name_validation() {
+        assert!(Name::new("robot").is_ok());
+        assert!(Name::new("camera_v1").is_ok());
 
-        assert!(InstanceID::new("").is_err()); // empty not permitted
-        assert!(InstanceID::new("/").is_err()); // slash not permitted
-        assert!(InstanceID::new("/robot").is_err()); // slash not permitted
-        assert!(InstanceID::new("Robot").is_ok()); // capital now allowed
-        assert!(InstanceID::new("robot$cam").is_err()); // special
+        assert!(Name::new("").is_err()); // empty not permitted
+        assert!(Name::new("/").is_err()); // slash not permitted
+        assert!(Name::new("/robot").is_err()); // slash not permitted
+        assert!(Name::new("Robot").is_ok()); // capital now allowed
+        assert!(Name::new("robot$cam").is_err()); // special
     }
 
     #[test]
-    fn instance_id_error_message() {
-        let err = InstanceID::new("Invalid!").unwrap_err();
-        if let ParsingError::InvalidInstanceId(_, msg) = err {
+    fn name_error_message() {
+        let err = Name::new("Invalid!").unwrap_err();
+        if let ParsingError::InvalidName(_, msg) = err {
             assert_eq!(msg, crate::consts::ALLOWED_CONFIG_CHARS);
         } else {
-            panic!("Expected InvalidInstanceId error");
+            panic!("Expected InvalidName error");
         }
     }
 
@@ -571,7 +606,7 @@ mod tests {
 
         let err = serde_json5::from_str::<Deployment>(duplicate_instances)
             .expect_err("expected duplicate instance_id rejection");
-        let ParsingError::DuplicateInstanceId(duplicate) = ParsingError::from(err) else {
+        let ParsingError::DuplicateName(duplicate) = ParsingError::from(err) else {
             panic!("expected duplicate instance id error");
         };
         assert_eq!(duplicate, "camera_front");
@@ -604,9 +639,8 @@ mod tests {
             instances: []
         }"#;
         let err = serde_json5::from_str::<Deployment>(empty).expect_err("should fail");
-        let ParsingError::InvalidName(name, _) = ParsingError::from(err) else {
-            panic!("expected InvalidName error");
+        let ParsingError::EmptyName = ParsingError::from(err) else {
+            panic!("expected EmptyName error");
         };
-        assert_eq!(name, "Name cannot be empty");
     }
 }

@@ -50,7 +50,7 @@ impl TryFrom<String> for Name {
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         if value.is_empty() {
-            let err = crate::error::StructuredError::EmptyInstanceId;
+            let err = crate::error::StructuredError::EmptyName;
             let msg =
                 serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
             return Err(ParsingError::Structured(msg));
@@ -58,8 +58,8 @@ impl TryFrom<String> for Name {
         if value.chars().all(Name::is_valid_char) {
             return Ok(Name(value));
         }
-        let err = crate::error::StructuredError::InvalidInstanceId {
-            id: value,
+        let err = crate::error::StructuredError::InvalidName {
+            name: value,
             allowed: ALLOWED_CONFIG_CHARS.to_string(),
         };
         let msg =
