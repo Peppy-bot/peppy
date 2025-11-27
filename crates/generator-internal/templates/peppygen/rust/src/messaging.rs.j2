@@ -1,6 +1,8 @@
+use peppylib::config::Name;
+
 pub struct Messenger {
-    master_node_name: String,
-    node_name: String,
+    master_node_name: Name,
+    node_name: Name,
     messenger: peppylib::MessengerHandle,
 }
 
@@ -15,12 +17,20 @@ impl Messenger {
                 source,
             }
         })?;
-        let master_node_name = "{{ master_node_name }}";
+        let master_node_name = Name::new("{{ master_node_name }}").map_err(|e| {
+            crate::Error::InvalidMasterNodeName {
+                node_name: "{{ master_node_name }}".to_string(),
+                reason: e.to_string(),
+            }
+        })?;
 
-        // Using NodeName allows the node_name to be checked for valid characters
-        let node_name = peppylib::config::NodeName::new(node_name)?;
+        // Using Name allows the node_name to be checked for valid characters
+        let node_name = Name::new(&node_name).map_err(|e| crate::Error::InvalidNodeName {
+            node_name,
+            reason: e.to_string(),
+        })?;
         Ok(Self {
-            node_name, // TODO: Turn node_name into a String
+            node_name,
             master_node_name,
             messenger,
         })
@@ -28,6 +38,10 @@ impl Messenger {
 
     pub fn node_name(&self) -> &str {
         self.node_name.as_str()
+    }
+
+    pub fn master_node_name(&self) -> &str {
+        self.master_node_name.as_str()
     }
 
     pub fn handle(&self) -> &peppylib::MessengerHandle {
