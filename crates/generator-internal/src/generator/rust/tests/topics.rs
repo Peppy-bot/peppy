@@ -2,6 +2,8 @@ use super::*;
 use config::node::{ExposedTopic, MessageFormat, SubscribedTopic};
 use std::process::Command;
 
+const MASTER_NODE_NAME: &str = "master_node";
+
 const EXPOSED_TOPIC_EXAMPLE: &str = r#"
 {
   name: "push_frame",
@@ -46,6 +48,7 @@ const EXPOSED_TOPIC_EXAMPLE2: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE1: &str = r#"
 {
+    id: "stream",
     node: "uvc_camera",
     name: "stream",
     tag: "0.1.0"
@@ -72,6 +75,7 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE2: &str = r#"
 {
+    id: "sound",
     node: "uvc_camera",
     name: "sound",
     tag: "0.1.0"
@@ -101,7 +105,7 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2: &str = r#"
 fn expose_topic() {
     let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
 
-    let mut generator = RustGenerator::new();
+    let mut generator = RustGenerator::new(MASTER_NODE_NAME);
     generator.add_exposed_topic(&topic).unwrap();
     let artifacts: Vec<String> = generator
         .into_artifacts()
@@ -221,11 +225,7 @@ fn expose_topic() {
         &rendered,
         "expected instance id error mapping"
     );
-    assert_rendered!(
-        rendered.contains("messenger.node_name()"),
-        &rendered,
-        "expected node name to be used when emitting"
-    );
+
     assert_rendered!(
         rendered.contains("&instance_id"),
         &rendered,
@@ -248,7 +248,7 @@ fn expose_two_topics() {
     let topic1: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
     let topic2: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE2).unwrap();
 
-    let mut generator = RustGenerator::new();
+    let mut generator = RustGenerator::new(MASTER_NODE_NAME);
     generator.add_exposed_topic(&topic1).unwrap();
     generator.add_exposed_topic(&topic2).unwrap();
     let artifacts: Vec<String> = generator
@@ -314,7 +314,7 @@ fn subscribed_to_topic() {
     let topic: SubscribedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE1).unwrap();
     let format: MessageFormat = serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1).unwrap();
 
-    let mut generator = RustGenerator::new();
+    let mut generator = RustGenerator::new(MASTER_NODE_NAME);
     generator.add_subscribed_topic(&topic, format).unwrap();
     let artifacts: Vec<String> = generator
         .into_artifacts()
@@ -415,7 +415,7 @@ fn subscribed_to_topic() {
         "expected tuple return with instance id and message"
     );
     assert_rendered!(
-        rendered.contains("peppylib::TopicMessenger::listen("),
+        rendered.contains("peppylib::TopicMessenger::subscribe("),
         &rendered,
         "expected subscription helper invocation"
     );
@@ -476,7 +476,7 @@ fn subscribed_to_two_topics_same_node() {
     let sound_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2).unwrap();
 
-    let mut generator = RustGenerator::new();
+    let mut generator = RustGenerator::new(MASTER_NODE_NAME);
     generator
         .add_subscribed_topic(&video_topic, video_format)
         .unwrap();

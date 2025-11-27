@@ -14,7 +14,7 @@
 /// let random_target_tag = "local_node:random";
 /// const subscriber_id: &str = "subscriber_1";
 ///
-/// // TODO Fix, not completed, how can get_subscriber_target guess the key of this var?
+/// // TODO Fix, not completed, how can get_subscriber_target guess the key of this var? Find out
 /// let key = format!("DEPLOYMENT_{}", subscriber_id);
 /// unsafe {
 ///     env::set_var(key, format!("{}:{}", target_master_node, target_instance_id));

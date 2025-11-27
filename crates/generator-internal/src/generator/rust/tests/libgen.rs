@@ -38,6 +38,7 @@ const EXPOSED_TOPIC_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE: &str = r#"
 {
+  id: "camera_frame",
   node: "uvc_camera",
   name: "push_frame",
   tag: "0.1.0"
