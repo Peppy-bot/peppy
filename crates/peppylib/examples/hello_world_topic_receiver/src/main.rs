@@ -3,7 +3,7 @@ use config::node::QoSProfile;
 use peppylib::{MessengerHandle, TopicMessenger};
 use tokio::signal;
 
-const MASTER_NODE_NAME: &str = "master_node";
+const MASTER_NODE_NAME: &str = "the_master_node";
 
 #[tokio::main]
 async fn main() {
