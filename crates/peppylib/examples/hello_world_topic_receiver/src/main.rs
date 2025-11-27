@@ -1,4 +1,4 @@
-use config::consts::DEFAULT_ZENOH_PORT;
+use config::consts::{DEFAULT_ZENOH_PORT, MASTER_NODE_NAME};
 use config::node::QoSProfile;
 use peppylib::{MessengerHandle, TopicMessenger};
 use tokio::signal;
@@ -20,9 +20,15 @@ async fn main() {
             panic!("failed to create messenger on {host}:{port}: {error:?}.\n Did you start a zenohd server with the `zenohd_simple` example?")
         });
 
-    let mut subscription = TopicMessenger::listen(&receiver_handle, node_name, topic_name, qos)
-        .await
-        .expect("Should subscribe to the topic");
+    let mut subscription = TopicMessenger::subscribe(
+        &receiver_handle,
+        MASTER_NODE_NAME,
+        node_name,
+        topic_name,
+        qos,
+    )
+    .await
+    .expect("Should subscribe to the topic");
 
     println!("Waiting for payload... Press CTRL+C to stop.");
 

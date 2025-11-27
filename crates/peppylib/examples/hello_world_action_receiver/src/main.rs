@@ -1,9 +1,9 @@
 use bytes::Bytes;
 use chrono::Local;
 use colored::Colorize;
-use config::consts::DEFAULT_ZENOH_PORT;
+use config::consts::{DEFAULT_ZENOH_PORT, MASTER_NODE_NAME};
 use names_generator2::get_random;
-use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
+use peppylib::messaging::{ActionCreation, ServiceRequestContext};
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use rand::rng;
 use std::sync::Arc;
@@ -51,7 +51,7 @@ async fn handle_goal_request(
 
     let feedback_text = format!("feedback: working on `{payload_text}`");
     feedback_publisher
-        .publish(Bytes::from(feedback_text.clone()))
+        .publish_with_prefix(MASTER_NODE_NAME, Bytes::from(feedback_text.clone()))
         .await?;
 
     let timestamp = current_timestamp();
@@ -349,9 +349,14 @@ async fn main() {
     let receiver_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
     let as_instance_id = format!("{}_listener", get_random(rng()));
 
-    let action = ActionMessenger::listen(&receiver_handle, NODE_NAME, ACTION_NAME, &as_instance_id)
-        .await
-        .expect("Should expose the action");
+    let action = ActionMessenger::listen(
+        &receiver_handle,
+        NODE_NAME,
+        ACTION_NAME,
+        &as_instance_id,
+    )
+    .await
+    .expect("Should expose the action");
 
     println!(
         "{}",

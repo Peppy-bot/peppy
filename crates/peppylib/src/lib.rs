@@ -4,6 +4,7 @@ mod node;
 pub mod checker;
 pub mod encoding;
 pub mod messaging;
+pub mod utils;
 
 pub use error::{Error as PeppyError, Result as PeppyResult};
 pub use messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, TopicMessenger};

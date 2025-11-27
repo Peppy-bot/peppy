@@ -251,6 +251,7 @@ impl RustGenerator {
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 messenger.handle(),
+                messenger.master_node(),
                 "default_client",
                 node_name,
                 service_name,
@@ -493,6 +494,7 @@ impl RustGenerator {
                 let message = {
                     let mut subscription = peppylib::TopicMessenger::listen(
                         messenger.handle(),
+                        messenger.master_node(),
                         node_name,
                         topic_name,
                         qos,
@@ -1078,6 +1080,7 @@ impl LanguageGenerator for RustGenerator {
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 messenger.handle(),
+                messenger.master_node(),
                 instance_id.as_str(),
                 node_name,
                 service_name,
@@ -2325,7 +2328,6 @@ fn build_topic_emit(
 
                     peppylib::TopicMessenger::emit(
                         messenger.handle(),
-                        messenger.node_name(),
                         topic_name,
                         &#instance_id_ident,
                         qos,
@@ -2406,6 +2408,7 @@ fn build_subscribed_topic_callback(
             let message = {
                 let mut subscription = peppylib::TopicMessenger::listen(
                     messenger.handle(),
+                    messenger.master_node(),
                     node_name,
                     topic_name,
                     qos,
