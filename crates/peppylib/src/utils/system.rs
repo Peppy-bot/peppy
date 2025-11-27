@@ -23,6 +23,6 @@
 /// assert!(&master_res, target_master_node);
 /// assert!(&target_res, target_instance_id);
 /// ```
-pub fn get_subscriber_target(target_tag: &str) -> (String, String) {
+pub fn get_subscriber_target(current_master_node: &str, target_tag: &str) -> (String, String) {
     todo!("Finish")
 }

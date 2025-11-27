@@ -234,10 +234,6 @@ fn optional_node_ignored() {
         {{
           instance_id: "video_stream1",
           parameters: {{
-            camera_instance_ids: [
-              "camera_right",
-              "camera_left"
-            ],
             http: {{
               host: "0.0.0.0",
               port: 8083,

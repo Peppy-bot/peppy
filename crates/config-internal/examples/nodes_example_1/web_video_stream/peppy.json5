@@ -15,10 +15,6 @@
   },
   // The input parameters of the current node
   parameters: {
-    camera_instance_ids: {
-      type: "array",
-      items: "string"
-    },
     http: {
       host: "string",
       port: "u16",
@@ -37,6 +33,7 @@
     subscribes_to: {
       topics: [
         {
+          id: "camera_stream",
           node: "uvc_camera", // Will look for that node name
           tag: "0.1.0", // On that particular tag/version
           name: "stream", // With this topic name

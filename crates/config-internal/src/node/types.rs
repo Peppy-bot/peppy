@@ -359,6 +359,7 @@ pub struct ExposedAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubscribedTopic {
+    pub id: Name,
     #[serde(deserialize_with = "deserialize_subscribed_topic_node")]
     pub node: String,
     #[serde(deserialize_with = "deserialize_subscribed_topic_name")]
@@ -370,6 +371,7 @@ pub struct SubscribedTopic {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubscribedService {
+    pub id: Name,
     /// A subscribed service has to specify to which node it wants to connect to
     #[serde(deserialize_with = "deserialize_subscribed_service_node")]
     pub node: String,
@@ -382,6 +384,7 @@ pub struct SubscribedService {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubscribedAction {
+    pub id: Name,
     #[serde(default)]
     pub node: String,
     #[serde(default)]
@@ -570,31 +573,31 @@ mod tests {
 
     #[test]
     fn subscribed_topic_node_is_required() {
-        let valid = r#"{ node: "uvc_camera", name: "stream" }"#;
+        let valid = r#"{ id: "camera_stream", node: "uvc_camera", name: "stream" }"#;
         let topic: SubscribedTopic =
             serde_json5::from_str(valid).expect("valid topic should parse");
         assert_eq!(topic.node, "uvc_camera");
         assert_eq!(topic.name, "stream");
 
-        let without_node = r#"{ name: "stream" }"#;
+        let without_node = r#"{ id: "camera_stream", name: "stream" }"#;
         assert!(serde_json5::from_str::<SubscribedTopic>(without_node).is_err());
 
-        let missing_node = r#"{ node: "", name: "stream" }"#;
+        let missing_node = r#"{ id: "camera_stream", node: "", name: "stream" }"#;
         assert!(serde_json5::from_str::<SubscribedTopic>(missing_node).is_err());
 
-        let missing_name = r#"{ node: "uvc_camera", name: "" }"#;
+        let missing_name = r#"{ id: "camera_stream", node: "uvc_camera", name: "" }"#;
         assert!(serde_json5::from_str::<SubscribedTopic>(missing_name).is_err());
 
-        let whitespace_only = r#"{ node: "   ", name: "stream" }"#;
+        let whitespace_only = r#"{ id: "camera_stream", node: "   ", name: "stream" }"#;
         assert!(serde_json5::from_str::<SubscribedTopic>(whitespace_only).is_err());
 
-        let punctuation_only = r#"{ node: "--", name: "stream" }"#;
+        let punctuation_only = r#"{ id: "camera_stream", node: "--", name: "stream" }"#;
         assert!(serde_json5::from_str::<SubscribedTopic>(punctuation_only).is_err());
 
-        let missing_field = r#"{ node: "uvc_camera" }"#;
+        let missing_field = r#"{ id: "camera_stream", node: "uvc_camera" }"#;
         assert!(serde_json5::from_str::<SubscribedTopic>(missing_field).is_err());
 
-        let trimmed = r#"{ node: " uvc_camera ", name: " stream " }"#;
+        let trimmed = r#"{ id: "camera_stream", node: " uvc_camera ", name: " stream " }"#;
         let topic: SubscribedTopic =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
         assert_eq!(topic.node, "uvc_camera");
@@ -603,20 +606,22 @@ mod tests {
 
     #[test]
     fn subscribed_service_node_is_required() {
-        let with_node = r#"{ node: "uvc_camera", name: "enable_camera", tag: "0.1.0" }"#;
+        let with_node =
+            r#"{ id: "enable_camera", node: "uvc_camera", name: "enable_camera", tag: "0.1.0" }"#;
         let service: SubscribedService =
             serde_json5::from_str(with_node).expect("service with node should parse");
         assert_eq!(service.node, "uvc_camera");
 
-        let trimmed = r#"{ node: "  uvc_camera  ", name: "enable_camera", tag: "0.1.0" }"#;
+        let trimmed = r#"{ id: "enable_camera", node: "  uvc_camera  ", name: "enable_camera", tag: "0.1.0" }"#;
         let service: SubscribedService =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
         assert_eq!(service.node, "uvc_camera");
 
-        let without_node = r#"{ name: "enable_camera", tag: "0.1.0" }"#;
+        let without_node = r#"{ id: "enable_camera", name: "enable_camera", tag: "0.1.0" }"#;
         assert!(serde_json5::from_str::<SubscribedService>(without_node).is_err());
 
-        let blank_node = r#"{ node: "   ", name: "enable_camera", tag: "0.1.0" }"#;
+        let blank_node =
+            r#"{ id: "enable_camera", node: "   ", name: "enable_camera", tag: "0.1.0" }"#;
         assert!(serde_json5::from_str::<SubscribedService>(blank_node).is_err());
     }
 
