@@ -637,6 +637,128 @@ async fn service_communication_poll_wrong_node() {
         .expect("router shutdown timed out");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_request_routed_to_target_instance_only() {
+    let router = TestRouterContext::start().await;
+
+    let listener_node_name = "camera";
+    let listener_service_name = "enable_camera";
+    let target_instance_id = "listener_primary";
+    let other_instance_id = "listener_secondary";
+    let caller_instance_id = "caller_instance";
+
+    let request_payload = Bytes::from_static(b"enable=true");
+    let response_payload = Bytes::from_static(b"ack");
+    let service_wait_timeout = Duration::from_millis(500);
+
+    let (service_a_ready_tx, service_a_ready_rx) = oneshot::channel();
+    let (service_b_ready_tx, service_b_ready_rx) = oneshot::channel();
+
+    let service_a_task = {
+        let service_expose_handle = router.service_messenger().await;
+        let response_payload = response_payload.clone();
+        let request_payload = request_payload.clone();
+
+        tokio::spawn(async move {
+            let mut service = ServiceMessenger::listen(
+                &service_expose_handle,
+                listener_node_name,
+                listener_service_name,
+                target_instance_id,
+            )
+            .await
+            .expect("service A should start");
+
+            let _ = service_a_ready_tx.send(());
+
+            let handled = service
+                .handle_next_request(|request| {
+                    let response_payload = response_payload.clone();
+                    let request_payload = request_payload.clone();
+                    async move {
+                        assert_eq!(request.message().instance_id(), caller_instance_id);
+                        assert_eq!(request.message().payload(), &request_payload);
+                        Ok(response_payload)
+                    }
+                })
+                .await
+                .expect("service A should process the targeted request");
+
+            assert!(handled, "service A subscription closed unexpectedly");
+
+            Ok::<(), Error>(())
+        })
+    };
+
+    let service_b_task = {
+        let service_expose_handle = router.service_messenger().await;
+
+        tokio::spawn(async move {
+            let mut service = ServiceMessenger::listen(
+                &service_expose_handle,
+                listener_node_name,
+                listener_service_name,
+                other_instance_id,
+            )
+            .await
+            .expect("service B should start");
+
+            let _ = service_b_ready_tx.send(());
+
+            let outcome = tokio::time::timeout(
+                service_wait_timeout,
+                service.handle_next_request(|_request| async {
+                    Ok(Bytes::from_static(b"unexpected payload"))
+                }),
+            )
+            .await;
+
+            match outcome {
+                Ok(Ok(handled)) => panic!(
+                    "non-targeted service should not receive the request (handled={handled})"
+                ),
+                Ok(Err(err)) => Err(err),
+                Err(_) => Ok(()),
+            }
+        })
+    };
+
+    service_a_ready_rx
+        .await
+        .expect("service A should signal readiness");
+    service_b_ready_rx
+        .await
+        .expect("service B should signal readiness");
+
+    let caller_handle = router.service_messenger().await;
+    let response = ServiceMessenger::poll(
+        &caller_handle,
+        MASTER_NODE_NAME,
+        caller_instance_id,
+        listener_node_name,
+        listener_service_name,
+        Some(target_instance_id),
+        request_payload.clone(),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("caller should receive response from targeted instance");
+
+    assert_eq!(response.payload().to_bytes(), response_payload);
+    assert_eq!(response.instance_id(), target_instance_id);
+
+    service_a_task
+        .await
+        .expect("service A task panicked")
+        .expect("service A task returned error");
+    service_b_task
+        .await
+        .expect("service B task panicked")
+        .expect("service B task returned error");
+
+    router.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn service_communication_fails_not_started() {
     let router = TestRouterContext::start().await;
