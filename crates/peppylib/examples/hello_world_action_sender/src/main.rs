@@ -10,6 +10,7 @@ use tokio::time::{sleep, timeout};
 
 const NODE_NAME: &str = "hello_node";
 const ACTION_NAME: &str = "hello_action";
+const MASTER_NODE_NAME: &str = "the_master_node";
 
 const FEEDBACK_TIMEOUT: Duration = Duration::from_secs(5);
 const GOAL_TIMEOUT: Duration = Duration::from_secs(3);

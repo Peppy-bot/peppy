@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use config::consts::{DEFAULT_ZENOH_PORT, MASTER_NODE_NAME};
+use config::consts::DEFAULT_ZENOH_PORT;
 use names_generator2::get_random;
 use peppylib::{MessengerHandle, ServiceMessenger};
 use rand::rng;
@@ -7,6 +7,7 @@ use std::time::Duration;
 
 const POLL_SERVICE_NAME: &str = "hello_service";
 const POLL_NODE_NAME: &str = "hello_node";
+const MASTER_NODE_NAME: &str = "the_master_node";
 
 async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
     MessengerHandle::from_host_port(host, port)

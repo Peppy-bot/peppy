@@ -1,9 +1,9 @@
 use bytes::Bytes;
 use chrono::Local;
 use colored::Colorize;
-use config::consts::{DEFAULT_ZENOH_PORT, MASTER_NODE_NAME};
+use config::consts::DEFAULT_ZENOH_PORT;
 use names_generator2::get_random;
-use peppylib::messaging::{ActionCreation, ServiceRequestContext};
+use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use rand::rng;
 use std::sync::Arc;
@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 
 const NODE_NAME: &str = "hello_node";
 const ACTION_NAME: &str = "hello_action";
+const MASTER_NODE_NAME: &str = "the_master_node";
 
 async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
     MessengerHandle::from_host_port(host, port)

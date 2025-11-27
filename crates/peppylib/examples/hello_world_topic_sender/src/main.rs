@@ -5,6 +5,8 @@ use names_generator2::get_random;
 use peppylib::{MessengerHandle, TopicMessenger};
 use rand::rng;
 
+const MASTER_NODE_NAME: &str = "the_master_node";
+
 #[tokio::main]
 async fn main() {
     let topic_name = "hello_msg";
@@ -30,6 +32,7 @@ async fn main() {
     println!("Sending payload as {instance_id}...");
     TopicMessenger::emit(
         &sender_handle,
+        MASTER_NODE_NAME,
         node_name,
         topic_name,
         &instance_id,
