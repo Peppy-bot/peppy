@@ -24,11 +24,13 @@
     subscribes_to: {
       topics: [
         {
+          id: "camera_stream",
           node: "{{ uvc_camera_node_name }}",
           tag: "0.1.0",
           name: "stream"
         },
         {
+          id: "lidar_object_push",
           node: "{{ lidar_sensor_node_name }}",
           tag: "0.1.0",
           name: "push_lidar_object"
@@ -37,6 +39,7 @@
       services: [],
       actions: [
         {
+          id: "move_right_arm_action",
           node: "{{ controller_node_name }}", // Will look for that node name
           tag: "0.1.0", // On that particular tag/version
           name: "move_right_arm", // With this action name

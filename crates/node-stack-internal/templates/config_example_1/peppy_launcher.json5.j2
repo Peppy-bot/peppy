@@ -81,15 +81,11 @@
       name: "{{ web_video_stream_node_name }}",
       tag: "0.1.0",
       // Since it's optional, if the node cannot be found, it will be ignored
-      optional: {{ web_video_stream_optional }},
+      optional: "{{ web_video_stream_optional }}",
       instances: [
         {
           instance_id: "stream_1",
           parameters: {
-            camera_instance_ids: [
-              "camera_right",
-              "camera_left"
-            ],
             http: {
               host: "0.0.0.0",
               port: 8083,
@@ -116,6 +112,16 @@
           instance_id: "the_brain",
           parameters: {}
         }
+      ],
+      subscriber_targets: [
+        {
+          id: "camera_stream",
+          // Subscribe to all these instances
+          target_instance_ids: [
+            "camera_right",
+            "camera_left"
+          ]
+        },
       ]
     },
     {

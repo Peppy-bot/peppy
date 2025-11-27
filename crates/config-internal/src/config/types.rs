@@ -44,6 +44,15 @@ pub struct DeploymentInstance {
     pub instance_id: Name,
     #[serde(default)]
     pub parameters: NodeParameters,
+    #[serde(default)]
+    pub subscriber_targets: Vec<SubscriberTarget>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubscriberTarget {
+    pub id: Name,
+    pub target_instance_ids: Vec<String>,
 }
 
 fn deserialize_instances<'de, D>(deserializer: D) -> Result<Vec<DeploymentInstance>, D::Error>
@@ -642,5 +651,36 @@ mod tests {
         let ParsingError::EmptyName = ParsingError::from(err) else {
             panic!("expected EmptyName error");
         };
+    }
+
+    #[test]
+    fn subscriber_targets_deserialization() {
+        let json = r#"{
+            name: "web_video_stream",
+            tag: "0.1.0",
+            instances: [
+                {
+                    instance_id: "video_stream1",
+                    subscriber_targets: [
+                        {
+                            id: "camera_stream",
+                            target_instance_ids: [
+                                "camera_front",
+                                "self:camera_rear"
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }"#;
+
+        let deployment: Deployment = serde_json5::from_str(json).expect("valid deployment");
+        let instance = &deployment.instances[0];
+        assert_eq!(instance.subscriber_targets.len(), 1);
+        let target = &instance.subscriber_targets[0];
+        assert_eq!(target.id.as_str(), "camera_stream");
+        assert_eq!(target.target_instance_ids.len(), 2);
+        assert_eq!(target.target_instance_ids[0], "camera_front");
+        assert_eq!(target.target_instance_ids[1], "self:camera_rear");
     }
 }

@@ -69,11 +69,6 @@
         {
           instance_id: "video_stream1",
           parameters: {
-            // Listen to all the instances with this ID, it's up to the writer of the node to implement the filtering
-            camera_instances_id_filter: [
-              "camera_front",
-              "camera_rear"
-            ],
             http: {
               host: "0.0.0.0",
               port: 8083,
@@ -87,7 +82,18 @@
               quality: 3,
               max_fps: 30,
             },
-          }
+          },
+          // `subscriber_targets` is mandatory for the node to know what exposer it should point to
+          subscriber_targets: [
+            {
+              id: "camera_stream",
+              // Subscribe to all these instances
+              target_instance_ids: [
+                "camera_front",
+                "self:camera_rear" // `self` is a special keyword that refers to the current master node
+              ]
+            },
+          ]
         }
       ]
     },
