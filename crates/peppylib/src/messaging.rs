@@ -69,6 +69,19 @@ pub fn build_key_expr(message_type: &str, node_name: &str, message_type_name: &s
         .join("/")
 }
 
+pub fn build_master_key_expr(
+    master_node: &str,
+    message_type: &str,
+    node_name: &str,
+    message_type_name: &str,
+) -> String {
+    build_key_expr(
+        &format!("{master_node}/{message_type}"),
+        node_name,
+        message_type_name,
+    )
+}
+
 fn format_instance_segment(instance_id: &str) -> Option<String> {
     (instance_id != INSTANCE_ID_WILDCARD).then(|| format!("<INSTANCE_ID:{instance_id}>"))
 }
@@ -84,7 +97,6 @@ pub struct ServiceEndpoint {
     subscription: Subscription,
     service_root: String,
     instance_id: String,
-    response_topic_base: String,
 }
 
 impl ServiceEndpoint {
@@ -158,8 +170,14 @@ impl ServiceEndpoint {
 
     async fn next_request(&mut self) -> Result<(ServiceRequestContext, String)> {
         while let Some(request) = self.subscription.rx.recv().await {
-            let (context, response_topic) = self.build_request_context(request)?;
-            return Ok((context, response_topic));
+            match self.build_request_context(request) {
+                Ok((context, response_topic)) => return Ok((context, response_topic)),
+                // Err(Error::InvalidServiceRequest { .. }) => {
+                //     // Skip messages that do not match this service endpoint.
+                //     continue;
+                // }
+                Err(err) => return Err(err),
+            }
         }
 
         Err(Error::ServiceRequestStreamClosed)
@@ -170,16 +188,24 @@ impl ServiceEndpoint {
         request: TopicMessage,
     ) -> Result<(ServiceRequestContext, String)> {
         let identifier = request.key_expr().to_string();
+        let (master_segment, identifier_without_master) =
+            identifier
+                .split_once('/')
+                .ok_or_else(|| Error::InvalidServiceRequest {
+                    identifier: identifier.clone(),
+                    reason: "missing master node segment in request".to_string(),
+                })?;
+        let service_root_with_master = format!("{master_segment}/{}", self.service_root);
         let service_instance_segment = format_instance_segment(self.instance_id.as_str());
         let response_instance_segment = service_instance_segment
             .clone()
             .unwrap_or_else(|| format!("<INSTANCE_ID:{}>", self.instance_id));
 
-        let specific_prefix = service_instance_segment
-            .as_ref()
-            .map(|instance_segment| format!("{}/{instance_segment}/request/", self.service_root));
-        let direct_prefix = format!("{}/request/", self.service_root);
-        let wildcard_prefix = format!("{}/**/request/", self.service_root);
+        let specific_prefix = service_instance_segment.as_ref().map(|instance_segment| {
+            format!("{}/{instance_segment}/request/", service_root_with_master)
+        });
+        let direct_prefix = format!("{service_root_with_master}/request/");
+        let wildcard_prefix = format!("{service_root_with_master}/**/request/");
         let expected_prefixes = {
             let mut prefixes = Vec::new();
             if let Some(prefix) = specific_prefix.as_ref() {
@@ -219,15 +245,21 @@ impl ServiceEndpoint {
             }
         })?;
 
-        let remainder = identifier.strip_prefix(&request_prefix).ok_or_else(|| {
-            let reason =
-                "request topic is missing the expected prefix after validation".to_string();
-            error!(%identifier, %reason, "service received invalid request");
-            Error::InvalidServiceRequest {
-                identifier: identifier.clone(),
-                reason,
-            }
-        })?;
+        let remainder = identifier_without_master
+            .strip_prefix(
+                request_prefix
+                    .strip_prefix(&format!("{master_segment}/"))
+                    .unwrap_or(request_prefix),
+            )
+            .ok_or_else(|| {
+                let reason =
+                    "request topic is missing the expected prefix after validation".to_string();
+                error!(%identifier, %reason, "service received invalid request");
+                Error::InvalidServiceRequest {
+                    identifier: identifier.clone(),
+                    reason,
+                }
+            })?;
         let mut remainder_parts = remainder.split('/').filter(|segment| !segment.is_empty());
 
         let caller_segment = match remainder_parts.next().map(str::to_string) {
@@ -254,19 +286,20 @@ impl ServiceEndpoint {
                 });
             }
         };
+        let response_topic_base = format!("{service_root_with_master}/response");
         let response_topic = format!(
             "{}/{}/{}/{}",
-            self.response_topic_base, caller_segment, request_id, response_instance_segment
+            response_topic_base, caller_segment, request_id, response_instance_segment
         );
 
         let message_identifier = match service_instance_segment.as_deref() {
             Some(instance_segment) => {
                 format!(
                     "{}/{instance_segment}/request/{caller_segment}",
-                    self.service_root
+                    service_root_with_master
                 )
             }
-            None => format!("{}/**/request/{caller_segment}", self.service_root),
+            None => format!("{}/**/request/{caller_segment}", service_root_with_master),
         };
         let message = TopicMessage::new(&message_identifier, request.into_payload())?;
         let context = ServiceRequestContext::new(message, request_id);
@@ -336,7 +369,16 @@ impl TopicPublisher {
     }
 
     pub async fn publish(&self, payload: Bytes) -> Result<()> {
-        let message = Message::new(&self.topic, payload);
+        self.publish_on(self.topic.clone(), payload).await
+    }
+
+    pub async fn publish_with_prefix(&self, prefix: &str, payload: Bytes) -> Result<()> {
+        let topic = format!("{prefix}/{}", self.topic);
+        self.publish_on(topic, payload).await
+    }
+
+    async fn publish_on(&self, topic: String, payload: Bytes) -> Result<()> {
+        let message = Message::new(&topic, payload);
         let mut messenger = self.messenger.lock().await;
         messenger
             .publish(message, self.qos)
@@ -346,6 +388,7 @@ impl TopicPublisher {
 }
 
 pub struct ActionGoalHandle {
+    master_node: String,
     node_name: String,
     action_name: String,
     target_instance_id: Option<String>,
@@ -372,7 +415,7 @@ pub struct ActionCreation {
 }
 
 impl TopicMessenger {
-    pub async fn listen(
+    pub async fn subscribe(
         messenger: &MessengerHandle,
         as_node_name: &str,
         as_topic: &str,
@@ -385,14 +428,22 @@ impl TopicMessenger {
 
     pub async fn emit(
         messenger: &MessengerHandle,
-        to_node_name: &str,
+        to_master_node: &str,
+        to_node: &str,
         to_topic: &str,
         as_instance_id: &str,
         qos: QoSProfile,
         payload: Bytes,
     ) -> Result<()> {
         messenger
-            .emit_topic_message(to_node_name, to_topic, as_instance_id, qos, payload)
+            .emit_topic_message(
+                to_master_node,
+                to_node,
+                to_topic,
+                as_instance_id,
+                qos,
+                payload,
+            )
             .await
     }
 }
@@ -412,6 +463,7 @@ impl ServiceMessenger {
 
     pub async fn poll(
         messenger: &MessengerHandle,
+        master_node: &str,
         as_instance_id: &str,
         node_name: &str,
         service_name: &str,
@@ -422,6 +474,7 @@ impl ServiceMessenger {
         messenger
             .poll_service(
                 "service",
+                master_node,
                 node_name,
                 service_name,
                 instance_id,
@@ -447,6 +500,7 @@ impl ActionMessenger {
 
     pub async fn send_goal(
         messenger: &MessengerHandle,
+        master_node: &str,
         as_instance_id: &str,
         node_name: &str,
         action_name: &str,
@@ -455,7 +509,7 @@ impl ActionMessenger {
         feedback_qos: QoSProfile,
         goal_timeout: Duration,
     ) -> Result<ActionGoalHandle> {
-        let action_root = build_key_expr("action", node_name, action_name);
+        let action_root = build_master_key_expr(master_node, "action", node_name, action_name);
         let feedback_topic = match instance_id {
             Some(target_instance_id) => {
                 format!("{action_root}/feedback/<INSTANCE_ID:{target_instance_id}>")
@@ -474,6 +528,7 @@ impl ActionMessenger {
         let goal_response = messenger
             .poll_service(
                 "action",
+                master_node,
                 node_name,
                 &goal_service_name,
                 instance_id,
@@ -484,6 +539,7 @@ impl ActionMessenger {
             .await?;
 
         Ok(ActionGoalHandle {
+            master_node: master_node.to_string(),
             node_name: node_name.to_string(),
             action_name: action_name.to_string(),
             target_instance_id: instance_id.map(|id| id.to_string()),
@@ -503,6 +559,7 @@ impl ActionMessenger {
         messenger
             .poll_service(
                 "action",
+                &handle.master_node,
                 &handle.node_name,
                 &cancel_service_name,
                 handle.target_instance_id.as_deref(),
@@ -525,6 +582,7 @@ impl ActionMessenger {
         messenger
             .poll_service(
                 "action",
+                &handle.master_node,
                 &handle.node_name,
                 &result_service_name,
                 handle.target_instance_id.as_deref(),
@@ -552,17 +610,8 @@ impl MessengerHandle {
         Self { messenger }
     }
 
-    pub async fn new() -> Result<Self> {
-        let adapter = ZenohAdapter::default();
-        Self::from_adapter(adapter).await
-    }
-
     pub async fn from_host_port(host: &str, port: u16) -> Result<Self> {
         let adapter = ZenohAdapter::from_host_port(ZenohNetProtocol::Tcp, host, port);
-        Self::from_adapter(adapter).await
-    }
-
-    async fn from_adapter(adapter: ZenohAdapter) -> Result<Self> {
         let messenger = Self::new_session(adapter).await?;
         Ok(Self {
             messenger: Arc::new(Mutex::new(messenger)),
@@ -581,11 +630,11 @@ impl MessengerHandle {
 
     async fn receive_topic_msg(
         &self,
-        from_node_name: &str,
-        from_topic: &str,
+        as_node_name: &str,
+        as_topic: &str,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        let key_expr = format!("topic/{}/{}/**", from_node_name, from_topic);
+        let key_expr = format!("**/topic/{}/{}/**", as_node_name, as_topic);
         let subscriber_qos = map_node_qos_to_subscriber_qos(qos);
 
         let subscription = {
@@ -599,6 +648,7 @@ impl MessengerHandle {
 
     async fn emit_topic_message(
         &self,
+        to_master_node: &str,
         to_node_name: &str,
         to_topic: &str,
         as_instance_id: &str,
@@ -607,8 +657,8 @@ impl MessengerHandle {
     ) -> Result<()> {
         // Uses the zenoh key expression ID matching to save bytes on sending the node ID on the other side
         let key_expr = format!(
-            "topic/{}/{}/<INSTANCE_ID:{}>",
-            to_node_name, to_topic, as_instance_id
+            "{}/topic/{}/{}/<INSTANCE_ID:{}>",
+            to_master_node, to_node_name, to_topic, as_instance_id
         );
         let msg = Message::new(&key_expr, payload);
 
@@ -637,8 +687,7 @@ impl MessengerHandle {
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
         let service_root = key_expr;
-        let request_subscription_topic = format!("{service_root}/**/request/**");
-        let response_topic_base = format!("{service_root}/response");
+        let request_subscription_topic = format!("**/{service_root}/**/request/**");
 
         let subscription = {
             let messenger = self.messenger.lock().await;
@@ -653,13 +702,13 @@ impl MessengerHandle {
             subscription,
             service_root,
             instance_id: as_instance_id.to_string(),
-            response_topic_base,
         })
     }
 
     async fn poll_service(
         &self,
         message_type: &str,
+        master_node: &str,
         node_name: &str,
         service_name: &str,
         instance_id: Option<&str>,
@@ -667,7 +716,8 @@ impl MessengerHandle {
         request_payload: Bytes,
         response_timeout: Duration,
     ) -> Result<TopicMessage> {
-        let service_root = build_key_expr(message_type, node_name, service_name);
+        let service_root =
+            build_master_key_expr(master_node, message_type, node_name, service_name);
         let target_instance_segment = instance_id.and_then(format_instance_segment);
         let target_instance_id = instance_id.map(|id| id.to_string());
         let caller_instance_segment = format_instance_segment(as_instance_id)
@@ -754,7 +804,8 @@ impl MessengerHandle {
         let goal_service_root = format!("{action_root}/goal");
         let cancel_service_root = format!("{action_root}/cancel");
         let result_service_root = format!("{action_root}/result");
-        let feedback_topic = format!("{action_root}/feedback/<INSTANCE_ID:{as_instance_id}>");
+        let feedback_topic_suffix =
+            format!("{action_root}/feedback/<INSTANCE_ID:{as_instance_id}>");
 
         let goal_service = self
             .create_service_endpoint(goal_service_root, as_instance_id)
@@ -768,7 +819,7 @@ impl MessengerHandle {
 
         let feedback_publisher = TopicPublisher {
             messenger: Arc::clone(&self.messenger),
-            topic: feedback_topic,
+            topic: feedback_topic_suffix,
             qos: PublisherQoS::Standard,
         };
 

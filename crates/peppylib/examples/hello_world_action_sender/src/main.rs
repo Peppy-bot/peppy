@@ -76,6 +76,7 @@ async fn main() {
     );
     let mut goal_handle = ActionMessenger::send_goal(
         &sender_handle,
+        MASTER_NODE_NAME,
         &as_instance_id,
         NODE_NAME,
         ACTION_NAME,
@@ -122,6 +123,7 @@ async fn main() {
     println!("{}", "[GOAL] Sending cancellable goal...".bold().green());
     let mut cancellable_goal_handle = ActionMessenger::send_goal(
         &sender_handle,
+        MASTER_NODE_NAME,
         &as_instance_id,
         NODE_NAME,
         ACTION_NAME,

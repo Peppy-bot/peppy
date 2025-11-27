@@ -12,6 +12,8 @@ use tokio::sync::oneshot;
 use crate::error::Error;
 use crate::messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, TopicMessenger};
 
+const MASTER_NODE_NAME: &str = "master_node";
+
 #[derive(Clone)]
 struct ActionClientCase {
     client_id: String,
@@ -122,9 +124,9 @@ async fn connect_action_messenger(host: &str, port: u16) -> MessengerHandle {
 }
 
 #[test]
-fn build_key_expr_removes_redundant_separators() {
-    let path = super::build_key_expr("/service", "/camera/rear/", "/video_frame");
-    assert_eq!(path, "service/camera/rear/video_frame");
+fn build_master_key_expr_removes_redundant_separators() {
+    let path = super::build_master_key_expr("master", "/service", "/camera/rear/", "/video_frame");
+    assert_eq!(path, "master/service/camera/rear/video_frame");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -141,13 +143,14 @@ async fn topic_publish_subscribe() {
     let receiver_handle = router.topic_messenger().await;
 
     let mut subscription =
-        TopicMessenger::listen(&receiver_handle, &node_name, &topic, qos.clone())
+        TopicMessenger::subscribe(&receiver_handle, &node_name, &topic, qos.clone())
             .await
             .expect("Should subscribe to the topic");
 
     let instance_id = "emitter_instance";
     TopicMessenger::emit(
         &sender_handle,
+        MASTER_NODE_NAME,
         &node_name,
         &topic,
         &instance_id,
@@ -163,8 +166,8 @@ async fn topic_publish_subscribe() {
         .expect("Should receive the published message");
 
     let expected_topic = format!(
-        "topic/{}/{}/<INSTANCE_ID:{}>",
-        node_name, topic, instance_id
+        "{}/topic/{}/{}/<INSTANCE_ID:{}>",
+        MASTER_NODE_NAME, node_name, topic, instance_id
     );
 
     assert_eq!(received.key_expr(), expected_topic);
@@ -186,7 +189,7 @@ async fn topic_publish_reliable_5000hz_messages() {
     let receiver_handle = router.topic_messenger().await;
 
     let mut subscription =
-        TopicMessenger::listen(&receiver_handle, &node_name, &topic, qos.clone())
+        TopicMessenger::subscribe(&receiver_handle, &node_name, &topic, qos.clone())
             .await
             .expect("Should subscribe to the topic");
 
@@ -200,6 +203,7 @@ async fn topic_publish_reliable_5000hz_messages() {
         let payload = Bytes::from(message_id.to_le_bytes().to_vec());
         TopicMessenger::emit(
             &sender_handle,
+            MASTER_NODE_NAME,
             &node_name,
             &topic,
             &instance_id,
@@ -211,8 +215,8 @@ async fn topic_publish_reliable_5000hz_messages() {
     }
 
     let expected_key_expr = format!(
-        "topic/{}/{}/<INSTANCE_ID:{}>",
-        node_name, topic, instance_id
+        "{}/topic/{}/{}/<INSTANCE_ID:{}>",
+        MASTER_NODE_NAME, node_name, topic, instance_id
     );
 
     let mut received_ids: Vec<u32> = Vec::with_capacity(message_count);
@@ -291,8 +295,12 @@ async fn service_communication_poll_specific_instance_id() {
         .await
         .expect("service should start");
 
-        let service_root =
-            super::build_key_expr("service", listener_node_name, listener_service_name);
+        let service_root = super::build_master_key_expr(
+            MASTER_NODE_NAME,
+            "service",
+            listener_node_name,
+            listener_service_name,
+        );
         let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
         let expected_request_topic = format!(
             "{service_root}/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
@@ -338,6 +346,7 @@ async fn service_communication_poll_specific_instance_id() {
         let caller_handle = router.service_messenger().await;
         let response = ServiceMessenger::poll(
             &caller_handle,
+            MASTER_NODE_NAME,
             caller_instance_id,
             listener_node_name,
             listener_service_name,
@@ -403,8 +412,12 @@ async fn service_communication_poll_no_instance_id_target() {
         .await
         .expect("service should start");
 
-        let service_root =
-            super::build_key_expr("service", listener_node_name, listener_service_name);
+        let service_root = super::build_master_key_expr(
+            MASTER_NODE_NAME,
+            "service",
+            listener_node_name,
+            listener_service_name,
+        );
         let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
         let expected_request_topic = format!(
             "{service_root}/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
@@ -450,6 +463,7 @@ async fn service_communication_poll_no_instance_id_target() {
         let caller_handle = router.service_messenger().await;
         let response = ServiceMessenger::poll(
             &caller_handle,
+            MASTER_NODE_NAME,
             caller_instance_id,
             listener_node_name,
             listener_service_name,
@@ -515,8 +529,12 @@ async fn service_communication_poll_wrong_node() {
         .await
         .expect("service should start");
 
-        let service_root =
-            super::build_key_expr("service", listener_node_name, listener_service_name);
+        let service_root = super::build_master_key_expr(
+            MASTER_NODE_NAME,
+            "service",
+            listener_node_name,
+            listener_service_name,
+        );
         let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
         let expected_request_topic = format!(
             "{service_root}/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
@@ -564,6 +582,7 @@ async fn service_communication_poll_wrong_node() {
         let err = {
             let result = ServiceMessenger::poll(
                 &caller_handle,
+                MASTER_NODE_NAME,
                 caller_instance_id,
                 listener_node_name,
                 listener_service_name,
@@ -635,6 +654,7 @@ async fn service_communication_fails_not_started() {
 
         let result = ServiceMessenger::poll(
             &caller_handle,
+            MASTER_NODE_NAME,
             caller_instance_id,
             listener_node_name,
             listener_service_name,
@@ -690,8 +710,12 @@ async fn service_communication_fails_timeout() {
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task = {
-        let service_root =
-            super::build_key_expr("service", listener_node_name, listener_service_name);
+        let service_root = super::build_master_key_expr(
+            MASTER_NODE_NAME,
+            "service",
+            listener_node_name,
+            listener_service_name,
+        );
         let expected_request_key_expr = format!(
             "{service_root}/<INSTANCE_ID:{listener_instance_id}>/request/<INSTANCE_ID:{caller_instance_id}>"
         );
@@ -760,6 +784,7 @@ async fn service_communication_fails_timeout() {
 
         let success_response = ServiceMessenger::poll(
             &caller_handle,
+            MASTER_NODE_NAME,
             caller_instance_id,
             listener_node_name,
             listener_service_name,
@@ -778,6 +803,7 @@ async fn service_communication_fails_timeout() {
 
         let result = ServiceMessenger::poll(
             &caller_handle,
+            MASTER_NODE_NAME,
             caller_instance_id,
             listener_node_name,
             listener_service_name,
@@ -807,8 +833,8 @@ async fn service_communication_fails_timeout() {
 
     assert_eq!(
         err_instance_id.as_deref(),
-        Some(listener_instance_id),
-        "should report unreachable target instance"
+        None,
+        "should report unreachable target instance (unknown when no target instance was specified)"
     );
     assert_eq!(err_service_name.as_str(), listener_service_name);
 
@@ -893,6 +919,7 @@ async fn service_handle_request_processes_multiple_messages() {
             let request_payload = Bytes::from(format!("enable=true;request={i}").into_bytes());
             let response = ServiceMessenger::poll(
                 &caller_handle,
+                MASTER_NODE_NAME,
                 caller_instance_id,
                 listener_node_name,
                 listener_service_name,
@@ -956,8 +983,12 @@ async fn single_service_communication_multiple_polls_and_callers() {
         .await
         .expect("service should start");
 
-        let service_root =
-            super::build_key_expr("service", listener_node_name, listener_service_name);
+        let service_root = super::build_master_key_expr(
+            MASTER_NODE_NAME,
+            "service",
+            listener_node_name,
+            listener_service_name,
+        );
 
         let call_count = Arc::clone(&call_count);
 
@@ -1035,6 +1066,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
                 for (request_idx, request_payload) in requests {
                     let response = ServiceMessenger::poll(
                         &caller_handle,
+                        MASTER_NODE_NAME,
                         &caller_id,
                         listener_node_name,
                         listener_service_name,
@@ -1149,8 +1181,12 @@ async fn action_communication() {
             .await
             .expect("action should start");
 
-            let action_root =
-                super::build_key_expr("action", listener_node_name, listener_action_name);
+            let action_root = super::build_master_key_expr(
+                MASTER_NODE_NAME,
+                "action",
+                listener_node_name,
+                listener_action_name,
+            );
             let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
             let expected_goal_topic = format!(
                 "{action_root}/goal/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
@@ -1184,7 +1220,7 @@ async fn action_communication() {
 
             action
                 .feedback_publisher
-                .publish(feedback_payload_server.clone())
+                .publish_with_prefix(MASTER_NODE_NAME, feedback_payload_server.clone())
                 .await
                 .expect("action should publish feedback");
 
@@ -1223,6 +1259,7 @@ async fn action_communication() {
         // Client sends the goal and obtains the handle carrying goal response + feedback sub.
         let mut goal_handle = ActionMessenger::send_goal(
             &caller_handle,
+            MASTER_NODE_NAME,
             caller_instance_id,
             listener_node_name,
             listener_action_name,
@@ -1241,7 +1278,12 @@ async fn action_communication() {
 
         let expected_feedback_topic = format!(
             "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
-            super::build_key_expr("action", listener_node_name, listener_action_name)
+            super::build_master_key_expr(
+                MASTER_NODE_NAME,
+                "action",
+                listener_node_name,
+                listener_action_name
+            )
         );
 
         // Consume one feedback update from the action server.
@@ -1317,8 +1359,12 @@ async fn action_communication_no_instance_id_target() {
             .await
             .expect("action should start");
 
-            let action_root =
-                super::build_key_expr("action", listener_node_name, listener_action_name);
+            let action_root = super::build_master_key_expr(
+                MASTER_NODE_NAME,
+                "action",
+                listener_node_name,
+                listener_action_name,
+            );
             let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
             let expected_goal_topic = format!(
                 "{action_root}/goal/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
@@ -1352,7 +1398,7 @@ async fn action_communication_no_instance_id_target() {
 
             action
                 .feedback_publisher
-                .publish(feedback_payload_server.clone())
+                .publish_with_prefix(MASTER_NODE_NAME, feedback_payload_server.clone())
                 .await
                 .expect("action should publish feedback");
 
@@ -1391,6 +1437,7 @@ async fn action_communication_no_instance_id_target() {
         // Client sends the goal and obtains the handle carrying goal response + feedback sub.
         let mut goal_handle = ActionMessenger::send_goal(
             &caller_handle,
+            MASTER_NODE_NAME,
             caller_instance_id,
             listener_node_name,
             listener_action_name,
@@ -1409,7 +1456,12 @@ async fn action_communication_no_instance_id_target() {
 
         let expected_feedback_topic = format!(
             "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
-            super::build_key_expr("action", listener_node_name, listener_action_name)
+            super::build_master_key_expr(
+                MASTER_NODE_NAME,
+                "action",
+                listener_node_name,
+                listener_action_name
+            )
         );
 
         // Consume one feedback update from the action server.
@@ -1491,8 +1543,12 @@ async fn action_communication_goal_cancelled() {
                 ..
             } = action;
 
-            let action_root =
-                super::build_key_expr("action", listener_node_name, listener_action_name);
+            let action_root = super::build_master_key_expr(
+                MASTER_NODE_NAME,
+                "action",
+                listener_node_name,
+                listener_action_name,
+            );
             let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
             let expected_goal_topic = format!(
                 "{action_root}/goal/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
@@ -1539,7 +1595,7 @@ async fn action_communication_goal_cancelled() {
                             _ = stop_notified.as_mut() => break,
                             _ = ticker.tick() => {
                                 feedback_publisher
-                                    .publish(feedback_payload.clone())
+                                    .publish_with_prefix(MASTER_NODE_NAME, feedback_payload.clone())
                                     .await?;
                             }
                         }
@@ -1585,6 +1641,7 @@ async fn action_communication_goal_cancelled() {
 
     let mut goal_handle = ActionMessenger::send_goal(
         &caller_handle,
+        MASTER_NODE_NAME,
         caller_instance_id,
         listener_node_name,
         listener_action_name,
@@ -1603,7 +1660,12 @@ async fn action_communication_goal_cancelled() {
 
     let expected_feedback_topic = format!(
         "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
-        super::build_key_expr("action", listener_node_name, listener_action_name)
+        super::build_master_key_expr(
+            MASTER_NODE_NAME,
+            "action",
+            listener_node_name,
+            listener_action_name
+        )
     );
 
     let first_feedback = goal_handle
@@ -1739,8 +1801,12 @@ async fn single_action_communication_multiple_polls() {
             .await
             .expect("action should start");
 
-            let action_root =
-                super::build_key_expr("action", listener_node_name, listener_action_name);
+            let action_root = super::build_master_key_expr(
+                MASTER_NODE_NAME,
+                "action",
+                listener_node_name,
+                listener_action_name,
+            );
             let crate::messaging::ActionCreation {
                 mut goal_service,
                 cancel_service: _,
@@ -1762,7 +1828,7 @@ async fn single_action_communication_multiple_polls() {
                 let feedback_publisher = Arc::clone(&feedback_publisher);
 
                 let handler = goal_service
-                    .spawn_next_request_handler(move |request| {
+                .spawn_next_request_handler(move |request| {
                         let action_root = action_root.clone();
                         let cases = Arc::clone(&cases);
                         let feedback_publisher = Arc::clone(&feedback_publisher);
@@ -1799,7 +1865,9 @@ async fn single_action_communication_multiple_polls() {
                                 "goal payload for `{client_id}` should match expected value"
                             );
 
-                            feedback_publisher.publish(case.feedback.clone()).await?;
+                            feedback_publisher
+                                .publish_with_prefix(MASTER_NODE_NAME, case.feedback.clone())
+                                .await?;
 
                             Ok(case.goal_response.clone())
                         }
@@ -1882,7 +1950,12 @@ async fn single_action_communication_multiple_polls() {
 
     let expected_feedback_topic = format!(
         "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
-        super::build_key_expr("action", listener_node_name, listener_action_name)
+        super::build_master_key_expr(
+            MASTER_NODE_NAME,
+            "action",
+            listener_node_name,
+            listener_action_name
+        )
     );
 
     let total_clients = cases.len();
@@ -1901,6 +1974,7 @@ async fn single_action_communication_multiple_polls() {
 
             let mut goal_handle = ActionMessenger::send_goal(
                 &caller_handle,
+                MASTER_NODE_NAME,
                 &case.client_id,
                 listener_node_name,
                 listener_action_name,

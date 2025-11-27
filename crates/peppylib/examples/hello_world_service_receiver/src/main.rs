@@ -70,8 +70,8 @@ async fn main() {
 
     let mut service =
         ServiceMessenger::listen(&receiver_handle, NODE_NAME, SERVICE_NAME, &instance_id)
-            .await
-            .expect("Should expose the service");
+        .await
+        .expect("Should expose the service");
 
     println!("Waiting for service requests as instance_id {instance_id}... Press CTRL+C to stop.");
     loop {

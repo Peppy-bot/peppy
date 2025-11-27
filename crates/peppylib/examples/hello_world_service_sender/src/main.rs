@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use config::consts::DEFAULT_ZENOH_PORT;
+use config::consts::{DEFAULT_ZENOH_PORT, MASTER_NODE_NAME};
 use names_generator2::get_random;
 use peppylib::{MessengerHandle, ServiceMessenger};
 use rand::rng;
@@ -29,6 +29,7 @@ async fn main() {
     println!("Sending service request as instance_id {as_instance_id}...");
     let response = ServiceMessenger::poll(
         &sender_handle,
+        MASTER_NODE_NAME,
         &as_instance_id,
         POLL_NODE_NAME,
         POLL_SERVICE_NAME,
