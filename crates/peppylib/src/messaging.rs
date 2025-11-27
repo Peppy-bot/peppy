@@ -172,10 +172,10 @@ impl ServiceEndpoint {
         while let Some(request) = self.subscription.rx.recv().await {
             match self.build_request_context(request) {
                 Ok((context, response_topic)) => return Ok((context, response_topic)),
-                // Err(Error::InvalidServiceRequest { .. }) => {
-                //     // Skip messages that do not match this service endpoint.
-                //     continue;
-                // }
+                Err(Error::InvalidServiceRequest { .. }) => {
+                    // Skip messages that do not match this service endpoint.
+                    continue;
+                }
                 Err(err) => return Err(err),
             }
         }
