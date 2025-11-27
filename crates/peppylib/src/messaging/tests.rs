@@ -142,10 +142,15 @@ async fn topic_publish_subscribe() {
     let sender_handle = router.topic_messenger().await;
     let receiver_handle = router.topic_messenger().await;
 
-    let mut subscription =
-        TopicMessenger::subscribe(&receiver_handle, &node_name, &topic, qos.clone())
-            .await
-            .expect("Should subscribe to the topic");
+    let mut subscription = TopicMessenger::subscribe(
+        &receiver_handle,
+        MASTER_NODE_NAME,
+        &node_name,
+        &topic,
+        qos.clone(),
+    )
+    .await
+    .expect("Should subscribe to the topic");
 
     let instance_id = "emitter_instance";
     TopicMessenger::emit(
@@ -188,10 +193,15 @@ async fn topic_publish_reliable_5000hz_messages() {
     let sender_handle = router.topic_messenger().await;
     let receiver_handle = router.topic_messenger().await;
 
-    let mut subscription =
-        TopicMessenger::subscribe(&receiver_handle, &node_name, &topic, qos.clone())
-            .await
-            .expect("Should subscribe to the topic");
+    let mut subscription = TopicMessenger::subscribe(
+        &receiver_handle,
+        MASTER_NODE_NAME,
+        &node_name,
+        &topic,
+        qos.clone(),
+    )
+    .await
+    .expect("Should subscribe to the topic");
 
     let message_count = 5000;
     let instance_id = "emitter_instance";
@@ -288,6 +298,7 @@ async fn service_communication_poll_specific_instance_id() {
         let service_expose_handle = router.service_messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
+            MASTER_NODE_NAME,
             listener_node_name,
             listener_service_name,
             listener_instance_id,
@@ -405,6 +416,7 @@ async fn service_communication_poll_no_instance_id_target() {
         let service_expose_handle = router.service_messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
+            MASTER_NODE_NAME,
             listener_node_name,
             listener_service_name,
             listener_instance_id,
@@ -522,6 +534,7 @@ async fn service_communication_poll_wrong_node() {
         let service_expose_handle = router.service_messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
+            MASTER_NODE_NAME,
             listener_node_name,
             listener_service_name,
             listener_instance_id,
@@ -637,6 +650,114 @@ async fn service_communication_poll_wrong_node() {
         .expect("router shutdown timed out");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn service_communication_poll_wrong_master_node() {
+    let router = TestRouterContext::start().await;
+
+    // Listener instance
+    let listener_node_name = "camera";
+    let listener_service_name = "enable_camera";
+    let listener_instance_id = "listener_instance";
+
+    // Caller instance
+    let caller_instance_id = "caller_instance";
+
+    let wrong_master_node = "wrong_master";
+
+    let request_payload = Bytes::from_static(b"enable=true");
+
+    let (service_ready_tx, service_ready_rx) = oneshot::channel();
+    let service_wait_timeout = Duration::from_millis(500);
+    let service_task_timeout = service_wait_timeout + Duration::from_millis(500);
+    let service_ready_timeout = Duration::from_secs(1);
+
+    // The exposed service has its own dedicated scope (emulates running on its own instance)
+    let service_task = {
+        let service_expose_handle = router.service_messenger().await;
+
+        tokio::spawn(async move {
+            let mut service = ServiceMessenger::listen(
+                &service_expose_handle,
+                MASTER_NODE_NAME,
+                listener_node_name,
+                listener_service_name,
+                listener_instance_id,
+            )
+            .await
+            .expect("service should start");
+
+            service_ready_tx.send(()).unwrap();
+
+            let outcome = tokio::time::timeout(
+                service_wait_timeout,
+                service.handle_next_request(|_request| async {
+                    Ok(Bytes::from_static(b"unexpected payload"))
+                }),
+            )
+            .await;
+
+            match outcome {
+                Ok(Ok(_)) => {
+                    panic!("service should not receive a request on the wrong master node")
+                }
+                Ok(Err(err)) => Err(err),
+                Err(_) => Ok(()),
+            }
+        })
+    };
+
+    // The caller node has its own scope (emulates a separate node running on a different instance)
+    let err = {
+        tokio::time::timeout(service_ready_timeout, service_ready_rx)
+            .await
+            .expect("service should signal readiness before timeout")
+            .expect("service should signal readiness");
+
+        let caller_handle = router.service_messenger().await;
+        let result = ServiceMessenger::poll(
+            &caller_handle,
+            wrong_master_node,
+            caller_instance_id,
+            listener_node_name,
+            listener_service_name,
+            Some(listener_instance_id),
+            request_payload.clone(),
+            Duration::from_millis(200),
+        )
+        .await;
+
+        let Err(err) = result else {
+            panic!("service call should fail when targeting the wrong master node");
+        };
+
+        err
+    };
+
+    let Error::ServiceUnreachable {
+        instance_id: err_instance_id,
+        service_name: err_service_name,
+    } = &err
+    else {
+        panic!(
+            "expected ServiceUnreachable error, received unexpected error: {:?}",
+            err
+        );
+    };
+
+    assert_eq!(err_instance_id.as_deref(), Some(listener_instance_id));
+    assert_eq!(err_service_name.as_str(), listener_service_name);
+
+    tokio::time::timeout(service_task_timeout, service_task)
+        .await
+        .expect("service task should finish within timeout")
+        .expect("service task panicked")
+        .expect("service task returned error");
+
+    tokio::time::timeout(service_task_timeout, router.shutdown())
+        .await
+        .expect("router shutdown timed out");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_request_routed_to_target_instance_only() {
     let router = TestRouterContext::start().await;
@@ -662,6 +783,7 @@ async fn service_request_routed_to_target_instance_only() {
         tokio::spawn(async move {
             let mut service = ServiceMessenger::listen(
                 &service_expose_handle,
+                MASTER_NODE_NAME,
                 listener_node_name,
                 listener_service_name,
                 target_instance_id,
@@ -696,6 +818,7 @@ async fn service_request_routed_to_target_instance_only() {
         tokio::spawn(async move {
             let mut service = ServiceMessenger::listen(
                 &service_expose_handle,
+                MASTER_NODE_NAME,
                 listener_node_name,
                 listener_service_name,
                 other_instance_id,
@@ -846,6 +969,7 @@ async fn service_communication_fails_timeout() {
         let service_expose_handle = router.service_messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
+            MASTER_NODE_NAME,
             listener_node_name,
             listener_service_name,
             listener_instance_id,
@@ -1005,6 +1129,7 @@ async fn service_handle_request_processes_multiple_messages() {
 
             let mut service = ServiceMessenger::listen(
                 &service_expose_handle,
+                MASTER_NODE_NAME,
                 listener_node_name,
                 listener_service_name,
                 listener_instance_id,
@@ -1098,6 +1223,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
 
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
+            MASTER_NODE_NAME,
             listener_node_name,
             listener_service_name,
             listener_instance_id,
@@ -1296,6 +1422,7 @@ async fn action_communication() {
         tokio::spawn(async move {
             let mut action = ActionMessenger::listen(
                 &action_handle,
+                MASTER_NODE_NAME,
                 listener_node_name,
                 listener_action_name,
                 listener_instance_id,
@@ -1474,6 +1601,7 @@ async fn action_communication_no_instance_id_target() {
         tokio::spawn(async move {
             let mut action = ActionMessenger::listen(
                 &action_handle,
+                MASTER_NODE_NAME,
                 listener_node_name,
                 listener_action_name,
                 listener_instance_id,
@@ -1651,6 +1779,7 @@ async fn action_communication_goal_cancelled() {
         tokio::spawn(async move {
             let action = ActionMessenger::listen(
                 &action_handle,
+                MASTER_NODE_NAME,
                 listener_node_name,
                 listener_action_name,
                 listener_instance_id,
@@ -1916,6 +2045,7 @@ async fn single_action_communication_multiple_polls() {
         tokio::spawn(async move {
             let action = ActionMessenger::listen(
                 &action_handle,
+                MASTER_NODE_NAME,
                 listener_node_name,
                 listener_action_name,
                 listener_instance_id,

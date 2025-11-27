@@ -9,6 +9,7 @@ use tokio::signal;
 
 const SERVICE_NAME: &str = "hello_service";
 const NODE_NAME: &str = "hello_node";
+const MASTER_NODE_NAME: &str = "master_node";
 
 async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
     MessengerHandle::from_host_port(host, port)
@@ -69,7 +70,13 @@ async fn main() {
     let instance_id = format!("{}_listener", get_random(rng()));
 
     let mut service =
-        ServiceMessenger::listen(&receiver_handle, NODE_NAME, SERVICE_NAME, &instance_id)
+        ServiceMessenger::listen(
+            &receiver_handle,
+            MASTER_NODE_NAME,
+            NODE_NAME,
+            SERVICE_NAME,
+            &instance_id,
+        )
         .await
         .expect("Should expose the service");
 

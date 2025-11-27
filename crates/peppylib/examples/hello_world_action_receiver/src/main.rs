@@ -351,6 +351,7 @@ async fn main() {
 
     let action = ActionMessenger::listen(
         &receiver_handle,
+        MASTER_NODE_NAME,
         NODE_NAME,
         ACTION_NAME,
         &as_instance_id,
