@@ -12,12 +12,15 @@ use std::path::Path;
 /// Python-specific implementation of the interface generator.
 pub struct PythonGenerator {
     sections: Vec<InterfaceArtifact>,
+    #[allow(dead_code)]
+    master_node_bound_name: String,
 }
 
 impl PythonGenerator {
-    pub fn new() -> Self {
+    pub fn new(master_node_bound_name: &str) -> Self {
         Self {
             sections: Vec::new(),
+            master_node_bound_name: master_node_bound_name.to_string(),
         }
     }
 

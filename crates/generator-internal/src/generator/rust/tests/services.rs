@@ -3,6 +3,8 @@ use std::process::Command;
 use super::*;
 use config::node::{ExposedService, SubscribedService};
 
+const MASTER_NODE_NAME: &str = "master_node";
+
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {
   name: "enable_camera",
@@ -86,7 +88,7 @@ const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2: &str = r#"
 fn expose_service() {
     let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
 
-    let mut generator = RustGenerator::new();
+    let mut generator = RustGenerator::new(MASTER_NODE_NAME);
     generator.add_exposed_service(&service).unwrap();
     let artifacts: Vec<String> = generator
         .into_artifacts()
@@ -233,7 +235,7 @@ fn expose_service() {
 fn expose_service_without_request_body() {
     let service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE3).unwrap();
 
-    let mut generator = RustGenerator::new();
+    let mut generator = RustGenerator::new(MASTER_NODE_NAME);
     generator.add_exposed_service(&service).unwrap();
     let rendered = generator
         .into_artifacts()
@@ -274,7 +276,7 @@ fn expose_two_services() {
     let service1: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
 
-    let mut generator = RustGenerator::new();
+    let mut generator = RustGenerator::new(MASTER_NODE_NAME);
     generator.add_exposed_service(&service1).unwrap();
     generator.add_exposed_service(&service2).unwrap();
 
@@ -387,7 +389,7 @@ fn subscribed_to_service() {
     let response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1).unwrap();
 
-    let mut generator = RustGenerator::new();
+    let mut generator = RustGenerator::new(MASTER_NODE_NAME);
     generator
         .add_subscribed_service(&service, Some(&request_format), Some(&response_format))
         .unwrap();
@@ -598,7 +600,7 @@ fn subscribed_to_two_services_same_node() {
     let response_format2: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2).unwrap();
 
-    let mut generator = RustGenerator::new();
+    let mut generator = RustGenerator::new(MASTER_NODE_NAME);
     generator
         .add_subscribed_service(&service1, Some(&request_format1), Some(&response_format1))
         .unwrap();
@@ -745,7 +747,7 @@ fn subscribed_service_without_response_payload() {
         "#;
     let service: SubscribedService = serde_json5::from_str(service).unwrap();
 
-    let mut generator = RustGenerator::new();
+    let mut generator = RustGenerator::new(MASTER_NODE_NAME);
     generator
         .add_subscribed_service(&service, None, None)
         .expect("generator should allow services without response format");

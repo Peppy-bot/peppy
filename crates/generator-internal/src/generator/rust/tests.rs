@@ -48,7 +48,7 @@ fn prepare_directories(temp_dir: &TempDir) -> (std::path::PathBuf, std::path::Pa
 
 fn init_test_env(temp_dir: &TempDir) -> (RustGenerator, std::path::PathBuf, std::path::PathBuf) {
     let (output_dir, user_node) = prepare_directories(temp_dir);
-    (RustGenerator::new(), output_dir, user_node)
+    (RustGenerator::new("master_node"), output_dir, user_node)
 }
 
 /// Init the cargo project in a given path and add the peppygen dependency to the project

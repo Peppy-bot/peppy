@@ -28,14 +28,16 @@ pub struct RustGenerator {
     sections: Vec<InterfaceArtifact>,
     schemas: HashMap<String, CapnpSchema>,
     pending_exposed_services: Option<ExposedServicesModule>,
+    master_node_bound_name: String,
 }
 
 impl RustGenerator {
-    pub fn new() -> Self {
+    pub fn new(master_node_bound_name: &str) -> Self {
         Self {
             sections: Vec::new(),
             schemas: HashMap::new(),
             pending_exposed_services: None,
+            master_node_bound_name: master_node_bound_name.to_string(),
         }
     }
 
@@ -1366,7 +1368,7 @@ impl LanguageGenerator for RustGenerator {
         self.flush_pending_exposed_services();
 
         // First create the basic structure of the project
-        common::add_peppylib_dependencies(&to_path)?;
+        common::add_peppylib_dependencies(&to_path, &self.master_node_bound_name)?;
         // Write the schema files to the project
         common::write_capnp_schemas(&self.schemas, to_path.as_ref())?;
         // Add the content to the Rust files
@@ -2328,6 +2330,8 @@ fn build_topic_emit(
 
                     peppylib::TopicMessenger::emit(
                         messenger.handle(),
+                        messenger.bound_master_node(),
+                        messenger.node_name(),
                         topic_name,
                         &#instance_id_ident,
                         qos,
@@ -2406,9 +2410,9 @@ fn build_subscribed_topic_callback(
             let qos = peppylib::config::QoSProfile::Standard;
 
             let message = {
-                let mut subscription = peppylib::TopicMessenger::listen(
+                let mut subscription = peppylib::TopicMessenger::subscribe(
                     messenger.handle(),
-                    messenger.master_node(),
+                    messenger.bound_master_node(),
                     node_name,
                     topic_name,
                     qos,
