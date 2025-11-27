@@ -32,9 +32,9 @@ impl DeploymentSourceResolver for StaticResolver {
     ) -> Result<DeploymentMap> {
         let node = self
             .nodes
-            .get(&(deployment.name.clone(), deployment.tag.clone()))
+            .get(&(deployment.name.to_string(), deployment.tag.clone()))
             .cloned()
-            .ok_or_else(|| Error::NodeNotFound(deployment.name.clone()))?;
+            .ok_or_else(|| Error::NodeNotFound(deployment.name.to_string()))?;
 
         Ok(DeploymentMap::new(
             deployment.clone(),

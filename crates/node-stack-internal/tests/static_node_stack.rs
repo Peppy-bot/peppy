@@ -136,11 +136,11 @@ fn local_stack_example_builds_dependencies() {
                         .expect("dependency node must exist")
                         .deployment()
                         .name
-                        .clone()
+                        .to_string()
                 })
                 .collect();
 
-            (map.deployment().name.clone(), deps)
+            (map.deployment().name.to_string(), deps)
         })
         .collect();
 
@@ -306,7 +306,7 @@ fn optional_node_ignored() {
                 .expect("deployment must exist")
                 .deployment()
                 .name
-                .clone()
+                .to_string()
         })
         .collect();
     assert!(

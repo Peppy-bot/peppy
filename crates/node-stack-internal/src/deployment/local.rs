@@ -10,7 +10,7 @@ pub fn resolve_local_deployment(
 ) -> Result<DeploymentMap> {
     let node = node_stack
         .find(deployment.name.as_str(), &deployment.tag)
-        .ok_or_else(|| Error::NodeNotFound(deployment.name.clone()))?
+        .ok_or_else(|| Error::NodeNotFound(deployment.name.to_string()))?
         .into_config();
 
     let node_source = ResolvedNodeSource::new(deployment.source.clone(), node);

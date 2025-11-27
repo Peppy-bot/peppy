@@ -42,7 +42,7 @@ impl PeppyLauncherParser {
 #[cfg(test)]
 mod tests {
     use crate::{
-        config::DeploymentNodeSource,
+        config::{DeploymentNodeSource, types::Name},
         error::{Error, ParsingError},
         node::LogFormat,
     };
@@ -120,7 +120,7 @@ mod tests {
         assert_eq!(deployments.len(), 3);
 
         // Check first deployment
-        assert_eq!(deployments[0].name, "uvc_camera");
+        assert_eq!(deployments[0].name, Name::new("uvc_camera").unwrap());
         assert_eq!(deployments[0].tag, "0.1.0");
         assert!(matches!(
             deployments[0].source,
@@ -129,7 +129,7 @@ mod tests {
         assert_eq!(deployments[0].instances.len(), 2);
 
         // Check second deployment
-        assert_eq!(deployments[1].name, "web_video_stream");
+        assert_eq!(deployments[1].name, Name::new("web_video_stream").unwrap());
         assert!(matches!(
             deployments[1].source,
             Some(DeploymentNodeSource::Git(_))
@@ -137,7 +137,7 @@ mod tests {
         assert_eq!(deployments[1].instances.len(), 1);
 
         // Check third deployment
-        assert_eq!(deployments[2].name, "peppy_web");
+        assert_eq!(deployments[2].name, Name::new("peppy_web").unwrap());
         assert!(matches!(
             deployments[2].source,
             Some(DeploymentNodeSource::Git(_))
