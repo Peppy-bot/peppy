@@ -1,3 +1,4 @@
+use std::env::VarError;
 use std::fmt;
 use thiserror::Error;
 
@@ -59,6 +60,28 @@ pub enum Error {
     ActionResultUnreachable {
         instance_id: Option<String>,
         action_name: String,
+    },
+
+    // -- system
+    #[error("failed to read `{var}` from the environment")]
+    MissingInstanceIdEnvVar {
+        var: &'static str,
+        #[source]
+        source: VarError,
+    },
+
+    #[error("failed to read launch config at `{path}`")]
+    LaunchConfigRead {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("failed to parse launch config at `{path}`")]
+    LaunchConfigParse {
+        path: String,
+        #[source]
+        source: serde_json5::Error,
     },
 }
 

@@ -103,6 +103,7 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2: &str = r#"
 /// In the case of a topic, an "exposed" topic is an entity that emits messages
 #[test]
 fn expose_topic() {
+    // TODO: `Maybe replace let instance_id = std::env::var("PEPPY_INSTANCE_ID")` by `let deployment_config = std::env::var("PEPPY_DEPLOYMENT_CONFIG")` and parse it as a json5 object in the Messenger object
     let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new(MASTER_NODE_NAME);
