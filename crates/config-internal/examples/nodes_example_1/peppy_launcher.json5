@@ -90,7 +90,7 @@
               // Subscribe to all these instances
               target_instance_ids: [
                 "camera_front",
-                "self:camera_rear" // `self` is a special keyword that refers to the current master node
+                "self:camera_rear" // `self` is a special keyword that refers to the master node on this machine
               ]
             },
           ]

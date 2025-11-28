@@ -5,6 +5,7 @@ mod watch;
 
 pub mod consts;
 pub mod encoding;
+pub mod launch_config;
 pub mod node;
 pub mod peppy_config {
     pub use crate::config::*;

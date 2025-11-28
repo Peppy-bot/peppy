@@ -1,9 +1,8 @@
-use peppylib::config::Name;
+use peppylib::system::LaunchConfigProcessor;
 
 pub struct Messenger {
-    bound_master_node: Name,
-    node_name: Name,
     messenger: peppylib::MessengerHandle,
+    config_processor: LaunchConfigProcessor,
 }
 
 impl Messenger {
@@ -11,37 +10,20 @@ impl Messenger {
         let messenger = peppylib::MessengerHandle::from_host_port(host, port)
             .await
             .map_err(crate::Error::Messaging)?;
-        let node_name = std::env::var("PEPPY_NODE_NAME").map_err(|source| {
-            crate::Error::MissingInstanceIdEnvVar {
-                var: "PEPPY_NODE_NAME",
-                source,
-            }
-        })?;
-        let bound_master_node = Name::new("{{ bound_master_node }}").map_err(|e| {
-            crate::Error::InvalidMasterNodeName {
-                node_name: "{{ bound_master_node }}".to_string(),
-                reason: e.to_string(),
-            }
-        })?;
-
-        // Using Name allows the node_name to be checked for valid characters
-        let node_name = Name::new(&node_name).map_err(|e| crate::Error::InvalidNodeName {
-            node_name,
-            reason: e.to_string(),
-        })?;
-        Ok(Self {
-            node_name,
-            bound_master_node,
-            messenger,
-        })
+        let config_processor = LaunchConfigProcessor::new()?;
+        Ok(Self { messenger, config_processor })
     }
 
     pub fn node_name(&self) -> &str {
-        self.node_name.as_str()
+        self.config_processor.get_node_name()
+    }
+
+    pub fn master_node(&self) -> &str {
+        self.bound_master_node()
     }
 
     pub fn bound_master_node(&self) -> &str {
-        self.bound_master_node.as_str()
+        self.config_processor.bound_master_node()
     }
 
     pub fn handle(&self) -> &peppylib::MessengerHandle {
