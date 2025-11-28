@@ -103,7 +103,6 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2: &str = r#"
 /// In the case of a topic, an "exposed" topic is an entity that emits messages
 #[test]
 fn expose_topic() {
-    // TODO: `Maybe replace let instance_id = std::env::var("PEPPY_INSTANCE_ID")` by `let deployment_config = std::env::var("PEPPY_DEPLOYMENT_CONFIG")` and parse it as a json5 object in the Messenger object
     let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
 
     let mut generator = RustGenerator::new(MASTER_NODE_NAME);
@@ -167,16 +166,6 @@ fn expose_topic() {
         "expected structured header argument"
     );
     assert_rendered!(
-        !rendered.contains("set_instance_id"),
-        &rendered,
-        "expected instance id to be excluded from payload"
-    );
-    assert_rendered!(
-        !rendered.contains("instance_id: String"),
-        &rendered,
-        "expected instance id to be resolved at runtime"
-    );
-    assert_rendered!(
         rendered.contains("image: [u8; 3]"),
         &rendered,
         "expected fixed-size array argument"
@@ -207,7 +196,7 @@ fn expose_topic() {
         "expected bytes payload conversion"
     );
     assert_rendered!(
-        rendered.contains("let topic_name = \"push_frame\";"),
+        rendered.contains("let as_topic = \"push_frame\";"),
         &rendered,
         "expected topic name literal"
     );
@@ -217,18 +206,22 @@ fn expose_topic() {
         "expected qos profile literal"
     );
     assert_rendered!(
-        rendered.contains("std::env::var(\"PEPPY_INSTANCE_ID\")"),
+        rendered.contains("let as_instance_id = messenger.runtime().current_instance_id();"),
         &rendered,
-        "expected instance id env lookup"
+        "expected instance id to be resolved from runtime config"
     );
     assert_rendered!(
-        rendered.contains("crate::Error::MissingInstanceIdEnvVar"),
+        rendered.contains("let as_node_name = messenger.runtime().node_name();"),
         &rendered,
-        "expected instance id error mapping"
+        "expected node name to be resolved from runtime config"
     );
-
     assert_rendered!(
-        rendered.contains("&instance_id"),
+        rendered.contains("let with_master_node = messenger.runtime().bound_master_node();"),
+        &rendered,
+        "expected bound master node to be resolved from runtime config"
+    );
+    assert_rendered!(
+        rendered.contains("as_instance_id"),
         &rendered,
         "expected instance id to be passed to emitter"
     );
@@ -270,11 +263,11 @@ fn expose_two_topics() {
     let expectations = [
         ArtifactExpectation {
             builder_snippet: "crate::capnp::push_frame_message_capnp::push_frame_message::Builder",
-            topic_literal: "let topic_name = \"push_frame\";",
+            topic_literal: "let as_topic = \"push_frame\";",
         },
         ArtifactExpectation {
             builder_snippet: "crate::capnp::push_lidar_object_message_capnp::push_lidar_object_message::Builder",
-            topic_literal: "let topic_name = \"push_lidar_object\";",
+            topic_literal: "let as_topic = \"push_lidar_object\";",
         },
     ];
 
