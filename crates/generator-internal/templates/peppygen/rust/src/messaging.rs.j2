@@ -1,8 +1,8 @@
-use peppylib::system::LaunchConfigProcessor;
+use peppylib::system::RuntimeProcessor;
 
 pub struct Messenger {
     messenger: peppylib::MessengerHandle,
-    config_processor: LaunchConfigProcessor,
+    runtime_processor: RuntimeProcessor,
 }
 
 impl Messenger {
@@ -10,20 +10,12 @@ impl Messenger {
         let messenger = peppylib::MessengerHandle::from_host_port(host, port)
             .await
             .map_err(crate::Error::Messaging)?;
-        let config_processor = LaunchConfigProcessor::new()?;
-        Ok(Self { messenger, config_processor })
+        let runtime_processor = RuntimeProcessor::new()?;
+        Ok(Self { messenger, runtime_processor })
     }
 
-    pub fn node_name(&self) -> &str {
-        self.config_processor.get_node_name()
-    }
-
-    pub fn master_node(&self) -> &str {
-        self.bound_master_node()
-    }
-
-    pub fn bound_master_node(&self) -> &str {
-        self.config_processor.bound_master_node()
+    pub fn runtime(&self) -> &RuntimeProcessor {
+        self.runtime_processor
     }
 
     pub fn handle(&self) -> &peppylib::MessengerHandle {
