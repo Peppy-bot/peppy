@@ -1,3 +1,3 @@
 mod launch;
 
-pub use launch::LaunchConfigProcessor;
+pub use launch::RuntimeProcessor;

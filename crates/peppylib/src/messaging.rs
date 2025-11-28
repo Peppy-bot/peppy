@@ -418,29 +418,29 @@ impl TopicMessenger {
     pub async fn subscribe(
         messenger: &MessengerHandle,
         as_master_node: &str,
-        as_node_name: &str,
-        as_topic: &str,
+        to_node_name: &str,
+        to_topic: &str,
         qos: QoSProfile,
     ) -> Result<Subscription> {
         messenger
-            .receive_topic_msg(as_master_node, as_node_name, as_topic, qos)
+            .subscribe_to_topic(as_master_node, to_node_name, to_topic, qos)
             .await
     }
 
     pub async fn emit(
         messenger: &MessengerHandle,
-        to_master_node: &str,
-        to_node: &str,
-        to_topic: &str,
+        bound_master_node: &str,
+        as_node: &str,
+        as_topic: &str,
         as_instance_id: &str,
         qos: QoSProfile,
         payload: Bytes,
     ) -> Result<()> {
         messenger
             .emit_topic_message(
-                to_master_node,
-                to_node,
-                to_topic,
+                bound_master_node,
+                as_node,
+                as_topic,
                 as_instance_id,
                 qos,
                 payload,
@@ -636,14 +636,14 @@ impl MessengerHandle {
         Ok(messenger)
     }
 
-    async fn receive_topic_msg(
+    async fn subscribe_to_topic(
         &self,
         as_master_node: &str,
-        as_node_name: &str,
-        as_topic: &str,
+        to_node_name: &str,
+        to_topic: &str,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        let key_expr = format!("{as_master_node}/topic/{as_node_name}/{as_topic}/**");
+        let key_expr = format!("{as_master_node}/topic/{to_node_name}/{to_topic}/**");
         let subscriber_qos = map_node_qos_to_subscriber_qos(qos);
 
         let subscription = {
@@ -657,9 +657,9 @@ impl MessengerHandle {
 
     async fn emit_topic_message(
         &self,
-        to_master_node: &str,
-        to_node_name: &str,
-        to_topic: &str,
+        bound_master_node: &str,
+        as_node_name: &str,
+        as_topic: &str,
         as_instance_id: &str,
         qos: QoSProfile,
         payload: Bytes,
@@ -667,7 +667,7 @@ impl MessengerHandle {
         // Uses the zenoh key expression ID matching to save bytes on sending the node ID on the other side
         let key_expr = format!(
             "{}/topic/{}/{}/<INSTANCE_ID:{}>",
-            to_master_node, to_node_name, to_topic, as_instance_id
+            bound_master_node, as_node_name, as_topic, as_instance_id
         );
         let msg = Message::new(&key_expr, payload);
 
