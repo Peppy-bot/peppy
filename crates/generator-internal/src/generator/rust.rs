@@ -2289,16 +2289,6 @@ fn build_topic_emit(
     let topic_literal = Literal::string(topic.name.as_str());
     let qos_tokens = qos_profile_tokens(&topic.qos_profile);
     let label_literal = Literal::string(label);
-    let instance_id_ident = Ident::new("instance_id", Span::call_site());
-    let env_var_literal = Literal::string("PEPPY_INSTANCE_ID");
-    let instance_id_stmt = quote! {
-        let #instance_id_ident = std::env::var(#env_var_literal).map_err(|source| {
-            crate::Error::MissingInstanceIdEnvVar {
-                var: #env_var_literal,
-                source,
-            }
-        })?;
-    };
 
     match encoding {
         Some(spec) => {
@@ -2309,7 +2299,6 @@ fn build_topic_emit(
             quote! {
                 #[allow(clippy::too_many_arguments)]
                 pub async fn #method_ident(#method_signature) -> crate::Result<()> {
-                    #instance_id_stmt
                     let mut message = capnp::message::Builder::new_default();
                     {
                         let mut #root_ident = message.init_root::<#builder_type>();
@@ -2325,15 +2314,18 @@ fn build_topic_emit(
                     })?;
 
                     let payload = bytes::Bytes::from(buffer);
-                    let topic_name = #topic_literal;
                     let qos = #qos_tokens;
+                    let as_topic = #topic_literal;
+                    let as_node_name = messenger.runtime().node_name();
+                    let as_instance_id = messenger.runtime().current_instance_id();
+                    let with_master_node = messenger.runtime().bound_master_node();
 
                     peppylib::TopicMessenger::emit(
                         messenger.handle(),
-                        messenger.bound_master_node(),
-                        messenger.node_name(),
-                        topic_name,
-                        &#instance_id_ident,
+                        with_master_node,
+                        as_node_name,
+                        as_topic,
+                        as_instance_id,
                         qos,
                         payload,
                     )
@@ -2354,8 +2346,6 @@ fn build_topic_emit(
             quote! {
                 #[allow(clippy::too_many_arguments)]
                 pub async fn #method_ident(#method_signature) -> crate::Result<()> {
-                    #instance_id_stmt
-                    let _ = #instance_id_ident;
                     let _ = messenger;
                     #(#ignore_params)*
                     Err(crate::Error::MessageFormatUnavailable {

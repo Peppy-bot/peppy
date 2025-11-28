@@ -282,7 +282,7 @@ fn exposed_action() {
         "expected feedback emit method"
     );
     assert_rendered!(
-        rendered.contains("let topic_name = \"move_arm/feedback\";"),
+        rendered.contains("let as_topic = \"move_arm/feedback\";"),
         &rendered,
         "expected feedback topic literal"
     );
