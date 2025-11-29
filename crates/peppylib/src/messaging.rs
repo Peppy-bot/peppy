@@ -60,28 +60,6 @@ fn generate_request_id() -> String {
     format!("{:x}", result)[..16].to_string() // Use first 16 hex chars for compactness
 }
 
-pub fn build_key_expr(message_type: &str, node_name: &str, message_type_name: &str) -> String {
-    [message_type, node_name, message_type_name]
-        .into_iter()
-        .flat_map(|part| part.split('/'))
-        .filter(|segment| !segment.is_empty())
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-pub fn build_master_key_expr(
-    master_node: &str,
-    message_type: &str,
-    node_name: &str,
-    message_type_name: &str,
-) -> String {
-    build_key_expr(
-        &format!("{master_node}/{message_type}"),
-        node_name,
-        message_type_name,
-    )
-}
-
 fn format_instance_segment(instance_id: &str) -> Option<String> {
     (instance_id != INSTANCE_ID_WILDCARD).then(|| format!("<INSTANCE_ID:{instance_id}>"))
 }
@@ -426,12 +404,23 @@ impl TopicMessenger {
             .await
     }
 
+    /// Publishes a payload to a topic on the specified master node.
+    ///
+    /// Arguments:
+    /// - `messenger`: shared messenger handle used to publish.
+    /// - `bound_master_node`: master node segment to scope the topic under.
+    /// - `as_node`: name of the node emitting the message.
+    /// - `as_topic`: topic name to publish to.
+    /// - `as_instance_id`: instance identifier for the emitting node
+    /// - `qos`: QoS profile that is mapped to the publisher QoS.
+    /// - `payload`: message body to send.
     pub async fn emit(
         messenger: &MessengerHandle,
         bound_master_node: &str,
         as_node: &str,
         as_topic: &str,
         as_instance_id: &str,
+        to_instance_id: Option<&str>,
         qos: QoSProfile,
         payload: Bytes,
     ) -> Result<()> {
@@ -441,6 +430,7 @@ impl TopicMessenger {
                 as_node,
                 as_topic,
                 as_instance_id,
+                to_instance_id,
                 qos,
                 payload,
             )
@@ -461,24 +451,25 @@ impl ServiceMessenger {
             .await
     }
 
+    /// If `target_instance_id` is `None`, this call returns with the first service instance that it hits
     pub async fn poll(
         messenger: &MessengerHandle,
-        master_node: &str,
+        bound_master_node: &str,
         as_instance_id: &str,
-        node_name: &str,
-        service_name: &str,
-        instance_id: Option<&str>,
+        target_node_name: &str,
+        target_service_name: &str,
+        target_instance_id: Option<&str>,
         request_payload: Bytes,
         response_timeout: Duration,
     ) -> Result<TopicMessage> {
         messenger
             .poll_service(
                 "service",
-                master_node,
-                node_name,
-                service_name,
-                instance_id,
+                bound_master_node,
+                target_node_name,
+                target_service_name,
                 as_instance_id,
+                target_instance_id,
                 request_payload,
                 response_timeout,
             )
@@ -504,13 +495,13 @@ impl ActionMessenger {
         as_instance_id: &str,
         node_name: &str,
         action_name: &str,
-        instance_id: Option<&str>,
+        target_instance_id: Option<&str>,
         goal_payload: Bytes,
         feedback_qos: QoSProfile,
         goal_timeout: Duration,
     ) -> Result<ActionGoalHandle> {
-        let action_root = build_master_key_expr(master_node, "action", node_name, action_name);
-        let feedback_topic = match instance_id {
+        let action_root = format!("{}/action/{}/{}", master_node, node_name, action_name);
+        let feedback_topic = match target_instance_id {
             Some(target_instance_id) => {
                 format!("{action_root}/feedback/<INSTANCE_ID:{target_instance_id}>")
             }
@@ -531,8 +522,8 @@ impl ActionMessenger {
                 master_node,
                 node_name,
                 &goal_service_name,
-                instance_id,
                 as_instance_id,
+                target_instance_id,
                 goal_payload,
                 goal_timeout,
             )
@@ -542,7 +533,7 @@ impl ActionMessenger {
             master_node: master_node.to_string(),
             node_name: node_name.to_string(),
             action_name: action_name.to_string(),
-            target_instance_id: instance_id.map(|id| id.to_string()),
+            target_instance_id: target_instance_id.map(|id| id.to_string()),
             goal_response,
             feedback: feedback_subscription,
         })
@@ -562,8 +553,8 @@ impl ActionMessenger {
                 &handle.master_node,
                 &handle.node_name,
                 &cancel_service_name,
-                handle.target_instance_id.as_deref(),
                 as_instance_id,
+                handle.target_instance_id.as_deref(),
                 Bytes::new(),
                 cancel_timeout,
             )
@@ -585,8 +576,8 @@ impl ActionMessenger {
                 &handle.master_node,
                 &handle.node_name,
                 &result_service_name,
-                handle.target_instance_id.as_deref(),
                 as_instance_id,
+                handle.target_instance_id.as_deref(),
                 result_request_payload,
                 result_timeout,
             )
@@ -652,13 +643,20 @@ impl MessengerHandle {
         as_node_name: &str,
         as_topic: &str,
         as_instance_id: &str,
+        to_instance_id: Option<&str>,
         qos: QoSProfile,
         payload: Bytes,
     ) -> Result<()> {
         // Uses the zenoh key expression ID matching to save bytes on sending the node ID on the other side
+        // key_expr is of the form `<MASTER_NODE:bound_master_node>/topic/as_node_name/as_topic/<INSTANCE_ID:as_instance_id>/to_instance_id`.
+        // where `to_instance_id` is `*` when the value is `None`
+        let to_instance_id = match to_instance_id {
+            Some(instance_id) => instance_id,
+            None => "*",
+        };
         let key_expr = format!(
-            "<MASTER_NODE:{}>/topic/{}/{}/<INSTANCE_ID:{}>",
-            bound_master_node, as_node_name, as_topic, as_instance_id
+            "<MASTER_NODE:{}>/topic/{}/{}/<INSTANCE_ID:{}>/{}",
+            bound_master_node, as_node_name, as_topic, as_instance_id, to_instance_id
         );
         let msg = Message::new(&key_expr, payload);
 
@@ -677,7 +675,7 @@ impl MessengerHandle {
         as_service_name: &str,
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
-        let key_expr = build_key_expr("service", as_node_name, as_service_name);
+        let key_expr = format!("service/{}/{}", as_node_name, as_service_name);
         self.create_service_endpoint(key_expr, as_instance_id).await
     }
 
@@ -708,34 +706,39 @@ impl MessengerHandle {
     async fn poll_service(
         &self,
         message_type: &str,
-        master_node: &str,
-        node_name: &str,
-        service_name: &str,
-        instance_id: Option<&str>,
+        bound_master_node: &str,
+        target_node_name: &str,
+        target_service_name: &str,
         as_instance_id: &str,
+        target_instance_id: Option<&str>,
         request_payload: Bytes,
         response_timeout: Duration,
     ) -> Result<TopicMessage> {
-        let service_root =
-            build_master_key_expr(master_node, message_type, node_name, service_name);
-        let target_instance_segment = instance_id.and_then(format_instance_segment);
-        let target_instance_id = instance_id.map(|id| id.to_string());
+        let service_root = format!(
+            "{}/{}/{}/{}",
+            bound_master_node, message_type, target_node_name, target_service_name
+        );
         let caller_instance_segment = format_instance_segment(as_instance_id)
             .unwrap_or_else(|| INSTANCE_ID_WILDCARD.to_string());
 
+        let target_instance_id = target_instance_id.map(str::to_string);
+        let target_instance_segment = target_instance_id
+            .as_deref()
+            .and_then(format_instance_segment);
         let request_id = generate_request_id();
-
-        let request_topic = match &target_instance_segment {
-            Some(instance_segment) => format!(
-                "{service_root}/{instance_segment}/request/{caller_instance_segment}/{request_id}"
-            ),
-            None => format!("{service_root}/**/request/{caller_instance_segment}/{request_id}"),
+        let request_topic = match target_instance_segment.as_deref() {
+            Some(segment) => {
+                format!("{service_root}/{segment}/request/{caller_instance_segment}/{request_id}")
+            }
+            None => {
+                format!("{service_root}/**/request/{caller_instance_segment}/{request_id}")
+            }
         };
 
-        let response_topic = match &target_instance_segment {
-            Some(instance_segment) => format!(
-                "{service_root}/response/{caller_instance_segment}/{request_id}/{instance_segment}"
-            ),
+        let response_topic = match target_instance_segment.as_deref() {
+            Some(segment) => {
+                format!("{service_root}/response/{caller_instance_segment}/{request_id}/{segment}")
+            }
             None => {
                 format!("{service_root}/response/{caller_instance_segment}/{request_id}/*")
             }
@@ -778,13 +781,13 @@ impl MessengerHandle {
 
                 if has_matching_subscribers {
                     return Err(Error::ServiceTimeout {
-                        instance_id: target_instance_id,
-                        service_name: service_name.to_string(),
+                        instance_id: target_instance_id.clone(),
+                        service_name: target_service_name.to_string(),
                     });
                 } else {
                     return Err(Error::ServiceUnreachable {
                         instance_id: target_instance_id,
-                        service_name: service_name.to_string(),
+                        service_name: target_service_name.to_string(),
                     });
                 }
             }
@@ -799,7 +802,7 @@ impl MessengerHandle {
         as_action_name: &str,
         as_instance_id: &str,
     ) -> Result<ActionCreation> {
-        let action_root = build_key_expr("action", as_node_name, as_action_name);
+        let action_root = format!("action/{}/{}", as_node_name, as_action_name);
 
         let goal_service_root = format!("{action_root}/goal");
         let cancel_service_root = format!("{action_root}/cancel");

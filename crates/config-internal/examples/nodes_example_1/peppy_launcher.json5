@@ -88,6 +88,10 @@
             {
               id: "camera_stream",
               // Subscribe to all these instances
+              // Topics can subscribe to multiple sources, but services and action can only target a single source AT A TIME.
+              // `enable_camera` service for example, also need to target both `camera_front` and `camera_rear`
+              // How to unify those under a single key?
+              // Maybe the solution is to create a Hasmap of instances in Messenger, so the user can pick a specific instance or all of them.
               target_instance_ids: [
                 "camera_front",
                 "self:camera_rear" // `self` is a special keyword that refers to the master node on this machine
