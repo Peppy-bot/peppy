@@ -142,15 +142,10 @@ async fn topic_publish_subscribe() {
     let sender_handle = router.topic_messenger().await;
     let receiver_handle = router.topic_messenger().await;
 
-    let mut subscription = TopicMessenger::subscribe(
-        &receiver_handle,
-        MASTER_NODE_NAME,
-        &node_name,
-        &topic,
-        qos.clone(),
-    )
-    .await
-    .expect("Should subscribe to the topic");
+    let mut subscription =
+        TopicMessenger::subscribe(&receiver_handle, &node_name, &topic, qos.clone())
+            .await
+            .expect("Should subscribe to the topic");
 
     let instance_id = "emitter_instance";
     TopicMessenger::emit(
@@ -177,6 +172,7 @@ async fn topic_publish_subscribe() {
 
     assert_eq!(received.key_expr(), expected_topic);
     assert_eq!(received.instance_id(), instance_id);
+    assert_eq!(received.master_node(), MASTER_NODE_NAME);
     assert_eq!(received.payload(), &payload);
 
     router.shutdown().await;
@@ -193,15 +189,10 @@ async fn topic_publish_reliable_5000hz_messages() {
     let sender_handle = router.topic_messenger().await;
     let receiver_handle = router.topic_messenger().await;
 
-    let mut subscription = TopicMessenger::subscribe(
-        &receiver_handle,
-        MASTER_NODE_NAME,
-        &node_name,
-        &topic,
-        qos.clone(),
-    )
-    .await
-    .expect("Should subscribe to the topic");
+    let mut subscription =
+        TopicMessenger::subscribe(&receiver_handle, &node_name, &topic, qos.clone())
+            .await
+            .expect("Should subscribe to the topic");
 
     let message_count = 5000;
     let instance_id = "emitter_instance";
