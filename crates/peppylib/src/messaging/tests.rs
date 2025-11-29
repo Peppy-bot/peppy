@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use config::node::QoSProfile;
-use pmi::{Messenger, MessengerBackend};
+use pmi::{Messenger, MessengerBackend, Subscription};
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,6 +13,18 @@ use crate::error::Error;
 use crate::messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, TopicMessenger};
 
 const MASTER_NODE_NAME: &str = "master_node";
+
+fn master_key_expr(
+    bound_master_node: &str,
+    message_type: &str,
+    node_name: &str,
+    target_name: &str,
+) -> String {
+    format!(
+        "{}/{}/{}/{}",
+        bound_master_node, message_type, node_name, target_name
+    )
+}
 
 #[derive(Clone)]
 struct ActionClientCase {
@@ -124,8 +136,8 @@ async fn connect_action_messenger(host: &str, port: u16) -> MessengerHandle {
 }
 
 #[test]
-fn build_master_key_expr_removes_redundant_separators() {
-    let path = super::build_master_key_expr("master", "/service", "/camera/rear/", "/video_frame");
+fn master_key_expr_concatenates_segments() {
+    let path = master_key_expr("master", "service", "camera/rear", "video_frame");
     assert_eq!(path, "master/service/camera/rear/video_frame");
 }
 
@@ -154,6 +166,7 @@ async fn topic_publish_subscribe() {
         &node_name,
         &topic,
         &instance_id,
+        None,
         qos,
         payload.clone(),
     )
@@ -166,7 +179,7 @@ async fn topic_publish_subscribe() {
         .expect("Should receive the published message");
 
     let expected_topic = format!(
-        "{}/topic/{}/{}/<INSTANCE_ID:{}>",
+        "<MASTER_NODE:{}>/topic/{}/{}/<INSTANCE_ID:{}>/*",
         MASTER_NODE_NAME, node_name, topic, instance_id
     );
 
@@ -174,6 +187,101 @@ async fn topic_publish_subscribe() {
     assert_eq!(received.instance_id(), instance_id);
     assert_eq!(received.master_node(), MASTER_NODE_NAME);
     assert_eq!(received.payload(), &payload);
+
+    router.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn topic_publish_subscribe_target_instance_id() {
+    let router = TestRouterContext::start().await;
+
+    let qos = QoSProfile::Reliable;
+    let node_name = "uvc_camera";
+    let topic = "video_frame";
+    let payload = Bytes::from_static(b"A message");
+
+    let sender_handle = router.topic_messenger().await;
+    let target_handle = router.topic_messenger().await;
+    let other_handle = router.topic_messenger().await;
+
+    let emitter_instance_id = "emitter_instance";
+    let target_instance_id = "target_instance";
+    let other_instance_id = "other_instance";
+
+    async fn subscribe_for_instance(
+        handle: &MessengerHandle,
+        node_name: &str,
+        topic: &str,
+        target_instance_id: &str,
+        qos: QoSProfile,
+    ) -> Subscription {
+        let key_expr = format!("**/topic/{}/{}/**/{}", node_name, topic, target_instance_id);
+
+        {
+            let messenger = handle.messenger.lock().await;
+            messenger
+                .subscribe(&key_expr, super::map_node_qos_to_subscriber_qos(qos))
+                .await
+        }
+        .expect("Should subscribe to targeted topic")
+    }
+
+    let mut target_subscription = subscribe_for_instance(
+        &target_handle,
+        node_name,
+        topic,
+        target_instance_id,
+        qos.clone(),
+    )
+    .await;
+    let mut other_subscription = subscribe_for_instance(
+        &other_handle,
+        node_name,
+        topic,
+        other_instance_id,
+        qos.clone(),
+    )
+    .await;
+
+    TopicMessenger::emit(
+        &sender_handle,
+        MASTER_NODE_NAME,
+        node_name,
+        topic,
+        emitter_instance_id,
+        Some(target_instance_id),
+        qos,
+        payload.clone(),
+    )
+    .await
+    .expect("Should send the payload");
+
+    let expected_topic = format!(
+        "<MASTER_NODE:{}>/topic/{}/{}/<INSTANCE_ID:{}>/{}",
+        MASTER_NODE_NAME, node_name, topic, emitter_instance_id, target_instance_id
+    );
+
+    let received = tokio::time::timeout(Duration::from_secs(2), target_subscription.rx.recv())
+        .await
+        .expect("Timed out waiting for targeted message")
+        .expect("Should receive the targeted message");
+
+    assert_eq!(received.key_expr(), expected_topic);
+    assert_eq!(received.instance_id(), emitter_instance_id);
+    assert_eq!(received.master_node(), MASTER_NODE_NAME);
+    assert_eq!(received.payload(), &payload);
+
+    let non_target_result =
+        tokio::time::timeout(Duration::from_millis(500), other_subscription.rx.recv()).await;
+
+    match non_target_result {
+        Ok(Some(message)) => panic!(
+            "non-targeted subscriber received a message unexpectedly: {}",
+            message.key_expr()
+        ),
+        Ok(None) => panic!("non-targeted subscription closed unexpectedly"),
+        Err(_) => {} // Timeout is expected; no message should reach this subscriber
+    }
 
     router.shutdown().await;
 }
@@ -208,6 +316,7 @@ async fn topic_publish_reliable_5000hz_messages() {
             &node_name,
             &topic,
             &instance_id,
+            None,
             qos.clone(),
             payload,
         )
@@ -216,7 +325,7 @@ async fn topic_publish_reliable_5000hz_messages() {
     }
 
     let expected_key_expr = format!(
-        "{}/topic/{}/{}/<INSTANCE_ID:{}>",
+        "<MASTER_NODE:{}>/topic/{}/{}/<INSTANCE_ID:{}>/*",
         MASTER_NODE_NAME, node_name, topic, instance_id
     );
 
@@ -296,7 +405,7 @@ async fn service_communication_poll_specific_instance_id() {
         .await
         .expect("service should start");
 
-        let service_root = super::build_master_key_expr(
+        let service_root = master_key_expr(
             MASTER_NODE_NAME,
             "service",
             listener_node_name,
@@ -413,7 +522,7 @@ async fn service_communication_poll_no_instance_id_target() {
         .await
         .expect("service should start");
 
-        let service_root = super::build_master_key_expr(
+        let service_root = master_key_expr(
             MASTER_NODE_NAME,
             "service",
             listener_node_name,
@@ -530,7 +639,7 @@ async fn service_communication_poll_wrong_node() {
         .await
         .expect("service should start");
 
-        let service_root = super::build_master_key_expr(
+        let service_root = master_key_expr(
             MASTER_NODE_NAME,
             "service",
             listener_node_name,
@@ -940,7 +1049,7 @@ async fn service_communication_fails_timeout() {
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task = {
-        let service_root = super::build_master_key_expr(
+        let service_root = master_key_expr(
             MASTER_NODE_NAME,
             "service",
             listener_node_name,
@@ -1213,7 +1322,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
         .await
         .expect("service should start");
 
-        let service_root = super::build_master_key_expr(
+        let service_root = master_key_expr(
             MASTER_NODE_NAME,
             "service",
             listener_node_name,
@@ -1411,7 +1520,7 @@ async fn action_communication() {
             .await
             .expect("action should start");
 
-            let action_root = super::build_master_key_expr(
+            let action_root = master_key_expr(
                 MASTER_NODE_NAME,
                 "action",
                 listener_node_name,
@@ -1508,7 +1617,7 @@ async fn action_communication() {
 
         let expected_feedback_topic = format!(
             "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
-            super::build_master_key_expr(
+            master_key_expr(
                 MASTER_NODE_NAME,
                 "action",
                 listener_node_name,
@@ -1589,7 +1698,7 @@ async fn action_communication_no_instance_id_target() {
             .await
             .expect("action should start");
 
-            let action_root = super::build_master_key_expr(
+            let action_root = master_key_expr(
                 MASTER_NODE_NAME,
                 "action",
                 listener_node_name,
@@ -1686,7 +1795,7 @@ async fn action_communication_no_instance_id_target() {
 
         let expected_feedback_topic = format!(
             "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
-            super::build_master_key_expr(
+            master_key_expr(
                 MASTER_NODE_NAME,
                 "action",
                 listener_node_name,
@@ -1773,7 +1882,7 @@ async fn action_communication_goal_cancelled() {
                 ..
             } = action;
 
-            let action_root = super::build_master_key_expr(
+            let action_root = master_key_expr(
                 MASTER_NODE_NAME,
                 "action",
                 listener_node_name,
@@ -1890,7 +1999,7 @@ async fn action_communication_goal_cancelled() {
 
     let expected_feedback_topic = format!(
         "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
-        super::build_master_key_expr(
+        master_key_expr(
             MASTER_NODE_NAME,
             "action",
             listener_node_name,
@@ -2031,7 +2140,7 @@ async fn single_action_communication_multiple_polls() {
             .await
             .expect("action should start");
 
-            let action_root = super::build_master_key_expr(
+            let action_root = master_key_expr(
                 MASTER_NODE_NAME,
                 "action",
                 listener_node_name,
@@ -2180,7 +2289,7 @@ async fn single_action_communication_multiple_polls() {
 
     let expected_feedback_topic = format!(
         "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
-        super::build_master_key_expr(
+        master_key_expr(
             MASTER_NODE_NAME,
             "action",
             listener_node_name,
