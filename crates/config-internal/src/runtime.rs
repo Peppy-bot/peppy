@@ -55,10 +55,9 @@ mod tests {
     fn runtime_config_from_json(instance_id: &str) -> Result<RuntimeConfig> {
         let json = r#"{
             deployment_instance: {
-                instance_id: "camera_front"
+                instance_id: "$INSTANCE_ID"
             },
             node_name: "camera",
-            instance_id: "$INSTANCE_ID",
             bound_master_node: "master_node"
         }"#;
 

@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use config::{NodeParameters, launch_config::RuntimeConfig};
+use config::{NodeParameters, runtime::RuntimeConfig};
 
 const PEPPY_RUNTIME_CONFIG: &str = "PEPPY_RUNTIME_CONFIG";
 

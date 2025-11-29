@@ -289,7 +289,6 @@ async fn service_communication_poll_specific_instance_id() {
         let service_expose_handle = router.service_messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
-            MASTER_NODE_NAME,
             listener_node_name,
             listener_service_name,
             listener_instance_id,
@@ -407,7 +406,6 @@ async fn service_communication_poll_no_instance_id_target() {
         let service_expose_handle = router.service_messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
-            MASTER_NODE_NAME,
             listener_node_name,
             listener_service_name,
             listener_instance_id,
@@ -525,7 +523,6 @@ async fn service_communication_poll_wrong_node() {
         let service_expose_handle = router.service_messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
-            MASTER_NODE_NAME,
             listener_node_name,
             listener_service_name,
             listener_instance_id,
@@ -669,7 +666,6 @@ async fn service_communication_poll_wrong_master_node() {
         tokio::spawn(async move {
             let mut service = ServiceMessenger::listen(
                 &service_expose_handle,
-                MASTER_NODE_NAME,
                 listener_node_name,
                 listener_service_name,
                 listener_instance_id,
@@ -774,7 +770,6 @@ async fn service_request_routed_to_target_instance_only() {
         tokio::spawn(async move {
             let mut service = ServiceMessenger::listen(
                 &service_expose_handle,
-                MASTER_NODE_NAME,
                 listener_node_name,
                 listener_service_name,
                 target_instance_id,
@@ -809,7 +804,6 @@ async fn service_request_routed_to_target_instance_only() {
         tokio::spawn(async move {
             let mut service = ServiceMessenger::listen(
                 &service_expose_handle,
-                MASTER_NODE_NAME,
                 listener_node_name,
                 listener_service_name,
                 other_instance_id,
@@ -960,7 +954,6 @@ async fn service_communication_fails_timeout() {
         let service_expose_handle = router.service_messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
-            MASTER_NODE_NAME,
             listener_node_name,
             listener_service_name,
             listener_instance_id,
@@ -1120,7 +1113,6 @@ async fn service_handle_request_processes_multiple_messages() {
 
             let mut service = ServiceMessenger::listen(
                 &service_expose_handle,
-                MASTER_NODE_NAME,
                 listener_node_name,
                 listener_service_name,
                 listener_instance_id,
@@ -1214,7 +1206,6 @@ async fn single_service_communication_multiple_polls_and_callers() {
 
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
-            MASTER_NODE_NAME,
             listener_node_name,
             listener_service_name,
             listener_instance_id,
@@ -1413,7 +1404,6 @@ async fn action_communication() {
         tokio::spawn(async move {
             let mut action = ActionMessenger::listen(
                 &action_handle,
-                MASTER_NODE_NAME,
                 listener_node_name,
                 listener_action_name,
                 listener_instance_id,
@@ -1592,7 +1582,6 @@ async fn action_communication_no_instance_id_target() {
         tokio::spawn(async move {
             let mut action = ActionMessenger::listen(
                 &action_handle,
-                MASTER_NODE_NAME,
                 listener_node_name,
                 listener_action_name,
                 listener_instance_id,
@@ -1770,7 +1759,6 @@ async fn action_communication_goal_cancelled() {
         tokio::spawn(async move {
             let action = ActionMessenger::listen(
                 &action_handle,
-                MASTER_NODE_NAME,
                 listener_node_name,
                 listener_action_name,
                 listener_instance_id,
@@ -2036,7 +2024,6 @@ async fn single_action_communication_multiple_polls() {
         tokio::spawn(async move {
             let action = ActionMessenger::listen(
                 &action_handle,
-                MASTER_NODE_NAME,
                 listener_node_name,
                 listener_action_name,
                 listener_instance_id,
