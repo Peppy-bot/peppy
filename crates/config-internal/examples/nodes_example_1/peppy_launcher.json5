@@ -69,6 +69,11 @@
         {
           instance_id: "video_stream1",
           parameters: {
+            // It's up to the user to filter on these instances ids. Those ids can be extracted from Messenger::runtime()
+            camera_instances_ids: [
+              "camera_front",
+              "camera_rear"
+            ],
             http: {
               host: "0.0.0.0",
               port: 8083,
