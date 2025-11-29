@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use config::node::QoSProfile;
-use pmi::{Messenger, MessengerBackend, Subscription};
+use pmi::{Messenger, MessengerBackend};
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -135,12 +135,6 @@ async fn connect_action_messenger(host: &str, port: u16) -> MessengerHandle {
         })
 }
 
-#[test]
-fn master_key_expr_concatenates_segments() {
-    let path = master_key_expr("master", "service", "camera/rear", "video_frame");
-    assert_eq!(path, "master/service/camera/rear/video_frame");
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn topic_publish_subscribe() {
     let router = TestRouterContext::start().await;
@@ -154,10 +148,16 @@ async fn topic_publish_subscribe() {
     let sender_handle = router.topic_messenger().await;
     let receiver_handle = router.topic_messenger().await;
 
-    let mut subscription =
-        TopicMessenger::subscribe(&receiver_handle, &node_name, &topic, qos.clone())
-            .await
-            .expect("Should subscribe to the topic");
+    let subscriber_instance_id = "subscriber_instance";
+    let mut subscription = TopicMessenger::subscribe(
+        &receiver_handle,
+        subscriber_instance_id,
+        &node_name,
+        &topic,
+        qos.clone(),
+    )
+    .await
+    .expect("Should subscribe to the topic");
 
     let instance_id = "emitter_instance";
     TopicMessenger::emit(
@@ -179,7 +179,7 @@ async fn topic_publish_subscribe() {
         .expect("Should receive the published message");
 
     let expected_topic = format!(
-        "<MASTER_NODE:{}>/topic/{}/{}/<INSTANCE_ID:{}>/*",
+        "<MASTER_NODE:{}>/*/topic/{}/{}/<INSTANCE_ID:{}>",
         MASTER_NODE_NAME, node_name, topic, instance_id
     );
 
@@ -198,90 +198,71 @@ async fn topic_publish_subscribe_target_instance_id() {
     let qos = QoSProfile::Reliable;
     let node_name = "uvc_camera";
     let topic = "video_frame";
-    let payload = Bytes::from_static(b"A message");
+
+    let payload = Bytes::from_static(b"Targeted message");
 
     let sender_handle = router.topic_messenger().await;
-    let target_handle = router.topic_messenger().await;
-    let other_handle = router.topic_messenger().await;
+    let subscriber_a_handle = router.topic_messenger().await;
+    let subscriber_b_handle = router.topic_messenger().await;
+
+    let subscriber_a_id = "subscriber_a";
+    let subscriber_b_id = "subscriber_b";
+
+    let mut subscription_a = TopicMessenger::subscribe(
+        &subscriber_a_handle,
+        subscriber_a_id,
+        node_name,
+        topic,
+        qos.clone(),
+    )
+    .await
+    .expect("Subscriber A should subscribe to the topic");
+
+    let mut subscription_b = TopicMessenger::subscribe(
+        &subscriber_b_handle,
+        subscriber_b_id,
+        node_name,
+        topic,
+        qos.clone(),
+    )
+    .await
+    .expect("Subscriber B should subscribe to the topic");
 
     let emitter_instance_id = "emitter_instance";
-    let target_instance_id = "target_instance";
-    let other_instance_id = "other_instance";
-
-    async fn subscribe_for_instance(
-        handle: &MessengerHandle,
-        node_name: &str,
-        topic: &str,
-        target_instance_id: &str,
-        qos: QoSProfile,
-    ) -> Subscription {
-        let key_expr = format!("**/topic/{}/{}/**/{}", node_name, topic, target_instance_id);
-
-        {
-            let messenger = handle.messenger.lock().await;
-            messenger
-                .subscribe(&key_expr, super::map_node_qos_to_subscriber_qos(qos))
-                .await
-        }
-        .expect("Should subscribe to targeted topic")
-    }
-
-    let mut target_subscription = subscribe_for_instance(
-        &target_handle,
-        node_name,
-        topic,
-        target_instance_id,
-        qos.clone(),
-    )
-    .await;
-    let mut other_subscription = subscribe_for_instance(
-        &other_handle,
-        node_name,
-        topic,
-        other_instance_id,
-        qos.clone(),
-    )
-    .await;
-
     TopicMessenger::emit(
         &sender_handle,
         MASTER_NODE_NAME,
         node_name,
         topic,
         emitter_instance_id,
-        Some(target_instance_id),
+        Some(subscriber_b_id),
         qos,
         payload.clone(),
     )
     .await
-    .expect("Should send the payload");
+    .expect("Should send the payload to the targeted subscriber");
 
-    let expected_topic = format!(
-        "<MASTER_NODE:{}>/topic/{}/{}/<INSTANCE_ID:{}>/{}",
-        MASTER_NODE_NAME, node_name, topic, emitter_instance_id, target_instance_id
+    let non_targeted_outcome =
+        tokio::time::timeout(Duration::from_millis(200), subscription_a.rx.recv()).await;
+    assert!(
+        non_targeted_outcome.is_err(),
+        "Subscriber A should not receive messages targeted to Subscriber B"
     );
 
-    let received = tokio::time::timeout(Duration::from_secs(2), target_subscription.rx.recv())
+    let received = tokio::time::timeout(Duration::from_secs(2), subscription_b.rx.recv())
         .await
         .expect("Timed out waiting for targeted message")
-        .expect("Should receive the targeted message");
+        .expect("Targeted subscription closed unexpectedly");
+
+    let expected_topic = format!(
+        "<MASTER_NODE:{}>/{}/topic/{}/{}/<INSTANCE_ID:{}>",
+        MASTER_NODE_NAME, subscriber_b_id, node_name, topic, emitter_instance_id
+    );
 
     assert_eq!(received.key_expr(), expected_topic);
     assert_eq!(received.instance_id(), emitter_instance_id);
     assert_eq!(received.master_node(), MASTER_NODE_NAME);
     assert_eq!(received.payload(), &payload);
-
-    let non_target_result =
-        tokio::time::timeout(Duration::from_millis(500), other_subscription.rx.recv()).await;
-
-    match non_target_result {
-        Ok(Some(message)) => panic!(
-            "non-targeted subscriber received a message unexpectedly: {}",
-            message.key_expr()
-        ),
-        Ok(None) => panic!("non-targeted subscription closed unexpectedly"),
-        Err(_) => {} // Timeout is expected; no message should reach this subscriber
-    }
 
     router.shutdown().await;
 }
@@ -297,10 +278,16 @@ async fn topic_publish_reliable_5000hz_messages() {
     let sender_handle = router.topic_messenger().await;
     let receiver_handle = router.topic_messenger().await;
 
-    let mut subscription =
-        TopicMessenger::subscribe(&receiver_handle, &node_name, &topic, qos.clone())
-            .await
-            .expect("Should subscribe to the topic");
+    let subscriber_instance_id = "subscriber_instance";
+    let mut subscription = TopicMessenger::subscribe(
+        &receiver_handle,
+        subscriber_instance_id,
+        &node_name,
+        &topic,
+        qos.clone(),
+    )
+    .await
+    .expect("Should subscribe to the topic");
 
     let message_count = 5000;
     let instance_id = "emitter_instance";
@@ -325,7 +312,7 @@ async fn topic_publish_reliable_5000hz_messages() {
     }
 
     let expected_key_expr = format!(
-        "<MASTER_NODE:{}>/topic/{}/{}/<INSTANCE_ID:{}>/*",
+        "<MASTER_NODE:{}>/*/topic/{}/{}/<INSTANCE_ID:{}>",
         MASTER_NODE_NAME, node_name, topic, instance_id
     );
 

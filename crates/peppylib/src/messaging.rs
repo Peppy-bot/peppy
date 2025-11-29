@@ -395,12 +395,13 @@ pub struct ActionCreation {
 impl TopicMessenger {
     pub async fn subscribe(
         messenger: &MessengerHandle,
+        as_instance_id: &str,
         to_node_name: &str,
         to_topic: &str,
         qos: QoSProfile,
     ) -> Result<Subscription> {
         messenger
-            .subscribe_to_topic(to_node_name, to_topic, qos)
+            .subscribe_to_topic(as_instance_id, to_node_name, to_topic, qos)
             .await
     }
 
@@ -621,11 +622,13 @@ impl MessengerHandle {
 
     async fn subscribe_to_topic(
         &self,
+        as_instance_id: &str,
         to_node_name: &str,
         to_topic: &str,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        let key_expr = format!("**/topic/{to_node_name}/{to_topic}/**");
+        // Key is: `master_node_name/instance_id/topic/to_node_name/to_topic/received_instance_id`
+        let key_expr = format!("*/{as_instance_id}/topic/{to_node_name}/{to_topic}/*");
         let subscriber_qos = map_node_qos_to_subscriber_qos(qos);
 
         let subscription = {
@@ -648,15 +651,15 @@ impl MessengerHandle {
         payload: Bytes,
     ) -> Result<()> {
         // Uses the zenoh key expression ID matching to save bytes on sending the node ID on the other side
-        // key_expr is of the form `<MASTER_NODE:bound_master_node>/topic/as_node_name/as_topic/<INSTANCE_ID:as_instance_id>/to_instance_id`.
+        // key_expr is of the form `<MASTER_NODE:bound_master_node>/to_instance_id/topic/as_node_name/as_topic/<INSTANCE_ID:as_instance_id>`.
         // where `to_instance_id` is `*` when the value is `None`
         let to_instance_id = match to_instance_id {
             Some(instance_id) => instance_id,
             None => "*",
         };
         let key_expr = format!(
-            "<MASTER_NODE:{}>/topic/{}/{}/<INSTANCE_ID:{}>/{}",
-            bound_master_node, as_node_name, as_topic, as_instance_id, to_instance_id
+            "<MASTER_NODE:{}>/{}/topic/{}/{}/<INSTANCE_ID:{}>",
+            bound_master_node, to_instance_id, as_node_name, as_topic, as_instance_id
         );
         let msg = Message::new(&key_expr, payload);
 
