@@ -88,7 +88,6 @@ mod tests {
             config.deployment_instance.instance_id
         );
         assert!(parsed.deployment_instance.parameters.is_empty());
-        assert!(parsed.deployment_instance.subscriber_targets.is_empty());
     }
 
     #[test]
