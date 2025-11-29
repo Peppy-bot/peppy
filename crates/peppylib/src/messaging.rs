@@ -417,13 +417,12 @@ pub struct ActionCreation {
 impl TopicMessenger {
     pub async fn subscribe(
         messenger: &MessengerHandle,
-        as_master_node: &str,
         to_node_name: &str,
         to_topic: &str,
         qos: QoSProfile,
     ) -> Result<Subscription> {
         messenger
-            .subscribe_to_topic(as_master_node, to_node_name, to_topic, qos)
+            .subscribe_to_topic(to_node_name, to_topic, qos)
             .await
     }
 
@@ -638,12 +637,11 @@ impl MessengerHandle {
 
     async fn subscribe_to_topic(
         &self,
-        as_master_node: &str,
         to_node_name: &str,
         to_topic: &str,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        let key_expr = format!("{as_master_node}/topic/{to_node_name}/{to_topic}/**");
+        let key_expr = format!("**/topic/{to_node_name}/{to_topic}/**");
         let subscriber_qos = map_node_qos_to_subscriber_qos(qos);
 
         let subscription = {
@@ -666,7 +664,7 @@ impl MessengerHandle {
     ) -> Result<()> {
         // Uses the zenoh key expression ID matching to save bytes on sending the node ID on the other side
         let key_expr = format!(
-            "{}/topic/{}/{}/<INSTANCE_ID:{}>",
+            "<MASTER_NODE:{}>/topic/{}/{}/<INSTANCE_ID:{}>",
             bound_master_node, as_node_name, as_topic, as_instance_id
         );
         let msg = Message::new(&key_expr, payload);

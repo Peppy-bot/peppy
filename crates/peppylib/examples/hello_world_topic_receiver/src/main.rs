@@ -3,8 +3,6 @@ use config::node::QoSProfile;
 use peppylib::{MessengerHandle, TopicMessenger};
 use tokio::signal;
 
-const MASTER_NODE_NAME: &str = "the_master_node";
-
 #[tokio::main]
 async fn main() {
     let topic_name = "hello_msg";
@@ -22,15 +20,9 @@ async fn main() {
             panic!("failed to create messenger on {host}:{port}: {error:?}.\n Did you start a zenohd server with the `zenohd_simple` example?")
         });
 
-    let mut subscription = TopicMessenger::subscribe(
-        &receiver_handle,
-        MASTER_NODE_NAME,
-        node_name,
-        topic_name,
-        qos,
-    )
-    .await
-    .expect("Should subscribe to the topic");
+    let mut subscription = TopicMessenger::subscribe(&receiver_handle, node_name, topic_name, qos)
+        .await
+        .expect("Should subscribe to the topic");
 
     println!("Waiting for payload... Press CTRL+C to stop.");
 
@@ -47,8 +39,9 @@ async fn main() {
                         let payload = String::from_utf8_lossy(payload_bytes.as_ref());
                         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
                         println!(
-                            "[{timestamp}] Received `{payload}` from instance_id `{}` with key_expr `{}`",
+                            "[{timestamp}] Received `{payload}` from instance_id `{}` and master_node `{}` with key_expr `{}`",
                             received.instance_id(),
+                            received.master_node(),
                             received.key_expr()
                         );
                     }

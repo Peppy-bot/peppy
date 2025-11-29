@@ -281,15 +281,18 @@ impl PartialEq<Payload> for bytes::Bytes {
 pub struct TopicMessage {
     key_expr: String,
     instance_id: String,
+    master_node: String,
     payload: Payload,
 }
 
 impl TopicMessage {
     pub fn new(key_expr: &str, payload: impl Into<Payload>) -> Result<Self> {
         let instance_id = TopicMessage::extract_instance_id(key_expr)?;
+        let master_node = TopicMessage::extract_master_node(key_expr)?;
         Ok(Self {
             key_expr: key_expr.to_string(),
             instance_id,
+            master_node,
             payload: payload.into(),
         })
     }
@@ -297,9 +300,11 @@ impl TopicMessage {
     #[cfg(feature = "zenoh")]
     pub fn from_zbytes(key_expr: &str, zbytes: ZBytes) -> Result<Self> {
         let instance_id = TopicMessage::extract_instance_id(key_expr)?;
+        let master_node = TopicMessage::extract_master_node(key_expr)?;
         Ok(Self {
             key_expr: key_expr.to_string(),
             instance_id,
+            master_node,
             payload: Payload::from_zbytes(zbytes),
         })
     }
@@ -319,8 +324,33 @@ impl TopicMessage {
             .ok_or_else(|| Error::InstanceIdExtractionError(key_expr.to_string()))
     }
 
+    fn extract_master_node(key_expr: &str) -> Result<String> {
+        let re = Regex::new(r"<MASTER_NODE:([^>]+)>")
+            .map_err(|err| Error::MasterNodeInvalid(err.to_string()))?;
+
+        let captures = re
+            .captures_iter(key_expr)
+            .last()
+            .ok_or_else(|| Error::MasterNodeNotFound(key_expr.to_string()))?;
+
+        let master_node = captures
+            .get(1)
+            .map(|value| value.as_str())
+            .ok_or_else(|| Error::MasterNodeInvalid(key_expr.to_string()))?;
+
+        if master_node == "**" {
+            return Err(Error::MasterNodeInvalid(key_expr.to_string()));
+        }
+
+        Ok(master_node.to_string())
+    }
+
     pub fn instance_id(&self) -> &str {
         &self.instance_id
+    }
+
+    pub fn master_node(&self) -> &str {
+        &self.master_node
     }
 
     pub fn payload(&self) -> &Payload {
