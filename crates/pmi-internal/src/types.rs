@@ -1,6 +1,5 @@
 use super::adapters::mock::MockAdapter;
 use super::error::{Error, Result};
-use regex::Regex;
 #[cfg(feature = "zenoh")]
 use std::borrow::Cow;
 use std::future::Future;
@@ -310,39 +309,19 @@ impl TopicMessage {
     }
 
     fn extract_instance_id(key_expr: &str) -> Result<String> {
-        let re = Regex::new(r"<INSTANCE_ID:([^>]+)>")
-            .map_err(|err| Error::InstanceIdExtractionError(err.to_string()))?;
-
-        let captures = re
-            .captures_iter(key_expr)
-            .last()
-            .ok_or_else(|| Error::InstanceIdNotFound(key_expr.to_string()))?;
-
-        captures
-            .get(1)
-            .map(|value| value.as_str().to_string())
-            .ok_or_else(|| Error::InstanceIdExtractionError(key_expr.to_string()))
+        let segments: Vec<&str> = key_expr.split('/').collect();
+        segments
+            .get(3)
+            .map(|s| s.to_string())
+            .ok_or_else(|| Error::InstanceIdNotFound(key_expr.to_string()))
     }
 
     fn extract_master_node(key_expr: &str) -> Result<String> {
-        let re = Regex::new(r"<MASTER_NODE:([^>]+)>")
-            .map_err(|err| Error::MasterNodeInvalid(err.to_string()))?;
-
-        let captures = re
-            .captures_iter(key_expr)
-            .last()
-            .ok_or_else(|| Error::MasterNodeNotFound(key_expr.to_string()))?;
-
-        let master_node = captures
+        let segments: Vec<&str> = key_expr.split('/').collect();
+        segments
             .get(1)
-            .map(|value| value.as_str().to_string())
-            .ok_or_else(|| Error::MasterNodeInvalid(key_expr.to_string()))?;
-
-        if master_node == "**" {
-            return Err(Error::MasterNodeInvalid(key_expr.to_string()));
-        }
-
-        Ok(master_node)
+            .map(|s| s.to_string())
+            .ok_or_else(|| Error::MasterNodeNotFound(key_expr.to_string()))
     }
 
     pub fn instance_id(&self) -> &str {

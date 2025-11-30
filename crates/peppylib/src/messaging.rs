@@ -60,8 +60,14 @@ fn generate_request_id() -> String {
     format!("{:x}", result)[..16].to_string() // Use first 16 hex chars for compactness
 }
 
-fn format_instance_segment(instance_id: &str) -> Option<String> {
-    (instance_id != INSTANCE_ID_WILDCARD).then(|| format!("<INSTANCE_ID:{instance_id}>"))
+/// Formats an instance ID as a bound instance segment (appears right after MASTER_NODE in key expressions)
+fn format_bound_instance_segment(instance_id: &str) -> Option<String> {
+    (instance_id != INSTANCE_ID_WILDCARD).then(|| format!("<BOUND_INSTANCE_ID:{instance_id}>"))
+}
+
+/// Formats an instance ID as a target instance segment (identifies a specific target/source instance)
+fn format_target_instance_segment(instance_id: &str) -> Option<String> {
+    (instance_id != INSTANCE_ID_WILDCARD).then(|| format!("<TARGET_INSTANCE_ID:{instance_id}>"))
 }
 
 pub struct TopicMessenger;
@@ -191,10 +197,11 @@ impl ServiceEndpoint {
             identifier: identifier.clone(),
             reason: "missing target instance segment in request".to_string(),
         })?;
-        let service_instance_segment = format_instance_segment(self.instance_id.as_str());
-        let response_instance_segment = service_instance_segment
-            .clone()
-            .unwrap_or_else(|| format!("<INSTANCE_ID:{}>", self.instance_id));
+        let service_bound_instance_segment =
+            format_bound_instance_segment(self.instance_id.as_str());
+        let response_target_instance_segment =
+            format_target_instance_segment(self.instance_id.as_str())
+                .unwrap_or_else(|| format!("<TARGET_INSTANCE_ID:{}>", self.instance_id));
 
         let expected_root_segments: Vec<_> = self
             .service_root
@@ -260,9 +267,9 @@ impl ServiceEndpoint {
         }
 
         // Only process requests targeting this instance or broadcast requests.
-        if let Some(instance_segment) = service_instance_segment.as_deref() {
+        if let Some(bound_segment) = service_bound_instance_segment.as_deref() {
             if target_instance_segment != INSTANCE_ID_WILDCARD
-                && target_instance_segment != instance_segment
+                && target_instance_segment != bound_segment
             {
                 let reason = "request is not addressed to this service instance".to_string();
                 error!(%identifier, %reason, "service received invalid request");
@@ -271,18 +278,18 @@ impl ServiceEndpoint {
         }
 
         let message_identifier = {
-            let instance_segment = service_instance_segment
+            let bound_segment = service_bound_instance_segment
                 .as_deref()
                 .unwrap_or(INSTANCE_ID_WILDCARD);
             format!(
                 "<MASTER_NODE:{}>/{}/{}/{caller_segment}/request",
-                master_segment, instance_segment, self.service_root
+                master_segment, bound_segment, self.service_root
             )
         };
 
         let response_topic = format!(
             "<MASTER_NODE:{}>/{}/{}/response/{request_id}/{}",
-            master_segment, caller_segment, self.service_root, response_instance_segment
+            master_segment, caller_segment, self.service_root, response_target_instance_segment
         );
 
         let message = TopicMessage::new(&message_identifier, request.into_payload())?;
@@ -401,13 +408,14 @@ pub struct ActionCreation {
 impl TopicMessenger {
     pub async fn subscribe(
         messenger: &MessengerHandle,
+        as_master_node: &str,
         as_instance_id: &str,
         to_node_name: &str,
         to_topic: &str,
         qos: QoSProfile,
     ) -> Result<Subscription> {
         messenger
-            .subscribe_to_topic(as_instance_id, to_node_name, to_topic, qos)
+            .subscribe_to_topic(as_master_node, as_instance_id, to_node_name, to_topic, qos)
             .await
     }
 
@@ -423,21 +431,23 @@ impl TopicMessenger {
     /// - `payload`: message body to send.
     pub async fn emit(
         messenger: &MessengerHandle,
-        bound_master_node: &str,
-        as_node: &str,
-        as_topic: &str,
+        as_master_node: &str,
         as_instance_id: &str,
+        to_master_node: Option<&str>,
         to_instance_id: Option<&str>,
+        to_node_name: &str,
+        to_topic: &str,
         qos: QoSProfile,
         payload: Bytes,
     ) -> Result<()> {
         messenger
             .emit_topic_message(
-                bound_master_node,
-                as_node,
-                as_topic,
+                as_master_node,
                 as_instance_id,
+                to_master_node,
                 to_instance_id,
+                to_node_name,
+                to_topic,
                 qos,
                 payload,
             )
@@ -521,9 +531,9 @@ impl ActionMessenger {
     ) -> Result<ActionGoalHandle> {
         let feedback_topic = match target_instance_id {
             Some(target_instance_id) => {
-                let instance_segment = format!("<INSTANCE_ID:{target_instance_id}>");
+                let bound_instance_segment = format!("<BOUND_INSTANCE_ID:{target_instance_id}>");
                 format!(
-                    "<MASTER_NODE:{master_node}>/{instance_segment}/action/{node_name}/{action_name}/feedback/<INSTANCE_ID:{target_instance_id}>"
+                    "<MASTER_NODE:{master_node}>/{bound_instance_segment}/action/{node_name}/{action_name}/feedback/<TARGET_INSTANCE_ID:{target_instance_id}>"
                 )
             }
             None => format!(
@@ -644,13 +654,14 @@ impl MessengerHandle {
 
     async fn subscribe_to_topic(
         &self,
+        as_master_node: &str,
         as_instance_id: &str,
         to_node_name: &str,
         to_topic: &str,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        // Key is: `master_node_name/instance_id/topic/to_node_name/to_topic/received_instance_id`
-        let key_expr = format!("*/{as_instance_id}/topic/{to_node_name}/{to_topic}/*");
+        let key_expr =
+            format!("{as_master_node}/*/{as_instance_id}/*/topic/{to_node_name}/{to_topic}");
         let subscriber_qos = map_node_qos_to_subscriber_qos(qos);
 
         let subscription = {
@@ -664,24 +675,26 @@ impl MessengerHandle {
 
     async fn emit_topic_message(
         &self,
-        bound_master_node: &str,
-        as_node_name: &str,
-        as_topic: &str,
+        as_master_node: &str,
         as_instance_id: &str,
+        to_master_node: Option<&str>,
         to_instance_id: Option<&str>,
+        to_node_name: &str,
+        to_topic: &str,
         qos: QoSProfile,
         payload: Bytes,
     ) -> Result<()> {
-        // Uses the zenoh key expression ID matching to save bytes on sending the node ID on the other side
-        // key_expr is of the form `<MASTER_NODE:bound_master_node>/to_instance_id/topic/as_node_name/as_topic/<INSTANCE_ID:as_instance_id>`.
-        // where `to_instance_id` is `*` when the value is `None`
+        let to_master_node = match to_master_node {
+            Some(master_node) => master_node,
+            None => "*",
+        };
         let to_instance_id = match to_instance_id {
             Some(instance_id) => instance_id,
             None => "*",
         };
         let key_expr = format!(
-            "<MASTER_NODE:{}>/{}/topic/{}/{}/<INSTANCE_ID:{}>",
-            bound_master_node, to_instance_id, as_node_name, as_topic, as_instance_id
+            "{}/{}/{}/{}/topic/{}/{}",
+            to_master_node, as_master_node, to_instance_id, as_instance_id, to_node_name, to_topic
         );
         let msg = Message::new(&key_expr, payload);
 
@@ -713,10 +726,10 @@ impl MessengerHandle {
         service_root: String,
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
-        let instance_segment =
-            format_instance_segment(as_instance_id).unwrap_or_else(|| as_instance_id.to_string());
+        let bound_instance_segment = format_bound_instance_segment(as_instance_id)
+            .unwrap_or_else(|| as_instance_id.to_string());
         let subscription_prefix =
-            format!("<MASTER_NODE:{bound_master_node}>/{instance_segment}/{service_root}");
+            format!("<MASTER_NODE:{bound_master_node}>/{bound_instance_segment}/{service_root}");
         let request_subscription_topic = format!("{subscription_prefix}/*/request/**");
         let subscription = {
             let messenger = self.messenger.lock().await;
@@ -750,40 +763,52 @@ impl MessengerHandle {
             "{}/{}/{}",
             message_type, target_node_name, target_service_name
         );
-        let caller_instance_segment = format_instance_segment(as_instance_id)
+        // Caller's instance as TARGET (identifies who is calling in request)
+        let caller_target_instance_segment = format_target_instance_segment(as_instance_id)
+            .unwrap_or_else(|| INSTANCE_ID_WILDCARD.to_string());
+        // Caller's instance as BOUND (caller receives response)
+        let caller_bound_instance_segment = format_bound_instance_segment(as_instance_id)
             .unwrap_or_else(|| INSTANCE_ID_WILDCARD.to_string());
 
         let target_instance_id = target_instance_id.map(str::to_string);
-        let target_instance_segment = target_instance_id
+        // Target's instance as BOUND (service is bound to receive requests)
+        let target_bound_instance_segment = target_instance_id
             .as_deref()
-            .and_then(format_instance_segment);
+            .and_then(format_bound_instance_segment);
+        // Target's instance as TARGET (identifies who responded)
+        let target_response_instance_segment = target_instance_id
+            .as_deref()
+            .and_then(format_target_instance_segment);
         let request_id = generate_request_id();
-        let request_topic = match target_instance_segment.as_deref() {
+        let request_topic = match target_bound_instance_segment.as_deref() {
             Some(segment) => {
                 format!(
                     "<MASTER_NODE:{}>/{}/{}/{}/request/{request_id}",
-                    bound_master_node, segment, service_root, caller_instance_segment
+                    bound_master_node, segment, service_root, caller_target_instance_segment
                 )
             }
             None => {
                 format!(
                     "<MASTER_NODE:{}>/{}/{}/{}/request/{request_id}",
-                    bound_master_node, INSTANCE_ID_WILDCARD, service_root, caller_instance_segment
+                    bound_master_node,
+                    INSTANCE_ID_WILDCARD,
+                    service_root,
+                    caller_target_instance_segment
                 )
             }
         };
 
-        let response_topic = match target_instance_segment.as_deref() {
+        let response_topic = match target_response_instance_segment.as_deref() {
             Some(segment) => {
                 format!(
                     "<MASTER_NODE:{}>/{}/{}/response/{request_id}/{}",
-                    bound_master_node, caller_instance_segment, service_root, segment
+                    bound_master_node, caller_bound_instance_segment, service_root, segment
                 )
             }
             None => {
                 format!(
                     "<MASTER_NODE:{}>/{}/{}/response/{request_id}/*",
-                    bound_master_node, caller_instance_segment, service_root
+                    bound_master_node, caller_bound_instance_segment, service_root
                 )
             }
         };
@@ -853,10 +878,10 @@ impl MessengerHandle {
         let cancel_service_root = format!("{action_root}/cancel");
         let result_service_root = format!("{action_root}/result");
 
-        let instance_segment =
-            format_instance_segment(as_instance_id).unwrap_or_else(|| as_instance_id.to_string());
+        let bound_instance_segment = format_bound_instance_segment(as_instance_id)
+            .unwrap_or_else(|| as_instance_id.to_string());
         let feedback_topic_suffix = format!(
-            "<MASTER_NODE:{bound_master_node}>/{instance_segment}/{action_root}/feedback/<INSTANCE_ID:{as_instance_id}>"
+            "<MASTER_NODE:{bound_master_node}>/{bound_instance_segment}/{action_root}/feedback/<TARGET_INSTANCE_ID:{as_instance_id}>"
         );
 
         let goal_service = self
