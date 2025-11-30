@@ -335,14 +335,14 @@ impl TopicMessage {
 
         let master_node = captures
             .get(1)
-            .map(|value| value.as_str())
+            .map(|value| value.as_str().to_string())
             .ok_or_else(|| Error::MasterNodeInvalid(key_expr.to_string()))?;
 
         if master_node == "**" {
             return Err(Error::MasterNodeInvalid(key_expr.to_string()));
         }
 
-        Ok(master_node.to_string())
+        Ok(master_node)
     }
 
     pub fn instance_id(&self) -> &str {

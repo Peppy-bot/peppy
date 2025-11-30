@@ -73,6 +73,7 @@ pub struct ActionMessenger;
 pub struct ServiceEndpoint {
     messenger: Arc<Mutex<Messenger>>,
     subscription: Subscription,
+    bound_master_node: String,
     service_root: String,
     instance_id: String,
 }
@@ -166,81 +167,64 @@ impl ServiceEndpoint {
         request: TopicMessage,
     ) -> Result<(ServiceRequestContext, String)> {
         let identifier = request.key_expr().to_string();
-        let (master_segment, identifier_without_master) =
-            identifier
-                .split_once('/')
-                .ok_or_else(|| Error::InvalidServiceRequest {
-                    identifier: identifier.clone(),
-                    reason: "missing master node segment in request".to_string(),
-                })?;
-        let service_root_with_master = format!("{master_segment}/{}", self.service_root);
+        let mut parts = identifier.split('/').filter(|segment| !segment.is_empty());
+
+        let _master_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
+            identifier: identifier.clone(),
+            reason: "missing master node segment in request".to_string(),
+        })?;
+        let master_segment = request.master_node();
+
+        if master_segment != self.bound_master_node {
+            let reason = format!(
+                "request targets master `{master_segment}` but listener is bound to `{}`",
+                self.bound_master_node
+            );
+            error!(%identifier, %reason, "service received invalid request");
+            return Err(Error::InvalidServiceRequest {
+                identifier: identifier.clone(),
+                reason,
+            });
+        }
+
+        let target_instance_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
+            identifier: identifier.clone(),
+            reason: "missing target instance segment in request".to_string(),
+        })?;
         let service_instance_segment = format_instance_segment(self.instance_id.as_str());
         let response_instance_segment = service_instance_segment
             .clone()
             .unwrap_or_else(|| format!("<INSTANCE_ID:{}>", self.instance_id));
 
-        let specific_prefix = service_instance_segment.as_ref().map(|instance_segment| {
-            format!("{}/{instance_segment}/request/", service_root_with_master)
-        });
-        let direct_prefix = format!("{service_root_with_master}/request/");
-        let wildcard_prefix = format!("{service_root_with_master}/**/request/");
-        let expected_prefixes = {
-            let mut prefixes = Vec::new();
-            if let Some(prefix) = specific_prefix.as_ref() {
-                prefixes.push(prefix.as_str());
-            }
-            prefixes.push(direct_prefix.as_str());
-            prefixes.push(wildcard_prefix.as_str());
-            prefixes.join(" or ")
-        };
+        let expected_root_segments: Vec<_> = self
+            .service_root
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .collect();
 
-        let matched_prefix = specific_prefix
-            .as_ref()
-            .filter(|prefix| identifier.starts_with(*prefix))
-            .map(String::as_str)
-            .or_else(|| {
-                if identifier.starts_with(&direct_prefix) {
-                    Some(direct_prefix.as_str())
-                } else {
-                    None
-                }
-            })
-            .or_else(|| {
-                if identifier.starts_with(&wildcard_prefix) {
-                    Some(wildcard_prefix.as_str())
-                } else {
-                    None
-                }
-            });
-
-        let request_prefix = matched_prefix.ok_or_else(|| {
-            let reason =
-                format!("unexpected request topic; expected to start with {expected_prefixes}");
-            error!(%identifier, %reason, "service received invalid request");
-            Error::InvalidServiceRequest {
-                identifier: identifier.clone(),
-                reason,
-            }
-        })?;
-
-        let remainder = identifier_without_master
-            .strip_prefix(
-                request_prefix
-                    .strip_prefix(&format!("{master_segment}/"))
-                    .unwrap_or(request_prefix),
-            )
-            .ok_or_else(|| {
-                let reason =
-                    "request topic is missing the expected prefix after validation".to_string();
+        for expected_segment in expected_root_segments {
+            let Some(segment) = parts.next() else {
+                let reason = "request is missing expected service path segments".to_string();
                 error!(%identifier, %reason, "service received invalid request");
-                Error::InvalidServiceRequest {
+                return Err(Error::InvalidServiceRequest {
                     identifier: identifier.clone(),
                     reason,
-                }
-            })?;
-        let mut remainder_parts = remainder.split('/').filter(|segment| !segment.is_empty());
+                });
+            };
 
-        let caller_segment = match remainder_parts.next().map(str::to_string) {
+            if segment != expected_segment {
+                let reason = format!(
+                    "request path does not match service root; expected segment `{expected_segment}`, got `{segment}`"
+                );
+                error!(%identifier, %reason, "service received invalid request");
+                return Err(Error::InvalidServiceRequest {
+                    identifier: identifier.clone(),
+                    reason,
+                });
+            }
+        }
+
+        let caller_segment = match parts.next().map(str::to_string) {
             Some(segment) => segment,
             None => {
                 error!(%identifier, "service received request without caller instance segment");
@@ -250,12 +234,16 @@ impl ServiceEndpoint {
                 });
             }
         };
-        let request_id = match remainder_parts
-            .next()
-            .filter(|segment| !segment.is_empty())
-            .map(str::to_string)
-        {
-            Some(id) => id,
+
+        let request_marker = parts.next().unwrap_or_default();
+        if request_marker != "request" {
+            let reason = "missing request marker segment".to_string();
+            error!(%identifier, %reason, "service received invalid request");
+            return Err(Error::InvalidServiceRequest { identifier, reason });
+        }
+
+        let request_id = match parts.next().filter(|segment| !segment.is_empty()) {
+            Some(id) => id.to_string(),
             None => {
                 error!(%identifier, "service received request without request id segment");
                 return Err(Error::InvalidServiceRequest {
@@ -264,21 +252,39 @@ impl ServiceEndpoint {
                 });
             }
         };
-        let response_topic_base = format!("{service_root_with_master}/response");
+
+        if parts.next().is_some() {
+            let reason = "request contains unexpected trailing segments".to_string();
+            error!(%identifier, %reason, "service received invalid request");
+            return Err(Error::InvalidServiceRequest { identifier, reason });
+        }
+
+        // Only process requests targeting this instance or broadcast requests.
+        if let Some(instance_segment) = service_instance_segment.as_deref() {
+            if target_instance_segment != INSTANCE_ID_WILDCARD
+                && target_instance_segment != instance_segment
+            {
+                let reason = "request is not addressed to this service instance".to_string();
+                error!(%identifier, %reason, "service received invalid request");
+                return Err(Error::InvalidServiceRequest { identifier, reason });
+            }
+        }
+
+        let message_identifier = {
+            let instance_segment = service_instance_segment
+                .as_deref()
+                .unwrap_or(INSTANCE_ID_WILDCARD);
+            format!(
+                "<MASTER_NODE:{}>/{}/{}/{caller_segment}/request",
+                master_segment, instance_segment, self.service_root
+            )
+        };
+
         let response_topic = format!(
-            "{}/{}/{}/{}",
-            response_topic_base, caller_segment, request_id, response_instance_segment
+            "<MASTER_NODE:{}>/{}/{}/response/{request_id}/{}",
+            master_segment, caller_segment, self.service_root, response_instance_segment
         );
 
-        let message_identifier = match service_instance_segment.as_deref() {
-            Some(instance_segment) => {
-                format!(
-                    "{}/{instance_segment}/request/{caller_segment}",
-                    service_root_with_master
-                )
-            }
-            None => format!("{}/**/request/{caller_segment}", service_root_with_master),
-        };
         let message = TopicMessage::new(&message_identifier, request.into_payload())?;
         let context = ServiceRequestContext::new(message, request_id);
 
@@ -443,12 +449,18 @@ impl ServiceMessenger {
     /// Listening as a service is a 2 way stream, so the process that exposes the service needs to provide its instance_id
     pub async fn listen(
         messenger: &MessengerHandle,
+        bound_master_node: &str,
         as_node_name: &str,
         as_service_name: &str,
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
         messenger
-            .expose_service(as_node_name, as_service_name, as_instance_id)
+            .expose_service(
+                bound_master_node,
+                as_node_name,
+                as_service_name,
+                as_instance_id,
+            )
             .await
     }
 
@@ -481,12 +493,18 @@ impl ServiceMessenger {
 impl ActionMessenger {
     pub async fn listen(
         messenger: &MessengerHandle,
+        bound_master_node: &str,
         as_node_name: &str,
         as_action_name: &str,
         as_instance_id: &str,
     ) -> Result<ActionCreation> {
         messenger
-            .expose_action(as_node_name, as_action_name, as_instance_id)
+            .expose_action(
+                bound_master_node,
+                as_node_name,
+                as_action_name,
+                as_instance_id,
+            )
             .await
     }
 
@@ -501,12 +519,16 @@ impl ActionMessenger {
         feedback_qos: QoSProfile,
         goal_timeout: Duration,
     ) -> Result<ActionGoalHandle> {
-        let action_root = format!("{}/action/{}/{}", master_node, node_name, action_name);
         let feedback_topic = match target_instance_id {
             Some(target_instance_id) => {
-                format!("{action_root}/feedback/<INSTANCE_ID:{target_instance_id}>")
+                let instance_segment = format!("<INSTANCE_ID:{target_instance_id}>");
+                format!(
+                    "<MASTER_NODE:{master_node}>/{instance_segment}/action/{node_name}/{action_name}/feedback/<INSTANCE_ID:{target_instance_id}>"
+                )
             }
-            None => format!("{action_root}/feedback/**"),
+            None => format!(
+                "<MASTER_NODE:{master_node}>/{INSTANCE_ID_WILDCARD}/action/{node_name}/{action_name}/feedback/*"
+            ),
         };
         let goal_service_name = format!("{action_name}/goal");
 
@@ -674,22 +696,28 @@ impl MessengerHandle {
 
     async fn expose_service(
         &self,
+        bound_master_node: &str,
         as_node_name: &str,
         as_service_name: &str,
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
-        let key_expr = format!("service/{}/{}", as_node_name, as_service_name);
-        self.create_service_endpoint(key_expr, as_instance_id).await
+        // Key is: `master_node_name/instance_id/service/as_node_name/as_service_name/received_instance_id`
+        let service_root = format!("service/{as_node_name}/{as_service_name}");
+        self.create_service_endpoint(bound_master_node, service_root, as_instance_id)
+            .await
     }
 
     async fn create_service_endpoint(
         &self,
-        key_expr: String,
+        bound_master_node: &str,
+        service_root: String,
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
-        let service_root = key_expr;
-        let request_subscription_topic = format!("**/{service_root}/**/request/**");
-
+        let instance_segment =
+            format_instance_segment(as_instance_id).unwrap_or_else(|| as_instance_id.to_string());
+        let subscription_prefix =
+            format!("<MASTER_NODE:{bound_master_node}>/{instance_segment}/{service_root}");
+        let request_subscription_topic = format!("{subscription_prefix}/*/request/**");
         let subscription = {
             let messenger = self.messenger.lock().await;
             messenger
@@ -701,6 +729,7 @@ impl MessengerHandle {
         Ok(ServiceEndpoint {
             messenger: Arc::clone(&self.messenger),
             subscription,
+            bound_master_node: bound_master_node.to_string(),
             service_root,
             instance_id: as_instance_id.to_string(),
         })
@@ -718,8 +747,8 @@ impl MessengerHandle {
         response_timeout: Duration,
     ) -> Result<TopicMessage> {
         let service_root = format!(
-            "{}/{}/{}/{}",
-            bound_master_node, message_type, target_node_name, target_service_name
+            "{}/{}/{}",
+            message_type, target_node_name, target_service_name
         );
         let caller_instance_segment = format_instance_segment(as_instance_id)
             .unwrap_or_else(|| INSTANCE_ID_WILDCARD.to_string());
@@ -731,19 +760,31 @@ impl MessengerHandle {
         let request_id = generate_request_id();
         let request_topic = match target_instance_segment.as_deref() {
             Some(segment) => {
-                format!("{service_root}/{segment}/request/{caller_instance_segment}/{request_id}")
+                format!(
+                    "<MASTER_NODE:{}>/{}/{}/{}/request/{request_id}",
+                    bound_master_node, segment, service_root, caller_instance_segment
+                )
             }
             None => {
-                format!("{service_root}/**/request/{caller_instance_segment}/{request_id}")
+                format!(
+                    "<MASTER_NODE:{}>/{}/{}/{}/request/{request_id}",
+                    bound_master_node, INSTANCE_ID_WILDCARD, service_root, caller_instance_segment
+                )
             }
         };
 
         let response_topic = match target_instance_segment.as_deref() {
             Some(segment) => {
-                format!("{service_root}/response/{caller_instance_segment}/{request_id}/{segment}")
+                format!(
+                    "<MASTER_NODE:{}>/{}/{}/response/{request_id}/{}",
+                    bound_master_node, caller_instance_segment, service_root, segment
+                )
             }
             None => {
-                format!("{service_root}/response/{caller_instance_segment}/{request_id}/*")
+                format!(
+                    "<MASTER_NODE:{}>/{}/{}/response/{request_id}/*",
+                    bound_master_node, caller_instance_segment, service_root
+                )
             }
         };
 
@@ -801,6 +842,7 @@ impl MessengerHandle {
 
     async fn expose_action(
         &self,
+        bound_master_node: &str,
         as_node_name: &str,
         as_action_name: &str,
         as_instance_id: &str,
@@ -810,17 +852,21 @@ impl MessengerHandle {
         let goal_service_root = format!("{action_root}/goal");
         let cancel_service_root = format!("{action_root}/cancel");
         let result_service_root = format!("{action_root}/result");
-        let feedback_topic_suffix =
-            format!("{action_root}/feedback/<INSTANCE_ID:{as_instance_id}>");
+
+        let instance_segment =
+            format_instance_segment(as_instance_id).unwrap_or_else(|| as_instance_id.to_string());
+        let feedback_topic_suffix = format!(
+            "<MASTER_NODE:{bound_master_node}>/{instance_segment}/{action_root}/feedback/<INSTANCE_ID:{as_instance_id}>"
+        );
 
         let goal_service = self
-            .create_service_endpoint(goal_service_root, as_instance_id)
+            .create_service_endpoint(bound_master_node, goal_service_root, as_instance_id)
             .await?;
         let cancel_service = self
-            .create_service_endpoint(cancel_service_root, as_instance_id)
+            .create_service_endpoint(bound_master_node, cancel_service_root, as_instance_id)
             .await?;
         let result_service = self
-            .create_service_endpoint(result_service_root, as_instance_id)
+            .create_service_endpoint(bound_master_node, result_service_root, as_instance_id)
             .await?;
 
         let feedback_publisher = TopicPublisher {
