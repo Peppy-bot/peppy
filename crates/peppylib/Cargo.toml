@@ -25,6 +25,7 @@ tempfile = "3.10"
 askama = "0.14.0"
 tokio = { version = "1.47.0", features = ["full"] }
 rand = "0.9"
+regex = "1"
 
 [features]
 default = ["zenoh"]

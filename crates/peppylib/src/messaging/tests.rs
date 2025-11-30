@@ -2,9 +2,11 @@ use bytes::Bytes;
 use config::node::QoSProfile;
 use pmi::{Messenger, MessengerBackend};
 use rand::seq::SliceRandom;
+use regex::Regex;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
@@ -13,18 +15,6 @@ use crate::error::Error;
 use crate::messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, TopicMessenger};
 
 const MASTER_NODE_NAME: &str = "master_node";
-
-fn master_key_expr(
-    bound_master_node: &str,
-    message_type: &str,
-    node_name: &str,
-    target_name: &str,
-) -> String {
-    format!(
-        "{}/{}/{}/{}",
-        bound_master_node, message_type, node_name, target_name
-    )
-}
 
 #[derive(Clone)]
 struct ActionClientCase {
@@ -360,130 +350,12 @@ async fn topic_publish_reliable_5000hz_messages() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn service_communication_poll_specific_instance_id() {
-    let router = TestRouterContext::start().await;
-
-    // Listener instance
-    let listener_node_name = "camera";
-    let listener_service_name = "enable_camera";
-    let listener_instance_id = "listener_instance";
-
-    // Caller instance
-    let caller_instance_id = "caller_instance";
-
-    let request_payload = Bytes::from_static(b"enable=true");
-    let response_payload = Bytes::from_static(b"ack");
-    let call_count = Arc::new(AtomicUsize::new(0));
-
-    let (service_ready_tx, service_ready_rx) = oneshot::channel();
-    let service_wait_timeout = Duration::from_millis(1500);
-    let service_task_timeout = service_wait_timeout + Duration::from_millis(500);
-    let service_ready_timeout = Duration::from_secs(1);
-
-    // The exposed service has its own dedicated scope (emulates running on its own instance)
-    let service_task = {
-        let service_expose_handle = router.service_messenger().await;
-        let mut service = ServiceMessenger::listen(
-            &service_expose_handle,
-            listener_node_name,
-            listener_service_name,
-            listener_instance_id,
-        )
-        .await
-        .expect("service should start");
-
-        let service_root = master_key_expr(
-            MASTER_NODE_NAME,
-            "service",
-            listener_node_name,
-            listener_service_name,
-        );
-        let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
-        let expected_request_topic = format!(
-            "{service_root}/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
-        );
-
-        let request_payload = request_payload.clone();
-        let response_payload = response_payload.clone();
-        let call_count = Arc::clone(&call_count);
-
-        tokio::spawn(async move {
-            let handler = service.handle_next_request(|request| {
-                let response_payload = response_payload.clone();
-                async move {
-                    assert_eq!(request.message().key_expr(), expected_request_topic);
-                    assert_eq!(request.message().instance_id(), caller_instance_id);
-                    assert_eq!(request.message().payload(), &request_payload);
-                    call_count.fetch_add(1, Ordering::SeqCst);
-                    Ok(response_payload)
-                }
-            });
-
-            service_ready_tx.send(()).unwrap();
-            let handled = tokio::time::timeout(service_wait_timeout, handler)
-                .await
-                .expect("service handler timed out");
-            let handled = handled.expect("service should receive exactly one request");
-
-            assert!(
-                handled,
-                "service subscription closed before handling request"
-            );
-
-            Ok::<(), Error>(())
-        })
-    };
-
-    // The caller node has its own scope (emulates a separate node running on a different instance)
-    {
-        tokio::time::timeout(service_ready_timeout, service_ready_rx)
-            .await
-            .expect("service should signal readiness before timeout")
-            .expect("service should signal readiness");
-        let caller_handle = router.service_messenger().await;
-        let response = ServiceMessenger::poll(
-            &caller_handle,
-            MASTER_NODE_NAME,
-            caller_instance_id,
-            listener_node_name,
-            listener_service_name,
-            Some(listener_instance_id),
-            request_payload.clone(),
-            Duration::from_secs(1),
-        )
-        .await
-        .expect("caller should receive response");
-
-        assert_eq!(response.payload().to_bytes(), response_payload);
-        assert_eq!(response.instance_id(), listener_instance_id);
-    }
-
-    // Ensure the service callback was called exactly once
-    assert_eq!(
-        call_count.load(Ordering::SeqCst),
-        1,
-        "service callback should have been called exactly once"
-    );
-
-    tokio::time::timeout(service_task_timeout, service_task)
-        .await
-        .expect("service task should finish within timeout")
-        .expect("service task panicked")
-        .expect("service task returned error");
-
-    tokio::time::timeout(service_task_timeout, router.shutdown())
-        .await
-        .expect("router shutdown timed out");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn service_communication_poll_no_instance_id_target() {
     let router = TestRouterContext::start().await;
 
     // Listener instance
     let listener_node_name = "camera";
     let listener_service_name = "enable_camera";
-    let listener_instance_id = "listener_instance";
 
     // Caller instance
     let caller_instance_id = "caller_instance";
@@ -492,32 +364,29 @@ async fn service_communication_poll_no_instance_id_target() {
     let response_payload = Bytes::from_static(b"ack");
     let call_count = Arc::new(AtomicUsize::new(0));
 
-    let (service_ready_tx, service_ready_rx) = oneshot::channel();
+    let (service_ready_tx1, service_ready_rx1) = oneshot::channel();
+    let (service_ready_tx2, service_ready_rx2) = oneshot::channel();
     let service_wait_timeout = Duration::from_millis(1500);
     let service_task_timeout = service_wait_timeout + Duration::from_millis(500);
     let service_ready_timeout = Duration::from_secs(1);
 
+    // Listener instance 1
+    let listener_instance_id1 = "listener_instance1";
     // The exposed service has its own dedicated scope (emulates running on its own instance)
-    let service_task = {
+    let service_task1 = {
         let service_expose_handle = router.service_messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
+            MASTER_NODE_NAME,
             listener_node_name,
             listener_service_name,
-            listener_instance_id,
+            listener_instance_id1,
         )
         .await
         .expect("service should start");
 
-        let service_root = master_key_expr(
-            MASTER_NODE_NAME,
-            "service",
-            listener_node_name,
-            listener_service_name,
-        );
-        let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
         let expected_request_topic = format!(
-            "{service_root}/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
+            "<MASTER_NODE:{MASTER_NODE_NAME}>/<INSTANCE_ID:{listener_instance_id1}>/service/{listener_node_name}/{listener_service_name}/<INSTANCE_ID:{caller_instance_id}>/request"
         );
 
         let request_payload = request_payload.clone();
@@ -528,6 +397,7 @@ async fn service_communication_poll_no_instance_id_target() {
             let handler = service.handle_next_request(|request| {
                 let response_payload = response_payload.clone();
                 async move {
+                    assert_eq!(request.message().master_node(), MASTER_NODE_NAME);
                     assert_eq!(request.message().key_expr(), expected_request_topic);
                     assert_eq!(request.message().instance_id(), caller_instance_id);
                     assert_eq!(request.message().payload(), &request_payload);
@@ -536,7 +406,7 @@ async fn service_communication_poll_no_instance_id_target() {
                 }
             });
 
-            service_ready_tx.send(()).unwrap();
+            service_ready_tx1.send(()).unwrap();
             let handled = tokio::time::timeout(service_wait_timeout, handler)
                 .await
                 .expect("service handler timed out");
@@ -551,12 +421,71 @@ async fn service_communication_poll_no_instance_id_target() {
         })
     };
 
+    // Creates a second listener (emulates a second instance) that is slower than the listener 1 to respond
+    // Listener instance 2
+    let listener_instance_id2 = "listener_instance2";
+    let service_task2 = {
+        let service_expose_handle = router.service_messenger().await;
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            MASTER_NODE_NAME,
+            listener_node_name,
+            listener_service_name,
+            listener_instance_id2,
+        )
+        .await
+        .expect("service should start");
+
+        let expected_request_topic = format!(
+            "<MASTER_NODE:{MASTER_NODE_NAME}>/<INSTANCE_ID:{listener_instance_id2}>/service/{listener_node_name}/{listener_service_name}/<INSTANCE_ID:{caller_instance_id}>/request"
+        );
+
+        let request_payload = request_payload.clone();
+        let response_payload = response_payload.clone();
+        let call_count = Arc::clone(&call_count);
+
+        tokio::spawn(async move {
+            let handler = service.handle_next_request(|request| {
+                let response_payload = response_payload.clone();
+                async move {
+                    assert_eq!(request.message().master_node(), MASTER_NODE_NAME);
+                    assert_eq!(request.message().key_expr(), expected_request_topic);
+                    assert_eq!(request.message().instance_id(), caller_instance_id);
+                    assert_eq!(request.message().payload(), &request_payload);
+                    call_count.fetch_add(1, Ordering::SeqCst);
+                    // This second service instance is a bit slow for processing, so the first listener service will respond first
+                    thread::sleep(Duration::from_millis(200));
+                    Ok(response_payload)
+                }
+            });
+
+            service_ready_tx2.send(()).unwrap();
+            let handled = tokio::time::timeout(service_wait_timeout, handler)
+                .await
+                .expect("service handler timed out");
+            let handled = handled.expect("service should receive exactly one request");
+
+            assert!(
+                handled,
+                "service subscription closed before handling request"
+            );
+
+            Ok::<(), Error>(())
+        })
+    };
+
+    tokio::time::timeout(service_ready_timeout, service_ready_rx1)
+        .await
+        .expect("service 1 should signal readiness before timeout")
+        .expect("service 1 should signal readiness");
+
+    tokio::time::timeout(service_ready_timeout, service_ready_rx2)
+        .await
+        .expect("service 2 should signal readiness before timeout")
+        .expect("service 2 should signal readiness");
+
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        tokio::time::timeout(service_ready_timeout, service_ready_rx)
-            .await
-            .expect("service should signal readiness before timeout")
-            .expect("service should signal readiness");
         let caller_handle = router.service_messenger().await;
         let response = ServiceMessenger::poll(
             &caller_handle,
@@ -566,27 +495,219 @@ async fn service_communication_poll_no_instance_id_target() {
             listener_service_name,
             None, // Here we don't specify any node
             request_payload.clone(),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("caller should receive response");
+
+        // Listener instance 1 is supposed to have responded more quickly here
+        assert_eq!(response.instance_id(), listener_instance_id1);
+        assert_eq!(response.payload().to_bytes(), response_payload);
+        // The `[a-f0-9]{{16}}` part is the randomly generated response_id
+        let expected_key_expr_pattern = format!(
+            r"^<MASTER_NODE:{MASTER_NODE_NAME}>/<INSTANCE_ID:{caller_instance_id}>/service/{listener_node_name}/{listener_service_name}/response/[a-f0-9]{{16}}/<INSTANCE_ID:{listener_instance_id1}>$"
+        );
+        let re = Regex::new(&expected_key_expr_pattern).expect("invalid regex pattern");
+        assert!(
+            re.is_match(response.key_expr()),
+            "key_expr '{}' does not match expected pattern '{}'",
+            response.key_expr(),
+            expected_key_expr_pattern
+        );
+    }
+
+    tokio::time::timeout(service_task_timeout, service_task1)
+        .await
+        .expect("service task should finish within timeout")
+        .expect("service task panicked")
+        .expect("service task returned error");
+
+    tokio::time::timeout(service_task_timeout, service_task2)
+        .await
+        .expect("service task should finish within timeout")
+        .expect("service task panicked")
+        .expect("service task returned error");
+
+    // The two services received the request, but only the fastest one has reponded to the sender
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        2,
+        "service callback should have been called exactly once"
+    );
+
+    tokio::time::timeout(service_task_timeout, router.shutdown())
+        .await
+        .expect("router shutdown timed out");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_communication_poll_specific_instance_id() {
+    let router = TestRouterContext::start().await;
+
+    // Listener instance
+    let listener_node_name = "camera";
+    let listener_service_name = "enable_camera";
+
+    // Caller instance
+    let caller_instance_id = "caller_instance";
+
+    let request_payload = Bytes::from_static(b"enable=true");
+    let response_payload = Bytes::from_static(b"ack");
+    let call_count = Arc::new(AtomicUsize::new(0));
+
+    let (service_ready_tx1, service_ready_rx1) = oneshot::channel();
+    let (service_ready_tx2, service_ready_rx2) = oneshot::channel();
+    let service_wait_timeout = Duration::from_millis(1500);
+    let service_task_timeout = service_wait_timeout + Duration::from_secs(1);
+    let service_ready_timeout = Duration::from_secs(1);
+
+    let listener_instance_id1 = "listener_instance1";
+    // The exposed service has its own dedicated scope (emulates running on its own instance)
+    // This listener is not out target, but is in competition for incoming requests with instance 2
+    let service_task1 = {
+        let service_expose_handle = router.service_messenger().await;
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            MASTER_NODE_NAME,
+            listener_node_name,
+            listener_service_name,
+            listener_instance_id1,
+        )
+        .await
+        .expect("service should start");
+
+        tokio::spawn(async move {
+            service_ready_tx1.send(()).unwrap();
+
+            let outcome = tokio::time::timeout(
+                service_wait_timeout,
+                service.handle_next_request(|_request| async {
+                    Ok(Bytes::from_static(b"unexpected response"))
+                }),
+            )
+            .await;
+
+            if outcome.is_err() {
+                return Ok(()); // Timeout is expected - no request should be received
+            }
+            outcome.unwrap().map_or_else(Err, |handled| {
+                panic!("non-targeted service should not receive the request (handled={handled})")
+            })
+        })
+    };
+
+    // Creates a second listener with a different ID (emulates a second instance). This is out target
+    // Listener instance 2
+    let listener_instance_id2 = "listener_instance2";
+    let service_task2 = {
+        let service_expose_handle = router.service_messenger().await;
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            MASTER_NODE_NAME,
+            listener_node_name,
+            listener_service_name,
+            listener_instance_id2,
+        )
+        .await
+        .expect("service should start");
+
+        let expected_request_topic = format!(
+            "<MASTER_NODE:{MASTER_NODE_NAME}>/<INSTANCE_ID:{listener_instance_id2}>/service/{listener_node_name}/{listener_service_name}/<INSTANCE_ID:{caller_instance_id}>/request"
+        );
+
+        let request_payload = request_payload.clone();
+        let response_payload = response_payload.clone();
+        let call_count = Arc::clone(&call_count);
+
+        tokio::spawn(async move {
+            let handler = service.handle_next_request(|request| {
+                let response_payload = response_payload.clone();
+                async move {
+                    assert_eq!(request.message().master_node(), MASTER_NODE_NAME);
+                    assert_eq!(request.message().key_expr(), expected_request_topic);
+                    assert_eq!(request.message().instance_id(), caller_instance_id);
+                    assert_eq!(request.message().payload(), &request_payload);
+                    call_count.fetch_add(1, Ordering::SeqCst);
+                    // This second service instance is a bit slow for processing, but since it's been targeted, it's gonna be the one that responds
+                    thread::sleep(Duration::from_millis(200));
+                    Ok(response_payload)
+                }
+            });
+
+            service_ready_tx2.send(()).unwrap();
+            let handled = tokio::time::timeout(service_wait_timeout, handler)
+                .await
+                .expect("service handler timed out");
+            let handled = handled.expect("service should receive exactly one request");
+
+            assert!(
+                handled,
+                "service subscription closed before handling request"
+            );
+
+            Ok::<(), Error>(())
+        })
+    };
+
+    tokio::time::timeout(service_ready_timeout, service_ready_rx1)
+        .await
+        .expect("service 1 should signal readiness before timeout")
+        .expect("service 1 should signal readiness");
+    tokio::time::timeout(service_ready_timeout, service_ready_rx2)
+        .await
+        .expect("service 2 should signal readiness before timeout")
+        .expect("service 2 should signal readiness");
+
+    // The caller node has its own scope (emulates a separate node running on a different instance)
+    {
+        let caller_handle = router.service_messenger().await;
+        let response = ServiceMessenger::poll(
+            &caller_handle,
+            MASTER_NODE_NAME,
+            caller_instance_id,
+            listener_node_name,
+            listener_service_name,
+            Some(listener_instance_id2),
+            request_payload.clone(),
             Duration::from_secs(1),
         )
         .await
         .expect("caller should receive response");
 
+        // Listener instance 2 is supposed to have responded more quickly here
+        assert_eq!(response.instance_id(), listener_instance_id2);
         assert_eq!(response.payload().to_bytes(), response_payload);
-        assert_eq!(response.instance_id(), listener_instance_id);
+        // The `[a-f0-9]{{16}}` part is the randomly generated response_id
+        let expected_key_expr_pattern = format!(
+            r"^<MASTER_NODE:{MASTER_NODE_NAME}>/<INSTANCE_ID:{caller_instance_id}>/service/{listener_node_name}/{listener_service_name}/response/[a-f0-9]{{16}}/<INSTANCE_ID:{listener_instance_id2}>$"
+        );
+        let re = Regex::new(&expected_key_expr_pattern).expect("invalid regex pattern");
+        assert!(
+            re.is_match(response.key_expr()),
+            "key_expr '{}' does not match expected pattern '{}'",
+            response.key_expr(),
+            expected_key_expr_pattern
+        );
     }
 
-    // Ensure the service callback was called exactly once
+    tokio::time::timeout(service_task_timeout, service_task1)
+        .await
+        .expect("service task should finish within timeout")
+        .expect("service task panicked")
+        .expect("service task returned error");
+
+    tokio::time::timeout(service_task_timeout, service_task2)
+        .await
+        .expect("service task should finish within timeout")
+        .expect("service task panicked")
+        .expect("service task returned error");
+
+    // Ensure the service callback was called exactly once (othewise that means both services received the request)
     assert_eq!(
         call_count.load(Ordering::SeqCst),
         1,
         "service callback should have been called exactly once"
     );
-
-    tokio::time::timeout(service_task_timeout, service_task)
-        .await
-        .expect("service task should finish within timeout")
-        .expect("service task panicked")
-        .expect("service task returned error");
 
     tokio::time::timeout(service_task_timeout, router.shutdown())
         .await
@@ -606,7 +727,6 @@ async fn service_communication_poll_wrong_node() {
     let caller_instance_id = "caller_instance";
 
     let request_payload = Bytes::from_static(b"enable=true");
-    let response_payload = Bytes::from_static(b"ack");
     let call_count = Arc::new(AtomicUsize::new(0));
 
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
@@ -619,6 +739,7 @@ async fn service_communication_poll_wrong_node() {
         let service_expose_handle = router.service_messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
+            MASTER_NODE_NAME,
             listener_node_name,
             listener_service_name,
             listener_instance_id,
@@ -626,28 +747,14 @@ async fn service_communication_poll_wrong_node() {
         .await
         .expect("service should start");
 
-        let service_root = master_key_expr(
-            MASTER_NODE_NAME,
-            "service",
-            listener_node_name,
-            listener_service_name,
-        );
-        let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
-        let expected_request_topic = format!(
-            "{service_root}/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
-        );
-
-        let request_payload = request_payload.clone();
-        let response_payload = response_payload.clone();
         let call_count = Arc::clone(&call_count);
 
         tokio::spawn(async move {
-            let handler = service.handle_next_request(|request| {
-                let response_payload = response_payload.clone();
+            let handler = service.handle_next_request(|_request| {
+                let response_payload = Bytes::from_static(b"ack");
                 async move {
-                    assert_eq!(request.message().key_expr(), expected_request_topic);
-                    assert_eq!(request.message().instance_id(), caller_instance_id);
-                    assert_eq!(request.message().payload(), &request_payload);
+                    // This closure should never be called in this test since
+                    // we're targeting the wrong node
                     call_count.fetch_add(1, Ordering::SeqCst);
                     Ok(response_payload)
                 }
@@ -656,25 +763,23 @@ async fn service_communication_poll_wrong_node() {
             service_ready_tx.send(()).unwrap();
             let handled = tokio::time::timeout(service_wait_timeout, handler).await;
 
-            if let Ok(handled) = handled {
-                let handled = handled.expect("service should receive exactly one request");
-
-                assert!(
-                    handled,
-                    "service subscription closed before handling request"
-                );
-            }
+            // Timeout is expected since the service should not receive a request
+            assert!(
+                handled.is_err(),
+                "service handler should have timed out waiting for request"
+            );
 
             Ok::<(), Error>(())
         })
     };
 
+    tokio::time::timeout(service_ready_timeout, service_ready_rx)
+        .await
+        .expect("service should signal readiness before timeout")
+        .expect("service should signal readiness");
+
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        tokio::time::timeout(service_ready_timeout, service_ready_rx)
-            .await
-            .expect("service should signal readiness before timeout")
-            .expect("service should signal readiness");
         let caller_handle = router.service_messenger().await;
         let err = {
             let result = ServiceMessenger::poll(
@@ -696,13 +801,13 @@ async fn service_communication_poll_wrong_node() {
             err
         };
 
-        let Error::ServiceTimeout {
+        let Error::ServiceUnreachable {
             instance_id: err_instance_id,
             service_name: err_service_name,
         } = &err
         else {
             panic!(
-                "expected ServiceTimeout error, received unexpected error: {:?}",
+                "expected ServiceUnreachable error, received unexpected error: {:?}",
                 err
             );
         };
@@ -750,6 +855,8 @@ async fn service_communication_poll_wrong_master_node() {
 
     let request_payload = Bytes::from_static(b"enable=true");
 
+    let call_count = Arc::new(AtomicUsize::new(0));
+
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
     let service_wait_timeout = Duration::from_millis(500);
     let service_task_timeout = service_wait_timeout + Duration::from_millis(500);
@@ -758,34 +865,39 @@ async fn service_communication_poll_wrong_master_node() {
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task = {
         let service_expose_handle = router.service_messenger().await;
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            MASTER_NODE_NAME,
+            listener_node_name,
+            listener_service_name,
+            listener_instance_id,
+        )
+        .await
+        .expect("service should start");
+
+        let call_count = Arc::clone(&call_count);
 
         tokio::spawn(async move {
-            let mut service = ServiceMessenger::listen(
-                &service_expose_handle,
-                listener_node_name,
-                listener_service_name,
-                listener_instance_id,
-            )
-            .await
-            .expect("service should start");
+            let handler = service.handle_next_request(|_request| {
+                let response_payload = Bytes::from_static(b"ack");
+                async move {
+                    // This closure should never be called in this test since
+                    // we're targeting the wrong node
+                    call_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(response_payload)
+                }
+            });
 
             service_ready_tx.send(()).unwrap();
+            let handled = tokio::time::timeout(service_wait_timeout, handler).await;
 
-            let outcome = tokio::time::timeout(
-                service_wait_timeout,
-                service.handle_next_request(|_request| async {
-                    Ok(Bytes::from_static(b"unexpected payload"))
-                }),
-            )
-            .await;
+            // Timeout is expected since the service should not receive a request
+            assert!(
+                handled.is_err(),
+                "service handler should have timed out waiting for request"
+            );
 
-            match outcome {
-                Ok(Ok(_)) => {
-                    panic!("service should not receive a request on the wrong master node")
-                }
-                Ok(Err(err)) => Err(err),
-                Err(_) => Ok(()),
-            }
+            Ok::<(), Error>(())
         })
     };
 
@@ -839,128 +951,6 @@ async fn service_communication_poll_wrong_master_node() {
     tokio::time::timeout(service_task_timeout, router.shutdown())
         .await
         .expect("router shutdown timed out");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn service_request_routed_to_target_instance_only() {
-    let router = TestRouterContext::start().await;
-
-    let listener_node_name = "camera";
-    let listener_service_name = "enable_camera";
-    let target_instance_id = "listener_primary";
-    let other_instance_id = "listener_secondary";
-    let caller_instance_id = "caller_instance";
-
-    let request_payload = Bytes::from_static(b"enable=true");
-    let response_payload = Bytes::from_static(b"ack");
-    let service_wait_timeout = Duration::from_millis(500);
-
-    let (service_a_ready_tx, service_a_ready_rx) = oneshot::channel();
-    let (service_b_ready_tx, service_b_ready_rx) = oneshot::channel();
-
-    let service_a_task = {
-        let service_expose_handle = router.service_messenger().await;
-        let response_payload = response_payload.clone();
-        let request_payload = request_payload.clone();
-
-        tokio::spawn(async move {
-            let mut service = ServiceMessenger::listen(
-                &service_expose_handle,
-                listener_node_name,
-                listener_service_name,
-                target_instance_id,
-            )
-            .await
-            .expect("service A should start");
-
-            let _ = service_a_ready_tx.send(());
-
-            let handled = service
-                .handle_next_request(|request| {
-                    let response_payload = response_payload.clone();
-                    let request_payload = request_payload.clone();
-                    async move {
-                        assert_eq!(request.message().instance_id(), caller_instance_id);
-                        assert_eq!(request.message().payload(), &request_payload);
-                        Ok(response_payload)
-                    }
-                })
-                .await
-                .expect("service A should process the targeted request");
-
-            assert!(handled, "service A subscription closed unexpectedly");
-
-            Ok::<(), Error>(())
-        })
-    };
-
-    let service_b_task = {
-        let service_expose_handle = router.service_messenger().await;
-
-        tokio::spawn(async move {
-            let mut service = ServiceMessenger::listen(
-                &service_expose_handle,
-                listener_node_name,
-                listener_service_name,
-                other_instance_id,
-            )
-            .await
-            .expect("service B should start");
-
-            let _ = service_b_ready_tx.send(());
-
-            let outcome = tokio::time::timeout(
-                service_wait_timeout,
-                service.handle_next_request(|_request| async {
-                    Ok(Bytes::from_static(b"unexpected payload"))
-                }),
-            )
-            .await;
-
-            match outcome {
-                Ok(Ok(handled)) => panic!(
-                    "non-targeted service should not receive the request (handled={handled})"
-                ),
-                Ok(Err(err)) => Err(err),
-                Err(_) => Ok(()),
-            }
-        })
-    };
-
-    service_a_ready_rx
-        .await
-        .expect("service A should signal readiness");
-    service_b_ready_rx
-        .await
-        .expect("service B should signal readiness");
-
-    let caller_handle = router.service_messenger().await;
-    let response = ServiceMessenger::poll(
-        &caller_handle,
-        MASTER_NODE_NAME,
-        caller_instance_id,
-        listener_node_name,
-        listener_service_name,
-        Some(target_instance_id),
-        request_payload.clone(),
-        Duration::from_millis(500),
-    )
-    .await
-    .expect("caller should receive response from targeted instance");
-
-    assert_eq!(response.payload().to_bytes(), response_payload);
-    assert_eq!(response.instance_id(), target_instance_id);
-
-    service_a_task
-        .await
-        .expect("service A task panicked")
-        .expect("service A task returned error");
-    service_b_task
-        .await
-        .expect("service B task panicked")
-        .expect("service B task returned error");
-
-    router.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -1036,20 +1026,16 @@ async fn service_communication_fails_timeout() {
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task = {
-        let service_root = master_key_expr(
-            MASTER_NODE_NAME,
-            "service",
-            listener_node_name,
-            listener_service_name,
-        );
+        let service_root = format!("service/{listener_node_name}/{listener_service_name}");
         let expected_request_key_expr = format!(
-            "{service_root}/<INSTANCE_ID:{listener_instance_id}>/request/<INSTANCE_ID:{caller_instance_id}>"
+            "<MASTER_NODE:{MASTER_NODE_NAME}>/<INSTANCE_ID:{listener_instance_id}>/{service_root}/<INSTANCE_ID:{caller_instance_id}>/request"
         );
         let response_delay = Duration::from_millis(200);
 
         let service_expose_handle = router.service_messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
+            MASTER_NODE_NAME,
             listener_node_name,
             listener_service_name,
             listener_instance_id,
@@ -1200,25 +1186,25 @@ async fn service_handle_request_processes_multiple_messages() {
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
 
+    let call_count = Arc::clone(&call_count);
+    let host = host.clone();
+
     let service_task = {
+        let service_expose_handle = connect_service_messenger(&host, port).await;
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            MASTER_NODE_NAME,
+            listener_node_name,
+            listener_service_name,
+            listener_instance_id,
+        )
+        .await
+        .expect("service should start");
+
         let call_count = Arc::clone(&call_count);
-        let host = host.clone();
-        let service_ready_tx = Some(service_ready_tx);
+
         tokio::spawn(async move {
-            let service_expose_handle = connect_service_messenger(&host, port).await;
-
-            let mut service = ServiceMessenger::listen(
-                &service_expose_handle,
-                listener_node_name,
-                listener_service_name,
-                listener_instance_id,
-            )
-            .await
-            .expect("service should start");
-
-            if let Some(tx) = service_ready_tx {
-                let _ = tx.send(());
-            }
+            service_ready_tx.send(()).unwrap();
 
             tokio::select! {
                 result = service.handle_requests(|request| {
@@ -1263,7 +1249,7 @@ async fn service_handle_request_processes_multiple_messages() {
         }
     }
 
-    let _ = shutdown_tx.send(());
+    shutdown_tx.send(()).unwrap();
 
     let service_result = service_task.await.expect("service task panicked");
     service_result.expect("service task returned error");
@@ -1302,19 +1288,13 @@ async fn single_service_communication_multiple_polls_and_callers() {
 
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
+            MASTER_NODE_NAME,
             listener_node_name,
             listener_service_name,
             listener_instance_id,
         )
         .await
         .expect("service should start");
-
-        let service_root = master_key_expr(
-            MASTER_NODE_NAME,
-            "service",
-            listener_node_name,
-            listener_service_name,
-        );
 
         let call_count = Arc::clone(&call_count);
 
@@ -1323,7 +1303,6 @@ async fn single_service_communication_multiple_polls_and_callers() {
             service_ready_tx.send(()).unwrap();
 
             for _ in 0..total_requests {
-                let service_root = service_root.clone();
                 let listener_instance_id = listener_instance_id.to_string();
                 let call_count = Arc::clone(&call_count);
 
@@ -1333,7 +1312,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
                         let payload = request.message().payload().to_bytes();
                         let caller_id = request.message().instance_id();
                         let expected_identifier = format!(
-                            "{service_root}/<INSTANCE_ID:{listener_instance_id}>/request/<INSTANCE_ID:{caller_id}>"
+                            "<MASTER_NODE:{MASTER_NODE_NAME}>/<INSTANCE_ID:{listener_instance_id}>/service/{listener_node_name}/{listener_service_name}/<INSTANCE_ID:{caller_id}>/request"
                         );
                         assert_eq!(identifier, expected_identifier);
                         call_count.fetch_add(1, Ordering::SeqCst);
@@ -1422,16 +1401,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
             results.append(&mut caller_results);
         }
 
-        let mut verification_indices: Vec<usize> = (0..results.len()).collect();
-        let original_indices = verification_indices.clone();
-        let mut rng = rand::rng();
-        verification_indices.shuffle(&mut rng);
-        if verification_indices == original_indices {
-            verification_indices.rotate_left(1);
-        }
-
-        for index in verification_indices {
-            let (caller_id, request_idx, request_payload, response) = &results[index];
+        for (caller_id, request_idx, request_payload, response) in &results {
             let expected_payload = expected_payloads
                 .remove(&(caller_id.clone(), *request_idx))
                 .expect("expected payload should exist for caller/request pair");
@@ -1458,9 +1428,9 @@ async fn single_service_communication_multiple_polls_and_callers() {
         .expect("service task panicked")
         .expect("service task returned error");
 
-    let expected_count = call_count.load(Ordering::SeqCst);
+    let actual_count = call_count.load(Ordering::SeqCst);
     assert_eq!(
-        expected_count, total_requests,
+        actual_count, total_requests,
         "service should have been called {total_requests} times"
     );
 
@@ -1500,6 +1470,7 @@ async fn action_communication() {
         tokio::spawn(async move {
             let mut action = ActionMessenger::listen(
                 &action_handle,
+                MASTER_NODE_NAME,
                 listener_node_name,
                 listener_action_name,
                 listener_instance_id,
@@ -1507,18 +1478,15 @@ async fn action_communication() {
             .await
             .expect("action should start");
 
-            let action_root = master_key_expr(
-                MASTER_NODE_NAME,
-                "action",
-                listener_node_name,
-                listener_action_name,
-            );
-            let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
+            let goal_service_root =
+                format!("action/{listener_node_name}/{listener_action_name}/goal");
+            let result_service_root =
+                format!("action/{listener_node_name}/{listener_action_name}/result");
             let expected_goal_topic = format!(
-                "{action_root}/goal/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
+                "<MASTER_NODE:{MASTER_NODE_NAME}>/<INSTANCE_ID:{listener_instance_id}>/{goal_service_root}/<INSTANCE_ID:{caller_instance_id}>/request"
             );
             let expected_result_topic = format!(
-                "{action_root}/result/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
+                "<MASTER_NODE:{MASTER_NODE_NAME}>/<INSTANCE_ID:{listener_instance_id}>/{result_service_root}/<INSTANCE_ID:{caller_instance_id}>/request"
             );
 
             let _ = action_ready_tx.send(());
@@ -1546,7 +1514,7 @@ async fn action_communication() {
 
             action
                 .feedback_publisher
-                .publish_with_prefix(MASTER_NODE_NAME, feedback_payload_server.clone())
+                .publish(feedback_payload_server.clone())
                 .await
                 .expect("action should publish feedback");
 
@@ -1603,13 +1571,7 @@ async fn action_communication() {
         );
 
         let expected_feedback_topic = format!(
-            "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
-            master_key_expr(
-                MASTER_NODE_NAME,
-                "action",
-                listener_node_name,
-                listener_action_name
-            )
+            "<MASTER_NODE:{MASTER_NODE_NAME}>/<INSTANCE_ID:{listener_instance_id}>/action/{listener_node_name}/{listener_action_name}/feedback/<INSTANCE_ID:{listener_instance_id}>"
         );
 
         // Consume one feedback update from the action server.
@@ -1678,6 +1640,7 @@ async fn action_communication_no_instance_id_target() {
         tokio::spawn(async move {
             let mut action = ActionMessenger::listen(
                 &action_handle,
+                MASTER_NODE_NAME,
                 listener_node_name,
                 listener_action_name,
                 listener_instance_id,
@@ -1685,18 +1648,15 @@ async fn action_communication_no_instance_id_target() {
             .await
             .expect("action should start");
 
-            let action_root = master_key_expr(
-                MASTER_NODE_NAME,
-                "action",
-                listener_node_name,
-                listener_action_name,
-            );
-            let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
+            let goal_service_root =
+                format!("action/{listener_node_name}/{listener_action_name}/goal");
+            let result_service_root =
+                format!("action/{listener_node_name}/{listener_action_name}/result");
             let expected_goal_topic = format!(
-                "{action_root}/goal/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
+                "<MASTER_NODE:{MASTER_NODE_NAME}>/<INSTANCE_ID:{listener_instance_id}>/{goal_service_root}/<INSTANCE_ID:{caller_instance_id}>/request"
             );
             let expected_result_topic = format!(
-                "{action_root}/result/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
+                "<MASTER_NODE:{MASTER_NODE_NAME}>/<INSTANCE_ID:{listener_instance_id}>/{result_service_root}/<INSTANCE_ID:{caller_instance_id}>/request"
             );
 
             let _ = action_ready_tx.send(());
@@ -1724,7 +1684,7 @@ async fn action_communication_no_instance_id_target() {
 
             action
                 .feedback_publisher
-                .publish_with_prefix(MASTER_NODE_NAME, feedback_payload_server.clone())
+                .publish(feedback_payload_server.clone())
                 .await
                 .expect("action should publish feedback");
 
@@ -1781,13 +1741,7 @@ async fn action_communication_no_instance_id_target() {
         );
 
         let expected_feedback_topic = format!(
-            "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
-            master_key_expr(
-                MASTER_NODE_NAME,
-                "action",
-                listener_node_name,
-                listener_action_name
-            )
+            "<MASTER_NODE:{MASTER_NODE_NAME}>/<INSTANCE_ID:{listener_instance_id}>/action/{listener_node_name}/{listener_action_name}/feedback/<INSTANCE_ID:{listener_instance_id}>"
         );
 
         // Consume one feedback update from the action server.
@@ -1855,6 +1809,7 @@ async fn action_communication_goal_cancelled() {
         tokio::spawn(async move {
             let action = ActionMessenger::listen(
                 &action_handle,
+                MASTER_NODE_NAME,
                 listener_node_name,
                 listener_action_name,
                 listener_instance_id,
@@ -1869,18 +1824,15 @@ async fn action_communication_goal_cancelled() {
                 ..
             } = action;
 
-            let action_root = master_key_expr(
-                MASTER_NODE_NAME,
-                "action",
-                listener_node_name,
-                listener_action_name,
-            );
-            let listener_instance_segment = format!("<INSTANCE_ID:{listener_instance_id}>");
+            let goal_service_root =
+                format!("action/{listener_node_name}/{listener_action_name}/goal");
+            let cancel_service_root =
+                format!("action/{listener_node_name}/{listener_action_name}/cancel");
             let expected_goal_topic = format!(
-                "{action_root}/goal/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
+                "<MASTER_NODE:{MASTER_NODE_NAME}>/<INSTANCE_ID:{listener_instance_id}>/{goal_service_root}/<INSTANCE_ID:{caller_instance_id}>/request"
             );
             let expected_cancel_topic = format!(
-                "{action_root}/cancel/{listener_instance_segment}/request/<INSTANCE_ID:{caller_instance_id}>"
+                "<MASTER_NODE:{MASTER_NODE_NAME}>/<INSTANCE_ID:{listener_instance_id}>/{cancel_service_root}/<INSTANCE_ID:{caller_instance_id}>/request"
             );
 
             if let Some(tx) = action_ready_tx {
@@ -1921,7 +1873,7 @@ async fn action_communication_goal_cancelled() {
                             _ = stop_notified.as_mut() => break,
                             _ = ticker.tick() => {
                                 feedback_publisher
-                                    .publish_with_prefix(MASTER_NODE_NAME, feedback_payload.clone())
+                                    .publish(feedback_payload.clone())
                                     .await?;
                             }
                         }
@@ -1985,13 +1937,7 @@ async fn action_communication_goal_cancelled() {
     );
 
     let expected_feedback_topic = format!(
-        "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
-        master_key_expr(
-            MASTER_NODE_NAME,
-            "action",
-            listener_node_name,
-            listener_action_name
-        )
+        "<MASTER_NODE:{MASTER_NODE_NAME}>/<INSTANCE_ID:{listener_instance_id}>/action/{listener_node_name}/{listener_action_name}/feedback/<INSTANCE_ID:{listener_instance_id}>"
     );
 
     let first_feedback = goal_handle
@@ -2120,6 +2066,7 @@ async fn single_action_communication_multiple_polls() {
         tokio::spawn(async move {
             let action = ActionMessenger::listen(
                 &action_handle,
+                MASTER_NODE_NAME,
                 listener_node_name,
                 listener_action_name,
                 listener_instance_id,
@@ -2127,12 +2074,10 @@ async fn single_action_communication_multiple_polls() {
             .await
             .expect("action should start");
 
-            let action_root = master_key_expr(
-                MASTER_NODE_NAME,
-                "action",
-                listener_node_name,
-                listener_action_name,
-            );
+            let goal_service_root =
+                format!("action/{listener_node_name}/{listener_action_name}/goal");
+            let result_service_root =
+                format!("action/{listener_node_name}/{listener_action_name}/result");
             let crate::messaging::ActionCreation {
                 mut goal_service,
                 cancel_service: _,
@@ -2149,20 +2094,20 @@ async fn single_action_communication_multiple_polls() {
 
             let mut goal_handlers = Vec::with_capacity(client_total);
             for _ in 0..client_total {
-                let action_root = action_root.clone();
+                let goal_service_root = goal_service_root.clone();
                 let cases = Arc::clone(&cases);
                 let feedback_publisher = Arc::clone(&feedback_publisher);
 
                 let handler = goal_service
-                .spawn_next_request_handler(move |request| {
-                        let action_root = action_root.clone();
+                    .spawn_next_request_handler(move |request| {
+                        let goal_service_root = goal_service_root.clone();
                         let cases = Arc::clone(&cases);
                         let feedback_publisher = Arc::clone(&feedback_publisher);
 
                         async move {
                             let caller_id = request.message().instance_id();
                             let expected_goal_topic = format!(
-                                "{action_root}/goal/<INSTANCE_ID:{listener_instance_id}>/request/<INSTANCE_ID:{caller_id}>"
+                                "<MASTER_NODE:{MASTER_NODE_NAME}>/<INSTANCE_ID:{listener_instance_id}>/{goal_service_root}/<INSTANCE_ID:{caller_id}>/request"
                             );
                             assert_eq!(request.message().key_expr(), expected_goal_topic);
 
@@ -2191,9 +2136,7 @@ async fn single_action_communication_multiple_polls() {
                                 "goal payload for `{client_id}` should match expected value"
                             );
 
-                            feedback_publisher
-                                .publish_with_prefix(MASTER_NODE_NAME, case.feedback.clone())
-                                .await?;
+                            feedback_publisher.publish(case.feedback.clone()).await?;
 
                             Ok(case.goal_response.clone())
                         }
@@ -2214,18 +2157,18 @@ async fn single_action_communication_multiple_polls() {
 
             let mut result_handlers = Vec::with_capacity(client_total);
             for _ in 0..client_total {
-                let action_root = action_root.clone();
+                let result_service_root = result_service_root.clone();
                 let cases = Arc::clone(&cases);
 
                 let handler = result_service
                     .spawn_next_request_handler(move |request| {
-                        let action_root = action_root.clone();
+                        let result_service_root = result_service_root.clone();
                         let cases = Arc::clone(&cases);
 
                         async move {
                             let caller_id = request.message().instance_id();
                             let expected_result_topic = format!(
-                                "{action_root}/result/<INSTANCE_ID:{listener_instance_id}>/request/<INSTANCE_ID:{caller_id}>"
+                                "<MASTER_NODE:{MASTER_NODE_NAME}>/<INSTANCE_ID:{listener_instance_id}>/{result_service_root}/<INSTANCE_ID:{caller_id}>/request"
                             );
                             assert_eq!(request.message().key_expr(), expected_result_topic);
 
@@ -2275,13 +2218,7 @@ async fn single_action_communication_multiple_polls() {
         .expect("action server should signal readiness");
 
     let expected_feedback_topic = format!(
-        "{}/feedback/<INSTANCE_ID:{listener_instance_id}>",
-        master_key_expr(
-            MASTER_NODE_NAME,
-            "action",
-            listener_node_name,
-            listener_action_name
-        )
+        "<MASTER_NODE:{MASTER_NODE_NAME}>/<INSTANCE_ID:{listener_instance_id}>/action/{listener_node_name}/{listener_action_name}/feedback/<INSTANCE_ID:{listener_instance_id}>"
     );
 
     let total_clients = cases.len();
