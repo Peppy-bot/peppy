@@ -62,12 +62,12 @@ fn generate_request_id() -> String {
 
 /// Formats an instance ID as a bound instance segment (appears right after MASTER_NODE in key expressions)
 fn format_bound_instance_segment(instance_id: &str) -> Option<String> {
-    (instance_id != INSTANCE_ID_WILDCARD).then(|| format!("<BOUND_INSTANCE_ID:{instance_id}>"))
+    (instance_id != INSTANCE_ID_WILDCARD).then(|| format!("{instance_id}"))
 }
 
 /// Formats an instance ID as a target instance segment (identifies a specific target/source instance)
 fn format_target_instance_segment(instance_id: &str) -> Option<String> {
-    (instance_id != INSTANCE_ID_WILDCARD).then(|| format!("<TARGET_INSTANCE_ID:{instance_id}>"))
+    (instance_id != INSTANCE_ID_WILDCARD).then(|| format!("{instance_id}"))
 }
 
 pub struct TopicMessenger;
@@ -201,7 +201,7 @@ impl ServiceEndpoint {
             format_bound_instance_segment(self.instance_id.as_str());
         let response_target_instance_segment =
             format_target_instance_segment(self.instance_id.as_str())
-                .unwrap_or_else(|| format!("<TARGET_INSTANCE_ID:{}>", self.instance_id));
+                .unwrap_or_else(|| format!("{}", self.instance_id));
 
         let expected_root_segments: Vec<_> = self
             .service_root
@@ -282,13 +282,13 @@ impl ServiceEndpoint {
                 .as_deref()
                 .unwrap_or(INSTANCE_ID_WILDCARD);
             format!(
-                "<MASTER_NODE:{}>/{}/{}/{caller_segment}/request",
+                "{}/{}/{}/{caller_segment}/request",
                 master_segment, bound_segment, self.service_root
             )
         };
 
         let response_topic = format!(
-            "<MASTER_NODE:{}>/{}/{}/response/{request_id}/{}",
+            "{}/{}/{}/response/{request_id}/{}",
             master_segment, caller_segment, self.service_root, response_target_instance_segment
         );
 
@@ -531,13 +531,13 @@ impl ActionMessenger {
     ) -> Result<ActionGoalHandle> {
         let feedback_topic = match target_instance_id {
             Some(target_instance_id) => {
-                let bound_instance_segment = format!("<BOUND_INSTANCE_ID:{target_instance_id}>");
+                let bound_instance_segment = format!("{target_instance_id}");
                 format!(
-                    "<MASTER_NODE:{master_node}>/{bound_instance_segment}/action/{node_name}/{action_name}/feedback/<TARGET_INSTANCE_ID:{target_instance_id}>"
+                    "{master_node}/{bound_instance_segment}/action/{node_name}/{action_name}/feedback/{target_instance_id}"
                 )
             }
             None => format!(
-                "<MASTER_NODE:{master_node}>/{INSTANCE_ID_WILDCARD}/action/{node_name}/{action_name}/feedback/*"
+                "{master_node}/{INSTANCE_ID_WILDCARD}/action/{node_name}/{action_name}/feedback/*"
             ),
         };
         let goal_service_name = format!("{action_name}/goal");
@@ -729,7 +729,7 @@ impl MessengerHandle {
         let bound_instance_segment = format_bound_instance_segment(as_instance_id)
             .unwrap_or_else(|| as_instance_id.to_string());
         let subscription_prefix =
-            format!("<MASTER_NODE:{bound_master_node}>/{bound_instance_segment}/{service_root}");
+            format!("{bound_master_node}/{bound_instance_segment}/{service_root}");
         let request_subscription_topic = format!("{subscription_prefix}/*/request/**");
         let subscription = {
             let messenger = self.messenger.lock().await;
@@ -783,13 +783,13 @@ impl MessengerHandle {
         let request_topic = match target_bound_instance_segment.as_deref() {
             Some(segment) => {
                 format!(
-                    "<MASTER_NODE:{}>/{}/{}/{}/request/{request_id}",
+                    "{}/{}/{}/{}/request/{request_id}",
                     bound_master_node, segment, service_root, caller_target_instance_segment
                 )
             }
             None => {
                 format!(
-                    "<MASTER_NODE:{}>/{}/{}/{}/request/{request_id}",
+                    "{}/{}/{}/{}/request/{request_id}",
                     bound_master_node,
                     INSTANCE_ID_WILDCARD,
                     service_root,
@@ -801,13 +801,13 @@ impl MessengerHandle {
         let response_topic = match target_response_instance_segment.as_deref() {
             Some(segment) => {
                 format!(
-                    "<MASTER_NODE:{}>/{}/{}/response/{request_id}/{}",
+                    "{}/{}/{}/response/{request_id}/{}",
                     bound_master_node, caller_bound_instance_segment, service_root, segment
                 )
             }
             None => {
                 format!(
-                    "<MASTER_NODE:{}>/{}/{}/response/{request_id}/*",
+                    "{}/{}/{}/response/{request_id}/*",
                     bound_master_node, caller_bound_instance_segment, service_root
                 )
             }
@@ -881,7 +881,7 @@ impl MessengerHandle {
         let bound_instance_segment = format_bound_instance_segment(as_instance_id)
             .unwrap_or_else(|| as_instance_id.to_string());
         let feedback_topic_suffix = format!(
-            "<MASTER_NODE:{bound_master_node}>/{bound_instance_segment}/{action_root}/feedback/<TARGET_INSTANCE_ID:{as_instance_id}>"
+            "{bound_master_node}/{bound_instance_segment}/{action_root}/feedback/{as_instance_id}"
         );
 
         let goal_service = self
