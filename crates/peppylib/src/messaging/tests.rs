@@ -480,7 +480,7 @@ async fn service_communication_poll_no_instance_id_target() {
         .expect("service should start");
 
         let expected_request_topic = format!(
-            "<MASTER_NODE:{MASTER_NODE_NAME}>/<BOUND_INSTANCE_ID:{listener_instance_id1}>/service/{listener_node_name}/{listener_service_name}/<TARGET_INSTANCE_ID:{caller_instance_id}>/request"
+            "{MASTER_NODE_NAME}/{listener_instance_id1}/service/{listener_node_name}/{listener_service_name}/{caller_instance_id}/request"
         );
 
         let request_payload = request_payload.clone();
@@ -531,7 +531,7 @@ async fn service_communication_poll_no_instance_id_target() {
         .expect("service should start");
 
         let expected_request_topic = format!(
-            "<MASTER_NODE:{MASTER_NODE_NAME}>/<BOUND_INSTANCE_ID:{listener_instance_id2}>/service/{listener_node_name}/{listener_service_name}/<TARGET_INSTANCE_ID:{caller_instance_id}>/request"
+            "{MASTER_NODE_NAME}/{listener_instance_id2}/service/{listener_node_name}/{listener_service_name}/{caller_instance_id}/request"
         );
 
         let request_payload = request_payload.clone();
@@ -599,7 +599,7 @@ async fn service_communication_poll_no_instance_id_target() {
         assert_eq!(response.payload().to_bytes(), response_payload);
         // The `[a-f0-9]{{16}}` part is the randomly generated response_id
         let expected_key_expr_pattern = format!(
-            r"^<MASTER_NODE:{MASTER_NODE_NAME}>/<BOUND_INSTANCE_ID:{caller_instance_id}>/service/{listener_node_name}/{listener_service_name}/response/[a-f0-9]{{16}}/<TARGET_INSTANCE_ID:{listener_instance_id1}>$"
+            r"^{MASTER_NODE_NAME}/{caller_instance_id}/service/{listener_node_name}/{listener_service_name}/response/[a-f0-9]{{16}}/{listener_instance_id1}$"
         );
         let re = Regex::new(&expected_key_expr_pattern).expect("invalid regex pattern");
         assert!(
@@ -706,7 +706,7 @@ async fn service_communication_poll_specific_instance_id() {
         .expect("service should start");
 
         let expected_request_topic = format!(
-            "<MASTER_NODE:{MASTER_NODE_NAME}>/<BOUND_INSTANCE_ID:{listener_instance_id2}>/service/{listener_node_name}/{listener_service_name}/<TARGET_INSTANCE_ID:{caller_instance_id}>/request"
+            "{MASTER_NODE_NAME}/{listener_instance_id2}/service/{listener_node_name}/{listener_service_name}/{caller_instance_id}/request"
         );
 
         let request_payload = request_payload.clone();
@@ -773,7 +773,7 @@ async fn service_communication_poll_specific_instance_id() {
         assert_eq!(response.payload().to_bytes(), response_payload);
         // The `[a-f0-9]{{16}}` part is the randomly generated response_id
         let expected_key_expr_pattern = format!(
-            r"^<MASTER_NODE:{MASTER_NODE_NAME}>/<BOUND_INSTANCE_ID:{caller_instance_id}>/service/{listener_node_name}/{listener_service_name}/response/[a-f0-9]{{16}}/<TARGET_INSTANCE_ID:{listener_instance_id2}>$"
+            r"^{MASTER_NODE_NAME}/{caller_instance_id}/service/{listener_node_name}/{listener_service_name}/response/[a-f0-9]{{16}}/{listener_instance_id2}$"
         );
         let re = Regex::new(&expected_key_expr_pattern).expect("invalid regex pattern");
         assert!(
@@ -1122,7 +1122,7 @@ async fn service_communication_fails_timeout() {
     let service_task = {
         let service_root = format!("service/{listener_node_name}/{listener_service_name}");
         let expected_request_key_expr = format!(
-            "<MASTER_NODE:{MASTER_NODE_NAME}>/<BOUND_INSTANCE_ID:{listener_instance_id}>/{service_root}/<TARGET_INSTANCE_ID:{caller_instance_id}>/request"
+            "{MASTER_NODE_NAME}/{listener_instance_id}/{service_root}/{caller_instance_id}/request"
         );
         let response_delay = Duration::from_millis(200);
 
@@ -1406,7 +1406,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
                         let payload = request.message().payload().to_bytes();
                         let caller_id = request.message().instance_id();
                         let expected_identifier = format!(
-                            "<MASTER_NODE:{MASTER_NODE_NAME}>/<BOUND_INSTANCE_ID:{listener_instance_id}>/service/{listener_node_name}/{listener_service_name}/<TARGET_INSTANCE_ID:{caller_id}>/request"
+                            "{MASTER_NODE_NAME}/{listener_instance_id}/service/{listener_node_name}/{listener_service_name}/{caller_id}/request"
                         );
                         assert_eq!(identifier, expected_identifier);
                         call_count.fetch_add(1, Ordering::SeqCst);
@@ -1577,10 +1577,10 @@ async fn action_communication() {
             let result_service_root =
                 format!("action/{listener_node_name}/{listener_action_name}/result");
             let expected_goal_topic = format!(
-                "<MASTER_NODE:{MASTER_NODE_NAME}>/<BOUND_INSTANCE_ID:{listener_instance_id}>/{goal_service_root}/<TARGET_INSTANCE_ID:{caller_instance_id}>/request"
+                "{MASTER_NODE_NAME}/{listener_instance_id}/{goal_service_root}/{caller_instance_id}/request"
             );
             let expected_result_topic = format!(
-                "<MASTER_NODE:{MASTER_NODE_NAME}>/<BOUND_INSTANCE_ID:{listener_instance_id}>/{result_service_root}/<TARGET_INSTANCE_ID:{caller_instance_id}>/request"
+                "{MASTER_NODE_NAME}/{listener_instance_id}/{result_service_root}/{caller_instance_id}/request"
             );
 
             let _ = action_ready_tx.send(());
@@ -1665,7 +1665,7 @@ async fn action_communication() {
         );
 
         let expected_feedback_topic = format!(
-            "<MASTER_NODE:{MASTER_NODE_NAME}>/<BOUND_INSTANCE_ID:{listener_instance_id}>/action/{listener_node_name}/{listener_action_name}/feedback/<TARGET_INSTANCE_ID:{listener_instance_id}>"
+            "{MASTER_NODE_NAME}/{listener_instance_id}/action/{listener_node_name}/{listener_action_name}/feedback/{listener_instance_id}"
         );
 
         // Consume one feedback update from the action server.
@@ -1747,10 +1747,10 @@ async fn action_communication_no_instance_id_target() {
             let result_service_root =
                 format!("action/{listener_node_name}/{listener_action_name}/result");
             let expected_goal_topic = format!(
-                "<MASTER_NODE:{MASTER_NODE_NAME}>/<BOUND_INSTANCE_ID:{listener_instance_id}>/{goal_service_root}/<TARGET_INSTANCE_ID:{caller_instance_id}>/request"
+                "{MASTER_NODE_NAME}/{listener_instance_id}/{goal_service_root}/{caller_instance_id}/request"
             );
             let expected_result_topic = format!(
-                "<MASTER_NODE:{MASTER_NODE_NAME}>/<BOUND_INSTANCE_ID:{listener_instance_id}>/{result_service_root}/<TARGET_INSTANCE_ID:{caller_instance_id}>/request"
+                "{MASTER_NODE_NAME}/{listener_instance_id}/{result_service_root}/{caller_instance_id}/request"
             );
 
             let _ = action_ready_tx.send(());
@@ -1835,7 +1835,7 @@ async fn action_communication_no_instance_id_target() {
         );
 
         let expected_feedback_topic = format!(
-            "<MASTER_NODE:{MASTER_NODE_NAME}>/<BOUND_INSTANCE_ID:{listener_instance_id}>/action/{listener_node_name}/{listener_action_name}/feedback/<TARGET_INSTANCE_ID:{listener_instance_id}>"
+            "{MASTER_NODE_NAME}/{listener_instance_id}/action/{listener_node_name}/{listener_action_name}/feedback/{listener_instance_id}"
         );
 
         // Consume one feedback update from the action server.
@@ -1923,10 +1923,10 @@ async fn action_communication_goal_cancelled() {
             let cancel_service_root =
                 format!("action/{listener_node_name}/{listener_action_name}/cancel");
             let expected_goal_topic = format!(
-                "<MASTER_NODE:{MASTER_NODE_NAME}>/<BOUND_INSTANCE_ID:{listener_instance_id}>/{goal_service_root}/<TARGET_INSTANCE_ID:{caller_instance_id}>/request"
+                "{MASTER_NODE_NAME}/{listener_instance_id}/{goal_service_root}/{caller_instance_id}/request"
             );
             let expected_cancel_topic = format!(
-                "<MASTER_NODE:{MASTER_NODE_NAME}>/<BOUND_INSTANCE_ID:{listener_instance_id}>/{cancel_service_root}/<TARGET_INSTANCE_ID:{caller_instance_id}>/request"
+                "{MASTER_NODE_NAME}/{listener_instance_id}/{cancel_service_root}/{caller_instance_id}/request"
             );
 
             if let Some(tx) = action_ready_tx {
@@ -2031,7 +2031,7 @@ async fn action_communication_goal_cancelled() {
     );
 
     let expected_feedback_topic = format!(
-        "<MASTER_NODE:{MASTER_NODE_NAME}>/<BOUND_INSTANCE_ID:{listener_instance_id}>/action/{listener_node_name}/{listener_action_name}/feedback/<TARGET_INSTANCE_ID:{listener_instance_id}>"
+        "{MASTER_NODE_NAME}/{listener_instance_id}/action/{listener_node_name}/{listener_action_name}/feedback/{listener_instance_id}"
     );
 
     let first_feedback = goal_handle
@@ -2201,7 +2201,7 @@ async fn single_action_communication_multiple_polls() {
                         async move {
                             let caller_id = request.message().instance_id();
                             let expected_goal_topic = format!(
-                                "<MASTER_NODE:{MASTER_NODE_NAME}>/<BOUND_INSTANCE_ID:{listener_instance_id}>/{goal_service_root}/<TARGET_INSTANCE_ID:{caller_id}>/request"
+                                "{MASTER_NODE_NAME}/{listener_instance_id}/{goal_service_root}/{caller_id}/request"
                             );
                             assert_eq!(request.message().key_expr(), expected_goal_topic);
 
@@ -2262,7 +2262,7 @@ async fn single_action_communication_multiple_polls() {
                         async move {
                             let caller_id = request.message().instance_id();
                             let expected_result_topic = format!(
-                                "<MASTER_NODE:{MASTER_NODE_NAME}>/<BOUND_INSTANCE_ID:{listener_instance_id}>/{result_service_root}/<TARGET_INSTANCE_ID:{caller_id}>/request"
+                                "{MASTER_NODE_NAME}/{listener_instance_id}/{result_service_root}/{caller_id}/request"
                             );
                             assert_eq!(request.message().key_expr(), expected_result_topic);
 
@@ -2312,7 +2312,7 @@ async fn single_action_communication_multiple_polls() {
         .expect("action server should signal readiness");
 
     let expected_feedback_topic = format!(
-        "<MASTER_NODE:{MASTER_NODE_NAME}>/<BOUND_INSTANCE_ID:{listener_instance_id}>/action/{listener_node_name}/{listener_action_name}/feedback/<TARGET_INSTANCE_ID:{listener_instance_id}>"
+        "{MASTER_NODE_NAME}/{listener_instance_id}/action/{listener_node_name}/{listener_action_name}/feedback/{listener_instance_id}"
     );
 
     let total_clients = cases.len();
