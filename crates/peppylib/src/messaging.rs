@@ -172,37 +172,38 @@ impl ServiceEndpoint {
         &self,
         request: TopicMessage,
     ) -> Result<(ServiceRequestContext, String)> {
+        // Format: target_master/caller_master/target_instance/caller_instance/service_root/request/id
         let identifier = request.key_expr().to_string();
         let mut parts = identifier.split('/').filter(|segment| !segment.is_empty());
 
-        let _master_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
+        // Parse target_master (first segment)
+        let target_master_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
             identifier: identifier.clone(),
-            reason: "missing master node segment in request".to_string(),
+            reason: "missing target master node segment in request".to_string(),
         })?;
-        let master_segment = request.master_node();
 
-        if master_segment != self.bound_master_node {
-            let reason = format!(
-                "request targets master `{master_segment}` but listener is bound to `{}`",
-                self.bound_master_node
-            );
-            error!(%identifier, %reason, "service received invalid request");
-            return Err(Error::InvalidServiceRequest {
-                identifier: identifier.clone(),
-                reason,
-            });
-        }
+        // Parse caller_master (second segment)
+        let caller_master_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
+            identifier: identifier.clone(),
+            reason: "missing caller master node segment in request".to_string(),
+        })?;
 
+        // Parse target_instance (third segment)
         let target_instance_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
             identifier: identifier.clone(),
             reason: "missing target instance segment in request".to_string(),
         })?;
-        let service_bound_instance_segment =
-            format_bound_instance_segment(self.instance_id.as_str());
+
+        // Parse caller_instance (fourth segment)
+        let caller_instance_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
+            identifier: identifier.clone(),
+            reason: "missing caller instance segment in request".to_string(),
+        })?;
         let response_target_instance_segment =
             format_target_instance_segment(self.instance_id.as_str())
-                .unwrap_or_else(|| format!("{}", self.instance_id));
+                .unwrap_or_else(|| self.instance_id.clone());
 
+        // Parse and validate service root segments
         let expected_root_segments: Vec<_> = self
             .service_root
             .split('/')
@@ -231,24 +232,18 @@ impl ServiceEndpoint {
             }
         }
 
-        let caller_segment = match parts.next().map(str::to_string) {
-            Some(segment) => segment,
-            None => {
-                error!(%identifier, "service received request without caller instance segment");
-                return Err(Error::InvalidServiceRequest {
-                    identifier,
-                    reason: "missing caller instance segment".to_string(),
-                });
-            }
-        };
-
+        // Parse request marker
         let request_marker = parts.next().unwrap_or_default();
         if request_marker != "request" {
             let reason = "missing request marker segment".to_string();
             error!(%identifier, %reason, "service received invalid request");
-            return Err(Error::InvalidServiceRequest { identifier, reason });
+            return Err(Error::InvalidServiceRequest {
+                identifier: identifier.clone(),
+                reason,
+            });
         }
 
+        // Parse request_id
         let request_id = match parts.next().filter(|segment| !segment.is_empty()) {
             Some(id) => id.to_string(),
             None => {
@@ -266,30 +261,26 @@ impl ServiceEndpoint {
             return Err(Error::InvalidServiceRequest { identifier, reason });
         }
 
-        // Only process requests targeting this instance or broadcast requests.
-        if let Some(bound_segment) = service_bound_instance_segment.as_deref() {
-            if target_instance_segment != INSTANCE_ID_WILDCARD
-                && target_instance_segment != bound_segment
-            {
-                let reason = "request is not addressed to this service instance".to_string();
-                error!(%identifier, %reason, "service received invalid request");
-                return Err(Error::InvalidServiceRequest { identifier, reason });
-            }
-        }
+        // Construct message_identifier preserving the original target values from the request
+        // This ensures all listeners receiving a broadcast see the same key_expr
+        let message_identifier = format!(
+            "{}/{}/{}/{}/{}/request/{request_id}",
+            target_master_segment,
+            caller_master_segment,
+            target_instance_segment,
+            caller_instance_segment,
+            self.service_root
+        );
 
-        let message_identifier = {
-            let bound_segment = service_bound_instance_segment
-                .as_deref()
-                .unwrap_or(INSTANCE_ID_WILDCARD);
-            format!(
-                "{}/{}/{}/{caller_segment}/request",
-                master_segment, bound_segment, self.service_root
-            )
-        };
-
+        // Response topic format: caller_master/responder_master/caller_instance/responder_instance/service_root/response/request_id
+        // This ensures master_node() returns responder's master (position 1) and instance_id() returns responder's instance (position 3)
         let response_topic = format!(
-            "{}/{}/{}/response/{request_id}/{}",
-            master_segment, caller_segment, self.service_root, response_target_instance_segment
+            "{}/{}/{}/{}/{}/response/{request_id}",
+            caller_master_segment,
+            self.bound_master_node,
+            caller_instance_segment,
+            response_target_instance_segment,
+            self.service_root
         );
 
         let message = TopicMessage::new(&message_identifier, request.into_payload())?;
@@ -459,14 +450,14 @@ impl ServiceMessenger {
     /// Listening as a service is a 2 way stream, so the process that exposes the service needs to provide its instance_id
     pub async fn listen(
         messenger: &MessengerHandle,
-        bound_master_node: &str,
+        as_master_node: &str,
         as_node_name: &str,
         as_service_name: &str,
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
         messenger
             .expose_service(
-                bound_master_node,
+                as_master_node,
                 as_node_name,
                 as_service_name,
                 as_instance_id,
@@ -481,6 +472,7 @@ impl ServiceMessenger {
         as_instance_id: &str,
         target_node_name: &str,
         target_service_name: &str,
+        target_master_node: Option<&str>,
         target_instance_id: Option<&str>,
         request_payload: Bytes,
         response_timeout: Duration,
@@ -489,9 +481,10 @@ impl ServiceMessenger {
             .poll_service(
                 "service",
                 bound_master_node,
+                as_instance_id,
                 target_node_name,
                 target_service_name,
-                as_instance_id,
+                target_master_node,
                 target_instance_id,
                 request_payload,
                 response_timeout,
@@ -553,9 +546,10 @@ impl ActionMessenger {
             .poll_service(
                 "action",
                 master_node,
+                as_instance_id,
                 node_name,
                 &goal_service_name,
-                as_instance_id,
+                None,
                 target_instance_id,
                 goal_payload,
                 goal_timeout,
@@ -584,9 +578,10 @@ impl ActionMessenger {
             .poll_service(
                 "action",
                 &handle.master_node,
+                as_instance_id,
                 &handle.node_name,
                 &cancel_service_name,
-                as_instance_id,
+                None,
                 handle.target_instance_id.as_deref(),
                 Bytes::new(),
                 cancel_timeout,
@@ -607,9 +602,10 @@ impl ActionMessenger {
             .poll_service(
                 "action",
                 &handle.master_node,
+                as_instance_id,
                 &handle.node_name,
                 &result_service_name,
-                as_instance_id,
+                None,
                 handle.target_instance_id.as_deref(),
                 result_request_payload,
                 result_timeout,
@@ -714,7 +710,6 @@ impl MessengerHandle {
         as_service_name: &str,
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
-        // Key is: `master_node_name/instance_id/service/as_node_name/as_service_name/received_instance_id`
         let service_root = format!("service/{as_node_name}/{as_service_name}");
         self.create_service_endpoint(bound_master_node, service_root, as_instance_id)
             .await
@@ -728,9 +723,11 @@ impl MessengerHandle {
     ) -> Result<ServiceEndpoint> {
         let bound_instance_segment = format_bound_instance_segment(as_instance_id)
             .unwrap_or_else(|| as_instance_id.to_string());
-        let subscription_prefix =
-            format!("{bound_master_node}/{bound_instance_segment}/{service_root}");
-        let request_subscription_topic = format!("{subscription_prefix}/*/request/**");
+        // Format: target_master/caller_master/target_instance/caller_instance/service_root/request/id
+        // Subscribe to: */*/*/*/service_root/request/** to receive both targeted and broadcast requests
+        // When targeted, build_request_context filters by bound_master_node and bound_instance
+        // When broadcast (wildcards), all listeners receive and the first to respond wins
+        let request_subscription_topic = format!("*/*/*/*/{service_root}/request/**");
         let subscription = {
             let messenger = self.messenger.lock().await;
             messenger
@@ -752,9 +749,10 @@ impl MessengerHandle {
         &self,
         message_type: &str,
         bound_master_node: &str,
+        as_instance_id: &str,
         target_node_name: &str,
         target_service_name: &str,
-        as_instance_id: &str,
+        target_master_node: Option<&str>,
         target_instance_id: Option<&str>,
         request_payload: Bytes,
         response_timeout: Duration,
@@ -771,43 +769,54 @@ impl MessengerHandle {
             .unwrap_or_else(|| INSTANCE_ID_WILDCARD.to_string());
 
         let target_instance_id = target_instance_id.map(str::to_string);
-        // Target's instance as BOUND (service is bound to receive requests)
-        let target_bound_instance_segment = target_instance_id
-            .as_deref()
-            .and_then(format_bound_instance_segment);
-        // Target's instance as TARGET (identifies who responded)
-        let target_response_instance_segment = target_instance_id
-            .as_deref()
-            .and_then(format_target_instance_segment);
-        let request_id = generate_request_id();
-        let request_topic = match target_bound_instance_segment.as_deref() {
-            Some(segment) => {
-                format!(
-                    "{}/{}/{}/{}/request/{request_id}",
-                    bound_master_node, segment, service_root, caller_target_instance_segment
-                )
-            }
-            None => {
-                format!(
-                    "{}/{}/{}/{}/request/{request_id}",
-                    bound_master_node,
-                    INSTANCE_ID_WILDCARD,
-                    service_root,
-                    caller_target_instance_segment
-                )
-            }
-        };
 
+        // If no target specified, use wildcards for broadcast
+        let (effective_target_master, effective_target_instance) =
+            match (target_master_node, target_instance_id.as_deref()) {
+                (Some(master), Some(instance)) => (master.to_string(), instance.to_string()),
+                (Some(master), None) => (master.to_string(), "*".to_string()),
+                (None, Some(instance)) => ("*".to_string(), instance.to_string()),
+                (None, None) => ("*".to_string(), "*".to_string()),
+            };
+
+        // Target's instance as BOUND (service is bound to receive requests)
+        let target_bound_instance_segment =
+            format_bound_instance_segment(&effective_target_instance);
+        // Target's instance as TARGET (identifies who responded)
+        let target_response_instance_segment =
+            format_target_instance_segment(&effective_target_instance);
+        let request_id = generate_request_id();
+
+        // Format: target_master/caller_master/target_instance/caller_instance/service_root/request/id
+        let target_master = target_bound_instance_segment
+            .as_ref()
+            .map(|_| effective_target_master.as_str())
+            .unwrap_or("*");
+        let target_instance = target_bound_instance_segment.as_deref().unwrap_or("*");
+        let request_topic = format!(
+            "{}/{}/{}/{}/{}/request/{request_id}",
+            target_master,
+            bound_master_node,
+            target_instance,
+            caller_target_instance_segment,
+            service_root
+        );
+
+        // Response topic format: caller_master/responder_master/caller_instance/responder_instance/service_root/response/request_id
         let response_topic = match target_response_instance_segment.as_deref() {
             Some(segment) => {
                 format!(
-                    "{}/{}/{}/response/{request_id}/{}",
-                    bound_master_node, caller_bound_instance_segment, service_root, segment
+                    "{}/{}/{}/{}/{}/response/{request_id}",
+                    bound_master_node,
+                    effective_target_master,
+                    caller_bound_instance_segment,
+                    segment,
+                    service_root
                 )
             }
             None => {
                 format!(
-                    "{}/{}/{}/response/{request_id}/*",
+                    "{}/*/{}/*/{}/response/{request_id}",
                     bound_master_node, caller_bound_instance_segment, service_root
                 )
             }
