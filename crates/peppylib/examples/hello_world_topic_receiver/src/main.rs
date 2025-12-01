@@ -1,6 +1,8 @@
 use config::consts::DEFAULT_ZENOH_PORT;
 use config::node::QoSProfile;
+use names_generator2::get_random;
 use peppylib::{MessengerHandle, TopicMessenger};
+use rand::rng;
 use tokio::signal;
 
 #[tokio::main]
@@ -10,6 +12,8 @@ async fn main() {
 
     // Those properties are found in the peppy_launcher.json5 `deployments` array
     let node_name = "hello_node";
+    let master_node = format!("{}_master", get_random(rng()));
+    let instance_id = format!("{}_receiver", get_random(rng()));
 
     // Create a messenger for the receiving node.
     let host = "127.0.0.1";
@@ -20,9 +24,16 @@ async fn main() {
             panic!("failed to create messenger on {host}:{port}: {error:?}.\n Did you start a zenohd server with the `zenohd_simple` example?")
         });
 
-    let mut subscription = TopicMessenger::subscribe(&receiver_handle, node_name, topic_name, qos)
-        .await
-        .expect("Should subscribe to the topic");
+    let mut subscription = TopicMessenger::subscribe(
+        &receiver_handle,
+        &master_node,
+        &instance_id,
+        node_name,
+        topic_name,
+        qos,
+    )
+    .await
+    .expect("Should subscribe to the topic");
 
     println!("Waiting for payload... Press CTRL+C to stop.");
 
