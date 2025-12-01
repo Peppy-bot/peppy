@@ -182,6 +182,17 @@ impl ServiceEndpoint {
             reason: "missing target master node segment in request".to_string(),
         })?;
 
+        // If request targets a specific master node, verify this service is bound to it
+        if target_master_segment != "*" && target_master_segment != self.bound_master_node {
+            return Err(Error::InvalidServiceRequest {
+                identifier: identifier.clone(),
+                reason: format!(
+                    "request targets master node '{}', but this service is bound to '{}'",
+                    target_master_segment, self.bound_master_node
+                ),
+            });
+        }
+
         // Parse caller_master (second segment)
         let caller_master_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
             identifier: identifier.clone(),
@@ -193,6 +204,17 @@ impl ServiceEndpoint {
             identifier: identifier.clone(),
             reason: "missing target instance segment in request".to_string(),
         })?;
+
+        // If request targets a specific instance, verify this service instance matches
+        if target_instance_segment != "*" && target_instance_segment != self.instance_id {
+            return Err(Error::InvalidServiceRequest {
+                identifier: identifier.clone(),
+                reason: format!(
+                    "request targets instance '{}', but this service has instance_id '{}'",
+                    target_instance_segment, self.instance_id
+                ),
+            });
+        }
 
         // Parse caller_instance (fourth segment)
         let caller_instance_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
@@ -721,12 +743,9 @@ impl MessengerHandle {
         service_root: String,
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
-        let bound_instance_segment = format_bound_instance_segment(as_instance_id)
-            .unwrap_or_else(|| as_instance_id.to_string());
         // Format: target_master/caller_master/target_instance/caller_instance/service_root/request/id
-        // Subscribe to: */*/*/*/service_root/request/** to receive both targeted and broadcast requests
-        // When targeted, build_request_context filters by bound_master_node and bound_instance
-        // When broadcast (wildcards), all listeners receive and the first to respond wins
+        // Subscribe to all requests; filtering for targeted requests is done in build_request_context
+        // Note: Zenoh doesn't support $* alone in a chunk, so we can't filter at subscription level
         let request_subscription_topic = format!("*/*/*/*/{service_root}/request/**");
         let subscription = {
             let messenger = self.messenger.lock().await;
