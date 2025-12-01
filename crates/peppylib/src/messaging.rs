@@ -375,11 +375,6 @@ impl TopicPublisher {
         self.publish_on(self.topic.clone(), payload).await
     }
 
-    pub async fn publish_with_prefix(&self, prefix: &str, payload: Bytes) -> Result<()> {
-        let topic = format!("{prefix}/{}", self.topic);
-        self.publish_on(topic, payload).await
-    }
-
     async fn publish_on(&self, topic: String, payload: Bytes) -> Result<()> {
         let message = Message::new(&topic, payload);
         let mut messenger = self.messenger.lock().await;
@@ -534,10 +529,11 @@ impl ActionMessenger {
 
     pub async fn send_goal(
         messenger: &MessengerHandle,
-        master_node: &str,
+        as_master_node: &str,
         as_instance_id: &str,
-        node_name: &str,
-        action_name: &str,
+        to_node_name: &str,
+        to_action_name: &str,
+        target_master_node: Option<&str>,
         target_instance_id: Option<&str>,
         goal_payload: Bytes,
         feedback_qos: QoSProfile,
@@ -547,14 +543,14 @@ impl ActionMessenger {
             Some(target_instance_id) => {
                 let bound_instance_segment = format!("{target_instance_id}");
                 format!(
-                    "{master_node}/{bound_instance_segment}/action/{node_name}/{action_name}/feedback/{target_instance_id}"
+                    "{as_master_node}/{bound_instance_segment}/action/{to_node_name}/{to_action_name}/feedback/{target_instance_id}"
                 )
             }
             None => format!(
-                "{master_node}/{INSTANCE_ID_WILDCARD}/action/{node_name}/{action_name}/feedback/*"
+                "{as_master_node}/{INSTANCE_ID_WILDCARD}/action/{to_node_name}/{to_action_name}/feedback/*"
             ),
         };
-        let goal_service_name = format!("{action_name}/goal");
+        let goal_service_name = format!("{to_action_name}/goal");
 
         let feedback_subscription = {
             let subscriber_qos = map_node_qos_to_subscriber_qos(feedback_qos);
@@ -566,9 +562,9 @@ impl ActionMessenger {
         let goal_response = messenger
             .poll_service(
                 "action",
-                master_node,
+                as_master_node,
                 as_instance_id,
-                node_name,
+                to_node_name,
                 &goal_service_name,
                 None,
                 target_instance_id,
@@ -578,9 +574,9 @@ impl ActionMessenger {
             .await?;
 
         Ok(ActionGoalHandle {
-            master_node: master_node.to_string(),
-            node_name: node_name.to_string(),
-            action_name: action_name.to_string(),
+            master_node: as_master_node.to_string(),
+            node_name: to_node_name.to_string(),
+            action_name: to_action_name.to_string(),
             target_instance_id: target_instance_id.map(|id| id.to_string()),
             goal_response,
             feedback: feedback_subscription,
@@ -610,7 +606,7 @@ impl ActionMessenger {
             .await
     }
 
-    pub async fn poll_result(
+    pub async fn request_result(
         messenger: &MessengerHandle,
         as_instance_id: &str,
         handle: &ActionGoalHandle,
