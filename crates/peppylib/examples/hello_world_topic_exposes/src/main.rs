@@ -33,8 +33,6 @@ async fn main() {
         &sender_handle,
         &master_node,
         &instance_id,
-        None,
-        None,
         node_name,
         topic_name,
         qos,

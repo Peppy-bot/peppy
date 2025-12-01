@@ -30,6 +30,8 @@ async fn main() {
         &instance_id,
         node_name,
         topic_name,
+        None,
+        None,
         qos,
     )
     .await
