@@ -80,8 +80,12 @@ pub struct ActionMessenger;
 
 pub struct ServiceEndpoint {
     messenger: Arc<Mutex<Messenger>>,
-    instance_subscription: Subscription,
-    broadcast_subscription: Subscription,
+    /// Subscriptions to service requests. Four patterns are needed to match:
+    /// - [0] Requests targeting this specific master node and instance
+    /// - [1] Requests targeting this specific master node with broadcast instance
+    /// - [2] Broadcast requests (any master) targeting this specific instance
+    /// - [3] Full broadcast requests (any master, any instance)
+    subscriptions: [Subscription; 4],
     bound_master_node: String,
     service_root: String,
     instance_id: String,
@@ -158,10 +162,15 @@ impl ServiceEndpoint {
 
     async fn next_request(&mut self) -> Result<(ServiceRequestContext, String)> {
         loop {
-            // Use select! to receive from either the instance-specific subscription or the broadcast subscription
+            // Destructure to get separate mutable references for tokio::select!
+            let [sub0, sub1, sub2, sub3] = &mut self.subscriptions;
+
+            // Use tokio::select! to receive from any of the 4 subscription patterns
             let request = tokio::select! {
-                msg = self.instance_subscription.rx.recv() => msg,
-                msg = self.broadcast_subscription.rx.recv() => msg,
+                msg = sub0.rx.recv() => msg,
+                msg = sub1.rx.recv() => msg,
+                msg = sub2.rx.recv() => msg,
+                msg = sub3.rx.recv() => msg,
             };
 
             match request {
@@ -734,23 +743,35 @@ impl MessengerHandle {
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
         // Format: target_master/caller_master/target_instance/caller_instance/service_root/request/id
-        // Subscribe to requests targeting this specific instance OR broadcast requests (using BROADCAST_MARKER)
-        // The subscription pattern uses Zenoh's wildcard to match both cases:
-        // - Instance-specific: target_instance = as_instance_id
-        // - Broadcast: target_instance = BROADCAST_MARKER (_any_)
-        // We subscribe to both patterns using separate subscriptions on the same key space
-        let subscription_topic = format!("*/*/{as_instance_id}/*/{service_root}/request/**");
-        let broadcast_subscription_topic =
-            format!("*/*/{BROADCAST_MARKER}/*/{service_root}/request/**");
+        // We need 4 subscription patterns to match all valid request combinations:
+        let patterns = [
+            // 1. Specific master, specific instance
+            format!("{bound_master_node}/*/{as_instance_id}/*/{service_root}/request/**"),
+            // 2. Specific master, broadcast instance
+            format!("{bound_master_node}/*/{BROADCAST_MARKER}/*/{service_root}/request/**"),
+            // 3. Broadcast master, specific instance
+            format!("{BROADCAST_MARKER}/*/{as_instance_id}/*/{service_root}/request/**"),
+            // 4. Broadcast master, broadcast instance
+            format!("{BROADCAST_MARKER}/*/{BROADCAST_MARKER}/*/{service_root}/request/**"),
+        ];
 
         let messenger = self.messenger.lock().await;
-        let instance_subscription = messenger
-            .subscribe(&subscription_topic, SubscriberQoS::Standard)
+
+        // Create all 4 subscriptions
+        let sub0 = messenger
+            .subscribe(&patterns[0], SubscriberQoS::Standard)
             .await
             .map_err(Error::PeppyMessagingInterface)?;
-
-        let broadcast_subscription = messenger
-            .subscribe(&broadcast_subscription_topic, SubscriberQoS::Standard)
+        let sub1 = messenger
+            .subscribe(&patterns[1], SubscriberQoS::Standard)
+            .await
+            .map_err(Error::PeppyMessagingInterface)?;
+        let sub2 = messenger
+            .subscribe(&patterns[2], SubscriberQoS::Standard)
+            .await
+            .map_err(Error::PeppyMessagingInterface)?;
+        let sub3 = messenger
+            .subscribe(&patterns[3], SubscriberQoS::Standard)
             .await
             .map_err(Error::PeppyMessagingInterface)?;
 
@@ -758,8 +779,7 @@ impl MessengerHandle {
 
         Ok(ServiceEndpoint {
             messenger: Arc::clone(&self.messenger),
-            instance_subscription,
-            broadcast_subscription,
+            subscriptions: [sub0, sub1, sub2, sub3],
             bound_master_node: bound_master_node.to_string(),
             service_root,
             instance_id: as_instance_id.to_string(),
