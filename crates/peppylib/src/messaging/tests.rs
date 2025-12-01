@@ -609,13 +609,9 @@ async fn service_communication_poll_no_instance_id_target() {
         .expect("caller should receive response");
 
         // Listener instance 1 is supposed to have responded more quickly here
-        assert_eq!(response.instance_id(), listener_instance_id1);
-        assert_eq!(response.master_node(), listener_master_node1);
-        assert_eq!(response.payload().to_bytes(), response_payload);
         // The `[a-f0-9]{16}` part is the randomly generated request_id
         let expected_key_expr_pattern = format!(
-            r"^{CALLER_MASTER_NODE}/{}/{CALLER_INSTANCE_ID}/{}/service/{listener_node_name}/{listener_service_name}/response/[a-f0-9]{{16}}$",
-            listener_master_node1, listener_instance_id1
+            r"^{CALLER_MASTER_NODE}/{listener_master_node1}/{CALLER_INSTANCE_ID}/{listener_instance_id1}/service/{listener_node_name}/{listener_service_name}/response/[a-f0-9]{{16}}$"
         );
         let re = Regex::new(&expected_key_expr_pattern).expect("invalid regex pattern");
         assert!(
@@ -624,6 +620,9 @@ async fn service_communication_poll_no_instance_id_target() {
             response.key_expr(),
             expected_key_expr_pattern
         );
+        assert_eq!(response.instance_id(), listener_instance_id1);
+        assert_eq!(response.master_node(), listener_master_node1);
+        assert_eq!(response.payload().to_bytes(), response_payload);
     }
 
     tokio::time::timeout(service_task_timeout, service_task1)
@@ -650,179 +649,191 @@ async fn service_communication_poll_no_instance_id_target() {
         .expect("router shutdown timed out");
 }
 
-// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-// async fn service_communication_poll_specific_instance_id() {
-//     let router = TestRouterContext::start().await;
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_communication_poll_specific_instance_id() {
+    let router = TestRouterContext::start().await;
 
-//     // Listener instance
-//     let listener_node_name = "camera";
-//     let listener_service_name = "enable_camera";
+    // Listener instance
+    let listener_node_name = "camera";
+    let listener_service_name = "enable_camera";
 
-//     // Caller instance
-//     let caller_instance_id = "caller_instance";
+    // Caller instance
+    const CALLER_INSTANCE_ID: &str = "caller_instance";
+    const CALLER_MASTER_NODE: &str = "caller_master_node";
 
-//     let request_payload = Bytes::from_static(b"enable=true");
-//     let response_payload = Bytes::from_static(b"ack");
-//     let call_count = Arc::new(AtomicUsize::new(0));
+    let request_payload = Bytes::from_static(b"enable=true");
+    let response_payload = Bytes::from_static(b"ack");
+    let call_count = Arc::new(AtomicUsize::new(0));
 
-//     let (service_ready_tx1, service_ready_rx1) = oneshot::channel();
-//     let (service_ready_tx2, service_ready_rx2) = oneshot::channel();
-//     let service_wait_timeout = Duration::from_millis(1500);
-//     let service_task_timeout = service_wait_timeout + Duration::from_secs(1);
-//     let service_ready_timeout = Duration::from_secs(1);
+    let (service_ready_tx1, service_ready_rx1) = oneshot::channel();
+    let (service_ready_tx2, service_ready_rx2) = oneshot::channel();
+    let service_wait_timeout = Duration::from_millis(1500);
+    let service_task_timeout = service_wait_timeout + Duration::from_secs(1);
+    let service_ready_timeout = Duration::from_secs(1);
 
-//     let listener_instance_id1 = "listener_instance1";
-//     // The exposed service has its own dedicated scope (emulates running on its own instance)
-//     // This listener is not out target, but is in competition for incoming requests with instance 2
-//     let service_task1 = {
-//         let service_expose_handle = router.service_messenger().await;
-//         let mut service = ServiceMessenger::listen(
-//             &service_expose_handle,
-//             MASTER_NODE_NAME,
-//             listener_node_name,
-//             listener_service_name,
-//             listener_instance_id1,
-//         )
-//         .await
-//         .expect("service should start");
+    // The exposed service has its own dedicated scope (emulates running on its own instance)
+    // This listener is not our target
+    let listener_master_node1 = "listener_master_node1";
+    let listener_instance_id1 = "listener_instance1";
+    let service_task1 = {
+        let service_expose_handle = router.service_messenger().await;
+        // This listener is not supposed to receive any message
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            listener_master_node1,
+            listener_node_name,
+            listener_service_name,
+            listener_instance_id1,
+        )
+        .await
+        .expect("service should start");
 
-//         tokio::spawn(async move {
-//             service_ready_tx1.send(()).unwrap();
+        tokio::spawn(async move {
+            service_ready_tx1.send(()).unwrap();
 
-//             let outcome = tokio::time::timeout(
-//                 service_wait_timeout,
-//                 service.handle_next_request(|_request| async {
-//                     Ok(Bytes::from_static(b"unexpected response"))
-//                 }),
-//             )
-//             .await;
+            let outcome = tokio::time::timeout(
+                service_wait_timeout,
+                service.handle_next_request(|_request| async {
+                    Ok(Bytes::from_static(b"unexpected response"))
+                }),
+            )
+            .await;
 
-//             if outcome.is_err() {
-//                 return Ok(()); // Timeout is expected - no request should be received
-//             }
-//             outcome.unwrap().map_or_else(Err, |handled| {
-//                 panic!("non-targeted service should not receive the request (handled={handled})")
-//             })
-//         })
-//     };
+            if outcome.is_err() {
+                return Ok(()); // Timeout is expected - no request should be received
+            }
+            outcome.unwrap().map_or_else(Err, |handled| {
+                panic!("non-targeted service should not receive the request (handled={handled})")
+            })
+        })
+    };
 
-//     // Creates a second listener with a different ID (emulates a second instance). This is out target
-//     // Listener instance 2
-//     let listener_instance_id2 = "listener_instance2";
-//     let service_task2 = {
-//         let service_expose_handle = router.service_messenger().await;
-//         let mut service = ServiceMessenger::listen(
-//             &service_expose_handle,
-//             MASTER_NODE_NAME,
-//             listener_node_name,
-//             listener_service_name,
-//             listener_instance_id2,
-//         )
-//         .await
-//         .expect("service should start");
+    // Creates a second listener with a different ID (emulates a second instance). This is our target
+    let listener_master_node2 = "listener_master_node2";
+    let listener_instance_id2 = "listener_instance2";
+    let service_task2 = {
+        let service_expose_handle = router.service_messenger().await;
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            listener_master_node2,
+            listener_node_name,
+            listener_service_name,
+            listener_instance_id2,
+        )
+        .await
+        .expect("service should start");
 
-//         let expected_request_topic = format!(
-//             "{MASTER_NODE_NAME}/{listener_instance_id2}/service/{listener_node_name}/{listener_service_name}/{caller_instance_id}/request"
-//         );
+        let expected_requester_key_expr_pattern = format!(
+            r"^\*/{CALLER_MASTER_NODE}/{listener_instance_id2}/{CALLER_INSTANCE_ID}/service/{listener_node_name}/{listener_service_name}/request/.+$"
+        );
+        let expected_requester_key_expr_regex =
+            Regex::new(&expected_requester_key_expr_pattern).unwrap();
 
-//         let request_payload = request_payload.clone();
-//         let response_payload = response_payload.clone();
-//         let call_count = Arc::clone(&call_count);
+        let request_payload = request_payload.clone();
+        let response_payload = response_payload.clone();
+        let call_count = Arc::clone(&call_count);
 
-//         tokio::spawn(async move {
-//             let handler = service.handle_next_request(|request| {
-//                 let response_payload = response_payload.clone();
-//                 async move {
-//                     assert_eq!(request.message().master_node(), MASTER_NODE_NAME);
-//                     assert_eq!(request.message().key_expr(), expected_request_topic);
-//                     assert_eq!(request.message().instance_id(), caller_instance_id);
-//                     assert_eq!(request.message().payload(), &request_payload);
-//                     call_count.fetch_add(1, Ordering::SeqCst);
-//                     // This second service instance is a bit slow for processing, but since it's been targeted, it's gonna be the one that responds
-//                     thread::sleep(Duration::from_millis(200));
-//                     Ok(response_payload)
-//                 }
-//             });
+        tokio::spawn(async move {
+            let handler = service.handle_next_request(|request| {
+                let response_payload = response_payload.clone();
+                async move {
+                    assert!(
+                        expected_requester_key_expr_regex.is_match(request.message().key_expr()),
+                        "key_expr {} doesn't match pattern {}",
+                        request.message().key_expr(),
+                        expected_requester_key_expr_pattern
+                    );
+                    assert_eq!(request.message().master_node(), CALLER_MASTER_NODE);
+                    assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
+                    assert_eq!(request.message().payload(), &request_payload);
+                    call_count.fetch_add(1, Ordering::SeqCst);
+                    // This second service instance is a bit slow for processing, but since it's been targeted, it's gonna be the one that responds
+                    thread::sleep(Duration::from_millis(200));
+                    Ok(response_payload)
+                }
+            });
 
-//             service_ready_tx2.send(()).unwrap();
-//             let handled = tokio::time::timeout(service_wait_timeout, handler)
-//                 .await
-//                 .expect("service handler timed out");
-//             let handled = handled.expect("service should receive exactly one request");
+            service_ready_tx2.send(()).unwrap();
+            let handled = tokio::time::timeout(service_wait_timeout, handler)
+                .await
+                .expect("service handler timed out");
+            let handled = handled.expect("service should receive exactly one request");
 
-//             assert!(
-//                 handled,
-//                 "service subscription closed before handling request"
-//             );
+            assert!(
+                handled,
+                "service subscription closed before handling request"
+            );
 
-//             Ok::<(), Error>(())
-//         })
-//     };
+            Ok::<(), Error>(())
+        })
+    };
 
-//     tokio::time::timeout(service_ready_timeout, service_ready_rx1)
-//         .await
-//         .expect("service 1 should signal readiness before timeout")
-//         .expect("service 1 should signal readiness");
-//     tokio::time::timeout(service_ready_timeout, service_ready_rx2)
-//         .await
-//         .expect("service 2 should signal readiness before timeout")
-//         .expect("service 2 should signal readiness");
+    tokio::time::timeout(service_ready_timeout, service_ready_rx1)
+        .await
+        .expect("service 1 should signal readiness before timeout")
+        .expect("service 1 should signal readiness");
+    tokio::time::timeout(service_ready_timeout, service_ready_rx2)
+        .await
+        .expect("service 2 should signal readiness before timeout")
+        .expect("service 2 should signal readiness");
 
-//     // The caller node has its own scope (emulates a separate node running on a different instance)
-//     {
-//         let caller_handle = router.service_messenger().await;
-//         let response = ServiceMessenger::poll(
-//             &caller_handle,
-//             MASTER_NODE_NAME,
-//             caller_instance_id,
-//             listener_node_name,
-//             listener_service_name,
-//             Some(listener_instance_id2),
-//             request_payload.clone(),
-//             Duration::from_secs(1),
-//         )
-//         .await
-//         .expect("caller should receive response");
+    // The caller node has its own scope (emulates a separate node running on a different instance)
+    {
+        let caller_handle = router.service_messenger().await;
+        let response = ServiceMessenger::poll(
+            &caller_handle,
+            CALLER_MASTER_NODE,
+            CALLER_INSTANCE_ID,
+            listener_node_name,
+            listener_service_name,
+            None,                        // Here we don't specify any target master node
+            Some(listener_instance_id2), // We specify listener_instance_id2 as the target
+            request_payload.clone(),
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("caller should receive response");
 
-//         // Listener instance 2 is supposed to have responded more quickly here
-//         assert_eq!(response.instance_id(), listener_instance_id2);
-//         assert_eq!(response.payload().to_bytes(), response_payload);
-//         // The `[a-f0-9]{{16}}` part is the randomly generated response_id
-//         let expected_key_expr_pattern = format!(
-//             r"^{MASTER_NODE_NAME}/{caller_instance_id}/service/{listener_node_name}/{listener_service_name}/response/[a-f0-9]{{16}}/{listener_instance_id2}$"
-//         );
-//         let re = Regex::new(&expected_key_expr_pattern).expect("invalid regex pattern");
-//         assert!(
-//             re.is_match(response.key_expr()),
-//             "key_expr '{}' does not match expected pattern '{}'",
-//             response.key_expr(),
-//             expected_key_expr_pattern
-//         );
-//     }
+        // Listener instance 2 is supposed to have responded since it's the target
+        // The `[a-f0-9]{16}` part is the randomly generated request_id
+        let expected_key_expr_pattern = format!(
+            r"^{CALLER_MASTER_NODE}/{listener_master_node2}/{CALLER_INSTANCE_ID}/{listener_instance_id2}/service/{listener_node_name}/{listener_service_name}/response/[a-f0-9]{{16}}$"
+        );
+        let re = Regex::new(&expected_key_expr_pattern).expect("invalid regex pattern");
+        assert!(
+            re.is_match(response.key_expr()),
+            "key_expr '{}' does not match expected pattern '{}'",
+            response.key_expr(),
+            expected_key_expr_pattern
+        );
+        assert_eq!(response.instance_id(), listener_instance_id2);
+        assert_eq!(response.master_node(), listener_master_node2);
+        assert_eq!(response.payload().to_bytes(), response_payload);
+    }
 
-//     tokio::time::timeout(service_task_timeout, service_task1)
-//         .await
-//         .expect("service task should finish within timeout")
-//         .expect("service task panicked")
-//         .expect("service task returned error");
+    tokio::time::timeout(service_task_timeout, service_task1)
+        .await
+        .expect("service task should finish within timeout")
+        .expect("service task panicked")
+        .expect("service task returned error");
 
-//     tokio::time::timeout(service_task_timeout, service_task2)
-//         .await
-//         .expect("service task should finish within timeout")
-//         .expect("service task panicked")
-//         .expect("service task returned error");
+    tokio::time::timeout(service_task_timeout, service_task2)
+        .await
+        .expect("service task should finish within timeout")
+        .expect("service task panicked")
+        .expect("service task returned error");
 
-//     // Ensure the service callback was called exactly once (othewise that means both services received the request)
-//     assert_eq!(
-//         call_count.load(Ordering::SeqCst),
-//         1,
-//         "service callback should have been called exactly once"
-//     );
+    // Ensure the service callback was called exactly once (othewise that means both services received the request)
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        1,
+        "service callback should have been called exactly once"
+    );
 
-//     tokio::time::timeout(service_task_timeout, router.shutdown())
-//         .await
-//         .expect("router shutdown timed out");
-// }
+    tokio::time::timeout(service_task_timeout, router.shutdown())
+        .await
+        .expect("router shutdown timed out");
+}
 
 // #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 // async fn service_communication_poll_wrong_node() {
