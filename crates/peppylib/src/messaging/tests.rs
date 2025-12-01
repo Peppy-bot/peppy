@@ -2,6 +2,7 @@ use bytes::Bytes;
 use config::node::QoSProfile;
 use pmi::{Messenger, MessengerBackend};
 use rand::seq::SliceRandom;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -1233,275 +1234,277 @@ async fn service_communication_fails_service_timeouts() {
         .expect("router shutdown timed out");
 }
 
-// #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-// async fn service_handle_request_processes_multiple_messages() {
-//     let router = TestRouterContext::start().await;
-//     let (host, port) = router.connection_target();
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn service_handle_request_processes_multiple_messages() {
+    let router = TestRouterContext::start().await;
+    let (host, port) = router.connection_target();
 
-//     // Listener instance
-//     let listener_node_name = "camera";
-//     let listener_service_name = "enable_camera";
-//     let listener_instance_id = "listener_instance";
+    // Listener instance
+    let listener_node_name = "camera";
+    let listener_service_name = "enable_camera";
+    let listener_instance_id = "listener_instance";
+    let listener_master_node = "listener_master_node";
 
-//     // Caller instance
-//     let caller_instance_id = "caller_instance";
+    // Caller instance
+    const CALLER_INSTANCE_ID: &str = "caller_instance";
+    const CALLER_MASTER_NODE: &str = "caller_master_node";
 
-//     let expected_requests = 500;
-//     let call_count = Arc::new(AtomicUsize::new(0));
+    let expected_requests = 500;
+    let call_count = Arc::new(AtomicUsize::new(0));
 
-//     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-//     let (service_ready_tx, service_ready_rx) = oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let (service_ready_tx, service_ready_rx) = oneshot::channel();
 
-//     let call_count = Arc::clone(&call_count);
-//     let host = host.clone();
+    let call_count = Arc::clone(&call_count);
+    let host = host.clone();
 
-//     let service_task = {
-//         let service_expose_handle = connect_service_messenger(&host, port).await;
-//         let mut service = ServiceMessenger::listen(
-//             &service_expose_handle,
-//             MASTER_NODE_NAME,
-//             listener_node_name,
-//             listener_service_name,
-//             listener_instance_id,
-//         )
-//         .await
-//         .expect("service should start");
+    let service_task = {
+        let service_expose_handle = connect_service_messenger(&host, port).await;
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            listener_master_node,
+            listener_node_name,
+            listener_service_name,
+            listener_instance_id,
+        )
+        .await
+        .expect("service should start");
 
-//         let call_count = Arc::clone(&call_count);
+        let call_count = Arc::clone(&call_count);
 
-//         tokio::spawn(async move {
-//             service_ready_tx.send(()).unwrap();
+        tokio::spawn(async move {
+            service_ready_tx.send(()).unwrap();
 
-//             tokio::select! {
-//                 result = service.handle_requests(|request| {
-//                     let call_count = Arc::clone(&call_count);
-//                     async move {
-//                         call_count.fetch_add(1, Ordering::SeqCst);
-//                         Ok(request.message().payload().to_bytes())
-//                     }
-//                 }) => result,
-//                 _ = shutdown_rx => Ok(()),
-//             }
-//         })
-//     };
+            tokio::select! {
+                result = service.handle_requests(|request| {
+                    let call_count = Arc::clone(&call_count);
+                    async move {
+                        call_count.fetch_add(1, Ordering::SeqCst);
+                        Ok(request.message().payload().to_bytes())
+                    }
+                }) => result,
+                _ = shutdown_rx => Ok(()),
+            }
+        })
+    };
 
-//     service_ready_rx
-//         .await
-//         .expect("service should signal readiness");
+    service_ready_rx
+        .await
+        .expect("service should signal readiness");
 
-//     // The caller node has its own scope (emulates a separate node running on a different instance)
-//     {
-//         let caller_handle = router.service_messenger().await;
+    // The caller node has its own scope (emulates a separate node running on a different instance)
+    {
+        let caller_handle = router.service_messenger().await;
 
-//         for i in 0..expected_requests {
-//             let request_payload = Bytes::from(format!("enable=true;request={i}").into_bytes());
-//             let response = ServiceMessenger::poll(
-//                 &caller_handle,
-//                 MASTER_NODE_NAME,
-//                 caller_instance_id,
-//                 listener_node_name,
-//                 listener_service_name,
-//                 Some(listener_instance_id),
-//                 request_payload.clone(),
-//                 Duration::from_secs(2),
-//             )
-//             .await
-//             .expect("caller should receive response");
-//             assert_eq!(
-//                 response.payload().to_bytes(),
-//                 request_payload,
-//                 "response should match the originating request payload"
-//             );
-//         }
-//     }
+        for i in 0..expected_requests {
+            let request_payload = Bytes::from(format!("enable=true;request={i}").into_bytes());
+            let response = ServiceMessenger::poll(
+                &caller_handle,
+                CALLER_MASTER_NODE,
+                CALLER_INSTANCE_ID,
+                listener_node_name,
+                listener_service_name,
+                None,
+                Some(listener_instance_id),
+                request_payload.clone(),
+                Duration::from_secs(2),
+            )
+            .await
+            .expect("caller should receive response");
+            assert_eq!(
+                response.payload().to_bytes(),
+                request_payload,
+                "response should match the originating request payload"
+            );
+        }
+    }
 
-//     shutdown_tx.send(()).unwrap();
+    shutdown_tx.send(()).unwrap();
 
-//     let service_result = service_task.await.expect("service task panicked");
-//     service_result.expect("service task returned error");
+    let service_result = service_task.await.expect("service task panicked");
+    service_result.expect("service task returned error");
 
-//     assert_eq!(
-//         call_count.load(Ordering::SeqCst),
-//         expected_requests,
-//         "service should process all requests"
-//     );
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        expected_requests,
+        "service should process all requests"
+    );
 
-//     router.shutdown().await;
-// }
+    router.shutdown().await;
+}
 
-// /// Ensures a unique request returns its unique response
-// #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-// async fn single_service_communication_multiple_polls_and_callers() {
-//     let router = TestRouterContext::start().await;
-//     let (host, port) = router.connection_target();
+/// Ensures a unique request returns its unique response
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn single_service_communication_multiple_polls_and_callers() {
+    let router = TestRouterContext::start().await;
+    let (host, port) = router.connection_target();
 
-//     // Listener instance
-//     let listener_node_name = "camera";
-//     let listener_service_name = "enable_camera";
-//     let listener_instance_id = "listener_instance";
+    // Listener instance
+    let listener_node_name = "camera";
+    let listener_service_name = "enable_camera";
+    let listener_instance_id = "listener_instance";
+    let listener_master_node = "listener_master_node";
 
-//     // TODO: 500 callers saturate Zenohd, it shouldn't
-//     let caller_count = 100;
-//     let requests_per_caller = 5;
-//     let total_requests = caller_count * requests_per_caller;
-//     let call_count = Arc::new(AtomicUsize::new(0));
+    // Caller master node (shared by all callers)
+    const CALLER_MASTER_NODE: &str = "caller_master_node";
 
-//     let (service_ready_tx, service_ready_rx) = oneshot::channel();
+    // TODO: 500 callers saturate Zenohd, it shouldn't
+    let caller_count = 100;
+    let requests_per_caller = 5;
+    let total_requests = caller_count * requests_per_caller;
+    let call_count = Arc::new(AtomicUsize::new(0));
 
-//     // The exposed service has its own dedicated scope (emulates running on its own instance)
-//     let service_task: tokio::task::JoinHandle<Result<(), Error>> = {
-//         let service_expose_handle = router.service_messenger().await;
+    let (service_ready_tx, service_ready_rx) = oneshot::channel();
 
-//         let mut service = ServiceMessenger::listen(
-//             &service_expose_handle,
-//             MASTER_NODE_NAME,
-//             listener_node_name,
-//             listener_service_name,
-//             listener_instance_id,
-//         )
-//         .await
-//         .expect("service should start");
+    // The exposed service has its own dedicated scope (emulates running on its own instance)
+    let service_task: tokio::task::JoinHandle<Result<(), Error>> = {
+        let service_expose_handle = router.service_messenger().await;
 
-//         let call_count = Arc::clone(&call_count);
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            listener_master_node,
+            listener_node_name,
+            listener_service_name,
+            listener_instance_id,
+        )
+        .await
+        .expect("service should start");
 
-//         tokio::spawn(async move {
-//             let mut in_flight = Vec::with_capacity(total_requests);
-//             service_ready_tx.send(()).unwrap();
+        let call_count = Arc::clone(&call_count);
 
-//             for _ in 0..total_requests {
-//                 let listener_instance_id = listener_instance_id.to_string();
-//                 let call_count = Arc::clone(&call_count);
+        tokio::spawn(async move {
+            let mut in_flight = Vec::with_capacity(total_requests);
+            service_ready_tx.send(()).unwrap();
 
-//                 let handle = service
-//                     .spawn_next_request_handler(move |request| async move {
-//                         let identifier = request.message().key_expr().to_string();
-//                         let payload = request.message().payload().to_bytes();
-//                         let caller_id = request.message().instance_id();
-//                         let expected_identifier = format!(
-//                             "{MASTER_NODE_NAME}/{listener_instance_id}/service/{listener_node_name}/{listener_service_name}/{caller_id}/request"
-//                         );
-//                         assert_eq!(identifier, expected_identifier);
-//                         call_count.fetch_add(1, Ordering::SeqCst);
-//                         Ok(payload)
-//                     })
-//                     .await
-//                     .expect("service should receive expected number of requests")
-//                     .expect("service subscription closed before handling request");
+            for _ in 0..total_requests {
+                let call_count = Arc::clone(&call_count);
 
-//                 in_flight.push(handle);
-//             }
+                let handle = service
+                    .spawn_next_request_handler(move |request| async move {
+                        let payload = request.message().payload().to_bytes();
+                        assert_eq!(request.message().master_node(), CALLER_MASTER_NODE);
+                        call_count.fetch_add(1, Ordering::SeqCst);
+                        Ok(payload)
+                    })
+                    .await
+                    .expect("service should receive expected number of requests")
+                    .expect("service subscription closed before handling request");
 
-//             for handle in in_flight {
-//                 handle
-//                     .await
-//                     .expect("service handler task panicked")
-//                     .expect("service handler task returned error");
-//             }
+                in_flight.push(handle);
+            }
 
-//             Ok(())
-//         })
-//     };
+            for handle in in_flight {
+                handle
+                    .await
+                    .expect("service handler task panicked")
+                    .expect("service handler task returned error");
+            }
 
-//     service_ready_rx
-//         .await
-//         .expect("service should signal readiness");
+            Ok(())
+        })
+    };
 
-//     // The caller node has its own scope (emulates a separate node running on a different instance)
-//     {
-//         let mut expected_payloads = HashMap::with_capacity(total_requests);
-//         let mut caller_requests = Vec::with_capacity(caller_count);
+    service_ready_rx
+        .await
+        .expect("service should signal readiness");
 
-//         for caller_idx in 0..caller_count {
-//             let caller_name = format!("vision_pipeline_{caller_idx}");
-//             let mut requests = Vec::with_capacity(requests_per_caller);
-//             for request_idx in 0..requests_per_caller {
-//                 let payload =
-//                     Bytes::from(format!("caller={caller_name};request={request_idx}").into_bytes());
-//                 expected_payloads.insert((caller_name.clone(), request_idx), payload.clone());
-//                 requests.push((request_idx, payload));
-//             }
-//             caller_requests.push((caller_name, requests));
-//         }
+    // The caller node has its own scope (emulates a separate node running on a different instance)
+    {
+        let mut expected_payloads = HashMap::with_capacity(total_requests);
+        let mut caller_requests = Vec::with_capacity(caller_count);
 
-//         let mut rng = rand::rng();
-//         caller_requests.shuffle(&mut rng);
+        for caller_idx in 0..caller_count {
+            let caller_name = format!("vision_pipeline_{caller_idx}");
+            let mut requests = Vec::with_capacity(requests_per_caller);
+            for request_idx in 0..requests_per_caller {
+                let payload =
+                    Bytes::from(format!("caller={caller_name};request={request_idx}").into_bytes());
+                expected_payloads.insert((caller_name.clone(), request_idx), payload.clone());
+                requests.push((request_idx, payload));
+            }
+            caller_requests.push((caller_name, requests));
+        }
 
-//         let mut handles = Vec::with_capacity(caller_count);
-//         for (caller_id, mut requests) in caller_requests {
-//             requests.shuffle(&mut rng);
-//             let host = host.clone();
-//             let poll_service = tokio::spawn(async move {
-//                 let caller_handle = connect_service_messenger(&host, port).await;
+        let mut rng = rand::rng();
+        caller_requests.shuffle(&mut rng);
 
-//                 let mut caller_results = Vec::with_capacity(requests.len());
-//                 for (request_idx, request_payload) in requests {
-//                     let response = ServiceMessenger::poll(
-//                         &caller_handle,
-//                         MASTER_NODE_NAME,
-//                         &caller_id,
-//                         listener_node_name,
-//                         listener_service_name,
-//                         Some(listener_instance_id),
-//                         request_payload.clone(),
-//                         Duration::from_secs(1),
-//                     )
-//                     .await
-//                     .expect("caller should receive response");
+        let mut handles = Vec::with_capacity(caller_count);
+        for (caller_id, mut requests) in caller_requests {
+            requests.shuffle(&mut rng);
+            let host = host.clone();
+            let poll_service = tokio::spawn(async move {
+                let caller_handle = connect_service_messenger(&host, port).await;
 
-//                     caller_results.push((
-//                         caller_id.clone(),
-//                         request_idx,
-//                         request_payload.clone(),
-//                         response,
-//                     ));
-//                 }
+                let mut caller_results = Vec::with_capacity(requests.len());
+                for (request_idx, request_payload) in requests {
+                    let response = ServiceMessenger::poll(
+                        &caller_handle,
+                        CALLER_MASTER_NODE,
+                        &caller_id,
+                        listener_node_name,
+                        listener_service_name,
+                        None,
+                        Some(listener_instance_id),
+                        request_payload.clone(),
+                        Duration::from_secs(1),
+                    )
+                    .await
+                    .expect("caller should receive response");
 
-//                 caller_results
-//             });
-//             handles.push(poll_service);
-//         }
+                    caller_results.push((
+                        caller_id.clone(),
+                        request_idx,
+                        request_payload.clone(),
+                        response,
+                    ));
+                }
 
-//         let mut results = Vec::with_capacity(total_requests);
-//         for handle in handles {
-//             let mut caller_results = handle.await.expect("poll_service task should not panic");
-//             results.append(&mut caller_results);
-//         }
+                caller_results
+            });
+            handles.push(poll_service);
+        }
 
-//         for (caller_id, request_idx, request_payload, response) in &results {
-//             let expected_payload = expected_payloads
-//                 .remove(&(caller_id.clone(), *request_idx))
-//                 .expect("expected payload should exist for caller/request pair");
+        let mut results = Vec::with_capacity(total_requests);
+        for handle in handles {
+            let mut caller_results = handle.await.expect("poll_service task should not panic");
+            results.append(&mut caller_results);
+        }
 
-//             assert_eq!(
-//                 request_payload, &expected_payload,
-//                 "stored request payload should match expected value for `{caller_id}` request {request_idx}"
-//             );
-//             assert_eq!(
-//                 response.payload().to_bytes(),
-//                 expected_payload,
-//                 "response for `{caller_id}` request {request_idx} should match the originating request payload"
-//             );
-//         }
+        for (caller_id, request_idx, request_payload, response) in &results {
+            let expected_payload = expected_payloads
+                .remove(&(caller_id.clone(), *request_idx))
+                .expect("expected payload should exist for caller/request pair");
 
-//         assert!(
-//             expected_payloads.is_empty(),
-//             "all expected caller/request pairs should have been validated"
-//         );
-//     };
+            assert_eq!(
+                request_payload, &expected_payload,
+                "stored request payload should match expected value for `{caller_id}` request {request_idx}"
+            );
+            assert_eq!(
+                response.payload().to_bytes(),
+                expected_payload,
+                "response for `{caller_id}` request {request_idx} should match the originating request payload"
+            );
+        }
 
-//     service_task
-//         .await
-//         .expect("service task panicked")
-//         .expect("service task returned error");
+        assert!(
+            expected_payloads.is_empty(),
+            "all expected caller/request pairs should have been validated"
+        );
+    };
 
-//     let actual_count = call_count.load(Ordering::SeqCst);
-//     assert_eq!(
-//         actual_count, total_requests,
-//         "service should have been called {total_requests} times"
-//     );
+    service_task
+        .await
+        .expect("service task panicked")
+        .expect("service task returned error");
 
-//     router.shutdown().await;
-// }
+    let actual_count = call_count.load(Ordering::SeqCst);
+    assert_eq!(
+        actual_count, total_requests,
+        "service should have been called {total_requests} times"
+    );
+
+    router.shutdown().await;
+}
 
 // #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 // async fn action_communication() {
