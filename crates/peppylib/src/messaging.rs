@@ -22,6 +22,8 @@ use tokio::{
 use tracing::error;
 
 const INSTANCE_ID_WILDCARD: &str = "**";
+/// Marker used in key expressions for broadcast requests (targeting any instance)
+const BROADCAST_MARKER: &str = "_any_";
 
 pub struct MessengerHandle {
     messenger: Arc<Mutex<Messenger>>,
@@ -78,7 +80,8 @@ pub struct ActionMessenger;
 
 pub struct ServiceEndpoint {
     messenger: Arc<Mutex<Messenger>>,
-    subscription: Subscription,
+    instance_subscription: Subscription,
+    broadcast_subscription: Subscription,
     bound_master_node: String,
     service_root: String,
     instance_id: String,
@@ -154,18 +157,27 @@ impl ServiceEndpoint {
     }
 
     async fn next_request(&mut self) -> Result<(ServiceRequestContext, String)> {
-        while let Some(request) = self.subscription.rx.recv().await {
-            match self.build_request_context(request) {
-                Ok((context, response_topic)) => return Ok((context, response_topic)),
-                Err(Error::InvalidServiceRequest { .. }) => {
-                    // Skip messages that do not match this service endpoint.
-                    continue;
+        loop {
+            // Use select! to receive from either the instance-specific subscription or the broadcast subscription
+            let request = tokio::select! {
+                msg = self.instance_subscription.rx.recv() => msg,
+                msg = self.broadcast_subscription.rx.recv() => msg,
+            };
+
+            match request {
+                Some(request) => {
+                    match self.build_request_context(request) {
+                        Ok((context, response_topic)) => return Ok((context, response_topic)),
+                        Err(Error::InvalidServiceRequest { .. }) => {
+                            // Skip messages that do not match this service endpoint.
+                            continue;
+                        }
+                        Err(err) => return Err(err),
+                    }
                 }
-                Err(err) => return Err(err),
+                None => return Err(Error::ServiceRequestStreamClosed),
             }
         }
-
-        Err(Error::ServiceRequestStreamClosed)
     }
 
     fn build_request_context(
@@ -182,17 +194,6 @@ impl ServiceEndpoint {
             reason: "missing target master node segment in request".to_string(),
         })?;
 
-        // If request targets a specific master node, verify this service is bound to it
-        if target_master_segment != "*" && target_master_segment != self.bound_master_node {
-            return Err(Error::InvalidServiceRequest {
-                identifier: identifier.clone(),
-                reason: format!(
-                    "request targets master node '{}', but this service is bound to '{}'",
-                    target_master_segment, self.bound_master_node
-                ),
-            });
-        }
-
         // Parse caller_master (second segment)
         let caller_master_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
             identifier: identifier.clone(),
@@ -204,17 +205,6 @@ impl ServiceEndpoint {
             identifier: identifier.clone(),
             reason: "missing target instance segment in request".to_string(),
         })?;
-
-        // If request targets a specific instance, verify this service instance matches
-        if target_instance_segment != "*" && target_instance_segment != self.instance_id {
-            return Err(Error::InvalidServiceRequest {
-                identifier: identifier.clone(),
-                reason: format!(
-                    "request targets instance '{}', but this service has instance_id '{}'",
-                    target_instance_segment, self.instance_id
-                ),
-            });
-        }
 
         // Parse caller_instance (fourth segment)
         let caller_instance_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
@@ -744,20 +734,32 @@ impl MessengerHandle {
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
         // Format: target_master/caller_master/target_instance/caller_instance/service_root/request/id
-        // Subscribe to all requests; filtering for targeted requests is done in build_request_context
-        // Note: Zenoh doesn't support $* alone in a chunk, so we can't filter at subscription level
-        let request_subscription_topic = format!("*/*/*/*/{service_root}/request/**");
-        let subscription = {
-            let messenger = self.messenger.lock().await;
-            messenger
-                .subscribe(&request_subscription_topic, SubscriberQoS::Standard)
-                .await
-        }
-        .map_err(Error::PeppyMessagingInterface)?;
+        // Subscribe to requests targeting this specific instance OR broadcast requests (using BROADCAST_MARKER)
+        // The subscription pattern uses Zenoh's wildcard to match both cases:
+        // - Instance-specific: target_instance = as_instance_id
+        // - Broadcast: target_instance = BROADCAST_MARKER (_any_)
+        // We subscribe to both patterns using separate subscriptions on the same key space
+        let subscription_topic = format!("*/*/{as_instance_id}/*/{service_root}/request/**");
+        let broadcast_subscription_topic =
+            format!("*/*/{BROADCAST_MARKER}/*/{service_root}/request/**");
+
+        let messenger = self.messenger.lock().await;
+        let instance_subscription = messenger
+            .subscribe(&subscription_topic, SubscriberQoS::Standard)
+            .await
+            .map_err(Error::PeppyMessagingInterface)?;
+
+        let broadcast_subscription = messenger
+            .subscribe(&broadcast_subscription_topic, SubscriberQoS::Standard)
+            .await
+            .map_err(Error::PeppyMessagingInterface)?;
+
+        drop(messenger);
 
         Ok(ServiceEndpoint {
             messenger: Arc::clone(&self.messenger),
-            subscription,
+            instance_subscription,
+            broadcast_subscription,
             bound_master_node: bound_master_node.to_string(),
             service_root,
             instance_id: as_instance_id.to_string(),
@@ -789,13 +791,14 @@ impl MessengerHandle {
 
         let target_instance_id = target_instance_id.map(str::to_string);
 
-        // If no target specified, use wildcards for broadcast
+        // If no target specified, use BROADCAST_MARKER for broadcast requests
+        // This allows Zenoh subscription patterns to filter at the key expression level
         let (effective_target_master, effective_target_instance) =
             match (target_master_node, target_instance_id.as_deref()) {
                 (Some(master), Some(instance)) => (master.to_string(), instance.to_string()),
-                (Some(master), None) => (master.to_string(), "*".to_string()),
-                (None, Some(instance)) => ("*".to_string(), instance.to_string()),
-                (None, None) => ("*".to_string(), "*".to_string()),
+                (Some(master), None) => (master.to_string(), BROADCAST_MARKER.to_string()),
+                (None, Some(instance)) => (BROADCAST_MARKER.to_string(), instance.to_string()),
+                (None, None) => (BROADCAST_MARKER.to_string(), BROADCAST_MARKER.to_string()),
             };
 
         // Target's instance as BOUND (service is bound to receive requests)
@@ -810,8 +813,10 @@ impl MessengerHandle {
         let target_master = target_bound_instance_segment
             .as_ref()
             .map(|_| effective_target_master.as_str())
-            .unwrap_or("*");
-        let target_instance = target_bound_instance_segment.as_deref().unwrap_or("*");
+            .unwrap_or(BROADCAST_MARKER);
+        let target_instance = target_bound_instance_segment
+            .as_deref()
+            .unwrap_or(BROADCAST_MARKER);
         let request_topic = format!(
             "{}/{}/{}/{}/{}/request/{request_id}",
             target_master,
@@ -822,14 +827,27 @@ impl MessengerHandle {
         );
 
         // Response topic format: caller_master/responder_master/caller_instance/responder_instance/service_root/response/request_id
+        // For response subscriptions, use wildcard (*) instead of _any_ because we're subscribing (not publishing)
+        // The responder will publish with its actual master node, so we need a wildcard to match any responder
+        let response_master_pattern = if effective_target_master == BROADCAST_MARKER {
+            "*"
+        } else {
+            &effective_target_master
+        };
         let response_topic = match target_response_instance_segment.as_deref() {
             Some(segment) => {
+                // When targeting a specific instance, use wildcard for master if we don't know it
+                let response_instance_pattern = if segment == BROADCAST_MARKER {
+                    "*"
+                } else {
+                    segment
+                };
                 format!(
                     "{}/{}/{}/{}/{}/response/{request_id}",
                     bound_master_node,
-                    effective_target_master,
+                    response_master_pattern,
                     caller_bound_instance_segment,
-                    segment,
+                    response_instance_pattern,
                     service_root
                 )
             }

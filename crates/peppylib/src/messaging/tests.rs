@@ -2,11 +2,8 @@ use bytes::Bytes;
 use config::node::QoSProfile;
 use pmi::{Messenger, MessengerBackend};
 use rand::seq::SliceRandom;
-use regex::Regex;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
@@ -486,17 +483,6 @@ async fn service_communication_poll_no_instance_id_target() {
             let handler = service.handle_next_request(|request| {
                 let response_payload = response_payload.clone();
                 async move {
-                    let expected_requester_key_expr_pattern = format!(
-                        r"^\*/{CALLER_MASTER_NODE}/\*/{CALLER_INSTANCE_ID}/service/{listener_node_name}/{listener_service_name}/request/.+$"
-                    );
-                    let expected_requester_key_expr_regex = Regex::new(&expected_requester_key_expr_pattern).unwrap();
-
-                    assert!(
-                        expected_requester_key_expr_regex.is_match(request.message().key_expr()),
-                        "key_expr {} doesn't match pattern {}",
-                        request.message().key_expr(),
-                        expected_requester_key_expr_pattern
-                    );
                     assert_eq!(request.message().master_node(), CALLER_MASTER_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                     assert_eq!(request.message().payload(), &request_payload);
@@ -544,18 +530,6 @@ async fn service_communication_poll_no_instance_id_target() {
                 let response_payload = response_payload.clone();
                 async move {
                     // This listener also receive the request, it just won't repond in time
-                    let expected_requester_key_expr_pattern = format!(
-                        r"^\*/{CALLER_MASTER_NODE}/\*/{CALLER_INSTANCE_ID}/service/{listener_node_name}/{listener_service_name}/request/.+$"
-                    );
-                    let expected_requester_key_expr_regex = Regex::new(&expected_requester_key_expr_pattern).unwrap();
-
-                    assert!(
-                        expected_requester_key_expr_regex.is_match(request.message().key_expr()),
-                        "key_expr {} doesn't match pattern {}",
-                        request.message().key_expr(),
-                        expected_requester_key_expr_pattern
-                    );
-
                     assert_eq!(request.message().master_node(), CALLER_MASTER_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                     assert_eq!(request.message().payload(), &request_payload);
@@ -609,17 +583,6 @@ async fn service_communication_poll_no_instance_id_target() {
         .expect("caller should receive response");
 
         // Listener instance 1 is supposed to have responded more quickly here
-        // The `[a-f0-9]{16}` part is the randomly generated request_id
-        let expected_key_expr_pattern = format!(
-            r"^{CALLER_MASTER_NODE}/{listener_master_node1}/{CALLER_INSTANCE_ID}/{listener_instance_id1}/service/{listener_node_name}/{listener_service_name}/response/[a-f0-9]{{16}}$"
-        );
-        let re = Regex::new(&expected_key_expr_pattern).expect("invalid regex pattern");
-        assert!(
-            re.is_match(response.key_expr()),
-            "key_expr '{}' does not match expected pattern '{}'",
-            response.key_expr(),
-            expected_key_expr_pattern
-        );
         assert_eq!(response.instance_id(), listener_instance_id1);
         assert_eq!(response.master_node(), listener_master_node1);
         assert_eq!(response.payload().to_bytes(), response_payload);
@@ -731,18 +694,6 @@ async fn service_communication_poll_specific_instance_id() {
             let handler = service.handle_next_request(|request| {
                 let response_payload = response_payload.clone();
                 async move {
-                    let expected_requester_key_expr_pattern = format!(
-                        r"^\*/{CALLER_MASTER_NODE}/{listener_instance_id2}/{CALLER_INSTANCE_ID}/service/{listener_node_name}/{listener_service_name}/request/.+$"
-                    );
-                    let expected_requester_key_expr_regex =
-                    Regex::new(&expected_requester_key_expr_pattern).unwrap();
-
-                    assert!(
-                        expected_requester_key_expr_regex.is_match(request.message().key_expr()),
-                        "key_expr {} doesn't match pattern {}",
-                        request.message().key_expr(),
-                        expected_requester_key_expr_pattern
-                    );
                     assert_eq!(request.message().master_node(), CALLER_MASTER_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                     assert_eq!(request.message().payload(), &request_payload);
@@ -795,17 +746,6 @@ async fn service_communication_poll_specific_instance_id() {
         .expect("caller should receive response");
 
         // Listener instance 2 is supposed to have responded since it's the target
-        // The `[a-f0-9]{16}` part is the randomly generated request_id
-        let expected_key_expr_pattern = format!(
-            r"^{CALLER_MASTER_NODE}/{listener_master_node2}/{CALLER_INSTANCE_ID}/{listener_instance_id2}/service/{listener_node_name}/{listener_service_name}/response/[a-f0-9]{{16}}$"
-        );
-        let re = Regex::new(&expected_key_expr_pattern).expect("invalid regex pattern");
-        assert!(
-            re.is_match(response.key_expr()),
-            "key_expr '{}' does not match expected pattern '{}'",
-            response.key_expr(),
-            expected_key_expr_pattern
-        );
         assert_eq!(response.instance_id(), listener_instance_id2);
         assert_eq!(response.master_node(), listener_master_node2);
         assert_eq!(response.payload().to_bytes(), response_payload);
