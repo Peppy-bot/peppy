@@ -427,15 +427,6 @@ impl TopicMessenger {
     }
 
     /// Publishes a payload to a topic on the specified master node.
-    ///
-    /// Arguments:
-    /// - `messenger`: shared messenger handle used to publish.
-    /// - `bound_master_node`: master node segment to scope the topic under.
-    /// - `as_node`: name of the node emitting the message.
-    /// - `as_topic`: topic name to publish to.
-    /// - `as_instance_id`: instance identifier for the emitting node
-    /// - `qos`: QoS profile that is mapped to the publisher QoS.
-    /// - `payload`: message body to send.
     pub async fn emit(
         messenger: &MessengerHandle,
         as_master_node: &str,

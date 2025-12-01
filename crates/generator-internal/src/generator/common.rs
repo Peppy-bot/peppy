@@ -29,16 +29,6 @@ impl<'a> PeppyConfigTemplate<'a> {
     pub const TEMPLATE_PATH: &'static str = "peppygen/rust/Cargo.toml.j2";
 }
 
-#[derive(Template)]
-#[template(path = "peppygen/rust/src/messaging.rs.j2", escape = "none")]
-struct MessagingTemplate<'a> {
-    bound_master_node: &'a str,
-}
-
-impl<'a> MessagingTemplate<'a> {
-    pub const TEMPLATE_PATH: &'static str = "peppygen/rust/src/messaging.rs.j2";
-}
-
 #[derive(Clone)]
 struct WorkspacePackageMetadata {
     version: String,
@@ -46,10 +36,7 @@ struct WorkspacePackageMetadata {
     authors: Vec<String>,
 }
 
-pub fn add_peppylib_dependencies(
-    to_path: impl AsRef<Path>,
-    master_node_bound_name: &str,
-) -> Result<()> {
+pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>) -> Result<()> {
     const PEPPYLIB_DIR: &str = "peppylib";
     const PMI_INTERNAL_DIR: &str = "pmi-internal";
     const CONFIG_INTERNAL_DIR: &str = "config-internal";
@@ -60,7 +47,7 @@ pub fn add_peppylib_dependencies(
     let vendored_crates_dir = to_path.join(VENDORED_ROOT);
     fs::create_dir_all(&vendored_crates_dir)?;
 
-    generate_lib_structure(to_path, PEPPYLIB_RELATIVE_PATH, master_node_bound_name)?;
+    generate_lib_structure(to_path, PEPPYLIB_RELATIVE_PATH)?;
 
     let metadata = workspace_package_metadata()?;
 
@@ -155,24 +142,14 @@ impl ModuleCategory {
     }
 }
 
-fn generate_lib_structure(
-    to_path: impl AsRef<Path>,
-    peppylib_path: &str,
-    master_node_bound_name: &str,
-) -> Result<()> {
+fn generate_lib_structure(to_path: impl AsRef<Path>, peppylib_path: &str) -> Result<()> {
     let templates_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
     let template_root = templates_dir.join("peppygen/rust");
     let to_path = to_path.as_ref();
 
     fs::create_dir_all(to_path)?;
 
-    copy_templates(
-        &templates_dir,
-        &template_root,
-        to_path,
-        peppylib_path,
-        &master_node_bound_name,
-    )
+    copy_templates(&templates_dir, &template_root, to_path, peppylib_path)
 }
 
 fn group_artifacts_by_category(
@@ -466,13 +443,7 @@ fn as_function_item(item: ImplItem) -> Option<Item> {
     }))
 }
 
-fn copy_templates(
-    root: &Path,
-    from: &Path,
-    to: &Path,
-    peppylib_path: &str,
-    master_node_bound_name: &str,
-) -> Result<()> {
+fn copy_templates(root: &Path, from: &Path, to: &Path, peppylib_path: &str) -> Result<()> {
     for entry in fs::read_dir(from)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
@@ -481,19 +452,13 @@ fn copy_templates(
 
         if file_type.is_dir() {
             fs::create_dir_all(&destination)?;
-            copy_templates(
-                root,
-                &path,
-                &destination,
-                peppylib_path,
-                master_node_bound_name,
-            )?;
+            copy_templates(root, &path, &destination, peppylib_path)?;
         } else if file_type.is_file() {
             let ext = path.extension().and_then(|ext| ext.to_str());
             if ext == Some(".gitkeep") {
                 continue;
             } else if ext == Some("j2") {
-                let rendered = render_template(root, &path, peppylib_path, master_node_bound_name)?;
+                let rendered = render_template(root, &path, peppylib_path)?;
                 let destination = destination.with_extension("");
 
                 if let Some(parent) = destination.parent() {
@@ -698,12 +663,7 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
     Ok(())
 }
 
-fn render_template(
-    root: &Path,
-    template_path: &Path,
-    peppylib_path: &str,
-    master_node_bound_name: &str,
-) -> Result<String> {
+fn render_template(root: &Path, template_path: &Path, peppylib_path: &str) -> Result<String> {
     let relative = template_path
         .strip_prefix(root)
         .unwrap_or(template_path)
@@ -715,12 +675,6 @@ fn render_template(
             let tpl = PeppyConfigTemplate {
                 peppylib_version: env!("CARGO_PKG_VERSION"),
                 peppylib_path,
-            };
-            Ok(tpl.render()?)
-        }
-        MessagingTemplate::TEMPLATE_PATH => {
-            let tpl = MessagingTemplate {
-                bound_master_node: master_node_bound_name,
             };
             Ok(tpl.render()?)
         }

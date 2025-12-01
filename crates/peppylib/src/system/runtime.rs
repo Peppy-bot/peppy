@@ -38,6 +38,10 @@ impl RuntimeProcessor {
         self.launch_config.deployment_instance.instance_id.as_str()
     }
 
+    pub fn bound_master_node(&self) -> &str {
+        self.launch_config.bound_master_node.as_str()
+    }
+
     pub fn input_parameters(&self) -> &NodeParameters {
         &self.launch_config.deployment_instance.parameters
     }
@@ -46,12 +50,10 @@ impl RuntimeProcessor {
         self.launch_config.node_name.as_str()
     }
 
-    pub fn bound_master_node(&self) -> &str {
-        self.launch_config.bound_master_node.as_str()
-    }
-
     pub fn get_instance_ids() -> HashMap<String, String> {
-        todo!("Finish")
+        todo!(
+            "Finish. This is a dynamic call to the master node to get the current instances_ids. Don't do that during code generation since the list won't be up to date"
+        )
     }
 }
 

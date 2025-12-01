@@ -28,16 +28,14 @@ pub struct RustGenerator {
     sections: Vec<InterfaceArtifact>,
     schemas: HashMap<String, CapnpSchema>,
     pending_exposed_services: Option<ExposedServicesModule>,
-    master_node_bound_name: String,
 }
 
 impl RustGenerator {
-    pub fn new(master_node_bound_name: &str) -> Self {
+    pub fn new() -> Self {
         Self {
             sections: Vec::new(),
             schemas: HashMap::new(),
             pending_exposed_services: None,
-            master_node_bound_name: master_node_bound_name.to_string(),
         }
     }
 
@@ -1368,7 +1366,7 @@ impl LanguageGenerator for RustGenerator {
         self.flush_pending_exposed_services();
 
         // First create the basic structure of the project
-        common::add_peppylib_dependencies(&to_path, &self.master_node_bound_name)?;
+        common::add_peppylib_dependencies(&to_path)?;
         // Write the schema files to the project
         common::write_capnp_schemas(&self.schemas, to_path.as_ref())?;
         // Add the content to the Rust files

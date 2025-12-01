@@ -161,7 +161,7 @@ fn exposed_action() {
     // TODO: finish fixing
     let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
 
-    let mut generator = RustGenerator::new(MASTER_NODE_NAME);
+    let mut generator = RustGenerator::new();
     generator.add_exposed_action(&action).unwrap();
     let artifacts: Vec<String> = generator
         .into_artifacts()
@@ -332,7 +332,7 @@ fn exposed_action() {
 fn expose_action_without_request_body() {
     let action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
 
-    let mut generator = RustGenerator::new(MASTER_NODE_NAME);
+    let mut generator = RustGenerator::new();
     generator.add_exposed_action(&action).unwrap();
     let artifacts: Vec<String> = generator
         .into_artifacts()
@@ -425,7 +425,7 @@ fn expose_two_actions() {
     let action1: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let action2: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
 
-    let mut generator = RustGenerator::new(MASTER_NODE_NAME);
+    let mut generator = RustGenerator::new();
     generator.add_exposed_action(&action1).unwrap();
     generator.add_exposed_action(&action2).unwrap();
 
@@ -526,7 +526,7 @@ fn subscribed_to_action() {
         result_response: Some(result_response_format),
     };
 
-    let mut generator = RustGenerator::new(MASTER_NODE_NAME);
+    let mut generator = RustGenerator::new();
     generator
         .add_subscribed_action(&action, Some(&format))
         .unwrap();
@@ -708,7 +708,7 @@ fn subscribed_to_two_actions_same_node() {
         result_response: Some(rotate_result_response),
     };
 
-    let mut generator = RustGenerator::new(MASTER_NODE_NAME);
+    let mut generator = RustGenerator::new();
     generator
         .add_subscribed_action(&move_arm_action, Some(&move_arm_messages))
         .unwrap();
@@ -878,7 +878,7 @@ fn subscribed_action_without_response_payload() {
         result_response: None,
     };
 
-    let mut generator = RustGenerator::new(MASTER_NODE_NAME);
+    let mut generator = RustGenerator::new();
     generator
         .add_subscribed_action(&action, Some(&format))
         .expect("generator should allow subscribed actions with empty response payloads");
@@ -927,7 +927,7 @@ fn subscribed_action_without_feedback() {
         result_response: None,
     };
 
-    let mut generator = RustGenerator::new(MASTER_NODE_NAME);
+    let mut generator = RustGenerator::new();
     generator
         .add_subscribed_action(&action, Some(&format))
         .expect("generator should allow subscribed actions without feedback payloads");

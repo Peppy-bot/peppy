@@ -15,21 +15,12 @@ pub fn generate_lib_for_language(
     language: Language,
     interfaces: &[DeploymentInterface],
     output_dir: impl AsRef<Path>,
-    with_bound_master_node_name: &str,
 ) -> Result<()> {
     let output_dir = output_dir.as_ref();
 
     match language {
-        Language::Rust => generate_with_backend(
-            RustGenerator::new(with_bound_master_node_name),
-            interfaces,
-            output_dir,
-        ),
-        Language::Python => generate_with_backend(
-            PythonGenerator::new(with_bound_master_node_name),
-            interfaces,
-            output_dir,
-        ),
+        Language::Rust => generate_with_backend(RustGenerator::new(), interfaces, output_dir),
+        Language::Python => generate_with_backend(PythonGenerator::new(), interfaces, output_dir),
     }
 }
 
