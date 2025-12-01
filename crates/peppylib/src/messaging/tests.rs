@@ -2192,282 +2192,257 @@ async fn action_communication_goal_cancelled() {
     router.shutdown().await;
 }
 
-// #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-// async fn single_action_communication_multiple_polls() {
-//     let router = TestRouterContext::start().await;
-//     let (host, port) = router.connection_target();
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn single_action_communication_multiple_polls() {
+    let router = TestRouterContext::start().await;
+    let (host, port) = router.connection_target();
 
-//     // Listener instance
-//     let listener_node_name = "camera";
-//     let listener_action_name = "enable_camera";
-//     let listener_instance_id = "listener_instance";
+    // Listener instance
+    let listener_node_name = "camera";
+    let listener_action_name = "enable_camera";
+    const LISTENER_MASTER_NODE: &str = "listener_master_node";
+    const LISTENER_INSTANCE_ID: &str = "listener_instance";
 
-//     // Caller instance
-//     let caller_prefix = "the_brain";
+    // Caller instance
+    const CALLER_MASTER_NODE: &str = "caller_master_node";
+    let caller_prefix = "the_brain";
 
-//     const CLIENT_COUNT: usize = 8;
-//     let cases: Vec<_> = (0..CLIENT_COUNT)
-//         .map(|idx| ActionClientCase::new(caller_prefix, idx))
-//         .collect();
-//     let cases = Arc::new(cases);
+    const CLIENT_COUNT: usize = 8;
+    let cases: Vec<_> = (0..CLIENT_COUNT)
+        .map(|idx| ActionClientCase::new(caller_prefix, idx))
+        .collect();
+    let cases = Arc::new(cases);
 
-//     let (action_ready_tx, action_ready_rx) = oneshot::channel();
+    let (action_ready_tx, action_ready_rx) = oneshot::channel();
 
-//     // Launch a background task that plays the role of the action server.
-//     let server_task = {
-//         let action_handle = router.action_messenger().await;
-//         let action_ready_tx = Some(action_ready_tx);
-//         let cases = Arc::clone(&cases);
+    // Launch a background task that plays the role of the action server.
+    let server_task = {
+        let action_handle = router.action_messenger().await;
+        let action_ready_tx = Some(action_ready_tx);
+        let cases = Arc::clone(&cases);
 
-//         tokio::spawn(async move {
-//             let action = ActionMessenger::listen(
-//                 &action_handle,
-//                 MASTER_NODE_NAME,
-//                 listener_node_name,
-//                 listener_action_name,
-//                 listener_instance_id,
-//             )
-//             .await
-//             .expect("action should start");
+        tokio::spawn(async move {
+            let action = ActionMessenger::listen(
+                &action_handle,
+                LISTENER_MASTER_NODE,
+                listener_node_name,
+                listener_action_name,
+                LISTENER_INSTANCE_ID,
+            )
+            .await
+            .expect("action should start");
 
-//             let goal_service_root =
-//                 format!("action/{listener_node_name}/{listener_action_name}/goal");
-//             let result_service_root =
-//                 format!("action/{listener_node_name}/{listener_action_name}/result");
-//             let crate::messaging::ActionCreation {
-//                 mut goal_service,
-//                 cancel_service: _,
-//                 feedback_publisher,
-//                 mut result_service,
-//             } = action;
-//             let feedback_publisher = Arc::new(feedback_publisher);
+            let crate::messaging::ActionCreation {
+                mut goal_service,
+                cancel_service: _,
+                feedback_publisher,
+                mut result_service,
+            } = action;
+            let feedback_publisher = Arc::new(feedback_publisher);
 
-//             if let Some(tx) = action_ready_tx {
-//                 let _ = tx.send(());
-//             }
+            if let Some(tx) = action_ready_tx {
+                let _ = tx.send(());
+            }
 
-//             let client_total = cases.len();
+            let client_total = cases.len();
 
-//             let mut goal_handlers = Vec::with_capacity(client_total);
-//             for _ in 0..client_total {
-//                 let goal_service_root = goal_service_root.clone();
-//                 let cases = Arc::clone(&cases);
-//                 let feedback_publisher = Arc::clone(&feedback_publisher);
+            let mut goal_handlers = Vec::with_capacity(client_total);
+            for _ in 0..client_total {
+                let cases = Arc::clone(&cases);
+                let feedback_publisher = Arc::clone(&feedback_publisher);
 
-//                 let handler = goal_service
-//                     .spawn_next_request_handler(move |request| {
-//                         let goal_service_root = goal_service_root.clone();
-//                         let cases = Arc::clone(&cases);
-//                         let feedback_publisher = Arc::clone(&feedback_publisher);
+                let handler = goal_service
+                    .spawn_next_request_handler(move |request| {
+                        let cases = Arc::clone(&cases);
+                        let feedback_publisher = Arc::clone(&feedback_publisher);
 
-//                         async move {
-//                             let caller_id = request.message().instance_id();
-//                             let expected_goal_topic = format!(
-//                                 "{MASTER_NODE_NAME}/{listener_instance_id}/{goal_service_root}/{caller_id}/request"
-//                             );
-//                             assert_eq!(request.message().key_expr(), expected_goal_topic);
+                        async move {
+                            let payload = request.message().payload();
+                            let payload_bytes = payload.as_bytes();
+                            let payload_str = std::str::from_utf8(payload_bytes.as_ref())
+                                .expect("goal payload should be valid UTF-8");
 
-//                             let payload = request.message().payload();
-//                             let payload_bytes = payload.as_bytes();
-//                             let payload_str = std::str::from_utf8(payload_bytes.as_ref())
-//                                 .expect("goal payload should be valid UTF-8");
+                            let client_id = payload_str
+                                .split(';')
+                                .find_map(|part| part.strip_prefix("client="))
+                                .expect("goal payload should contain client identifier")
+                                .to_string();
 
-//                             let client_id = payload_str
-//                                 .split(';')
-//                                 .find_map(|part| part.strip_prefix("client="))
-//                                 .expect("goal payload should contain client identifier")
-//                                 .to_string();
+                            let case = cases
+                                .iter()
+                                .find(|case| case.client_id == client_id)
+                                .unwrap_or_else(|| {
+                                    panic!(
+                                        "goal handler received unexpected client id `{client_id}`"
+                                    )
+                                });
 
-//                             let case = cases
-//                                 .iter()
-//                                 .find(|case| case.client_id == client_id)
-//                                 .unwrap_or_else(|| {
-//                                     panic!(
-//                                         "goal handler received unexpected client id `{client_id}`"
-//                                     )
-//                                 });
+                            assert_eq!(
+                                payload, &case.goal,
+                                "goal payload for `{client_id}` should match expected value"
+                            );
 
-//                             assert_eq!(
-//                                 payload, &case.goal,
-//                                 "goal payload for `{client_id}` should match expected value"
-//                             );
+                            feedback_publisher.publish(case.feedback.clone()).await?;
 
-//                             feedback_publisher.publish(case.feedback.clone()).await?;
+                            Ok(case.goal_response.clone())
+                        }
+                    })
+                    .await
+                    .expect("action should spawn goal handler")
+                    .expect("goal subscription closed before handling request");
 
-//                             Ok(case.goal_response.clone())
-//                         }
-//                     })
-//                     .await
-//                     .expect("action should spawn goal handler")
-//                     .expect("goal subscription closed before handling request");
+                goal_handlers.push(handler);
+            }
 
-//                 goal_handlers.push(handler);
-//             }
+            for handler in goal_handlers {
+                handler
+                    .await
+                    .expect("goal handler task panicked")
+                    .expect("goal handler returned error");
+            }
 
-//             for handler in goal_handlers {
-//                 handler
-//                     .await
-//                     .expect("goal handler task panicked")
-//                     .expect("goal handler returned error");
-//             }
+            let mut result_handlers = Vec::with_capacity(client_total);
+            for _ in 0..client_total {
+                let cases = Arc::clone(&cases);
 
-//             let mut result_handlers = Vec::with_capacity(client_total);
-//             for _ in 0..client_total {
-//                 let result_service_root = result_service_root.clone();
-//                 let cases = Arc::clone(&cases);
+                let handler = result_service
+                    .spawn_next_request_handler(move |request| {
+                        let cases = Arc::clone(&cases);
 
-//                 let handler = result_service
-//                     .spawn_next_request_handler(move |request| {
-//                         let result_service_root = result_service_root.clone();
-//                         let cases = Arc::clone(&cases);
+                        async move {
+                            let payload = request.message().payload();
+                            let payload_bytes = payload.as_bytes();
+                            let payload_str = std::str::from_utf8(payload_bytes.as_ref())
+                                .expect("result payload should be valid UTF-8");
 
-//                         async move {
-//                             let caller_id = request.message().instance_id();
-//                             let expected_result_topic = format!(
-//                                 "{MASTER_NODE_NAME}/{listener_instance_id}/{result_service_root}/{caller_id}/request"
-//                             );
-//                             assert_eq!(request.message().key_expr(), expected_result_topic);
+                            let client_id = payload_str
+                                .split(';')
+                                .find_map(|part| part.strip_prefix("client="))
+                                .expect("result payload should contain client identifier")
+                                .to_string();
 
-//                             let payload = request.message().payload();
-//                             let payload_bytes = payload.as_bytes();
-//                             let payload_str = std::str::from_utf8(payload_bytes.as_ref())
-//                                 .expect("result payload should be valid UTF-8");
+                            let case = cases.iter().find(|case| case.client_id == client_id).unwrap_or_else(|| {
+                                panic!("result handler received unexpected client id `{client_id}`")
+                            });
 
-//                             let client_id = payload_str
-//                                 .split(';')
-//                                 .find_map(|part| part.strip_prefix("client="))
-//                                 .expect("result payload should contain client identifier")
-//                                 .to_string();
+                            assert_eq!(
+                                payload, &case.result_request,
+                                "result request payload for `{client_id}` should match expected value"
+                            );
 
-//                             let case = cases.iter().find(|case| case.client_id == client_id).unwrap_or_else(|| {
-//                                 panic!("result handler received unexpected client id `{client_id}`")
-//                             });
+                            Ok(case.result_response.clone())
+                        }
+                    })
+                    .await
+                    .expect("action should spawn result handler")
+                    .expect("result subscription closed before handling request");
 
-//                             assert_eq!(
-//                                 payload, &case.result_request,
-//                                 "result request payload for `{client_id}` should match expected value"
-//                             );
+                result_handlers.push(handler);
+            }
 
-//                             Ok(case.result_response.clone())
-//                         }
-//                     })
-//                     .await
-//                     .expect("action should spawn result handler")
-//                     .expect("result subscription closed before handling request");
+            for handler in result_handlers {
+                handler
+                    .await
+                    .expect("result handler task panicked")
+                    .expect("result handler returned error");
+            }
 
-//                 result_handlers.push(handler);
-//             }
+            Ok::<(), Error>(())
+        })
+    };
 
-//             for handler in result_handlers {
-//                 handler
-//                     .await
-//                     .expect("result handler task panicked")
-//                     .expect("result handler returned error");
-//             }
+    action_ready_rx
+        .await
+        .expect("action server should signal readiness");
 
-//             Ok::<(), Error>(())
-//         })
-//     };
+    // Allow the action server to fully establish its listeners
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
-//     action_ready_rx
-//         .await
-//         .expect("action server should signal readiness");
+    let total_clients = cases.len();
+    let mut shuffled_cases = cases.as_ref().clone();
+    let mut rng = rand::rng();
+    shuffled_cases.shuffle(&mut rng);
 
-//     let expected_feedback_topic = format!(
-//         "{MASTER_NODE_NAME}/{listener_instance_id}/action/{listener_node_name}/{listener_action_name}/feedback/{listener_instance_id}"
-//     );
+    let mut client_handles = Vec::with_capacity(total_clients);
+    for case in shuffled_cases {
+        let host = host.clone();
+        let feedback_search_limit = total_clients;
 
-//     let total_clients = cases.len();
-//     let mut shuffled_cases = cases.as_ref().clone();
-//     let mut rng = rand::rng();
-//     shuffled_cases.shuffle(&mut rng);
+        let handle = tokio::spawn(async move {
+            let caller_handle = connect_action_messenger(&host, port).await;
 
-//     let mut client_handles = Vec::with_capacity(total_clients);
-//     for case in shuffled_cases {
-//         let host = host.clone();
-//         let expected_feedback_topic = expected_feedback_topic.clone();
-//         let feedback_search_limit = total_clients;
+            let mut goal_handle = ActionMessenger::send_goal(
+                &caller_handle,
+                CALLER_MASTER_NODE,
+                &case.client_id,
+                listener_node_name,
+                listener_action_name,
+                None,
+                None,
+                case.goal.clone(),
+                QoSProfile::Reliable,
+                Duration::from_millis(1000),
+            )
+            .await
+            .expect("caller should send goal");
 
-//         let handle = tokio::spawn(async move {
-//             let caller_handle = connect_action_messenger(&host, port).await;
+            assert_eq!(
+                goal_handle.goal_response().payload().to_bytes(),
+                case.goal_response.clone(),
+                "goal response should match expected payload for `{}`",
+                case.client_id
+            );
 
-//             let mut goal_handle = ActionMessenger::send_goal(
-//                 &caller_handle,
-//                 MASTER_NODE_NAME,
-//                 &case.client_id,
-//                 listener_node_name,
-//                 listener_action_name,
-//                 None,
-//                 case.goal.clone(),
-//                 QoSProfile::Reliable,
-//                 Duration::from_millis(1000),
-//             )
-//             .await
-//             .expect("caller should send goal");
+            let mut feedback_matched = false;
+            for _ in 0..feedback_search_limit {
+                let feedback_message = goal_handle
+                    .feedback_mut()
+                    .rx
+                    .recv()
+                    .await
+                    .expect("caller should receive feedback message");
 
-//             assert_eq!(
-//                 goal_handle.goal_response().payload().to_bytes(),
-//                 case.goal_response.clone(),
-//                 "goal response should match expected payload for `{}`",
-//                 case.client_id
-//             );
+                if feedback_message.payload() == &case.feedback {
+                    feedback_matched = true;
+                    break;
+                }
+            }
 
-//             let mut feedback_matched = false;
-//             for _ in 0..feedback_search_limit {
-//                 let feedback_message = goal_handle
-//                     .feedback_mut()
-//                     .rx
-//                     .recv()
-//                     .await
-//                     .expect("caller should receive feedback message");
+            assert!(
+                feedback_matched,
+                "caller `{}` should observe its corresponding feedback payload",
+                case.client_id
+            );
 
-//                 assert_eq!(
-//                     feedback_message.key_expr(),
-//                     expected_feedback_topic,
-//                     "feedback should be published on the expected topic"
-//                 );
+            let result_response = ActionMessenger::request_result(
+                &caller_handle,
+                &case.client_id,
+                &goal_handle,
+                case.result_request.clone(),
+                Duration::from_millis(1000),
+            )
+            .await
+            .expect("caller should receive result response");
 
-//                 if feedback_message.payload() == &case.feedback {
-//                     feedback_matched = true;
-//                     break;
-//                 }
-//             }
+            assert_eq!(
+                result_response.payload().to_bytes(),
+                case.result_response.clone(),
+                "result response should match expected payload for `{}`",
+                case.client_id
+            );
+        });
 
-//             assert!(
-//                 feedback_matched,
-//                 "caller `{}` should observe its corresponding feedback payload",
-//                 case.client_id
-//             );
+        client_handles.push(handle);
+    }
 
-//             let result_response = ActionMessenger::poll_result(
-//                 &caller_handle,
-//                 &case.client_id,
-//                 &goal_handle,
-//                 case.result_request.clone(),
-//                 Duration::from_millis(1000),
-//             )
-//             .await
-//             .expect("caller should receive result response");
+    for handle in client_handles {
+        handle.await.expect("caller task should not panic");
+    }
 
-//             assert_eq!(
-//                 result_response.payload().to_bytes(),
-//                 case.result_response.clone(),
-//                 "result response should match expected payload for `{}`",
-//                 case.client_id
-//             );
-//         });
+    server_task
+        .await
+        .expect("action handler task panicked")
+        .expect("action handler returned error");
 
-//         client_handles.push(handle);
-//     }
-
-//     for handle in client_handles {
-//         handle.await.expect("caller task should not panic");
-//     }
-
-//     server_task
-//         .await
-//         .expect("action handler task panicked")
-//         .expect("action handler returned error");
-
-//     router.shutdown().await;
-// }
+    router.shutdown().await;
+}
