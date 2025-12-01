@@ -419,10 +419,20 @@ impl TopicMessenger {
         as_instance_id: &str,
         to_node_name: &str,
         to_topic: &str,
+        to_master_node: Option<&str>,
+        to_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
         messenger
-            .subscribe_to_topic(as_master_node, as_instance_id, to_node_name, to_topic, qos)
+            .subscribe_to_topic(
+                as_master_node,
+                as_instance_id,
+                to_node_name,
+                to_topic,
+                to_master_node,
+                to_instance_id,
+                qos,
+            )
             .await
     }
 
@@ -431,10 +441,8 @@ impl TopicMessenger {
         messenger: &MessengerHandle,
         as_master_node: &str,
         as_instance_id: &str,
-        to_master_node: Option<&str>,
-        to_instance_id: Option<&str>,
-        to_node_name: &str,
-        to_topic: &str,
+        as_node_name: &str,
+        as_topic_name: &str,
         qos: QoSProfile,
         payload: Bytes,
     ) -> Result<()> {
@@ -442,10 +450,8 @@ impl TopicMessenger {
             .emit_topic_message(
                 as_master_node,
                 as_instance_id,
-                to_master_node,
-                to_instance_id,
-                to_node_name,
-                to_topic,
+                as_node_name,
+                as_topic_name,
                 qos,
                 payload,
             )
@@ -664,10 +670,21 @@ impl MessengerHandle {
         as_instance_id: &str,
         to_node_name: &str,
         to_topic: &str,
+        to_master_node: Option<&str>,
+        to_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        let key_expr =
-            format!("{as_master_node}/*/{as_instance_id}/*/topic/{to_node_name}/{to_topic}");
+        let to_master_node = match to_master_node {
+            Some(master_node) => master_node,
+            None => "*",
+        };
+        let to_instance_id = match to_instance_id {
+            Some(instance_id) => instance_id,
+            None => "*",
+        };
+        let key_expr = format!(
+            "{as_master_node}/{to_master_node}/{as_instance_id}/{to_instance_id}/topic/{to_node_name}/{to_topic}"
+        );
         let subscriber_qos = map_node_qos_to_subscriber_qos(qos);
 
         let subscription = {
@@ -683,24 +700,14 @@ impl MessengerHandle {
         &self,
         as_master_node: &str,
         as_instance_id: &str,
-        to_master_node: Option<&str>,
-        to_instance_id: Option<&str>,
-        to_node_name: &str,
-        to_topic: &str,
+        as_node_name: &str,
+        as_topic_name: &str,
         qos: QoSProfile,
         payload: Bytes,
     ) -> Result<()> {
-        let to_master_node = match to_master_node {
-            Some(master_node) => master_node,
-            None => "*",
-        };
-        let to_instance_id = match to_instance_id {
-            Some(instance_id) => instance_id,
-            None => "*",
-        };
         let key_expr = format!(
-            "{}/{}/{}/{}/topic/{}/{}",
-            to_master_node, as_master_node, to_instance_id, as_instance_id, to_node_name, to_topic
+            "*/{}/*/{}/topic/{}/{}",
+            as_master_node, as_instance_id, as_node_name, as_topic_name
         );
         let msg = Message::new(&key_expr, payload);
 
