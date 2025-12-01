@@ -467,16 +467,16 @@ impl ServiceMessenger {
     pub async fn listen(
         messenger: &MessengerHandle,
         as_master_node: &str,
+        as_instance_id: &str,
         as_node_name: &str,
         as_service_name: &str,
-        as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
         messenger
             .expose_service(
                 as_master_node,
+                as_instance_id,
                 as_node_name,
                 as_service_name,
-                as_instance_id,
             )
             .await
     }
@@ -725,9 +725,9 @@ impl MessengerHandle {
     async fn expose_service(
         &self,
         bound_master_node: &str,
+        as_instance_id: &str,
         as_node_name: &str,
         as_service_name: &str,
-        as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
         let service_root = format!("service/{as_node_name}/{as_service_name}");
         self.create_service_endpoint(bound_master_node, service_root, as_instance_id)

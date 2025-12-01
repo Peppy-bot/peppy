@@ -7,7 +7,6 @@ use std::time::Duration;
 
 const POLL_SERVICE_NAME: &str = "hello_service";
 const POLL_NODE_NAME: &str = "hello_node";
-const MASTER_NODE_NAME: &str = "the_master_node";
 
 async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
     MessengerHandle::from_host_port(host, port)
@@ -23,18 +22,22 @@ async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
 async fn main() {
     // Create a messenger for the sending node.
     let sender_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
+    let master_node = format!("{}_master", get_random(rng()));
     let as_instance_id = format!("{}_caller", get_random(rng()));
 
     let request_payload = Bytes::from_static(b"Hello service");
 
-    println!("Sending service request as instance_id {as_instance_id}...");
+    println!(
+        "Sending service request as instance_id {as_instance_id} and master node {master_node}..."
+    );
     let response = ServiceMessenger::poll(
         &sender_handle,
-        MASTER_NODE_NAME,
+        &master_node,
         &as_instance_id,
         POLL_NODE_NAME,
         POLL_SERVICE_NAME,
-        None, // We don't need to point to a particular instance, any would work
+        None, // target_master_node - not needed
+        None, // target_instance_id - we don't need to point to a particular instance, any would work
         request_payload,
         Duration::from_secs(3),
     )
