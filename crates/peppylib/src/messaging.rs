@@ -539,16 +539,18 @@ impl ActionMessenger {
         feedback_qos: QoSProfile,
         goal_timeout: Duration,
     ) -> Result<ActionGoalHandle> {
-        let feedback_topic = match target_instance_id {
-            Some(target_instance_id) => {
-                let bound_instance_segment = format!("{target_instance_id}");
-                format!(
-                    "{as_master_node}/{bound_instance_segment}/action/{to_node_name}/{to_action_name}/feedback/{target_instance_id}"
-                )
+        let feedback_topic = {
+            let sender_master = target_master_node.unwrap_or("*");
+            match target_instance_id {
+                Some(target_instance_id) => {
+                    format!(
+                        "{as_master_node}/{sender_master}/{as_instance_id}/{target_instance_id}/action/{to_node_name}/{to_action_name}/feedback/{target_instance_id}"
+                    )
+                }
+                None => format!(
+                    "{as_master_node}/*/{as_instance_id}/*/action/{to_node_name}/{to_action_name}/feedback/*"
+                ),
             }
-            None => format!(
-                "{as_master_node}/{INSTANCE_ID_WILDCARD}/action/{to_node_name}/{to_action_name}/feedback/*"
-            ),
         };
         let goal_service_name = format!("{to_action_name}/goal");
 
@@ -943,7 +945,7 @@ impl MessengerHandle {
         let bound_instance_segment = format_bound_instance_segment(as_instance_id)
             .unwrap_or_else(|| as_instance_id.to_string());
         let feedback_topic_suffix = format!(
-            "{bound_master_node}/{bound_instance_segment}/{action_root}/feedback/{as_instance_id}"
+            "*/{bound_master_node}/*/{bound_instance_segment}/{action_root}/feedback/{as_instance_id}"
         );
 
         let goal_service = self
