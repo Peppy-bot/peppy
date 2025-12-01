@@ -481,9 +481,9 @@ async fn service_communication_poll_no_instance_id_target() {
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
             listener_master_node1,
+            listener_instance_id1,
             listener_node_name,
             listener_service_name,
-            listener_instance_id1,
         )
         .await
         .expect("service should start");
@@ -527,9 +527,9 @@ async fn service_communication_poll_no_instance_id_target() {
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
             listener_master_node2,
+            listener_instance_id2,
             listener_node_name,
             listener_service_name,
-            listener_instance_id2,
         )
         .await
         .expect("service should start");
@@ -660,9 +660,9 @@ async fn service_communication_poll_specific_instance_id() {
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
             listener_master_node1,
+            listener_instance_id1,
             listener_node_name,
             listener_service_name,
-            listener_instance_id1,
         )
         .await
         .expect("service should start");
@@ -695,9 +695,9 @@ async fn service_communication_poll_specific_instance_id() {
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
             listener_master_node2,
+            listener_instance_id2,
             listener_node_name,
             listener_service_name,
-            listener_instance_id2,
         )
         .await
         .expect("service should start");
@@ -822,9 +822,9 @@ async fn service_communication_poll_wrong_node() {
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
             listener_master_node,
+            listener_instance_id,
             listener_node_name,
             listener_service_name,
-            listener_instance_id,
         )
         .await
         .expect("service should start");
@@ -954,9 +954,9 @@ async fn service_communication_poll_wrong_master_node() {
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
             listener_master_node,
+            listener_instance_id,
             listener_node_name,
             listener_service_name,
-            listener_instance_id,
         )
         .await
         .expect("service should start");
@@ -1126,9 +1126,9 @@ async fn service_communication_fails_service_timeouts() {
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
             listener_master_node,
+            listener_instance_id,
             listener_node_name,
             listener_service_name,
-            listener_instance_id,
         )
         .await
         .expect("service should start");
@@ -1288,9 +1288,9 @@ async fn service_handle_request_processes_multiple_messages() {
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
             listener_master_node,
+            listener_instance_id,
             listener_node_name,
             listener_service_name,
-            listener_instance_id,
         )
         .await
         .expect("service should start");
@@ -1391,9 +1391,9 @@ async fn single_service_communication_multiple_polls_and_callers() {
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
             listener_master_node,
+            listener_instance_id,
             listener_node_name,
             listener_service_name,
-            listener_instance_id,
         )
         .await
         .expect("service should start");
