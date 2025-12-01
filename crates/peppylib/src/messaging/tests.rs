@@ -723,12 +723,6 @@ async fn service_communication_poll_specific_instance_id() {
         .await
         .expect("service should start");
 
-        let expected_requester_key_expr_pattern = format!(
-            r"^\*/{CALLER_MASTER_NODE}/{listener_instance_id2}/{CALLER_INSTANCE_ID}/service/{listener_node_name}/{listener_service_name}/request/.+$"
-        );
-        let expected_requester_key_expr_regex =
-            Regex::new(&expected_requester_key_expr_pattern).unwrap();
-
         let request_payload = request_payload.clone();
         let response_payload = response_payload.clone();
         let call_count = Arc::clone(&call_count);
@@ -737,6 +731,12 @@ async fn service_communication_poll_specific_instance_id() {
             let handler = service.handle_next_request(|request| {
                 let response_payload = response_payload.clone();
                 async move {
+                    let expected_requester_key_expr_pattern = format!(
+                        r"^\*/{CALLER_MASTER_NODE}/{listener_instance_id2}/{CALLER_INSTANCE_ID}/service/{listener_node_name}/{listener_service_name}/request/.+$"
+                    );
+                    let expected_requester_key_expr_regex =
+                    Regex::new(&expected_requester_key_expr_pattern).unwrap();
+
                     assert!(
                         expected_requester_key_expr_regex.is_match(request.message().key_expr()),
                         "key_expr {} doesn't match pattern {}",
@@ -748,7 +748,7 @@ async fn service_communication_poll_specific_instance_id() {
                     assert_eq!(request.message().payload(), &request_payload);
                     call_count.fetch_add(1, Ordering::SeqCst);
                     // This second service instance is a bit slow for processing, but since it's been targeted, it's gonna be the one that responds
-                    thread::sleep(Duration::from_millis(200));
+                    tokio::time::sleep(Duration::from_millis(500)).await;
                     Ok(response_payload)
                 }
             });
@@ -823,7 +823,7 @@ async fn service_communication_poll_specific_instance_id() {
         .expect("service task panicked")
         .expect("service task returned error");
 
-    // Ensure the service callback was called exactly once (othewise that means both services received the request)
+    // Ensure the service callback was called exactly once (otherwise that means both services received the request)
     assert_eq!(
         call_count.load(Ordering::SeqCst),
         1,
