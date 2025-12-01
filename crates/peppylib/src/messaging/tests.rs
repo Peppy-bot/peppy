@@ -1018,219 +1018,220 @@ async fn service_communication_poll_wrong_master_node() {
         .expect("router shutdown timed out");
 }
 
-// #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-// async fn service_communication_fails_not_started() {
-//     let router = TestRouterContext::start().await;
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn service_communication_fails_service_not_started() {
+    let router = TestRouterContext::start().await;
 
-//     // Listener instance
-//     let listener_node_name = "camera";
-//     let listener_service_name = "enable_camera";
+    // Listener instance
+    let listener_node_name = "camera";
+    let listener_service_name = "enable_camera";
 
-//     // Caller instance
-//     let caller_instance_id = "caller_instance";
+    // Caller instance
+    const CALLER_INSTANCE_ID: &str = "caller_instance";
+    const CALLER_MASTER_NODE: &str = "caller_master_node";
 
-//     // The caller node has its own scope (emulates a separate node running on a different instance)
-//     let err = {
-//         let caller_handle = router.service_messenger().await;
+    // The caller node has its own scope (emulates a separate node running on a different instance)
+    let err = {
+        let caller_handle = router.service_messenger().await;
 
-//         let result = ServiceMessenger::poll(
-//             &caller_handle,
-//             MASTER_NODE_NAME,
-//             caller_instance_id,
-//             listener_node_name,
-//             listener_service_name,
-//             None,
-//             Bytes::from_static(b"enable=true"),
-//             Duration::from_secs(1),
-//         )
-//         .await;
+        let result = ServiceMessenger::poll(
+            &caller_handle,
+            CALLER_MASTER_NODE,
+            CALLER_INSTANCE_ID,
+            listener_node_name,
+            listener_service_name,
+            None,
+            None,
+            Bytes::from_static(b"enable=true"),
+            Duration::from_secs(1),
+        )
+        .await;
 
-//         let Err(err) = result else {
-//             panic!("service call should fail when service is not started");
-//         };
+        let Err(err) = result else {
+            panic!("service call should fail when service is not started");
+        };
 
-//         err
-//     };
+        err
+    };
 
-//     let Error::ServiceUnreachable {
-//         instance_id: err_instance_id,
-//         service_name: err_service_name,
-//     } = err
-//     else {
-//         panic!(
-//             "expected ServiceUnreachable error, received unexpected error: {:?}",
-//             err
-//         );
-//     };
+    let Error::ServiceUnreachable {
+        instance_id: err_instance_id,
+        service_name: err_service_name,
+    } = err
+    else {
+        panic!(
+            "expected ServiceUnreachable error, received unexpected error: {:?}",
+            err
+        );
+    };
 
-//     assert_eq!(err_instance_id, None);
-//     assert_eq!(err_service_name, listener_service_name);
+    assert_eq!(err_instance_id, None);
+    assert_eq!(err_service_name, listener_service_name);
 
-//     router.shutdown().await;
-// }
+    router.shutdown().await;
+}
 
-// #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-// async fn service_communication_fails_timeout() {
-//     let router = TestRouterContext::start().await;
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn service_communication_fails_service_timeouts() {
+    let router = TestRouterContext::start().await;
 
-//     // Listener instance
-//     let listener_node_name = "camera";
-//     let listener_service_name = "enable_camera";
-//     let listener_instance_id = "listener_instance";
+    // Listener instance
+    let listener_node_name = "camera";
+    let listener_service_name = "enable_camera";
+    let listener_instance_id = "listener_instance";
+    let listener_master_node = "listener_master_node";
 
-//     // Caller instance
-//     let caller_instance_id = "caller_instance";
+    // Caller instance
+    const CALLER_INSTANCE_ID: &str = "caller_instance";
+    const CALLER_MASTER_NODE: &str = "caller_master_node";
 
-//     let response_payload = Bytes::from_static(b"ack");
-//     let call_count = Arc::new(AtomicUsize::new(0));
+    let response_payload = Bytes::from_static(b"ack");
+    let call_count = Arc::new(AtomicUsize::new(0));
 
-//     let (service_ready_tx, service_ready_rx) = oneshot::channel();
-//     let service_wait_timeout = Duration::from_millis(1500);
-//     let service_task_timeout = service_wait_timeout * 2 + Duration::from_millis(500);
-//     let service_ready_timeout = Duration::from_secs(1);
+    let (service_ready_tx, service_ready_rx) = oneshot::channel();
+    let service_wait_timeout = Duration::from_millis(1500);
+    let service_task_timeout = service_wait_timeout * 2 + Duration::from_millis(500);
+    let service_ready_timeout = Duration::from_secs(1);
 
-//     // The exposed service has its own dedicated scope (emulates running on its own instance)
-//     let service_task = {
-//         let service_root = format!("service/{listener_node_name}/{listener_service_name}");
-//         let expected_request_key_expr = format!(
-//             "{MASTER_NODE_NAME}/{listener_instance_id}/{service_root}/{caller_instance_id}/request"
-//         );
-//         let response_delay = Duration::from_millis(200);
+    // The exposed service has its own dedicated scope (emulates running on its own instance)
+    let service_task = {
+        let response_delay = Duration::from_millis(200);
 
-//         let service_expose_handle = router.service_messenger().await;
-//         let mut service = ServiceMessenger::listen(
-//             &service_expose_handle,
-//             MASTER_NODE_NAME,
-//             listener_node_name,
-//             listener_service_name,
-//             listener_instance_id,
-//         )
-//         .await
-//         .expect("service should start");
+        let service_expose_handle = router.service_messenger().await;
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            listener_master_node,
+            listener_node_name,
+            listener_service_name,
+            listener_instance_id,
+        )
+        .await
+        .expect("service should start");
 
-//         let expected_request_topic = expected_request_key_expr.clone();
-//         let response_payload = response_payload.clone();
-//         let call_count = Arc::clone(&call_count);
-//         let response_delay = response_delay;
-//         let expected_requests = 2;
+        let response_payload = response_payload.clone();
+        let call_count = Arc::clone(&call_count);
+        let response_delay = response_delay;
+        let expected_requests = 2;
 
-//         tokio::spawn(async move {
-//             service_ready_tx.send(()).unwrap();
+        tokio::spawn(async move {
+            service_ready_tx.send(()).unwrap();
 
-//             for _ in 0..expected_requests {
-//                 let expected_request_topic = expected_request_topic.clone();
-//                 let response_payload = response_payload.clone();
-//                 let call_count = Arc::clone(&call_count);
-//                 let response_delay = response_delay;
+            for _ in 0..expected_requests {
+                let response_payload = response_payload.clone();
+                let call_count = Arc::clone(&call_count);
+                let response_delay = response_delay;
 
-//                 let handled = tokio::time::timeout(
-//                     service_wait_timeout,
-//                     service.handle_next_request(|request| async move {
-//                         assert_eq!(request.message().key_expr(), expected_request_topic);
-//                         call_count.fetch_add(1, Ordering::SeqCst);
-//                         tokio::time::sleep(response_delay).await;
-//                         Ok(response_payload)
-//                     }),
-//                 )
-//                 .await
-//                 .expect("service handler timed out")
-//                 .expect("service should receive expected number of requests");
+                let handled = tokio::time::timeout(
+                    service_wait_timeout,
+                    service.handle_next_request(|request| async move {
+                        assert_eq!(request.message().master_node(), CALLER_MASTER_NODE);
+                        assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
+                        call_count.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(response_delay).await;
+                        Ok(response_payload)
+                    }),
+                )
+                .await
+                .expect("service handler timed out")
+                .expect("service should receive expected number of requests");
 
-//                 assert!(
-//                     handled,
-//                     "service subscription closed before handling request"
-//                 );
-//             }
+                assert!(
+                    handled,
+                    "service subscription closed before handling request"
+                );
+            }
 
-//             Ok::<(), Error>(())
-//         })
-//     };
+            Ok::<(), Error>(())
+        })
+    };
 
-//     tokio::time::timeout(service_ready_timeout, service_ready_rx)
-//         .await
-//         .expect("service should signal readiness before timeout")
-//         .expect("service should signal readiness");
+    tokio::time::timeout(service_ready_timeout, service_ready_rx)
+        .await
+        .expect("service should signal readiness before timeout")
+        .expect("service should signal readiness");
 
-//     // The caller node has its own scope (emulates a separate node running on a different instance)
-//     let err = {
-//         let request_payload = Bytes::from_static(b"enable=true");
-//         let caller_success_timeout = Duration::from_millis(500);
-//         let caller_failure_timeout = Duration::from_millis(50);
+    // The caller node has its own scope (emulates a separate node running on a different instance)
+    let err = {
+        let request_payload = Bytes::from_static(b"enable=true");
+        let caller_success_timeout = Duration::from_millis(500);
+        let caller_failure_timeout = Duration::from_millis(50);
 
-//         let caller_handle = router.service_messenger().await;
+        let caller_handle = router.service_messenger().await;
 
-//         let success_response = ServiceMessenger::poll(
-//             &caller_handle,
-//             MASTER_NODE_NAME,
-//             caller_instance_id,
-//             listener_node_name,
-//             listener_service_name,
-//             None,
-//             request_payload.clone(),
-//             caller_success_timeout,
-//         )
-//         .await
-//         .expect("caller should receive response before timeout");
-//         assert_eq!(success_response.payload().to_bytes(), response_payload);
-//         assert_eq!(
-//             call_count.load(Ordering::SeqCst),
-//             1,
-//             "service should have processed the successful request exactly once"
-//         );
+        let success_response = ServiceMessenger::poll(
+            &caller_handle,
+            CALLER_MASTER_NODE,
+            CALLER_INSTANCE_ID,
+            listener_node_name,
+            listener_service_name,
+            None,
+            None,
+            request_payload.clone(),
+            caller_success_timeout,
+        )
+        .await
+        .expect("caller should receive response before timeout");
+        assert_eq!(success_response.payload().to_bytes(), response_payload);
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "service should have processed the successful request exactly once"
+        );
 
-//         let result = ServiceMessenger::poll(
-//             &caller_handle,
-//             MASTER_NODE_NAME,
-//             caller_instance_id,
-//             listener_node_name,
-//             listener_service_name,
-//             None,
-//             request_payload,
-//             caller_failure_timeout,
-//         )
-//         .await;
+        let result = ServiceMessenger::poll(
+            &caller_handle,
+            CALLER_MASTER_NODE,
+            CALLER_INSTANCE_ID,
+            listener_node_name,
+            listener_service_name,
+            None,
+            None,
+            request_payload,
+            caller_failure_timeout,
+        )
+        .await;
 
-//         let Err(err) = result else {
-//             panic!("service call should fail when response exceeds timeout");
-//         };
+        let Err(err) = result else {
+            panic!("service call should fail when response exceeds timeout");
+        };
 
-//         err
-//     };
+        err
+    };
 
-//     let Error::ServiceTimeout {
-//         instance_id: err_instance_id,
-//         service_name: err_service_name,
-//     } = &err
-//     else {
-//         panic!(
-//             "expected ServiceTimeout error for timeout, received: {:?}",
-//             err
-//         );
-//     };
+    let Error::ServiceTimeout {
+        instance_id: err_instance_id,
+        service_name: err_service_name,
+    } = &err
+    else {
+        panic!(
+            "expected ServiceTimeout error for timeout, received: {:?}",
+            err
+        );
+    };
 
-//     assert_eq!(
-//         err_instance_id.as_deref(),
-//         None,
-//         "should report unreachable target instance (unknown when no target instance was specified)"
-//     );
-//     assert_eq!(err_service_name.as_str(), listener_service_name);
+    assert_eq!(
+        err_instance_id.as_deref(),
+        None,
+        "should report unreachable target instance (unknown when no target instance was specified)"
+    );
+    assert_eq!(err_service_name.as_str(), listener_service_name);
 
-//     tokio::time::timeout(service_task_timeout, service_task)
-//         .await
-//         .expect("service task should finish within timeout")
-//         .expect("service task panicked")
-//         .expect("service task returned error");
+    tokio::time::timeout(service_task_timeout, service_task)
+        .await
+        .expect("service task should finish within timeout")
+        .expect("service task panicked")
+        .expect("service task returned error");
 
-//     assert_eq!(
-//         call_count.load(Ordering::SeqCst),
-//         2,
-//         "service should have processed both requests"
-//     );
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        2,
+        "service should have processed both requests"
+    );
 
-//     tokio::time::timeout(service_task_timeout, router.shutdown())
-//         .await
-//         .expect("router shutdown timed out");
-// }
+    tokio::time::timeout(service_task_timeout, router.shutdown())
+        .await
+        .expect("router shutdown timed out");
+}
 
 // #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 // async fn service_handle_request_processes_multiple_messages() {
