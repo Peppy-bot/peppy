@@ -10,7 +10,7 @@ use tempfile::TempDir;
 use tokio::sync::oneshot;
 
 use crate::error::Error;
-use crate::messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, TopicMessenger};
+use crate::messaging::{MessengerHandle, ServiceMessenger, TopicMessenger};
 
 #[derive(Clone)]
 struct ActionClientCase {
@@ -144,6 +144,9 @@ async fn topic_publish_subscribe_no_target_instance_id() {
     .await
     .expect("Should subscribe to the topic");
 
+    // Allow subscription to propagate before publishing
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
     let emitter_master_node = "master_node_emit";
     let emitter_instance_id = "emitter_instance";
     let emitter_handle = router.topic_messenger().await;
@@ -215,6 +218,9 @@ async fn topic_publish_subscribe_with_target_instance_id() {
     .await
     .expect("Should subscribe to the topic");
 
+    // Allow subscriptions to propagate before publishing
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
     let emitter_master_node = "master_node_emit";
     let emitter_instance_id = "emitter_instance";
     let emitter_handle = router.topic_messenger().await;
@@ -233,7 +239,7 @@ async fn topic_publish_subscribe_with_target_instance_id() {
     .expect("Should send the payload");
 
     let timeout_result =
-        tokio::time::timeout(Duration::from_secs(2), subscription1.rx.recv()).await;
+        tokio::time::timeout(Duration::from_millis(500), subscription1.rx.recv()).await;
     assert!(
         timeout_result.is_err(),
         "subscription1 should not receive the message targeted to subscriber_instance_id2"
@@ -295,6 +301,9 @@ async fn topic_publish_subscribe_with_target_master_and_instance_id() {
     .await
     .expect("Should subscribe to the topic");
 
+    // Allow subscriptions to propagate before publishing
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
     let emitter_master_node = "master_node_emit";
     let emitter_instance_id = "emitter_instance";
     let emitter_handle = router.topic_messenger().await;
@@ -313,7 +322,7 @@ async fn topic_publish_subscribe_with_target_master_and_instance_id() {
     .expect("Should send the payload");
 
     let timeout_result =
-        tokio::time::timeout(Duration::from_secs(2), subscription1.rx.recv()).await;
+        tokio::time::timeout(Duration::from_millis(500), subscription1.rx.recv()).await;
     assert!(
         timeout_result.is_err(),
         "subscription1 should not receive the message targeted to subscriber_instance_id2"
@@ -366,6 +375,9 @@ async fn topic_publish_reliable_5000hz_messages() {
     )
     .await
     .expect("Should subscribe to the topic");
+
+    // Allow subscription to propagate before publishing
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let message_count = 5000;
     let emitter_master_node = "emitter_master_node";
@@ -566,6 +578,9 @@ async fn service_communication_poll_no_instance_id_target() {
         .expect("service 2 should signal readiness before timeout")
         .expect("service 2 should signal readiness");
 
+    // Allow services to fully establish their listeners
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
         let caller_handle = router.service_messenger().await;
@@ -729,6 +744,9 @@ async fn service_communication_poll_specific_instance_id() {
         .expect("service 2 should signal readiness before timeout")
         .expect("service 2 should signal readiness");
 
+    // Allow services to fully establish their listeners
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
         let caller_handle = router.service_messenger().await;
@@ -841,6 +859,9 @@ async fn service_communication_poll_wrong_node() {
         .await
         .expect("service should signal readiness before timeout")
         .expect("service should signal readiness");
+
+    // Allow the service to fully establish its listener
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
@@ -972,6 +993,9 @@ async fn service_communication_poll_wrong_master_node() {
             .await
             .expect("service should signal readiness before timeout")
             .expect("service should signal readiness");
+
+        // Allow the service to fully establish its listener
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         let caller_handle = router.service_messenger().await;
         let result = ServiceMessenger::poll(
@@ -1151,6 +1175,9 @@ async fn service_communication_fails_service_timeouts() {
         .expect("service should signal readiness before timeout")
         .expect("service should signal readiness");
 
+    // Allow the service to fully establish its listener
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
     // The caller node has its own scope (emulates a separate node running on a different instance)
     let err = {
         let request_payload = Bytes::from_static(b"enable=true");
@@ -1292,6 +1319,9 @@ async fn service_handle_request_processes_multiple_messages() {
         .await
         .expect("service should signal readiness");
 
+    // Allow the service to fully establish its listener
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
         let caller_handle = router.service_messenger().await;
@@ -1407,6 +1437,9 @@ async fn single_service_communication_multiple_polls_and_callers() {
     service_ready_rx
         .await
         .expect("service should signal readiness");
+
+    // Allow the service to fully establish its listener
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
