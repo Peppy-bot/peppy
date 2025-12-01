@@ -12,7 +12,6 @@ use tokio::sync::Mutex;
 
 const NODE_NAME: &str = "hello_node";
 const ACTION_NAME: &str = "hello_action";
-const MASTER_NODE_NAME: &str = "the_master_node";
 
 async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
     MessengerHandle::from_host_port(host, port)
@@ -39,20 +38,21 @@ async fn handle_goal_request(
     feedback_publisher: &TopicPublisher,
 ) -> PeppyResult<Bytes> {
     let request_id = request.request_id();
+    let master_node = request.message().master_node();
     let instance_id = request.message().instance_id();
     let payload_text = payload_as_text(&request);
 
     let timestamp = current_timestamp();
     println!(
         "{}",
-        format!("[GOAL] [{timestamp}] Received goal `{request_id}` from `{instance_id}` with payload `{payload_text}`")
+        format!("[GOAL] [{timestamp}] Received goal `{request_id}` from `{instance_id}` and master node `{master_node}` with payload `{payload_text}`")
             .bold()
             .green()
     );
 
     let feedback_text = format!("feedback: working on `{payload_text}`");
     feedback_publisher
-        .publish_with_prefix(MASTER_NODE_NAME, Bytes::from(feedback_text.clone()))
+        .publish(Bytes::from(feedback_text.clone()))
         .await?;
 
     let timestamp = current_timestamp();
@@ -348,11 +348,12 @@ async fn run_action_loop(mut action: ActionCreation) {
 #[tokio::main]
 async fn main() {
     let receiver_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
+    let master_node_name = format!("{}_master", get_random(rng()));
     let as_instance_id = format!("{}_listener", get_random(rng()));
 
     let action = ActionMessenger::listen(
         &receiver_handle,
-        MASTER_NODE_NAME,
+        &master_node_name,
         NODE_NAME,
         ACTION_NAME,
         &as_instance_id,
@@ -362,7 +363,7 @@ async fn main() {
 
     println!(
         "{}",
-        format!("[ACTION] Waiting for action goals as {as_instance_id}... Press CTRL+C to stop.")
+        format!("[ACTION] Waiting for action goals as `{as_instance_id}` and master node `{master_node_name}`... Press CTRL+C to stop.")
             .bold()
             .white()
     );
