@@ -775,244 +775,248 @@ async fn service_communication_poll_specific_instance_id() {
         .expect("router shutdown timed out");
 }
 
-// #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-// async fn service_communication_poll_wrong_node() {
-//     let router = TestRouterContext::start().await;
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn service_communication_poll_wrong_node() {
+    let router = TestRouterContext::start().await;
 
-//     // Listener instance
-//     let listener_node_name = "camera";
-//     let listener_service_name = "enable_camera";
-//     let listener_instance_id = "listener_instance";
+    // Listener instance
+    let listener_node_name = "camera";
+    let listener_service_name = "enable_camera";
+    let listener_instance_id = "listener_instance";
+    let listener_master_node = "listener_master_node";
 
-//     // Caller instance
-//     let caller_instance_id = "caller_instance";
+    // Caller instance
+    const CALLER_INSTANCE_ID: &str = "caller_instance";
+    const CALLER_MASTER_NODE: &str = "caller_master_node";
 
-//     let request_payload = Bytes::from_static(b"enable=true");
-//     let call_count = Arc::new(AtomicUsize::new(0));
+    let request_payload = Bytes::from_static(b"enable=true");
+    let call_count = Arc::new(AtomicUsize::new(0));
 
-//     let (service_ready_tx, service_ready_rx) = oneshot::channel();
-//     let service_wait_timeout = Duration::from_millis(1500);
-//     let service_task_timeout = service_wait_timeout + Duration::from_millis(500);
-//     let service_ready_timeout = Duration::from_secs(1);
+    let (service_ready_tx, service_ready_rx) = oneshot::channel();
+    let service_wait_timeout = Duration::from_millis(1500);
+    let service_task_timeout = service_wait_timeout + Duration::from_millis(500);
+    let service_ready_timeout = Duration::from_secs(1);
 
-//     // The exposed service has its own dedicated scope (emulates running on its own instance)
-//     let service_task = {
-//         let service_expose_handle = router.service_messenger().await;
-//         let mut service = ServiceMessenger::listen(
-//             &service_expose_handle,
-//             MASTER_NODE_NAME,
-//             listener_node_name,
-//             listener_service_name,
-//             listener_instance_id,
-//         )
-//         .await
-//         .expect("service should start");
+    // The exposed service has its own dedicated scope (emulates running on its own instance)
+    let service_task = {
+        let service_expose_handle = router.service_messenger().await;
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            listener_master_node,
+            listener_node_name,
+            listener_service_name,
+            listener_instance_id,
+        )
+        .await
+        .expect("service should start");
 
-//         let call_count = Arc::clone(&call_count);
+        let call_count = Arc::clone(&call_count);
 
-//         tokio::spawn(async move {
-//             let handler = service.handle_next_request(|_request| {
-//                 let response_payload = Bytes::from_static(b"ack");
-//                 async move {
-//                     // This closure should never be called in this test since
-//                     // we're targeting the wrong node
-//                     call_count.fetch_add(1, Ordering::SeqCst);
-//                     Ok(response_payload)
-//                 }
-//             });
+        tokio::spawn(async move {
+            let handler = service.handle_next_request(|_request| {
+                let response_payload = Bytes::from_static(b"ack");
+                async move {
+                    // This closure should never be called in this test since
+                    // we're targeting the wrong node
+                    call_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(response_payload)
+                }
+            });
 
-//             service_ready_tx.send(()).unwrap();
-//             let handled = tokio::time::timeout(service_wait_timeout, handler).await;
+            service_ready_tx.send(()).unwrap();
+            let handled = tokio::time::timeout(service_wait_timeout, handler).await;
 
-//             // Timeout is expected since the service should not receive a request
-//             assert!(
-//                 handled.is_err(),
-//                 "service handler should have timed out waiting for request"
-//             );
+            // Timeout is expected since the service should not receive a request
+            assert!(
+                handled.is_err(),
+                "service handler should have timed out waiting for request"
+            );
 
-//             Ok::<(), Error>(())
-//         })
-//     };
+            Ok::<(), Error>(())
+        })
+    };
 
-//     tokio::time::timeout(service_ready_timeout, service_ready_rx)
-//         .await
-//         .expect("service should signal readiness before timeout")
-//         .expect("service should signal readiness");
+    tokio::time::timeout(service_ready_timeout, service_ready_rx)
+        .await
+        .expect("service should signal readiness before timeout")
+        .expect("service should signal readiness");
 
-//     // The caller node has its own scope (emulates a separate node running on a different instance)
-//     {
-//         let caller_handle = router.service_messenger().await;
-//         let err = {
-//             let result = ServiceMessenger::poll(
-//                 &caller_handle,
-//                 MASTER_NODE_NAME,
-//                 caller_instance_id,
-//                 listener_node_name,
-//                 listener_service_name,
-//                 Some("wrong_node"), // Use a wrong node name here
-//                 request_payload.clone(),
-//                 Duration::from_secs(1),
-//             )
-//             .await;
+    // The caller node has its own scope (emulates a separate node running on a different instance)
+    {
+        let caller_handle = router.service_messenger().await;
+        let err = {
+            let result = ServiceMessenger::poll(
+                &caller_handle,
+                CALLER_MASTER_NODE,
+                CALLER_INSTANCE_ID,
+                listener_node_name,
+                listener_service_name,
+                None,               // target_master_node
+                Some("wrong_node"), // Use a wrong instance_id here
+                request_payload.clone(),
+                Duration::from_secs(1),
+            )
+            .await;
 
-//             let Err(err) = result else {
-//                 panic!("service call should fail when targeting the wrong node");
-//             };
+            let Err(err) = result else {
+                panic!("service call should fail when targeting the wrong node");
+            };
 
-//             err
-//         };
+            err
+        };
 
-//         let Error::ServiceUnreachable {
-//             instance_id: err_instance_id,
-//             service_name: err_service_name,
-//         } = &err
-//         else {
-//             panic!(
-//                 "expected ServiceUnreachable error, received unexpected error: {:?}",
-//                 err
-//             );
-//         };
+        let Error::ServiceUnreachable {
+            instance_id: err_instance_id,
+            service_name: err_service_name,
+        } = &err
+        else {
+            panic!(
+                "expected ServiceUnreachable error, received unexpected error: {:?}",
+                err
+            );
+        };
 
-//         assert_eq!(err_instance_id.as_deref(), Some("wrong_node"));
-//         assert_eq!(err_service_name.as_str(), listener_service_name);
-//         assert_eq!(
-//             call_count.load(Ordering::SeqCst),
-//             0,
-//             "service should not be called when targeting the wrong instance"
-//         );
-//     }
+        assert_eq!(err_instance_id.as_deref(), Some("wrong_node"));
+        assert_eq!(err_service_name.as_str(), listener_service_name);
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            0,
+            "service should not be called when targeting the wrong instance"
+        );
+    }
 
-//     // Ensure the service callback was not called at all
-//     assert_eq!(
-//         call_count.load(Ordering::SeqCst),
-//         0,
-//         "service callback should not have been called"
-//     );
+    // Ensure the service callback was not called at all
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        0,
+        "service callback should not have been called"
+    );
 
-//     tokio::time::timeout(service_task_timeout, service_task)
-//         .await
-//         .expect("service task should finish within timeout")
-//         .expect("service task panicked")
-//         .expect("service task returned error");
+    tokio::time::timeout(service_task_timeout, service_task)
+        .await
+        .expect("service task should finish within timeout")
+        .expect("service task panicked")
+        .expect("service task returned error");
 
-//     tokio::time::timeout(service_task_timeout, router.shutdown())
-//         .await
-//         .expect("router shutdown timed out");
-// }
+    tokio::time::timeout(service_task_timeout, router.shutdown())
+        .await
+        .expect("router shutdown timed out");
+}
 
-// #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-// async fn service_communication_poll_wrong_master_node() {
-//     let router = TestRouterContext::start().await;
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn service_communication_poll_wrong_master_node() {
+    let router = TestRouterContext::start().await;
 
-//     // Listener instance
-//     let listener_node_name = "camera";
-//     let listener_service_name = "enable_camera";
-//     let listener_instance_id = "listener_instance";
+    // Listener instance
+    let listener_node_name = "camera";
+    let listener_service_name = "enable_camera";
+    let listener_instance_id = "listener_instance";
+    let listener_master_node = "listener_master_node";
 
-//     // Caller instance
-//     let caller_instance_id = "caller_instance";
+    // Caller instance
+    const CALLER_INSTANCE_ID: &str = "caller_instance";
+    const CALLER_MASTER_NODE: &str = "caller_master_node";
 
-//     let wrong_master_node = "wrong_master";
+    let request_payload = Bytes::from_static(b"enable=true");
 
-//     let request_payload = Bytes::from_static(b"enable=true");
+    let call_count = Arc::new(AtomicUsize::new(0));
 
-//     let call_count = Arc::new(AtomicUsize::new(0));
+    let (service_ready_tx, service_ready_rx) = oneshot::channel();
+    let service_wait_timeout = Duration::from_millis(500);
+    let service_task_timeout = service_wait_timeout + Duration::from_millis(500);
+    let service_ready_timeout = Duration::from_secs(1);
 
-//     let (service_ready_tx, service_ready_rx) = oneshot::channel();
-//     let service_wait_timeout = Duration::from_millis(500);
-//     let service_task_timeout = service_wait_timeout + Duration::from_millis(500);
-//     let service_ready_timeout = Duration::from_secs(1);
+    // The exposed service has its own dedicated scope (emulates running on its own instance)
+    let service_task = {
+        let service_expose_handle = router.service_messenger().await;
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            listener_master_node,
+            listener_node_name,
+            listener_service_name,
+            listener_instance_id,
+        )
+        .await
+        .expect("service should start");
 
-//     // The exposed service has its own dedicated scope (emulates running on its own instance)
-//     let service_task = {
-//         let service_expose_handle = router.service_messenger().await;
-//         let mut service = ServiceMessenger::listen(
-//             &service_expose_handle,
-//             MASTER_NODE_NAME,
-//             listener_node_name,
-//             listener_service_name,
-//             listener_instance_id,
-//         )
-//         .await
-//         .expect("service should start");
+        let call_count = Arc::clone(&call_count);
 
-//         let call_count = Arc::clone(&call_count);
+        tokio::spawn(async move {
+            let handler = service.handle_next_request(|_request| {
+                let response_payload = Bytes::from_static(b"ack");
+                async move {
+                    // This closure should never be called in this test since
+                    // we're targeting the wrong node
+                    call_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(response_payload)
+                }
+            });
 
-//         tokio::spawn(async move {
-//             let handler = service.handle_next_request(|_request| {
-//                 let response_payload = Bytes::from_static(b"ack");
-//                 async move {
-//                     // This closure should never be called in this test since
-//                     // we're targeting the wrong node
-//                     call_count.fetch_add(1, Ordering::SeqCst);
-//                     Ok(response_payload)
-//                 }
-//             });
+            service_ready_tx.send(()).unwrap();
+            let handled = tokio::time::timeout(service_wait_timeout, handler).await;
 
-//             service_ready_tx.send(()).unwrap();
-//             let handled = tokio::time::timeout(service_wait_timeout, handler).await;
+            // Timeout is expected since the service should not receive a request
+            assert!(
+                handled.is_err(),
+                "service handler should have timed out waiting for request"
+            );
 
-//             // Timeout is expected since the service should not receive a request
-//             assert!(
-//                 handled.is_err(),
-//                 "service handler should have timed out waiting for request"
-//             );
+            Ok::<(), Error>(())
+        })
+    };
 
-//             Ok::<(), Error>(())
-//         })
-//     };
+    // The caller node has its own scope (emulates a separate node running on a different instance)
+    let err = {
+        tokio::time::timeout(service_ready_timeout, service_ready_rx)
+            .await
+            .expect("service should signal readiness before timeout")
+            .expect("service should signal readiness");
 
-//     // The caller node has its own scope (emulates a separate node running on a different instance)
-//     let err = {
-//         tokio::time::timeout(service_ready_timeout, service_ready_rx)
-//             .await
-//             .expect("service should signal readiness before timeout")
-//             .expect("service should signal readiness");
+        let caller_handle = router.service_messenger().await;
+        let result = ServiceMessenger::poll(
+            &caller_handle,
+            CALLER_MASTER_NODE,
+            CALLER_INSTANCE_ID,
+            listener_node_name,
+            listener_service_name,
+            Some("wrong_master"), // target_master_node - wrong one!
+            None,                 // no specific target_instance_id
+            request_payload.clone(),
+            Duration::from_millis(200),
+        )
+        .await;
 
-//         let caller_handle = router.service_messenger().await;
-//         let result = ServiceMessenger::poll(
-//             &caller_handle,
-//             wrong_master_node,
-//             caller_instance_id,
-//             listener_node_name,
-//             listener_service_name,
-//             Some(listener_instance_id),
-//             request_payload.clone(),
-//             Duration::from_millis(200),
-//         )
-//         .await;
+        let Err(err) = result else {
+            panic!("service call should fail when targeting the wrong master node");
+        };
 
-//         let Err(err) = result else {
-//             panic!("service call should fail when targeting the wrong master node");
-//         };
+        err
+    };
 
-//         err
-//     };
+    let Error::ServiceUnreachable {
+        instance_id: err_instance_id,
+        service_name: err_service_name,
+    } = &err
+    else {
+        panic!(
+            "expected ServiceUnreachable error, received unexpected error: {:?}",
+            err
+        );
+    };
 
-//     let Error::ServiceUnreachable {
-//         instance_id: err_instance_id,
-//         service_name: err_service_name,
-//     } = &err
-//     else {
-//         panic!(
-//             "expected ServiceUnreachable error, received unexpected error: {:?}",
-//             err
-//         );
-//     };
+    assert_eq!(err_instance_id.as_deref(), None); // No instance_id was targeted
+    assert_eq!(err_service_name.as_str(), listener_service_name);
 
-//     assert_eq!(err_instance_id.as_deref(), Some(listener_instance_id));
-//     assert_eq!(err_service_name.as_str(), listener_service_name);
+    tokio::time::timeout(service_task_timeout, service_task)
+        .await
+        .expect("service task should finish within timeout")
+        .expect("service task panicked")
+        .expect("service task returned error");
 
-//     tokio::time::timeout(service_task_timeout, service_task)
-//         .await
-//         .expect("service task should finish within timeout")
-//         .expect("service task panicked")
-//         .expect("service task returned error");
-
-//     tokio::time::timeout(service_task_timeout, router.shutdown())
-//         .await
-//         .expect("router shutdown timed out");
-// }
+    tokio::time::timeout(service_task_timeout, router.shutdown())
+        .await
+        .expect("router shutdown timed out");
+}
 
 // #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 // async fn service_communication_fails_not_started() {
