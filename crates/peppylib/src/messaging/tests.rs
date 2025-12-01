@@ -139,6 +139,8 @@ async fn topic_publish_subscribe_no_target_instance_id() {
         subscriber_instance_id,
         &node_name,
         &topic,
+        None, // Accepts any master node that emits
+        None, // Accepts any instance id that emits
         qos.clone(),
     )
     .await
@@ -154,8 +156,6 @@ async fn topic_publish_subscribe_no_target_instance_id() {
         &emitter_handle,
         emitter_master_node,
         emitter_instance_id,
-        None,
-        None,
         &node_name,
         &topic,
         qos,
@@ -189,6 +189,15 @@ async fn topic_publish_subscribe_with_target_instance_id() {
     let qos = QoSProfile::Reliable;
     let node_name = "uvc_camera";
     let topic = "video_frame";
+
+    // The messages emitted from this one will never be received by any subscriber
+    let emitter_master_node1 = "master_node_emit1";
+    let emitter_instance_id1 = "emitter_instance1";
+
+    // The messages emitted from this one will be received by a subscriber
+    let emitter_master_node2 = "master_node_emit2";
+    let emitter_instance_id2 = "emitter_instance2";
+
     let payload = Bytes::from_static(b"A message");
 
     let subscriber_master_node = "master_node_subscribe";
@@ -201,11 +210,14 @@ async fn topic_publish_subscribe_with_target_instance_id() {
         subscriber_instance_id1,
         &node_name,
         &topic,
+        Some(emitter_master_node1),
+        Some(emitter_instance_id1),
         qos.clone(),
     )
     .await
     .expect("Should subscribe to the topic");
 
+    // Only this subscriber will receive a message
     let subscriber_instance_id2 = "subscriber_instance2";
     let mut subscription2 = TopicMessenger::subscribe(
         &subscriber_handle,
@@ -213,6 +225,8 @@ async fn topic_publish_subscribe_with_target_instance_id() {
         subscriber_instance_id2,
         &node_name,
         &topic,
+        Some(emitter_master_node2),
+        Some(emitter_instance_id2),
         qos.clone(),
     )
     .await
@@ -221,15 +235,11 @@ async fn topic_publish_subscribe_with_target_instance_id() {
     // Allow subscriptions to propagate before publishing
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let emitter_master_node = "master_node_emit";
-    let emitter_instance_id = "emitter_instance";
-    let emitter_handle = router.topic_messenger().await;
+    let emitter_handle1 = router.topic_messenger().await;
     TopicMessenger::emit(
-        &emitter_handle,
-        emitter_master_node,
-        emitter_instance_id,
-        None,
-        Some(subscriber_instance_id2),
+        &emitter_handle1,
+        emitter_master_node2,
+        emitter_instance_id2,
         &node_name,
         &topic,
         qos,
@@ -238,64 +248,72 @@ async fn topic_publish_subscribe_with_target_instance_id() {
     .await
     .expect("Should send the payload");
 
-    let timeout_result =
-        tokio::time::timeout(Duration::from_millis(500), subscription1.rx.recv()).await;
-    assert!(
-        timeout_result.is_err(),
-        "subscription1 should not receive the message targeted to subscriber_instance_id2"
-    );
-
     let received = tokio::time::timeout(Duration::from_secs(2), subscription2.rx.recv())
         .await
         .expect("Timed out waiting for published message")
         .expect("Should receive the published message");
 
-    // Now the key_expr contains subscriber_instance_id2 since it specifically target this subscriber
-    let expected_key_expr = format!(
-        "*/{}/{}/{}/topic/{}/{}",
-        emitter_master_node, subscriber_instance_id2, emitter_instance_id, node_name, topic
+    // The second subscriber should never receive a message
+    let timeout_result =
+        tokio::time::timeout(Duration::from_secs(2), subscription1.rx.recv()).await;
+    assert!(
+        timeout_result.is_err(),
+        "subscription1 should not receive a second message"
     );
 
-    assert_eq!(received.key_expr(), expected_key_expr);
-    assert_eq!(received.instance_id(), emitter_instance_id);
-    assert_eq!(received.master_node(), emitter_master_node);
+    // Only receive from emitter 2
+    assert_eq!(received.master_node(), emitter_master_node2);
+    assert_eq!(received.instance_id(), emitter_instance_id2);
     assert_eq!(received.payload(), &payload);
 
     router.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn topic_publish_subscribe_with_target_master_and_instance_id() {
+async fn topic_publish_subscribe_with_target_master_node() {
     let router = TestRouterContext::start().await;
 
     let qos = QoSProfile::Reliable;
     let node_name = "uvc_camera";
     let topic = "video_frame";
+
+    // The messages emitted from this one will never be received by any subscriber
+    let emitter_master_node1 = "master_node_emit1";
+    let emitter_instance_id = "emitter_instance";
+
+    // The messages emitted from this one will be received by a subscriber
+    let emitter_master_node2 = "master_node_emit2";
+
     let payload = Bytes::from_static(b"A message");
 
-    let subscriber_master_node1 = "master_node_subscribe1";
+    // Same instance_id for every subscriber
+    let subscriber_instance_id = "subscriber_instance";
     let subscriber_handle = router.topic_messenger().await;
 
-    let subscriber_instance_id1 = "subscriber_instance1";
+    let subscriber_master_node1 = "master_node_subscribe1";
     let mut subscription1 = TopicMessenger::subscribe(
         &subscriber_handle,
         subscriber_master_node1,
-        subscriber_instance_id1,
+        subscriber_instance_id,
         &node_name,
         &topic,
+        Some(emitter_master_node1),
+        Some(emitter_instance_id),
         qos.clone(),
     )
     .await
     .expect("Should subscribe to the topic");
 
+    // Only this subscriber will receive a message
     let subscriber_master_node2 = "master_node_subscribe2";
-    let subscriber_instance_id2 = "subscriber_instance2";
     let mut subscription2 = TopicMessenger::subscribe(
         &subscriber_handle,
         subscriber_master_node2,
-        subscriber_instance_id2,
+        subscriber_instance_id,
         &node_name,
         &topic,
+        Some(emitter_master_node2),
+        Some(emitter_instance_id),
         qos.clone(),
     )
     .await
@@ -304,15 +322,11 @@ async fn topic_publish_subscribe_with_target_master_and_instance_id() {
     // Allow subscriptions to propagate before publishing
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let emitter_master_node = "master_node_emit";
-    let emitter_instance_id = "emitter_instance";
-    let emitter_handle = router.topic_messenger().await;
+    let emitter_handle1 = router.topic_messenger().await;
     TopicMessenger::emit(
-        &emitter_handle,
-        emitter_master_node,
+        &emitter_handle1,
+        emitter_master_node2,
         emitter_instance_id,
-        Some(subscriber_master_node2),
-        Some(subscriber_instance_id2),
         &node_name,
         &topic,
         qos,
@@ -321,32 +335,22 @@ async fn topic_publish_subscribe_with_target_master_and_instance_id() {
     .await
     .expect("Should send the payload");
 
-    let timeout_result =
-        tokio::time::timeout(Duration::from_millis(500), subscription1.rx.recv()).await;
-    assert!(
-        timeout_result.is_err(),
-        "subscription1 should not receive the message targeted to subscriber_instance_id2"
-    );
-
     let received = tokio::time::timeout(Duration::from_secs(2), subscription2.rx.recv())
         .await
         .expect("Timed out waiting for published message")
         .expect("Should receive the published message");
 
-    // Now the key_expr contains subscriber_instance_id2 since it specifically target this subscriber
-    let expected_key_expr = format!(
-        "{}/{}/{}/{}/topic/{}/{}",
-        subscriber_master_node2,
-        emitter_master_node,
-        subscriber_instance_id2,
-        emitter_instance_id,
-        node_name,
-        topic
+    // The second subscriber should never receive a message
+    let timeout_result =
+        tokio::time::timeout(Duration::from_secs(2), subscription1.rx.recv()).await;
+    assert!(
+        timeout_result.is_err(),
+        "subscription1 should not receive a second message"
     );
 
-    assert_eq!(received.key_expr(), expected_key_expr);
+    // Only receive from emitter 2
+    assert_eq!(received.master_node(), emitter_master_node2);
     assert_eq!(received.instance_id(), emitter_instance_id);
-    assert_eq!(received.master_node(), emitter_master_node);
     assert_eq!(received.payload(), &payload);
 
     router.shutdown().await;
@@ -371,6 +375,8 @@ async fn topic_publish_reliable_5000hz_messages() {
         subscriber_instance_id,
         &node_name,
         &topic,
+        None,
+        None,
         qos.clone(),
     )
     .await
@@ -392,8 +398,6 @@ async fn topic_publish_reliable_5000hz_messages() {
             &sender_handle,
             emitter_master_node,
             emitter_instance_id,
-            None,
-            None,
             &node_name,
             &topic,
             qos.clone(),
