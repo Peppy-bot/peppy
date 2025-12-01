@@ -1949,264 +1949,248 @@ async fn action_communication_with_instance_id_target() {
     router.shutdown().await;
 }
 
-// #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-// async fn action_communication_goal_cancelled() {
-//     let router = TestRouterContext::start().await;
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn action_communication_goal_cancelled() {
+    let router = TestRouterContext::start().await;
 
-//     // Listener instance
-//     let listener_node_name = "camera";
-//     let listener_action_name = "enable_camera";
-//     let listener_instance_id = "listener_instance";
+    // Listener instance
+    let listener_node_name = "camera";
+    let listener_action_name = "enable_camera";
+    const LISTENER_MASTER_NODE: &str = "listener_master_node";
+    const LISTENER_INSTANCE_ID: &str = "listener_instance";
 
-//     // Caller instance
-//     let caller_instance_id = "caller_instance";
+    // Caller instance
+    const CALLER_MASTER_NODE: &str = "caller_master_node";
+    const CALLER_INSTANCE_ID: &str = "caller_instance";
 
-//     let goal_payload = Bytes::from_static(b"arm=right;pos=1,2,3");
-//     let goal_response_payload = Bytes::from_static(b"accepted");
-//     let feedback_payload = Bytes::from_static(b"progress=50");
-//     let result_request_payload = Bytes::from_static(b"goal=right_arm");
-//     let cancel_response_payload = Bytes::from_static(b"cancelled");
+    let goal_payload = Bytes::from_static(b"arm=right;pos=1,2,3");
+    let goal_response_payload = Bytes::from_static(b"accepted");
+    let feedback_payload = Bytes::from_static(b"progress=50");
+    let cancel_response_payload = Bytes::from_static(b"cancelled");
 
-//     let (action_ready_tx, action_ready_rx) = oneshot::channel();
+    let goal_call_count = Arc::new(AtomicUsize::new(0));
+    let cancel_call_count = Arc::new(AtomicUsize::new(0));
 
-//     let server_task = {
-//         let goal_payload_server = goal_payload.clone();
-//         let goal_response_payload_server = goal_response_payload.clone();
-//         let feedback_payload_server = feedback_payload.clone();
-//         let cancel_response_payload_server = cancel_response_payload.clone();
+    let (action_ready_tx, action_ready_rx) = oneshot::channel();
 
-//         let action_handle = router.action_messenger().await;
-//         let action_ready_tx = Some(action_ready_tx);
+    let server_task = {
+        let expected_goal_payload = goal_payload.clone();
+        let expected_goal_response_payload = goal_response_payload.clone();
+        let feedback_payload_server = feedback_payload.clone();
+        let cancel_response_payload_server = cancel_response_payload.clone();
+        let goal_call_count = Arc::clone(&goal_call_count);
+        let cancel_call_count = Arc::clone(&cancel_call_count);
 
-//         tokio::spawn(async move {
-//             let action = ActionMessenger::listen(
-//                 &action_handle,
-//                 MASTER_NODE_NAME,
-//                 listener_node_name,
-//                 listener_action_name,
-//                 listener_instance_id,
-//             )
-//             .await
-//             .expect("action should start");
+        let action_handle = router.action_messenger().await;
 
-//             let crate::messaging::ActionCreation {
-//                 mut goal_service,
-//                 mut cancel_service,
-//                 feedback_publisher,
-//                 ..
-//             } = action;
+        tokio::spawn(async move {
+            let mut action = ActionMessenger::listen(
+                &action_handle,
+                LISTENER_MASTER_NODE,
+                listener_node_name,
+                listener_action_name,
+                LISTENER_INSTANCE_ID,
+            )
+            .await
+            .expect("action should start");
 
-//             let goal_service_root =
-//                 format!("action/{listener_node_name}/{listener_action_name}/goal");
-//             let cancel_service_root =
-//                 format!("action/{listener_node_name}/{listener_action_name}/cancel");
-//             let expected_goal_topic = format!(
-//                 "{MASTER_NODE_NAME}/{listener_instance_id}/{goal_service_root}/{caller_instance_id}/request"
-//             );
-//             let expected_cancel_topic = format!(
-//                 "{MASTER_NODE_NAME}/{listener_instance_id}/{cancel_service_root}/{caller_instance_id}/request"
-//             );
+            // Create the goal handler future first (this sets up the subscription)
+            let goal_handler = action.goal_service.handle_next_request(move |request| {
+                let goal_call_count = Arc::clone(&goal_call_count);
+                async move {
+                    assert_eq!(request.message.master_node(), CALLER_MASTER_NODE);
+                    assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
+                    assert_eq!(request.message().payload(), &expected_goal_payload);
 
-//             if let Some(tx) = action_ready_tx {
-//                 let _ = tx.send(());
-//             }
+                    goal_call_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(expected_goal_response_payload)
+                }
+            });
 
-//             let handled_goal = goal_service
-//                 .handle_next_request(move |request| {
-//                     let expected_goal_topic = expected_goal_topic.clone();
-//                     let expected_goal_payload = goal_payload_server.clone();
-//                     let expected_goal_response_payload = goal_response_payload_server.clone();
-//                     async move {
-//                         assert_eq!(request.message().key_expr(), expected_goal_topic);
-//                         assert_eq!(request.message().payload(), &expected_goal_payload);
-//                         Ok(expected_goal_response_payload)
-//                     }
-//                 })
-//                 .await
-//                 .expect("action should receive goal request");
+            // Create the cancel handler future
+            let cancel_handler = action.cancel_service.handle_next_request(move |request| {
+                let cancel_call_count = Arc::clone(&cancel_call_count);
+                async move {
+                    assert_eq!(request.message.master_node(), CALLER_MASTER_NODE);
+                    assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
+                    assert!(
+                        request.message().payload().is_empty(),
+                        "cancel service should receive empty payload"
+                    );
 
-//             assert!(
-//                 handled_goal,
-//                 "goal subscription closed before handling request"
-//             );
+                    cancel_call_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(cancel_response_payload_server)
+                }
+            });
 
-//             let stop_feedback = Arc::new(tokio::sync::Notify::new());
-//             let feedback_task = {
-//                 let stop_feedback = Arc::clone(&stop_feedback);
-//                 let feedback_publisher = feedback_publisher;
-//                 let feedback_payload = feedback_payload_server.clone();
-//                 tokio::spawn(async move {
-//                     let mut ticker = tokio::time::interval(Duration::from_millis(50));
-//                     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-//                     let stop_notified = stop_feedback.notified();
-//                     tokio::pin!(stop_notified);
-//                     loop {
-//                         tokio::select! {
-//                             _ = stop_notified.as_mut() => break,
-//                             _ = ticker.tick() => {
-//                                 feedback_publisher
-//                                     .publish(feedback_payload.clone())
-//                                     .await?;
-//                             }
-//                         }
-//                     }
-//                     Ok::<(), Error>(())
-//                 })
-//             };
+            // Signal ready after handlers are set up
+            action_ready_tx.send(()).unwrap();
 
-//             let handled_cancel = cancel_service
-//                 .handle_next_request(move |request| {
-//                     let expected_topic = expected_cancel_topic.clone();
-//                     let response_payload = cancel_response_payload_server.clone();
-//                     async move {
-//                         assert_eq!(request.message().key_expr(), expected_topic);
-//                         assert!(
-//                             request.message().payload().is_empty(),
-//                             "cancel service should receive empty payload"
-//                         );
-//                         Ok(response_payload)
-//                     }
-//                 })
-//                 .await
-//                 .expect("action should receive cancel request");
+            // From this point on, wait for the client to send a goal request
+            let handled_goal = tokio::time::timeout(Duration::from_secs(5), goal_handler)
+                .await
+                .expect("timed out waiting for goal request")
+                .expect("action should receive goal request");
 
-//             assert!(
-//                 handled_cancel,
-//                 "cancel subscription closed before handling request"
-//             );
+            assert!(
+                handled_goal,
+                "goal subscription closed before handling request"
+            );
 
-//             stop_feedback.notify_waiters();
+            let stop_feedback = Arc::new(tokio::sync::Notify::new());
+            let feedback_task = {
+                let stop_feedback = Arc::clone(&stop_feedback);
+                let feedback_publisher = action.feedback_publisher;
+                let feedback_payload = feedback_payload_server.clone();
+                tokio::spawn(async move {
+                    let mut ticker = tokio::time::interval(Duration::from_millis(50));
+                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    let stop_notified = stop_feedback.notified();
+                    tokio::pin!(stop_notified);
+                    loop {
+                        tokio::select! {
+                            _ = stop_notified.as_mut() => break,
+                            _ = ticker.tick() => {
+                                feedback_publisher
+                                    .publish(feedback_payload.clone())
+                                    .await?;
+                            }
+                        }
+                    }
+                    Ok::<(), Error>(())
+                })
+            };
 
-//             feedback_task.await.expect("feedback loop task panicked")?;
+            let handled_cancel = tokio::time::timeout(Duration::from_secs(5), cancel_handler)
+                .await
+                .expect("timed out waiting for cancel request")
+                .expect("action should receive cancel request");
 
-//             Ok::<(), Error>(())
-//         })
-//     };
+            assert!(
+                handled_cancel,
+                "cancel subscription closed before handling request"
+            );
 
-//     action_ready_rx
-//         .await
-//         .expect("action server should signal readiness");
+            stop_feedback.notify_waiters();
 
-//     let caller_handle = router.action_messenger().await;
+            feedback_task.await.expect("feedback loop task panicked")?;
 
-//     let mut goal_handle = ActionMessenger::send_goal(
-//         &caller_handle,
-//         MASTER_NODE_NAME,
-//         caller_instance_id,
-//         listener_node_name,
-//         listener_action_name,
-//         Some(listener_instance_id),
-//         goal_payload,
-//         QoSProfile::Reliable,
-//         Duration::from_millis(1000),
-//     )
-//     .await
-//     .expect("caller should send goal");
+            Ok::<(), Error>(())
+        })
+    };
 
-//     assert_eq!(
-//         goal_handle.goal_response().payload().to_bytes(),
-//         goal_response_payload
-//     );
+    action_ready_rx
+        .await
+        .expect("action server should signal readiness");
 
-//     let expected_feedback_topic = format!(
-//         "{MASTER_NODE_NAME}/{listener_instance_id}/action/{listener_node_name}/{listener_action_name}/feedback/{listener_instance_id}"
-//     );
+    // Allow the action server to fully establish its listeners
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
-//     let first_feedback = goal_handle
-//         .feedback_mut()
-//         .rx
-//         .recv()
-//         .await
-//         .expect("caller should receive initial feedback");
+    let caller_handle = router.action_messenger().await;
 
-//     assert_eq!(first_feedback.key_expr(), expected_feedback_topic);
-//     assert_eq!(first_feedback.payload(), &feedback_payload);
+    let mut goal_handle = ActionMessenger::send_goal(
+        &caller_handle,
+        CALLER_MASTER_NODE,
+        CALLER_INSTANCE_ID,
+        listener_node_name,
+        listener_action_name,
+        Some(LISTENER_MASTER_NODE),
+        Some(LISTENER_INSTANCE_ID),
+        goal_payload,
+        QoSProfile::Reliable,
+        Duration::from_millis(1000),
+    )
+    .await
+    .expect("caller should send goal");
 
-//     let second_feedback = tokio::time::timeout(
-//         Duration::from_millis(200),
-//         goal_handle.feedback_mut().rx.recv(),
-//     )
-//     .await
-//     .expect("feedback stream should continue delivering updates before cancellation")
-//     .expect("feedback stream closed unexpectedly before cancellation");
+    assert_eq!(
+        goal_handle.goal_response().master_node(),
+        LISTENER_MASTER_NODE
+    );
+    assert_eq!(
+        goal_handle.goal_response().instance_id(),
+        LISTENER_INSTANCE_ID
+    );
+    assert_eq!(
+        goal_handle.goal_response().payload().to_bytes(),
+        goal_response_payload
+    );
 
-//     assert_eq!(second_feedback.key_expr(), expected_feedback_topic);
-//     assert_eq!(second_feedback.payload(), &feedback_payload);
+    let first_feedback = goal_handle
+        .feedback_mut()
+        .rx
+        .recv()
+        .await
+        .expect("caller should receive initial feedback");
 
-//     let cancel_response = ActionMessenger::cancel_goal(
-//         &caller_handle,
-//         caller_instance_id,
-//         &goal_handle,
-//         Duration::from_millis(500),
-//     )
-//     .await
-//     .expect("caller should receive cancel acknowledgement");
+    assert_eq!(first_feedback.payload(), &feedback_payload);
+    assert_eq!(first_feedback.master_node(), LISTENER_MASTER_NODE);
+    assert_eq!(first_feedback.instance_id(), LISTENER_INSTANCE_ID);
 
-//     assert_eq!(
-//         cancel_response.payload().to_bytes(),
-//         cancel_response_payload
-//     );
+    let second_feedback = tokio::time::timeout(
+        Duration::from_millis(200),
+        goal_handle.feedback_mut().rx.recv(),
+    )
+    .await
+    .expect("feedback stream should continue delivering updates before cancellation")
+    .expect("feedback stream closed unexpectedly before cancellation");
 
-//     while let Ok(message) = goal_handle.feedback_mut().rx.try_recv() {
-//         assert_eq!(
-//             message.key_expr(),
-//             expected_feedback_topic,
-//             "feedback from unexpected topic while draining"
-//         );
-//     }
+    assert_eq!(second_feedback.payload(), &feedback_payload);
+    assert_eq!(second_feedback.master_node(), LISTENER_MASTER_NODE);
+    assert_eq!(second_feedback.instance_id(), LISTENER_INSTANCE_ID);
 
-//     let post_cancel_feedback = tokio::time::timeout(
-//         Duration::from_millis(200),
-//         goal_handle.feedback_mut().rx.recv(),
-//     )
-//     .await;
+    let cancel_response = ActionMessenger::cancel_goal(
+        &caller_handle,
+        CALLER_INSTANCE_ID,
+        &goal_handle,
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("caller should receive cancel acknowledgement");
 
-//     if let Ok(Some(message)) = post_cancel_feedback {
-//         panic!(
-//             "expected no feedback after cancellation, received topic '{}' with payload {:?}",
-//             message.key_expr(),
-//             message.payload()
-//         );
-//     }
+    assert_eq!(
+        cancel_response.payload().to_bytes(),
+        cancel_response_payload
+    );
+    assert_eq!(cancel_response.master_node(), LISTENER_MASTER_NODE);
+    assert_eq!(cancel_response.instance_id(), LISTENER_INSTANCE_ID);
 
-//     let err = ActionMessenger::poll_result(
-//         &caller_handle,
-//         caller_instance_id,
-//         &goal_handle,
-//         result_request_payload,
-//         Duration::from_millis(200),
-//     )
-//     .await;
+    // Drain any remaining feedback messages
+    while goal_handle.feedback_mut().rx.try_recv().is_ok() {}
 
-//     let Err(err) = err else {
-//         panic!("action result should time out after cancellation");
-//     };
+    let post_cancel_feedback = tokio::time::timeout(
+        Duration::from_millis(200),
+        goal_handle.feedback_mut().rx.recv(),
+    )
+    .await;
 
-//     let Error::ActionResultUnreachable {
-//         instance_id: err_instance_id,
-//         action_name: err_action_name,
-//     } = &err
-//     else {
-//         panic!(
-//             "expected ActionResultTimeout or ActionResultUnreachable error after cancellation, received: {:?}",
-//             err
-//         );
-//     };
+    if let Ok(Some(message)) = post_cancel_feedback {
+        panic!(
+            "expected no feedback after cancellation, received from master_node '{}' instance_id '{}' with payload {:?}",
+            message.master_node(),
+            message.instance_id(),
+            message.payload()
+        );
+    }
 
-//     assert_eq!(
-//         err_instance_id.as_deref(),
-//         Some(listener_instance_id),
-//         "should report unreachable targeted action instance"
-//     );
-//     assert_eq!(err_action_name, listener_action_name);
+    server_task
+        .await
+        .expect("action handler task panicked")
+        .expect("action handler returned error");
 
-//     server_task
-//         .await
-//         .expect("action handler task panicked")
-//         .expect("action handler returned error");
+    assert_eq!(
+        goal_call_count.load(Ordering::SeqCst),
+        1,
+        "goal handler should have been called exactly once"
+    );
+    assert_eq!(
+        cancel_call_count.load(Ordering::SeqCst),
+        1,
+        "cancel handler should have been called exactly once"
+    );
 
-//     router.shutdown().await;
-// }
+    router.shutdown().await;
+}
 
 // #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 // async fn single_action_communication_multiple_polls() {
