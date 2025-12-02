@@ -204,7 +204,7 @@ fn expose_topic() {
         "expected qos profile literal"
     );
     assert_rendered!(
-        rendered.contains("let as_instance_id = messenger.runtime().current_instance_id();"),
+        rendered.contains("let as_instance_id = messenger.runtime().bound_instance_id();"),
         &rendered,
         "expected instance id to be resolved from runtime config"
     );
@@ -377,6 +377,36 @@ fn subscribed_to_topic() {
         "expected messenger reference parameter"
     );
     assert_rendered!(
+        rendered.contains("master_node_target: Option<&str>"),
+        &rendered,
+        "expected master_node_target parameter"
+    );
+    assert_rendered!(
+        rendered.contains("instance_id_target: Option<&str>"),
+        &rendered,
+        "expected instance_id_target parameter"
+    );
+    assert_rendered!(
+        rendered.contains("messenger.runtime().bound_master_node()"),
+        &rendered,
+        "expected bound master node from runtime"
+    );
+    assert_rendered!(
+        rendered.contains("messenger.runtime().bound_instance_id()"),
+        &rendered,
+        "expected bound instance id from runtime"
+    );
+    assert_rendered!(
+        rendered.contains("master_node_target,"),
+        &rendered,
+        "expected master_node_target passed to subscribe"
+    );
+    assert_rendered!(
+        rendered.contains("instance_id_target,"),
+        &rendered,
+        "expected instance_id_target passed to subscribe"
+    );
+    assert_rendered!(
         rendered.contains("message.payload().as_bytes()"),
         &rendered,
         "expected payload extraction from received message"
@@ -535,6 +565,26 @@ fn subscribed_to_two_topics_same_node() {
             rendered.contains("messenger: &crate::Messenger"),
             rendered,
             "expected messenger parameter"
+        );
+        assert_rendered!(
+            rendered.contains("master_node_target: Option<&str>"),
+            rendered,
+            "expected master_node_target parameter"
+        );
+        assert_rendered!(
+            rendered.contains("instance_id_target: Option<&str>"),
+            rendered,
+            "expected instance_id_target parameter"
+        );
+        assert_rendered!(
+            rendered.contains("messenger.runtime().bound_master_node()"),
+            rendered,
+            "expected bound master node from runtime"
+        );
+        assert_rendered!(
+            rendered.contains("messenger.runtime().bound_instance_id()"),
+            rendered,
+            "expected bound instance id from runtime"
         );
         assert_rendered!(
             rendered.contains("let node_name = \"uvc_camera\";"),

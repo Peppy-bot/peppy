@@ -99,7 +99,7 @@ use peppygen::{{Messenger, Result}};
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", {}).await?;
 
-    let (instance_id, frame) = on_next_message_received(&messenger).await?;
+    let (instance_id, frame) = on_next_message_received(&messenger, None, None).await?;
     println!(
         \"got {{}}x{{}} frame encoded as {{}} from {{}}\",
         frame.width, frame.height, frame.encoding, &instance_id

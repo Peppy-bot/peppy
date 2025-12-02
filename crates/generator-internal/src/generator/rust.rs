@@ -2315,15 +2315,15 @@ fn build_topic_emit(
                     let qos = #qos_tokens;
                     let as_topic = #topic_literal;
                     let as_node_name = messenger.runtime().node_name();
-                    let as_instance_id = messenger.runtime().current_instance_id();
+                    let as_instance_id = messenger.runtime().bound_instance_id();
                     let with_master_node = messenger.runtime().bound_master_node();
 
                     peppylib::TopicMessenger::emit(
                         messenger.handle(),
                         with_master_node,
+                        as_instance_id,
                         as_node_name,
                         as_topic,
-                        as_instance_id,
                         qos,
                         payload,
                     )
@@ -2392,7 +2392,11 @@ fn build_subscribed_topic_callback(
     let context_literal = Literal::string(struct_prefix);
 
     quote! {
-        pub async fn #fn_name(messenger: &crate::Messenger) -> crate::Result<(String, #args_struct_ident)> {
+        pub async fn #fn_name(
+            messenger: &crate::Messenger,
+            master_node_target: Option<&str>,
+            instance_id_target: Option<&str>,
+        ) -> crate::Result<(String, #args_struct_ident)> {
             let topic_name = #topic_literal;
             let node_name = #node_name_literal;
             let qos = peppylib::config::QoSProfile::Standard;
@@ -2400,9 +2404,12 @@ fn build_subscribed_topic_callback(
             let message = {
                 let mut subscription = peppylib::TopicMessenger::subscribe(
                     messenger.handle(),
-                    messenger.bound_master_node(),
+                    messenger.runtime().bound_master_node(),
+                    messenger.runtime().bound_instance_id(),
                     node_name,
                     topic_name,
+                    master_node_target,
+                    instance_id_target,
                     qos,
                 )
                 .await

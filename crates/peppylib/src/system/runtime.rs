@@ -34,7 +34,7 @@ impl RuntimeProcessor {
         })
     }
 
-    pub fn current_instance_id(&self) -> &str {
+    pub fn bound_instance_id(&self) -> &str {
         self.launch_config.deployment_instance.instance_id.as_str()
     }
 
