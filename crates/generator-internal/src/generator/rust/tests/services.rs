@@ -3,8 +3,6 @@ use std::process::Command;
 use super::*;
 use config::node::{ExposedService, SubscribedService};
 
-const MASTER_NODE_NAME: &str = "master_node";
-
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {
   name: "enable_camera",

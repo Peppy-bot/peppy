@@ -3,8 +3,6 @@ use super::*;
 use config::node::{ExposedAction, SubscribedAction};
 use std::{collections::HashMap, fs};
 
-const MASTER_NODE_NAME: &str = "master_node";
-
 // --- Exposes examples
 const EXPOSED_ACTION_EXAMPLE: &str = r#"
 {

@@ -15,7 +15,7 @@ impl Messenger {
     }
 
     pub fn runtime(&self) -> &RuntimeProcessor {
-        self.runtime_processor
+        &self.runtime_processor
     }
 
     pub fn handle(&self) -> &peppylib::MessengerHandle {
