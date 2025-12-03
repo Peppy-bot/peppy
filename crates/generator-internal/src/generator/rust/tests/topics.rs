@@ -615,7 +615,7 @@ fn compile_lib_with_exposed_and_subscribed_topics() {
     let subscribed_format2: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2).unwrap();
 
-    let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
     generator.add_exposed_topic(&exposed_topic1).unwrap();
     generator.add_exposed_topic(&exposed_topic2).unwrap();
     generator

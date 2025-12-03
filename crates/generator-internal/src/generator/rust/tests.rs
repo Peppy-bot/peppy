@@ -13,6 +13,7 @@ mod services;
 mod topics;
 
 use super::*;
+use config::runtime::RuntimeConfig;
 use std::path::Path;
 use std::{
     fs,
@@ -37,21 +38,37 @@ const STUB_NODE_CONFIG: &str = r#"{
 }
 "#;
 
-fn prepare_directories(temp_dir: &TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
+fn prepare_directories(
+    temp_dir: &TempDir,
+) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
     let output_dir = temp_dir.path().join(".peppy/libs/peppygen");
     let user_node = temp_dir.path().join("user_node");
+    let peppy_node_config = user_node.join(PEPPY_NODE_CONFIG_FILE);
     fs::create_dir_all(&output_dir).unwrap();
     fs::create_dir_all(&user_node).unwrap();
-    fs::write(user_node.join(PEPPY_NODE_CONFIG_FILE), STUB_NODE_CONFIG).unwrap();
-    (output_dir, user_node)
+    fs::write(&peppy_node_config, STUB_NODE_CONFIG).unwrap();
+    (output_dir, user_node, peppy_node_config)
 }
 
-fn init_test_env(temp_dir: &TempDir) -> (RustGenerator, std::path::PathBuf, std::path::PathBuf) {
-    let (output_dir, user_node) = prepare_directories(temp_dir);
-    (RustGenerator::new(), output_dir, user_node)
+fn init_test_env(
+    temp_dir: &TempDir,
+) -> (
+    RustGenerator,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
+    let (output_dir, user_node, peppy_node_config_path) = prepare_directories(temp_dir);
+    (
+        RustGenerator::new(),
+        output_dir,
+        user_node,
+        peppy_node_config_path,
+    )
 }
 
-/// Init the cargo project in a given path and add the peppygen dependency to the project
+/// Init the cargo project in a given path and add the peppygen dependency to the project.
+/// Copies the peppy_config file to the crate directory and returns the destination path.
 fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
     let crate_dir = to_dir.as_ref();
     fs::create_dir_all(crate_dir).expect("failed to create user node directory");
@@ -79,17 +96,15 @@ fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
     let manifest_contents =
         fs::read_to_string(&cargo_toml_path).expect("failed to read user node Cargo.toml");
 
-    if manifest_contents
+    if !manifest_contents
         .lines()
         .any(|line| line.trim_start().starts_with("peppygen"))
     {
-        return;
+        let dependency_line = format!("peppygen = {{ path = \"{}\" }}\n", peppygen_path);
+        let updated_manifest = insert_dependency_line(&manifest_contents, &dependency_line);
+        fs::write(&cargo_toml_path, updated_manifest)
+            .expect("failed to write user node Cargo.toml");
     }
-
-    let dependency_line = format!("peppygen = {{ path = \"{}\" }}\n", peppygen_path);
-
-    let updated_manifest = insert_dependency_line(&manifest_contents, &dependency_line);
-    fs::write(&cargo_toml_path, updated_manifest).expect("failed to write user node Cargo.toml");
 }
 
 fn run_cargo_run(

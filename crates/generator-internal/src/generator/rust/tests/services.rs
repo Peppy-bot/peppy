@@ -788,7 +788,7 @@ fn compile_lib_with_exposed_and_subscribed_services() {
     let subscribed_service_response2: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2).unwrap();
 
-    let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
     generator.add_exposed_service(&exposed_service1).unwrap();
     generator.add_exposed_service(&exposed_service2).unwrap();
     generator
