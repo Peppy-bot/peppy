@@ -11,28 +11,25 @@ pub enum Error {
     InvalidNodeName { node_name: String, reason: String },
     #[error("invalid master node name `{node_name}`: {reason}")]
     InvalidMasterNodeName { node_name: String, reason: String },
-    #[error("failed to create messenger for topic `{topic_name}` on {host}:{port}")]
+    #[error("failed to create messenger for topic `{topic_name}` on {host}:{port}, {source_msg}")]
     TopicMessengerConnect {
         topic_name: String,
         host: String,
         port: u16,
-        #[source]
-        source: PeppyError,
+        source_msg: String,
     },
-    #[error("failed to create messenger for node `{node_name}` on {host}:{port}")]
+    #[error("failed to create messenger for node `{node_name}` on {host}:{port}, {source_msg}")]
     NodeMessengerConnect {
         node_name: String,
         host: String,
         port: u16,
-        #[source]
-        source: PeppyError,
+        source_msg: String,
     },
-    #[error("failed to subscribe to topic `{topic_name}` in node `{node_name}`")]
+    #[error("failed to subscribe to topic `{topic_name}` in node `{node_name}`, {source_msg}")]
     TopicSubscribe {
         topic_name: String,
         node_name: String,
-        #[source]
-        source: PeppyError,
+        source_msg: String,
     },
     #[error("subscription to `{topic_name}` closed without yielding a message")]
     SubscriptionClosed { topic_name: String },

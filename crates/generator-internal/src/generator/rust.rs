@@ -492,18 +492,19 @@ impl RustGenerator {
                 let qos = peppylib::config::QoSProfile::Standard;
 
                 let message = {
-                    let mut subscription = peppylib::TopicMessenger::listen(
+                    let subscription_future = peppylib::TopicMessenger::listen(
                         messenger.handle(),
                         messenger.master_node(),
                         node_name,
                         topic_name,
                         qos,
-                    )
-                    .await
-                    .map_err(|source| crate::Error::TopicSubscribe {
-                        topic_name: topic_name.to_string(),
-                        node_name: node_name.to_string(),
-                        source,
+                    );
+                    let mut subscription = subscription_future.await.map_err(|source| {
+                        crate::Error::TopicSubscribe {
+                            topic_name: topic_name.to_string(),
+                            node_name: node_name.to_string(),
+                            source_msg: source.to_string(),
+                        }
                     })?;
                     subscription
                         .on_next_message()
@@ -2402,7 +2403,7 @@ fn build_subscribed_topic_callback(
             let qos = peppylib::config::QoSProfile::Standard;
 
             let message = {
-                let mut subscription = peppylib::TopicMessenger::subscribe(
+                let subscription_future = peppylib::TopicMessenger::subscribe(
                     messenger.handle(),
                     messenger.runtime().bound_master_node(),
                     messenger.runtime().bound_instance_id(),
@@ -2411,12 +2412,13 @@ fn build_subscribed_topic_callback(
                     master_node_target,
                     instance_id_target,
                     qos,
-                )
-                .await
-                .map_err(|source| crate::Error::TopicSubscribe {
-                    topic_name: topic_name.to_string(),
-                    node_name: node_name.to_string(),
-                    source,
+                );
+                let mut subscription = subscription_future.await.map_err(|source| {
+                    crate::Error::TopicSubscribe {
+                        topic_name: topic_name.to_string(),
+                        node_name: node_name.to_string(),
+                        source_msg: source.to_string(),
+                    }
                 })?;
                 subscription
                     .on_next_message()
@@ -2434,14 +2436,12 @@ fn build_subscribed_topic_callback(
 
         fn #helper_fn_ident(payload: &[u8]) -> crate::Result<#args_struct_ident> {
             let mut cursor = std::io::Cursor::new(payload);
-            let message_reader = capnp::serialize::read_message(
-                &mut cursor,
-                capnp::message::ReaderOptions::new(),
-            )
-            .map_err(|source| crate::Error::CapnpDeserialize {
-                context: String::from(#context_literal),
-                source,
-            })?;
+            let reader_options = capnp::message::ReaderOptions::new();
+            let message_reader = capnp::serialize::read_message(&mut cursor, reader_options)
+                .map_err(|source| crate::Error::CapnpDeserialize {
+                    context: String::from(#context_literal),
+                    source,
+                })?;
 
             let root = message_reader
                 .get_root::<#reader_type>()
