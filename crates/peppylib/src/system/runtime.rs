@@ -58,4 +58,110 @@ impl RuntimeProcessor {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::{PEPPY_RUNTIME_CONFIG, RuntimeProcessor};
+    use config::{AnyType, NodeParameters, runtime::RuntimeConfig};
+    use std::{collections::BTreeMap, env, sync::Mutex};
+    use tempfile::TempDir;
+
+    static ENV_VAR_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let _lock = ENV_VAR_MUTEX.lock().expect("env mutex should lock");
+            let previous = env::var(key).ok();
+            // SAFETY: environment mutation is guarded by a global mutex to avoid races.
+            unsafe { env::set_var(key, value) };
+            Self {
+                key,
+                previous,
+                _lock,
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(ref value) = self.previous {
+                // SAFETY: environment mutation is guarded by a global mutex to avoid races.
+                unsafe { env::set_var(self.key, value) };
+            } else {
+                // SAFETY: environment mutation is guarded by a global mutex to avoid races.
+                unsafe { env::remove_var(self.key) };
+            }
+        }
+    }
+
+    #[test]
+    fn loads_runtime_config_from_env() {
+        let bound_master_node = "epic-whale-6789";
+        let bound_node_name = "uvc_camera";
+        let bound_instance_id = "camera_front";
+        let json5_config = r#"{
+            deployment_instance: {
+                instance_id: "$INSTANCE_ID",
+                parameters: {
+                    exposure: 0.25,
+                    flags: ["hdr", "stabilized"],
+                    nested: { enabled: true, gain: 10 },
+                    mode: "auto"
+                }
+            },
+            node_name: "$NODE_NAME",
+            bound_master_node: "$MASTER_NODE"
+        }"#;
+
+        let populated_config = json5_config
+            .replace("$INSTANCE_ID", bound_instance_id)
+            .replace("$NODE_NAME", bound_node_name)
+            .replace("$MASTER_NODE", bound_master_node);
+
+        let runtime_config: RuntimeConfig =
+            serde_json5::from_str(&populated_config).expect("runtime config should parse");
+
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
+        runtime_config
+            .save_json5_launch_config(&runtime_config_path)
+            .expect("runtime config should be saved");
+
+        let _env_guard = EnvVarGuard::set(
+            PEPPY_RUNTIME_CONFIG,
+            runtime_config_path
+                .to_str()
+                .expect("runtime config path should be valid UTF-8"),
+        );
+
+        let runtime_processor =
+            RuntimeProcessor::new().expect("runtime processor should load config from env");
+
+        let mut expected_parameters: NodeParameters = NodeParameters::new();
+        expected_parameters.insert("exposure".into(), AnyType::Float(0.25));
+        expected_parameters.insert(
+            "flags".into(),
+            AnyType::Array(vec![
+                AnyType::String("hdr".into()),
+                AnyType::String("stabilized".into()),
+            ]),
+        );
+        expected_parameters.insert(
+            "nested".into(),
+            AnyType::Object(BTreeMap::from([
+                ("enabled".to_string(), AnyType::Bool(true)),
+                ("gain".to_string(), AnyType::Int(10)),
+            ])),
+        );
+        expected_parameters.insert("mode".into(), AnyType::String("auto".into()));
+
+        assert_eq!(runtime_processor.bound_instance_id(), bound_instance_id);
+        assert_eq!(runtime_processor.bound_master_node(), bound_master_node);
+        assert_eq!(runtime_processor.node_name(), bound_node_name);
+        assert_eq!(runtime_processor.input_parameters(), &expected_parameters);
+    }
+}
