@@ -16,6 +16,7 @@ pub struct RuntimeConfig {
     pub node_name: Name,
     pub bound_master_node: Name,
     pub deployment_instance: DeploymentInstance,
+    pub codegen_peppy_config_md5: String,
 }
 
 impl RuntimeConfig {
@@ -23,11 +24,13 @@ impl RuntimeConfig {
         deployment_instance: DeploymentInstance,
         node_name: impl Into<String>,
         bound_master_node: impl Into<String>,
+        codegen_peppy_config_md5: &str,
     ) -> Result<Self> {
         Ok(Self {
             deployment_instance,
             node_name: Name::new(node_name.into())?,
             bound_master_node: Name::new(bound_master_node.into())?,
+            codegen_peppy_config_md5: codegen_peppy_config_md5.to_string(),
         })
     }
 
@@ -43,6 +46,12 @@ impl RuntimeConfig {
             .map_err(|err| crate::error::Error::Serialize(err.to_string()))?;
         fs::write(path, serialized)?;
         Ok(path.to_path_buf())
+    }
+
+    pub fn generate_peppy_config_md5(peppy_config: impl AsRef<Path>) -> Result<String> {
+        let config_path = peppy_config.as_ref();
+        let content = std::fs::read(config_path)?;
+        Ok(format!("{:x}", md5::compute(content)))
     }
 }
 

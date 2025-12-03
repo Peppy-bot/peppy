@@ -83,6 +83,13 @@ pub enum Error {
         #[source]
         source: serde_json5::Error,
     },
+
+    #[error("peppy config md5 mismatch for `{path}` (expected `{expected}`, got `{actual}`)")]
+    PeppyConfigMd5Mismatch {
+        path: String,
+        expected: String,
+        actual: String,
+    },
 }
 
 struct InstanceSuffix<'a>(Option<&'a str>);
