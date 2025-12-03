@@ -114,6 +114,7 @@ fn topics_communication() {
         .unwrap();
 
     init_cargo_user_node(&user_node_subscriber);
+    let peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
     let subscriber_main = format!(
         "
 use peppygen::subscribed_topics::uvc_camera_push_frame::on_next_message_received;
@@ -132,7 +133,7 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        &codegen_peppy_config_md5, router_host, router_port
+        peppy_config_path_str, router_host, router_port
     );
     let main_file = user_node_subscriber.join("src").join("main.rs");
     fs::write(main_file, &subscriber_main).expect("failed to write main file");
@@ -155,7 +156,7 @@ async fn main() -> Result<()> {{
             instance_id: Name::new(exposer_instance_id).unwrap(),
             parameters: Default::default(),
         },
-        "exposer_node",
+        "uvc_camera", // Must match the node name expected by the subscriber
         "test_master",
         &codegen_peppy_config_md5,
     )
@@ -166,6 +167,7 @@ async fn main() -> Result<()> {{
         .unwrap();
 
     init_cargo_user_node(&user_node_exposer);
+    let peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
     let exposer_main = format!(
         "
 use peppygen::exposed_topics::push_frame;
@@ -191,14 +193,16 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        &codegen_peppy_config_md5, router_host, router_port
+        peppy_config_path_str, router_host, router_port
     );
 
     let main_file = user_node_exposer.join("src").join("main.rs");
     fs::write(main_file, &exposer_main).expect("failed to write main file");
 
-    let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
-    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
+    let user_node_subscriber_config_str =
+        subscriber_runtime_config_path.to_str().unwrap().to_owned();
+    let user_node_exposer_runtime_config_str =
+        exposer_runtime_config_path.to_str().unwrap().to_owned();
 
     compile_project(&user_node_subscriber);
     compile_project(&user_node_exposer);
@@ -208,7 +212,7 @@ async fn main() -> Result<()> {{
         run_cargo_run(
             &subscriber_dir,
             Some(Duration::from_secs(5)),
-            &[("PEPPY_RUNTIME_CONFIG", &subscriber_runtime_config_str)],
+            &[("PEPPY_RUNTIME_CONFIG", &user_node_subscriber_config_str)],
         )
     });
 
@@ -220,7 +224,10 @@ async fn main() -> Result<()> {{
         run_cargo_run(
             &exposer_dir,
             Some(Duration::from_secs(5)),
-            &[("PEPPY_RUNTIME_CONFIG", &exposer_runtime_config_str)],
+            &[(
+                "PEPPY_RUNTIME_CONFIG",
+                &user_node_exposer_runtime_config_str,
+            )],
         )
     });
 
@@ -354,6 +361,7 @@ fn services_communication_no_target_instance_id() {
     subscriber_runtime_config
         .save_json5_launch_config(&subscriber_runtime_config_path)
         .unwrap();
+    let peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = format!(
@@ -380,7 +388,7 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        &codegen_peppy_config_md5, router_host, router_port
+        &peppy_config_path_str, router_host, router_port
     );
     let main_file = user_node_subscriber.join("src").join("main.rs");
     fs::write(main_file, subscriber_main).expect("failed to write subscriber main");
@@ -575,6 +583,7 @@ fn services_communication_multiple_expose_instances_same_service() {
     subscriber_runtime_config
         .save_json5_launch_config(&subscriber_runtime_config_path)
         .unwrap();
+    let peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = format!(
@@ -600,7 +609,7 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        &codegen_peppy_config_md5, router_host, router_port
+        &peppy_config_path_str, router_host, router_port
     );
     let main_file = user_node_subscriber.join("src").join("main.rs");
     fs::write(main_file, subscriber_main).expect("failed to write subscriber main");
@@ -1001,6 +1010,7 @@ async fn main() -> Result<()> {{
     exposer_runtime_config
         .save_json5_launch_config(&exposer_runtime_config_path)
         .unwrap();
+    let peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = format!(
@@ -1047,7 +1057,7 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        &codegen_peppy_config_md5, router_host, router_port
+        &peppy_config_path_str, router_host, router_port
     );
     let main_file = user_node_exposer.join("src").join("main.rs");
     fs::write(main_file, exposer_main).expect("failed to write exposer main");
@@ -1246,6 +1256,7 @@ async fn main() -> Result<()> {{
     exposer_runtime_config
         .save_json5_launch_config(&exposer_runtime_config_path)
         .unwrap();
+    let peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = format!(
@@ -1284,7 +1295,7 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        &codegen_peppy_config_md5, router_host, router_port
+        &peppy_config_path_str, router_host, router_port
     );
     let main_file = user_node_exposer.join("src").join("main.rs");
     fs::write(main_file, exposer_main).expect("failed to write exposer main");
