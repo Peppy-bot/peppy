@@ -1002,7 +1002,7 @@ fn compile_lib_with_exposed_and_subscribed_actions() {
         result_response: Some(subscribed_action2_result_response),
     };
 
-    let (mut generator, output_dir, user_node) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
     generator.add_exposed_action(&action1).unwrap();
     generator.add_exposed_action(&action2).unwrap();
     generator

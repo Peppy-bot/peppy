@@ -1,8 +1,12 @@
 use super::*;
 use crate::generator::types::SubscribedActionMessage;
-use config::node::{
-    ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
-    SubscribedService, SubscribedTopic,
+use config::{
+    node::{
+        ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
+        SubscribedService, SubscribedTopic,
+    },
+    peppy_config::{DeploymentInstance, Name},
+    runtime::RuntimeConfig,
 };
 use pmi::MessengerBackend;
 use std::{fs, thread, time::Duration};
@@ -77,18 +81,38 @@ fn topics_communication() {
         .expect("failed to start zenoh router for test");
 
     // --- Subscriber project
+    let subscriber_instance_id = "subscriber_instance";
     let temp_dir_proj2 = TempDir::new().unwrap();
     let subscribed_topic: SubscribedTopic =
         serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
     let subscribed_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
-    let (mut generator, output_dir2, user_node_subscriber) = init_test_env(&temp_dir_proj2);
+    let (mut generator, output_dir2, user_node_subscriber, peppy_node_config_path) =
+        init_test_env(&temp_dir_proj2);
     generator
         .add_subscribed_topic(&subscribed_topic, subscribed_format)
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir2);
     generator.build(&output_dir2).unwrap();
     fs::remove_file(output_config).unwrap();
+
+    let codegen_peppy_config_md5 =
+        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
+    let subscriber_runtime_config = RuntimeConfig::new(
+        DeploymentInstance {
+            instance_id: Name::new(subscriber_instance_id).unwrap(),
+            parameters: Default::default(),
+        },
+        "subscriber_node",
+        "test_master",
+        &codegen_peppy_config_md5,
+    )
+    .unwrap();
+    let subscriber_runtime_config_path = temp_dir_proj2.path().join("peppy_runtime.json5");
+    subscriber_runtime_config
+        .save_json5_launch_config(&subscriber_runtime_config_path)
+        .unwrap();
+
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = format!(
         "
@@ -97,7 +121,7 @@ use peppygen::{{Messenger, Result}};
 
 #[tokio::main]
 async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", {}).await?;
+    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
     let (instance_id, frame) = on_next_message_received(&messenger, None, None).await?;
     println!(
@@ -108,20 +132,39 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        router_host, router_port
+        &codegen_peppy_config_md5, router_host, router_port
     );
     let main_file = user_node_subscriber.join("src").join("main.rs");
     fs::write(main_file, &subscriber_main).expect("failed to write main file");
 
     // --- Exposer project
-    let exposer_instance_name = "test_instance";
+    let exposer_instance_id = "exposer_instance";
     let temp_dir_proj1 = TempDir::new().unwrap();
     let exposed_topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
-    let (mut generator, output_dir1, user_node_exposer) = init_test_env(&temp_dir_proj1);
+    let (mut generator, output_dir1, user_node_exposer, peppy_node_config_path) =
+        init_test_env(&temp_dir_proj1);
     generator.add_exposed_topic(&exposed_topic).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir1);
     generator.build(&output_dir1).unwrap();
     fs::remove_file(output_config).unwrap();
+
+    let codegen_peppy_config_md5 =
+        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
+    let exposer_runtime_config = RuntimeConfig::new(
+        DeploymentInstance {
+            instance_id: Name::new(exposer_instance_id).unwrap(),
+            parameters: Default::default(),
+        },
+        "exposer_node",
+        "test_master",
+        &codegen_peppy_config_md5,
+    )
+    .unwrap();
+    let exposer_runtime_config_path = temp_dir_proj1.path().join("peppy_runtime.json5");
+    exposer_runtime_config
+        .save_json5_launch_config(&exposer_runtime_config_path)
+        .unwrap();
+
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = format!(
         "
@@ -130,7 +173,7 @@ use peppygen::{{Messenger, Result}};
 
 #[tokio::main]
 async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", {}).await?;
+    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
     push_frame::emit(
         &messenger,
@@ -148,18 +191,26 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        router_host, router_port
+        &codegen_peppy_config_md5, router_host, router_port
     );
 
     let main_file = user_node_exposer.join("src").join("main.rs");
     fs::write(main_file, &exposer_main).expect("failed to write main file");
 
+    let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
+    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
+
     compile_project(&user_node_subscriber);
     compile_project(&user_node_exposer);
 
     let subscriber_dir = user_node_subscriber.clone();
-    let subscriber_thread =
-        thread::spawn(move || run_cargo_run(&subscriber_dir, Some(Duration::from_secs(5)), &[]));
+    let subscriber_thread = thread::spawn(move || {
+        run_cargo_run(
+            &subscriber_dir,
+            Some(Duration::from_secs(5)),
+            &[("PEPPY_RUNTIME_CONFIG", &subscriber_runtime_config_str)],
+        )
+    });
 
     // Give the subscriber a moment to connect before emitting frames.
     thread::sleep(Duration::from_millis(500));
@@ -169,7 +220,7 @@ async fn main() -> Result<()> {{
         run_cargo_run(
             &exposer_dir,
             Some(Duration::from_secs(5)),
-            &[("PEPPY_INSTANCE_ID", exposer_instance_name)],
+            &[("PEPPY_RUNTIME_CONFIG", &exposer_runtime_config_str)],
         )
     });
 
@@ -266,6 +317,7 @@ fn services_communication_no_target_instance_id() {
         .expect("failed to start zenoh router for test");
 
     // --- Subscriber (client) project
+    let subscriber_instance_id = "the_subscriber";
     let temp_dir_subscriber = TempDir::new().unwrap();
     let subscribed_service: SubscribedService =
         serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE).unwrap();
@@ -273,7 +325,7 @@ fn services_communication_no_target_instance_id() {
         serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap();
     let subscribed_response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE).unwrap();
-    let (mut generator, output_dir_subscriber, user_node_subscriber) =
+    let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env(&temp_dir_subscriber);
     generator
         .add_subscribed_service(
@@ -285,6 +337,24 @@ fn services_communication_no_target_instance_id() {
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
     fs::remove_file(output_config).unwrap();
+
+    let codegen_peppy_config_md5 =
+        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
+    let subscriber_runtime_config = RuntimeConfig::new(
+        DeploymentInstance {
+            instance_id: Name::new(subscriber_instance_id).unwrap(),
+            parameters: Default::default(),
+        },
+        "subscriber_node",
+        "test_master",
+        &codegen_peppy_config_md5,
+    )
+    .unwrap();
+    let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
+    subscriber_runtime_config
+        .save_json5_launch_config(&subscriber_runtime_config_path)
+        .unwrap();
+
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = format!(
         "
@@ -294,7 +364,7 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", {}).await?;
+    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
     let request = uvc_camera_enable_camera::Request::new(true);
     let (instance_id, response) =
@@ -310,19 +380,39 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        router_host, router_port
+        &codegen_peppy_config_md5, router_host, router_port
     );
     let main_file = user_node_subscriber.join("src").join("main.rs");
     fs::write(main_file, subscriber_main).expect("failed to write subscriber main");
 
     // --- Exposer (server) project
+    let exposer_instance_id = "the_exposer";
     let temp_dir_exposer = TempDir::new().unwrap();
     let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer, user_node_exposer) = init_test_env(&temp_dir_exposer);
+    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
+        init_test_env(&temp_dir_exposer);
     generator.add_exposed_service(&exposed_service).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator.build(&output_dir_exposer).unwrap();
     fs::remove_file(output_config).unwrap();
+
+    let codegen_peppy_config_md5 =
+        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
+    let exposer_runtime_config = RuntimeConfig::new(
+        DeploymentInstance {
+            instance_id: Name::new(exposer_instance_id).unwrap(),
+            parameters: Default::default(),
+        },
+        "exposer_node",
+        "test_master",
+        &codegen_peppy_config_md5,
+    )
+    .unwrap();
+    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
+    exposer_runtime_config
+        .save_json5_launch_config(&exposer_runtime_config_path)
+        .unwrap();
+
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = format!(
         "
@@ -331,7 +421,7 @@ use peppygen::{{Messenger, Result}};
 
 #[tokio::main]
 async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", {}).await?;
+    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
     enable_camera::handle_next_request(&messenger, |instance_id, request| -> Result<enable_camera::Response> {{
         println!(\"received enable_camera request from {{}}: enable = {{}}\", instance_id, request.enable);
@@ -347,7 +437,9 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        router_host, router_port
+        &codegen_peppy_config_md5,
+        router_host,
+        router_port
     );
     let main_file = user_node_exposer.join("src").join("main.rs");
     fs::write(main_file, exposer_main).expect("failed to write exposer main");
@@ -356,12 +448,12 @@ async fn main() -> Result<()> {{
     compile_project(&user_node_exposer);
 
     let exposer_dir = user_node_exposer.clone();
-    let exposer_instance_id = "the_exposer";
+    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
     let exposer_thread = thread::spawn(move || {
         run_cargo_run(
             &exposer_dir,
             Some(Duration::from_secs(5)),
-            &[("PEPPY_INSTANCE_ID", exposer_instance_id)],
+            &[("PEPPY_RUNTIME_CONFIG", &exposer_runtime_config_str)],
         )
     });
 
@@ -369,12 +461,12 @@ async fn main() -> Result<()> {{
     thread::sleep(Duration::from_millis(500));
 
     let subscriber_dir = user_node_subscriber.clone();
-    let subscriber_instance_id = "the_subscriber";
+    let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
     let subscriber_thread = thread::spawn(move || {
         run_cargo_run(
             &subscriber_dir,
             Some(Duration::from_secs(5)),
-            &[("PEPPY_INSTANCE_ID", subscriber_instance_id)],
+            &[("PEPPY_RUNTIME_CONFIG", &subscriber_runtime_config_str)],
         )
     });
 
@@ -446,6 +538,7 @@ fn services_communication_multiple_expose_instances_same_service() {
         .expect("failed to start zenoh router for test");
 
     // --- Subscriber (client) project
+    let subscriber_instance_id = "subscriber_instance";
     let temp_dir_subscriber = TempDir::new().unwrap();
     let subscribed_service: SubscribedService =
         serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE).unwrap();
@@ -453,7 +546,7 @@ fn services_communication_multiple_expose_instances_same_service() {
         serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap();
     let subscribed_response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE).unwrap();
-    let (mut generator, output_dir_subscriber, user_node_subscriber) =
+    let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env(&temp_dir_subscriber);
     generator
         .add_subscribed_service(
@@ -465,6 +558,24 @@ fn services_communication_multiple_expose_instances_same_service() {
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
     fs::remove_file(output_config).unwrap();
+
+    let codegen_peppy_config_md5 =
+        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
+    let subscriber_runtime_config = RuntimeConfig::new(
+        DeploymentInstance {
+            instance_id: Name::new(subscriber_instance_id).unwrap(),
+            parameters: Default::default(),
+        },
+        "subscriber_node",
+        "test_master",
+        &codegen_peppy_config_md5,
+    )
+    .unwrap();
+    let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
+    subscriber_runtime_config
+        .save_json5_launch_config(&subscriber_runtime_config_path)
+        .unwrap();
+
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = format!(
         "
@@ -474,7 +585,7 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", {}).await?;
+    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
     let request = uvc_camera_enable_camera::Request::new(true);
     let response =
@@ -489,20 +600,48 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        router_host, router_port
+        &codegen_peppy_config_md5, router_host, router_port
     );
     let main_file = user_node_subscriber.join("src").join("main.rs");
     fs::write(main_file, subscriber_main).expect("failed to write subscriber main");
 
-    // --- Exposer (server) project
-    let exposer_main = format!(
+    // --- Exposer 1
+    let exposer1_instance_id = "exposer1_instance";
+    let temp_dir_exposer1 = TempDir::new().unwrap();
+    let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
+    let (mut generator, output_dir_exposer1, user_node_exposer1, peppy_node_config_path) =
+        init_test_env(&temp_dir_exposer1);
+    generator.add_exposed_service(&exposed_service).unwrap();
+    let output_config = copy_config_to_output(&user_node_exposer1, &output_dir_exposer1);
+    generator.build(&output_dir_exposer1).unwrap();
+    fs::remove_file(output_config).unwrap();
+
+    let codegen_peppy_config_md5 =
+        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
+    let exposer1_runtime_config = RuntimeConfig::new(
+        DeploymentInstance {
+            instance_id: Name::new(exposer1_instance_id).unwrap(),
+            parameters: Default::default(),
+        },
+        "exposer1_node",
+        "test_master",
+        &codegen_peppy_config_md5,
+    )
+    .unwrap();
+    let exposer1_runtime_config_path = temp_dir_exposer1.path().join("peppy_runtime.json5");
+    exposer1_runtime_config
+        .save_json5_launch_config(&exposer1_runtime_config_path)
+        .unwrap();
+
+    init_cargo_user_node(&user_node_exposer1);
+    let exposer1_main = format!(
         "
 use peppygen::exposed_services::enable_camera;
 use peppygen::{{Messenger, Result}};
 
 #[tokio::main]
 async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", {}).await?;
+    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
     enable_camera::handle_next_request(&messenger, |instance_id, request| -> Result<enable_camera::Response> {{
         println!(\"received enable_camera request for {{}}: {{}}\", instance_id, request.enable);
@@ -518,34 +657,71 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        router_host, router_port
+        &codegen_peppy_config_md5,
+        router_host,
+        router_port
     );
-
-    // --- Exposer 1
-    let temp_dir_exposer1 = TempDir::new().unwrap();
-    let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer1, user_node_exposer1) =
-        init_test_env(&temp_dir_exposer1);
-    generator.add_exposed_service(&exposed_service).unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer1, &output_dir_exposer1);
-    generator.build(&output_dir_exposer1).unwrap();
-    fs::remove_file(output_config).unwrap();
-    init_cargo_user_node(&user_node_exposer1);
     let main_file = user_node_exposer1.join("src").join("main.rs");
-    fs::write(main_file, &exposer_main).expect("failed to write exposer main 1");
+    fs::write(main_file, &exposer1_main).expect("failed to write exposer main 1");
 
     // --- Exposer 2
+    let exposer2_instance_id = "exposer2_instance";
     let temp_dir_exposer2 = TempDir::new().unwrap();
     let exposed_service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer2, user_node_exposer2) =
+    let (mut generator, output_dir_exposer2, user_node_exposer2, peppy_node_config_path) =
         init_test_env(&temp_dir_exposer2);
     generator.add_exposed_service(&exposed_service2).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer2, &output_dir_exposer2);
     generator.build(&output_dir_exposer2).unwrap();
     fs::remove_file(output_config).unwrap();
+
+    let codegen_peppy_config_md5 =
+        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
+    let exposer2_runtime_config = RuntimeConfig::new(
+        DeploymentInstance {
+            instance_id: Name::new(exposer2_instance_id).unwrap(),
+            parameters: Default::default(),
+        },
+        "exposer2_node",
+        "test_master",
+        &codegen_peppy_config_md5,
+    )
+    .unwrap();
+    let exposer2_runtime_config_path = temp_dir_exposer2.path().join("peppy_runtime.json5");
+    exposer2_runtime_config
+        .save_json5_launch_config(&exposer2_runtime_config_path)
+        .unwrap();
+
     init_cargo_user_node(&user_node_exposer2);
+    let exposer2_main = format!(
+        "
+use peppygen::exposed_services::enable_camera;
+use peppygen::{{Messenger, Result}};
+
+#[tokio::main]
+async fn main() -> Result<()> {{
+    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
+
+    enable_camera::handle_next_request(&messenger, |instance_id, request| -> Result<enable_camera::Response> {{
+        println!(\"received enable_camera request for {{}}: {{}}\", instance_id, request.enable);
+        Ok(enable_camera::Response::new(
+            request.enable,
+            Some(\"handled\".to_owned()),
+        ))
+    }})
+    .await?;
+
+    println!(\"enable_camera handler finished\");
+
+    Ok(())
+}}
+",
+        &codegen_peppy_config_md5,
+        router_host,
+        router_port
+    );
     let main_file = user_node_exposer2.join("src").join("main.rs");
-    fs::write(main_file, &exposer_main).expect("failed to write exposer main 2");
+    fs::write(main_file, &exposer2_main).expect("failed to write exposer main 2");
 
     // Compilation + execution
     compile_project(&user_node_subscriber);
@@ -553,19 +729,37 @@ async fn main() -> Result<()> {{
     compile_project(&user_node_exposer2);
 
     let exposer_dir1 = user_node_exposer1.clone();
-    let exposer_thread1 =
-        thread::spawn(move || run_cargo_run(&exposer_dir1, Some(Duration::from_secs(10)), &[]));
+    let exposer1_runtime_config_str = exposer1_runtime_config_path.to_str().unwrap().to_owned();
+    let exposer_thread1 = thread::spawn(move || {
+        run_cargo_run(
+            &exposer_dir1,
+            Some(Duration::from_secs(10)),
+            &[("PEPPY_RUNTIME_CONFIG", &exposer1_runtime_config_str)],
+        )
+    });
 
     let exposer_dir2 = user_node_exposer2.clone();
-    let exposer_thread2 =
-        thread::spawn(move || run_cargo_run(&exposer_dir2, Some(Duration::from_secs(10)), &[]));
+    let exposer2_runtime_config_str = exposer2_runtime_config_path.to_str().unwrap().to_owned();
+    let exposer_thread2 = thread::spawn(move || {
+        run_cargo_run(
+            &exposer_dir2,
+            Some(Duration::from_secs(10)),
+            &[("PEPPY_RUNTIME_CONFIG", &exposer2_runtime_config_str)],
+        )
+    });
 
     // Give the exposers a moment to start listening before the subscriber sends a request.
     thread::sleep(Duration::from_secs(1));
 
     let subscriber_dir = user_node_subscriber.clone();
-    let subscriber_thread =
-        thread::spawn(move || run_cargo_run(&subscriber_dir, Some(Duration::from_secs(10)), &[]));
+    let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
+    let subscriber_thread = thread::spawn(move || {
+        run_cargo_run(
+            &subscriber_dir,
+            Some(Duration::from_secs(10)),
+            &[("PEPPY_RUNTIME_CONFIG", &subscriber_runtime_config_str)],
+        )
+    });
 
     let exposer_output1 = exposer_thread1.join().expect("exposer thread panicked");
     let exposer_output2 = exposer_thread2.join().expect("exposer thread panicked");
@@ -699,6 +893,7 @@ fn actions_communication() {
         .expect("failed to start zenoh router for test");
 
     // --- Subscriber (client) project
+    let subscriber_instance_id = "subscriber_instance";
     let temp_dir_subscriber = TempDir::new().unwrap();
     let subscribed_action: SubscribedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
@@ -717,7 +912,7 @@ fn actions_communication() {
         result_request: None,
         result_response: Some(result_response_format),
     };
-    let (mut generator, output_dir_subscriber, user_node_subscriber) =
+    let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env(&temp_dir_subscriber);
     generator
         .add_subscribed_action(&subscribed_action, Some(&action_messages))
@@ -725,6 +920,24 @@ fn actions_communication() {
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
     fs::remove_file(output_config).unwrap();
+
+    let codegen_peppy_config_md5 =
+        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
+    let subscriber_runtime_config = RuntimeConfig::new(
+        DeploymentInstance {
+            instance_id: Name::new(subscriber_instance_id).unwrap(),
+            parameters: Default::default(),
+        },
+        "subscriber_node",
+        "test_master",
+        &codegen_peppy_config_md5,
+    )
+    .unwrap();
+    let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
+    subscriber_runtime_config
+        .save_json5_launch_config(&subscriber_runtime_config_path)
+        .unwrap();
+
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = format!(
         "
@@ -734,7 +947,7 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", {}).await?;
+    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
     let goal = brain_move_arm::fire_goal(&messenger, Duration::from_secs(5), 7, [10, 20, 30]).await?;
     println!(\"goal accepted={{}}\", goal.accepted);
@@ -754,19 +967,41 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        router_host, router_port
+        &codegen_peppy_config_md5,
+        router_host,
+        router_port
     );
     let main_file = user_node_subscriber.join("src").join("main.rs");
     fs::write(main_file, subscriber_main).expect("failed to write subscriber main");
 
     // --- Exposer (server) project
+    let exposer_instance_id = "exposer_instance";
     let temp_dir_exposer = TempDir::new().unwrap();
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer, user_node_exposer) = init_test_env(&temp_dir_exposer);
+    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
+        init_test_env(&temp_dir_exposer);
     generator.add_exposed_action(&exposed_action).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator.build(&output_dir_exposer).unwrap();
     fs::remove_file(output_config).unwrap();
+
+    let codegen_peppy_config_md5 =
+        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
+    let exposer_runtime_config = RuntimeConfig::new(
+        DeploymentInstance {
+            instance_id: Name::new(exposer_instance_id).unwrap(),
+            parameters: Default::default(),
+        },
+        "exposer_node",
+        "test_master",
+        &codegen_peppy_config_md5,
+    )
+    .unwrap();
+    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
+    exposer_runtime_config
+        .save_json5_launch_config(&exposer_runtime_config_path)
+        .unwrap();
+
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = format!(
         "
@@ -776,7 +1011,7 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", {}).await?;
+    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
     move_arm::handle_goal_next_request(&messenger, |request| -> Result<move_arm::GoalResponse> {{
         println!(
@@ -812,7 +1047,7 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        router_host, router_port
+        &codegen_peppy_config_md5, router_host, router_port
     );
     let main_file = user_node_exposer.join("src").join("main.rs");
     fs::write(main_file, exposer_main).expect("failed to write exposer main");
@@ -821,15 +1056,27 @@ async fn main() -> Result<()> {{
     compile_project(&user_node_exposer);
 
     let exposer_dir = user_node_exposer.clone();
-    let exposer_thread =
-        thread::spawn(move || run_cargo_run(&exposer_dir, Some(Duration::from_secs(15)), &[]));
+    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
+    let exposer_thread = thread::spawn(move || {
+        run_cargo_run(
+            &exposer_dir,
+            Some(Duration::from_secs(15)),
+            &[("PEPPY_RUNTIME_CONFIG", &exposer_runtime_config_str)],
+        )
+    });
 
     // Give the exposer a moment to start listening for goals before firing one.
     thread::sleep(Duration::from_millis(500));
 
     let subscriber_dir = user_node_subscriber.clone();
-    let subscriber_thread =
-        thread::spawn(move || run_cargo_run(&subscriber_dir, Some(Duration::from_secs(15)), &[]));
+    let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
+    let subscriber_thread = thread::spawn(move || {
+        run_cargo_run(
+            &subscriber_dir,
+            Some(Duration::from_secs(15)),
+            &[("PEPPY_RUNTIME_CONFIG", &subscriber_runtime_config_str)],
+        )
+    });
 
     let exposer_output = exposer_thread.join().expect("exposer thread panicked");
     let subscriber_output = subscriber_thread
@@ -893,6 +1140,7 @@ fn actions_communication_cancel_goal() {
     let (mut router, _dir, router_host, router_port) = start_router_for_tests(&rt);
 
     // --- Subscriber (client) project
+    let subscriber_instance_id = "subscriber_instance";
     let temp_dir_subscriber = TempDir::new().unwrap();
     let subscribed_action: SubscribedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
@@ -911,7 +1159,7 @@ fn actions_communication_cancel_goal() {
         result_request: None,
         result_response: Some(result_response_format),
     };
-    let (mut generator, output_dir_subscriber, user_node_subscriber) =
+    let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env(&temp_dir_subscriber);
     generator
         .add_subscribed_action(&subscribed_action, Some(&action_messages))
@@ -919,6 +1167,24 @@ fn actions_communication_cancel_goal() {
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
     fs::remove_file(output_config).unwrap();
+
+    let codegen_peppy_config_md5 =
+        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
+    let subscriber_runtime_config = RuntimeConfig::new(
+        DeploymentInstance {
+            instance_id: Name::new(subscriber_instance_id).unwrap(),
+            parameters: Default::default(),
+        },
+        "subscriber_node",
+        "test_master",
+        &codegen_peppy_config_md5,
+    )
+    .unwrap();
+    let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
+    subscriber_runtime_config
+        .save_json5_launch_config(&subscriber_runtime_config_path)
+        .unwrap();
+
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = format!(
         "
@@ -928,7 +1194,7 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", {}).await?;
+    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
     let goal = brain_move_arm::fire_goal(&messenger, Duration::from_secs(5), 7, [10, 20, 30]).await?;
     println!(\"goal accepted={{}}\", goal.accepted);
@@ -946,19 +1212,41 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        router_host, router_port
+        &codegen_peppy_config_md5,
+        router_host,
+        router_port
     );
     let main_file = user_node_subscriber.join("src").join("main.rs");
     fs::write(main_file, subscriber_main).expect("failed to write subscriber main");
 
     // --- Exposer (server) project
+    let exposer_instance_id = "exposer_instance";
     let temp_dir_exposer = TempDir::new().unwrap();
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer, user_node_exposer) = init_test_env(&temp_dir_exposer);
+    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
+        init_test_env(&temp_dir_exposer);
     generator.add_exposed_action(&exposed_action).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator.build(&output_dir_exposer).unwrap();
     fs::remove_file(output_config).unwrap();
+
+    let codegen_peppy_config_md5 =
+        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
+    let exposer_runtime_config = RuntimeConfig::new(
+        DeploymentInstance {
+            instance_id: Name::new(exposer_instance_id).unwrap(),
+            parameters: Default::default(),
+        },
+        "exposer_node",
+        "test_master",
+        &codegen_peppy_config_md5,
+    )
+    .unwrap();
+    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
+    exposer_runtime_config
+        .save_json5_launch_config(&exposer_runtime_config_path)
+        .unwrap();
+
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = format!(
         "
@@ -967,7 +1255,7 @@ use peppygen::{{Messenger, Result}};
 
 #[tokio::main]
 async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", {}).await?;
+    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
     move_arm::handle_goal_next_request(&messenger, |request| -> Result<move_arm::GoalResponse> {{
         println!(
@@ -996,7 +1284,7 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        router_host, router_port
+        &codegen_peppy_config_md5, router_host, router_port
     );
     let main_file = user_node_exposer.join("src").join("main.rs");
     fs::write(main_file, exposer_main).expect("failed to write exposer main");
@@ -1005,14 +1293,26 @@ async fn main() -> Result<()> {{
     compile_project(&user_node_exposer);
 
     let exposer_dir = user_node_exposer.clone();
-    let exposer_thread =
-        thread::spawn(move || run_cargo_run(&exposer_dir, Some(Duration::from_secs(15)), &[]));
+    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
+    let exposer_thread = thread::spawn(move || {
+        run_cargo_run(
+            &exposer_dir,
+            Some(Duration::from_secs(15)),
+            &[("PEPPY_RUNTIME_CONFIG", &exposer_runtime_config_str)],
+        )
+    });
 
     thread::sleep(Duration::from_millis(500));
 
     let subscriber_dir = user_node_subscriber.clone();
-    let subscriber_thread =
-        thread::spawn(move || run_cargo_run(&subscriber_dir, Some(Duration::from_secs(15)), &[]));
+    let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
+    let subscriber_thread = thread::spawn(move || {
+        run_cargo_run(
+            &subscriber_dir,
+            Some(Duration::from_secs(15)),
+            &[("PEPPY_RUNTIME_CONFIG", &subscriber_runtime_config_str)],
+        )
+    });
 
     let exposer_output = exposer_thread.join().expect("exposer thread panicked");
     let subscriber_output = subscriber_thread
