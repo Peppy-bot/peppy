@@ -462,6 +462,11 @@ fn subscribed_to_topic() {
         "expected explicit topic subscribe error variant"
     );
     assert_rendered!(
+        rendered.contains("source_msg: source.to_string(),"),
+        &rendered,
+        "expected source_msg field with to_string conversion in TopicSubscribe error"
+    );
+    assert_rendered!(
         rendered.contains("crate::Error::SubscriptionClosed"),
         &rendered,
         "expected explicit subscription closed error variant"
@@ -545,6 +550,11 @@ fn subscribed_to_two_topics_same_node() {
             rendered.contains("crate::Error::TopicSubscribe"),
             rendered,
             "expected explicit subscribe error variant"
+        );
+        assert_rendered!(
+            rendered.contains("source_msg: source.to_string(),"),
+            rendered,
+            "expected source_msg field with to_string conversion in TopicSubscribe error"
         );
         assert_rendered!(
             rendered.contains("pub async fn on_next_message_received("),
