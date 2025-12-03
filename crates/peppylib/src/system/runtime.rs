@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, path::Path};
 
 use crate::error::{Error, Result};
 use config::{NodeParameters, runtime::RuntimeConfig};
@@ -9,8 +9,12 @@ pub struct RuntimeProcessor {
     launch_config: RuntimeConfig,
 }
 
+/// This struct is launched at runtime everytime a new peppy node is launched
 impl RuntimeProcessor {
-    pub fn new() -> Result<Self> {
+    /// This function takes care of 2 things:
+    /// 1. Reads the `PEPPY_RUNTIME_CONFIG` env var passed during runtime from the master node/peppy daemon when the node is started
+    /// 2. Checks that the md5 of the peppy_config generated for `peppygen` matches the one we have at runtime as input parameter to this function
+    pub fn new_with_peppy_config(peppy_config: impl AsRef<Path>) -> Result<Self> {
         let launch_config_path = std::env::var(PEPPY_RUNTIME_CONFIG).map_err(|source| {
             Error::MissingInstanceIdEnvVar {
                 var: PEPPY_RUNTIME_CONFIG,
@@ -18,7 +22,28 @@ impl RuntimeProcessor {
             }
         })?;
         let launch_config = RuntimeProcessor::get_peppy_deployment_config(&launch_config_path)?;
+        RuntimeProcessor::check_generated_code_matches_runtime_config(
+            peppy_config,
+            &launch_config.codegen_peppy_config_md5,
+        )?;
         Ok(Self { launch_config })
+    }
+
+    fn check_generated_code_matches_runtime_config(
+        peppy_config: impl AsRef<Path>,
+        codegen_peppy_config_md5: &str,
+    ) -> Result<()> {
+        let md5 = RuntimeConfig::generate_peppy_config_md5(&peppy_config)?;
+
+        if md5 == codegen_peppy_config_md5 {
+            return Ok(());
+        }
+
+        Err(Error::PeppyConfigMd5Mismatch {
+            path: peppy_config.as_ref().display().to_string(),
+            expected: codegen_peppy_config_md5.to_string(),
+            actual: md5,
+        })
     }
 
     fn get_peppy_deployment_config(launch_config_path: &str) -> Result<RuntimeConfig> {
@@ -103,6 +128,15 @@ mod tests {
         let bound_master_node = "epic-whale-6789";
         let bound_node_name = "uvc_camera";
         let bound_instance_id = "camera_front";
+
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+
+        // Create a peppy config file and compute its MD5
+        let peppy_config_path = temp_dir.path().join("peppy_config.json5");
+        std::fs::write(&peppy_config_path, "{}").expect("peppy config should be written");
+        let codegen_md5 = RuntimeConfig::generate_peppy_config_md5(&peppy_config_path)
+            .expect("peppy config md5 should be generated");
+
         let json5_config = r#"{
             deployment_instance: {
                 instance_id: "$INSTANCE_ID",
@@ -114,18 +148,19 @@ mod tests {
                 }
             },
             node_name: "$NODE_NAME",
-            bound_master_node: "$MASTER_NODE"
+            bound_master_node: "$MASTER_NODE",
+            codegen_peppy_config_md5: "$CODEGEN_MD5"
         }"#;
 
         let populated_config = json5_config
             .replace("$INSTANCE_ID", bound_instance_id)
             .replace("$NODE_NAME", bound_node_name)
-            .replace("$MASTER_NODE", bound_master_node);
+            .replace("$MASTER_NODE", bound_master_node)
+            .replace("$CODEGEN_MD5", &codegen_md5);
 
         let runtime_config: RuntimeConfig =
             serde_json5::from_str(&populated_config).expect("runtime config should parse");
 
-        let temp_dir = TempDir::new().expect("temp dir should be created");
         let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
         runtime_config
             .save_json5_launch_config(&runtime_config_path)
@@ -138,8 +173,8 @@ mod tests {
                 .expect("runtime config path should be valid UTF-8"),
         );
 
-        let runtime_processor =
-            RuntimeProcessor::new().expect("runtime processor should load config from env");
+        let runtime_processor = RuntimeProcessor::new_with_peppy_config(&peppy_config_path)
+            .expect("runtime processor should load config from env");
 
         let mut expected_parameters: NodeParameters = NodeParameters::new();
         expected_parameters.insert("exposure".into(), AnyType::Float(0.25));

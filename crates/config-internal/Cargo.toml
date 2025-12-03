@@ -19,5 +19,6 @@ capnp = "0.23"
 capnpc = "0.23"
 tempfile = "3.8"
 indexmap = { version = "2.2", features = ["serde"] }
+md5 = "0.8"
 
 [dev-dependencies]
