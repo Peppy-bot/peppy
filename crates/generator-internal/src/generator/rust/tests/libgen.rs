@@ -535,7 +535,7 @@ async fn main() -> Result<()> {{
 }
 
 #[test]
-fn services_communication_multiple_expose_instances_same_service() {
+fn services_communication_multiple_exposed_instances_same_service() {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
