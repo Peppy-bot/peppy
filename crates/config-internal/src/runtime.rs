@@ -51,8 +51,7 @@ impl RuntimeConfig {
     pub fn generate_peppy_config_md5(peppy_config: impl AsRef<Path>) -> Result<String> {
         let config_path = peppy_config.as_ref();
         let content = std::fs::read(config_path)?;
-        let md5 = format!("{:x}", md5::compute(content));
-        Ok(md5)
+        Ok(format!("{:x}", md5::compute(content)))
     }
 }
 
