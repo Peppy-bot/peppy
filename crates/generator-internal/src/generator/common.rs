@@ -40,6 +40,7 @@ pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>) -> Result<()> {
     const PEPPYLIB_DIR: &str = "peppylib";
     const PMI_INTERNAL_DIR: &str = "pmi-internal";
     const CONFIG_INTERNAL_DIR: &str = "config-internal";
+    const NODE_STACK_DIR: &str = "node-stack-internal";
     const VENDORED_ROOT: &str = "crates";
     const PEPPYLIB_RELATIVE_PATH: &str = "crates/peppylib";
 
@@ -54,6 +55,7 @@ pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>) -> Result<()> {
     copy_workspace_crate(PEPPYLIB_DIR, &vendored_crates_dir, &metadata)?;
     copy_workspace_crate(PMI_INTERNAL_DIR, &vendored_crates_dir, &metadata)?;
     copy_workspace_crate(CONFIG_INTERNAL_DIR, &vendored_crates_dir, &metadata)?;
+    copy_workspace_crate(NODE_STACK_DIR, &vendored_crates_dir, &metadata)?;
     Ok(())
 }
 
@@ -514,6 +516,7 @@ fn copy_workspace_crate(
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
     fs::create_dir_all(dst)?;
+    const IGNORED_DIRS: [&str; 4] = ["target", ".git", ".cargo", "tests"];
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
@@ -521,6 +524,9 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
         let destination_path = dst.join(entry.file_name());
 
         if file_type.is_dir() {
+            if IGNORED_DIRS.iter().any(|&d| entry.file_name() == d) {
+                continue;
+            }
             copy_dir_recursive(&entry_path, &destination_path)?;
         } else if file_type.is_file() {
             if let Some(parent) = destination_path.parent() {
