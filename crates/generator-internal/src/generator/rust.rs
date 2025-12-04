@@ -180,7 +180,9 @@ impl RustGenerator {
             label,
             service_name_literal,
             request_struct_ident.as_ref(),
+            None, // request_data_struct - not used in action handlers
             response_spec.as_ref(),
+            false, // use_service_name_const - action handlers use inline literals
         ))
     }
 
@@ -650,14 +652,51 @@ impl LanguageGenerator for RustGenerator {
         let instance_id_param =
             FunctionParam::new(Ident::new("instance_id", Span::call_site()), quote!(String));
 
-        let request_struct_ident = if let Some((ident, tokens)) =
-            build_request_struct_with_name("Request", &handler_params)
+        // Build RequestData struct (contains the payload fields)
+        let request_data_struct_ident = if let Some((ident, tokens)) =
+            build_request_struct_with_name_and_impl("RequestData", &handler_params, false)
         {
             context.add_private_struct(tokens);
             Some(ident)
         } else {
             None
         };
+
+        // Build Request struct (wraps instance_id, master_node, and request_data)
+        let request_struct_tokens = if let Some(ref data_ident) = request_data_struct_ident {
+            quote! {
+                #[derive(Debug, Clone)]
+                #[allow(dead_code)]
+                pub struct Request {
+                    pub instance_id: String,
+                    pub master_node: String,
+                    pub request_data: #data_ident,
+                }
+
+                impl Request {
+                    pub fn new(instance_id: String, master_node: String, request_data: #data_ident) -> Self {
+                        Self { instance_id, master_node, request_data }
+                    }
+                }
+            }
+        } else {
+            quote! {
+                #[derive(Debug, Clone)]
+                #[allow(dead_code)]
+                pub struct Request {
+                    pub instance_id: String,
+                    pub master_node: String,
+                }
+
+                impl Request {
+                    pub fn new(instance_id: String, master_node: String) -> Self {
+                        Self { instance_id, master_node }
+                    }
+                }
+            }
+        };
+        context.add_private_struct(request_struct_tokens);
+        let request_struct_ident = Some(Ident::new("Request", Span::call_site()));
 
         let response_spec = if let Some(return_artifacts) = response_wire_artifacts.as_ref() {
             let response_prefix = format!("{struct_prefix}Response");
@@ -688,10 +727,19 @@ impl LanguageGenerator for RustGenerator {
             &fn_name_str,
             &service_name_literal,
             request_struct_ident.as_ref(),
+            request_data_struct_ident.as_ref(),
             response_spec.as_ref(),
+            true, // use_service_name_const
         );
 
-        let mut service_tokens = context.into_tokens();
+        // Add service_name constant at module level
+        let service_name_const = {
+            let service_name_str = Literal::string(service.name.as_str());
+            quote!(const SERVICE_NAME: &str = #service_name_str;)
+        };
+
+        let mut service_tokens = vec![service_name_const];
+        service_tokens.extend(context.into_tokens());
         service_tokens.push(method_token);
         service_tokens.extend(helper_tokens);
 
@@ -2920,7 +2968,9 @@ fn build_exposed_service_method(
     label: &str,
     service_name_literal: &Literal,
     request_struct: Option<&Ident>,
+    request_data_struct: Option<&Ident>,
     response_spec: Option<&ServiceResponseSpec>,
+    use_service_name_const: bool,
 ) -> (TokenStream, Vec<TokenStream>) {
     let handler_fn_name = handler_fn_name_override.cloned().unwrap_or_else(|| {
         Ident::new(
@@ -2930,15 +2980,26 @@ fn build_exposed_service_method(
     });
 
     // Build callback parameter signature (just types, no names for Fn trait bounds)
-    let mut callback_param_types: Vec<TokenStream> = Vec::new();
-    if let Some(instance_param) = instance_id_param {
-        callback_param_types.push(instance_param.ty.clone());
-    }
-    if let Some(request_struct) = request_struct {
-        callback_param_types.push(quote!(#request_struct));
+    let callback_param_types: Vec<TokenStream> = if use_service_name_const {
+        // For exposed services: handler takes Request (which wraps instance_id, master_node, request_data)
+        if let Some(request_struct) = request_struct {
+            vec![quote!(#request_struct)]
+        } else {
+            Vec::new()
+        }
     } else {
-        callback_param_types.extend(handler_params.iter().map(|p| p.ty.clone()));
-    }
+        // For action handlers: handler takes (instance_id, Request) or just the params
+        let mut types = Vec::new();
+        if let Some(instance_param) = instance_id_param {
+            types.push(instance_param.ty.clone());
+        }
+        if let Some(request_struct) = request_struct {
+            types.push(quote!(#request_struct));
+        } else {
+            types.extend(handler_params.iter().map(|p| p.ty.clone()));
+        }
+        types
+    };
 
     // Determine response type
     let response_ty = response_spec
@@ -2967,32 +3028,44 @@ fn build_exposed_service_method(
 
     let instance_binding_ident =
         instance_id_param.map(|_| Ident::new("instance_id", Span::call_site()));
-    let (request_pattern, handler_request_args): (TokenStream, Vec<TokenStream>) =
-        if request_struct.is_some() {
-            let binding_ident = Ident::new("request_data", Span::call_site());
-            (quote!(#binding_ident), vec![quote!(#binding_ident)])
-        } else if handler_params.is_empty() {
-            (quote!(()), Vec::new())
-        } else if handler_params.len() == 1 {
-            let ident = &handler_params[0].ident;
-            (quote!((#ident,)), vec![quote!(#ident)])
+
+    let (request_pattern, callback_call): (TokenStream, TokenStream) = if use_service_name_const {
+        let binding_ident = Ident::new("request_data", Span::call_site());
+        let request_ident = Ident::new("request", Span::call_site());
+        if request_data_struct.is_some() {
+            (quote!(#binding_ident), quote!(handler(#request_ident)))
         } else {
-            let idents: Vec<&Ident> = handler_params.iter().map(|p| &p.ident).collect();
-            let args = idents.iter().map(|ident| quote!(#ident)).collect();
-            (quote!((#(#idents),*)), args)
-        };
-    let callback_call = if let Some(instance_ident) = instance_binding_ident.as_ref() {
-        let mut handler_args = Vec::with_capacity(handler_request_args.len() + 1);
-        handler_args.push(quote!(#instance_ident));
-        handler_args.extend(handler_request_args.iter().cloned());
-        quote!(handler(#(#handler_args),*))
-    } else if handler_request_args.is_empty() {
-        quote!(handler())
-    } else if handler_request_args.len() == 1 {
-        let arg = &handler_request_args[0];
-        quote!(handler(#arg))
+            (quote!(()), quote!(handler(#request_ident)))
+        }
     } else {
-        quote!(handler(#(#handler_request_args),*))
+        let (pattern, handler_request_args): (TokenStream, Vec<TokenStream>) =
+            if request_struct.is_some() {
+                let binding_ident = Ident::new("request_data", Span::call_site());
+                (quote!(#binding_ident), vec![quote!(#binding_ident)])
+            } else if handler_params.is_empty() {
+                (quote!(()), Vec::new())
+            } else if handler_params.len() == 1 {
+                let ident = &handler_params[0].ident;
+                (quote!((#ident,)), vec![quote!(#ident)])
+            } else {
+                let idents: Vec<&Ident> = handler_params.iter().map(|p| &p.ident).collect();
+                let args = idents.iter().map(|ident| quote!(#ident)).collect();
+                (quote!((#(#idents),*)), args)
+            };
+        let call = if let Some(instance_ident) = instance_binding_ident.as_ref() {
+            let mut handler_args = Vec::with_capacity(handler_request_args.len() + 1);
+            handler_args.push(quote!(#instance_ident));
+            handler_args.extend(handler_request_args.iter().cloned());
+            quote!(handler(#(#handler_args),*))
+        } else if handler_request_args.is_empty() {
+            quote!(handler())
+        } else if handler_request_args.len() == 1 {
+            let arg = &handler_request_args[0];
+            quote!(handler(#arg))
+        } else {
+            quote!(handler(#(#handler_request_args),*))
+        };
+        (pattern, call)
     };
 
     let response_serialization = build_response_serialization_code(
@@ -3022,6 +3095,13 @@ fn build_exposed_service_method(
     if let Some(request_spec) = encoding {
         let request_format =
             request_format.expect("request format should exist when encoding is present");
+
+        let deserializer_struct = if use_service_name_const {
+            request_data_struct
+        } else {
+            request_struct
+        };
+
         let request_deserializer = if instance_from_request_context {
             build_request_deserializer(
                 &request_deserializer_name,
@@ -3030,8 +3110,9 @@ fn build_exposed_service_method(
                 wire_params,
                 handler_params,
                 label,
-                request_struct,
+                deserializer_struct,
                 None,
+                use_service_name_const,
             )
         } else {
             build_request_deserializer(
@@ -3041,13 +3122,16 @@ fn build_exposed_service_method(
                 wire_params,
                 handler_params,
                 label,
-                request_struct,
+                deserializer_struct,
                 instance_id_param,
+                use_service_name_const,
             )
         };
         helper_tokens.push(request_deserializer);
 
-        let deserializer_pattern = if let Some(instance_ident) = instance_binding_ident.as_ref() {
+        let deserializer_pattern = if use_service_name_const {
+            request_pattern.clone()
+        } else if let Some(instance_ident) = instance_binding_ident.as_ref() {
             if instance_from_request_context {
                 request_pattern.clone()
             } else {
@@ -3060,7 +3144,10 @@ fn build_exposed_service_method(
 
         let mut helper_params: Vec<TokenStream> = vec![quote!(payload: &[u8]), quote!(handler: &F)];
 
-        if instance_from_request_context {
+        if use_service_name_const {
+            helper_params.push(quote!(master_node: String));
+            helper_params.push(quote!(instance_id: String));
+        } else if instance_from_request_context {
             let instance_ident = instance_binding_ident
                 .as_ref()
                 .expect("instance_id param should exist when provided from context");
@@ -3071,23 +3158,47 @@ fn build_exposed_service_method(
             helper_params.push(quote!(#instance_ident: &str));
         }
 
-        let helper_fn = quote! {
-            fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<bytes::Bytes>
-            where
-                F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
-            {
-                let #deserializer_pattern = #request_deserializer_name(payload)?;
+        let helper_fn = if use_service_name_const {
+            let request_construction = if request_data_struct.is_some() {
+                quote!(let request = Request::new(instance_id, master_node, request_data);)
+            } else {
+                quote!(let request = Request::new(instance_id, master_node);)
+            };
+            quote! {
+                fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<bytes::Bytes>
+                where
+                    F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
+                {
+                    let #deserializer_pattern = #request_deserializer_name(payload)?;
+                    #request_construction
 
-                let response_payload = #response_serialization;
+                    let response_payload = #response_serialization;
 
-                Ok(response_payload)
+                    Ok(response_payload)
+                }
+            }
+        } else {
+            quote! {
+                fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<bytes::Bytes>
+                where
+                    F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
+                {
+                    let #deserializer_pattern = #request_deserializer_name(payload)?;
+
+                    let response_payload = #response_serialization;
+
+                    Ok(response_payload)
+                }
             }
         };
         helper_tokens.push(helper_fn);
     } else {
         let mut helper_params: Vec<TokenStream> = vec![quote!(handler: &F)];
 
-        if instance_from_request_context {
+        if use_service_name_const {
+            helper_params.push(quote!(master_node: String));
+            helper_params.push(quote!(instance_id: String));
+        } else if instance_from_request_context {
             let instance_ident = instance_binding_ident
                 .as_ref()
                 .expect("instance_id param should exist when provided from context");
@@ -3098,14 +3209,29 @@ fn build_exposed_service_method(
             helper_params.push(quote!(#instance_ident: &str));
         }
 
-        let helper_fn = quote! {
-            fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<bytes::Bytes>
-            where
-                F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
-            {
-                let response_payload = #response_serialization;
+        let helper_fn = if use_service_name_const {
+            quote! {
+                fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<bytes::Bytes>
+                where
+                    F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
+                {
+                    let request = Request::new(instance_id, master_node);
 
-                Ok(response_payload)
+                    let response_payload = #response_serialization;
+
+                    Ok(response_payload)
+                }
+            }
+        } else {
+            quote! {
+                fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<bytes::Bytes>
+                where
+                    F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
+                {
+                    let response_payload = #response_serialization;
+
+                    Ok(response_payload)
+                }
             }
         };
         helper_tokens.push(helper_fn);
@@ -3117,7 +3243,42 @@ fn build_exposed_service_method(
         Ident::new("_request_context", Span::call_site())
     };
 
-    let helper_call_tokens = if encoding.is_some() {
+    let helper_call_tokens = if use_service_name_const {
+        if encoding.is_some() {
+            let mut helper_args: Vec<TokenStream> = vec![
+                quote!(payload.as_ref()),
+                quote!(&handler),
+                quote!(master_node),
+                quote!(instance_id),
+            ];
+
+            if let Some(arg) = service_instance_call_arg.clone() {
+                helper_args.push(arg);
+            }
+
+            quote!({
+                let message = #request_context_ident.message();
+                let payload = message.payload().as_bytes();
+                let master_node = message.master_node().to_string();
+                let instance_id = message.instance_id().to_string();
+                #handler_helper_name(#(#helper_args),*)
+            })
+        } else {
+            let mut helper_args: Vec<TokenStream> =
+                vec![quote!(&handler), quote!(master_node), quote!(instance_id)];
+
+            if let Some(arg) = service_instance_call_arg.clone() {
+                helper_args.push(arg);
+            }
+
+            quote!({
+                let message = #request_context_ident.message();
+                let master_node = message.master_node().to_string();
+                let instance_id = message.instance_id().to_string();
+                #handler_helper_name(#(#helper_args),*)
+            })
+        }
+    } else if encoding.is_some() {
         let mut helper_args: Vec<TokenStream> = vec![quote!(payload.as_ref()), quote!(&handler)];
 
         if instance_from_request_context {
@@ -3164,56 +3325,94 @@ fn build_exposed_service_method(
         }
     };
 
-    let service_instance_env_stmt = {
-        let env_var_literal = Literal::string("PEPPY_INSTANCE_ID");
+    let service_name_ref = if use_service_name_const {
+        quote!(SERVICE_NAME)
+    } else {
+        quote!(service_name)
+    };
+
+    let method = if use_service_name_const {
         quote! {
+            pub async fn #handler_fn_name<F>(
+                messenger: &crate::Messenger,
+                handler: F,
+            ) -> crate::Result<()>
+            where
+                F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
+            {
+                let mut service = peppylib::ServiceMessenger::listen(
+                    messenger.handle(),
+                    messenger.runtime().bound_master_node(),
+                    messenger.runtime().bound_instance_id(),
+                    messenger.runtime().node_name(),
+                    #service_name_ref,
+                )
+                .await?;
+
+                service
+                    .handle_next_request(move |#request_context_ident| {
+                        async move {
+                            #helper_call_tokens.map_err(|error| {
+                                peppylib::PeppyError::Io(std::io::Error::other(error.to_string()))
+                            })
+                        }
+                    })
+                    .await?;
+
+                Ok(())
+            }
+        }
+    } else {
+        let env_var_literal = Literal::string("PEPPY_INSTANCE_ID");
+        let service_instance_env_stmt = quote! {
             let service_instance_id = std::env::var(#env_var_literal).map_err(|source| {
                 crate::Error::MissingInstanceIdEnvVar {
                     var: #env_var_literal,
                     source,
                 }
             })?;
-        }
-    };
-    let service_instance_clone_stmt = if needs_service_instance_id {
-        quote!(let service_instance_id = service_instance_id.clone();)
-    } else {
-        TokenStream::new()
-    };
+        };
+        let service_instance_clone_stmt = if needs_service_instance_id {
+            quote!(let service_instance_id = service_instance_id.clone();)
+        } else {
+            TokenStream::new()
+        };
+        let service_name_binding = quote!(let service_name = #service_name;);
 
-    let method = quote! {
-        pub async fn #handler_fn_name<F>(
-            messenger: &crate::Messenger,
-            handler: F,
-        ) -> crate::Result<()>
-        where
-            F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
-        {
-            #service_instance_env_stmt
-            let node_name = messenger.node_name();
-            let service_name = #service_name;
+        quote! {
+            pub async fn #handler_fn_name<F>(
+                messenger: &crate::Messenger,
+                handler: F,
+            ) -> crate::Result<()>
+            where
+                F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
+            {
+                #service_instance_env_stmt
+                let node_name = messenger.node_name();
+                #service_name_binding
 
-            let mut service = peppylib::ServiceMessenger::listen(
-                messenger.handle(),
-                messenger.master_node(),
-                service_instance_id.as_str(),
-                node_name,
-                service_name,
-            )
-            .await?;
-
-            service
-                .handle_next_request(move |#request_context_ident| {
-                    #service_instance_clone_stmt
-                    async move {
-                        #helper_call_tokens.map_err(|error| {
-                            peppylib::PeppyError::Io(std::io::Error::other(error.to_string()))
-                        })
-                    }
-                })
+                let mut service = peppylib::ServiceMessenger::listen(
+                    messenger.handle(),
+                    messenger.master_node(),
+                    service_instance_id.as_str(),
+                    node_name,
+                    service_name,
+                )
                 .await?;
 
-            Ok(())
+                service
+                    .handle_next_request(move |#request_context_ident| {
+                        #service_instance_clone_stmt
+                        async move {
+                            #helper_call_tokens.map_err(|error| {
+                                peppylib::PeppyError::Io(std::io::Error::other(error.to_string()))
+                            })
+                        }
+                    })
+                    .await?;
+
+                Ok(())
+            }
         }
     };
 
@@ -3223,6 +3422,14 @@ fn build_exposed_service_method(
 fn build_request_struct_with_name(
     struct_name: &str,
     params: &[FunctionParam],
+) -> Option<(Ident, TokenStream)> {
+    build_request_struct_with_name_and_impl(struct_name, params, true)
+}
+
+fn build_request_struct_with_name_and_impl(
+    struct_name: &str,
+    params: &[FunctionParam],
+    with_impl: bool,
 ) -> Option<(Ident, TokenStream)> {
     if params.is_empty() {
         return None;
@@ -3237,34 +3444,45 @@ fn build_request_struct_with_name(
             quote!(pub #ident: #ty)
         })
         .collect();
-    let ctor_params: Vec<TokenStream> = params
-        .iter()
-        .map(|param| {
-            let ident = &param.ident;
-            let ty = &param.ty;
-            quote!(#ident: #ty)
-        })
-        .collect();
-    let ctor_bindings: Vec<TokenStream> = params
-        .iter()
-        .map(|param| {
-            let ident = &param.ident;
-            quote!(#ident)
-        })
-        .collect();
 
-    let tokens = quote! {
-        #[derive(Debug, Clone)]
-        #[allow(dead_code)]
-        pub struct #ident {
-            #( #field_tokens ),*
-        }
+    let tokens = if with_impl {
+        let ctor_params: Vec<TokenStream> = params
+            .iter()
+            .map(|param| {
+                let ident = &param.ident;
+                let ty = &param.ty;
+                quote!(#ident: #ty)
+            })
+            .collect();
+        let ctor_bindings: Vec<TokenStream> = params
+            .iter()
+            .map(|param| {
+                let ident = &param.ident;
+                quote!(#ident)
+            })
+            .collect();
 
-        impl #ident {
-            pub fn new(#(#ctor_params),*) -> Self {
-                Self {
-                    #( #ctor_bindings ),*
+        quote! {
+            #[derive(Debug, Clone)]
+            #[allow(dead_code)]
+            pub struct #ident {
+                #( #field_tokens ),*
+            }
+
+            impl #ident {
+                pub fn new(#(#ctor_params),*) -> Self {
+                    Self {
+                        #( #ctor_bindings ),*
+                    }
                 }
+            }
+        }
+    } else {
+        quote! {
+            #[derive(Debug, Clone)]
+            #[allow(dead_code)]
+            pub struct #ident {
+                #( #field_tokens ),*
             }
         }
     };
@@ -3289,10 +3507,17 @@ fn build_request_deserializer(
     label: &str,
     request_struct: Option<&Ident>,
     instance_id_param: Option<&FunctionParam>,
+    use_service_name_const: bool,
 ) -> TokenStream {
+    let context_expr = if use_service_name_const {
+        quote!(SERVICE_NAME)
+    } else {
+        let context_literal = Literal::string(label);
+        quote!(#context_literal)
+    };
+
     if let Some(instance_param) = instance_id_param {
         let reader_type = &request_spec.reader_type;
-        let context_literal = Literal::string(label);
         let instance_ty = &instance_param.ty;
 
         // Build return type for request data
@@ -3381,14 +3606,14 @@ fn build_request_deserializer(
                         capnp::message::ReaderOptions::new(),
                     )
                     .map_err(|source| crate::Error::CapnpDeserialize {
-                        context: String::from(#context_literal),
+                        context: String::from(#context_expr),
                         source,
                     })?;
 
                 let root = message_reader
                     .get_root::<#reader_type>()
                     .map_err(|source| crate::Error::CapnpDeserialize {
-                        context: String::from(#context_literal),
+                        context: String::from(#context_expr),
                         source,
                     })?;
 
@@ -3399,7 +3624,6 @@ fn build_request_deserializer(
         }
     } else {
         let reader_type = &request_spec.reader_type;
-        let context_literal = Literal::string(label);
 
         let return_ty = if let Some(request_struct) = request_struct {
             quote!(#request_struct)
@@ -3462,14 +3686,14 @@ fn build_request_deserializer(
                         capnp::message::ReaderOptions::new(),
                     )
                     .map_err(|source| crate::Error::CapnpDeserialize {
-                        context: String::from(#context_literal),
+                        context: String::from(#context_expr),
                         source,
                     })?;
 
                 let root = message_reader
                     .get_root::<#reader_type>()
                     .map_err(|source| crate::Error::CapnpDeserialize {
-                        context: String::from(#context_literal),
+                        context: String::from(#context_expr),
                         source,
                     })?;
 
@@ -3480,6 +3704,7 @@ fn build_request_deserializer(
         }
     }
 }
+
 fn build_response_serialization_code(
     response_spec: Option<&ServiceResponseSpec>,
     label: &str,

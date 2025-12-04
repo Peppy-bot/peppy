@@ -43,6 +43,7 @@ const EXPOSED_SERVICE_EXAMPLE3: &str = r#"
 
 const SUBSCRIBED_SERVICE_EXAMPLE1: &str = r#"
 {
+  id: "uvc_camera_enable_camera",
   node: "uvc_camera",
   name: "enable_camera",
   tag: "0.1.0"
@@ -67,6 +68,7 @@ const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1: &str = r#"
 
 const SUBSCRIBED_SERVICE_EXAMPLE2: &str = r#"
 {
+    id: "uvc_camera_get_camera_info",
     node: "uvc_camera",
     name: "get_camera_info",
     tag: "0.1.0"
@@ -127,24 +129,49 @@ fn expose_service() {
         "expected optional string field in response struct"
     );
     assert_rendered!(
+        rendered.contains("const SERVICE_NAME: &str = \"enable_camera\";"),
+        &rendered,
+        "expected SERVICE_NAME constant at module level"
+    );
+    assert_rendered!(
         rendered.contains("pub async fn handle_next_request<F>"),
         &rendered,
         "expected async service handler with generic naming"
     );
     assert_rendered!(
-        rendered.contains("F: Fn(String, Request) -> crate::Result<Response>"),
+        rendered.contains("F: Fn(Request) -> crate::Result<Response>"),
         &rendered,
-        "expected Fn trait bound for handler that includes instance_id"
+        "expected Fn trait bound for handler that takes Request"
     );
     assert_rendered!(
-        rendered.contains("pub struct Request"),
+        rendered.contains("pub struct RequestData"),
         &rendered,
-        "expected public request struct for enable_camera"
+        "expected public request data struct for enable_camera"
     );
     assert_rendered!(
         rendered.contains("pub enable: bool"),
         &rendered,
-        "expected public request field for enable_camera"
+        "expected public request field in RequestData"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct Request"),
+        &rendered,
+        "expected public Request struct with metadata fields"
+    );
+    assert_rendered!(
+        rendered.contains("pub instance_id: String"),
+        &rendered,
+        "expected instance_id field in Request struct"
+    );
+    assert_rendered!(
+        rendered.contains("pub master_node: String"),
+        &rendered,
+        "expected master_node field in Request struct"
+    );
+    assert_rendered!(
+        rendered.contains("pub request_data: RequestData"),
+        &rendered,
+        "expected request_data field in Request struct"
     );
     assert_rendered!(
         rendered.contains("impl Request {"),
@@ -167,6 +194,11 @@ fn expose_service() {
         "expected instance_id extraction"
     );
     assert_rendered!(
+        rendered.contains("let master_node = message.master_node().to_string();"),
+        &rendered,
+        "expected master_node extraction"
+    );
+    assert_rendered!(
         rendered.contains("let message = request_context.message();"),
         &rendered,
         "expected request message binding"
@@ -177,14 +209,19 @@ fn expose_service() {
         "expected request payload to be pulled from the request context"
     );
     assert_rendered!(
-        rendered.contains("fn deserialize_request(payload: &[u8]) -> crate::Result<Request>"),
+        rendered.contains("fn deserialize_request(payload: &[u8]) -> crate::Result<RequestData>"),
         &rendered,
-        "expected request deserializer helper returning Request"
+        "expected request deserializer helper returning RequestData"
     );
     assert_rendered!(
         rendered.contains("fn handle_request_payload<F>("),
         &rendered,
         "expected generic helper for handling request payloads"
+    );
+    assert_rendered!(
+        rendered.contains("master_node: String"),
+        &rendered,
+        "expected handler helper to accept master_node"
     );
     assert_rendered!(
         rendered.contains("instance_id: String"),
@@ -197,19 +234,29 @@ fn expose_service() {
         "expected helper to deserialize request payload"
     );
     assert_rendered!(
-        rendered.contains("let response = handler(instance_id, request_data)?;"),
+        rendered.contains("let request = Request::new(instance_id, master_node, request_data);"),
         &rendered,
-        "expected handler result to be captured with instance context"
+        "expected Request construction from components"
     );
     assert_rendered!(
-        rendered.contains("let service_instance_id = std::env::var(\"PEPPY_INSTANCE_ID\")"),
+        rendered.contains("let response = handler(request)?;"),
         &rendered,
-        "expected service handler to resolve instance id from environment"
+        "expected handler result to be captured with Request"
     );
     assert_rendered!(
-        rendered.contains("crate::Error::MissingInstanceIdEnvVar"),
+        rendered.contains("messenger.runtime().bound_master_node()"),
         &rendered,
-        "expected service handler to surface missing instance id errors"
+        "expected ServiceMessenger::listen to use runtime bound_master_node"
+    );
+    assert_rendered!(
+        rendered.contains("messenger.runtime().bound_instance_id()"),
+        &rendered,
+        "expected ServiceMessenger::listen to use runtime bound_instance_id"
+    );
+    assert_rendered!(
+        rendered.contains("messenger.runtime().node_name()"),
+        &rendered,
+        "expected ServiceMessenger::listen to use runtime node_name"
     );
     assert_rendered!(
         rendered.contains("bytes::Bytes::from(buffer)"),
@@ -243,6 +290,11 @@ fn expose_service_without_request_body() {
         .expect("artifact is present");
 
     assert_rendered!(
+        rendered.contains("const SERVICE_NAME: &str = \"get_system_status\";"),
+        &rendered,
+        "expected SERVICE_NAME constant at module level"
+    );
+    assert_rendered!(
         rendered.contains("pub struct Response"),
         &rendered,
         "expected response struct for service without request body"
@@ -253,9 +305,29 @@ fn expose_service_without_request_body() {
         "expected response impl block for service without request body"
     );
     assert_rendered!(
-        rendered.contains("F: Fn(String) -> crate::Result<Response>"),
+        rendered.contains("F: Fn(Request) -> crate::Result<Response>"),
         &rendered,
-        "expected handler to take only instance_id parameter"
+        "expected handler to take Request parameter"
+    );
+    assert_rendered!(
+        rendered.contains("pub struct Request"),
+        &rendered,
+        "expected Request struct with metadata fields"
+    );
+    assert_rendered!(
+        rendered.contains("pub instance_id: String"),
+        &rendered,
+        "expected instance_id field in Request struct"
+    );
+    assert_rendered!(
+        rendered.contains("pub master_node: String"),
+        &rendered,
+        "expected master_node field in Request struct"
+    );
+    assert_rendered!(
+        !rendered.contains("pub struct RequestData"),
+        &rendered,
+        "expected no RequestData struct when there is no request body"
     );
     assert_rendered!(
         rendered.contains("fn handle_request_payload"),
@@ -263,9 +335,19 @@ fn expose_service_without_request_body() {
         "expected generic helper function even without request payload"
     );
     assert_rendered!(
+        rendered.contains("master_node: String"),
+        &rendered,
+        "expected payload helper signature to include master_node"
+    );
+    assert_rendered!(
         rendered.contains("instance_id: String"),
         &rendered,
         "expected payload helper signature to include caller instance id"
+    );
+    assert_rendered!(
+        rendered.contains("let request = Request::new(instance_id, master_node);"),
+        &rendered,
+        "expected Request construction without request_data"
     );
 }
 
@@ -301,9 +383,14 @@ fn expose_two_services() {
         .expect("get_lidar_info artifact is present");
 
     assert_rendered!(
-        enable_rendered.contains("let service_name = \"enable_camera\";"),
+        enable_rendered.contains("const SERVICE_NAME: &str = \"enable_camera\";"),
         enable_rendered,
-        "expected enable_camera service name literal"
+        "expected enable_camera SERVICE_NAME constant"
+    );
+    assert_rendered!(
+        enable_rendered.contains("pub struct RequestData"),
+        enable_rendered,
+        "expected request data struct for enable_camera"
     );
     assert_rendered!(
         enable_rendered.contains("pub struct Request"),
@@ -326,9 +413,9 @@ fn expose_two_services() {
         "expected async handler for enable_camera"
     );
     assert_rendered!(
-        enable_rendered.contains("F: Fn(String, Request) -> crate::Result<Response>"),
+        enable_rendered.contains("F: Fn(Request) -> crate::Result<Response>"),
         enable_rendered,
-        "expected handler signature for enable_camera to include instance_id"
+        "expected handler signature for enable_camera to take Request"
     );
     assert_rendered!(
         enable_rendered.contains("fn deserialize_request("),
@@ -342,9 +429,14 @@ fn expose_two_services() {
     );
 
     assert_rendered!(
-        lidar_rendered.contains("let service_name = \"get_lidar_info\";"),
+        lidar_rendered.contains("const SERVICE_NAME: &str = \"get_lidar_info\";"),
         lidar_rendered,
-        "expected get_lidar_info service name literal"
+        "expected get_lidar_info SERVICE_NAME constant"
+    );
+    assert_rendered!(
+        lidar_rendered.contains("pub struct RequestData"),
+        lidar_rendered,
+        "expected request data struct for get_lidar_info"
     );
     assert_rendered!(
         lidar_rendered.contains("pub struct Request"),
@@ -362,9 +454,9 @@ fn expose_two_services() {
         "expected get_lidar_info to omit response struct"
     );
     assert_rendered!(
-        lidar_rendered.contains("F: Fn(String, Request) -> crate::Result<()>"),
+        lidar_rendered.contains("F: Fn(Request) -> crate::Result<()>"),
         lidar_rendered,
-        "expected handler signature for get_lidar_info to include instance_id"
+        "expected handler signature for get_lidar_info to take Request"
     );
     assert_rendered!(
         lidar_rendered.contains("fn deserialize_request("),
@@ -738,6 +830,7 @@ fn subscribed_to_two_services_same_node() {
 fn subscribed_service_without_response_payload() {
     let service = r#"
         {
+            id: "uvc_camera_get_camera_info",
             node: "uvc_camera",
             name: "get_camera_info",
             tag: "0.1.0"
