@@ -404,6 +404,7 @@ async fn main() -> Result<()> {{
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator.build(&output_dir_exposer).unwrap();
     fs::remove_file(output_config).unwrap();
+    let exposer_peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
@@ -412,7 +413,7 @@ async fn main() -> Result<()> {{
             instance_id: Name::new(exposer_instance_id).unwrap(),
             parameters: Default::default(),
         },
-        "exposer_node",
+        "uvc_camera",
         "test_master",
         &codegen_peppy_config_md5,
     )
@@ -446,7 +447,7 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        &codegen_peppy_config_md5,
+        &exposer_peppy_config_path_str,
         router_host,
         router_port
     );
@@ -625,6 +626,7 @@ async fn main() -> Result<()> {{
     let output_config = copy_config_to_output(&user_node_exposer1, &output_dir_exposer1);
     generator.build(&output_dir_exposer1).unwrap();
     fs::remove_file(output_config).unwrap();
+    let exposer1_peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
@@ -633,7 +635,7 @@ async fn main() -> Result<()> {{
             instance_id: Name::new(exposer1_instance_id).unwrap(),
             parameters: Default::default(),
         },
-        "exposer1_node",
+        "uvc_camera",
         "test_master",
         &codegen_peppy_config_md5,
     )
@@ -667,7 +669,7 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        &codegen_peppy_config_md5,
+        &exposer1_peppy_config_path_str,
         router_host,
         router_port
     );
@@ -684,6 +686,7 @@ async fn main() -> Result<()> {{
     let output_config = copy_config_to_output(&user_node_exposer2, &output_dir_exposer2);
     generator.build(&output_dir_exposer2).unwrap();
     fs::remove_file(output_config).unwrap();
+    let exposer2_peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
@@ -692,7 +695,7 @@ async fn main() -> Result<()> {{
             instance_id: Name::new(exposer2_instance_id).unwrap(),
             parameters: Default::default(),
         },
-        "exposer2_node",
+        "uvc_camera",
         "test_master",
         &codegen_peppy_config_md5,
     )
@@ -726,7 +729,7 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        &codegen_peppy_config_md5,
+        &exposer2_peppy_config_path_str,
         router_host,
         router_port
     );
