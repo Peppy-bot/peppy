@@ -68,7 +68,8 @@ mod tests {
                 instance_id: "$INSTANCE_ID"
             },
             node_name: "camera",
-            bound_master_node: "master_node"
+            bound_master_node: "master_node",
+            codegen_peppy_config_md5: "d41d8cd98f00b204e9800998ecf8427e"
         }"#;
 
         let populated = json.replace("$INSTANCE_ID", instance_id);
