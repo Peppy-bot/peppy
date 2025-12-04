@@ -241,4 +241,263 @@ mod tests {
         assert_eq!(runtime_processor.node_name(), bound_node_name);
         assert_eq!(runtime_processor.input_parameters(), &expected_parameters);
     }
+
+    #[test]
+    fn fails_when_codegen_md5_mismatch() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+
+        let peppy_config_path = temp_dir.path().join("peppy_config.json5");
+        let peppy_config_content = r#"{
+            schema_version: 1,
+            manifest: { name: "test_node", tag: "0.1.0" },
+            parameters: { value: "i64" }
+        }"#;
+        std::fs::write(&peppy_config_path, peppy_config_content)
+            .expect("peppy config should be written");
+
+        let json5_config = r#"{
+            deployment_instance: {
+                instance_id: "test_instance",
+                parameters: { value: 42 }
+            },
+            node_name: "test_node",
+            bound_master_node: "master-1234",
+            codegen_peppy_config_md5: "invalid_md5_that_does_not_match"
+        }"#;
+
+        let runtime_config: RuntimeConfig =
+            serde_json5::from_str(json5_config).expect("runtime config should parse");
+
+        let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
+        runtime_config
+            .save_json5_launch_config(&runtime_config_path)
+            .expect("runtime config should be saved");
+
+        let _env_guard =
+            EnvVarGuard::set(PEPPY_RUNTIME_CONFIG, runtime_config_path.to_str().unwrap());
+
+        let Err(err) = RuntimeProcessor::new_with_peppy_config(&peppy_config_path) else {
+            panic!("expected md5 mismatch error");
+        };
+        let err_string = err.to_string();
+        assert!(
+            err_string.contains("md5 mismatch"),
+            "expected md5 mismatch error, got: {err_string}"
+        );
+    }
+
+    #[test]
+    fn fails_when_runtime_parameter_missing_in_compiled_config() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+
+        // Compiled config only has 'value' parameter
+        let peppy_config_path = temp_dir.path().join("peppy_config.json5");
+        let peppy_config_content = r#"{
+            schema_version: 1,
+            manifest: { name: "test_node", tag: "0.1.0" },
+            parameters: { value: "i64" }
+        }"#;
+        std::fs::write(&peppy_config_path, peppy_config_content)
+            .expect("peppy config should be written");
+
+        let codegen_md5 = RuntimeConfig::generate_peppy_config_md5(&peppy_config_path)
+            .expect("peppy config md5 should be generated");
+
+        // Runtime config has 'value' AND 'extra_param' - but 'extra_param' is not in compiled
+        let json5_config = format!(
+            r#"{{
+            deployment_instance: {{
+                instance_id: "test_instance",
+                parameters: {{ value: 42, extra_param: "unexpected" }}
+            }},
+            node_name: "test_node",
+            bound_master_node: "master-1234",
+            codegen_peppy_config_md5: "{codegen_md5}"
+        }}"#
+        );
+
+        let runtime_config: RuntimeConfig =
+            serde_json5::from_str(&json5_config).expect("runtime config should parse");
+
+        let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
+        runtime_config
+            .save_json5_launch_config(&runtime_config_path)
+            .expect("runtime config should be saved");
+
+        let _env_guard =
+            EnvVarGuard::set(PEPPY_RUNTIME_CONFIG, runtime_config_path.to_str().unwrap());
+
+        let Err(err) = RuntimeProcessor::new_with_peppy_config(&peppy_config_path) else {
+            panic!("expected missing parameter error");
+        };
+        let err_string = err.to_string();
+        assert!(
+            err_string.contains("missing parameter") && err_string.contains("extra_param"),
+            "expected missing parameter error for 'extra_param', got: {err_string}"
+        );
+    }
+
+    #[test]
+    fn fails_when_parameter_type_mismatch() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+
+        // Compiled config expects 'value' to be i64
+        let peppy_config_path = temp_dir.path().join("peppy_config.json5");
+        let peppy_config_content = r#"{
+            schema_version: 1,
+            manifest: { name: "test_node", tag: "0.1.0" },
+            parameters: { value: "i64" }
+        }"#;
+        std::fs::write(&peppy_config_path, peppy_config_content)
+            .expect("peppy config should be written");
+
+        let codegen_md5 = RuntimeConfig::generate_peppy_config_md5(&peppy_config_path)
+            .expect("peppy config md5 should be generated");
+
+        // Runtime config provides 'value' as a string instead of i64
+        let json5_config = format!(
+            r#"{{
+            deployment_instance: {{
+                instance_id: "test_instance",
+                parameters: {{ value: "not_an_integer" }}
+            }},
+            node_name: "test_node",
+            bound_master_node: "master-1234",
+            codegen_peppy_config_md5: "{codegen_md5}"
+        }}"#
+        );
+
+        let runtime_config: RuntimeConfig =
+            serde_json5::from_str(&json5_config).expect("runtime config should parse");
+
+        let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
+        runtime_config
+            .save_json5_launch_config(&runtime_config_path)
+            .expect("runtime config should be saved");
+
+        let _env_guard =
+            EnvVarGuard::set(PEPPY_RUNTIME_CONFIG, runtime_config_path.to_str().unwrap());
+
+        let Err(err) = RuntimeProcessor::new_with_peppy_config(&peppy_config_path) else {
+            panic!("expected type mismatch error");
+        };
+        let err_string = err.to_string();
+        assert!(
+            err_string.contains("type mismatch") && err_string.contains("value"),
+            "expected type mismatch error for 'value', got: {err_string}"
+        );
+    }
+
+    #[test]
+    fn fails_when_nested_parameter_type_mismatch() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+
+        // Compiled config expects nested object with specific types
+        let peppy_config_path = temp_dir.path().join("peppy_config.json5");
+        let peppy_config_content = r#"{
+            schema_version: 1,
+            manifest: { name: "test_node", tag: "0.1.0" },
+            parameters: {
+                config: {
+                    $type: "object",
+                    enabled: "bool",
+                    threshold: "f64"
+                }
+            }
+        }"#;
+        std::fs::write(&peppy_config_path, peppy_config_content)
+            .expect("peppy config should be written");
+
+        let codegen_md5 = RuntimeConfig::generate_peppy_config_md5(&peppy_config_path)
+            .expect("peppy config md5 should be generated");
+
+        // Runtime config provides 'enabled' as string instead of bool
+        let json5_config = format!(
+            r#"{{
+            deployment_instance: {{
+                instance_id: "test_instance",
+                parameters: {{ config: {{ enabled: "yes", threshold: 0.5 }} }}
+            }},
+            node_name: "test_node",
+            bound_master_node: "master-1234",
+            codegen_peppy_config_md5: "{codegen_md5}"
+        }}"#
+        );
+
+        let runtime_config: RuntimeConfig =
+            serde_json5::from_str(&json5_config).expect("runtime config should parse");
+
+        let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
+        runtime_config
+            .save_json5_launch_config(&runtime_config_path)
+            .expect("runtime config should be saved");
+
+        let _env_guard =
+            EnvVarGuard::set(PEPPY_RUNTIME_CONFIG, runtime_config_path.to_str().unwrap());
+
+        let Err(err) = RuntimeProcessor::new_with_peppy_config(&peppy_config_path) else {
+            panic!("expected type mismatch error");
+        };
+        let err_string = err.to_string();
+        assert!(
+            err_string.contains("type mismatch") && err_string.contains("config.enabled"),
+            "expected type mismatch error for 'config.enabled', got: {err_string}"
+        );
+    }
+
+    #[test]
+    fn fails_when_array_item_type_mismatch() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+
+        // Compiled config expects array of strings
+        let peppy_config_path = temp_dir.path().join("peppy_config.json5");
+        let peppy_config_content = r#"{
+            schema_version: 1,
+            manifest: { name: "test_node", tag: "0.1.0" },
+            parameters: {
+                tags: {
+                    $type: "array",
+                    $items: "string"
+                }
+            }
+        }"#;
+        std::fs::write(&peppy_config_path, peppy_config_content)
+            .expect("peppy config should be written");
+
+        let codegen_md5 = RuntimeConfig::generate_peppy_config_md5(&peppy_config_path)
+            .expect("peppy config md5 should be generated");
+
+        // Runtime config provides array with mixed types (string and int)
+        let json5_config = format!(
+            r#"{{
+            deployment_instance: {{
+                instance_id: "test_instance",
+                parameters: {{ tags: ["valid", 123, "also_valid"] }}
+            }},
+            node_name: "test_node",
+            bound_master_node: "master-1234",
+            codegen_peppy_config_md5: "{codegen_md5}"
+        }}"#
+        );
+
+        let runtime_config: RuntimeConfig =
+            serde_json5::from_str(&json5_config).expect("runtime config should parse");
+
+        let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
+        runtime_config
+            .save_json5_launch_config(&runtime_config_path)
+            .expect("runtime config should be saved");
+
+        let _env_guard =
+            EnvVarGuard::set(PEPPY_RUNTIME_CONFIG, runtime_config_path.to_str().unwrap());
+
+        let Err(err) = RuntimeProcessor::new_with_peppy_config(&peppy_config_path) else {
+            panic!("expected type mismatch error");
+        };
+        let err_string = err.to_string();
+        assert!(
+            err_string.contains("type mismatch") && err_string.contains("tags[1]"),
+            "expected type mismatch error for 'tags[1]', got: {err_string}"
+        );
+    }
 }
