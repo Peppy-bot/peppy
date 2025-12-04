@@ -1,7 +1,8 @@
-use std::{collections::HashMap, path::Path};
+use std::path::Path;
 
 use crate::error::{Error, Result};
-use config::{NodeParameters, runtime::RuntimeConfig};
+use config::{NodeParameters, node::NodeConfig, runtime::RuntimeConfig};
+use node_stack::NodeStack;
 
 const PEPPY_RUNTIME_CONFIG: &str = "PEPPY_RUNTIME_CONFIG";
 
@@ -22,10 +23,17 @@ impl RuntimeProcessor {
             }
         })?;
         let launch_config = RuntimeProcessor::get_peppy_deployment_config(&launch_config_path)?;
+        let node_config: NodeConfig =
+            serde_json5::from_str(&std::fs::read_to_string(peppy_config.as_ref())?)?;
         RuntimeProcessor::check_generated_code_matches_runtime_config(
             peppy_config,
             &launch_config.codegen_peppy_config_md5,
         )?;
+        RuntimeProcessor::check_node_config_parameters_types(
+            &launch_config.deployment_instance.parameters,
+            &node_config.parameters,
+        )?;
+
         Ok(Self { launch_config })
     }
 
@@ -44,6 +52,34 @@ impl RuntimeProcessor {
             expected: codegen_peppy_config_md5.to_string(),
             actual: md5,
         })
+    }
+
+    fn check_node_config_parameters_types(
+        runtime_parameters: &NodeParameters,
+        compiled_node_parameters: &NodeParameters,
+    ) -> Result<()> {
+        todo!("Check that the two parameter types match");
+        // For example the following `runtime_parameters`:
+        // {
+        //     exposure: 0.25,
+        //     flags: ["hdr", "stabilized"],
+        //     nested: { enabled: true, gain: 10 },
+        //     mode: "auto"
+        // }
+        // Will need to match the `compiled_node_parameters`:
+        // {
+        //     exposure: "f32",
+        //     flags: {
+        //       $type: "array",
+        //       $items: "string",
+        //     },
+        //     nested: {
+        //       $type: "object",
+        //       enabled: "bool",
+        //       gain: "f32"
+        //     },
+        //     mode: "string"
+        // }
     }
 
     fn get_peppy_deployment_config(launch_config_path: &str) -> Result<RuntimeConfig> {
@@ -75,9 +111,9 @@ impl RuntimeProcessor {
         self.launch_config.node_name.as_str()
     }
 
-    pub fn get_instance_ids() -> HashMap<String, String> {
+    pub fn get_node_stack() -> NodeStack {
         todo!(
-            "Finish. This is a dynamic call to the master node to get the current instances_ids. Don't do that during code generation since the list won't be up to date"
+            "Call the master node endpoint that returns the node stack. Don't do that during code generation since the list won't be up to date"
         )
     }
 }
