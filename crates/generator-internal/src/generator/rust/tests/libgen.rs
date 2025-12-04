@@ -289,6 +289,7 @@ const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_SERVICE_EXAMPLE: &str = r#"
 {
+  id: "uvc_camera_enable_camera",
   node: "uvc_camera",
   name: "enable_camera",
   tag: "0.1.0"
@@ -375,13 +376,13 @@ async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
     let request = uvc_camera_enable_camera::Request::new(true);
-    let (instance_id, response) =
-        uvc_camera_enable_camera::poll(&messenger, Duration::from_secs(5), None, request).await?;
-    let error_msg = response.error_msg.as_deref().unwrap_or(\"<none>\");
+    let response =
+        uvc_camera_enable_camera::poll(&messenger, Duration::from_secs(5), None, None, request).await?;
+    let error_msg = response.data.error_msg.as_deref().unwrap_or(\"<none>\");
     println!(
         \"enable_camera result: service_id={{}} enabled={{}} error={{}}\",
-        &instance_id,
-        response.enabled,
+        &response.instance_id,
+        response.data.enabled,
         error_msg
     );
 
@@ -431,10 +432,10 @@ use peppygen::{{Messenger, Result}};
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
-    enable_camera::handle_next_request(&messenger, |instance_id, request| -> Result<enable_camera::Response> {{
-        println!(\"received enable_camera request from {{}}: enable = {{}}\", instance_id, request.enable);
+    enable_camera::handle_next_request(&messenger, |request| -> Result<enable_camera::Response> {{
+        println!(\"received enable_camera request from {{}}: enable = {{}}\", request.instance_id, request.request_data.enable);
         Ok(enable_camera::Response::new(
-            request.enable,
+            request.request_data.enable,
             Some(\"handled\".to_owned()),
         ))
     }})
@@ -598,11 +599,11 @@ async fn main() -> Result<()> {{
 
     let request = uvc_camera_enable_camera::Request::new(true);
     let response =
-        uvc_camera_enable_camera::poll(&messenger, Duration::from_secs(5), None, request).await?;
-    let error_msg = response.error_msg.as_deref().unwrap_or(\"<none>\");
+        uvc_camera_enable_camera::poll(&messenger, Duration::from_secs(5), None, None, request).await?;
+    let error_msg = response.data.error_msg.as_deref().unwrap_or(\"<none>\");
     println!(
         \"enable_camera result: enabled={{}} error={{}}\",
-        response.enabled,
+        response.data.enabled,
         error_msg
     );
 
@@ -652,10 +653,10 @@ use peppygen::{{Messenger, Result}};
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
-    enable_camera::handle_next_request(&messenger, |instance_id, request| -> Result<enable_camera::Response> {{
-        println!(\"received enable_camera request for {{}}: {{}}\", instance_id, request.enable);
+    enable_camera::handle_next_request(&messenger, |request| -> Result<enable_camera::Response> {{
+        println!(\"received enable_camera request for {{}}: {{}}\", request.instance_id, request.request_data.enable);
         Ok(enable_camera::Response::new(
-            request.enable,
+            request.request_data.enable,
             Some(\"handled\".to_owned()),
         ))
     }})
@@ -711,10 +712,10 @@ use peppygen::{{Messenger, Result}};
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
-    enable_camera::handle_next_request(&messenger, |instance_id, request| -> Result<enable_camera::Response> {{
-        println!(\"received enable_camera request for {{}}: {{}}\", instance_id, request.enable);
+    enable_camera::handle_next_request(&messenger, |request| -> Result<enable_camera::Response> {{
+        println!(\"received enable_camera request for {{}}: {{}}\", request.instance_id, request.request_data.enable);
         Ok(enable_camera::Response::new(
-            request.enable,
+            request.request_data.enable,
             Some(\"handled\".to_owned()),
         ))
     }})
