@@ -284,13 +284,19 @@ impl RustGenerator {
             let mut response_inits = Vec::new();
             let mut names = NameGenerator::new();
 
+            let response_context_value = response_context_label
+                .map(str::to_string)
+                .unwrap_or_else(|| response_struct_name.clone());
+            let response_context_literal = Literal::string(&response_context_value);
+            let context_expr = quote!(String::from(#response_context_literal));
+
             for (field_name, schema) in &response_format.0 {
                 let (mut statements, value_ident) = generate_field_reader_statements(
                     &quote!(root),
                     field_name,
                     schema,
                     &response_struct_name,
-                    &response_struct_name,
+                    &context_expr,
                     &mut names,
                 );
                 response_statements.append(&mut statements);
@@ -298,11 +304,6 @@ impl RustGenerator {
                     Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
                 response_inits.push(quote!(#field_ident: #value_ident));
             }
-
-            let response_context_value = response_context_label
-                .map(str::to_string)
-                .unwrap_or_else(|| response_struct_name.clone());
-            let response_context_literal = Literal::string(&response_context_value);
 
             let poll_tokens = quote! {
                 let response_bytes = #poll_call.await?;
@@ -436,6 +437,9 @@ impl RustGenerator {
         let format_schema = format_artifacts.message_format();
         let schema_lookup = SchemaFieldLookup::new(format_schema);
 
+        let context_literal = Literal::string(feedback_context_label);
+        let context_expr = quote!(String::from(#context_literal));
+
         let mut names = NameGenerator::new();
         let mut field_statements = Vec::new();
         let mut field_inits = Vec::new();
@@ -447,15 +451,13 @@ impl RustGenerator {
                 original_name,
                 schema,
                 &schema_struct_name,
-                feedback_context_label,
+                &context_expr,
                 &mut names,
             );
             field_statements.append(&mut statements);
             let field_ident = &param.ident;
             field_inits.push(quote!(#field_ident: #value_ident));
         }
-
-        let context_literal = Literal::string(feedback_context_label);
 
         let helper_tokens = quote! {
             fn #helper_fn_ident(payload: &[u8]) -> crate::Result<#struct_ident> {
@@ -1010,8 +1012,6 @@ impl LanguageGenerator for RustGenerator {
         let service_ident = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
         let service_name_component = service_ident.to_string();
         let struct_prefix = to_camel_case(service_name_component.as_str());
-        let service_label = subscribed_service_label(service);
-        let response_context_label = format!("{service_label} response");
 
         let method_label = {
             let mut components = Vec::with_capacity(3);
@@ -1156,6 +1156,7 @@ impl LanguageGenerator for RustGenerator {
                 let mut response_statements = Vec::new();
                 let mut response_inits = Vec::new();
                 let mut name_gen = NameGenerator::new();
+                let context_expr = quote!(context.clone());
                 for (field_name, _) in &response_format.0 {
                     let (original_name, schema) = schema_lookup.get(field_name);
                     let (mut statements, value_ident) = generate_field_reader_statements(
@@ -1163,7 +1164,7 @@ impl LanguageGenerator for RustGenerator {
                         original_name.as_str(),
                         schema,
                         &response_struct_name,
-                        &response_context_label,
+                        &context_expr,
                         &mut name_gen,
                     );
                     response_statements.append(&mut statements);
@@ -1171,8 +1172,6 @@ impl LanguageGenerator for RustGenerator {
                         Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
                     response_inits.push(quote!(#field_ident: #value_ident));
                 }
-
-                let response_context_literal = Literal::string(&response_context_label);
 
                 let poll_tokens = quote! {
                     let response_message = #poll_call.await?;
@@ -1200,20 +1199,21 @@ impl LanguageGenerator for RustGenerator {
 
                 let deserialize_fn = quote! {
                     fn deserialize_response(payload: &[u8]) -> crate::Result<#response_data_ident> {
+                        let context = format!("{} {} response", NODE_NAME, SERVICE_NAME);
                         let mut cursor = std::io::Cursor::new(payload);
                         let message_reader = capnp::serialize::read_message(
                             &mut cursor,
                             capnp::message::ReaderOptions::new(),
                         )
                         .map_err(|source| crate::Error::CapnpDeserialize {
-                            context: String::from(#response_context_literal),
+                            context: context.clone(),
                             source,
                         })?;
 
                         let root = message_reader
                             .get_root::<#response_reader_type>()
                             .map_err(|source| crate::Error::CapnpDeserialize {
-                                context: String::from(#response_context_literal),
+                                context: context.clone(),
                                 source,
                             })?;
 
@@ -1492,27 +1492,6 @@ fn non_empty_str(value: &str) -> Option<&str> {
         None
     } else {
         Some(value)
-    }
-}
-
-fn subscribed_service_label(service: &SubscribedService) -> String {
-    let mut label = String::new();
-    let node = service.node.trim();
-    if !node.is_empty() {
-        label.push_str(node);
-    }
-    let name = service.name.trim();
-    if !name.is_empty() {
-        if !label.is_empty() {
-            label.push(' ');
-        }
-        label.push_str(name);
-    }
-
-    if label.is_empty() {
-        "service".to_string()
-    } else {
-        label
     }
 }
 
@@ -2431,6 +2410,9 @@ fn build_subscribed_topic_callback(
     let reader_type = &encoding.reader_type;
     let schema_lookup = SchemaFieldLookup::new(artifacts.message_format());
 
+    let context_literal = Literal::string(struct_prefix);
+    let context_expr = quote!(String::from(#context_literal));
+
     let mut names = NameGenerator::new();
     let mut field_statements = Vec::new();
     let mut field_inits = Vec::new();
@@ -2442,15 +2424,13 @@ fn build_subscribed_topic_callback(
             original_name.as_str(),
             schema,
             struct_prefix,
-            struct_prefix,
+            &context_expr,
             &mut names,
         );
         field_statements.append(&mut statements);
         let field_ident = &param.ident;
         field_inits.push(quote!(#field_ident: #value_ident));
     }
-
-    let context_literal = Literal::string(struct_prefix);
 
     quote! {
         pub async fn #fn_name(
@@ -2524,7 +2504,7 @@ fn generate_field_reader_statements(
     field_name: &str,
     schema: &SchemaType,
     struct_prefix: &str,
-    context_label: &str,
+    context_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
     generate_field_reader_statements_inner(
@@ -2532,7 +2512,7 @@ fn generate_field_reader_statements(
         field_name,
         schema,
         struct_prefix,
-        context_label,
+        context_expr,
         names,
         true,
     )
@@ -2543,7 +2523,7 @@ fn generate_field_reader_statements_inner(
     field_name: &str,
     schema: &SchemaType,
     struct_prefix: &str,
-    context_label: &str,
+    context_expr: &TokenStream,
     names: &mut NameGenerator,
     handle_optional: bool,
 ) -> (Vec<TokenStream>, Ident) {
@@ -2559,7 +2539,7 @@ fn generate_field_reader_statements_inner(
                 field_name,
                 schema,
                 struct_prefix,
-                context_label,
+                context_expr,
                 names,
                 false,
             );
@@ -2578,7 +2558,7 @@ fn generate_field_reader_statements_inner(
                 field_name,
                 schema,
                 struct_prefix,
-                context_label,
+                context_expr,
                 names,
                 false,
             );
@@ -2589,24 +2569,24 @@ fn generate_field_reader_statements_inner(
 
     match schema {
         SchemaType::Type(token) => {
-            generate_primitive_reader(reader_expr, field_name, token, context_label, names)
+            generate_primitive_reader(reader_expr, field_name, token, context_expr, names)
         }
         SchemaType::Primitive(primitive) => generate_primitive_reader(
             reader_expr,
             field_name,
             &primitive.kind,
-            context_label,
+            context_expr,
             names,
         ),
         SchemaType::Array(array) => {
-            generate_array_reader(reader_expr, field_name, array, context_label, names)
+            generate_array_reader(reader_expr, field_name, array, context_expr, names)
         }
         SchemaType::Object(object) => generate_object_reader(
             reader_expr,
             field_name,
             &object.fields,
             struct_prefix,
-            context_label,
+            context_expr,
             names,
         ),
     }
@@ -2630,7 +2610,7 @@ fn generate_primitive_reader(
     reader_expr: &TokenStream,
     field_name: &str,
     token: &TypeToken,
-    context_label: &str,
+    context_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
     let method_ident = Ident::new(
@@ -2639,7 +2619,6 @@ fn generate_primitive_reader(
     );
     let value_ident = names.next(field_name);
     let field_literal = Literal::string(field_name);
-    let context_literal = Literal::string(context_label);
 
     match token {
         TypeToken::Bool
@@ -2667,7 +2646,7 @@ fn generate_primitive_reader(
                         .#method_ident()
                         .map_err(|source| crate::Error::CapnpField {
                             field: String::from(#field_literal),
-                            context: String::from(#context_literal),
+                            context: #context_expr,
                             source,
                         })?;
                 },
@@ -2676,7 +2655,7 @@ fn generate_primitive_reader(
                         .to_str()
                         .map_err(|source| crate::Error::CapnpField {
                             field: String::from(#field_literal),
-                            context: String::from(#context_literal),
+                            context: #context_expr,
                             source: capnp::Error::failed(source.to_string()),
                         })?
                         .to_owned();
@@ -2693,7 +2672,7 @@ fn generate_primitive_reader(
                         .#method_ident()
                         .map_err(|source| crate::Error::CapnpField {
                             field: String::from(#field_literal),
-                            context: String::from(#context_literal),
+                            context: #context_expr,
                             source,
                         })?;
                 },
@@ -2717,7 +2696,7 @@ fn generate_primitive_reader(
                         .#method_ident()
                         .map_err(|source| crate::Error::CapnpField {
                             field: String::from(#field_literal),
-                            context: String::from(#context_literal),
+                            context: #context_expr,
                             source,
                         })?;
                 },
@@ -2738,7 +2717,7 @@ fn generate_array_reader(
     reader_expr: &TokenStream,
     field_name: &str,
     array: &ArraySchema,
-    context_label: &str,
+    context_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
     let method_ident = Ident::new(
@@ -2751,7 +2730,7 @@ fn generate_array_reader(
             field_name,
             &method_ident,
             array.length,
-            context_label,
+            context_expr,
             names,
         ),
         Some(token) => generate_primitive_array_reader(
@@ -2760,7 +2739,7 @@ fn generate_array_reader(
             token,
             &method_ident,
             array.length,
-            context_label,
+            context_expr,
             names,
         ),
         None => panic!("unsupported nested schema type in array `{field_name}`"),
@@ -2772,13 +2751,12 @@ fn generate_u8_array_reader(
     field_name: &str,
     method_ident: &Ident,
     length: Option<usize>,
-    context_label: &str,
+    context_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
     let reader_ident = names.next("data");
     let value_ident = names.next(field_name);
     let field_literal = Literal::string(field_name);
-    let context_literal = Literal::string(context_label);
 
     let mut statements = vec![quote! {
         let #reader_ident = #reader_expr
@@ -2786,7 +2764,7 @@ fn generate_u8_array_reader(
             .#method_ident()
             .map_err(|source| crate::Error::CapnpField {
                 field: String::from(#field_literal),
-                context: String::from(#context_literal),
+                context: #context_expr,
                 source,
             })?;
     }];
@@ -2834,13 +2812,12 @@ fn generate_primitive_array_reader(
     token: &TypeToken,
     method_ident: &Ident,
     length: Option<usize>,
-    context_label: &str,
+    context_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
     let reader_ident = names.next("list");
     let value_ident = names.next(field_name);
     let field_literal = Literal::string(field_name);
-    let context_literal = Literal::string(context_label);
 
     let element_ty = primitive_type_token(token);
 
@@ -2850,7 +2827,7 @@ fn generate_primitive_array_reader(
             .#method_ident()
             .map_err(|source| crate::Error::CapnpField {
                 field: String::from(#field_literal),
-                context: String::from(#context_literal),
+                context: #context_expr,
                 source,
             })?;
     }];
@@ -2892,7 +2869,7 @@ fn generate_object_reader(
     field_name: &str,
     object: &IndexMap<String, SchemaType>,
     struct_prefix: &str,
-    context_label: &str,
+    context_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
     let method_ident = Ident::new(
@@ -2901,14 +2878,13 @@ fn generate_object_reader(
     );
     let reader_ident = names.next("reader");
     let field_literal = Literal::string(field_name);
-    let context_literal = Literal::string(context_label);
     let mut statements = vec![quote! {
         let #reader_ident = #reader_expr
             .reborrow()
             .#method_ident()
             .map_err(|source| crate::Error::CapnpField {
                 field: String::from(#field_literal),
-                context: String::from(#context_literal),
+                context: #context_expr,
                 source,
             })?;
     }];
@@ -2923,7 +2899,7 @@ fn generate_object_reader(
             nested_name.as_str(),
             nested_schema,
             &nested_prefix,
-            &nested_prefix,
+            context_expr,
             names,
         );
         field_statements.append(&mut nested_statements);
@@ -3521,11 +3497,14 @@ fn build_request_deserializer(
     instance_id_param: Option<&FunctionParam>,
     use_service_name_const: bool,
 ) -> TokenStream {
-    let context_expr = if use_service_name_const {
-        quote!(SERVICE_NAME)
+    let (context_expr, field_context_expr) = if use_service_name_const {
+        (quote!(SERVICE_NAME), quote!(String::from(SERVICE_NAME)))
     } else {
         let context_literal = Literal::string(label);
-        quote!(#context_literal)
+        (
+            quote!(#context_literal),
+            quote!(String::from(#context_literal)),
+        )
     };
 
     if let Some(instance_param) = instance_id_param {
@@ -3564,7 +3543,7 @@ fn build_request_deserializer(
                 original_name.as_str(),
                 schema,
                 label,
-                label,
+                &field_context_expr,
                 &mut names,
             );
             field_statements.append(&mut statements);
@@ -3664,7 +3643,7 @@ fn build_request_deserializer(
                 original_name.as_str(),
                 schema,
                 label,
-                label,
+                &field_context_expr,
                 &mut names,
             );
             field_statements.append(&mut statements);

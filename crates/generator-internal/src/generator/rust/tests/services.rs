@@ -709,9 +709,14 @@ fn subscribed_to_service() {
         "expected response field reader for string"
     );
     assert_rendered!(
-        rendered.contains("context: String::from(\"uvc_camera enable_camera response\")"),
+        rendered.contains("let context = format!(\"{} {} response\", NODE_NAME, SERVICE_NAME)"),
         &rendered,
-        "expected response deserialization error context"
+        "expected context variable creation"
+    );
+    assert_rendered!(
+        rendered.contains("context: context.clone()"),
+        &rendered,
+        "expected response deserialization error context using context.clone()"
     );
     assert_rendered!(
         rendered.contains("Ok(ResponseData {"),
@@ -749,17 +754,17 @@ fn subscribed_to_two_services_same_node() {
         artifacts.len()
     );
     let enable_module_name = subscribed_service_module_name(&service1);
-    let enable_artifact = artifacts
+    let enable_rendered = &artifacts
         .iter()
         .find(|artifact| artifact.node_name.as_str() == enable_module_name.as_str())
-        .unwrap_or_else(|| panic!("expected {enable_module_name} artifact to be generated"));
+        .unwrap_or_else(|| panic!("expected {enable_module_name} artifact to be generated"))
+        .code_output;
     let camera_module_name = subscribed_service_module_name(&service2);
-    let camera_artifact = artifacts
+    let get_info_rendered = &artifacts
         .iter()
         .find(|artifact| artifact.node_name.as_str() == camera_module_name.as_str())
-        .unwrap_or_else(|| panic!("expected {camera_module_name} artifact to be generated"));
-    let enable_rendered = &enable_artifact.code_output;
-    let camera_rendered = &camera_artifact.code_output;
+        .unwrap_or_else(|| panic!("expected {camera_module_name} artifact to be generated"))
+        .code_output;
 
     // enable_camera service assertions
     assert_rendered!(
@@ -818,7 +823,8 @@ fn subscribed_to_two_services_same_node() {
         "expected bound_instance_id from runtime for `enable_camera`"
     );
     assert_rendered!(
-        enable_rendered.contains("fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>"),
+        enable_rendered
+            .contains("fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>"),
         enable_rendered,
         "expected deserialize_response function for `enable_camera`"
     );
@@ -828,9 +834,15 @@ fn subscribed_to_two_services_same_node() {
         "expected response deserialization for `enable_camera`"
     );
     assert_rendered!(
-        enable_rendered.contains("context: String::from(\"uvc_camera enable_camera response\")"),
+        enable_rendered
+            .contains("let context = format!(\"{} {} response\", NODE_NAME, SERVICE_NAME)"),
         enable_rendered,
-        "expected response context for `enable_camera`"
+        "expected context variable creation for `enable_camera`"
+    );
+    assert_rendered!(
+        enable_rendered.contains("context: context.clone()"),
+        enable_rendered,
+        "expected response context using context.clone() for `enable_camera`"
     );
     assert_rendered!(
         enable_rendered.contains("Ok(ResponseData {"),
@@ -840,73 +852,80 @@ fn subscribed_to_two_services_same_node() {
 
     // get_camera_info service assertions
     assert_rendered!(
-        camera_rendered.contains("const NODE_NAME: &str = \"uvc_camera\";"),
-        camera_rendered,
+        get_info_rendered.contains("const NODE_NAME: &str = \"uvc_camera\";"),
+        get_info_rendered,
         "expected NODE_NAME constant for `get_camera_info`"
     );
     assert_rendered!(
-        camera_rendered.contains("const SERVICE_NAME: &str = \"get_camera_info\";"),
-        camera_rendered,
+        get_info_rendered.contains("const SERVICE_NAME: &str = \"get_camera_info\";"),
+        get_info_rendered,
         "expected SERVICE_NAME constant for `get_camera_info`"
     );
     assert_rendered!(
-        camera_rendered.contains("pub struct ResponseData"),
-        camera_rendered,
+        get_info_rendered.contains("pub struct ResponseData"),
+        get_info_rendered,
         "expected ResponseData struct for `get_camera_info`"
     );
     assert_rendered!(
-        camera_rendered.contains("pub struct Response"),
-        camera_rendered,
+        get_info_rendered.contains("pub struct Response"),
+        get_info_rendered,
         "expected Response struct for `get_camera_info`"
     );
     assert_rendered!(
-        camera_rendered.contains("card_type: String"),
-        camera_rendered,
+        get_info_rendered.contains("card_type: String"),
+        get_info_rendered,
         "expected response field for `card_type`"
     );
     assert_rendered!(
-        camera_rendered.contains("interval: String"),
-        camera_rendered,
+        get_info_rendered.contains("interval: String"),
+        get_info_rendered,
         "expected response field for `interval`"
     );
     assert_rendered!(
-        camera_rendered.contains("size: String"),
-        camera_rendered,
+        get_info_rendered.contains("size: String"),
+        get_info_rendered,
         "expected response field for `size`"
     );
     assert_rendered!(
-        camera_rendered.contains("pub async fn poll("),
-        camera_rendered,
+        get_info_rendered.contains("pub async fn poll("),
+        get_info_rendered,
         "expected poll helper for `get_camera_info`"
     );
     assert_rendered!(
-        camera_rendered.contains("-> crate::Result<Response>"),
-        camera_rendered,
+        get_info_rendered.contains("-> crate::Result<Response>"),
+        get_info_rendered,
         "expected return type for `get_camera_info` poll helper"
     );
     assert_rendered!(
-        camera_rendered.contains("peppylib::ServiceMessenger::poll("),
-        camera_rendered,
+        get_info_rendered.contains("peppylib::ServiceMessenger::poll("),
+        get_info_rendered,
         "expected poll invocation for `get_camera_info`"
     );
     assert_rendered!(
-        camera_rendered.contains("fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>"),
-        camera_rendered,
+        get_info_rendered
+            .contains("fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>"),
+        get_info_rendered,
         "expected deserialize_response function for `get_camera_info`"
     );
     assert_rendered!(
-        camera_rendered.contains("capnp::serialize::read_message"),
-        camera_rendered,
+        get_info_rendered.contains("capnp::serialize::read_message"),
+        get_info_rendered,
         "expected response deserialization for `get_camera_info`"
     );
     assert_rendered!(
-        camera_rendered.contains("context: String::from(\"uvc_camera get_camera_info response\")"),
-        camera_rendered,
-        "expected response context for `get_camera_info`"
+        get_info_rendered
+            .contains("let context = format!(\"{} {} response\", NODE_NAME, SERVICE_NAME)"),
+        get_info_rendered,
+        "expected context variable creation for `get_camera_info`"
     );
     assert_rendered!(
-        camera_rendered.contains("Ok(ResponseData {"),
-        camera_rendered,
+        get_info_rendered.contains("context: context.clone()"),
+        get_info_rendered,
+        "expected response context using context.clone() for `get_camera_info`"
+    );
+    assert_rendered!(
+        get_info_rendered.contains("Ok(ResponseData {"),
+        get_info_rendered,
         "expected ResponseData construction for `get_camera_info` response"
     );
 }
@@ -1184,12 +1203,18 @@ fn compile_lib_with_exposed_and_subscribed_services() {
     );
     assert!(
         subscriber_module_contents
-            .contains("context: String::from(\"uvc_camera enable_camera response\")"),
-        "Enable_camera subscriber module should use response context, got:\n{}",
+            .contains("let context = format!(\"{} {} response\", NODE_NAME, SERVICE_NAME)"),
+        "Enable_camera subscriber module should define context variable, got:\n{}",
         subscriber_module_contents
     );
     assert!(
-        subscriber_module_contents.contains("fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>"),
+        subscriber_module_contents.contains("context: context.clone()"),
+        "Enable_camera subscriber module should use context.clone(), got:\n{}",
+        subscriber_module_contents
+    );
+    assert!(
+        subscriber_module_contents
+            .contains("fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>"),
         "Enable_camera subscriber module should define deserialize_response function, got:\n{}",
         subscriber_module_contents
     );
