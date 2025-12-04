@@ -58,28 +58,13 @@ impl RuntimeProcessor {
         runtime_parameters: &NodeParameters,
         compiled_node_parameters: &NodeParameters,
     ) -> Result<()> {
-        todo!("Check that the two parameter types match");
-        // For example the following `runtime_parameters`:
-        // {
-        //     exposure: 0.25,
-        //     flags: ["hdr", "stabilized"],
-        //     nested: { enabled: true, gain: 10 },
-        //     mode: "auto"
-        // }
-        // Will need to match the `compiled_node_parameters`:
-        // {
-        //     exposure: "f32",
-        //     flags: {
-        //       $type: "array",
-        //       $items: "string",
-        //     },
-        //     nested: {
-        //       $type: "object",
-        //       enabled: "bool",
-        //       gain: "f32"
-        //     },
-        //     mode: "string"
-        // }
+        for (key, runtime_value) in runtime_parameters {
+            let compiled_type = compiled_node_parameters
+                .get(key)
+                .ok_or_else(|| Error::MissingCompiledParameter { path: key.clone() })?;
+            runtime_value.matches_type_spec(compiled_type, key)?;
+        }
+        Ok(())
     }
 
     fn get_peppy_deployment_config(launch_config_path: &str) -> Result<RuntimeConfig> {
@@ -167,9 +152,30 @@ mod tests {
 
         let temp_dir = TempDir::new().expect("temp dir should be created");
 
-        // Create a peppy config file and compute its MD5
+        // Create a peppy config file with type specifications matching runtime parameters
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
-        std::fs::write(&peppy_config_path, "{}").expect("peppy config should be written");
+        let peppy_config_content = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "uvc_camera",
+                tag: "0.1.0"
+            },
+            parameters: {
+                exposure: "f32",
+                flags: {
+                    $type: "array",
+                    $items: "string"
+                },
+                nested: {
+                    $type: "object",
+                    enabled: "bool",
+                    gain: "i64"
+                },
+                mode: "string"
+            }
+        }"#;
+        std::fs::write(&peppy_config_path, peppy_config_content)
+            .expect("peppy config should be written");
         let codegen_md5 = RuntimeConfig::generate_peppy_config_md5(&peppy_config_path)
             .expect("peppy config md5 should be generated");
 

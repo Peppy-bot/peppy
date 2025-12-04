@@ -90,6 +90,12 @@ pub enum Error {
         expected: String,
         actual: String,
     },
+
+    #[error(transparent)]
+    ParameterTypeMismatch(#[from] config::TypeMismatch),
+
+    #[error("missing parameter `{path}` in compiled node parameters")]
+    MissingCompiledParameter { path: String },
 }
 
 struct InstanceSuffix<'a>(Option<&'a str>);
