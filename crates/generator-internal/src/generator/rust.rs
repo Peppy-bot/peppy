@@ -1011,7 +1011,6 @@ impl LanguageGenerator for RustGenerator {
         let service_name_component = service_ident.to_string();
         let struct_prefix = to_camel_case(service_name_component.as_str());
         let service_label = subscribed_service_label(service);
-        let request_context_label = format!("poll {service_label}");
         let response_context_label = format!("{service_label} response");
 
         let method_label = {
@@ -1028,14 +1027,14 @@ impl LanguageGenerator for RustGenerator {
         let method_ident = Ident::new("poll", Span::call_site());
 
         let mut context = GenerationContext::default();
-        let generic_response_ident = Ident::new("Response", Span::call_site());
+        let response_data_ident = Ident::new("ResponseData", Span::call_site());
 
         let params = collect_function_params(
             request_artifacts.as_ref(),
             response_artifacts.as_ref(),
             &struct_prefix,
             &mut context,
-            Some(&generic_response_ident),
+            Some(&response_data_ident),
         )?;
 
         let instance_id_param_index = params
@@ -1088,8 +1087,6 @@ impl LanguageGenerator for RustGenerator {
             &params,
         )?;
 
-        let request_context_literal = Literal::string(&request_context_label);
-
         let request_payload_tokens = if let Some(spec) = &request_encoding {
             let builder_type = &spec.builder_type;
             let assignments = &spec.assignments;
@@ -1110,7 +1107,7 @@ impl LanguageGenerator for RustGenerator {
                     let mut buffer = Vec::new();
                     capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
                         crate::Error::CapnpSerialize {
-                            context: String::from(#request_context_literal),
+                            context: format!("poll {} {}", NODE_NAME, SERVICE_NAME),
                             source,
                         }
                     })?;
@@ -1129,20 +1126,22 @@ impl LanguageGenerator for RustGenerator {
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 messenger.handle(),
-                messenger.master_node(),
-                instance_id.as_str(),
-                node_name,
-                service_name,
-                final_target_instance_id.as_deref(),
+                messenger.runtime().bound_master_node(),
+                messenger.runtime().bound_instance_id(),
+                NODE_NAME,
+                SERVICE_NAME,
+                target_master_node,
+                target_instance_id,
                 request_payload,
                 timeout,
             )
         };
 
-        let (return_ty, response_tokens, poll_tokens) =
+        let response_struct_ident = Ident::new("Response", Span::call_site());
+
+        let (return_ty, response_tokens, poll_tokens, deserialize_fn_tokens) =
             if let Some(response_artifacts) = response_artifacts.as_ref() {
                 let response_struct_name = format!("{struct_prefix}Response");
-                let response_struct_ident = generic_response_ident.clone();
 
                 let response_schema_key = format!("{method_label}_response");
                 let response_schema = self.register_schema(
@@ -1179,81 +1178,88 @@ impl LanguageGenerator for RustGenerator {
                     let response_message = #poll_call.await?;
                 };
 
+                let response_struct_tokens = quote! {
+                    #[derive(Debug, Clone)]
+                    pub struct #response_struct_ident {
+                        pub master_node: String,
+                        pub instance_id: String,
+                        pub data: #response_data_ident,
+                    }
+                };
+                context.add_private_struct(response_struct_tokens);
+
                 let response_tokens = quote! {
-                    let response_instance_id = response_message.instance_id().to_string();
+                    let payload = response_message.payload().as_bytes();
+                    let response_data = deserialize_response(&payload)?;
+                    Ok(#response_struct_ident {
+                        master_node: response_message.master_node().to_string(),
+                        instance_id: response_message.instance_id().to_string(),
+                        data: response_data,
+                    })
+                };
 
-                    let mut cursor = std::io::Cursor::new(response_message.payload().as_bytes());
-                    let message_reader = capnp::serialize::read_message(
-                        &mut cursor,
-                        capnp::message::ReaderOptions::new(),
-                    )
-                    .map_err(|source| crate::Error::CapnpDeserialize {
-                        context: String::from(#response_context_literal),
-                        source,
-                    })?;
-
-                    let root = message_reader
-                        .get_root::<#response_reader_type>()
+                let deserialize_fn = quote! {
+                    fn deserialize_response(payload: &[u8]) -> crate::Result<#response_data_ident> {
+                        let mut cursor = std::io::Cursor::new(payload);
+                        let message_reader = capnp::serialize::read_message(
+                            &mut cursor,
+                            capnp::message::ReaderOptions::new(),
+                        )
                         .map_err(|source| crate::Error::CapnpDeserialize {
                             context: String::from(#response_context_literal),
                             source,
                         })?;
 
-                    #( #response_statements )*
+                        let root = message_reader
+                            .get_root::<#response_reader_type>()
+                            .map_err(|source| crate::Error::CapnpDeserialize {
+                                context: String::from(#response_context_literal),
+                                source,
+                            })?;
 
-                    Ok((
-                        response_instance_id,
-                        #response_struct_ident {
+                        #( #response_statements )*
+
+                        Ok(#response_data_ident {
                             #( #response_inits ),*
-                        },
-                    ))
+                        })
+                    }
                 };
 
                 (
-                    quote!((String, #response_struct_ident)),
+                    quote!(#response_struct_ident),
                     response_tokens,
                     poll_tokens,
+                    Some(deserialize_fn),
                 )
             } else {
                 let poll_tokens = quote! {
                     let _ = #poll_call.await?;
                 };
-                (quote!(()), quote!(Ok(())), poll_tokens)
+                (quote!(()), quote!(Ok(())), poll_tokens, None)
             };
 
         let mut service_tokens = context.into_tokens();
         let service_name_literal = Literal::string(service.name.as_str());
         let node_name_literal = Literal::string(service.node.as_str());
 
+        // Add NODE_NAME and SERVICE_NAME constants at the beginning
+        let constants_tokens = quote! {
+            const NODE_NAME: &str = #node_name_literal;
+            const SERVICE_NAME: &str = #service_name_literal;
+        };
+
         let mut fn_param_tokens = vec![
             quote!(messenger: &crate::Messenger),
             quote!(timeout: std::time::Duration),
-            quote!(target_instance_id: Option<String>),
+            quote!(target_master_node: Option<&str>),
+            quote!(target_instance_id: Option<&str>),
         ];
         if !request_struct_params.is_empty() {
             fn_param_tokens.push(quote!(request: #request_struct_ident));
         }
 
         let function_token = quote! {
-            /// Ignores the target_instance_id argument if it has already been set by a deployment
             pub async fn #method_ident(#(#fn_param_tokens),*) -> crate::Result<#return_ty> {
-                let node_name = #node_name_literal;
-                let service_name = #service_name_literal;
-
-                let instance_id = std::env::var("PEPPY_INSTANCE_ID")
-                    .map_err(|source| {
-                        crate::Error::MissingInstanceIdEnvVar {
-                            var: "PEPPY_INSTANCE_ID",
-                            source,
-                        }
-                    })?;
-                let deployment_target_instance_id = std::env::var(format!(
-                    "PEPPY_{}_{}_TARGET_INSTANCE_ID", &node_name, &service_name
-                ))
-                .ok();
-                let final_target_instance_id =
-                    deployment_target_instance_id.or(target_instance_id);
-
                 #request_payload_tokens
 
                 #poll_tokens
@@ -1262,7 +1268,13 @@ impl LanguageGenerator for RustGenerator {
             }
         };
 
-        service_tokens.push(function_token);
+        // Insert constants at the beginning, then service tokens, then function, then deserialize helper
+        let mut all_tokens = vec![constants_tokens];
+        all_tokens.append(&mut service_tokens);
+        all_tokens.push(function_token);
+        if let Some(deserialize_fn) = deserialize_fn_tokens {
+            all_tokens.push(deserialize_fn);
+        }
 
         let mut module_name = subscribed_service_module_name(service);
         if module_name.is_empty() {
@@ -1274,7 +1286,7 @@ impl LanguageGenerator for RustGenerator {
         }
 
         let tokens: TokenStream = quote! {
-            #( #service_tokens )*
+            #( #all_tokens )*
         };
         let rendered = render_tokens(tokens);
 

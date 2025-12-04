@@ -496,31 +496,63 @@ fn subscribed_to_service() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
+    // Module-level constants
+    assert_rendered!(
+        rendered.contains("const NODE_NAME: &str = \"uvc_camera\";"),
+        &rendered,
+        "expected NODE_NAME constant at module level"
+    );
+    assert_rendered!(
+        rendered.contains("const SERVICE_NAME: &str = \"enable_camera\";"),
+        &rendered,
+        "expected SERVICE_NAME constant at module level"
+    );
+
+    // ResponseData struct for actual response fields
     assert_rendered!(
         rendered.contains("#[derive(Debug, Clone)]"),
         &rendered,
-        "expected response struct derives"
+        "expected response data struct derives"
     );
     assert_rendered!(
-        rendered.contains("pub struct Response"),
+        rendered.contains("pub struct ResponseData"),
         &rendered,
-        "expected generic response struct"
-    );
-    assert_rendered!(
-        rendered.contains("impl Response {"),
-        &rendered,
-        "expected response implementation block"
+        "expected ResponseData struct for actual response fields"
     );
     assert_rendered!(
         rendered.contains("enabled: bool"),
         &rendered,
-        "expected response bool field"
+        "expected response bool field in ResponseData"
     );
     assert_rendered!(
         rendered.contains("error_msg: Option<String>"),
         &rendered,
-        "expected response optional string field"
+        "expected response optional string field in ResponseData"
     );
+
+    // Response struct with master_node, instance_id, and data
+    assert_rendered!(
+        rendered.contains("pub struct Response"),
+        &rendered,
+        "expected Response struct with metadata"
+    );
+    assert_rendered!(
+        rendered.contains("pub master_node: String"),
+        &rendered,
+        "expected master_node field in Response struct"
+    );
+    assert_rendered!(
+        rendered.contains("pub instance_id: String"),
+        &rendered,
+        "expected instance_id field in Response struct"
+    );
+    assert_rendered!(
+        rendered.contains("pub data: ResponseData"),
+        &rendered,
+        "expected data field in Response struct"
+    );
+
+    // Request struct
     assert_rendered!(
         rendered.contains("pub struct Request"),
         &rendered,
@@ -536,6 +568,8 @@ fn subscribed_to_service() {
         &rendered,
         "expected request struct impl block"
     );
+
+    // Poll function signature
     assert_rendered!(
         rendered.contains("pub async fn poll("),
         &rendered,
@@ -552,7 +586,12 @@ fn subscribed_to_service() {
         "expected timeout parameter"
     );
     assert_rendered!(
-        rendered.contains("target_instance_id: Option<String>"),
+        rendered.contains("target_master_node: Option<&str>"),
+        &rendered,
+        "expected target_master_node parameter"
+    );
+    assert_rendered!(
+        rendered.contains("target_instance_id: Option<&str>"),
         &rendered,
         "expected target_instance_id parameter"
     );
@@ -562,42 +601,12 @@ fn subscribed_to_service() {
         "expected request parameter"
     );
     assert_rendered!(
-        rendered.contains("-> crate::Result<(String, Response)>"),
+        rendered.contains("-> crate::Result<Response>"),
         &rendered,
-        "expected poll helper to return instance id with response"
+        "expected poll helper to return Response"
     );
-    assert_rendered!(
-        rendered.contains(
-            "/// Ignores the target_instance_id argument if it has already been set by a deployment"
-        ),
-        &rendered,
-        "expected poll helper docstring describing target instance precedence"
-    );
-    assert_rendered!(
-        rendered.contains("let node_name = \"uvc_camera\";"),
-        &rendered,
-        "expected node name literal"
-    );
-    assert_rendered!(
-        rendered.contains("let service_name = \"enable_camera\";"),
-        &rendered,
-        "expected service name literal"
-    );
-    assert_rendered!(
-        rendered.contains("PEPPY_{}_{}_TARGET_INSTANCE_ID"),
-        &rendered,
-        "expected deployment target instance override environment variable"
-    );
-    assert_rendered!(
-        rendered.contains("let final_target_instance_id"),
-        &rendered,
-        "expected final target instance selection"
-    );
-    assert_rendered!(
-        rendered.contains("final_target_instance_id.as_deref()"),
-        &rendered,
-        "expected poll helper to forward target instance id to ServiceMessenger"
-    );
+
+    // Request serialization
     assert_rendered!(
         rendered.contains("capnp::message::Builder::new_default"),
         &rendered,
@@ -624,30 +633,65 @@ fn subscribed_to_service() {
         "expected request serialization using capnp"
     );
     assert_rendered!(
-        rendered.contains("context: String::from(\"poll uvc_camera enable_camera\")"),
+        rendered.contains("format!(\"poll {} {}\", NODE_NAME, SERVICE_NAME)"),
         &rendered,
-        "expected request serialization error context"
+        "expected request serialization error context using constants"
     );
-    assert_rendered!(
-        rendered.contains("let instance_id = std::env::var(\"PEPPY_INSTANCE_ID\")"),
-        &rendered,
-        "expected poll helper to resolve caller instance id from environment"
-    );
+
+    // ServiceMessenger::poll call
     assert_rendered!(
         rendered.contains("peppylib::ServiceMessenger::poll("),
         &rendered,
         "expected poll helper invocation"
     );
-
     assert_rendered!(
-        rendered.contains("let response_instance_id = response_message.instance_id().to_string();"),
+        rendered.contains("messenger.runtime().bound_master_node()"),
         &rendered,
-        "expected response instance id to be read from message context"
+        "expected bound_master_node from runtime"
     );
     assert_rendered!(
-        rendered.contains("response_message.payload().as_bytes()"),
+        rendered.contains("messenger.runtime().bound_instance_id()"),
         &rendered,
-        "expected response payload to be read from message context"
+        "expected bound_instance_id from runtime"
+    );
+    assert_rendered!(
+        rendered.contains("target_master_node,"),
+        &rendered,
+        "expected target_master_node forwarded to ServiceMessenger"
+    );
+    assert_rendered!(
+        rendered.contains("target_instance_id,"),
+        &rendered,
+        "expected target_instance_id forwarded to ServiceMessenger"
+    );
+
+    // Response handling
+    assert_rendered!(
+        rendered.contains("let payload = response_message.payload().as_bytes();"),
+        &rendered,
+        "expected response payload extraction"
+    );
+    assert_rendered!(
+        rendered.contains("let response_data = deserialize_response(&payload)?;"),
+        &rendered,
+        "expected call to deserialize_response with borrow"
+    );
+    assert_rendered!(
+        rendered.contains("response_message.master_node().to_string()"),
+        &rendered,
+        "expected master_node extraction from response message"
+    );
+    assert_rendered!(
+        rendered.contains("response_message.instance_id().to_string()"),
+        &rendered,
+        "expected instance_id extraction from response message"
+    );
+
+    // deserialize_response function
+    assert_rendered!(
+        rendered.contains("fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>"),
+        &rendered,
+        "expected deserialize_response function"
     );
     assert_rendered!(
         rendered.contains("capnp::serialize::read_message"),
@@ -670,9 +714,9 @@ fn subscribed_to_service() {
         "expected response deserialization error context"
     );
     assert_rendered!(
-        rendered.contains("Ok(("),
+        rendered.contains("Ok(ResponseData {"),
         &rendered,
-        "expected poll helper to return tuple containing instance id"
+        "expected ResponseData construction in deserialize_response"
     );
 }
 
@@ -717,10 +761,26 @@ fn subscribed_to_two_services_same_node() {
     let enable_rendered = &enable_artifact.code_output;
     let camera_rendered = &camera_artifact.code_output;
 
+    // enable_camera service assertions
+    assert_rendered!(
+        enable_rendered.contains("const NODE_NAME: &str = \"uvc_camera\";"),
+        enable_rendered,
+        "expected NODE_NAME constant for `enable_camera`"
+    );
+    assert_rendered!(
+        enable_rendered.contains("const SERVICE_NAME: &str = \"enable_camera\";"),
+        enable_rendered,
+        "expected SERVICE_NAME constant for `enable_camera`"
+    );
+    assert_rendered!(
+        enable_rendered.contains("pub struct ResponseData"),
+        enable_rendered,
+        "expected ResponseData struct for `enable_camera`"
+    );
     assert_rendered!(
         enable_rendered.contains("pub struct Response"),
         enable_rendered,
-        "expected response struct for `enable_camera`"
+        "expected Response struct for `enable_camera`"
     );
     assert_rendered!(
         enable_rendered.contains("pub async fn poll("),
@@ -733,7 +793,7 @@ fn subscribed_to_two_services_same_node() {
         "expected request parameter for `enable_camera`"
     );
     assert_rendered!(
-        enable_rendered.contains("-> crate::Result<(String, Response)>"),
+        enable_rendered.contains("-> crate::Result<Response>"),
         enable_rendered,
         "expected return type for `enable_camera` poll helper"
     );
@@ -748,15 +808,19 @@ fn subscribed_to_two_services_same_node() {
         "expected poll invocation for `enable_camera`"
     );
     assert_rendered!(
-        enable_rendered.contains("context: String::from(\"poll uvc_camera enable_camera\")"),
+        enable_rendered.contains("messenger.runtime().bound_master_node()"),
         enable_rendered,
-        "expected request context for `enable_camera`"
+        "expected bound_master_node from runtime for `enable_camera`"
     );
     assert_rendered!(
-        enable_rendered
-            .contains("let response_instance_id = response_message.instance_id().to_string();"),
+        enable_rendered.contains("messenger.runtime().bound_instance_id()"),
         enable_rendered,
-        "expected response instance id to be read from message context for `enable_camera`"
+        "expected bound_instance_id from runtime for `enable_camera`"
+    );
+    assert_rendered!(
+        enable_rendered.contains("fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>"),
+        enable_rendered,
+        "expected deserialize_response function for `enable_camera`"
     );
     assert_rendered!(
         enable_rendered.contains("capnp::serialize::read_message"),
@@ -769,15 +833,31 @@ fn subscribed_to_two_services_same_node() {
         "expected response context for `enable_camera`"
     );
     assert_rendered!(
-        enable_rendered.contains("Ok(("),
+        enable_rendered.contains("Ok(ResponseData {"),
         enable_rendered,
-        "expected tuple construction for `enable_camera` response"
+        "expected ResponseData construction for `enable_camera` response"
     );
 
+    // get_camera_info service assertions
+    assert_rendered!(
+        camera_rendered.contains("const NODE_NAME: &str = \"uvc_camera\";"),
+        camera_rendered,
+        "expected NODE_NAME constant for `get_camera_info`"
+    );
+    assert_rendered!(
+        camera_rendered.contains("const SERVICE_NAME: &str = \"get_camera_info\";"),
+        camera_rendered,
+        "expected SERVICE_NAME constant for `get_camera_info`"
+    );
+    assert_rendered!(
+        camera_rendered.contains("pub struct ResponseData"),
+        camera_rendered,
+        "expected ResponseData struct for `get_camera_info`"
+    );
     assert_rendered!(
         camera_rendered.contains("pub struct Response"),
         camera_rendered,
-        "expected response struct for `get_camera_info`"
+        "expected Response struct for `get_camera_info`"
     );
     assert_rendered!(
         camera_rendered.contains("card_type: String"),
@@ -800,7 +880,7 @@ fn subscribed_to_two_services_same_node() {
         "expected poll helper for `get_camera_info`"
     );
     assert_rendered!(
-        camera_rendered.contains("-> crate::Result<(String, Response)>"),
+        camera_rendered.contains("-> crate::Result<Response>"),
         camera_rendered,
         "expected return type for `get_camera_info` poll helper"
     );
@@ -808,6 +888,11 @@ fn subscribed_to_two_services_same_node() {
         camera_rendered.contains("peppylib::ServiceMessenger::poll("),
         camera_rendered,
         "expected poll invocation for `get_camera_info`"
+    );
+    assert_rendered!(
+        camera_rendered.contains("fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>"),
+        camera_rendered,
+        "expected deserialize_response function for `get_camera_info`"
     );
     assert_rendered!(
         camera_rendered.contains("capnp::serialize::read_message"),
@@ -820,9 +905,9 @@ fn subscribed_to_two_services_same_node() {
         "expected response context for `get_camera_info`"
     );
     assert_rendered!(
-        camera_rendered.contains("Ok(("),
+        camera_rendered.contains("Ok(ResponseData {"),
         camera_rendered,
-        "expected tuple construction for `get_camera_info` response"
+        "expected ResponseData construction for `get_camera_info` response"
     );
 }
 
@@ -1033,8 +1118,38 @@ fn compile_lib_with_exposed_and_subscribed_services() {
     let subscriber_module_contents = std::fs::read_to_string(&subscriber_module_impl_path)
         .expect("failed to read enable_camera subscriber module");
     assert!(
+        subscriber_module_contents.contains("const NODE_NAME: &str = \"uvc_camera\";"),
+        "Enable_camera subscriber module should define NODE_NAME constant, got:\n{}",
+        subscriber_module_contents
+    );
+    assert!(
+        subscriber_module_contents.contains("const SERVICE_NAME: &str = \"enable_camera\";"),
+        "Enable_camera subscriber module should define SERVICE_NAME constant, got:\n{}",
+        subscriber_module_contents
+    );
+    assert!(
+        subscriber_module_contents.contains("pub struct ResponseData"),
+        "Enable_camera subscriber module should define ResponseData struct, got:\n{}",
+        subscriber_module_contents
+    );
+    assert!(
         subscriber_module_contents.contains("pub struct Response"),
-        "Enable_camera subscriber module should define generic Response struct, got:\n{}",
+        "Enable_camera subscriber module should define Response struct, got:\n{}",
+        subscriber_module_contents
+    );
+    assert!(
+        subscriber_module_contents.contains("pub master_node: String"),
+        "Enable_camera subscriber module Response should have master_node field, got:\n{}",
+        subscriber_module_contents
+    );
+    assert!(
+        subscriber_module_contents.contains("pub instance_id: String"),
+        "Enable_camera subscriber module Response should have instance_id field, got:\n{}",
+        subscriber_module_contents
+    );
+    assert!(
+        subscriber_module_contents.contains("pub data: ResponseData"),
+        "Enable_camera subscriber module Response should have data field, got:\n{}",
         subscriber_module_contents
     );
     assert!(
@@ -1043,35 +1158,49 @@ fn compile_lib_with_exposed_and_subscribed_services() {
         subscriber_module_contents
     );
     assert!(
+        subscriber_module_contents.contains("target_master_node: Option<&str>"),
+        "Enable_camera subscriber module poll should have target_master_node parameter, got:\n{}",
         subscriber_module_contents
-            .contains("context: String::from(\"poll uvc_camera enable_camera\")"),
-        "Enable_camera subscriber module should use simplified request context, got:\n{}",
+    );
+    assert!(
+        subscriber_module_contents.contains("target_instance_id: Option<&str>"),
+        "Enable_camera subscriber module poll should have target_instance_id parameter, got:\n{}",
+        subscriber_module_contents
+    );
+    assert!(
+        subscriber_module_contents.contains("-> crate::Result<Response>"),
+        "Enable_camera subscriber module poll should return Response, got:\n{}",
+        subscriber_module_contents
+    );
+    assert!(
+        subscriber_module_contents.contains("messenger.runtime().bound_master_node()"),
+        "Enable_camera subscriber module should use runtime bound_master_node, got:\n{}",
+        subscriber_module_contents
+    );
+    assert!(
+        subscriber_module_contents.contains("messenger.runtime().bound_instance_id()"),
+        "Enable_camera subscriber module should use runtime bound_instance_id, got:\n{}",
         subscriber_module_contents
     );
     assert!(
         subscriber_module_contents
             .contains("context: String::from(\"uvc_camera enable_camera response\")"),
-        "Enable_camera subscriber module should use simplified response context, got:\n{}",
+        "Enable_camera subscriber module should use response context, got:\n{}",
         subscriber_module_contents
     );
     assert!(
-        subscriber_module_contents.contains("PEPPY_{}_{}_TARGET_INSTANCE_ID"),
-        "Enable_camera subscriber module should allow deployment target overrides, got:\n{}",
+        subscriber_module_contents.contains("fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>"),
+        "Enable_camera subscriber module should define deserialize_response function, got:\n{}",
         subscriber_module_contents
     );
     assert!(
-        subscriber_module_contents.contains("let final_target_instance_id"),
-        "Enable_camera subscriber module should resolve final target instance id, got:\n{}",
-        subscriber_module_contents
-    );
-    assert!(
-        subscriber_module_contents.contains("final_target_instance_id.as_deref()"),
-        "Enable_camera subscriber module should forward target instance id to ServiceMessenger, got:\n{}",
+        subscriber_module_contents.contains("response_message.master_node()"),
+        "Enable_camera subscriber module should read master_node from response message, got:\n{}",
         subscriber_module_contents
     );
     assert!(
         subscriber_module_contents.contains("response_message.instance_id()"),
-        "Enable_camera subscriber module should read service instance id from message context, got:\n{}",
+        "Enable_camera subscriber module should read instance_id from response message, got:\n{}",
         subscriber_module_contents
     );
 
@@ -1151,14 +1280,8 @@ fn compile_lib_with_exposed_and_subscribed_services() {
         enable_module_contents
     );
     assert!(
-        enable_module_contents
-            .contains("let service_instance_id = std::env::var(\"PEPPY_INSTANCE_ID\")"),
-        "Expected handler to resolve service instance id from environment, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains("crate::Error::MissingInstanceIdEnvVar"),
-        "Expected handler to propagate missing instance id errors, got:\n{}",
+        enable_module_contents.contains("messenger.runtime().bound_instance_id()"),
+        "Expected handler to resolve service instance id from runtime, got:\n{}",
         enable_module_contents
     );
     assert!(
