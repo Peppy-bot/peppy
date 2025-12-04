@@ -10,6 +10,7 @@ readme = "Readme.md"
 [dependencies]
 pmi = { path = "../pmi-internal" }
 config = { path = "../config-internal" }
+node-stack = { path = "../node-stack-internal" }
 thiserror = "2.0"                                   # Avoid Anyhow in this crate
 tokio = { version = "1.47.0", features = ["full"] }
 tracing = "0.1.41"

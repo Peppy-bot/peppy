@@ -2218,6 +2218,7 @@ dependencies = [
  "bytes",
  "config",
  "md5",
+ "node-stack",
  "pmi",
  "rand 0.9.2",
  "regex",
