@@ -385,9 +385,11 @@ impl ActionGoalHandle {
     }
 
     /// Receives the next feedback message.
-    /// Returns `None` if the channel is closed.
-    pub async fn on_next_feedback(&mut self) -> Option<TopicMessage> {
-        self.feedback.on_next_message().await
+    pub async fn on_next_feedback(&mut self) -> Result<TopicMessage> {
+        self.feedback
+            .on_next_message()
+            .await
+            .ok_or(Error::ActionFeedbackChannelClosed)
     }
 }
 

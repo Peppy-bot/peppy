@@ -27,10 +27,18 @@ async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
 }
 
 async fn receive_feedback(handle: &mut ActionGoalHandle, goal_label: &str) {
-    let feedback_result = timeout(FEEDBACK_TIMEOUT, handle.on_next_feedback()).await;
+    let Ok(feedback_result) = timeout(FEEDBACK_TIMEOUT, handle.on_next_feedback()).await else {
+        println!(
+            "{}",
+            format!("[FEEDBACK] Timed out waiting for feedback for `{goal_label}`")
+                .bold()
+                .yellow()
+        );
+        return;
+    };
 
     match feedback_result {
-        Ok(Some(message)) => {
+        Ok(message) => {
             let feedback_bytes = message.payload().as_bytes();
             let feedback_text = String::from_utf8_lossy(feedback_bytes.as_ref());
             let master_node = message.master_node();
@@ -42,18 +50,10 @@ async fn receive_feedback(handle: &mut ActionGoalHandle, goal_label: &str) {
                     .yellow()
             );
         }
-        Ok(None) => {
-            println!(
-                "{}",
-                format!("[FEEDBACK] Feedback channel closed early for `{goal_label}`")
-                    .bold()
-                    .yellow()
-            );
-        }
         Err(_) => {
             println!(
                 "{}",
-                format!("[FEEDBACK] Timed out waiting for feedback for `{goal_label}`")
+                format!("[FEEDBACK] Feedback channel closed early for `{goal_label}`")
                     .bold()
                     .yellow()
             );

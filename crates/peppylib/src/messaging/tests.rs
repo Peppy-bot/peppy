@@ -2149,19 +2149,20 @@ async fn action_communication_goal_cancelled() {
     assert_eq!(cancel_response.instance_id(), LISTENER_INSTANCE_ID);
 
     // Check that no feedback is received after cancellation
-    let post_cancel_feedback = tokio::time::timeout(
+    if let Ok(feedback_result) = tokio::time::timeout(
         Duration::from_millis(200),
         goal_handle.on_next_feedback(),
     )
-    .await;
-
-    if let Ok(Some(message)) = post_cancel_feedback {
-        panic!(
-            "expected no feedback after cancellation, received from master_node '{}' instance_id '{}' with payload {:?}",
-            message.master_node(),
-            message.instance_id(),
-            message.payload()
-        );
+    .await
+    {
+        if let Ok(message) = feedback_result {
+            panic!(
+                "expected no feedback after cancellation, received from master_node '{}' instance_id '{}' with payload {:?}",
+                message.master_node(),
+                message.instance_id(),
+                message.payload()
+            );
+        }
     }
 
     server_task
