@@ -28,6 +28,9 @@ pub enum Error {
     #[error("service request stream closed unexpectedly")]
     ServiceRequestStreamClosed,
 
+    #[error("action feedback channel closed unexpectedly")]
+    ActionFeedbackChannelClosed,
+
     // -- topics/services/actions errors
     #[error(
         "service '{service_name}'{instance_suffix} is unreachable",
