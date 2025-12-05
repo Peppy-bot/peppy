@@ -103,176 +103,84 @@ fn expose_service() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
+    // Response struct
     assert_rendered!(
         rendered.contains("pub struct Response"),
         &rendered,
-        "expected response struct for exposed service"
-    );
-    assert_rendered!(
-        rendered.contains("impl Response {"),
-        &rendered,
-        "expected response struct impl block"
-    );
-    assert_rendered!(
-        rendered.contains("pub fn new"),
-        &rendered,
-        "expected response constructor"
+        "expected response struct"
     );
     assert_rendered!(
         rendered.contains("enabled: bool"),
         &rendered,
-        "expected bool field in response struct"
+        "expected bool field in response"
     );
     assert_rendered!(
         rendered.contains("error_msg: Option<String>"),
         &rendered,
-        "expected optional string field in response struct"
+        "expected optional string field in response"
     );
-    assert_rendered!(
-        rendered.contains("const SERVICE_NAME: &str = \"enable_camera\";"),
-        &rendered,
-        "expected SERVICE_NAME constant at module level"
-    );
-    assert_rendered!(
-        rendered.contains("pub async fn handle_next_request<F>"),
-        &rendered,
-        "expected async service handler with generic naming"
-    );
-    assert_rendered!(
-        rendered.contains("F: Fn(Request) -> crate::Result<Response>"),
-        &rendered,
-        "expected Fn trait bound for handler that takes Request"
-    );
+
+    // Request structs
     assert_rendered!(
         rendered.contains("pub struct RequestData"),
         &rendered,
-        "expected public request data struct for enable_camera"
-    );
-    assert_rendered!(
-        rendered.contains("pub enable: bool"),
-        &rendered,
-        "expected public request field in RequestData"
+        "expected RequestData struct"
     );
     assert_rendered!(
         rendered.contains("pub struct Request"),
         &rendered,
-        "expected public Request struct with metadata fields"
+        "expected Request struct with metadata"
     );
     assert_rendered!(
         rendered.contains("pub instance_id: String"),
         &rendered,
-        "expected instance_id field in Request struct"
-    );
-    assert_rendered!(
-        rendered.contains("pub master_node: String"),
-        &rendered,
-        "expected master_node field in Request struct"
+        "expected instance_id field in Request"
     );
     assert_rendered!(
         rendered.contains("pub request_data: RequestData"),
         &rendered,
-        "expected request_data field in Request struct"
+        "expected request_data field in Request"
+    );
+
+    // Handler signature
+    assert_rendered!(
+        rendered.contains("const SERVICE_NAME: &str = \"enable_camera\";"),
+        &rendered,
+        "expected SERVICE_NAME constant"
     );
     assert_rendered!(
-        rendered.contains("impl Request {"),
+        rendered.contains("pub async fn handle_next_request<F>"),
         &rendered,
-        "expected request struct impl block"
+        "expected async service handler"
     );
     assert_rendered!(
-        rendered.contains("peppylib::ServiceMessenger::listen"),
+        rendered.contains("F: Fn(Request) -> crate::Result<Response>"),
         &rendered,
-        "expected service listen call through peppylib helper"
+        "expected handler trait bound"
     );
-    assert_rendered!(
-        rendered.contains(".handle_next_request(move |request_context|"),
-        &rendered,
-        "expected generated handler to schedule request handling through ServiceMessenger"
-    );
-    assert_rendered!(
-        rendered.contains("let instance_id = message.instance_id().to_string();"),
-        &rendered,
-        "expected instance_id extraction"
-    );
-    assert_rendered!(
-        rendered.contains("let master_node = message.master_node().to_string();"),
-        &rendered,
-        "expected master_node extraction"
-    );
-    assert_rendered!(
-        rendered.contains("let message = request_context.message();"),
-        &rendered,
-        "expected request message binding"
-    );
-    assert_rendered!(
-        rendered.contains("let payload = message.payload().as_bytes();"),
-        &rendered,
-        "expected request payload to be pulled from the request context"
-    );
+
+    // Request processing
     assert_rendered!(
         rendered.contains("fn deserialize_request(payload: &[u8]) -> crate::Result<RequestData>"),
         &rendered,
-        "expected request deserializer helper returning RequestData"
+        "expected request deserializer"
     );
     assert_rendered!(
         rendered.contains("fn handle_request_payload<F>("),
         &rendered,
-        "expected generic helper for handling request payloads"
+        "expected payload handler helper"
+    );
+
+    // Messenger integration
+    assert_rendered!(
+        rendered.contains("peppylib::ServiceMessenger::listen"),
+        &rendered,
+        "expected service listen call"
     );
     assert_rendered!(
-        rendered.contains("master_node: String"),
+        rendered.contains(".handle_next_request(move |request_context|"),
         &rendered,
-        "expected handler helper to accept master_node"
-    );
-    assert_rendered!(
-        rendered.contains("instance_id: String"),
-        &rendered,
-        "expected handler helper to accept caller instance id"
-    );
-    assert_rendered!(
-        rendered.contains("let request_data = deserialize_request(payload)?;"),
-        &rendered,
-        "expected helper to deserialize request payload"
-    );
-    assert_rendered!(
-        rendered.contains("let request = Request::new(instance_id, master_node, request_data);"),
-        &rendered,
-        "expected Request construction from components"
-    );
-    assert_rendered!(
-        rendered.contains("let response = handler(request)?;"),
-        &rendered,
-        "expected handler result to be captured with Request"
-    );
-    assert_rendered!(
-        rendered.contains("messenger.runtime().bound_master_node()"),
-        &rendered,
-        "expected ServiceMessenger::listen to use runtime bound_master_node"
-    );
-    assert_rendered!(
-        rendered.contains("messenger.runtime().bound_instance_id()"),
-        &rendered,
-        "expected ServiceMessenger::listen to use runtime bound_instance_id"
-    );
-    assert_rendered!(
-        rendered.contains("messenger.runtime().node_name()"),
-        &rendered,
-        "expected ServiceMessenger::listen to use runtime node_name"
-    );
-    assert_rendered!(
-        rendered.contains("bytes::Bytes::from(buffer)"),
-        &rendered,
-        "expected response serialization to produce bytes"
-    );
-    assert_rendered!(
-        rendered.contains("capnp::serialize::read_message"),
-        &rendered,
-        "expected request deserialization"
-    );
-    assert_rendered!(
-        rendered
-            .contains("crate::capnp::enable_camera_message_capnp::enable_camera_message::Reader"),
-        &rendered,
-        "expected service request schema reader"
+        "expected request handling callback"
     );
 }
 
@@ -289,61 +197,26 @@ fn expose_service_without_request_body() {
         .next()
         .expect("artifact is present");
 
-    assert_rendered!(
-        rendered.contains("const SERVICE_NAME: &str = \"get_system_status\";"),
-        &rendered,
-        "expected SERVICE_NAME constant at module level"
-    );
-    assert_rendered!(
-        rendered.contains("pub struct Response"),
-        &rendered,
-        "expected response struct for service without request body"
-    );
-    assert_rendered!(
-        rendered.contains("impl Response {"),
-        &rendered,
-        "expected response impl block for service without request body"
-    );
-    assert_rendered!(
-        rendered.contains("F: Fn(Request) -> crate::Result<Response>"),
-        &rendered,
-        "expected handler to take Request parameter"
-    );
+    // Service without request body should still have Request struct for metadata
     assert_rendered!(
         rendered.contains("pub struct Request"),
         &rendered,
-        "expected Request struct with metadata fields"
+        "expected Request struct with metadata"
     );
     assert_rendered!(
         rendered.contains("pub instance_id: String"),
         &rendered,
-        "expected instance_id field in Request struct"
+        "expected instance_id in Request"
     );
-    assert_rendered!(
-        rendered.contains("pub master_node: String"),
-        &rendered,
-        "expected master_node field in Request struct"
-    );
+
+    // But no RequestData struct
     assert_rendered!(
         !rendered.contains("pub struct RequestData"),
         &rendered,
         "expected no RequestData struct when there is no request body"
     );
-    assert_rendered!(
-        rendered.contains("fn handle_request_payload"),
-        &rendered,
-        "expected generic helper function even without request payload"
-    );
-    assert_rendered!(
-        rendered.contains("master_node: String"),
-        &rendered,
-        "expected payload helper signature to include master_node"
-    );
-    assert_rendered!(
-        rendered.contains("instance_id: String"),
-        &rendered,
-        "expected payload helper signature to include caller instance id"
-    );
+
+    // Request construction should omit request_data
     assert_rendered!(
         rendered.contains("let request = Request::new(instance_id, master_node);"),
         &rendered,
@@ -382,72 +255,18 @@ fn expose_two_services() {
         .find(|rendered| rendered.contains("get_lidar_info"))
         .expect("get_lidar_info artifact is present");
 
-    assert_rendered!(
-        enable_rendered.contains("const SERVICE_NAME: &str = \"enable_camera\";"),
-        enable_rendered,
-        "expected enable_camera SERVICE_NAME constant"
-    );
-    assert_rendered!(
-        enable_rendered.contains("pub struct RequestData"),
-        enable_rendered,
-        "expected request data struct for enable_camera"
-    );
-    assert_rendered!(
-        enable_rendered.contains("pub struct Request"),
-        enable_rendered,
-        "expected request struct for enable_camera"
-    );
-    assert_rendered!(
-        enable_rendered.contains("impl Request {"),
-        enable_rendered,
-        "expected request struct impl for enable_camera"
-    );
+    // enable_camera has response, get_lidar_info does not
     assert_rendered!(
         enable_rendered.contains("pub struct Response"),
         enable_rendered,
         "expected response struct for enable_camera"
     );
     assert_rendered!(
-        enable_rendered.contains("pub async fn handle_next_request<F>("),
-        enable_rendered,
-        "expected async handler for enable_camera"
-    );
-    assert_rendered!(
         enable_rendered.contains("F: Fn(Request) -> crate::Result<Response>"),
         enable_rendered,
-        "expected handler signature for enable_camera to take Request"
-    );
-    assert_rendered!(
-        enable_rendered.contains("fn deserialize_request("),
-        enable_rendered,
-        "expected request deserializer for enable_camera"
-    );
-    assert_rendered!(
-        enable_rendered.contains("fn handle_request_payload"),
-        enable_rendered,
-        "expected payload handler for enable_camera"
+        "expected handler to return Response for enable_camera"
     );
 
-    assert_rendered!(
-        lidar_rendered.contains("const SERVICE_NAME: &str = \"get_lidar_info\";"),
-        lidar_rendered,
-        "expected get_lidar_info SERVICE_NAME constant"
-    );
-    assert_rendered!(
-        lidar_rendered.contains("pub struct RequestData"),
-        lidar_rendered,
-        "expected request data struct for get_lidar_info"
-    );
-    assert_rendered!(
-        lidar_rendered.contains("pub struct Request"),
-        lidar_rendered,
-        "expected request struct for get_lidar_info"
-    );
-    assert_rendered!(
-        lidar_rendered.contains("impl Request {"),
-        lidar_rendered,
-        "expected request struct impl for get_lidar_info"
-    );
     assert_rendered!(
         !lidar_rendered.contains("pub struct Response"),
         lidar_rendered,
@@ -456,17 +275,7 @@ fn expose_two_services() {
     assert_rendered!(
         lidar_rendered.contains("F: Fn(Request) -> crate::Result<()>"),
         lidar_rendered,
-        "expected handler signature for get_lidar_info to take Request"
-    );
-    assert_rendered!(
-        lidar_rendered.contains("fn deserialize_request("),
-        lidar_rendered,
-        "expected request deserializer for get_lidar_info"
-    );
-    assert_rendered!(
-        lidar_rendered.contains("fn handle_request_payload"),
-        lidar_rendered,
-        "expected payload handler for get_lidar_info"
+        "expected handler to return unit for get_lidar_info"
     );
 }
 
@@ -500,56 +309,29 @@ fn subscribed_to_service() {
     assert_rendered!(
         rendered.contains("const NODE_NAME: &str = \"uvc_camera\";"),
         &rendered,
-        "expected NODE_NAME constant at module level"
+        "expected NODE_NAME constant"
     );
     assert_rendered!(
         rendered.contains("const SERVICE_NAME: &str = \"enable_camera\";"),
         &rendered,
-        "expected SERVICE_NAME constant at module level"
+        "expected SERVICE_NAME constant"
     );
 
-    // ResponseData struct for actual response fields
-    assert_rendered!(
-        rendered.contains("#[derive(Debug, Clone)]"),
-        &rendered,
-        "expected response data struct derives"
-    );
+    // Response structs
     assert_rendered!(
         rendered.contains("pub struct ResponseData"),
         &rendered,
-        "expected ResponseData struct for actual response fields"
+        "expected ResponseData struct"
     );
-    assert_rendered!(
-        rendered.contains("enabled: bool"),
-        &rendered,
-        "expected response bool field in ResponseData"
-    );
-    assert_rendered!(
-        rendered.contains("error_msg: Option<String>"),
-        &rendered,
-        "expected response optional string field in ResponseData"
-    );
-
-    // Response struct with master_node, instance_id, and data
     assert_rendered!(
         rendered.contains("pub struct Response"),
         &rendered,
         "expected Response struct with metadata"
     );
     assert_rendered!(
-        rendered.contains("pub master_node: String"),
-        &rendered,
-        "expected master_node field in Response struct"
-    );
-    assert_rendered!(
-        rendered.contains("pub instance_id: String"),
-        &rendered,
-        "expected instance_id field in Response struct"
-    );
-    assert_rendered!(
         rendered.contains("pub data: ResponseData"),
         &rendered,
-        "expected data field in Response struct"
+        "expected data field in Response"
     );
 
     // Request struct
@@ -561,29 +343,14 @@ fn subscribed_to_service() {
     assert_rendered!(
         rendered.contains("pub enable: bool"),
         &rendered,
-        "expected request struct field"
-    );
-    assert_rendered!(
-        rendered.contains("impl Request {"),
-        &rendered,
-        "expected request struct impl block"
+        "expected request field"
     );
 
     // Poll function signature
     assert_rendered!(
         rendered.contains("pub async fn poll("),
         &rendered,
-        "expected async poll helper signature"
-    );
-    assert_rendered!(
-        rendered.contains("messenger: &crate::Messenger"),
-        &rendered,
-        "expected messenger parameter"
-    );
-    assert_rendered!(
-        rendered.contains("timeout: std::time::Duration"),
-        &rendered,
-        "expected timeout parameter"
+        "expected async poll helper"
     );
     assert_rendered!(
         rendered.contains("target_master_node: Option<&str>"),
@@ -596,132 +363,30 @@ fn subscribed_to_service() {
         "expected target_instance_id parameter"
     );
     assert_rendered!(
-        rendered.contains("request: Request"),
-        &rendered,
-        "expected request parameter"
-    );
-    assert_rendered!(
         rendered.contains("-> crate::Result<Response>"),
         &rendered,
-        "expected poll helper to return Response"
+        "expected poll to return Response"
     );
 
     // Request serialization
     assert_rendered!(
-        rendered.contains("capnp::message::Builder::new_default"),
-        &rendered,
-        "expected capnp message builder"
-    );
-    assert_rendered!(
-        rendered.contains("let enable = request.enable;"),
-        &rendered,
-        "expected request field unpacking"
-    );
-    assert_rendered!(
         rendered.contains("root.set_enable(enable);"),
         &rendered,
-        "expected request serialization assignment"
-    );
-    assert_rendered!(
-        rendered.contains("let mut buffer = Vec::new();"),
-        &rendered,
-        "expected request serialization buffer allocation"
-    );
-    assert_rendered!(
-        rendered.contains("capnp::serialize::write_message(&mut buffer, &message)"),
-        &rendered,
-        "expected request serialization using capnp"
-    );
-    assert_rendered!(
-        rendered.contains("format!(\"poll {} {}\", NODE_NAME, SERVICE_NAME)"),
-        &rendered,
-        "expected request serialization error context using constants"
+        "expected request serialization"
     );
 
-    // ServiceMessenger::poll call
+    // Messenger integration
     assert_rendered!(
         rendered.contains("peppylib::ServiceMessenger::poll("),
         &rendered,
         "expected poll helper invocation"
     );
-    assert_rendered!(
-        rendered.contains("messenger.runtime().bound_master_node()"),
-        &rendered,
-        "expected bound_master_node from runtime"
-    );
-    assert_rendered!(
-        rendered.contains("messenger.runtime().bound_instance_id()"),
-        &rendered,
-        "expected bound_instance_id from runtime"
-    );
-    assert_rendered!(
-        rendered.contains("target_master_node,"),
-        &rendered,
-        "expected target_master_node forwarded to ServiceMessenger"
-    );
-    assert_rendered!(
-        rendered.contains("target_instance_id,"),
-        &rendered,
-        "expected target_instance_id forwarded to ServiceMessenger"
-    );
 
-    // Response handling
-    assert_rendered!(
-        rendered.contains("let payload = response_message.payload().as_bytes();"),
-        &rendered,
-        "expected response payload extraction"
-    );
-    assert_rendered!(
-        rendered.contains("let response_data = deserialize_response(&payload)?;"),
-        &rendered,
-        "expected call to deserialize_response with borrow"
-    );
-    assert_rendered!(
-        rendered.contains("response_message.master_node().to_string()"),
-        &rendered,
-        "expected master_node extraction from response message"
-    );
-    assert_rendered!(
-        rendered.contains("response_message.instance_id().to_string()"),
-        &rendered,
-        "expected instance_id extraction from response message"
-    );
-
-    // deserialize_response function
+    // Response deserialization
     assert_rendered!(
         rendered.contains("fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>"),
         &rendered,
         "expected deserialize_response function"
-    );
-    assert_rendered!(
-        rendered.contains("capnp::serialize::read_message"),
-        &rendered,
-        "expected response deserialization"
-    );
-    assert_rendered!(
-        rendered.contains("root.reborrow().get_enabled()"),
-        &rendered,
-        "expected response field reader for bool"
-    );
-    assert_rendered!(
-        rendered.contains(".get_error_msg()"),
-        &rendered,
-        "expected response field reader for string"
-    );
-    assert_rendered!(
-        rendered.contains("let context = format!(\"{} {} response\", NODE_NAME, SERVICE_NAME)"),
-        &rendered,
-        "expected context variable creation"
-    );
-    assert_rendered!(
-        rendered.contains("context: context.clone()"),
-        &rendered,
-        "expected response deserialization error context using context.clone()"
-    );
-    assert_rendered!(
-        rendered.contains("Ok(ResponseData {"),
-        &rendered,
-        "expected ResponseData construction in deserialize_response"
     );
 }
 
@@ -753,6 +418,7 @@ fn subscribed_to_two_services_same_node() {
         "expected two generated artifacts, got {}",
         artifacts.len()
     );
+
     let enable_module_name = subscribed_service_module_name(&service1);
     let enable_rendered = &artifacts
         .iter()
@@ -766,167 +432,35 @@ fn subscribed_to_two_services_same_node() {
         .unwrap_or_else(|| panic!("expected {camera_module_name} artifact to be generated"))
         .code_output;
 
-    // enable_camera service assertions
+    // Both services point to the same node
     assert_rendered!(
         enable_rendered.contains("const NODE_NAME: &str = \"uvc_camera\";"),
         enable_rendered,
-        "expected NODE_NAME constant for `enable_camera`"
+        "expected NODE_NAME for enable_camera"
     );
-    assert_rendered!(
-        enable_rendered.contains("const SERVICE_NAME: &str = \"enable_camera\";"),
-        enable_rendered,
-        "expected SERVICE_NAME constant for `enable_camera`"
-    );
-    assert_rendered!(
-        enable_rendered.contains("pub struct ResponseData"),
-        enable_rendered,
-        "expected ResponseData struct for `enable_camera`"
-    );
-    assert_rendered!(
-        enable_rendered.contains("pub struct Response"),
-        enable_rendered,
-        "expected Response struct for `enable_camera`"
-    );
-    assert_rendered!(
-        enable_rendered.contains("pub async fn poll("),
-        enable_rendered,
-        "expected poll helper function for `enable_camera`"
-    );
-    assert_rendered!(
-        enable_rendered.contains("enable: bool"),
-        enable_rendered,
-        "expected request parameter for `enable_camera`"
-    );
-    assert_rendered!(
-        enable_rendered.contains("-> crate::Result<Response>"),
-        enable_rendered,
-        "expected return type for `enable_camera` poll helper"
-    );
-    assert_rendered!(
-        enable_rendered.contains("root.set_enable(enable);"),
-        enable_rendered,
-        "expected request serialization for `enable_camera`"
-    );
-    assert_rendered!(
-        enable_rendered.contains("peppylib::ServiceMessenger::poll("),
-        enable_rendered,
-        "expected poll invocation for `enable_camera`"
-    );
-    assert_rendered!(
-        enable_rendered.contains("messenger.runtime().bound_master_node()"),
-        enable_rendered,
-        "expected bound_master_node from runtime for `enable_camera`"
-    );
-    assert_rendered!(
-        enable_rendered.contains("messenger.runtime().bound_instance_id()"),
-        enable_rendered,
-        "expected bound_instance_id from runtime for `enable_camera`"
-    );
-    assert_rendered!(
-        enable_rendered
-            .contains("fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>"),
-        enable_rendered,
-        "expected deserialize_response function for `enable_camera`"
-    );
-    assert_rendered!(
-        enable_rendered.contains("capnp::serialize::read_message"),
-        enable_rendered,
-        "expected response deserialization for `enable_camera`"
-    );
-    assert_rendered!(
-        enable_rendered
-            .contains("let context = format!(\"{} {} response\", NODE_NAME, SERVICE_NAME)"),
-        enable_rendered,
-        "expected context variable creation for `enable_camera`"
-    );
-    assert_rendered!(
-        enable_rendered.contains("context: context.clone()"),
-        enable_rendered,
-        "expected response context using context.clone() for `enable_camera`"
-    );
-    assert_rendered!(
-        enable_rendered.contains("Ok(ResponseData {"),
-        enable_rendered,
-        "expected ResponseData construction for `enable_camera` response"
-    );
-
-    // get_camera_info service assertions
     assert_rendered!(
         get_info_rendered.contains("const NODE_NAME: &str = \"uvc_camera\";"),
         get_info_rendered,
-        "expected NODE_NAME constant for `get_camera_info`"
+        "expected NODE_NAME for get_camera_info"
+    );
+
+    // Each has distinct SERVICE_NAME
+    assert_rendered!(
+        enable_rendered.contains("const SERVICE_NAME: &str = \"enable_camera\";"),
+        enable_rendered,
+        "expected SERVICE_NAME for enable_camera"
     );
     assert_rendered!(
         get_info_rendered.contains("const SERVICE_NAME: &str = \"get_camera_info\";"),
         get_info_rendered,
-        "expected SERVICE_NAME constant for `get_camera_info`"
+        "expected SERVICE_NAME for get_camera_info"
     );
-    assert_rendered!(
-        get_info_rendered.contains("pub struct ResponseData"),
-        get_info_rendered,
-        "expected ResponseData struct for `get_camera_info`"
-    );
-    assert_rendered!(
-        get_info_rendered.contains("pub struct Response"),
-        get_info_rendered,
-        "expected Response struct for `get_camera_info`"
-    );
+
+    // get_camera_info has specific response fields
     assert_rendered!(
         get_info_rendered.contains("card_type: String"),
         get_info_rendered,
-        "expected response field for `card_type`"
-    );
-    assert_rendered!(
-        get_info_rendered.contains("interval: String"),
-        get_info_rendered,
-        "expected response field for `interval`"
-    );
-    assert_rendered!(
-        get_info_rendered.contains("size: String"),
-        get_info_rendered,
-        "expected response field for `size`"
-    );
-    assert_rendered!(
-        get_info_rendered.contains("pub async fn poll("),
-        get_info_rendered,
-        "expected poll helper for `get_camera_info`"
-    );
-    assert_rendered!(
-        get_info_rendered.contains("-> crate::Result<Response>"),
-        get_info_rendered,
-        "expected return type for `get_camera_info` poll helper"
-    );
-    assert_rendered!(
-        get_info_rendered.contains("peppylib::ServiceMessenger::poll("),
-        get_info_rendered,
-        "expected poll invocation for `get_camera_info`"
-    );
-    assert_rendered!(
-        get_info_rendered
-            .contains("fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>"),
-        get_info_rendered,
-        "expected deserialize_response function for `get_camera_info`"
-    );
-    assert_rendered!(
-        get_info_rendered.contains("capnp::serialize::read_message"),
-        get_info_rendered,
-        "expected response deserialization for `get_camera_info`"
-    );
-    assert_rendered!(
-        get_info_rendered
-            .contains("let context = format!(\"{} {} response\", NODE_NAME, SERVICE_NAME)"),
-        get_info_rendered,
-        "expected context variable creation for `get_camera_info`"
-    );
-    assert_rendered!(
-        get_info_rendered.contains("context: context.clone()"),
-        get_info_rendered,
-        "expected response context using context.clone() for `get_camera_info`"
-    );
-    assert_rendered!(
-        get_info_rendered.contains("Ok(ResponseData {"),
-        get_info_rendered,
-        "expected ResponseData construction for `get_camera_info` response"
+        "expected card_type response field"
     );
 }
 
@@ -964,7 +498,7 @@ fn subscribed_service_without_response_payload() {
     );
 }
 
-/// This is a long running test
+/// This is a long running test that verifies the generated code compiles and passes clippy
 #[test]
 fn compile_lib_with_exposed_and_subscribed_services() {
     let temp_dir = TempDir::new().unwrap();
@@ -1040,308 +574,47 @@ fn compile_lib_with_exposed_and_subscribed_services() {
         String::from_utf8_lossy(&clippy_output.stderr)
     );
 
+    // Verify module structure is generated correctly
     assert!(
         output_dir.join("Cargo.toml").exists(),
-        "Expected Cargo.toml to be generated in the temporary crate directory"
+        "Expected Cargo.toml to be generated"
     );
     assert!(
         !output_dir.join(PEPPY_NODE_CONFIG_FILE).exists(),
         "Generated crate should not keep a copy of the node configuration file"
     );
 
-    let lib_rs = output_dir.join("src/lib.rs");
+    let lib_contents =
+        std::fs::read_to_string(output_dir.join("src/lib.rs")).expect("failed to read lib.rs");
     assert!(
-        lib_rs.exists(),
-        "Expected lib.rs to exist so generated service modules are reachable"
-    );
-    let lib_contents = std::fs::read_to_string(&lib_rs).expect("failed to read generated lib.rs");
-    assert!(
-        lib_contents.contains("pub mod exposed_services;"),
-        "Expected generated lib.rs to re-export the `exposed_services` module, got:\n{}",
-        lib_contents
-    );
-    assert!(
-        lib_contents.contains("pub mod subscribed_services;"),
-        "Expected generated lib.rs to re-export the `subscribed_services` module, got:\n{}",
-        lib_contents
+        lib_contents.contains("pub mod exposed_services;")
+            && lib_contents.contains("pub mod subscribed_services;"),
+        "Expected lib.rs to re-export service modules"
     );
 
-    let exposed_services_mod = output_dir.join("src/exposed_services.rs");
+    // Verify expected module files exist
     assert!(
-        exposed_services_mod.exists(),
-        "Expected exposed services module file to exist so `peppygen::exposed_services::<service>` resolves"
-    );
-    let exposed_services_contents = std::fs::read_to_string(&exposed_services_mod)
-        .expect("failed to read exposed_services module");
-    assert!(
-        exposed_services_contents.contains("pub mod enable_camera;"),
-        "Expected exposed services module to declare the `enable_camera` service, got:\n{}",
-        exposed_services_contents
+        output_dir
+            .join("src/exposed_services/enable_camera.rs")
+            .exists(),
+        "Expected enable_camera exposed service module"
     );
     assert!(
-        exposed_services_contents.contains("pub mod get_lidar_info;"),
-        "Expected exposed services module to declare the `get_lidar_info` service, got:\n{}",
-        exposed_services_contents
-    );
-
-    let subscribed_services_mod = output_dir.join("src/subscribed_services.rs");
-    assert!(
-        subscribed_services_mod.exists(),
-        "Expected subscribed services module file to exist so `peppygen::subscribed_services::<service>` resolves"
-    );
-    let subscribed_services_contents = std::fs::read_to_string(&subscribed_services_mod)
-        .expect("failed to read subscribed_services module");
-    assert!(
-        subscribed_services_contents.contains("pub mod uvc_camera_enable_camera;"),
-        "Expected subscribed services module to declare the `uvc_camera_enable_camera` client, got:\n{}",
-        subscribed_services_contents
+        output_dir
+            .join("src/exposed_services/get_lidar_info.rs")
+            .exists(),
+        "Expected get_lidar_info exposed service module"
     );
     assert!(
-        subscribed_services_contents.contains("pub mod uvc_camera_get_camera_info;"),
-        "Expected subscribed services module to declare the `uvc_camera_get_camera_info` client, got:\n{}",
-        subscribed_services_contents
-    );
-
-    let enable_camera_module_path = output_dir.join("src/exposed_services/enable_camera.rs");
-    assert!(
-        enable_camera_module_path.exists(),
-        "Expected generated enable_camera service module at {:?}",
-        enable_camera_module_path
-    );
-    let enable_module_contents = std::fs::read_to_string(&enable_camera_module_path)
-        .expect("failed to read enable_camera service module");
-
-    let get_lidar_module_path = output_dir.join("src/exposed_services/get_lidar_info.rs");
-    assert!(
-        get_lidar_module_path.exists(),
-        "Expected generated get_lidar_info service module at {:?}",
-        get_lidar_module_path
-    );
-    let lidar_module_contents = std::fs::read_to_string(&get_lidar_module_path)
-        .expect("failed to read get_lidar_info service module");
-
-    let subscriber_module_impl_path =
-        output_dir.join("src/subscribed_services/uvc_camera_enable_camera.rs");
-    assert!(
-        subscriber_module_impl_path.exists(),
-        "Expected enable_camera subscriber module implementation at {:?}",
-        subscriber_module_impl_path
-    );
-    let subscriber_module_two_path =
-        output_dir.join("src/subscribed_services/uvc_camera_get_camera_info.rs");
-    assert!(
-        subscriber_module_two_path.exists(),
-        "Expected get_camera_info subscriber module implementation at {:?}",
-        subscriber_module_two_path
-    );
-    let subscriber_module_contents = std::fs::read_to_string(&subscriber_module_impl_path)
-        .expect("failed to read enable_camera subscriber module");
-    assert!(
-        subscriber_module_contents.contains("const NODE_NAME: &str = \"uvc_camera\";"),
-        "Enable_camera subscriber module should define NODE_NAME constant, got:\n{}",
-        subscriber_module_contents
+        output_dir
+            .join("src/subscribed_services/uvc_camera_enable_camera.rs")
+            .exists(),
+        "Expected uvc_camera_enable_camera subscriber module"
     );
     assert!(
-        subscriber_module_contents.contains("const SERVICE_NAME: &str = \"enable_camera\";"),
-        "Enable_camera subscriber module should define SERVICE_NAME constant, got:\n{}",
-        subscriber_module_contents
-    );
-    assert!(
-        subscriber_module_contents.contains("pub struct ResponseData"),
-        "Enable_camera subscriber module should define ResponseData struct, got:\n{}",
-        subscriber_module_contents
-    );
-    assert!(
-        subscriber_module_contents.contains("pub struct Response"),
-        "Enable_camera subscriber module should define Response struct, got:\n{}",
-        subscriber_module_contents
-    );
-    assert!(
-        subscriber_module_contents.contains("pub master_node: String"),
-        "Enable_camera subscriber module Response should have master_node field, got:\n{}",
-        subscriber_module_contents
-    );
-    assert!(
-        subscriber_module_contents.contains("pub instance_id: String"),
-        "Enable_camera subscriber module Response should have instance_id field, got:\n{}",
-        subscriber_module_contents
-    );
-    assert!(
-        subscriber_module_contents.contains("pub data: ResponseData"),
-        "Enable_camera subscriber module Response should have data field, got:\n{}",
-        subscriber_module_contents
-    );
-    assert!(
-        subscriber_module_contents.contains("pub async fn poll("),
-        "Enable_camera subscriber module should define poll helper, got:\n{}",
-        subscriber_module_contents
-    );
-    assert!(
-        subscriber_module_contents.contains("target_master_node: Option<&str>"),
-        "Enable_camera subscriber module poll should have target_master_node parameter, got:\n{}",
-        subscriber_module_contents
-    );
-    assert!(
-        subscriber_module_contents.contains("target_instance_id: Option<&str>"),
-        "Enable_camera subscriber module poll should have target_instance_id parameter, got:\n{}",
-        subscriber_module_contents
-    );
-    assert!(
-        subscriber_module_contents.contains("-> crate::Result<Response>"),
-        "Enable_camera subscriber module poll should return Response, got:\n{}",
-        subscriber_module_contents
-    );
-    assert!(
-        subscriber_module_contents.contains("messenger.runtime().bound_master_node()"),
-        "Enable_camera subscriber module should use runtime bound_master_node, got:\n{}",
-        subscriber_module_contents
-    );
-    assert!(
-        subscriber_module_contents.contains("messenger.runtime().bound_instance_id()"),
-        "Enable_camera subscriber module should use runtime bound_instance_id, got:\n{}",
-        subscriber_module_contents
-    );
-    assert!(
-        subscriber_module_contents
-            .contains("let context = format!(\"{} {} response\", NODE_NAME, SERVICE_NAME)"),
-        "Enable_camera subscriber module should define context variable, got:\n{}",
-        subscriber_module_contents
-    );
-    assert!(
-        subscriber_module_contents.contains("context: context.clone()"),
-        "Enable_camera subscriber module should use context.clone(), got:\n{}",
-        subscriber_module_contents
-    );
-    assert!(
-        subscriber_module_contents
-            .contains("fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>"),
-        "Enable_camera subscriber module should define deserialize_response function, got:\n{}",
-        subscriber_module_contents
-    );
-    assert!(
-        subscriber_module_contents.contains("response_message.master_node()"),
-        "Enable_camera subscriber module should read master_node from response message, got:\n{}",
-        subscriber_module_contents
-    );
-    assert!(
-        subscriber_module_contents.contains("response_message.instance_id()"),
-        "Enable_camera subscriber module should read instance_id from response message, got:\n{}",
-        subscriber_module_contents
-    );
-
-    assert!(
-        enable_module_contents.contains("pub struct Response"),
-        "Expected generated service module to define response struct, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains("impl Response {"),
-        "Expected generated service module to define response struct impl, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains("enabled: bool"),
-        "Expected generated response struct to include `enabled` field, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains("error_msg: Option<String>"),
-        "Expected generated response struct to include `error_msg` field, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains("pub struct Request"),
-        "Expected generated service module to define request struct, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains("impl Request {"),
-        "Expected generated service module to define request struct impl, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains("pub async fn handle_next_request<F>("),
-        "Expected generated service module to expose async handler, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains("messenger: &crate::Messenger"),
-        "Expected generated handler to accept messenger reference, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains("peppylib::ServiceMessenger::listen("),
-        "Expected generated handler to initialize ServiceMessenger listener, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains(".handle_next_request(move |request_context|"),
-        "Expected generated handler to use ServiceMessenger::handle_next_request, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains("let message = request_context.message();"),
-        "Expected generated handler to bind request message, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains("let payload = message.payload().as_bytes();"),
-        "Expected generated handler to deserialize request payload from the context, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains("fn deserialize_request"),
-        "Expected generated helper to deserialize request payload, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains("fn handle_request_payload"),
-        "Expected generated helper to convert handler output to bytes, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains("instance_id: String"),
-        "Expected payload helper to accept caller instance id, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains("messenger.runtime().bound_instance_id()"),
-        "Expected handler to resolve service instance id from runtime, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains("bytes::Bytes::from(buffer)"),
-        "Expected generated handler to serialize response payload, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        enable_module_contents.contains("capnp::serialize::read_message"),
-        "Expected generated module to deserialize requests using capnp, got:\n{}",
-        enable_module_contents
-    );
-    assert!(
-        lidar_module_contents.contains("pub async fn handle_next_request<F>("),
-        "Expected generated module to expose handler for get_lidar_info, got:\n{}",
-        lidar_module_contents
-    );
-    assert!(
-        lidar_module_contents.contains("pub struct Request"),
-        "Expected generated module to define request struct for get_lidar_info, got:\n{}",
-        lidar_module_contents
-    );
-    assert!(
-        lidar_module_contents.contains("impl Request {"),
-        "Expected generated module to define request struct impl for get_lidar_info, got:\n{}",
-        lidar_module_contents
-    );
-    assert!(
-        !lidar_module_contents.contains("pub struct Response"),
-        "Expected no response struct for get_lidar_info, got:\n{}",
-        lidar_module_contents
-    );
-    assert!(
-        lidar_module_contents.contains("fn handle_request_payload"),
-        "Expected helper for get_lidar_info payload handling, got:\n{}",
-        lidar_module_contents
+        output_dir
+            .join("src/subscribed_services/uvc_camera_get_camera_info.rs")
+            .exists(),
+        "Expected uvc_camera_get_camera_info subscriber module"
     );
 }

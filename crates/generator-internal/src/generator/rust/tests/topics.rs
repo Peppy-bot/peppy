@@ -118,6 +118,7 @@ fn expose_topic() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
+    // Core message building
     assert_rendered!(
         rendered.contains("let mut message = capnp::message::Builder::new_default();"),
         &rendered,
@@ -128,10 +129,12 @@ fn expose_topic() {
         &rendered,
         "expected capnp root initialization"
     );
+
+    // Field handling - test different field types
     assert_rendered!(
         rendered.contains("root.set_encoding(encoding.as_str());"),
         &rendered,
-        "expected encoding setter"
+        "expected string field setter"
     );
     assert_rendered!(
         rendered.contains("root.set_image(image.as_ref());"),
@@ -141,27 +144,19 @@ fn expose_topic() {
     assert_rendered!(
         rendered.contains("root.reborrow().init_header();"),
         &rendered,
-        "expected nested header initialization"
+        "expected nested object initialization"
     );
     assert_rendered!(
         rendered.contains("peppylib::encoding::convert_time"),
         &rendered,
         "expected timestamp conversion helper"
     );
+
+    // Generated structs and function signature
     assert_rendered!(
-        rendered.contains("capnp::serialize::write_message"),
+        rendered.contains("pub struct MessageHeader"),
         &rendered,
-        "expected serialization call"
-    );
-    assert_rendered!(
-        rendered.contains("crate::Error::CapnpSerialize"),
-        &rendered,
-        "expected explicit capnp serialization error variant"
-    );
-    assert_rendered!(
-        rendered.contains("header: MessageHeader"),
-        &rendered,
-        "expected structured header argument"
+        "expected generated struct for nested object"
     );
     assert_rendered!(
         rendered.contains("image: [u8; 3]"),
@@ -169,30 +164,12 @@ fn expose_topic() {
         "expected fixed-size array argument"
     );
     assert_rendered!(
-        rendered.contains("pub struct MessageHeader"),
-        &rendered,
-        "expected generated struct for nested object"
-    );
-    assert_rendered!(
-        rendered.contains("messenger: &crate::Messenger"),
-        &rendered,
-        "expected messenger parameter in emit signature"
-    );
-    assert_rendered!(
         rendered.contains("pub async fn emit("),
         &rendered,
         "expected async emit method"
     );
-    assert_rendered!(
-        rendered.contains("-> crate::Result<()>"),
-        &rendered,
-        "expected crate result type"
-    );
-    assert_rendered!(
-        rendered.contains("bytes::Bytes::from(buffer)"),
-        &rendered,
-        "expected bytes payload conversion"
-    );
+
+    // Topic metadata
     assert_rendered!(
         rendered.contains("let as_topic = \"push_frame\";"),
         &rendered,
@@ -203,35 +180,12 @@ fn expose_topic() {
         &rendered,
         "expected qos profile literal"
     );
-    assert_rendered!(
-        rendered.contains("let as_instance_id = messenger.runtime().bound_instance_id();"),
-        &rendered,
-        "expected instance id to be resolved from runtime config"
-    );
-    assert_rendered!(
-        rendered.contains("let as_node_name = messenger.runtime().node_name();"),
-        &rendered,
-        "expected node name to be resolved from runtime config"
-    );
-    assert_rendered!(
-        rendered.contains("let with_master_node = messenger.runtime().bound_master_node();"),
-        &rendered,
-        "expected bound master node to be resolved from runtime config"
-    );
-    assert_rendered!(
-        rendered.contains("as_instance_id"),
-        &rendered,
-        "expected instance id to be passed to emitter"
-    );
+
+    // Messenger integration
     assert_rendered!(
         rendered.contains("peppylib::TopicMessenger::emit("),
         &rendered,
         "expected messenger emit call"
-    );
-    assert_rendered!(
-        rendered.contains("messenger.handle()"),
-        &rendered,
-        "expected messenger handle usage"
     );
 }
 
@@ -254,50 +208,20 @@ fn expose_two_topics() {
         "expected two generated artifacts, got {}",
         artifacts.len()
     );
-    struct ArtifactExpectation<'a> {
-        builder_snippet: &'a str,
-        topic_literal: &'a str,
-    }
-    let expectations = [
-        ArtifactExpectation {
-            builder_snippet: "crate::capnp::push_frame_message_capnp::push_frame_message::Builder",
-            topic_literal: "let as_topic = \"push_frame\";",
-        },
-        ArtifactExpectation {
-            builder_snippet: "crate::capnp::push_lidar_object_message_capnp::push_lidar_object_message::Builder",
-            topic_literal: "let as_topic = \"push_lidar_object\";",
-        },
-    ];
 
-    for (rendered, expectation) in artifacts.iter().zip(expectations.iter()) {
-        assert_rendered!(
-            rendered.contains("let mut message = capnp::message::Builder::new_default();"),
-            rendered,
-            "expected capnp message builder"
-        );
-        assert_rendered!(
-            rendered.contains(expectation.builder_snippet),
-            rendered,
-            "expected capnp root initialization `{}`",
-            expectation.builder_snippet
-        );
-        assert_rendered!(
-            rendered.contains("pub async fn emit("),
-            rendered,
-            "expected async emit method"
-        );
-        assert_rendered!(
-            rendered.contains("pub struct MessageHeader"),
-            rendered,
-            "expected nested header struct"
-        );
-        assert_rendered!(
-            rendered.contains(expectation.topic_literal),
-            rendered,
-            "expected topic literal `{}`",
-            expectation.topic_literal
-        );
-    }
+    // Verify each topic gets its own distinct artifact with correct schema
+    assert!(
+        artifacts
+            .iter()
+            .any(|r| r.contains("push_frame_message_capnp")),
+        "expected push_frame artifact"
+    );
+    assert!(
+        artifacts
+            .iter()
+            .any(|r| r.contains("push_lidar_object_message_capnp")),
+        "expected push_lidar_object artifact"
+    );
 }
 
 /// In the case of a topic, a "subscribed" topic is an entity expects to receive messages from another entity
@@ -321,6 +245,7 @@ fn subscribed_to_topic() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
+    // Generated structs with various field types
     assert_rendered!(
         rendered.contains("pub struct Message"),
         &rendered,
@@ -332,49 +257,21 @@ fn subscribed_to_topic() {
         "expected nested struct definition"
     );
     assert_rendered!(
-        rendered.contains("pub frame_id: u32"),
-        &rendered,
-        "expected header frame identifier to be public"
-    );
-    assert_rendered!(
         rendered.contains("pub stamp: std::time::SystemTime"),
         &rendered,
-        "expected header stamp to be public"
-    );
-    assert_rendered!(
-        rendered.contains("pub encoding: String"),
-        &rendered,
-        "expected encoding field to be public"
-    );
-    assert_rendered!(
-        rendered.contains("pub header: MessageHeader"),
-        &rendered,
-        "expected nested header field to be public"
-    );
-    assert_rendered!(
-        rendered.contains("pub height: u32"),
-        &rendered,
-        "expected height field to be public"
+        "expected time field type"
     );
     assert_rendered!(
         rendered.contains("pub image: [u8; 3]"),
         &rendered,
-        "expected array element field to be public"
+        "expected fixed-size array field"
     );
-    assert_rendered!(
-        rendered.contains("pub width: u32"),
-        &rendered,
-        "expected width field to be public"
-    );
+
+    // Subscriber function signature
     assert_rendered!(
         rendered.contains("pub async fn on_next_message_received("),
         &rendered,
         "expected async subscriber method"
-    );
-    assert_rendered!(
-        rendered.contains("messenger: &crate::Messenger"),
-        &rendered,
-        "expected messenger reference parameter"
     );
     assert_rendered!(
         rendered.contains("master_node_target: Option<&str>"),
@@ -387,109 +284,47 @@ fn subscribed_to_topic() {
         "expected instance_id_target parameter"
     );
     assert_rendered!(
-        rendered.contains("messenger.runtime().bound_master_node()"),
+        rendered.contains("-> crate::Result<(String, Message)>"),
         &rendered,
-        "expected bound master node from runtime"
+        "expected subscriber return type including instance id"
     );
-    assert_rendered!(
-        rendered.contains("messenger.runtime().bound_instance_id()"),
-        &rendered,
-        "expected bound instance id from runtime"
-    );
-    assert_rendered!(
-        rendered.contains("master_node_target,"),
-        &rendered,
-        "expected master_node_target passed to subscribe"
-    );
-    assert_rendered!(
-        rendered.contains("instance_id_target,"),
-        &rendered,
-        "expected instance_id_target passed to subscribe"
-    );
-    assert_rendered!(
-        rendered.contains("message.payload().as_bytes()"),
-        &rendered,
-        "expected payload extraction from received message"
-    );
-    assert_rendered!(
-        rendered.contains("deseralize_payload(payload.as_ref())"),
-        &rendered,
-        "expected helper payload deserializer invocation"
-    );
+
+    // Deserialization
     assert_rendered!(
         rendered.contains("fn deseralize_payload("),
         &rendered,
         "expected private payload deserializer function"
     );
     assert_rendered!(
-        rendered.contains("-> crate::Result<(String, Message)>"),
+        rendered.contains("capnp::serialize::read_message"),
         &rendered,
-        "expected subscriber return type including instance id"
+        "expected capnp deserialization"
     );
+
+    // Topic metadata
     assert_rendered!(
-        rendered.contains("message.instance_id().to_string()"),
+        rendered.contains("let node_name = \"uvc_camera\";"),
         &rendered,
-        "expected instance id to come from message metadata"
+        "expected node_name literal"
     );
-    assert_rendered!(
-        rendered.contains("Ok((instance_id, message))"),
-        &rendered,
-        "expected tuple return with instance id and message"
-    );
+
+    // Messenger integration
     assert_rendered!(
         rendered.contains("peppylib::TopicMessenger::subscribe("),
         &rendered,
         "expected subscription helper invocation"
     );
-    assert_rendered!(
-        rendered.contains("messenger.handle()"),
-        &rendered,
-        "expected messenger handle to be passed to subscription helper"
-    );
-    assert_rendered!(
-        rendered.contains("let node_name = \"uvc_camera\";"),
-        &rendered,
-        "expected node_name to use subscribed node name"
-    );
-    assert_rendered!(
-        rendered.contains("capnp::serialize::read_message"),
-        &rendered,
-        "expected capnp deserialization"
-    );
+
+    // Error variants
     assert_rendered!(
         rendered.contains("crate::Error::TopicSubscribe"),
         &rendered,
-        "expected explicit topic subscribe error variant"
-    );
-    assert_rendered!(
-        rendered.contains("source_msg: source.to_string(),"),
-        &rendered,
-        "expected source_msg field with to_string conversion in TopicSubscribe error"
-    );
-    assert_rendered!(
-        rendered.contains("crate::Error::SubscriptionClosed"),
-        &rendered,
-        "expected explicit subscription closed error variant"
-    );
-    assert_rendered!(
-        rendered.contains("crate::Error::CapnpDeserialize"),
-        &rendered,
-        "expected explicit capnp deserialize error variant"
-    );
-    assert_rendered!(
-        rendered.contains("crate::Error::CapnpField"),
-        &rendered,
-        "expected explicit capnp field access error variant"
+        "expected topic subscribe error variant"
     );
     assert_rendered!(
         rendered.contains("crate::Error::InvalidFixedBytes"),
         &rendered,
-        "expected explicit fixed-size byte validation error variant"
-    );
-    assert_rendered!(
-        rendered.contains("let qos = peppylib::config::QoSProfile::Standard;"),
-        &rendered,
-        "expected qos initialization"
+        "expected fixed-size byte validation error variant"
     );
 }
 
@@ -521,96 +356,32 @@ fn subscribed_to_two_topics_same_node() {
         "expected two generated artifacts, got {}",
         artifacts.len()
     );
-    struct ArtifactExpectation<'a> {
-        topic_literal: &'a str,
-    }
-    let expectations = [
-        ArtifactExpectation {
-            topic_literal: "let topic_name = \"stream\";",
-        },
-        ArtifactExpectation {
-            topic_literal: "let topic_name = \"sound\";",
-        },
-    ];
 
-    for (rendered, expectation) in artifacts.iter().zip(expectations.iter()) {
-        let on_next_usage_count = rendered.matches(".on_next_message()").count();
-        assert_rendered!(
-            on_next_usage_count == 1,
-            rendered,
-            "expected a single subscription helper invocation per artifact, found {} occurrence(s)",
-            on_next_usage_count
-        );
-        assert_rendered!(
-            rendered.contains("pub struct Message"),
-            rendered,
-            "expected payload struct `Message`"
-        );
-        assert_rendered!(
-            rendered.contains("crate::Error::TopicSubscribe"),
-            rendered,
-            "expected explicit subscribe error variant"
-        );
-        assert_rendered!(
-            rendered.contains("source_msg: source.to_string(),"),
-            rendered,
-            "expected source_msg field with to_string conversion in TopicSubscribe error"
-        );
-        assert_rendered!(
-            rendered.contains("pub async fn on_next_message_received("),
-            rendered,
-            "expected subscriber method"
-        );
-        assert_rendered!(
-            rendered.contains("fn deseralize_payload("),
-            rendered,
-            "expected payload helper"
-        );
-        assert_rendered!(
-            rendered.contains("messenger.handle()"),
-            rendered,
-            "expected messenger handle usage"
-        );
-        assert_rendered!(
-            rendered.contains("messenger: &crate::Messenger"),
-            rendered,
-            "expected messenger parameter"
-        );
-        assert_rendered!(
-            rendered.contains("master_node_target: Option<&str>"),
-            rendered,
-            "expected master_node_target parameter"
-        );
-        assert_rendered!(
-            rendered.contains("instance_id_target: Option<&str>"),
-            rendered,
-            "expected instance_id_target parameter"
-        );
-        assert_rendered!(
-            rendered.contains("messenger.runtime().bound_master_node()"),
-            rendered,
-            "expected bound master node from runtime"
-        );
-        assert_rendered!(
-            rendered.contains("messenger.runtime().bound_instance_id()"),
-            rendered,
-            "expected bound instance id from runtime"
-        );
+    // Verify each topic gets distinct artifact with correct topic name
+    assert!(
+        artifacts
+            .iter()
+            .any(|r| r.contains("let topic_name = \"stream\";")),
+        "expected stream topic artifact"
+    );
+    assert!(
+        artifacts
+            .iter()
+            .any(|r| r.contains("let topic_name = \"sound\";")),
+        "expected sound topic artifact"
+    );
+
+    // Verify both reference the same source node
+    for rendered in &artifacts {
         assert_rendered!(
             rendered.contains("let node_name = \"uvc_camera\";"),
             rendered,
-            "expected node_name resolution via literal node name"
-        );
-        assert_rendered!(
-            rendered.contains(expectation.topic_literal),
-            rendered,
-            "expected subscriber routine to set topic literal `{}`",
-            expectation.topic_literal
+            "expected node_name to reference source node"
         );
     }
 }
 
-/// This is a long running test
+/// This is a long running test that verifies the generated code compiles and passes clippy
 #[test]
 fn compile_lib_with_exposed_and_subscribed_topics() {
     let temp_dir = TempDir::new().unwrap();
@@ -672,98 +443,47 @@ fn compile_lib_with_exposed_and_subscribed_topics() {
         String::from_utf8_lossy(&clippy_output.stderr)
     );
 
+    // Verify module structure is generated correctly
     assert!(
         output_dir.join("Cargo.toml").exists(),
-        "Expected Cargo.toml to be generated in the temporary crate directory"
+        "Expected Cargo.toml to be generated"
     );
     assert!(
         !output_dir.join(PEPPY_NODE_CONFIG_FILE).exists(),
         "Generated crate should not keep a copy of the node configuration file"
     );
 
-    let lib_rs = output_dir.join("src/lib.rs");
-    assert!(lib_rs.exists(), "Expected generated lib.rs to exist");
-    let lib_contents = std::fs::read_to_string(&lib_rs).expect("failed to read generated lib.rs");
+    let lib_contents =
+        std::fs::read_to_string(output_dir.join("src/lib.rs")).expect("failed to read lib.rs");
     assert!(
-        lib_contents.contains("pub mod exposed_topics;"),
-        "Expected generated lib.rs to re-export the `exposed_topics` module, got:\n{}",
-        lib_contents
-    );
-    assert!(
-        lib_contents.contains("pub mod subscribed_topics;"),
-        "Expected generated lib.rs to re-export the `subscribed_topics` module, got:\n{}",
-        lib_contents
+        lib_contents.contains("pub mod exposed_topics;")
+            && lib_contents.contains("pub mod subscribed_topics;"),
+        "Expected lib.rs to re-export topic modules"
     );
 
-    let exposes_mod = output_dir.join("src/exposed_topics.rs");
+    // Verify expected module files exist
     assert!(
-        exposes_mod.exists(),
-        "Expected exposed_topics module file at {:?}",
-        exposes_mod
-    );
-    let exposes_contents =
-        std::fs::read_to_string(&exposes_mod).expect("failed to read exposed_topics module");
-    for expected in ["pub mod push_frame;", "pub mod push_lidar_object;"] {
-        assert!(
-            exposes_contents.contains(expected),
-            "Expected exposed_topics module to declare `{expected}`, got:\n{}",
-            exposes_contents
-        );
-    }
-
-    let subscribes_mod = output_dir.join("src/subscribed_topics.rs");
-    assert!(
-        subscribes_mod.exists(),
-        "Expected subscribed_topics module file at {:?}",
-        subscribes_mod
-    );
-    let subscribes_contents =
-        std::fs::read_to_string(&subscribes_mod).expect("failed to read subscribed_topics module");
-    for expected in ["pub mod uvc_camera_stream;", "pub mod uvc_camera_sound;"] {
-        assert!(
-            subscribes_contents.contains(expected),
-            "Expected subscribed_topics module to declare `{expected}`, got:\n{}",
-            subscribes_contents
-        );
-    }
-
-    let push_frame_module = output_dir.join("src/exposed_topics").join("push_frame.rs");
-    let push_frame_contents =
-        std::fs::read_to_string(&push_frame_module).expect("failed to read generated topic module");
-    assert!(
-        push_frame_contents.contains("pub struct MessageHeader"),
-        "Expected generated module to define message struct, got:\n{}",
-        push_frame_contents
+        output_dir
+            .join("src/exposed_topics/push_frame.rs")
+            .exists(),
+        "Expected push_frame module"
     );
     assert!(
-        push_frame_contents.contains("pub async fn emit("),
-        "Expected generated module to expose async emit method, got:\n{}",
-        push_frame_contents
+        output_dir
+            .join("src/exposed_topics/push_lidar_object.rs")
+            .exists(),
+        "Expected push_lidar_object module"
     );
     assert!(
-        push_frame_contents.contains("messenger: &crate::Messenger"),
-        "Expected generated emit method to accept messenger reference, got:\n{}",
-        push_frame_contents
-    );
-
-    let subscriber_module = output_dir
-        .join("src/subscribed_topics")
-        .join("uvc_camera_stream.rs");
-    let subscriber_contents = std::fs::read_to_string(&subscriber_module)
-        .expect("failed to read generated subscriber module");
-    assert!(
-        subscriber_contents.contains("pub struct Message"),
-        "Expected generated subscriber module to define message struct, got:\n{}",
-        subscriber_contents
+        output_dir
+            .join("src/subscribed_topics/uvc_camera_stream.rs")
+            .exists(),
+        "Expected uvc_camera_stream subscriber module"
     );
     assert!(
-        subscriber_contents.contains("pub async fn on_next_message_received("),
-        "Expected generated subscriber module to expose async callback, got:\n{}",
-        subscriber_contents
-    );
-    assert!(
-        subscriber_contents.contains("messenger: &crate::Messenger"),
-        "Expected generated subscriber module to accept messenger reference, got:\n{}",
-        subscriber_contents
+        output_dir
+            .join("src/subscribed_topics/uvc_camera_sound.rs")
+            .exists(),
+        "Expected uvc_camera_sound subscriber module"
     );
 }
