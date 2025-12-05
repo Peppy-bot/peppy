@@ -77,6 +77,7 @@ const EXPOSED_ACTION_EXAMPLE2: &str = r#"
 // --- Subscribes examples
 const SUBSCRIBED_ACTION_EXAMPLE1: &str = r#"
 {
+  id: "brain_move_arm",
   node: "brain",
   name: "move_arm",
   tag: "0.1.0"
@@ -127,6 +128,7 @@ const SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1: &str = r#"
 
 const SUBSCRIBED_ACTION_EXAMPLE2: &str = r#"
 {
+  id: "controller_rotate_servo",
   node: "controller",
   name: "rotate_servo_clockwise",
   tag: "0.1.0"
@@ -173,21 +175,53 @@ fn exposed_action() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
+    // ACTION_NAME constant
+    assert_rendered!(
+        rendered.contains("const ACTION_NAME: &str = \"move_arm\";"),
+        &rendered,
+        "expected ACTION_NAME constant"
+    );
+
+    // GoalRequestData struct
+    assert_rendered!(
+        rendered.contains("pub struct GoalRequestData"),
+        &rendered,
+        "expected goal request data struct"
+    );
+    assert_rendered!(
+        rendered.contains("pub arm_id: u16"),
+        &rendered,
+        "expected arm_id field in goal request data"
+    );
+    assert_rendered!(
+        rendered.contains("desired_position: [i32; 3]"),
+        &rendered,
+        "expected desired_position array in goal request data"
+    );
+
+    // GoalRequest struct
     assert_rendered!(
         rendered.contains("pub struct GoalRequest"),
         &rendered,
         "expected goal request struct"
     );
     assert_rendered!(
-        rendered.contains("pub arm_id: u16"),
+        rendered.contains("pub instance_id: String"),
         &rendered,
-        "expected arm_id field in goal request"
+        "expected instance_id field in goal request"
     );
     assert_rendered!(
-        rendered.contains("desired_position: [i32; 3]"),
+        rendered.contains("pub master_node: String"),
         &rendered,
-        "expected desired_position array in goal request"
+        "expected master_node field in goal request"
     );
+    assert_rendered!(
+        rendered.contains("pub data: GoalRequestData"),
+        &rendered,
+        "expected data field in goal request"
+    );
+
+    // GoalResponse struct
     assert_rendered!(
         rendered.contains("pub struct GoalResponse"),
         &rendered,
@@ -203,26 +237,15 @@ fn exposed_action() {
         &rendered,
         "expected goal response constructor signature"
     );
+
+    // CancelRequest struct
     assert_rendered!(
-        rendered.contains("final_position: [i32; 3]"),
+        rendered.contains("pub struct CancelRequest"),
         &rendered,
-        "expected final_position field in result response"
+        "expected cancel request struct"
     );
-    assert_rendered!(
-        rendered.contains("pub struct ResultResponse"),
-        &rendered,
-        "expected result response struct"
-    );
-    assert_rendered!(
-        rendered.contains("success: bool"),
-        &rendered,
-        "expected success field in result response"
-    );
-    assert_rendered!(
-        rendered.contains("error_msg: Option<String>"),
-        &rendered,
-        "expected error_msg field in result response"
-    );
+
+    // CancelResponse struct
     assert_rendered!(
         rendered.contains("pub struct CancelResponse"),
         &rendered,
@@ -243,6 +266,76 @@ fn exposed_action() {
         &rendered,
         "expected cancel response constructor signature"
     );
+
+    // ResultRequest struct
+    assert_rendered!(
+        rendered.contains("pub struct ResultRequest"),
+        &rendered,
+        "expected result request struct"
+    );
+
+    // ResultResponse struct
+    assert_rendered!(
+        rendered.contains("pub struct ResultResponse"),
+        &rendered,
+        "expected result response struct"
+    );
+    assert_rendered!(
+        rendered.contains("final_position: [i32; 3]"),
+        &rendered,
+        "expected final_position field in result response"
+    );
+    assert_rendered!(
+        rendered.contains("success: bool"),
+        &rendered,
+        "expected success field in result response"
+    );
+    assert_rendered!(
+        rendered.contains("error_msg: Option<String>"),
+        &rendered,
+        "expected error_msg field in result response"
+    );
+
+    // ActionHandle struct
+    assert_rendered!(
+        rendered.contains("pub struct ActionHandle"),
+        &rendered,
+        "expected ActionHandle struct"
+    );
+    assert_rendered!(
+        rendered.contains("goal_service: peppylib::messaging::ServiceCreation"),
+        &rendered,
+        "expected goal_service field in ActionHandle"
+    );
+    assert_rendered!(
+        rendered.contains("cancel_service: peppylib::messaging::ServiceCreation"),
+        &rendered,
+        "expected cancel_service field in ActionHandle"
+    );
+    assert_rendered!(
+        rendered.contains("result_service: peppylib::messaging::ServiceCreation"),
+        &rendered,
+        "expected result_service field in ActionHandle"
+    );
+    assert_rendered!(
+        rendered.contains("feedback_publisher: peppylib::messaging::TopicPublisher"),
+        &rendered,
+        "expected feedback_publisher field in ActionHandle"
+    );
+
+    // expose method
+    assert_rendered!(
+        rendered.contains("pub async fn expose(messenger: &crate::Messenger) -> crate::Result<Self>"),
+        &rendered,
+        "expected expose method signature"
+    );
+    assert_rendered!(
+        rendered.contains("peppylib::ActionMessenger::expose"),
+        &rendered,
+        "expected ActionMessenger::expose call"
+    );
+
+    // Handler methods
     assert_rendered!(
         rendered.contains("pub async fn handle_goal_next_request"),
         &rendered,
@@ -254,49 +347,14 @@ fn exposed_action() {
         "expected goal handler signature"
     );
     assert_rendered!(
-        rendered.contains("let service_name = \"move_arm/goal\";"),
-        &rendered,
-        "expected goal service name literal"
-    );
-    assert_rendered!(
         rendered.contains("pub async fn handle_cancel_next_request"),
         &rendered,
         "expected cancel handler method"
     );
     assert_rendered!(
-        rendered.contains("F: Fn() -> crate::Result<CancelResponse>"),
+        rendered.contains("F: Fn(CancelRequest) -> crate::Result<CancelResponse>"),
         &rendered,
         "expected cancel handler signature"
-    );
-    assert_rendered!(
-        rendered.contains("let service_name = \"move_arm/cancel\";"),
-        &rendered,
-        "expected cancel service name"
-    );
-    assert_rendered!(
-        rendered.contains("pub async fn emit_feedback"),
-        &rendered,
-        "expected feedback emit method"
-    );
-    assert_rendered!(
-        rendered.contains("let as_topic = \"move_arm/feedback\";"),
-        &rendered,
-        "expected feedback topic literal"
-    );
-    assert_rendered!(
-        rendered.contains("#[allow(clippy::too_many_arguments)]"),
-        &rendered,
-        "expected clippy allowance on feedback emitter"
-    );
-    assert_rendered!(
-        rendered.contains("peppylib::TopicMessenger::emit"),
-        &rendered,
-        "expected topic messenger emit call"
-    );
-    assert_rendered!(
-        rendered.contains("peppylib::ServiceMessenger::listen"),
-        &rendered,
-        "expected service listen call for action endpoints"
     );
     assert_rendered!(
         rendered.contains("pub async fn handle_result_next_request"),
@@ -304,9 +362,33 @@ fn exposed_action() {
         "expected result handler method"
     );
     assert_rendered!(
-        rendered.contains("F: Fn() -> crate::Result<ResultResponse>"),
+        rendered.contains("F: Fn(ResultRequest) -> crate::Result<ResultResponse>"),
         &rendered,
         "expected result handler signature"
+    );
+
+    // Feedback emit method
+    assert_rendered!(
+        rendered.contains("pub async fn emit_feedback"),
+        &rendered,
+        "expected feedback emit method"
+    );
+    assert_rendered!(
+        rendered.contains("#[allow(clippy::too_many_arguments)]"),
+        &rendered,
+        "expected clippy allowance on feedback emitter"
+    );
+    assert_rendered!(
+        rendered.contains("self.feedback_publisher.publish(payload).await"),
+        &rendered,
+        "expected feedback publisher publish call"
+    );
+
+    // Helper functions
+    assert_rendered!(
+        rendered.contains("fn deserialize_goal_request"),
+        &rendered,
+        "expected goal request deserializer"
     );
     assert_rendered!(
         rendered.contains("fn handle_goal_payload"),
@@ -314,7 +396,7 @@ fn exposed_action() {
         "expected goal payload helper"
     );
     assert_rendered!(
-        rendered.contains("fn handle_cancel_request_payload"),
+        rendered.contains("fn handle_cancel_payload"),
         &rendered,
         "expected cancel payload helper"
     );
@@ -344,6 +426,12 @@ fn expose_action_without_request_body() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
+    // GoalRequest still exists (with instance_id and master_node) even without data
+    assert_rendered!(
+        rendered.contains("pub struct GoalRequest"),
+        &rendered,
+        "expected goal request struct even without request body"
+    );
     assert_rendered!(
         rendered.contains("pub struct GoalResponse"),
         &rendered,
@@ -355,9 +443,9 @@ fn expose_action_without_request_body() {
         "expected goal handler even when goal request body is missing"
     );
     assert_rendered!(
-        rendered.contains("F: Fn() -> crate::Result<GoalResponse>"),
+        rendered.contains("F: Fn(GoalRequest) -> crate::Result<GoalResponse>"),
         &rendered,
-        "expected goal handler signature with zero parameters"
+        "expected goal handler signature with GoalRequest (containing instance_id and master_node)"
     );
     assert_rendered!(
         rendered.contains("fn handle_goal_payload"),
@@ -385,9 +473,9 @@ fn expose_action_without_request_body() {
         "expected result handler even when result request body is missing"
     );
     assert_rendered!(
-        rendered.contains("F: Fn() -> crate::Result<ResultResponse>"),
+        rendered.contains("F: Fn(ResultRequest) -> crate::Result<ResultResponse>"),
         &rendered,
-        "expected result handler signature with zero parameters"
+        "expected result handler signature with ResultRequest"
     );
     assert_rendered!(
         rendered.contains("fn handle_result_payload"),
@@ -405,9 +493,9 @@ fn expose_action_without_request_body() {
         "expected cancel handler even when request body is missing"
     );
     assert_rendered!(
-        rendered.contains("F: Fn() -> crate::Result<CancelResponse>"),
+        rendered.contains("F: Fn(CancelRequest) -> crate::Result<CancelResponse>"),
         &rendered,
-        "expected cancel handler signature with zero parameters"
+        "expected cancel handler signature with CancelRequest"
     );
 
     assert_rendered!(
@@ -468,9 +556,9 @@ fn expose_two_actions() {
         "expected feedback emitter for `move_arm`"
     );
     assert_rendered!(
-        move_arm.contains("let service_name = \"move_arm/goal\";"),
+        move_arm.contains("const ACTION_NAME: &str = \"move_arm\";"),
         &move_arm,
-        "expected move_arm goal service literal"
+        "expected move_arm ACTION_NAME constant"
     );
     assert_rendered!(
         rotate_servo.contains("pub async fn handle_goal_next_request"),
@@ -478,9 +566,9 @@ fn expose_two_actions() {
         "expected goal handler for `rotate_servo_clockwise`"
     );
     assert_rendered!(
-        rotate_servo.contains("F: Fn() -> crate::Result<GoalResponse>"),
+        rotate_servo.contains("F: Fn(GoalRequest) -> crate::Result<GoalResponse>"),
         &rotate_servo,
-        "expected zero-argument goal handler signature for `rotate_servo_clockwise`"
+        "expected goal handler signature with GoalRequest for `rotate_servo_clockwise`"
     );
     assert_rendered!(
         rotate_servo.contains("pub struct GoalResponse"),
@@ -498,9 +586,9 @@ fn expose_two_actions() {
         "expected feedback emitter for `rotate_servo_clockwise`"
     );
     assert_rendered!(
-        rotate_servo.contains("let service_name = \"rotate_servo_clockwise/goal\";"),
+        rotate_servo.contains("const ACTION_NAME: &str = \"rotate_servo_clockwise\";"),
         &rotate_servo,
-        "expected rotate_servo_clockwise goal service literal"
+        "expected rotate_servo_clockwise ACTION_NAME constant"
     );
 }
 
