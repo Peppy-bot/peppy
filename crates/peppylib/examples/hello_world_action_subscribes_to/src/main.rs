@@ -106,7 +106,6 @@ async fn main() {
 
     let result_payload = ActionMessenger::request_result(
         &sender_handle,
-        &as_instance_id,
         &goal_handle,
         Bytes::from_static(b"request result after completion"),
         GOAL_TIMEOUT,
@@ -126,7 +125,7 @@ async fn main() {
     sleep(Duration::from_secs(2)).await;
 
     println!("{}", "[GOAL] Sending cancellable goal...".bold().green());
-    let mut cancellable_goal_handle = ActionMessenger::send_goal(
+    let mut goal_handle = ActionMessenger::send_goal(
         &sender_handle,
         &master_node_name,
         &as_instance_id,
@@ -141,7 +140,7 @@ async fn main() {
     .await
     .expect("Cancellable action goal should succeed");
 
-    let cancel_goal_response_bytes = cancellable_goal_handle.goal_response().payload().as_bytes();
+    let cancel_goal_response_bytes = goal_handle.goal_response().payload().as_bytes();
     let cancel_goal_response = String::from_utf8_lossy(cancel_goal_response_bytes.as_ref());
     println!(
         "{}",
@@ -150,19 +149,15 @@ async fn main() {
             .green()
     );
 
-    receive_feedback(&mut cancellable_goal_handle, "cancellable goal").await;
+    receive_feedback(&mut goal_handle, "cancellable goal").await;
 
     println!("Waiting before issuing cancel request...");
     sleep(Duration::from_secs(2)).await;
 
-    let cancel_response = ActionMessenger::cancel_goal(
-        &sender_handle,
-        &as_instance_id,
-        &cancellable_goal_handle,
-        CANCEL_TIMEOUT,
-    )
-    .await
-    .expect("Cancel request should succeed");
+    let cancel_response =
+        ActionMessenger::cancel_goal(&sender_handle, &goal_handle, CANCEL_TIMEOUT)
+            .await
+            .expect("Cancel request should succeed");
     let cancel_bytes = cancel_response.payload().as_bytes();
     let cancel_text = String::from_utf8_lossy(cancel_bytes.as_ref());
     println!(
@@ -181,8 +176,7 @@ async fn main() {
 
     match ActionMessenger::request_result(
         &sender_handle,
-        &as_instance_id,
-        &cancellable_goal_handle,
+        &goal_handle,
         Bytes::from_static(b"result request after cancel"),
         GOAL_TIMEOUT,
     )
