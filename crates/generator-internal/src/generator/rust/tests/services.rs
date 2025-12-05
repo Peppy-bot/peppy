@@ -137,9 +137,9 @@ fn expose_service() {
         "expected instance_id field in Request"
     );
     assert_rendered!(
-        rendered.contains("pub request_data: RequestData"),
+        rendered.contains("pub data: RequestData"),
         &rendered,
-        "expected request_data field in Request"
+        "expected data field in Request"
     );
 
     // Handler signature
@@ -216,11 +216,11 @@ fn expose_service_without_request_body() {
         "expected no RequestData struct when there is no request body"
     );
 
-    // Request construction should omit request_data
+    // Request construction should omit data field
     assert_rendered!(
-        rendered.contains("let request = Request::new(instance_id, master_node);"),
+        rendered.contains("let request = Request {"),
         &rendered,
-        "expected Request construction without request_data"
+        "expected Request construction using struct literal"
     );
 }
 

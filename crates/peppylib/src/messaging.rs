@@ -510,9 +510,9 @@ impl ActionMessenger {
     pub async fn listen(
         messenger: &MessengerHandle,
         bound_master_node: &str,
+        as_instance_id: &str,
         as_node_name: &str,
         as_action_name: &str,
-        as_instance_id: &str,
     ) -> Result<ActionCreation> {
         messenger
             .expose_action(
