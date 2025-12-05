@@ -101,14 +101,16 @@ async fn main() {
 
     receive_feedback(&mut goal_handle, "initial goal").await;
 
-    let result_payload = ActionMessenger::request_result(
-        &sender_handle,
-        &goal_handle,
-        Bytes::from_static(b"request result after completion"),
-        GOAL_TIMEOUT,
-    )
-    .await
-    .expect("Action result should be available");
+    println!(
+        "{}",
+        format!("[RESULT] Requesting result payload...")
+            .bold()
+            .cyan()
+    );
+    let result_payload =
+        ActionMessenger::request_result(&sender_handle, &goal_handle, GOAL_TIMEOUT)
+            .await
+            .expect("Action result should be available");
     let result_bytes = result_payload.payload().as_bytes();
     let result_text = String::from_utf8_lossy(result_bytes.as_ref());
     println!(
@@ -171,14 +173,7 @@ async fn main() {
             .cyan()
     );
 
-    match ActionMessenger::request_result(
-        &sender_handle,
-        &goal_handle,
-        Bytes::from_static(b"result request after cancel"),
-        GOAL_TIMEOUT,
-    )
-    .await
-    {
+    match ActionMessenger::request_result(&sender_handle, &goal_handle, GOAL_TIMEOUT).await {
         Ok(result_payload) => {
             let result_bytes = result_payload.payload().as_bytes();
             let result_text = String::from_utf8_lossy(result_bytes.as_ref());

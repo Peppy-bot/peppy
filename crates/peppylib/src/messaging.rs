@@ -598,7 +598,6 @@ impl ActionMessenger {
     pub async fn request_result(
         messenger_handle: &MessengerHandle,
         action_handle: &ActionGoalHandle,
-        result_request_payload: Bytes,
         result_timeout: Duration,
     ) -> Result<TopicMessage> {
         let result_service_name = format!("{}/result", action_handle.action_name);
@@ -612,7 +611,7 @@ impl ActionMessenger {
                 &result_service_name,
                 None,
                 action_handle.target_instance_id.as_deref(),
-                result_request_payload,
+                Bytes::new(),
                 result_timeout,
             )
             .await

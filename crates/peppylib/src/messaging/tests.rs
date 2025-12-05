@@ -18,8 +18,6 @@ struct ActionClientCase {
     goal: Bytes,
     goal_response: Bytes,
     feedback: Bytes,
-    result_request: Bytes,
-    result_response: Bytes,
 }
 
 impl ActionClientCase {
@@ -30,17 +28,12 @@ impl ActionClientCase {
             Bytes::from(format!("client={client_id};goal_response=accepted").into_bytes());
         let feedback =
             Bytes::from(format!("client={client_id};feedback=progress-{idx}").into_bytes());
-        let result_request =
-            Bytes::from(format!("client={client_id};result_request={idx}").into_bytes());
-        let result_response = Bytes::from(format!("client={client_id};result=done").into_bytes());
 
         Self {
             client_id,
             goal,
             goal_response,
             feedback,
-            result_request,
-            result_response,
         }
     }
 }
@@ -1560,7 +1553,6 @@ async fn action_communication_no_instance_id_target() {
     let goal_response_payload = Bytes::from_static(b"accepted");
     let feedback_payload = Bytes::from_static(b"progress=50");
     let result_payload = Bytes::from_static(b"done");
-    let result_request_payload = Bytes::from_static(b"goal=right_arm");
 
     // Launch a background task that plays the role of the action server.
     let (action_ready_tx, action_ready_rx) = oneshot::channel();
@@ -1570,7 +1562,6 @@ async fn action_communication_no_instance_id_target() {
         let expected_goal_response_payload = goal_response_payload.clone();
         let feedback_payload_server = feedback_payload.clone();
         let result_payload_server = result_payload.clone();
-        let result_request_payload_server = result_request_payload.clone();
 
         let action_handle = router.action_messenger().await;
 
@@ -1598,12 +1589,11 @@ async fn action_communication_no_instance_id_target() {
 
             // Create the result handler future
             let result_handler = action.result_service.handle_next_request(move |request| {
-                let expected_payload = result_request_payload_server.clone();
                 let response_payload = result_payload_server.clone();
                 async move {
                     assert_eq!(request.message.master_node(), CALLER_MASTER_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
-                    assert_eq!(request.message().payload(), &expected_payload);
+                    assert!(request.message().payload().is_empty());
 
                     Ok(response_payload)
                 }
@@ -1698,7 +1688,6 @@ async fn action_communication_no_instance_id_target() {
         let result_response = ActionMessenger::request_result(
             &caller_handle,
             &goal_handle,
-            result_request_payload,
             Duration::from_millis(500),
         )
         .await
@@ -1739,7 +1728,6 @@ async fn action_communication_with_instance_id_target() {
     let goal_response_payload = Bytes::from_static(b"accepted");
     let feedback_payload = Bytes::from_static(b"progress=50");
     let result_payload = Bytes::from_static(b"done");
-    let result_request_payload = Bytes::from_static(b"goal=right_arm");
 
     let call_count = Arc::new(AtomicUsize::new(0));
 
@@ -1796,7 +1784,6 @@ async fn action_communication_with_instance_id_target() {
         let expected_goal_response_payload = goal_response_payload.clone();
         let feedback_payload_server = feedback_payload.clone();
         let result_payload_server = result_payload.clone();
-        let result_request_payload_server = result_request_payload.clone();
 
         let action_handle = router.action_messenger().await;
 
@@ -1824,12 +1811,11 @@ async fn action_communication_with_instance_id_target() {
 
             // Create the result handler future
             let result_handler = action.result_service.handle_next_request(move |request| {
-                let expected_payload = result_request_payload_server.clone();
                 let response_payload = result_payload_server.clone();
                 async move {
                     assert_eq!(request.message.master_node(), CALLER_MASTER_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
-                    assert_eq!(request.message().payload(), &expected_payload);
+                    assert!(request.message().payload().is_empty());
 
                     Ok(response_payload)
                 }
@@ -1924,7 +1910,6 @@ async fn action_communication_with_instance_id_target() {
         let result_response = ActionMessenger::request_result(
             &caller_handle,
             &goal_handle,
-            result_request_payload,
             Duration::from_millis(500),
         )
         .await
@@ -2295,34 +2280,12 @@ async fn single_action_communication_multiple_polls() {
 
             let mut result_handlers = Vec::with_capacity(client_total);
             for _ in 0..client_total {
-                let cases = Arc::clone(&cases);
-
                 let handler = result_service
                     .spawn_next_request_handler(move |request| {
-                        let cases = Arc::clone(&cases);
-
                         async move {
-                            let payload = request.message().payload();
-                            let payload_bytes = payload.as_bytes();
-                            let payload_str = std::str::from_utf8(payload_bytes.as_ref())
-                                .expect("result payload should be valid UTF-8");
+                            assert!(request.message().payload().is_empty());
 
-                            let client_id = payload_str
-                                .split(';')
-                                .find_map(|part| part.strip_prefix("client="))
-                                .expect("result payload should contain client identifier")
-                                .to_string();
-
-                            let case = cases.iter().find(|case| case.client_id == client_id).unwrap_or_else(|| {
-                                panic!("result handler received unexpected client id `{client_id}`")
-                            });
-
-                            assert_eq!(
-                                payload, &case.result_request,
-                                "result request payload for `{client_id}` should match expected value"
-                            );
-
-                            Ok(case.result_response.clone())
+                            Ok(Bytes::from_static(b"result=done"))
                         }
                     })
                     .await
@@ -2407,7 +2370,6 @@ async fn single_action_communication_multiple_polls() {
             let result_response = ActionMessenger::request_result(
                 &caller_handle,
                 &goal_handle,
-                case.result_request.clone(),
                 Duration::from_millis(1000),
             )
             .await
@@ -2415,7 +2377,7 @@ async fn single_action_communication_multiple_polls() {
 
             assert_eq!(
                 result_response.payload().to_bytes(),
-                case.result_response.clone(),
+                Bytes::from_static(b"result=done"),
                 "result response should match expected payload for `{}`",
                 case.client_id
             );
