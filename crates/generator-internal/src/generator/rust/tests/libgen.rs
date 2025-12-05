@@ -434,9 +434,9 @@ async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
     enable_camera::handle_next_request(&messenger, |request| -> Result<enable_camera::Response> {{
-        println!(\"received enable_camera request from {{}}: enable = {{}}\", request.instance_id, request.request_data.enable);
+        println!(\"received enable_camera request from {{}}: enable = {{}}\", request.instance_id, request.data.enable);
         Ok(enable_camera::Response::new(
-            request.request_data.enable,
+            request.data.enable,
             Some(\"handled\".to_owned()),
         ))
     }})
@@ -656,9 +656,9 @@ async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
     enable_camera::handle_next_request(&messenger, |request| -> Result<enable_camera::Response> {{
-        println!(\"received enable_camera request for {{}}: {{}}\", request.instance_id, request.request_data.enable);
+        println!(\"received enable_camera request for {{}}: {{}}\", request.instance_id, request.data.enable);
         Ok(enable_camera::Response::new(
-            request.request_data.enable,
+            request.data.enable,
             Some(\"handled\".to_owned()),
         ))
     }})
@@ -716,9 +716,9 @@ async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
     enable_camera::handle_next_request(&messenger, |request| -> Result<enable_camera::Response> {{
-        println!(\"received enable_camera request for {{}}: {{}}\", request.instance_id, request.request_data.enable);
+        println!(\"received enable_camera request for {{}}: {{}}\", request.instance_id, request.data.enable);
         Ok(enable_camera::Response::new(
-            request.request_data.enable,
+            request.data.enable,
             Some(\"handled\".to_owned()),
         ))
     }})

@@ -664,7 +664,7 @@ impl LanguageGenerator for RustGenerator {
             None
         };
 
-        // Build Request struct (wraps instance_id, master_node, and request_data)
+        // Build Request struct (wraps instance_id, master_node, and data)
         let request_struct_tokens = if let Some(ref data_ident) = request_data_struct_ident {
             quote! {
                 #[derive(Debug, Clone)]
@@ -672,13 +672,7 @@ impl LanguageGenerator for RustGenerator {
                 pub struct Request {
                     pub instance_id: String,
                     pub master_node: String,
-                    pub request_data: #data_ident,
-                }
-
-                impl Request {
-                    pub fn new(instance_id: String, master_node: String, request_data: #data_ident) -> Self {
-                        Self { instance_id, master_node, request_data }
-                    }
+                    pub data: #data_ident,
                 }
             }
         } else {
@@ -688,12 +682,6 @@ impl LanguageGenerator for RustGenerator {
                 pub struct Request {
                     pub instance_id: String,
                     pub master_node: String,
-                }
-
-                impl Request {
-                    pub fn new(instance_id: String, master_node: String) -> Self {
-                        Self { instance_id, master_node }
-                    }
                 }
             }
         };
@@ -3061,6 +3049,7 @@ fn build_exposed_service_method(
         label,
         &callback_call,
         service_instance_param_ident.as_ref(),
+        use_service_name_const,
     );
     let handler_helper_name = handler_helper_name_override.cloned().unwrap_or_else(|| {
         Ident::new(
@@ -3148,9 +3137,9 @@ fn build_exposed_service_method(
 
         let helper_fn = if use_service_name_const {
             let request_construction = if request_data_struct.is_some() {
-                quote!(let request = Request::new(instance_id, master_node, request_data);)
+                quote!(let request = Request { instance_id, master_node, data: request_data };)
             } else {
-                quote!(let request = Request::new(instance_id, master_node);)
+                quote!(let request = Request { instance_id, master_node };)
             };
             quote! {
                 fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<bytes::Bytes>
@@ -3203,7 +3192,7 @@ fn build_exposed_service_method(
                 where
                     F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
                 {
-                    let request = Request::new(instance_id, master_node);
+                    let request = Request { instance_id, master_node };
 
                     let response_payload = #response_serialization;
 
@@ -3701,6 +3690,7 @@ fn build_response_serialization_code(
     label: &str,
     callback_call: &TokenStream,
     service_instance_ident: Option<&Ident>,
+    use_service_name_const: bool,
 ) -> TokenStream {
     let Some(spec) = response_spec else {
         return quote!({
@@ -3711,7 +3701,14 @@ fn build_response_serialization_code(
 
     let builder_type = &spec.builder_type;
     let format = spec.format;
-    let context_literal = Literal::string(label);
+    // For exposed services (use_service_name_const=true), use format! with SERVICE_NAME constant
+    // For other handlers, use the label directly
+    let error_context = if use_service_name_const {
+        quote!(format!("handle_request_payload {}", SERVICE_NAME))
+    } else {
+        let context_literal = Literal::string(label);
+        quote!(String::from(#context_literal))
+    };
     let builder_ident = Ident::new("response_root", Span::call_site());
     let mut assignments = Vec::new();
     let mut names = NameGenerator::new();
@@ -3748,7 +3745,7 @@ fn build_response_serialization_code(
         let mut buffer = Vec::new();
         capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
             crate::Error::CapnpSerialize {
-                context: String::from(#context_literal),
+                context: #error_context,
                 source,
             }
         })?;

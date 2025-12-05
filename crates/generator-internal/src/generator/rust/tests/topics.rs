@@ -463,9 +463,7 @@ fn compile_lib_with_exposed_and_subscribed_topics() {
 
     // Verify expected module files exist
     assert!(
-        output_dir
-            .join("src/exposed_topics/push_frame.rs")
-            .exists(),
+        output_dir.join("src/exposed_topics/push_frame.rs").exists(),
         "Expected push_frame module"
     );
     assert!(

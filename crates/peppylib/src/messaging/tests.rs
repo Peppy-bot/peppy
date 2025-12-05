@@ -1578,9 +1578,9 @@ async fn action_communication_no_instance_id_target() {
             let mut action = ActionMessenger::listen(
                 &action_handle,
                 LISTENER_MASTER_NODE,
+                LISTENER_INSTANCE_ID,
                 listener_node_name,
                 listener_action_name,
-                LISTENER_INSTANCE_ID,
             )
             .await
             .expect("action should start");
@@ -1759,9 +1759,9 @@ async fn action_communication_with_instance_id_target() {
             let mut action = ActionMessenger::listen(
                 &action_handle,
                 LISTENER_MASTER_NODE1,
+                LISTENER_INSTANCE_ID1,
                 listener_node_name,
                 listener_action_name,
-                LISTENER_INSTANCE_ID1,
             )
             .await
             .expect("action should start");
@@ -1807,9 +1807,9 @@ async fn action_communication_with_instance_id_target() {
             let mut action = ActionMessenger::listen(
                 &action_handle,
                 LISTENER_MASTER_NODE2,
+                LISTENER_INSTANCE_ID2,
                 listener_node_name,
                 listener_action_name,
-                LISTENER_INSTANCE_ID2,
             )
             .await
             .expect("action should start");
@@ -1992,9 +1992,9 @@ async fn action_communication_goal_cancelled() {
             let mut action = ActionMessenger::listen(
                 &action_handle,
                 LISTENER_MASTER_NODE,
+                LISTENER_INSTANCE_ID,
                 listener_node_name,
                 listener_action_name,
-                LISTENER_INSTANCE_ID,
             )
             .await
             .expect("action should start");
@@ -2230,9 +2230,9 @@ async fn single_action_communication_multiple_polls() {
             let action = ActionMessenger::listen(
                 &action_handle,
                 LISTENER_MASTER_NODE,
+                LISTENER_INSTANCE_ID,
                 listener_node_name,
                 listener_action_name,
-                LISTENER_INSTANCE_ID,
             )
             .await
             .expect("action should start");
