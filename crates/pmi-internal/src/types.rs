@@ -1,5 +1,6 @@
 use super::adapters::mock::MockAdapter;
 use super::error::{Error, Result};
+use config::node::QoSProfile;
 #[cfg(feature = "zenoh")]
 use std::borrow::Cow;
 use std::future::Future;
@@ -38,6 +39,17 @@ pub enum PublisherQoS {
     Critical,
 }
 
+impl From<QoSProfile> for PublisherQoS {
+    fn from(qos: QoSProfile) -> Self {
+        match qos {
+            QoSProfile::Standard => PublisherQoS::Standard,
+            QoSProfile::Reliable => PublisherQoS::Important,
+            QoSProfile::SensorData => PublisherQoS::BestEffort,
+            QoSProfile::Critical => PublisherQoS::Critical,
+        }
+    }
+}
+
 /// QoS settings for subscribing to messages
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubscriberQoS {
@@ -55,6 +67,15 @@ impl SubscriberQoS {
         match self {
             SubscriberQoS::Standard => 128,
             SubscriberQoS::HighThroughput => 1024,
+        }
+    }
+}
+
+impl From<QoSProfile> for SubscriberQoS {
+    fn from(qos: QoSProfile) -> Self {
+        match qos {
+            QoSProfile::SensorData => SubscriberQoS::HighThroughput,
+            _ => SubscriberQoS::Standard,
         }
     }
 }
