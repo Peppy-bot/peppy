@@ -384,8 +384,10 @@ impl ActionGoalHandle {
         &self.goal_response
     }
 
-    pub fn feedback_mut(&mut self) -> &mut Subscription {
-        &mut self.feedback
+    /// Receives the next feedback message.
+    /// Returns `None` if the channel is closed.
+    pub async fn on_next_feedback(&mut self) -> Option<TopicMessage> {
+        self.feedback.on_next_message().await
     }
 }
 

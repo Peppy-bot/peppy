@@ -27,10 +27,7 @@ async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
 }
 
 async fn receive_feedback(handle: &mut ActionGoalHandle, goal_label: &str) {
-    let feedback_result = {
-        let subscription = handle.feedback_mut();
-        timeout(FEEDBACK_TIMEOUT, subscription.rx.recv()).await
-    };
+    let feedback_result = timeout(FEEDBACK_TIMEOUT, handle.on_next_feedback()).await;
 
     match feedback_result {
         Ok(Some(message)) => {

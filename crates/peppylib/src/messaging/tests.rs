@@ -1686,9 +1686,7 @@ async fn action_communication_no_instance_id_target() {
 
         // Consume one feedback update from the action server.
         let feedback_message = goal_handle
-            .feedback_mut()
-            .rx
-            .recv()
+            .on_next_feedback()
             .await
             .expect("caller should receive feedback");
 
@@ -1914,9 +1912,7 @@ async fn action_communication_with_instance_id_target() {
 
         // Consume one feedback update from the action server.
         let feedback_message = goal_handle
-            .feedback_mut()
-            .rx
-            .recv()
+            .on_next_feedback()
             .await
             .expect("caller should receive feedback");
 
@@ -2120,9 +2116,7 @@ async fn action_communication_goal_cancelled() {
     );
 
     let first_feedback = goal_handle
-        .feedback_mut()
-        .rx
-        .recv()
+        .on_next_feedback()
         .await
         .expect("caller should receive initial feedback");
 
@@ -2132,7 +2126,7 @@ async fn action_communication_goal_cancelled() {
 
     let second_feedback = tokio::time::timeout(
         Duration::from_millis(200),
-        goal_handle.feedback_mut().rx.recv(),
+        goal_handle.on_next_feedback(),
     )
     .await
     .expect("feedback stream should continue delivering updates before cancellation")
@@ -2154,12 +2148,10 @@ async fn action_communication_goal_cancelled() {
     assert_eq!(cancel_response.master_node(), LISTENER_MASTER_NODE);
     assert_eq!(cancel_response.instance_id(), LISTENER_INSTANCE_ID);
 
-    // Drain any remaining feedback messages
-    while goal_handle.feedback_mut().rx.try_recv().is_ok() {}
-
+    // Check that no feedback is received after cancellation
     let post_cancel_feedback = tokio::time::timeout(
         Duration::from_millis(200),
-        goal_handle.feedback_mut().rx.recv(),
+        goal_handle.on_next_feedback(),
     )
     .await;
 
@@ -2395,9 +2387,7 @@ async fn single_action_communication_multiple_polls() {
             let mut feedback_matched = false;
             for _ in 0..feedback_search_limit {
                 let feedback_message = goal_handle
-                    .feedback_mut()
-                    .rx
-                    .recv()
+                    .on_next_feedback()
                     .await
                     .expect("caller should receive feedback message");
 
