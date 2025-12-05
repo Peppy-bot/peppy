@@ -325,7 +325,8 @@ fn exposed_action() {
 
     // expose method
     assert_rendered!(
-        rendered.contains("pub async fn expose(messenger: &crate::Messenger) -> crate::Result<Self>"),
+        rendered
+            .contains("pub async fn expose(messenger: &crate::Messenger) -> crate::Result<Self>"),
         &rendered,
         "expected expose method signature"
     );
@@ -628,130 +629,229 @@ fn subscribed_to_action() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
+    // Constants
     assert_rendered!(
-        rendered.contains("pub struct GoalResponse"),
+        rendered.contains("const TARGET_NODE_NAME: &str = \"brain\";"),
         &rendered,
-        "expected goal response struct for subscribed action"
+        "expected TARGET_NODE_NAME constant"
+    );
+    assert_rendered!(
+        rendered.contains("const TARGET_ACTION_NAME: &str = \"move_arm\";"),
+        &rendered,
+        "expected TARGET_ACTION_NAME constant"
+    );
+
+    // GoalRequest struct
+    assert_rendered!(
+        rendered.contains("pub struct GoalRequest"),
+        &rendered,
+        "expected GoalRequest struct for subscribed action"
+    );
+    assert_rendered!(
+        rendered.contains("pub arm_id: u16"),
+        &rendered,
+        "expected arm_id field in GoalRequest"
+    );
+    assert_rendered!(
+        rendered.contains("pub desired_position: [i32; 3]"),
+        &rendered,
+        "expected desired_position field in GoalRequest"
+    );
+
+    // GoalResponseData struct
+    assert_rendered!(
+        rendered.contains("pub struct GoalResponseData"),
+        &rendered,
+        "expected GoalResponseData struct for subscribed action"
     );
     assert_rendered!(
         rendered.contains("pub accepted: bool"),
         &rendered,
-        "expected accepted field in goal response"
+        "expected accepted field in GoalResponseData"
     );
+
+    // GoalResponse wrapper struct
+    assert_rendered!(
+        rendered.contains("pub struct GoalResponse"),
+        &rendered,
+        "expected GoalResponse struct for subscribed action"
+    );
+    assert_rendered!(
+        rendered.contains("pub action_handle: peppylib::messaging::ActionGoalHandle"),
+        &rendered,
+        "expected action_handle field in GoalResponse"
+    );
+    assert_rendered!(
+        rendered.contains("pub data: GoalResponseData"),
+        &rendered,
+        "expected data field in GoalResponse"
+    );
+
+    // CancelResponseData struct
+    assert_rendered!(
+        rendered.contains("pub struct CancelResponseData"),
+        &rendered,
+        "expected CancelResponseData struct for subscribed action"
+    );
+    assert_rendered!(
+        rendered.contains("pub error_message: Option<String>"),
+        &rendered,
+        "expected error_message field in CancelResponseData"
+    );
+
+    // CancelResponse wrapper struct
+    assert_rendered!(
+        rendered.contains("pub struct CancelResponse"),
+        &rendered,
+        "expected CancelResponse struct for subscribed action"
+    );
+
+    // ResultResponseData struct
+    assert_rendered!(
+        rendered.contains("pub struct ResultResponseData"),
+        &rendered,
+        "expected ResultResponseData struct for subscribed action"
+    );
+    assert_rendered!(
+        rendered.contains("pub final_position: [i32; 3]"),
+        &rendered,
+        "expected final_position field in ResultResponseData"
+    );
+
+    // ResultResponse wrapper struct
     assert_rendered!(
         rendered.contains("pub struct ResultResponse"),
         &rendered,
-        "expected result response struct for subscribed action"
+        "expected ResultResponse struct for subscribed action"
     );
     assert_rendered!(
-        rendered.contains("final_position: [i32; 3]"),
+        rendered.contains("pub master_node: String"),
         &rendered,
-        "expected final_position array in result response"
+        "expected master_node field in ResultResponse"
     );
+    assert_rendered!(
+        rendered.contains("pub instance_id: String"),
+        &rendered,
+        "expected instance_id field in ResultResponse"
+    );
+
+    // FeedbackMessage struct
     assert_rendered!(
         rendered.contains("pub struct FeedbackMessage"),
         &rendered,
-        "expected feedback message struct for subscribed action"
+        "expected FeedbackMessage struct for subscribed action"
     );
     assert_rendered!(
-        rendered.contains("new_position: [i32; 3]"),
+        rendered.contains("pub new_position: [i32; 3]"),
         &rendered,
-        "expected feedback message field in struct"
+        "expected new_position field in FeedbackMessage"
     );
+
+    // fire_goal method
     assert_rendered!(
         rendered.contains("pub async fn fire_goal("),
         &rendered,
         "expected fire_goal method definition"
     );
     assert_rendered!(
-        rendered.contains("arm_id: u16"),
+        rendered.contains("request: GoalRequest"),
         &rendered,
-        "expected goal parameter arm_id"
+        "expected GoalRequest parameter in fire_goal"
     );
     assert_rendered!(
-        rendered.contains("desired_position: [i32; 3]"),
+        rendered.contains("feedback_qos: peppylib::config::QoSProfile"),
         &rendered,
-        "expected goal parameter desired_position"
+        "expected feedback_qos parameter in fire_goal"
     );
     assert_rendered!(
         rendered.contains("-> crate::Result<GoalResponse>"),
         &rendered,
-        "expected goal method to return goal response struct"
+        "expected fire_goal to return GoalResponse"
     );
     assert_rendered!(
-        rendered.contains("let service_name = \"move_arm/goal\";"),
+        rendered.contains("peppylib::ActionMessenger::send_goal"),
         &rendered,
-        "expected goal service endpoint literal"
+        "expected ActionMessenger::send_goal call in fire_goal"
     );
-    assert_rendered!(
-        rendered.contains("pub struct CancelResponse"),
-        &rendered,
-        "expected cancel response struct for subscribed action"
-    );
-    assert_rendered!(
-        rendered.contains("pub error_message: Option<String>"),
-        &rendered,
-        "expected cancel response to expose error_message field"
-    );
+
+    // cancel_goal method
     assert_rendered!(
         rendered.contains("pub async fn cancel_goal"),
         &rendered,
         "expected cancel_goal method definition"
     );
     assert_rendered!(
+        rendered.contains("action_handle: &peppylib::messaging::ActionGoalHandle"),
+        &rendered,
+        "expected action_handle parameter in cancel_goal"
+    );
+    assert_rendered!(
         rendered.contains("-> crate::Result<CancelResponse>"),
         &rendered,
-        "expected cancel goal to return cancel response struct"
+        "expected cancel_goal to return CancelResponse"
     );
+    assert_rendered!(
+        rendered.contains("peppylib::ActionMessenger::cancel_goal"),
+        &rendered,
+        "expected ActionMessenger::cancel_goal call"
+    );
+
+    // on_next_feedback_message method
     assert_rendered!(
         rendered.contains("pub async fn on_next_feedback_message"),
         &rendered,
-        "expected feedback listener method definition"
+        "expected on_next_feedback_message method definition"
     );
     assert_rendered!(
-        rendered.contains("peppylib::TopicMessenger::listen"),
+        rendered.contains("action_handle: &mut peppylib::messaging::ActionGoalHandle"),
         &rendered,
-        "expected topic subscription for feedback listener"
+        "expected action_handle parameter in on_next_feedback_message"
+    );
+    assert_rendered!(
+        rendered.contains("action_handle.on_next_feedback()"),
+        &rendered,
+        "expected on_next_feedback call on action_handle"
     );
     assert_rendered!(
         rendered.contains("fn deserialize_feedback_payload"),
         &rendered,
         "expected feedback payload helper function"
     );
+
+    // get_result method
     assert_rendered!(
-        rendered.contains("pub async fn get_action_result"),
+        rendered.contains("pub async fn get_result"),
         &rendered,
-        "expected result method definition"
-    );
-    assert_rendered!(
-        rendered.contains("let service_name = \"move_arm/result\";"),
-        &rendered,
-        "expected result service endpoint literal"
+        "expected get_result method definition"
     );
     assert_rendered!(
         rendered.contains("-> crate::Result<ResultResponse>"),
         &rendered,
-        "expected result method to return result response struct"
+        "expected get_result to return ResultResponse"
     );
     assert_rendered!(
-        rendered.contains("String::from(\"brain move_arm GoalResponse\")"),
+        rendered.contains("peppylib::ActionMessenger::request_result"),
         &rendered,
-        "expected goal response context label to include node and action"
+        "expected ActionMessenger::request_result call"
+    );
+
+    // Context labels use format! macro
+    assert_rendered!(
+        rendered.contains("format!(\"{} {} GoalResponse\", TARGET_NODE_NAME, TARGET_ACTION_NAME)"),
+        &rendered,
+        "expected goal response context label using format macro"
     );
     assert_rendered!(
-        rendered.contains("String::from(\"brain move_arm ResultResponse\")"),
+        rendered
+            .contains("format!(\"{} {} ResultResponse\", TARGET_NODE_NAME, TARGET_ACTION_NAME)"),
         &rendered,
-        "expected result response context label to include node and action"
+        "expected result response context label using format macro"
     );
     assert_rendered!(
-        rendered.contains("String::from(\"brain move_arm FeedbackMessage\")"),
+        rendered
+            .contains("format!(\"{} {} FeedbackMessage\", TARGET_NODE_NAME, TARGET_ACTION_NAME)"),
         &rendered,
-        "expected feedback context label to include node and action"
-    );
-    assert_rendered!(
-        rendered.contains("peppylib::ServiceMessenger::poll"),
-        &rendered,
-        "expected service poll usage in subscribed action methods"
+        "expected feedback context label using format macro"
     );
 }
 
@@ -827,11 +927,37 @@ fn subscribed_to_two_actions_same_node() {
         )
     });
 
-    // move_arm
+    // move_arm - check for constants
+    assert_rendered!(
+        move_arm.contains("const TARGET_NODE_NAME: &str = \"brain\";"),
+        move_arm,
+        "expected move_arm TARGET_NODE_NAME constant"
+    );
+    assert_rendered!(
+        move_arm.contains("const TARGET_ACTION_NAME: &str = \"move_arm\";"),
+        move_arm,
+        "expected move_arm TARGET_ACTION_NAME constant"
+    );
+    // move_arm - check for struct hierarchy
+    assert_rendered!(
+        move_arm.contains("pub struct GoalRequest"),
+        move_arm,
+        "expected move_arm goal request struct"
+    );
+    assert_rendered!(
+        move_arm.contains("pub struct GoalResponseData"),
+        move_arm,
+        "expected move_arm goal response data struct"
+    );
     assert_rendered!(
         move_arm.contains("pub struct GoalResponse"),
         move_arm,
         "expected move_arm goal response struct"
+    );
+    assert_rendered!(
+        move_arm.contains("pub action_handle: peppylib::messaging::ActionGoalHandle"),
+        move_arm,
+        "expected move_arm GoalResponse to contain action_handle"
     );
     assert_rendered!(
         move_arm.contains("pub struct ResultResponse"),
@@ -853,42 +979,72 @@ fn subscribed_to_two_actions_same_node() {
         move_arm,
         "expected desired_position goal parameter"
     );
+    // move_arm - check for new API calls
     assert_rendered!(
-        move_arm.contains("let service_name = \"move_arm/goal\";"),
+        move_arm.contains("peppylib::ActionMessenger::send_goal"),
         move_arm,
-        "expected move_arm goal service literal"
+        "expected move_arm to use ActionMessenger::send_goal"
     );
     assert_rendered!(
-        move_arm.contains("let service_name = \"move_arm/result\";"),
+        move_arm.contains("peppylib::ActionMessenger::cancel_goal"),
         move_arm,
-        "expected move_arm result service literal"
+        "expected move_arm to use ActionMessenger::cancel_goal"
+    );
+    assert_rendered!(
+        move_arm.contains("peppylib::ActionMessenger::request_result"),
+        move_arm,
+        "expected move_arm to use ActionMessenger::request_result"
     );
     assert_rendered!(
         move_arm.contains("fn deserialize_feedback_payload"),
         move_arm,
         "expected move_arm feedback helper"
     );
+    // move_arm - check for format! macro context labels
     assert_rendered!(
-        move_arm.contains("String::from(\"brain move_arm GoalResponse\")"),
+        move_arm.contains("format!(\"{} {} GoalResponse\", TARGET_NODE_NAME, TARGET_ACTION_NAME)"),
         move_arm,
-        "expected move_arm goal response context label"
+        "expected move_arm goal response context label using format!"
     );
     assert_rendered!(
-        move_arm.contains("String::from(\"brain move_arm ResultResponse\")"),
+        move_arm
+            .contains("format!(\"{} {} ResultResponse\", TARGET_NODE_NAME, TARGET_ACTION_NAME)"),
         move_arm,
-        "expected move_arm result response context label"
+        "expected move_arm result response context label using format!"
     );
     assert_rendered!(
-        move_arm.contains("String::from(\"brain move_arm FeedbackMessage\")"),
+        move_arm
+            .contains("format!(\"{} {} FeedbackMessage\", TARGET_NODE_NAME, TARGET_ACTION_NAME)"),
         move_arm,
-        "expected move_arm feedback context label"
+        "expected move_arm feedback context label using format!"
     );
 
-    // rotate_servo_clockwise
+    // rotate_servo_clockwise - check for constants
+    assert_rendered!(
+        rotate_servo.contains("const TARGET_NODE_NAME: &str = \"brain\";"),
+        rotate_servo,
+        "expected rotate_servo_clockwise TARGET_NODE_NAME constant"
+    );
+    assert_rendered!(
+        rotate_servo.contains("const TARGET_ACTION_NAME: &str = \"rotate_servo_clockwise\";"),
+        rotate_servo,
+        "expected rotate_servo_clockwise TARGET_ACTION_NAME constant"
+    );
+    // rotate_servo_clockwise - check for struct hierarchy
+    assert_rendered!(
+        rotate_servo.contains("pub struct GoalResponseData"),
+        rotate_servo,
+        "expected rotate_servo_clockwise goal response data struct"
+    );
     assert_rendered!(
         rotate_servo.contains("pub struct GoalResponse"),
         rotate_servo,
         "expected rotate_servo_clockwise goal response struct"
+    );
+    assert_rendered!(
+        rotate_servo.contains("pub action_handle: peppylib::messaging::ActionGoalHandle"),
+        rotate_servo,
+        "expected rotate_servo_clockwise GoalResponse to contain action_handle"
     );
     assert_rendered!(
         rotate_servo.contains("pub struct ResultResponse"),
@@ -901,16 +1057,6 @@ fn subscribed_to_two_actions_same_node() {
         "expected rotate_servo_clockwise feedback message struct"
     );
     assert_rendered!(
-        rotate_servo.contains("let service_name = \"rotate_servo_clockwise/goal\";"),
-        rotate_servo,
-        "expected rotate_servo_clockwise goal service literal"
-    );
-    assert_rendered!(
-        rotate_servo.contains("let service_name = \"rotate_servo_clockwise/result\";"),
-        rotate_servo,
-        "expected rotate_servo_clockwise result service literal"
-    );
-    assert_rendered!(
         rotate_servo.contains("fn deserialize_feedback_payload"),
         rotate_servo,
         "expected rotate_servo_clockwise feedback helper"
@@ -920,30 +1066,45 @@ fn subscribed_to_two_actions_same_node() {
         rotate_servo,
         "expected rotate_servo_clockwise goal helper return type"
     );
+    // rotate_servo_clockwise - check for new API calls
     assert_rendered!(
-        rotate_servo.contains("peppylib::ServiceMessenger::poll"),
+        rotate_servo.contains("peppylib::ActionMessenger::send_goal"),
         rotate_servo,
-        "expected rotate_servo_clockwise to poll service endpoints"
+        "expected rotate_servo_clockwise to use ActionMessenger::send_goal"
     );
     assert_rendered!(
-        rotate_servo.contains("peppylib::TopicMessenger::listen"),
+        rotate_servo.contains("peppylib::ActionMessenger::cancel_goal"),
         rotate_servo,
-        "expected rotate_servo_clockwise to subscribe for feedback"
+        "expected rotate_servo_clockwise to use ActionMessenger::cancel_goal"
     );
     assert_rendered!(
-        rotate_servo.contains("String::from(\"brain rotate_servo_clockwise GoalResponse\")"),
+        rotate_servo.contains("peppylib::ActionMessenger::request_result"),
         rotate_servo,
-        "expected rotate_servo goal response context label"
+        "expected rotate_servo_clockwise to use ActionMessenger::request_result"
     );
     assert_rendered!(
-        rotate_servo.contains("String::from(\"brain rotate_servo_clockwise ResultResponse\")"),
+        rotate_servo.contains("action_handle.on_next_feedback"),
         rotate_servo,
-        "expected rotate_servo result response context label"
+        "expected rotate_servo_clockwise to use action_handle.on_next_feedback"
+    );
+    // rotate_servo_clockwise - check for format! macro context labels
+    assert_rendered!(
+        rotate_servo
+            .contains("format!(\"{} {} GoalResponse\", TARGET_NODE_NAME, TARGET_ACTION_NAME)"),
+        rotate_servo,
+        "expected rotate_servo goal response context label using format!"
     );
     assert_rendered!(
-        rotate_servo.contains("String::from(\"brain rotate_servo_clockwise FeedbackMessage\")"),
+        rotate_servo
+            .contains("format!(\"{} {} ResultResponse\", TARGET_NODE_NAME, TARGET_ACTION_NAME)"),
         rotate_servo,
-        "expected rotate_servo feedback context label"
+        "expected rotate_servo result response context label using format!"
+    );
+    assert_rendered!(
+        rotate_servo
+            .contains("format!(\"{} {} FeedbackMessage\", TARGET_NODE_NAME, TARGET_ACTION_NAME)"),
+        rotate_servo,
+        "expected rotate_servo feedback context label using format!"
     );
 }
 
@@ -986,15 +1147,20 @@ fn subscribed_action_without_response_payload() {
         "expected fire_goal helper to be generated"
     );
     assert_rendered!(
-        rendered.contains("pub async fn get_action_result"),
+        rendered.contains("pub async fn get_result"),
         &rendered,
-        "expected get_action_result helper to be generated"
+        "expected get_result helper to be generated"
     );
-    let ok_unit_count = rendered.matches("Ok(())").count();
+    // Check for new API calls
     assert_rendered!(
-        ok_unit_count >= 2,
+        rendered.contains("peppylib::ActionMessenger::send_goal"),
         &rendered,
-        "expected helpers with empty responses to return Ok(())"
+        "expected to use ActionMessenger::send_goal"
+    );
+    assert_rendered!(
+        rendered.contains("peppylib::ActionMessenger::request_result"),
+        &rendered,
+        "expected to use ActionMessenger::request_result"
     );
 }
 
@@ -1026,7 +1192,7 @@ fn subscribed_action_without_feedback() {
         "expected subscribed actions to still emit goal helpers"
     );
     assert_rendered!(
-        rendered.contains("pub async fn get_action_result"),
+        rendered.contains("pub async fn get_result"),
         &rendered,
         "expected subscribed actions to still emit result helpers"
     );
@@ -1041,10 +1207,16 @@ fn subscribed_action_without_feedback() {
         &rendered,
         "expected feedback payload helper to be omitted without feedback format"
     );
+    // Check for new API calls
     assert_rendered!(
-        !rendered.contains("peppylib::TopicMessenger::listen"),
+        rendered.contains("peppylib::ActionMessenger::send_goal"),
         &rendered,
-        "expected generator to avoid topic subscriptions without feedback payloads"
+        "expected to use ActionMessenger::send_goal"
+    );
+    assert_rendered!(
+        rendered.contains("peppylib::ActionMessenger::request_result"),
+        &rendered,
+        "expected to use ActionMessenger::request_result"
     );
 }
 

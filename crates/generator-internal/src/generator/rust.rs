@@ -110,95 +110,68 @@ impl RustGenerator {
         }))
     }
 
-    fn build_action_service_method(
+    /// Builds the fire_goal method for subscribed actions using ActionMessenger::send_goal
+    fn build_subscribed_action_fire_goal_method(
         &mut self,
         context: &mut GenerationContext,
-        method_ident: &Ident,
-        struct_prefix: &str,
+        action_struct_name: &str,
         request_format: Option<&MessageFormat>,
         response_format: Option<&MessageFormat>,
-        service_name: &str,
         schema_key: &str,
-        response_struct_override: Option<&Ident>,
-        response_context_label: Option<&str>,
-        node_name: &str,
-    ) -> Result<TokenStream> {
+    ) -> Result<(TokenStream, Vec<TokenStream>)> {
         let request_artifacts = map_message_format(request_format)?;
         let response_artifacts = map_message_format(response_format)?;
 
-        let params = collect_function_params(
-            request_artifacts.as_ref(),
-            response_artifacts.as_ref(),
-            struct_prefix,
-            context,
-            response_struct_override,
-        )?;
-
-        let method_label = method_ident.to_string();
-        let method_label_literal = Literal::string(&method_label);
-        let node_name_literal = Literal::string(node_name);
-        let request_encoding = self.prepare_message_encoding(
-            schema_key,
-            struct_prefix,
-            request_artifacts.as_ref(),
-            &params,
-        )?;
-
-        let request_payload_tokens = if let Some(spec) = &request_encoding {
-            let builder_type = &spec.builder_type;
-            let assignments = &spec.assignments;
-
-            quote! {
-                let request_payload = {
-                    let mut message = capnp::message::Builder::new_default();
-                    {
-                        let mut root = message.init_root::<#builder_type>();
-                        #( #assignments )*
-                    }
-                    let mut buffer = Vec::new();
-                    capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
-                        crate::Error::CapnpSerialize {
-                            context: String::from(#method_label_literal),
-                            source,
-                        }
-                    })?;
-                    bytes::Bytes::from(buffer)
-                };
-            }
-        } else {
-            let suppress_unused = unused_params_stmt(&params);
-            quote! {
-                #suppress_unused
-                let request_payload = bytes::Bytes::new();
-            }
-        };
-
-        let service_name_literal = Literal::string(service_name);
-        let poll_call = quote! {
-            peppylib::ServiceMessenger::poll(
-                messenger.handle(),
-                messenger.master_node(),
-                "default_client",
-                node_name,
-                service_name,
+        // Build GoalRequest struct if there's request data
+        let goal_request_ident = Ident::new("GoalRequest", Span::call_site());
+        if let Some(ref artifacts) = request_artifacts {
+            let params = collect_function_params(
+                Some(artifacts),
                 None,
-                request_payload,
-                timeout,
-            )
-        };
+                &format!("{action_struct_name}Goal"),
+                context,
+                None,
+            )?;
+            let fields: Vec<(Ident, TokenStream)> = params
+                .iter()
+                .map(|p| (p.ident.clone(), p.ty.clone()))
+                .collect();
+            context.add_struct(goal_request_ident.clone(), fields);
+        }
 
-        let (return_ty, response_tokens, poll_tokens) = if let Some(response_artifacts) =
-            response_artifacts.as_ref()
-        {
-            let response_struct_ident = response_struct_override.cloned().unwrap_or_else(|| {
-                Ident::new(&format!("{struct_prefix}Response"), Span::call_site())
-            });
-            let response_struct_name = response_struct_ident.to_string();
+        // Build GoalResponseData struct
+        let goal_response_data_ident = Ident::new("GoalResponseData", Span::call_site());
+        let goal_response_ident = Ident::new("GoalResponse", Span::call_site());
 
+        let mut helper_items = Vec::new();
+        let method_tokens = if let Some(ref response_artifacts) = response_artifacts {
+            // Note: collect_function_params creates the GoalResponseData struct for us
+            let _response_params = collect_function_params(
+                None,
+                Some(response_artifacts),
+                &format!("{action_struct_name}GoalResponse"),
+                context,
+                Some(&goal_response_data_ident),
+            )?;
+
+            // GoalResponse wrapper with action_handle
+            let goal_response_fields = vec![
+                (
+                    Ident::new("action_handle", Span::call_site()),
+                    quote!(peppylib::messaging::ActionGoalHandle),
+                ),
+                (
+                    Ident::new("data", Span::call_site()),
+                    quote!(#goal_response_data_ident),
+                ),
+            ];
+            context.add_struct(goal_response_ident.clone(), goal_response_fields);
+
+            // Build deserializer helper
             let response_schema_key = format!("{schema_key}_response");
             let response_schema = self.register_schema(
                 &response_schema_key,
-                &response_struct_name,
+                "GoalResponseMessage",
                 response_artifacts,
             )?;
             let reader_type = response_schema.reader_type_tokens();
@@ -208,18 +181,17 @@ impl RustGenerator {
             let mut response_inits = Vec::new();
             let mut names = NameGenerator::new();
 
-            let response_context_value = response_context_label
-                .map(str::to_string)
-                .unwrap_or_else(|| response_struct_name.clone());
-            let response_context_literal = Literal::string(&response_context_value);
-            let context_expr = quote!(String::from(#response_context_literal));
+            let context_expr = quote!(format!(
+                "{} {} GoalResponse",
+                TARGET_NODE_NAME, TARGET_ACTION_NAME
+            ));
 
             for (field_name, schema) in &response_format.0 {
                 let (mut statements, value_ident) = generate_field_reader_statements(
                     &quote!(root),
                     field_name,
                     schema,
-                    &response_struct_name,
+                    "GoalResponseData",
                     &context_expr,
                     &mut names,
                 );
@@ -229,96 +201,329 @@ impl RustGenerator {
                 response_inits.push(quote!(#field_ident: #value_ident));
             }
 
-            let poll_tokens = quote! {
-                let response_bytes = #poll_call.await?;
+            let deserialize_helper = quote! {
+                fn deserialize_goal_response(payload: &[u8]) -> crate::Result<#goal_response_data_ident> {
+                    let context = format!("{} {} GoalResponse", TARGET_NODE_NAME, TARGET_ACTION_NAME);
+                    let mut cursor = std::io::Cursor::new(payload);
+                    let message_reader = capnp::serialize::read_message(
+                        &mut cursor,
+                        capnp::message::ReaderOptions::new(),
+                    )
+                    .map_err(|source| crate::Error::CapnpDeserialize {
+                        context: context.clone(),
+                        source,
+                    })?;
+
+                    let root = message_reader
+                        .get_root::<#reader_type>()
+                        .map_err(|source| crate::Error::CapnpDeserialize {
+                            context: context.clone(),
+                            source,
+                        })?;
+
+                    #( #response_statements )*
+
+                    Ok(#goal_response_data_ident {
+                        #( #response_inits ),*
+                    })
+                }
+            };
+            helper_items.push(deserialize_helper);
+
+            // Build goal payload encoding
+            let goal_payload_tokens = if let Some(ref request_artifacts) = request_artifacts {
+                let schema_info = self.register_schema(
+                    schema_key,
+                    &format!("{action_struct_name}GoalMessage"),
+                    request_artifacts,
+                )?;
+                let builder_type = schema_info.builder_type_tokens();
+
+                // Generate assignments that read from request struct
+                let request_ident = Ident::new("request", Span::call_site());
+                let assignments = generate_assignments_from_struct(
+                    &Ident::new("root", Span::call_site()),
+                    request_format.expect("request_format should be Some when artifacts exist"),
+                    &request_ident,
+                );
+
+                quote! {
+                    let goal_payload = {
+                        let mut message = capnp::message::Builder::new_default();
+                        {
+                            let mut root = message.init_root::<#builder_type>();
+                            #( #assignments )*
+                        }
+                        let mut buffer = Vec::new();
+                        capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
+                            crate::Error::CapnpSerialize {
+                                context: format!("fire_goal {} {}", TARGET_NODE_NAME, TARGET_ACTION_NAME),
+                                source,
+                            }
+                        })?;
+                        bytes::Bytes::from(buffer)
+                    };
+                }
+            } else {
+                quote! {
+                    let goal_payload = bytes::Bytes::new();
+                }
             };
 
-            let response_tokens = quote! {
-                let mut cursor = std::io::Cursor::new(response_bytes.as_ref());
+            let request_param = if request_format.is_some() {
+                quote!(request: #goal_request_ident,)
+            } else {
+                quote!()
+            };
+
+            quote! {
+                pub async fn fire_goal(
+                    messenger: &crate::Messenger,
+                    timeout: std::time::Duration,
+                    target_master_node: Option<&str>,
+                    target_instance_id: Option<&str>,
+                    #request_param
+                    feedback_qos: peppylib::config::QoSProfile,
+                ) -> crate::Result<#goal_response_ident> {
+                    #goal_payload_tokens
+
+                    let action_handle = peppylib::ActionMessenger::send_goal(
+                        messenger.handle(),
+                        messenger.runtime().bound_master_node(),
+                        messenger.runtime().bound_instance_id(),
+                        TARGET_NODE_NAME,
+                        TARGET_ACTION_NAME,
+                        target_master_node,
+                        target_instance_id,
+                        goal_payload,
+                        feedback_qos,
+                        timeout,
+                    )
+                    .await?;
+
+                    let payload = action_handle.goal_response().payload().as_bytes();
+                    let response_data = deserialize_goal_response(payload.as_ref())?;
+                    Ok(#goal_response_ident {
+                        action_handle,
+                        data: response_data,
+                    })
+                }
+            }
+        } else {
+            // No response format - still need the wrapper struct
+            let goal_response_fields = vec![(
+                Ident::new("action_handle", Span::call_site()),
+                quote!(peppylib::messaging::ActionGoalHandle),
+            )];
+            context.add_struct(goal_response_ident.clone(), goal_response_fields);
+
+            let goal_payload_tokens = if let Some(ref request_artifacts) = request_artifacts {
+                let schema_info = self.register_schema(
+                    schema_key,
+                    &format!("{action_struct_name}GoalMessage"),
+                    request_artifacts,
+                )?;
+                let builder_type = schema_info.builder_type_tokens();
+
+                let request_ident = Ident::new("request", Span::call_site());
+                let assignments = generate_assignments_from_struct(
+                    &Ident::new("root", Span::call_site()),
+                    request_format.expect("request_format should be Some when artifacts exist"),
+                    &request_ident,
+                );
+
+                quote! {
+                    let goal_payload = {
+                        let mut message = capnp::message::Builder::new_default();
+                        {
+                            let mut root = message.init_root::<#builder_type>();
+                            #( #assignments )*
+                        }
+                        let mut buffer = Vec::new();
+                        capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
+                            crate::Error::CapnpSerialize {
+                                context: format!("fire_goal {} {}", TARGET_NODE_NAME, TARGET_ACTION_NAME),
+                                source,
+                            }
+                        })?;
+                        bytes::Bytes::from(buffer)
+                    };
+                }
+            } else {
+                quote! {
+                    let goal_payload = bytes::Bytes::new();
+                }
+            };
+
+            let request_param = if request_format.is_some() {
+                quote!(request: #goal_request_ident,)
+            } else {
+                quote!()
+            };
+
+            quote! {
+                pub async fn fire_goal(
+                    messenger: &crate::Messenger,
+                    timeout: std::time::Duration,
+                    target_master_node: Option<&str>,
+                    target_instance_id: Option<&str>,
+                    #request_param
+                    feedback_qos: peppylib::config::QoSProfile,
+                ) -> crate::Result<#goal_response_ident> {
+                    #goal_payload_tokens
+
+                    let action_handle = peppylib::ActionMessenger::send_goal(
+                        messenger.handle(),
+                        messenger.runtime().bound_master_node(),
+                        messenger.runtime().bound_instance_id(),
+                        TARGET_NODE_NAME,
+                        TARGET_ACTION_NAME,
+                        target_master_node,
+                        target_instance_id,
+                        goal_payload,
+                        feedback_qos,
+                        timeout,
+                    )
+                    .await?;
+
+                    Ok(#goal_response_ident {
+                        action_handle,
+                    })
+                }
+            }
+        };
+
+        Ok((method_tokens, helper_items))
+    }
+
+    /// Builds the cancel_goal method for subscribed actions using ActionMessenger::cancel_goal
+    fn build_subscribed_action_cancel_method(
+        &mut self,
+        context: &mut GenerationContext,
+        action_struct_name: &str,
+        schema_key: &str,
+    ) -> Result<(TokenStream, Vec<TokenStream>)> {
+        let cancel_response_format = cancel_action_response_format();
+        let response_artifacts = map_message_format(Some(&cancel_response_format))?
+            .expect("cancel response format should yield artifacts");
+
+        let cancel_response_data_ident = Ident::new("CancelResponseData", Span::call_site());
+        let cancel_response_ident = Ident::new("CancelResponse", Span::call_site());
+
+        // Note: collect_function_params creates the CancelResponseData struct for us
+        let _response_params = collect_function_params(
+            None,
+            Some(&response_artifacts),
+            &format!("{action_struct_name}CancelResponse"),
+            context,
+            Some(&cancel_response_data_ident),
+        )?;
+
+        // CancelResponse wrapper struct
+        let cancel_response_fields = vec![
+            (Ident::new("master_node", Span::call_site()), quote!(String)),
+            (Ident::new("instance_id", Span::call_site()), quote!(String)),
+            (
+                Ident::new("data", Span::call_site()),
+                quote!(#cancel_response_data_ident),
+            ),
+        ];
+        context.add_struct(cancel_response_ident.clone(), cancel_response_fields);
+
+        // Build deserializer helper
+        let response_schema_key = format!("{schema_key}_response");
+        let response_schema = self.register_schema(
+            &response_schema_key,
+            "CancelResponseMessage",
+            &response_artifacts,
+        )?;
+        let reader_type = response_schema.reader_type_tokens();
+
+        let response_format = response_artifacts.message_format();
+        let mut response_statements = Vec::new();
+        let mut response_inits = Vec::new();
+        let mut names = NameGenerator::new();
+
+        let context_expr = quote!(format!(
+            "{} {} CancelResponse",
+            TARGET_NODE_NAME, TARGET_ACTION_NAME
+        ));
+
+        for (field_name, schema) in &response_format.0 {
+            let (mut statements, value_ident) = generate_field_reader_statements(
+                &quote!(root),
+                field_name,
+                schema,
+                "CancelResponseData",
+                &context_expr,
+                &mut names,
+            );
+            response_statements.append(&mut statements);
+            let field_ident =
+                Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
+            response_inits.push(quote!(#field_ident: #value_ident));
+        }
+
+        let deserialize_helper = quote! {
+            fn deserialize_cancel_response(payload: &[u8]) -> crate::Result<#cancel_response_data_ident> {
+                let context = format!("{} {} CancelResponse", TARGET_NODE_NAME, TARGET_ACTION_NAME);
+                let mut cursor = std::io::Cursor::new(payload);
                 let message_reader = capnp::serialize::read_message(
                     &mut cursor,
                     capnp::message::ReaderOptions::new(),
                 )
                 .map_err(|source| crate::Error::CapnpDeserialize {
-                    context: String::from(#response_context_literal),
+                    context: context.clone(),
                     source,
                 })?;
 
                 let root = message_reader
                     .get_root::<#reader_type>()
                     .map_err(|source| crate::Error::CapnpDeserialize {
-                        context: String::from(#response_context_literal),
+                        context: context.clone(),
                         source,
                     })?;
 
                 #( #response_statements )*
 
-                Ok(#response_struct_ident {
+                Ok(#cancel_response_data_ident {
                     #( #response_inits ),*
                 })
-            };
-
-            (quote!(#response_struct_ident), response_tokens, poll_tokens)
-        } else {
-            let poll_tokens = quote! {
-                let _ = #poll_call.await?;
-            };
-            (quote!(()), quote!(Ok(())), poll_tokens)
+            }
         };
 
-        let mut fn_params = vec![
-            quote!(messenger: &crate::Messenger),
-            quote!(timeout: std::time::Duration),
-        ];
-        fn_params.extend(function_param_tokens(&params));
+        let method_tokens = quote! {
+            pub async fn cancel_goal(
+                messenger: &crate::Messenger,
+                action_handle: &peppylib::messaging::ActionGoalHandle,
+                timeout: std::time::Duration,
+            ) -> crate::Result<#cancel_response_ident> {
+                let response = peppylib::ActionMessenger::cancel_goal(
+                    messenger.handle(),
+                    action_handle,
+                    timeout,
+                )
+                .await?;
 
-        Ok(quote! {
-            pub async fn #method_ident(#(#fn_params),*) -> crate::Result<#return_ty> {
-                let node_name = #node_name_literal;
-                let service_name = #service_name_literal;
-
-                #request_payload_tokens
-
-                #poll_tokens
-
-                #response_tokens
+                let payload = response.payload().as_bytes();
+                let response_data = deserialize_cancel_response(payload.as_ref())?;
+                Ok(#cancel_response_ident {
+                    master_node: response.master_node().to_string(),
+                    instance_id: response.instance_id().to_string(),
+                    data: response_data,
+                })
             }
-        })
+        };
+
+        Ok((method_tokens, vec![deserialize_helper]))
     }
 
-    fn build_action_cancel_method(
+    /// Builds the on_next_feedback_message method for subscribed actions
+    fn build_subscribed_action_feedback_method(
         &mut self,
         context: &mut GenerationContext,
-        struct_prefix: &str,
-        service_name: &str,
-        schema_key: &str,
-        response_context_label: Option<&str>,
-        node_name: &str,
-    ) -> Result<TokenStream> {
-        let cancel_response_format = cancel_action_response_format();
-        let cancel_response_ident = Ident::new("CancelResponse", Span::call_site());
-
-        self.build_action_service_method(
-            context,
-            &Ident::new("cancel_goal", Span::call_site()),
-            struct_prefix,
-            None,
-            Some(&cancel_response_format),
-            service_name,
-            schema_key,
-            Some(&cancel_response_ident),
-            response_context_label,
-            node_name,
-        )
-    }
-
-    fn build_action_feedback_method(
-        &mut self,
-        context: &mut GenerationContext,
-        action: &SubscribedAction,
         format: &MessageFormat,
         action_struct_name: &str,
-        feedback_context_label: &str,
     ) -> Result<(TokenStream, Vec<TokenStream>)> {
         let format_artifacts = map_message_format(Some(format))?
             .expect("feedback format should always yield encoding artifacts");
@@ -352,17 +557,15 @@ impl RustGenerator {
             .expect("feedback encoding spec should exist");
         let reader_type = encoding.reader_type.clone();
 
-        let topic_name = action_endpoint_name(None, action.name.as_str(), "feedback");
-        let topic_literal = Literal::string(&topic_name);
-        let node_name_literal = Literal::string(action.node.as_str());
-
         let helper_fn_ident = Ident::new("deserialize_feedback_payload", Span::call_site());
 
         let format_schema = format_artifacts.message_format();
         let schema_lookup = SchemaFieldLookup::new(format_schema);
 
-        let context_literal = Literal::string(feedback_context_label);
-        let context_expr = quote!(String::from(#context_literal));
+        let context_expr = quote!(format!(
+            "{} {} FeedbackMessage",
+            TARGET_NODE_NAME, TARGET_ACTION_NAME
+        ));
 
         let mut names = NameGenerator::new();
         let mut field_statements = Vec::new();
@@ -385,20 +588,21 @@ impl RustGenerator {
 
         let helper_tokens = quote! {
             fn #helper_fn_ident(payload: &[u8]) -> crate::Result<#struct_ident> {
+                let context = format!("{} {} FeedbackMessage", TARGET_NODE_NAME, TARGET_ACTION_NAME);
                 let mut cursor = std::io::Cursor::new(payload);
                 let message_reader = capnp::serialize::read_message(
                     &mut cursor,
                     capnp::message::ReaderOptions::new(),
                 )
                 .map_err(|source| crate::Error::CapnpDeserialize {
-                    context: String::from(#context_literal),
+                    context: context.clone(),
                     source,
                 })?;
 
                 let root = message_reader
                     .get_root::<#reader_type>()
                     .map_err(|source| crate::Error::CapnpDeserialize {
-                        context: String::from(#context_literal),
+                        context: context.clone(),
                         source,
                     })?;
 
@@ -413,41 +617,168 @@ impl RustGenerator {
         let method_ident = Ident::new("on_next_feedback_message", Span::call_site());
         let method_tokens = quote! {
             pub async fn #method_ident(
-                messenger: &crate::Messenger,
+                action_handle: &mut peppylib::messaging::ActionGoalHandle,
             ) -> crate::Result<#struct_ident> {
-                let topic_name = #topic_literal;
-                let node_name = #node_name_literal;
-                let qos = peppylib::config::QoSProfile::Standard;
-
-                let message = {
-                    let subscription_future = peppylib::TopicMessenger::listen(
-                        messenger.handle(),
-                        messenger.master_node(),
-                        node_name,
-                        topic_name,
-                        qos,
-                    );
-                    let mut subscription = subscription_future.await.map_err(|source| {
-                        crate::Error::TopicSubscribe {
-                            topic_name: topic_name.to_string(),
-                            node_name: node_name.to_string(),
-                            source_msg: source.to_string(),
-                        }
-                    })?;
-                    subscription
-                        .on_next_message()
-                        .await
-                        .ok_or_else(|| crate::Error::SubscriptionClosed {
-                            topic_name: topic_name.to_string(),
-                        })?
-                };
-
-                let payload = message.payload().as_bytes();
+                let feedback = action_handle.on_next_feedback().await?;
+                let payload = feedback.payload().as_bytes();
                 #helper_fn_ident(payload.as_ref())
             }
         };
 
         Ok((method_tokens, vec![helper_tokens]))
+    }
+
+    /// Builds the get_result method for subscribed actions using ActionMessenger::request_result
+    fn build_subscribed_action_result_method(
+        &mut self,
+        context: &mut GenerationContext,
+        action_struct_name: &str,
+        request_format: Option<&MessageFormat>,
+        response_format: Option<&MessageFormat>,
+        schema_key: &str,
+    ) -> Result<(TokenStream, Vec<TokenStream>)> {
+        let response_artifacts = map_message_format(response_format)?;
+
+        let result_response_data_ident = Ident::new("ResultResponseData", Span::call_site());
+        let result_response_ident = Ident::new("ResultResponse", Span::call_site());
+
+        let mut helper_items = Vec::new();
+        let method_tokens = if let Some(ref response_artifacts) = response_artifacts {
+            // Note: collect_function_params creates the ResultResponseData struct for us
+            let _response_params = collect_function_params(
+                None,
+                Some(response_artifacts),
+                &format!("{action_struct_name}ResultResponse"),
+                context,
+                Some(&result_response_data_ident),
+            )?;
+
+            // ResultResponse wrapper
+            let result_response_fields = vec![
+                (Ident::new("master_node", Span::call_site()), quote!(String)),
+                (Ident::new("instance_id", Span::call_site()), quote!(String)),
+                (
+                    Ident::new("data", Span::call_site()),
+                    quote!(#result_response_data_ident),
+                ),
+            ];
+            context.add_struct(result_response_ident.clone(), result_response_fields);
+
+            // Build deserializer helper
+            let response_schema_key = format!("{schema_key}_response");
+            let response_schema = self.register_schema(
+                &response_schema_key,
+                "ResultResponseMessage",
+                response_artifacts,
+            )?;
+            let reader_type = response_schema.reader_type_tokens();
+
+            let response_format = response_artifacts.message_format();
+            let mut response_statements = Vec::new();
+            let mut response_inits = Vec::new();
+            let mut names = NameGenerator::new();
+
+            let context_expr = quote!(format!(
+                "{} {} ResultResponse",
+                TARGET_NODE_NAME, TARGET_ACTION_NAME
+            ));
+
+            for (field_name, schema) in &response_format.0 {
+                let (mut statements, value_ident) = generate_field_reader_statements(
+                    &quote!(root),
+                    field_name,
+                    schema,
+                    "ResultResponseData",
+                    &context_expr,
+                    &mut names,
+                );
+                response_statements.append(&mut statements);
+                let field_ident =
+                    Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
+                response_inits.push(quote!(#field_ident: #value_ident));
+            }
+
+            let deserialize_helper = quote! {
+                fn deserialize_result_response(payload: &[u8]) -> crate::Result<#result_response_data_ident> {
+                    let context = format!("{} {} ResultResponse", TARGET_NODE_NAME, TARGET_ACTION_NAME);
+                    let mut cursor = std::io::Cursor::new(payload);
+                    let message_reader = capnp::serialize::read_message(
+                        &mut cursor,
+                        capnp::message::ReaderOptions::new(),
+                    )
+                    .map_err(|source| crate::Error::CapnpDeserialize {
+                        context: context.clone(),
+                        source,
+                    })?;
+
+                    let root = message_reader
+                        .get_root::<#reader_type>()
+                        .map_err(|source| crate::Error::CapnpDeserialize {
+                            context: context.clone(),
+                            source,
+                        })?;
+
+                    #( #response_statements )*
+
+                    Ok(#result_response_data_ident {
+                        #( #response_inits ),*
+                    })
+                }
+            };
+            helper_items.push(deserialize_helper);
+
+            quote! {
+                pub async fn get_result(
+                    messenger: &crate::Messenger,
+                    action_handle: &peppylib::messaging::ActionGoalHandle,
+                    timeout: std::time::Duration,
+                ) -> crate::Result<#result_response_ident> {
+                    let response = peppylib::ActionMessenger::request_result(
+                        messenger.handle(),
+                        action_handle,
+                        timeout,
+                    )
+                    .await?;
+
+                    let payload = response.payload().as_bytes();
+                    let response_data = deserialize_result_response(payload.as_ref())?;
+                    Ok(#result_response_ident {
+                        master_node: response.master_node().to_string(),
+                        instance_id: response.instance_id().to_string(),
+                        data: response_data,
+                    })
+                }
+            }
+        } else {
+            // No response format - return unit type wrapped
+            let result_response_fields = vec![
+                (Ident::new("master_node", Span::call_site()), quote!(String)),
+                (Ident::new("instance_id", Span::call_site()), quote!(String)),
+            ];
+            context.add_struct(result_response_ident.clone(), result_response_fields);
+
+            quote! {
+                pub async fn get_result(
+                    messenger: &crate::Messenger,
+                    action_handle: &peppylib::messaging::ActionGoalHandle,
+                    timeout: std::time::Duration,
+                ) -> crate::Result<#result_response_ident> {
+                    let response = peppylib::ActionMessenger::request_result(
+                        messenger.handle(),
+                        action_handle,
+                        timeout,
+                    )
+                    .await?;
+
+                    Ok(#result_response_ident {
+                        master_node: response.master_node().to_string(),
+                        instance_id: response.instance_id().to_string(),
+                    })
+                }
+            }
+        };
+
+        Ok((method_tokens, helper_items))
     }
 }
 
@@ -893,23 +1224,22 @@ impl LanguageGenerator for RustGenerator {
             )?;
 
             // Register result response schema
-            let result_response_spec =
-                if let Some(return_artifacts) = response_artifacts.as_ref() {
-                    let schema_key = format!("{label}_response");
-                    let schema_info = self.register_schema(
-                        &schema_key,
-                        &format!("{schema_struct_prefix}Response"),
-                        return_artifacts,
-                    )?;
-                    Some(ServiceResponseSpec {
-                        format: return_artifacts.message_format(),
-                        struct_ident: Ident::new("ResultResponse", Span::call_site()),
-                        builder_type: schema_info.builder_type_tokens(),
-                        include_service_instance_id: false,
-                    })
-                } else {
-                    None
-                };
+            let result_response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
+                let schema_key = format!("{label}_response");
+                let schema_info = self.register_schema(
+                    &schema_key,
+                    &format!("{schema_struct_prefix}Response"),
+                    return_artifacts,
+                )?;
+                Some(ServiceResponseSpec {
+                    format: return_artifacts.message_format(),
+                    struct_ident: Ident::new("ResultResponse", Span::call_site()),
+                    builder_type: schema_info.builder_type_tokens(),
+                    include_service_instance_id: false,
+                })
+            } else {
+                None
+            };
 
             // Build result payload handler
             let result_handler_fn = build_action_payload_handler(
@@ -1406,12 +1736,18 @@ impl LanguageGenerator for RustGenerator {
         };
         let action_prefix = to_camel_case(&base_component);
         let action_struct_name = format!("{action_prefix}Action");
-        let action_context_label =
-            subscribed_action_context_label(action.node.as_str(), action.name.as_str());
 
         let mut context = GenerationContext::default();
         let mut methods: Vec<TokenStream> = Vec::new();
         let mut helper_items: Vec<TokenStream> = Vec::new();
+
+        // Generate constants
+        let node_name_literal = Literal::string(action.node.as_str());
+        let action_name_literal = Literal::string(action.name.as_str());
+        let constants_tokens = quote! {
+            const TARGET_NODE_NAME: &str = #node_name_literal;
+            const TARGET_ACTION_NAME: &str = #action_name_literal;
+        };
 
         let goal_request_format = non_empty_message_format(messages.goal_request.as_ref());
         let goal_response_format = non_empty_message_format(messages.goal_response.as_ref());
@@ -1419,84 +1755,55 @@ impl LanguageGenerator for RustGenerator {
         let result_request_format = non_empty_message_format(messages.result_request.as_ref());
         let result_response_format = non_empty_message_format(messages.result_response.as_ref());
 
-        let goal_response_ident = Ident::new("GoalResponse", Span::call_site());
-        let goal_response_override = if goal_response_format.is_some() {
-            Some(&goal_response_ident)
-        } else {
-            None
-        };
-        let goal_response_context = goal_response_format
-            .is_some()
-            .then(|| format!("{action_context_label} GoalResponse"));
+        // fire_goal method
         let goal_schema_key = format!("{action_struct_name}_fire_goal");
-
-        let goal_method = self.build_action_service_method(
+        let (goal_method, mut goal_helpers) = self.build_subscribed_action_fire_goal_method(
             &mut context,
-            &Ident::new("fire_goal", Span::call_site()),
-            &format!("{action_struct_name}Goal"),
+            &action_struct_name,
             goal_request_format,
             goal_response_format,
-            &action_endpoint_name(None, action.name.as_str(), "goal"),
             &goal_schema_key,
-            goal_response_override,
-            goal_response_context.as_deref(),
-            action.node.as_str(),
         )?;
         methods.push(goal_method);
+        helper_items.append(&mut goal_helpers);
 
-        let cancel_struct_prefix = format!("{action_struct_name}Cancel");
+        // cancel_goal method
         let cancel_schema_key = format!("{action_struct_name}_cancel_goal");
-        let cancel_service_name = action_endpoint_name(None, action.name.as_str(), "cancel");
-        let cancel_response_context = Some(format!("{action_context_label} CancelResponse"));
-        let cancel_method = self.build_action_cancel_method(
+        let (cancel_method, mut cancel_helpers) = self.build_subscribed_action_cancel_method(
             &mut context,
-            &cancel_struct_prefix,
-            &cancel_service_name,
+            &action_struct_name,
             &cancel_schema_key,
-            cancel_response_context.as_deref(),
-            action.node.as_str(),
         )?;
         methods.push(cancel_method);
+        helper_items.append(&mut cancel_helpers);
 
+        // on_next_feedback_message method (only if feedback format exists)
         if let Some(feedback_format) = feedback_format {
-            let feedback_context_label = format!("{action_context_label} FeedbackMessage");
-            let (feedback_method, mut feedback_helpers) = self.build_action_feedback_method(
-                &mut context,
-                action,
-                feedback_format,
-                &action_struct_name,
-                &feedback_context_label,
-            )?;
+            let (feedback_method, mut feedback_helpers) = self
+                .build_subscribed_action_feedback_method(
+                    &mut context,
+                    feedback_format,
+                    &action_struct_name,
+                )?;
             methods.push(feedback_method);
             helper_items.append(&mut feedback_helpers);
         }
 
-        let result_response_ident = Ident::new("ResultResponse", Span::call_site());
-        let result_response_override = if result_response_format.is_some() {
-            Some(&result_response_ident)
-        } else {
-            None
-        };
-        let result_response_context = result_response_format
-            .is_some()
-            .then(|| format!("{action_context_label} ResultResponse"));
-        let result_schema_key = format!("{action_struct_name}_get_action_result");
-
-        let result_method = self.build_action_service_method(
+        // get_result method
+        let result_schema_key = format!("{action_struct_name}_get_result");
+        let (result_method, mut result_helpers) = self.build_subscribed_action_result_method(
             &mut context,
-            &Ident::new("get_action_result", Span::call_site()),
-            &format!("{action_struct_name}Result"),
+            &action_struct_name,
             result_request_format,
             result_response_format,
-            &action_endpoint_name(None, action.name.as_str(), "result"),
             &result_schema_key,
-            result_response_override,
-            result_response_context.as_deref(),
-            action.node.as_str(),
         )?;
         methods.push(result_method);
+        helper_items.append(&mut result_helpers);
 
-        let mut items = context.into_tokens();
+        // Assemble all items
+        let mut items = vec![constants_tokens];
+        items.extend(context.into_tokens());
         items.extend(methods);
         items.extend(helper_items);
 
@@ -2104,6 +2411,31 @@ fn generate_assignments_for_format(
             .unwrap_or_else(|| panic!("missing parameter for field `{field_name}`"))
             .clone();
         let value_expr = quote!(#param_ident);
+        assignments.push(generate_field_assignment(
+            &builder_expr,
+            field_name,
+            schema,
+            &value_expr,
+            &mut name_gen,
+        ));
+    }
+
+    assignments
+}
+
+/// Generates assignments from a struct access (e.g., request.field_name) instead of direct param access
+fn generate_assignments_from_struct(
+    builder_ident: &Ident,
+    format: &MessageFormat,
+    struct_ident: &Ident,
+) -> Vec<TokenStream> {
+    let mut assignments = Vec::with_capacity(format.0.len());
+    let mut name_gen = NameGenerator::new();
+    let builder_expr = quote!(#builder_ident);
+
+    for (field_name, schema) in &format.0 {
+        let field_ident = Ident::new(&sanitize_component(field_name), Span::call_site());
+        let value_expr = quote!(#struct_ident.#field_ident);
         assignments.push(generate_field_assignment(
             &builder_expr,
             field_name,
@@ -3842,11 +4174,7 @@ fn build_response_serialization_code(
 
 // --- Action generation helpers ---
 
-fn build_action_handle_struct(
-    has_goal: bool,
-    has_feedback: bool,
-    has_result: bool,
-) -> TokenStream {
+fn build_action_handle_struct(has_goal: bool, has_feedback: bool, has_result: bool) -> TokenStream {
     let mut fields = Vec::new();
 
     if has_goal {
@@ -4081,7 +4409,11 @@ fn build_action_request_deserializer(
     let mut names = NameGenerator::new();
     let mut field_statements = Vec::new();
     let mut value_idents = Vec::new();
-    let field_context_expr = quote!(format!("{} {}", stringify!(#deserializer_fn_name), ACTION_NAME));
+    let field_context_expr = quote!(format!(
+        "{} {}",
+        stringify!(#deserializer_fn_name),
+        ACTION_NAME
+    ));
 
     for param in params {
         let field_key = param.ident.to_string();

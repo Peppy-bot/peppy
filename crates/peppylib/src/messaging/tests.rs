@@ -2109,13 +2109,11 @@ async fn action_communication_goal_cancelled() {
     assert_eq!(first_feedback.master_node(), LISTENER_MASTER_NODE);
     assert_eq!(first_feedback.instance_id(), LISTENER_INSTANCE_ID);
 
-    let second_feedback = tokio::time::timeout(
-        Duration::from_millis(200),
-        goal_handle.on_next_feedback(),
-    )
-    .await
-    .expect("feedback stream should continue delivering updates before cancellation")
-    .expect("feedback stream closed unexpectedly before cancellation");
+    let second_feedback =
+        tokio::time::timeout(Duration::from_millis(200), goal_handle.on_next_feedback())
+            .await
+            .expect("feedback stream should continue delivering updates before cancellation")
+            .expect("feedback stream closed unexpectedly before cancellation");
 
     assert_eq!(second_feedback.payload(), &feedback_payload);
     assert_eq!(second_feedback.master_node(), LISTENER_MASTER_NODE);
@@ -2134,11 +2132,8 @@ async fn action_communication_goal_cancelled() {
     assert_eq!(cancel_response.instance_id(), LISTENER_INSTANCE_ID);
 
     // Check that no feedback is received after cancellation
-    if let Ok(feedback_result) = tokio::time::timeout(
-        Duration::from_millis(200),
-        goal_handle.on_next_feedback(),
-    )
-    .await
+    if let Ok(feedback_result) =
+        tokio::time::timeout(Duration::from_millis(200), goal_handle.on_next_feedback()).await
     {
         if let Ok(message) = feedback_result {
             panic!(
@@ -2281,12 +2276,10 @@ async fn single_action_communication_multiple_polls() {
             let mut result_handlers = Vec::with_capacity(client_total);
             for _ in 0..client_total {
                 let handler = result_service
-                    .spawn_next_request_handler(move |request| {
-                        async move {
-                            assert!(request.message().payload().is_empty());
+                    .spawn_next_request_handler(move |request| async move {
+                        assert!(request.message().payload().is_empty());
 
-                            Ok(Bytes::from_static(b"result=done"))
-                        }
+                        Ok(Bytes::from_static(b"result=done"))
                     })
                     .await
                     .expect("action should spawn result handler")
