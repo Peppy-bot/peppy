@@ -1575,7 +1575,7 @@ async fn action_communication_no_instance_id_target() {
         let action_handle = router.action_messenger().await;
 
         tokio::spawn(async move {
-            let mut action = ActionMessenger::listen(
+            let mut action = ActionMessenger::expose(
                 &action_handle,
                 LISTENER_MASTER_NODE,
                 LISTENER_INSTANCE_ID,
@@ -1756,7 +1756,7 @@ async fn action_communication_with_instance_id_target() {
         let action_handle = router.action_messenger().await;
 
         tokio::spawn(async move {
-            let mut action = ActionMessenger::listen(
+            let mut action = ActionMessenger::expose(
                 &action_handle,
                 LISTENER_MASTER_NODE1,
                 LISTENER_INSTANCE_ID1,
@@ -1804,7 +1804,7 @@ async fn action_communication_with_instance_id_target() {
         let action_handle = router.action_messenger().await;
 
         tokio::spawn(async move {
-            let mut action = ActionMessenger::listen(
+            let mut action = ActionMessenger::expose(
                 &action_handle,
                 LISTENER_MASTER_NODE2,
                 LISTENER_INSTANCE_ID2,
@@ -1989,7 +1989,7 @@ async fn action_communication_goal_cancelled() {
         let action_handle = router.action_messenger().await;
 
         tokio::spawn(async move {
-            let mut action = ActionMessenger::listen(
+            let mut action = ActionMessenger::expose(
                 &action_handle,
                 LISTENER_MASTER_NODE,
                 LISTENER_INSTANCE_ID,
@@ -2227,7 +2227,7 @@ async fn single_action_communication_multiple_polls() {
         let cases = Arc::clone(&cases);
 
         tokio::spawn(async move {
-            let action = ActionMessenger::listen(
+            let action = ActionMessenger::expose(
                 &action_handle,
                 LISTENER_MASTER_NODE,
                 LISTENER_INSTANCE_ID,

@@ -507,7 +507,7 @@ impl ServiceMessenger {
 }
 
 impl ActionMessenger {
-    pub async fn listen(
+    pub async fn expose(
         messenger: &MessengerHandle,
         bound_master_node: &str,
         as_instance_id: &str,
