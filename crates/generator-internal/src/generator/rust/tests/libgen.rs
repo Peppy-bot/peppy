@@ -462,20 +462,20 @@ async fn main() -> Result<()> {{
     let exposer_thread = thread::spawn(move || {
         run_cargo_run(
             &exposer_dir,
-            Some(Duration::from_secs(5)),
+            Some(Duration::from_secs(10)),
             &[("PEPPY_RUNTIME_CONFIG", &exposer_runtime_config_str)],
         )
     });
 
     // Give the exposer a moment to start listening before the subscriber sends a request.
-    thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_secs(1));
 
     let subscriber_dir = user_node_subscriber.clone();
     let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
     let subscriber_thread = thread::spawn(move || {
         run_cargo_run(
             &subscriber_dir,
-            Some(Duration::from_secs(5)),
+            Some(Duration::from_secs(10)),
             &[("PEPPY_RUNTIME_CONFIG", &subscriber_runtime_config_str)],
         )
     });
