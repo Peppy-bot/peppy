@@ -324,6 +324,7 @@ dependencies = [
  "capnp",
  "capnpc",
  "indexmap 2.12.1",
+ "md5",
  "notify",
  "notify-debouncer-mini",
  "proc-macro2",
@@ -1338,6 +1339,12 @@ checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
  "regex-automata",
 ]
+
+[[package]]
+name = "md5"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae960838283323069879657ca3de837e9f7bbb4c7bf6ea7f1b290d5e9476d2e0"
 
 [[package]]
 name = "memchr"

@@ -1699,7 +1699,6 @@ async fn action_communication_no_instance_id_target() {
         // Finally, request the result using the same handle and ensure the server replies.
         let result_response = ActionMessenger::request_result(
             &caller_handle,
-            CALLER_INSTANCE_ID,
             &goal_handle,
             result_request_payload,
             Duration::from_millis(500),
@@ -1928,7 +1927,6 @@ async fn action_communication_with_instance_id_target() {
         // Finally, request the result using the same handle and ensure the server replies.
         let result_response = ActionMessenger::request_result(
             &caller_handle,
-            CALLER_INSTANCE_ID,
             &goal_handle,
             result_request_payload,
             Duration::from_millis(500),
@@ -2144,14 +2142,10 @@ async fn action_communication_goal_cancelled() {
     assert_eq!(second_feedback.master_node(), LISTENER_MASTER_NODE);
     assert_eq!(second_feedback.instance_id(), LISTENER_INSTANCE_ID);
 
-    let cancel_response = ActionMessenger::cancel_goal(
-        &caller_handle,
-        CALLER_INSTANCE_ID,
-        &goal_handle,
-        Duration::from_millis(500),
-    )
-    .await
-    .expect("caller should receive cancel acknowledgement");
+    let cancel_response =
+        ActionMessenger::cancel_goal(&caller_handle, &goal_handle, Duration::from_millis(500))
+            .await
+            .expect("caller should receive cancel acknowledgement");
 
     assert_eq!(
         cancel_response.payload().to_bytes(),
@@ -2421,7 +2415,6 @@ async fn single_action_communication_multiple_polls() {
 
             let result_response = ActionMessenger::request_result(
                 &caller_handle,
-                &case.client_id,
                 &goal_handle,
                 case.result_request.clone(),
                 Duration::from_millis(1000),

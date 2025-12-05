@@ -387,6 +387,7 @@ impl TopicPublisher {
 
 pub struct ActionGoalHandle {
     master_node: String,
+    instance_id: String,
     node_name: String,
     action_name: String,
     target_instance_id: Option<String>,
@@ -574,6 +575,7 @@ impl ActionMessenger {
 
         Ok(ActionGoalHandle {
             master_node: as_master_node.to_string(),
+            instance_id: as_instance_id.to_string(),
             node_name: to_node_name.to_string(),
             action_name: to_action_name.to_string(),
             target_instance_id: target_instance_id.map(|id| id.to_string()),
@@ -584,7 +586,6 @@ impl ActionMessenger {
 
     pub async fn cancel_goal(
         messenger: &MessengerHandle,
-        as_instance_id: &str,
         handle: &ActionGoalHandle,
         cancel_timeout: Duration,
     ) -> Result<TopicMessage> {
@@ -594,7 +595,7 @@ impl ActionMessenger {
             .poll_service(
                 "action",
                 &handle.master_node,
-                as_instance_id,
+                &handle.instance_id,
                 &handle.node_name,
                 &cancel_service_name,
                 None,
@@ -607,7 +608,6 @@ impl ActionMessenger {
 
     pub async fn request_result(
         messenger: &MessengerHandle,
-        as_instance_id: &str,
         handle: &ActionGoalHandle,
         result_request_payload: Bytes,
         result_timeout: Duration,
@@ -618,7 +618,7 @@ impl ActionMessenger {
             .poll_service(
                 "action",
                 &handle.master_node,
-                as_instance_id,
+                &handle.instance_id,
                 &handle.node_name,
                 &result_service_name,
                 None,

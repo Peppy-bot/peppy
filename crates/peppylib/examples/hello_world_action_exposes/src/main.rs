@@ -351,12 +351,12 @@ async fn main() {
     let master_node_name = format!("{}_master", get_random(rng()));
     let as_instance_id = format!("{}_listener", get_random(rng()));
 
-    let action = ActionMessenger::listen(
+    let action = ActionMessenger::expose(
         &receiver_handle,
         &master_node_name,
+        &as_instance_id,
         NODE_NAME,
         ACTION_NAME,
-        &as_instance_id,
     )
     .await
     .expect("Should expose the action");
