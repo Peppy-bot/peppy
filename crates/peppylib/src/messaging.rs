@@ -29,22 +29,6 @@ pub struct MessengerHandle {
     messenger: Arc<Mutex<Messenger>>,
 }
 
-fn map_node_qos_to_publisher_qos(qos: QoSProfile) -> PublisherQoS {
-    match qos {
-        QoSProfile::Standard => PublisherQoS::Standard,
-        QoSProfile::Reliable => PublisherQoS::Important,
-        QoSProfile::SensorData => PublisherQoS::BestEffort,
-        QoSProfile::Critical => PublisherQoS::Critical,
-    }
-}
-
-fn map_node_qos_to_subscriber_qos(qos: QoSProfile) -> SubscriberQoS {
-    match qos {
-        QoSProfile::SensorData => SubscriberQoS::HighThroughput,
-        _ => SubscriberQoS::Standard,
-    }
-}
-
 /// Generates a unique request ID using SHA256 hash of timestamp + thread ID
 /// This ensures each service call has a unique correlation ID
 fn generate_request_id() -> String {
@@ -553,9 +537,10 @@ impl ActionMessenger {
         let goal_service_name = format!("{to_action_name}/goal");
 
         let feedback_subscription = {
-            let subscriber_qos = map_node_qos_to_subscriber_qos(feedback_qos);
             let messenger = messenger.messenger.lock().await;
-            messenger.subscribe(&feedback_topic, subscriber_qos).await
+            messenger
+                .subscribe(&feedback_topic, feedback_qos.into())
+                .await
         }
         .map_err(Error::PeppyMessagingInterface)?;
 
@@ -585,21 +570,21 @@ impl ActionMessenger {
     }
 
     pub async fn cancel_goal(
-        messenger: &MessengerHandle,
-        handle: &ActionGoalHandle,
+        messenger_handle: &MessengerHandle,
+        action_handle: &ActionGoalHandle,
         cancel_timeout: Duration,
     ) -> Result<TopicMessage> {
-        let cancel_service_name = format!("{}/cancel", handle.action_name);
+        let cancel_service_name = format!("{}/cancel", action_handle.action_name);
 
-        messenger
+        messenger_handle
             .poll_service(
                 "action",
-                &handle.master_node,
-                &handle.instance_id,
-                &handle.node_name,
+                &action_handle.master_node,
+                &action_handle.instance_id,
+                &action_handle.node_name,
                 &cancel_service_name,
                 None,
-                handle.target_instance_id.as_deref(),
+                action_handle.target_instance_id.as_deref(),
                 Bytes::new(),
                 cancel_timeout,
             )
@@ -607,22 +592,22 @@ impl ActionMessenger {
     }
 
     pub async fn request_result(
-        messenger: &MessengerHandle,
-        handle: &ActionGoalHandle,
+        messenger_handle: &MessengerHandle,
+        action_handle: &ActionGoalHandle,
         result_request_payload: Bytes,
         result_timeout: Duration,
     ) -> Result<TopicMessage> {
-        let result_service_name = format!("{}/result", handle.action_name);
+        let result_service_name = format!("{}/result", action_handle.action_name);
 
-        messenger
+        messenger_handle
             .poll_service(
                 "action",
-                &handle.master_node,
-                &handle.instance_id,
-                &handle.node_name,
+                &action_handle.master_node,
+                &action_handle.instance_id,
+                &action_handle.node_name,
                 &result_service_name,
                 None,
-                handle.target_instance_id.as_deref(),
+                action_handle.target_instance_id.as_deref(),
                 result_request_payload,
                 result_timeout,
             )
@@ -630,11 +615,11 @@ impl ActionMessenger {
             .map_err(|err| match err {
                 Error::ServiceTimeout { instance_id, .. } => Error::ActionResultTimeout {
                     instance_id,
-                    action_name: handle.action_name.clone(),
+                    action_name: action_handle.action_name.clone(),
                 },
                 Error::ServiceUnreachable { instance_id, .. } => Error::ActionResultUnreachable {
                     instance_id,
-                    action_name: handle.action_name.clone(),
+                    action_name: action_handle.action_name.clone(),
                 },
                 other => other,
             })
@@ -685,11 +670,9 @@ impl MessengerHandle {
         let key_expr = format!(
             "{as_master_node}/{to_master_node}/{as_instance_id}/{to_instance_id}/topic/{to_node_name}/{to_topic}"
         );
-        let subscriber_qos = map_node_qos_to_subscriber_qos(qos);
-
         let subscription = {
             let messenger = self.messenger.lock().await;
-            messenger.subscribe(&key_expr, subscriber_qos).await
+            messenger.subscribe(&key_expr, qos.into()).await
         }
         .map_err(Error::PeppyMessagingInterface)?;
 
@@ -711,11 +694,9 @@ impl MessengerHandle {
         );
         let msg = Message::new(&key_expr, payload);
 
-        let publisher_qos = map_node_qos_to_publisher_qos(qos);
-
         let mut messenger = self.messenger.lock().await;
         messenger
-            .publish(msg, publisher_qos)
+            .publish(msg, qos.into())
             .await
             .map_err(Error::PeppyMessagingInterface)
     }
