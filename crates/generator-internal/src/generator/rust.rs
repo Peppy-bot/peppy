@@ -110,82 +110,6 @@ impl RustGenerator {
         }))
     }
 
-    fn build_action_service_handler(
-        &mut self,
-        fn_name: &Ident,
-        handler_fn_name_override: Option<&Ident>,
-        handler_helper_name_override: Option<&Ident>,
-        rust_struct_prefix: &str,
-        schema_struct_prefix: &str,
-        request_format: Option<&MessageFormat>,
-        response_format: Option<&MessageFormat>,
-        label: &str,
-        service_name_literal: &Literal,
-        context: &mut GenerationContext,
-    ) -> Result<(TokenStream, Vec<TokenStream>)> {
-        let accept_format_artifacts = map_message_format(request_format)?;
-        let return_format_artifacts = map_message_format(response_format)?;
-
-        let params = collect_function_params(
-            accept_format_artifacts.as_ref(),
-            return_format_artifacts.as_ref(),
-            rust_struct_prefix,
-            context,
-            None,
-        )?;
-
-        let encoding = self.prepare_message_encoding(
-            label,
-            schema_struct_prefix,
-            accept_format_artifacts.as_ref(),
-            &params,
-        )?;
-
-        let request_struct_ident =
-            if let Some((ident, tokens)) = build_request_struct(rust_struct_prefix, &params) {
-                context.add_private_struct(tokens);
-                Some(ident)
-            } else {
-                None
-            };
-
-        let response_spec = if let Some(return_artifacts) = return_format_artifacts.as_ref() {
-            let response_struct_prefix = format!("{rust_struct_prefix}Response");
-            let response_schema_prefix = format!("{schema_struct_prefix}Response");
-            let schema_key = format!("{label}_response");
-            let schema_info =
-                self.register_schema(&schema_key, &response_schema_prefix, return_artifacts)?;
-            Some(ServiceResponseSpec {
-                format: return_artifacts.message_format(),
-                struct_ident: Ident::new(&response_struct_prefix, Span::call_site()),
-                builder_type: schema_info.builder_type_tokens(),
-                include_service_instance_id: false,
-            })
-        } else {
-            None
-        };
-
-        Ok(build_exposed_service_method(
-            fn_name,
-            handler_fn_name_override,
-            handler_helper_name_override,
-            None,
-            &params,
-            &params,
-            None,
-            encoding.as_ref(),
-            accept_format_artifacts
-                .as_ref()
-                .map(|art| art.message_format()),
-            label,
-            service_name_literal,
-            request_struct_ident.as_ref(),
-            None, // request_data_struct - not used in action handlers
-            response_spec.as_ref(),
-            false, // use_service_name_const - action handlers use inline literals
-        ))
-    }
-
     fn build_action_service_method(
         &mut self,
         context: &mut GenerationContext,
@@ -751,62 +675,268 @@ impl LanguageGenerator for RustGenerator {
         let action_prefix = to_camel_case(&base_name);
 
         let mut context = GenerationContext::default();
-        let mut methods: Vec<TokenStream> = Vec::new();
+        let mut action_handle_methods: Vec<TokenStream> = Vec::new();
         let mut helper_tokens: Vec<TokenStream> = Vec::new();
 
+        // ACTION_NAME constant
+        let action_name_literal = Literal::string(&action.name);
+
+        // Track whether we have each component
+        let has_goal = action.goal_service.is_some();
+        let has_feedback = action.feedback_topic.is_some();
+        let has_result = action.result_service.is_some();
+
+        // Generate goal service handler
         if let Some(goal) = action.goal_service.as_ref() {
-            let fn_name = Ident::new("goal", Span::call_site());
             let label = format!("{base_name}_goal");
             let schema_struct_prefix = format!("{action_prefix}Goal");
-            let helper_ident = Ident::new("handle_goal_payload", Span::call_site());
-            let service_name =
-                action_endpoint_name(goal.name.as_deref(), action.name.as_str(), "goal");
-            let service_literal = Literal::string(&service_name);
 
-            let (method, helpers) = self.build_action_service_handler(
-                &fn_name,
-                None,
-                Some(&helper_ident),
+            // Process request format
+            let request_artifacts = map_message_format(goal.request_message_format.as_ref())?;
+            let response_artifacts = map_message_format(goal.response_message_format.as_ref())?;
+
+            let goal_data_params = collect_function_params(
+                request_artifacts.as_ref(),
+                response_artifacts.as_ref(),
                 "Goal",
-                schema_struct_prefix.as_str(),
-                goal.request_message_format.as_ref(),
-                goal.response_message_format.as_ref(),
+                &mut context,
+                None,
+            )?;
+
+            // Build GoalRequestData struct if there are request params
+            let goal_request_data_struct = if let Some((ident, tokens)) =
+                build_request_struct_with_name_and_impl("GoalRequestData", &goal_data_params, false)
+            {
+                context.add_private_struct(tokens);
+                Some(ident)
+            } else {
+                None
+            };
+
+            // Build GoalRequest struct wrapping instance_id, master_node, and data
+            let goal_request_struct_tokens = if let Some(ref data_ident) = goal_request_data_struct
+            {
+                quote! {
+                    #[derive(Debug, Clone)]
+                    #[allow(dead_code)]
+                    pub struct GoalRequest {
+                        pub instance_id: String,
+                        pub master_node: String,
+                        pub data: #data_ident,
+                    }
+                }
+            } else {
+                quote! {
+                    #[derive(Debug, Clone)]
+                    #[allow(dead_code)]
+                    pub struct GoalRequest {
+                        pub instance_id: String,
+                        pub master_node: String,
+                    }
+                }
+            };
+            context.add_private_struct(goal_request_struct_tokens);
+
+            // Build encoding for request deserialization
+            let encoding = self.prepare_message_encoding(
                 &label,
-                &service_literal,
-                &mut context,
+                &schema_struct_prefix,
+                request_artifacts.as_ref(),
+                &goal_data_params,
             )?;
-            methods.push(method);
-            helper_tokens.extend(helpers);
 
-            let cancel_fn_name = Ident::new("cancel", Span::call_site());
+            // Build response serialization spec
+            let response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
+                let response_schema_prefix = format!("{schema_struct_prefix}Response");
+                let schema_key = format!("{label}_response");
+                let schema_info =
+                    self.register_schema(&schema_key, &response_schema_prefix, return_artifacts)?;
+                Some(ServiceResponseSpec {
+                    format: return_artifacts.message_format(),
+                    struct_ident: Ident::new("GoalResponse", Span::call_site()),
+                    builder_type: schema_info.builder_type_tokens(),
+                    include_service_instance_id: false,
+                })
+            } else {
+                None
+            };
+
+            // Build deserializer helper
+            if let Some(spec) = encoding.as_ref() {
+                let deserializer_fn = build_action_request_deserializer(
+                    &Ident::new("deserialize_goal_request", Span::call_site()),
+                    spec,
+                    request_artifacts
+                        .as_ref()
+                        .map(|a| a.message_format())
+                        .unwrap_or(&MessageFormat(IndexMap::new())),
+                    &goal_data_params,
+                    &label,
+                    goal_request_data_struct.as_ref(),
+                );
+                helper_tokens.push(deserializer_fn);
+            }
+
+            // Build payload handler
+            let goal_handler_fn = build_action_payload_handler(
+                &Ident::new("handle_goal_payload", Span::call_site()),
+                &Ident::new("deserialize_goal_request", Span::call_site()),
+                &Ident::new("GoalRequest", Span::call_site()),
+                goal_request_data_struct.as_ref(),
+                response_spec.as_ref(),
+                encoding.is_some(),
+            );
+            helper_tokens.push(goal_handler_fn);
+
+            // Build handle_goal_next_request method
+            let goal_method = build_action_handle_method(
+                &Ident::new("handle_goal_next_request", Span::call_site()),
+                &Ident::new("handle_goal_payload", Span::call_site()),
+                &Ident::new("GoalRequest", Span::call_site()),
+                &Ident::new("GoalResponse", Span::call_site()),
+                &Ident::new("goal_service", Span::call_site()),
+                encoding.is_some(),
+            );
+            action_handle_methods.push(goal_method);
+
+            // Generate cancel handler
             let cancel_label = format!("{base_name}_goal_cancel");
-            let cancel_service_name = action_endpoint_name(None, action.name.as_str(), "cancel");
-            let cancel_service_literal = Literal::string(&cancel_service_name);
-            let cancel_struct_prefix = "Cancel";
             let cancel_schema_prefix = format!("{action_prefix}GoalCancel");
-            let cancel_helper_ident =
-                Ident::new("handle_cancel_request_payload", Span::call_site());
             let cancel_response_format = cancel_action_response_format();
+            let cancel_response_artifacts = map_message_format(Some(&cancel_response_format))?;
 
-            let (cancel_method, cancel_helpers) = self.build_action_service_handler(
-                &cancel_fn_name,
+            // CancelRequest struct
+            context.add_private_struct(quote! {
+                #[derive(Debug, Clone)]
+                #[allow(dead_code)]
+                pub struct CancelRequest {
+                    pub instance_id: String,
+                    pub master_node: String,
+                }
+            });
+
+            // CancelResponse struct
+            let _cancel_params = collect_function_params(
                 None,
-                Some(&cancel_helper_ident),
-                cancel_struct_prefix,
-                cancel_schema_prefix.as_str(),
-                None,
-                Some(&cancel_response_format),
-                &cancel_label,
-                &cancel_service_literal,
+                cancel_response_artifacts.as_ref(),
+                "Cancel",
                 &mut context,
+                None,
             )?;
-            methods.push(cancel_method);
-            helper_tokens.extend(cancel_helpers);
+
+            // Register cancel response schema
+            let cancel_response_spec =
+                if let Some(return_artifacts) = cancel_response_artifacts.as_ref() {
+                    let schema_key = format!("{cancel_label}_response");
+                    let schema_info = self.register_schema(
+                        &schema_key,
+                        &format!("{cancel_schema_prefix}Response"),
+                        return_artifacts,
+                    )?;
+                    Some(ServiceResponseSpec {
+                        format: return_artifacts.message_format(),
+                        struct_ident: Ident::new("CancelResponse", Span::call_site()),
+                        builder_type: schema_info.builder_type_tokens(),
+                        include_service_instance_id: false,
+                    })
+                } else {
+                    None
+                };
+
+            // Build cancel payload handler
+            let cancel_handler_fn = build_action_payload_handler(
+                &Ident::new("handle_cancel_payload", Span::call_site()),
+                &Ident::new("deserialize_cancel_request", Span::call_site()),
+                &Ident::new("CancelRequest", Span::call_site()),
+                None,
+                cancel_response_spec.as_ref(),
+                false,
+            );
+            helper_tokens.push(cancel_handler_fn);
+
+            // Build handle_cancel_next_request method
+            let cancel_method = build_action_handle_method(
+                &Ident::new("handle_cancel_next_request", Span::call_site()),
+                &Ident::new("handle_cancel_payload", Span::call_site()),
+                &Ident::new("CancelRequest", Span::call_site()),
+                &Ident::new("CancelResponse", Span::call_site()),
+                &Ident::new("cancel_service", Span::call_site()),
+                false,
+            );
+            action_handle_methods.push(cancel_method);
         }
 
+        // Generate result service handler
+        if let Some(result) = action.result_service.as_ref() {
+            let label = format!("{base_name}_result");
+            let schema_struct_prefix = format!("{action_prefix}Result");
+
+            let response_artifacts = map_message_format(result.response_message_format.as_ref())?;
+
+            // ResultRequest struct
+            context.add_private_struct(quote! {
+                #[derive(Debug, Clone)]
+                #[allow(dead_code)]
+                pub struct ResultRequest {
+                    pub instance_id: String,
+                    pub master_node: String,
+                }
+            });
+
+            // ResultResponse struct
+            let _result_params = collect_function_params(
+                None,
+                response_artifacts.as_ref(),
+                "Result",
+                &mut context,
+                None,
+            )?;
+
+            // Register result response schema
+            let result_response_spec =
+                if let Some(return_artifacts) = response_artifacts.as_ref() {
+                    let schema_key = format!("{label}_response");
+                    let schema_info = self.register_schema(
+                        &schema_key,
+                        &format!("{schema_struct_prefix}Response"),
+                        return_artifacts,
+                    )?;
+                    Some(ServiceResponseSpec {
+                        format: return_artifacts.message_format(),
+                        struct_ident: Ident::new("ResultResponse", Span::call_site()),
+                        builder_type: schema_info.builder_type_tokens(),
+                        include_service_instance_id: false,
+                    })
+                } else {
+                    None
+                };
+
+            // Build result payload handler
+            let result_handler_fn = build_action_payload_handler(
+                &Ident::new("handle_result_payload", Span::call_site()),
+                &Ident::new("deserialize_result_request", Span::call_site()),
+                &Ident::new("ResultRequest", Span::call_site()),
+                None,
+                result_response_spec.as_ref(),
+                false,
+            );
+            helper_tokens.push(result_handler_fn);
+
+            // Build handle_result_next_request method
+            let result_method = build_action_handle_method(
+                &Ident::new("handle_result_next_request", Span::call_site()),
+                &Ident::new("handle_result_payload", Span::call_site()),
+                &Ident::new("ResultRequest", Span::call_site()),
+                &Ident::new("ResultResponse", Span::call_site()),
+                &Ident::new("result_service", Span::call_site()),
+                false,
+            );
+            action_handle_methods.push(result_method);
+        }
+
+        // Generate feedback emitter
         if let Some(feedback) = action.feedback_topic.as_ref() {
-            let method_ident = Ident::new("emit_feedback", Span::call_site());
-            let label = format!("emit_{base_name}_feedback");
+            let label = format!("emit_feedback {}", &action.name);
             let struct_prefix = format!("{action_prefix}Feedback");
             let format_artifacts = map_message_format(feedback.message_format.as_ref())?;
             let params = collect_function_params(
@@ -817,61 +947,33 @@ impl LanguageGenerator for RustGenerator {
                 None,
             )?;
             let encoding = self.prepare_message_encoding(
-                &label,
+                &format!("emit_{base_name}_feedback"),
                 &struct_prefix,
                 format_artifacts.as_ref(),
                 &params,
             )?;
 
-            let topic_name =
-                action_endpoint_name(feedback.name.as_deref(), action.name.as_str(), "feedback");
-            let topic_descriptor = ExposedTopic {
-                name: topic_name,
-                qos_profile: feedback.qos_profile.clone(),
-                message_format: feedback.message_format.clone(),
-            };
-
-            let method_tokens = build_topic_emit(
-                &method_ident,
-                &params,
-                encoding.as_ref(),
-                &topic_descriptor,
-                &label,
-            );
-            methods.push(method_tokens);
+            let method_tokens = build_action_feedback_emit(&params, encoding.as_ref(), &label);
+            action_handle_methods.push(method_tokens);
         }
 
-        if let Some(result) = action.result_service.as_ref() {
-            let fn_name = Ident::new("result", Span::call_site());
-            let label = format!("{base_name}_result");
-            let schema_struct_prefix = format!("{action_prefix}Result");
-            let helper_ident = Ident::new("handle_result_payload", Span::call_site());
-            let service_name =
-                action_endpoint_name(result.name.as_deref(), action.name.as_str(), "result");
-            let service_literal = Literal::string(&service_name);
-
-            let (method, helpers) = self.build_action_service_handler(
-                &fn_name,
-                None,
-                Some(&helper_ident),
-                "Result",
-                schema_struct_prefix.as_str(),
-                result.request_message_format.as_ref(),
-                result.response_message_format.as_ref(),
-                &label,
-                &service_literal,
-                &mut context,
-            )?;
-            methods.push(method);
-            helper_tokens.extend(helpers);
-        }
-
-        if methods.is_empty() {
+        if action_handle_methods.is_empty() {
             return Ok(());
         }
 
-        let mut items = context.into_tokens();
-        items.extend(methods);
+        // Build ActionHandle struct and expose method
+        let action_handle_struct = build_action_handle_struct(has_goal, has_feedback, has_result);
+        let expose_method = build_action_expose_method();
+
+        let mut items = vec![quote!(const ACTION_NAME: &str = #action_name_literal;)];
+        items.extend(context.into_tokens());
+        items.push(action_handle_struct);
+        items.push(quote! {
+            impl ActionHandle {
+                #expose_method
+                #( #action_handle_methods )*
+            }
+        });
         items.extend(helper_tokens);
 
         let tokens: TokenStream = quote! {
@@ -3396,13 +3498,6 @@ fn build_exposed_service_method(
     (method, helper_tokens)
 }
 
-fn build_request_struct_with_name(
-    struct_name: &str,
-    params: &[FunctionParam],
-) -> Option<(Ident, TokenStream)> {
-    build_request_struct_with_name_and_impl(struct_name, params, true)
-}
-
 fn build_request_struct_with_name_and_impl(
     struct_name: &str,
     params: &[FunctionParam],
@@ -3465,14 +3560,6 @@ fn build_request_struct_with_name_and_impl(
     };
 
     Some((ident, tokens))
-}
-
-fn build_request_struct(
-    struct_prefix: &str,
-    params: &[FunctionParam],
-) -> Option<(Ident, TokenStream)> {
-    let struct_name = format!("{struct_prefix}Request");
-    build_request_struct_with_name(&struct_name, params)
 }
 
 fn build_request_deserializer(
@@ -3752,6 +3839,386 @@ fn build_response_serialization_code(
         bytes::Bytes::from(buffer)
     })
 }
+
+// --- Action generation helpers ---
+
+fn build_action_handle_struct(
+    has_goal: bool,
+    has_feedback: bool,
+    has_result: bool,
+) -> TokenStream {
+    let mut fields = Vec::new();
+
+    if has_goal {
+        fields.push(quote!(goal_service: peppylib::messaging::ServiceCreation));
+        fields.push(quote!(cancel_service: peppylib::messaging::ServiceCreation));
+    }
+
+    if has_result {
+        fields.push(quote!(result_service: peppylib::messaging::ServiceCreation));
+    }
+
+    if has_feedback {
+        fields.push(quote!(feedback_publisher: peppylib::messaging::TopicPublisher));
+    }
+
+    quote! {
+        pub struct ActionHandle {
+            #( #fields ),*
+        }
+    }
+}
+
+fn build_action_expose_method() -> TokenStream {
+    quote! {
+        pub async fn expose(messenger: &crate::Messenger) -> crate::Result<Self> {
+            let action = peppylib::ActionMessenger::expose(
+                messenger.handle(),
+                messenger.runtime().bound_master_node(),
+                messenger.runtime().node_name(),
+                ACTION_NAME,
+                messenger.runtime().bound_instance_id(),
+            )
+            .await?;
+
+            Ok(Self {
+                goal_service: action.goal_service,
+                cancel_service: action.cancel_service,
+                result_service: action.result_service,
+                feedback_publisher: action.feedback_publisher,
+            })
+        }
+    }
+}
+
+fn build_action_handle_method(
+    method_name: &Ident,
+    helper_name: &Ident,
+    request_struct: &Ident,
+    response_struct: &Ident,
+    service_field: &Ident,
+    has_payload: bool,
+) -> TokenStream {
+    let helper_call = if has_payload {
+        quote! {
+            let message = request_context.message();
+            let payload = message.payload().as_bytes();
+            let master_node = message.master_node().to_string();
+            let instance_id = message.instance_id().to_string();
+            #helper_name(
+                payload.as_ref(),
+                &handler,
+                master_node,
+                instance_id,
+            )
+        }
+    } else {
+        quote! {
+            let message = request_context.message();
+            let master_node = message.master_node().to_string();
+            let instance_id = message.instance_id().to_string();
+            #helper_name(&handler, master_node, instance_id)
+        }
+    };
+
+    quote! {
+        pub async fn #method_name<F>(
+            &mut self,
+            handler: F,
+        ) -> crate::Result<bool>
+        where
+            F: Fn(#request_struct) -> crate::Result<#response_struct>,
+        {
+            let result = self
+                .#service_field
+                .handle_next_request(move |request_context| {
+                    async move {
+                        #helper_call
+                        .map_err(|error| {
+                            peppylib::PeppyError::Io(
+                                std::io::Error::other(error.to_string()),
+                            )
+                        })
+                    }
+                })
+                .await?;
+
+            Ok(result)
+        }
+    }
+}
+
+fn build_action_payload_handler(
+    handler_name: &Ident,
+    deserializer_name: &Ident,
+    request_struct: &Ident,
+    request_data_struct: Option<&Ident>,
+    response_spec: Option<&ServiceResponseSpec>,
+    has_payload: bool,
+) -> TokenStream {
+    let response_ty = response_spec
+        .as_ref()
+        .map(|spec| {
+            let struct_ident = &spec.struct_ident;
+            quote!(#struct_ident)
+        })
+        .unwrap_or_else(|| quote!(()));
+
+    let request_construction = if let Some(_data_ident) = request_data_struct {
+        quote!(let request = #request_struct { instance_id, master_node, data: request_data };)
+    } else {
+        quote!(let request = #request_struct { instance_id, master_node };)
+    };
+
+    let response_serialization = if let Some(spec) = response_spec {
+        let builder_type = &spec.builder_type;
+        let format = spec.format;
+        let builder_ident = Ident::new("response_root", Span::call_site());
+        let response_ident = Ident::new("response", Span::call_site());
+
+        let mut assignments = Vec::new();
+        let mut names = NameGenerator::new();
+        for (field_name, schema) in &format.0 {
+            let field_ident =
+                Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
+            let value_expr = quote!(#response_ident.#field_ident);
+            assignments.push(generate_field_assignment(
+                &quote!(#builder_ident),
+                field_name,
+                schema,
+                &value_expr,
+                &mut names,
+            ));
+        }
+
+        quote!({
+            let response = handler(request)?;
+
+            let mut message = capnp::message::Builder::new_default();
+            {
+                let mut #builder_ident = message.init_root::<#builder_type>();
+                #( #assignments )*
+            }
+            let mut buffer = Vec::new();
+            capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
+                crate::Error::CapnpSerialize {
+                    context: format!("{} {}", stringify!(#handler_name), ACTION_NAME),
+                    source,
+                }
+            })?;
+            bytes::Bytes::from(buffer)
+        })
+    } else {
+        quote!({
+            handler(request)?;
+            bytes::Bytes::new()
+        })
+    };
+
+    if has_payload {
+        quote! {
+            fn #handler_name<F>(
+                payload: &[u8],
+                handler: &F,
+                master_node: String,
+                instance_id: String,
+            ) -> crate::Result<bytes::Bytes>
+            where
+                F: Fn(#request_struct) -> crate::Result<#response_ty>,
+            {
+                let request_data = #deserializer_name(payload)?;
+                #request_construction
+
+                let response_payload = #response_serialization;
+
+                Ok(response_payload)
+            }
+        }
+    } else {
+        quote! {
+            fn #handler_name<F>(
+                handler: &F,
+                master_node: String,
+                instance_id: String,
+            ) -> crate::Result<bytes::Bytes>
+            where
+                F: Fn(#request_struct) -> crate::Result<#response_ty>,
+            {
+                #request_construction
+
+                let response_payload = #response_serialization;
+
+                Ok(response_payload)
+            }
+        }
+    }
+}
+
+fn build_action_request_deserializer(
+    deserializer_fn_name: &Ident,
+    request_spec: &MessageEncodingSpec,
+    request_format: &MessageFormat,
+    params: &[FunctionParam],
+    label: &str,
+    request_struct: Option<&Ident>,
+) -> TokenStream {
+    let reader_type = &request_spec.reader_type;
+
+    let return_ty = if let Some(request_struct) = request_struct {
+        quote!(#request_struct)
+    } else if params.is_empty() {
+        quote!(())
+    } else if params.len() == 1 {
+        let ty = &params[0].ty;
+        quote!((#ty,))
+    } else {
+        let types: Vec<&TokenStream> = params.iter().map(|p| &p.ty).collect();
+        quote!((#(#types),*))
+    };
+
+    let schema_lookup = SchemaFieldLookup::new(request_format);
+
+    let mut names = NameGenerator::new();
+    let mut field_statements = Vec::new();
+    let mut value_idents = Vec::new();
+    let field_context_expr = quote!(format!("{} {}", stringify!(#deserializer_fn_name), ACTION_NAME));
+
+    for param in params {
+        let field_key = param.ident.to_string();
+        let (original_name, schema) = schema_lookup.get(&field_key);
+
+        let (mut statements, value_ident) = generate_field_reader_statements(
+            &quote!(root),
+            original_name.as_str(),
+            schema,
+            label,
+            &field_context_expr,
+            &mut names,
+        );
+        field_statements.append(&mut statements);
+        value_idents.push(value_ident);
+    }
+
+    let request_expr = if let Some(request_struct) = request_struct {
+        let field_assignments: Vec<TokenStream> = params
+            .iter()
+            .zip(value_idents.iter())
+            .map(|(param, value_ident)| {
+                let field_ident = &param.ident;
+                quote!(#field_ident: #value_ident)
+            })
+            .collect();
+        quote!(#request_struct { #( #field_assignments ),* })
+    } else if value_idents.is_empty() {
+        quote!(())
+    } else if value_idents.len() == 1 {
+        let ident = &value_idents[0];
+        quote!((#ident,))
+    } else {
+        quote!((#(#value_idents),*))
+    };
+
+    quote! {
+        fn #deserializer_fn_name(payload: &[u8]) -> crate::Result<#return_ty> {
+            let mut cursor = std::io::Cursor::new(payload);
+            let message_reader = capnp::serialize::read_message(
+                    &mut cursor,
+                    capnp::message::ReaderOptions::new(),
+                )
+                .map_err(|source| crate::Error::CapnpDeserialize {
+                    context: format!("{} {}", stringify!(#deserializer_fn_name), ACTION_NAME),
+                    source,
+                })?;
+
+            let root = message_reader
+                .get_root::<#reader_type>()
+                .map_err(|source| crate::Error::CapnpDeserialize {
+                    context: format!("{} {}", stringify!(#deserializer_fn_name), ACTION_NAME),
+                    source,
+                })?;
+
+            #(#field_statements)*
+
+            Ok(#request_expr)
+        }
+    }
+}
+
+fn build_action_feedback_emit(
+    params: &[FunctionParam],
+    encoding: Option<&MessageEncodingSpec>,
+    label: &str,
+) -> TokenStream {
+    let mut method_param_tokens = Vec::new();
+    for param in params {
+        if param.ident.to_string() == "instance_id" {
+            continue;
+        }
+        let ident = &param.ident;
+        let ty = &param.ty;
+        method_param_tokens.push(quote!(#ident: #ty));
+    }
+
+    let method_signature = if method_param_tokens.is_empty() {
+        quote!(&self)
+    } else {
+        quote!(&self, #(#method_param_tokens),*)
+    };
+
+    let label_literal = Literal::string(label);
+
+    match encoding {
+        Some(spec) => {
+            let builder_type = &spec.builder_type;
+            let assignments = &spec.assignments;
+            let root_ident = Ident::new("root", Span::call_site());
+
+            quote! {
+                #[allow(clippy::too_many_arguments)]
+                pub async fn emit_feedback(#method_signature) -> crate::Result<()> {
+                    let mut message = capnp::message::Builder::new_default();
+                    {
+                        let mut #root_ident = message.init_root::<#builder_type>();
+                        #(#assignments)*
+                    }
+
+                    let mut buffer = Vec::new();
+                    capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
+                        crate::Error::CapnpSerialize {
+                            context: format!("{} {}", #label_literal, ACTION_NAME),
+                            source,
+                        }
+                    })?;
+
+                    let payload = bytes::Bytes::from(buffer);
+                    self.feedback_publisher.publish(payload).await?;
+                    Ok(())
+                }
+            }
+        }
+        None => {
+            let ignore_params: Vec<TokenStream> = params
+                .iter()
+                .map(|param| {
+                    let ident = &param.ident;
+                    quote!(let _ = #ident;)
+                })
+                .collect();
+
+            quote! {
+                #[allow(clippy::too_many_arguments)]
+                pub async fn emit_feedback(#method_signature) -> crate::Result<()> {
+                    #(#ignore_params)*
+                    Err(crate::Error::MessageFormatUnavailable {
+                        context: format!("{} {}", #label_literal, ACTION_NAME),
+                    })
+                }
+            }
+        }
+    }
+}
+
+// --- End action generation helpers ---
 
 fn to_camel_case(raw: &str) -> String {
     let sanitized = sanitize_component(raw);
