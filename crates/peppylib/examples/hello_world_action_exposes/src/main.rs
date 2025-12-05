@@ -45,7 +45,7 @@ async fn handle_goal_request(
     let timestamp = current_timestamp();
     println!(
         "{}",
-        format!("[GOAL] [{timestamp}] Received goal `{request_id}` from `{instance_id}` and master node `{master_node}` with payload `{payload_text}`")
+        format!("[GOAL] [{timestamp}] Received goal `{request_id}` from `{instance_id}` and master node `{master_node}`")
             .bold()
             .green()
     );
@@ -128,7 +128,7 @@ async fn handle_result_request(request: ServiceRequestContext) -> PeppyResult<By
         .cyan()
     );
 
-    let response_text = format!("result: `{payload_text}` -> success");
+    let response_text = format!("SUCCESS!");
     let timestamp = current_timestamp();
     println!(
         "{}",
