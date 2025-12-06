@@ -880,6 +880,7 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_ACTION_EXAMPLE: &str = r#"
 {
+  id: "brain_move_arm",
   node: "brain",
   name: "move_arm",
   tag: "0.1.0",
@@ -998,19 +999,30 @@ use std::time::Duration;
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
-    let goal = brain_move_arm::fire_goal(&messenger, Duration::from_secs(5), 7, [10, 20, 30]).await?;
-    println!(\"goal accepted={{}}\", goal.accepted);
+    let request = brain_move_arm::GoalRequest {{
+        arm_id: 7,
+        desired_position: [10, 20, 30],
+    }};
+    let mut goal = brain_move_arm::fire_goal(
+        &messenger,
+        Duration::from_secs(5),
+        None,
+        None,
+        request,
+        peppygen::QoSProfile::SensorData,
+    ).await?;
+    println!(\"goal accepted={{}}\", goal.data.accepted);
 
-    let feedback = brain_move_arm::on_next_feedback_message(&messenger).await?;
+    let feedback = brain_move_arm::on_next_feedback_message(&mut goal.action_handle).await?;
     assert_eq!(feedback.new_position, [7, 31, 43], \"unexpected feedback message\");
     println!(\"feedback message received new_position={{:?}}\", feedback.new_position);
 
-    let result = brain_move_arm::get_action_result(&messenger, Duration::from_secs(5)).await?;
+    let result = brain_move_arm::get_result(&messenger, &goal.action_handle, Duration::from_secs(5)).await?;
     println!(
         \"result success={{}} error={{:?}} final_position={{:?}}\",
-        result.success,
-        result.error_msg.as_deref(),
-        result.final_position
+        result.data.success,
+        result.data.error_msg.as_deref(),
+        result.data.final_position
     );
 
     Ok(())
@@ -1041,7 +1053,7 @@ async fn main() -> Result<()> {{
             instance_id: Name::new(exposer_instance_id).unwrap(),
             parameters: Default::default(),
         },
-        "exposer_node",
+        "brain", // Must match the node name expected by the subscriber
         "test_master",
         &codegen_peppy_config_md5,
     )
@@ -1050,7 +1062,7 @@ async fn main() -> Result<()> {{
     exposer_runtime_config
         .save_json5_launch_config(&exposer_runtime_config_path)
         .unwrap();
-    let peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
+    let exposer_peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = format!(
@@ -1063,11 +1075,13 @@ use std::time::Duration;
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
-    move_arm::handle_goal_next_request(&messenger, |request| -> Result<move_arm::GoalResponse> {{
+    let mut action = move_arm::ActionHandle::expose(&messenger).await?;
+
+    action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {{
         println!(
             \"server received goal arm_id={{}} desired={{:?}}\",
-            request.arm_id,
-            request.desired_position
+            request.data.arm_id,
+            request.data.desired_position
         );
         Ok(move_arm::GoalResponse::new(true))
     }})
@@ -1077,11 +1091,11 @@ async fn main() -> Result<()> {{
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let feedback_message = [7, 31, 43];
-    move_arm::emit_feedback(&messenger, feedback_message).await?;
+    action.emit_feedback(feedback_message).await?;
     println!(\"server emitted feedback message {{:?}}\", feedback_message);
 
     let final_position = [98, 4, 26];
-    move_arm::handle_result_next_request(&messenger, || -> Result<move_arm::ResultResponse> {{
+    action.handle_result_next_request(|_request| -> Result<move_arm::ResultResponse> {{
         println!(\"server preparing action result\");
         let final_pos = final_position.clone();
         Ok(move_arm::ResultResponse::new(
@@ -1097,7 +1111,7 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        &peppy_config_path_str, router_host, router_port
+        &exposer_peppy_config_path_str, router_host, router_port
     );
     let main_file = user_node_exposer.join("src").join("main.rs");
     fs::write(main_file, exposer_main).expect("failed to write exposer main");
@@ -1234,6 +1248,7 @@ fn actions_communication_cancel_goal() {
     subscriber_runtime_config
         .save_json5_launch_config(&subscriber_runtime_config_path)
         .unwrap();
+    let peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = format!(
@@ -1246,23 +1261,34 @@ use std::time::Duration;
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
-    let goal = brain_move_arm::fire_goal(&messenger, Duration::from_secs(5), 7, [10, 20, 30]).await?;
-    println!(\"goal accepted={{}}\", goal.accepted);
+    let request = brain_move_arm::GoalRequest {{
+        arm_id: 7,
+        desired_position: [10, 20, 30],
+    }};
+    let goal = brain_move_arm::fire_goal(
+        &messenger,
+        Duration::from_secs(5),
+        None,
+        None,
+        request,
+        peppygen::QoSProfile::SensorData,
+    ).await?;
+    println!(\"goal accepted={{}}\", goal.data.accepted);
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let cancel_response = brain_move_arm::cancel_goal(&messenger, Duration::from_secs(5)).await?;
-    let error_msg = cancel_response.error_message.as_deref().unwrap_or(\"<none>\");
+    let cancel_response = brain_move_arm::cancel_goal(&messenger, &goal.action_handle, Duration::from_secs(5)).await?;
+    let error_msg = cancel_response.data.error_message.as_deref().unwrap_or(\"<none>\");
     println!(
         \"cancel accepted={{}} error={{}}\",
-        cancel_response.accepted,
+        cancel_response.data.accepted,
         error_msg
     );
 
     Ok(())
 }}
 ",
-        &codegen_peppy_config_md5,
+        &peppy_config_path_str,
         router_host,
         router_port
     );
@@ -1287,7 +1313,7 @@ async fn main() -> Result<()> {{
             instance_id: Name::new(exposer_instance_id).unwrap(),
             parameters: Default::default(),
         },
-        "exposer_node",
+        "brain", // Must match the node name expected by the subscriber
         "test_master",
         &codegen_peppy_config_md5,
     )
@@ -1296,7 +1322,7 @@ async fn main() -> Result<()> {{
     exposer_runtime_config
         .save_json5_launch_config(&exposer_runtime_config_path)
         .unwrap();
-    let peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
+    let exposer_peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = format!(
@@ -1308,11 +1334,13 @@ use peppygen::{{Messenger, Result}};
 async fn main() -> Result<()> {{
     let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
 
-    move_arm::handle_goal_next_request(&messenger, |request| -> Result<move_arm::GoalResponse> {{
+    let mut action = move_arm::ActionHandle::expose(&messenger).await?;
+
+    action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {{
         println!(
             \"server received goal arm_id={{}} desired={{:?}}\",
-            request.arm_id,
-            request.desired_position
+            request.data.arm_id,
+            request.data.desired_position
         );
         Ok(move_arm::GoalResponse::new(true))
     }})
@@ -1321,7 +1349,7 @@ async fn main() -> Result<()> {{
 
     let cancel_error = \"goal cancelled by server\";
 
-    move_arm::handle_cancel_next_request(&messenger, || -> Result<move_arm::CancelResponse> {{
+    action.handle_cancel_next_request(|_request| -> Result<move_arm::CancelResponse> {{
         println!(\"server received cancel request\");
         Ok(move_arm::CancelResponse::new(
             false,
@@ -1335,7 +1363,7 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        &peppy_config_path_str, router_host, router_port
+        &exposer_peppy_config_path_str, router_host, router_port
     );
     let main_file = user_node_exposer.join("src").join("main.rs");
     fs::write(main_file, exposer_main).expect("failed to write exposer main");
