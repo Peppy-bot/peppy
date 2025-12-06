@@ -4188,9 +4188,9 @@ fn build_action_expose_method() -> TokenStream {
             let action = peppylib::ActionMessenger::expose(
                 messenger.handle(),
                 messenger.runtime().bound_master_node(),
+                messenger.runtime().bound_instance_id(),
                 messenger.runtime().node_name(),
                 ACTION_NAME,
-                messenger.runtime().bound_instance_id(),
             )
             .await?;
 
