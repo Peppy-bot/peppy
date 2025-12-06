@@ -303,17 +303,17 @@ fn exposed_action() {
         "expected ActionHandle struct"
     );
     assert_rendered!(
-        rendered.contains("goal_service: peppylib::messaging::ServiceCreation"),
+        rendered.contains("goal_service: peppylib::messaging::ServiceEndpoint"),
         &rendered,
         "expected goal_service field in ActionHandle"
     );
     assert_rendered!(
-        rendered.contains("cancel_service: peppylib::messaging::ServiceCreation"),
+        rendered.contains("cancel_service: peppylib::messaging::ServiceEndpoint"),
         &rendered,
         "expected cancel_service field in ActionHandle"
     );
     assert_rendered!(
-        rendered.contains("result_service: peppylib::messaging::ServiceCreation"),
+        rendered.contains("result_service: peppylib::messaging::ServiceEndpoint"),
         &rendered,
         "expected result_service field in ActionHandle"
     );

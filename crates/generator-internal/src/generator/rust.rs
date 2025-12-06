@@ -154,7 +154,6 @@ impl RustGenerator {
                 Some(&goal_response_data_ident),
             )?;
 
-            // GoalResponse wrapper with action_handle
             let goal_response_fields = vec![
                 (
                     Ident::new("action_handle", Span::call_site()),
@@ -165,7 +164,7 @@ impl RustGenerator {
                     quote!(#goal_response_data_ident),
                 ),
             ];
-            context.add_struct(goal_response_ident.clone(), goal_response_fields);
+            context.add_struct_without_clone(goal_response_ident.clone(), goal_response_fields);
 
             // Build deserializer helper
             let response_schema_key = format!("{schema_key}_response");
@@ -310,12 +309,11 @@ impl RustGenerator {
                 }
             }
         } else {
-            // No response format - still need the wrapper struct
             let goal_response_fields = vec![(
                 Ident::new("action_handle", Span::call_site()),
                 quote!(peppylib::messaging::ActionGoalHandle),
             )];
-            context.add_struct(goal_response_ident.clone(), goal_response_fields);
+            context.add_struct_without_clone(goal_response_ident.clone(), goal_response_fields);
 
             let goal_payload_tokens = if let Some(ref request_artifacts) = request_artifacts {
                 let schema_info = self.register_schema(
@@ -2083,10 +2081,31 @@ struct GenerationContext {
 
 impl GenerationContext {
     fn add_struct(&mut self, ident: Ident, fields: Vec<(Ident, TokenStream)>) {
+        self.add_struct_with_derives(ident, fields, true)
+    }
+
+    fn add_struct_without_clone(&mut self, ident: Ident, fields: Vec<(Ident, TokenStream)>) {
+        self.add_struct_with_derives(ident, fields, false)
+    }
+
+    fn add_struct_with_derives(
+        &mut self,
+        ident: Ident,
+        fields: Vec<(Ident, TokenStream)>,
+        derive_clone: bool,
+    ) {
         if let Some(existing) = self.structs.iter_mut().find(|def| def.ident == ident) {
-            *existing = StructDefinition { ident, fields };
+            *existing = StructDefinition {
+                ident,
+                fields,
+                derive_clone,
+            };
         } else {
-            self.structs.push(StructDefinition { ident, fields });
+            self.structs.push(StructDefinition {
+                ident,
+                fields,
+                derive_clone,
+            });
         }
     }
 
@@ -2109,6 +2128,7 @@ impl GenerationContext {
 struct StructDefinition {
     ident: Ident,
     fields: Vec<(Ident, TokenStream)>,
+    derive_clone: bool,
 }
 
 impl StructDefinition {
@@ -2124,15 +2144,21 @@ impl StructDefinition {
             })
             .collect();
 
+        let derive_attr = if self.derive_clone {
+            quote!(#[derive(Debug, Clone)])
+        } else {
+            quote!(#[derive(Debug)])
+        };
+
         if field_tokens.is_empty() {
             quote! {
-                #[derive(Debug, Clone)]
+                #derive_attr
                 #[allow(dead_code)]
                 pub struct #ident {}
             }
         } else {
             quote! {
-                #[derive(Debug, Clone)]
+                #derive_attr
                 #[allow(dead_code)]
                 pub struct #ident {
                     #( #field_tokens ),*
@@ -4178,12 +4204,12 @@ fn build_action_handle_struct(has_goal: bool, has_feedback: bool, has_result: bo
     let mut fields = Vec::new();
 
     if has_goal {
-        fields.push(quote!(goal_service: peppylib::messaging::ServiceCreation));
-        fields.push(quote!(cancel_service: peppylib::messaging::ServiceCreation));
+        fields.push(quote!(goal_service: peppylib::messaging::ServiceEndpoint));
+        fields.push(quote!(cancel_service: peppylib::messaging::ServiceEndpoint));
     }
 
     if has_result {
-        fields.push(quote!(result_service: peppylib::messaging::ServiceCreation));
+        fields.push(quote!(result_service: peppylib::messaging::ServiceEndpoint));
     }
 
     if has_feedback {
