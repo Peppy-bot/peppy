@@ -1932,36 +1932,6 @@ fn cancel_action_response_format() -> MessageFormat {
     MessageFormat(fields)
 }
 
-fn action_endpoint_name(custom: Option<&str>, action_name: &str, suffix: &str) -> String {
-    if let Some(candidate) = custom {
-        let trimmed = candidate.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-
-    let trimmed_action = action_name.trim();
-    if trimmed_action.is_empty() {
-        suffix.to_string()
-    } else if trimmed_action.ends_with('/') {
-        format!("{trimmed_action}{suffix}")
-    } else {
-        format!("{trimmed_action}/{suffix}")
-    }
-}
-
-fn subscribed_action_context_label(node: &str, action_name: &str) -> String {
-    let node = node.trim();
-    let action = action_name.trim();
-
-    match (node.is_empty(), action.is_empty()) {
-        (true, true) => String::from("action"),
-        (true, false) => action.to_string(),
-        (false, true) => node.to_string(),
-        (false, false) => format!("{node} {action}"),
-    }
-}
-
 fn prefixed_ident(prefix: &str, candidate: Option<&str>, fallback: &str) -> Ident {
     let fallback_component = match sanitize_component(fallback) {
         component if component.is_empty() => "item".to_string(),
@@ -3378,17 +3348,6 @@ fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
     };
     let variant_ident = Ident::new(variant, Span::call_site());
     quote!(peppylib::config::QoSProfile::#variant_ident)
-}
-
-fn function_param_tokens(params: &[FunctionParam]) -> Vec<TokenStream> {
-    params
-        .iter()
-        .map(|param| {
-            let ident = &param.ident;
-            let ty = &param.ty;
-            quote!(#ident: #ty)
-        })
-        .collect()
 }
 
 fn build_exposed_service_method(

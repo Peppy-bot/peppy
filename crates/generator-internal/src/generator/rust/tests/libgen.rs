@@ -985,6 +985,7 @@ fn actions_communication() {
     subscriber_runtime_config
         .save_json5_launch_config(&subscriber_runtime_config_path)
         .unwrap();
+    let peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = format!(
@@ -1015,7 +1016,7 @@ async fn main() -> Result<()> {{
     Ok(())
 }}
 ",
-        &codegen_peppy_config_md5,
+        &peppy_config_path_str,
         router_host,
         router_port
     );
