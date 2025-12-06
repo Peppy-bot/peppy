@@ -13,7 +13,6 @@ mod services;
 mod topics;
 
 use super::*;
-use config::runtime::RuntimeConfig;
 use std::path::Path;
 use std::{
     fs,
