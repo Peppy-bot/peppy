@@ -631,7 +631,6 @@ impl RustGenerator {
         &mut self,
         context: &mut GenerationContext,
         action_struct_name: &str,
-        request_format: Option<&MessageFormat>,
         response_format: Option<&MessageFormat>,
         schema_key: &str,
     ) -> Result<(TokenStream, Vec<TokenStream>)> {
@@ -1750,7 +1749,6 @@ impl LanguageGenerator for RustGenerator {
         let goal_request_format = non_empty_message_format(messages.goal_request.as_ref());
         let goal_response_format = non_empty_message_format(messages.goal_response.as_ref());
         let feedback_format = non_empty_message_format(messages.feedback.as_ref());
-        let result_request_format = non_empty_message_format(messages.result_request.as_ref());
         let result_response_format = non_empty_message_format(messages.result_response.as_ref());
 
         // fire_goal method
@@ -1792,7 +1790,6 @@ impl LanguageGenerator for RustGenerator {
         let (result_method, mut result_helpers) = self.build_subscribed_action_result_method(
             &mut context,
             &action_struct_name,
-            result_request_format,
             result_response_format,
             &result_schema_key,
         )?;
@@ -3900,27 +3897,43 @@ fn build_request_deserializer(
         )
     };
 
-    if let Some(instance_param) = instance_id_param {
-        let reader_type = &request_spec.reader_type;
-        let instance_ty = &instance_param.ty;
+    let reader_type = &request_spec.reader_type;
 
-        // Build return type for request data
-        let request_return_ty = if let Some(request_struct) = request_struct {
-            quote!(#request_struct)
-        } else if handler_params.is_empty() {
-            quote!(())
-        } else if handler_params.len() == 1 {
-            let ty = &handler_params[0].ty;
-            quote!((#ty,))
-        } else {
-            let types: Vec<&TokenStream> = handler_params.iter().map(|p| &p.ty).collect();
-            quote!((#(#types),*))
-        };
+    // Common deserialization body builder
+    let build_deserializer_body = |return_ty: TokenStream, result_expr: TokenStream, field_statements: Vec<TokenStream>| {
+        quote! {
+            fn #deserializer_fn_name(payload: &[u8]) -> crate::Result<#return_ty> {
+                let mut cursor = std::io::Cursor::new(payload);
+                let message_reader = capnp::serialize::read_message(
+                        &mut cursor,
+                        capnp::message::ReaderOptions::new(),
+                    )
+                    .map_err(|source| crate::Error::CapnpDeserialize {
+                        context: String::from(#context_expr),
+                        source,
+                    })?;
+
+                let root = message_reader
+                    .get_root::<#reader_type>()
+                    .map_err(|source| crate::Error::CapnpDeserialize {
+                        context: String::from(#context_expr),
+                        source,
+                    })?;
+
+                #(#field_statements)*
+
+                Ok(#result_expr)
+            }
+        }
+    };
+
+    if let Some(instance_param) = instance_id_param {
+        let instance_ty = &instance_param.ty;
+        let request_return_ty = build_return_type_from_params(handler_params, request_struct);
         let return_ty = quote!((#instance_ty, #request_return_ty));
 
-        // Generate field deserialization using schema metadata
+        // Deserialize all wire params, separating instance_id from the rest
         let schema_lookup = SchemaFieldLookup::new(request_format);
-
         let mut names = NameGenerator::new();
         let mut field_statements = Vec::new();
         let mut handler_value_map: HashMap<String, Ident> = HashMap::new();
@@ -3950,7 +3963,8 @@ fn build_request_deserializer(
 
         let instance_value_ident =
             instance_value_ident.expect("instance_id should be present in service requests");
-        let mut ordered_request_values: Vec<Ident> = handler_params
+
+        let ordered_request_values: Vec<Ident> = handler_params
             .iter()
             .map(|param| {
                 let key = param.ident.to_string();
@@ -3961,131 +3975,17 @@ fn build_request_deserializer(
             })
             .collect();
 
-        let request_expr = if let Some(request_struct) = request_struct {
-            let field_assignments: Vec<TokenStream> = handler_params
-                .iter()
-                .zip(ordered_request_values.iter())
-                .map(|(param, value_ident)| {
-                    let field_ident = &param.ident;
-                    quote!(#field_ident: #value_ident)
-                })
-                .collect();
-            quote!(#request_struct { #( #field_assignments ),* })
-        } else if ordered_request_values.is_empty() {
-            quote!(())
-        } else if ordered_request_values.len() == 1 {
-            let ident = ordered_request_values
-                .pop()
-                .expect("request value missing despite length check");
-            quote!((#ident,))
-        } else {
-            quote!((#(#ordered_request_values),*))
-        };
+        let request_expr = build_result_expr_from_values(handler_params, &ordered_request_values, request_struct);
+        let result_expr = quote!((#instance_value_ident, #request_expr));
 
-        quote! {
-            fn #deserializer_fn_name(payload: &[u8]) -> crate::Result<#return_ty> {
-                let mut cursor = std::io::Cursor::new(payload);
-                let message_reader = capnp::serialize::read_message(
-                        &mut cursor,
-                        capnp::message::ReaderOptions::new(),
-                    )
-                    .map_err(|source| crate::Error::CapnpDeserialize {
-                        context: String::from(#context_expr),
-                        source,
-                    })?;
-
-                let root = message_reader
-                    .get_root::<#reader_type>()
-                    .map_err(|source| crate::Error::CapnpDeserialize {
-                        context: String::from(#context_expr),
-                        source,
-                    })?;
-
-                #(#field_statements)*
-
-                Ok((#instance_value_ident, #request_expr))
-            }
-        }
+        build_deserializer_body(return_ty, result_expr, field_statements)
     } else {
-        let reader_type = &request_spec.reader_type;
+        let return_ty = build_return_type_from_params(handler_params, request_struct);
+        let (field_statements, value_idents) =
+            deserialize_fields_from_format(request_format, wire_params, label, &field_context_expr);
+        let request_expr = build_result_expr_from_values(handler_params, &value_idents, request_struct);
 
-        let return_ty = if let Some(request_struct) = request_struct {
-            quote!(#request_struct)
-        } else if handler_params.is_empty() {
-            quote!(())
-        } else if handler_params.len() == 1 {
-            let ty = &handler_params[0].ty;
-            quote!((#ty,))
-        } else {
-            let types: Vec<&TokenStream> = handler_params.iter().map(|p| &p.ty).collect();
-            quote!((#(#types),*))
-        };
-
-        let schema_lookup = SchemaFieldLookup::new(request_format);
-
-        let mut names = NameGenerator::new();
-        let mut field_statements = Vec::new();
-        let mut value_idents = Vec::new();
-
-        for param in wire_params {
-            let field_key = param.ident.to_string();
-            let (original_name, schema) = schema_lookup.get(&field_key);
-
-            let (mut statements, value_ident) = generate_field_reader_statements(
-                &quote!(root),
-                original_name.as_str(),
-                schema,
-                label,
-                &field_context_expr,
-                &mut names,
-            );
-            field_statements.append(&mut statements);
-            value_idents.push(value_ident);
-        }
-
-        let request_expr = if let Some(request_struct) = request_struct {
-            let field_assignments: Vec<TokenStream> = handler_params
-                .iter()
-                .zip(value_idents.iter())
-                .map(|(param, value_ident)| {
-                    let field_ident = &param.ident;
-                    quote!(#field_ident: #value_ident)
-                })
-                .collect();
-            quote!(#request_struct { #( #field_assignments ),* })
-        } else if value_idents.is_empty() {
-            quote!(())
-        } else if value_idents.len() == 1 {
-            let ident = &value_idents[0];
-            quote!((#ident,))
-        } else {
-            quote!((#(#value_idents),*))
-        };
-
-        quote! {
-            fn #deserializer_fn_name(payload: &[u8]) -> crate::Result<#return_ty> {
-                let mut cursor = std::io::Cursor::new(payload);
-                let message_reader = capnp::serialize::read_message(
-                        &mut cursor,
-                        capnp::message::ReaderOptions::new(),
-                    )
-                    .map_err(|source| crate::Error::CapnpDeserialize {
-                        context: String::from(#context_expr),
-                        source,
-                    })?;
-
-                let root = message_reader
-                    .get_root::<#reader_type>()
-                    .map_err(|source| crate::Error::CapnpDeserialize {
-                        context: String::from(#context_expr),
-                        source,
-                    })?;
-
-                #(#field_statements)*
-
-                Ok(#request_expr)
-            }
-        }
+        build_deserializer_body(return_ty, request_expr, field_statements)
     }
 }
 
@@ -4103,8 +4003,6 @@ fn build_response_serialization_code(
         });
     };
 
-    let builder_type = &spec.builder_type;
-    let format = spec.format;
     // For exposed services (use_service_name_const=true), use format! with SERVICE_NAME constant
     // For other handlers, use the label directly
     let error_context = if use_service_name_const {
@@ -4113,47 +4011,12 @@ fn build_response_serialization_code(
         let context_literal = Literal::string(label);
         quote!(String::from(#context_literal))
     };
-    let builder_ident = Ident::new("response_root", Span::call_site());
-    let mut assignments = Vec::new();
-    let mut names = NameGenerator::new();
     let response_ident = Ident::new("response", Span::call_site());
-    let include_service_instance_id = spec.include_service_instance_id;
-
-    for (field_name, schema) in &format.0 {
-        if include_service_instance_id && field_name == "instance_id" {
-            let instance_ident = service_instance_ident
-                .expect("service instance identifier should be available when required");
-            assignments.push(quote!(#builder_ident.set_instance_id(#instance_ident);));
-            continue;
-        }
-
-        let field_ident = Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
-        let value_expr = quote!(#response_ident.#field_ident);
-        assignments.push(generate_field_assignment(
-            &quote!(#builder_ident),
-            field_name,
-            schema,
-            &value_expr,
-            &mut names,
-        ));
-    }
+    let serialization = build_response_payload_tokens(spec, &response_ident, &error_context, service_instance_ident);
 
     quote!({
         let response = #callback_call?;
-
-        let mut message = capnp::message::Builder::new_default();
-        {
-            let mut #builder_ident = message.init_root::<#builder_type>();
-            #( #assignments )*
-        }
-        let mut buffer = Vec::new();
-        capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
-            crate::Error::CapnpSerialize {
-                context: #error_context,
-                source,
-            }
-        })?;
-        bytes::Bytes::from(buffer)
+        #serialization
     })
 }
 
@@ -4277,49 +4140,20 @@ fn build_action_payload_handler(
         })
         .unwrap_or_else(|| quote!(()));
 
-    let request_construction = if let Some(_data_ident) = request_data_struct {
+    let request_construction = if request_data_struct.is_some() {
         quote!(let request = #request_struct { instance_id, master_node, data: request_data };)
     } else {
         quote!(let request = #request_struct { instance_id, master_node };)
     };
 
     let response_serialization = if let Some(spec) = response_spec {
-        let builder_type = &spec.builder_type;
-        let format = spec.format;
-        let builder_ident = Ident::new("response_root", Span::call_site());
         let response_ident = Ident::new("response", Span::call_site());
-
-        let mut assignments = Vec::new();
-        let mut names = NameGenerator::new();
-        for (field_name, schema) in &format.0 {
-            let field_ident =
-                Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
-            let value_expr = quote!(#response_ident.#field_ident);
-            assignments.push(generate_field_assignment(
-                &quote!(#builder_ident),
-                field_name,
-                schema,
-                &value_expr,
-                &mut names,
-            ));
-        }
+        let error_context = quote!(format!("{} {}", stringify!(#handler_name), ACTION_NAME));
+        let serialization = build_response_payload_tokens(spec, &response_ident, &error_context, None);
 
         quote!({
             let response = handler(request)?;
-
-            let mut message = capnp::message::Builder::new_default();
-            {
-                let mut #builder_ident = message.init_root::<#builder_type>();
-                #( #assignments )*
-            }
-            let mut buffer = Vec::new();
-            capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
-                crate::Error::CapnpSerialize {
-                    context: format!("{} {}", stringify!(#handler_name), ACTION_NAME),
-                    source,
-                }
-            })?;
-            bytes::Bytes::from(buffer)
+            #serialization
         })
     } else {
         quote!({
@@ -4376,64 +4210,18 @@ fn build_action_request_deserializer(
     request_struct: Option<&Ident>,
 ) -> TokenStream {
     let reader_type = &request_spec.reader_type;
-
-    let return_ty = if let Some(request_struct) = request_struct {
-        quote!(#request_struct)
-    } else if params.is_empty() {
-        quote!(())
-    } else if params.len() == 1 {
-        let ty = &params[0].ty;
-        quote!((#ty,))
-    } else {
-        let types: Vec<&TokenStream> = params.iter().map(|p| &p.ty).collect();
-        quote!((#(#types),*))
-    };
-
-    let schema_lookup = SchemaFieldLookup::new(request_format);
-
-    let mut names = NameGenerator::new();
-    let mut field_statements = Vec::new();
-    let mut value_idents = Vec::new();
-    let field_context_expr = quote!(format!(
+    let return_ty = build_return_type_from_params(params, request_struct);
+    let context_expr = quote!(format!(
         "{} {}",
         stringify!(#deserializer_fn_name),
         ACTION_NAME
     ));
 
-    for param in params {
-        let field_key = param.ident.to_string();
-        let (original_name, schema) = schema_lookup.get(&field_key);
+    let (field_statements, value_idents) =
+        deserialize_fields_from_format(request_format, params, label, &context_expr);
 
-        let (mut statements, value_ident) = generate_field_reader_statements(
-            &quote!(root),
-            original_name.as_str(),
-            schema,
-            label,
-            &field_context_expr,
-            &mut names,
-        );
-        field_statements.append(&mut statements);
-        value_idents.push(value_ident);
-    }
-
-    let request_expr = if let Some(request_struct) = request_struct {
-        let field_assignments: Vec<TokenStream> = params
-            .iter()
-            .zip(value_idents.iter())
-            .map(|(param, value_ident)| {
-                let field_ident = &param.ident;
-                quote!(#field_ident: #value_ident)
-            })
-            .collect();
-        quote!(#request_struct { #( #field_assignments ),* })
-    } else if value_idents.is_empty() {
-        quote!(())
-    } else if value_idents.len() == 1 {
-        let ident = &value_idents[0];
-        quote!((#ident,))
-    } else {
-        quote!((#(#value_idents),*))
-    };
+    let request_expr =
+        build_result_expr_from_values(params, &value_idents, request_struct);
 
     quote! {
         fn #deserializer_fn_name(payload: &[u8]) -> crate::Result<#return_ty> {
@@ -4443,14 +4231,14 @@ fn build_action_request_deserializer(
                     capnp::message::ReaderOptions::new(),
                 )
                 .map_err(|source| crate::Error::CapnpDeserialize {
-                    context: format!("{} {}", stringify!(#deserializer_fn_name), ACTION_NAME),
+                    context: #context_expr,
                     source,
                 })?;
 
             let root = message_reader
                 .get_root::<#reader_type>()
                 .map_err(|source| crate::Error::CapnpDeserialize {
-                    context: format!("{} {}", stringify!(#deserializer_fn_name), ACTION_NAME),
+                    context: #context_expr,
                     source,
                 })?;
 
@@ -4536,6 +4324,135 @@ fn build_action_feedback_emit(
 }
 
 // --- End action generation helpers ---
+
+// --- Shared deserialization/serialization helpers ---
+
+/// Builds a return type token stream from function params.
+fn build_return_type_from_params(
+    params: &[FunctionParam],
+    request_struct: Option<&Ident>,
+) -> TokenStream {
+    if let Some(request_struct) = request_struct {
+        quote!(#request_struct)
+    } else if params.is_empty() {
+        quote!(())
+    } else if params.len() == 1 {
+        let ty = &params[0].ty;
+        quote!((#ty,))
+    } else {
+        let types: Vec<&TokenStream> = params.iter().map(|p| &p.ty).collect();
+        quote!((#(#types),*))
+    }
+}
+
+/// Deserializes fields from a message format, returning statements and value identifiers.
+fn deserialize_fields_from_format(
+    request_format: &MessageFormat,
+    params: &[FunctionParam],
+    label: &str,
+    context_expr: &TokenStream,
+) -> (Vec<TokenStream>, Vec<Ident>) {
+    let schema_lookup = SchemaFieldLookup::new(request_format);
+    let mut names = NameGenerator::new();
+    let mut field_statements = Vec::new();
+    let mut value_idents = Vec::new();
+
+    for param in params {
+        let field_key = param.ident.to_string();
+        let (original_name, schema) = schema_lookup.get(&field_key);
+
+        let (mut statements, value_ident) = generate_field_reader_statements(
+            &quote!(root),
+            original_name.as_str(),
+            schema,
+            label,
+            context_expr,
+            &mut names,
+        );
+        field_statements.append(&mut statements);
+        value_idents.push(value_ident);
+    }
+
+    (field_statements, value_idents)
+}
+
+/// Builds a result expression (struct or tuple) from deserialized value identifiers.
+fn build_result_expr_from_values(
+    params: &[FunctionParam],
+    value_idents: &[Ident],
+    request_struct: Option<&Ident>,
+) -> TokenStream {
+    if let Some(request_struct) = request_struct {
+        let field_assignments: Vec<TokenStream> = params
+            .iter()
+            .zip(value_idents.iter())
+            .map(|(param, value_ident)| {
+                let field_ident = &param.ident;
+                quote!(#field_ident: #value_ident)
+            })
+            .collect();
+        quote!(#request_struct { #( #field_assignments ),* })
+    } else if value_idents.is_empty() {
+        quote!(())
+    } else if value_idents.len() == 1 {
+        let ident = &value_idents[0];
+        quote!((#ident,))
+    } else {
+        quote!((#(#value_idents),*))
+    }
+}
+
+/// Generates response serialization code from a response spec and format.
+fn build_response_payload_tokens(
+    spec: &ServiceResponseSpec,
+    response_ident: &Ident,
+    error_context: &TokenStream,
+    service_instance_ident: Option<&Ident>,
+) -> TokenStream {
+    let builder_type = &spec.builder_type;
+    let format = spec.format;
+    let builder_ident = Ident::new("response_root", Span::call_site());
+
+    let mut assignments = Vec::new();
+    let mut names = NameGenerator::new();
+
+    for (field_name, schema) in &format.0 {
+        if spec.include_service_instance_id && field_name == "instance_id" {
+            let instance_ident = service_instance_ident
+                .expect("service instance identifier should be available when required");
+            assignments.push(quote!(#builder_ident.set_instance_id(#instance_ident);));
+            continue;
+        }
+
+        let field_ident = Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
+        let value_expr = quote!(#response_ident.#field_ident);
+        assignments.push(generate_field_assignment(
+            &quote!(#builder_ident),
+            field_name,
+            schema,
+            &value_expr,
+            &mut names,
+        ));
+    }
+
+    quote!({
+        let mut message = capnp::message::Builder::new_default();
+        {
+            let mut #builder_ident = message.init_root::<#builder_type>();
+            #( #assignments )*
+        }
+        let mut buffer = Vec::new();
+        capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
+            crate::Error::CapnpSerialize {
+                context: #error_context,
+                source,
+            }
+        })?;
+        bytes::Bytes::from(buffer)
+    })
+}
+
+// --- End shared helpers ---
 
 fn to_camel_case(raw: &str) -> String {
     let sanitized = sanitize_component(raw);
