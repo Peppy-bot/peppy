@@ -710,6 +710,7 @@ async fn main() -> Result<()> {{
         "
 use peppygen::exposed_services::enable_camera;
 use peppygen::{{Messenger, Result}};
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<()> {{
@@ -717,9 +718,11 @@ async fn main() -> Result<()> {{
 
     enable_camera::handle_next_request(&messenger, |request| -> Result<enable_camera::Response> {{
         println!(\"received enable_camera request for {{}}: {{}}\", request.instance_id, request.data.enable);
+        // Sleep to ensure exposer1 responds first
+        std::thread::sleep(Duration::from_secs(1));
         Ok(enable_camera::Response::new(
             request.data.enable,
-            Some(\"handled\".to_owned()),
+            Some(\"handled_by_exposer2\".to_owned()),
         ))
     }})
     .await?;
@@ -789,7 +792,39 @@ async fn main() -> Result<()> {{
         subscriber_stdout,
         subscriber_stderr
     );
-    // TODO finish the assertions
+
+    let exposer1_stdout = String::from_utf8_lossy(&exposer_output1.stdout).into_owned();
+    let exposer1_stderr = String::from_utf8_lossy(&exposer_output1.stderr).into_owned();
+    let exposer2_stdout = String::from_utf8_lossy(&exposer_output2.stdout).into_owned();
+    let exposer2_stderr = String::from_utf8_lossy(&exposer_output2.stderr).into_owned();
+
+    // Both exposers should have received the request
+    let expected_request_log = format!(
+        "received enable_camera request for {}: true",
+        subscriber_instance_id
+    );
+    assert!(
+        exposer1_stdout.contains(&expected_request_log)
+            && exposer1_stdout.contains("enable_camera handler finished"),
+        "exposer1 did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
+        exposer1_stdout,
+        exposer1_stderr
+    );
+    assert!(
+        exposer2_stdout.contains(&expected_request_log)
+            && exposer2_stdout.contains("enable_camera handler finished"),
+        "exposer2 did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
+        exposer2_stdout,
+        exposer2_stderr
+    );
+
+    // Subscriber should have received a response from exposer1 (the faster one)
+    assert!(
+        subscriber_stdout.contains("enable_camera result: enabled=true error=handled"),
+        "subscriber did not receive expected service response from exposer1.\nstdout:\n{}\nstderr:\n{}",
+        subscriber_stdout,
+        subscriber_stderr
+    );
 
     rt.block_on(async {
         router
