@@ -379,6 +379,18 @@ pub struct ActionGoalHandle {
     feedback: Subscription,
 }
 
+impl std::fmt::Debug for ActionGoalHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActionGoalHandle")
+            .field("master_node", &self.master_node)
+            .field("instance_id", &self.instance_id)
+            .field("node_name", &self.node_name)
+            .field("action_name", &self.action_name)
+            .field("target_instance_id", &self.target_instance_id)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ActionGoalHandle {
     pub fn goal_response(&self) -> &TopicMessage {
         &self.goal_response
