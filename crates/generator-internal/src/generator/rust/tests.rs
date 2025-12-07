@@ -8,19 +8,15 @@ macro_rules! assert_rendered {
 }
 
 /// Asserts that all given patterns are present in the rendered output.
-/// Usage: `assert_contains_all!(rendered, "pattern1", "pattern2", ...)`
-macro_rules! assert_contains_all {
-    ($rendered:expr, $($pattern:expr),+ $(,)?) => {{
-        let rendered: &str = &$rendered;
-        $(
-            assert_rendered!(
-                rendered.contains($pattern),
-                rendered,
-                "expected to find: {:?}",
-                $pattern
-            );
-        )+
-    }};
+fn assert_contains_all(rendered: &str, patterns: &[&str]) {
+    for pattern in patterns {
+        assert_rendered!(
+            rendered.contains(pattern),
+            rendered,
+            "expected to find: {:?}",
+            pattern
+        );
+    }
 }
 
 mod actions;
