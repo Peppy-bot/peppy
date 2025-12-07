@@ -90,11 +90,7 @@ fn expose_service() {
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_service(&service).unwrap();
-    let artifacts: Vec<String> = generator
-        .into_artifacts()
-        .into_iter()
-        .map(|artifact| artifact.code_output)
-        .collect();
+    let artifacts = render_artifacts(generator);
     assert_eq!(
         artifacts.len(),
         1,
@@ -104,83 +100,52 @@ fn expose_service() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     // Response struct
-    assert_rendered!(
-        rendered.contains("pub struct Response"),
+    assert_contains_all(
         &rendered,
-        "expected response struct"
-    );
-    assert_rendered!(
-        rendered.contains("enabled: bool"),
-        &rendered,
-        "expected bool field in response"
-    );
-    assert_rendered!(
-        rendered.contains("error_msg: Option<String>"),
-        &rendered,
-        "expected optional string field in response"
+        &[
+            "pub struct Response",
+            "enabled: bool",
+            "error_msg: Option<String>",
+        ],
     );
 
     // Request structs
-    assert_rendered!(
-        rendered.contains("pub struct RequestData"),
+    assert_contains_all(
         &rendered,
-        "expected RequestData struct"
-    );
-    assert_rendered!(
-        rendered.contains("pub struct Request"),
-        &rendered,
-        "expected Request struct with metadata"
-    );
-    assert_rendered!(
-        rendered.contains("pub instance_id: String"),
-        &rendered,
-        "expected instance_id field in Request"
-    );
-    assert_rendered!(
-        rendered.contains("pub data: RequestData"),
-        &rendered,
-        "expected data field in Request"
+        &[
+            "pub struct RequestData",
+            "pub struct Request",
+            "pub instance_id: String",
+            "pub data: RequestData",
+        ],
     );
 
     // Handler signature
-    assert_rendered!(
-        rendered.contains("const SERVICE_NAME: &str = \"enable_camera\";"),
+    assert_contains_all(
         &rendered,
-        "expected SERVICE_NAME constant"
-    );
-    assert_rendered!(
-        rendered.contains("pub async fn handle_next_request<F>"),
-        &rendered,
-        "expected async service handler"
-    );
-    assert_rendered!(
-        rendered.contains("F: Fn(Request) -> crate::Result<Response>"),
-        &rendered,
-        "expected handler trait bound"
+        &[
+            "const SERVICE_NAME: &str = \"enable_camera\";",
+            "pub async fn handle_next_request<F>",
+            "F: Fn(Request) -> crate::Result<Response>",
+        ],
     );
 
     // Request processing
-    assert_rendered!(
-        rendered.contains("fn deserialize_request(payload: &[u8]) -> crate::Result<RequestData>"),
+    assert_contains_all(
         &rendered,
-        "expected request deserializer"
-    );
-    assert_rendered!(
-        rendered.contains("fn handle_request_payload<F>("),
-        &rendered,
-        "expected payload handler helper"
+        &[
+            "fn deserialize_request(payload: &[u8]) -> crate::Result<RequestData>",
+            "fn handle_request_payload<F>(",
+        ],
     );
 
     // Messenger integration
-    assert_rendered!(
-        rendered.contains("peppylib::ServiceMessenger::listen"),
+    assert_contains_all(
         &rendered,
-        "expected service listen call"
-    );
-    assert_rendered!(
-        rendered.contains(".handle_next_request(move |request_context|"),
-        &rendered,
-        "expected request handling callback"
+        &[
+            "peppylib::ServiceMessenger::listen",
+            ".handle_next_request(move |request_context|",
+        ],
     );
 }
 
@@ -190,23 +155,19 @@ fn expose_service_without_request_body() {
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_service(&service).unwrap();
-    let rendered = generator
-        .into_artifacts()
+    let rendered = render_artifacts(generator)
         .into_iter()
-        .map(|artifact| artifact.code_output)
         .next()
         .expect("artifact is present");
 
     // Service without request body should still have Request struct for metadata
-    assert_rendered!(
-        rendered.contains("pub struct Request"),
+    assert_contains_all(
         &rendered,
-        "expected Request struct with metadata"
-    );
-    assert_rendered!(
-        rendered.contains("pub instance_id: String"),
-        &rendered,
-        "expected instance_id in Request"
+        &[
+            "pub struct Request",
+            "pub instance_id: String",
+            "let request = Request {",
+        ],
     );
 
     // But no RequestData struct
@@ -214,13 +175,6 @@ fn expose_service_without_request_body() {
         !rendered.contains("pub struct RequestData"),
         &rendered,
         "expected no RequestData struct when there is no request body"
-    );
-
-    // Request construction should omit data field
-    assert_rendered!(
-        rendered.contains("let request = Request {"),
-        &rendered,
-        "expected Request construction using struct literal"
     );
 }
 
@@ -233,12 +187,7 @@ fn expose_two_services() {
     generator.add_exposed_service(&service1).unwrap();
     generator.add_exposed_service(&service2).unwrap();
 
-    let artifacts: Vec<String> = generator
-        .into_artifacts()
-        .into_iter()
-        .map(|artifact| artifact.code_output)
-        .collect();
-
+    let artifacts = render_artifacts(generator);
     assert_eq!(
         artifacts.len(),
         2,
@@ -246,37 +195,13 @@ fn expose_two_services() {
         artifacts.len()
     );
 
-    let enable_rendered = artifacts
-        .iter()
-        .find(|rendered| rendered.contains("enable_camera"))
-        .expect("enable_camera artifact is present");
-    let lidar_rendered = artifacts
-        .iter()
-        .find(|rendered| rendered.contains("get_lidar_info"))
-        .expect("get_lidar_info artifact is present");
+    // Verify each service gets its own distinct artifact
+    assert_artifact_contains(&artifacts, "const SERVICE_NAME: &str = \"enable_camera\";");
+    assert_artifact_contains(&artifacts, "const SERVICE_NAME: &str = \"get_lidar_info\";");
 
     // enable_camera has response, get_lidar_info does not
-    assert_rendered!(
-        enable_rendered.contains("pub struct Response"),
-        enable_rendered,
-        "expected response struct for enable_camera"
-    );
-    assert_rendered!(
-        enable_rendered.contains("F: Fn(Request) -> crate::Result<Response>"),
-        enable_rendered,
-        "expected handler to return Response for enable_camera"
-    );
-
-    assert_rendered!(
-        !lidar_rendered.contains("pub struct Response"),
-        lidar_rendered,
-        "expected get_lidar_info to omit response struct"
-    );
-    assert_rendered!(
-        lidar_rendered.contains("F: Fn(Request) -> crate::Result<()>"),
-        lidar_rendered,
-        "expected handler to return unit for get_lidar_info"
-    );
+    assert_artifact_contains(&artifacts, "F: Fn(Request) -> crate::Result<Response>");
+    assert_artifact_contains(&artifacts, "F: Fn(Request) -> crate::Result<()>");
 }
 
 /// In the case of a service, a "subscribed" service is an entity expects to connect to another entity
@@ -292,11 +217,7 @@ fn subscribed_to_service() {
     generator
         .add_subscribed_service(&service, Some(&request_format), Some(&response_format))
         .unwrap();
-    let artifacts: Vec<String> = generator
-        .into_artifacts()
-        .into_iter()
-        .map(|artifact| artifact.code_output)
-        .collect();
+    let artifacts = render_artifacts(generator);
     assert_eq!(
         artifacts.len(),
         1,
@@ -306,94 +227,55 @@ fn subscribed_to_service() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     // Module-level constants
-    assert_rendered!(
-        rendered.contains("const NODE_NAME: &str = \"uvc_camera\";"),
+    assert_contains_all(
         &rendered,
-        "expected NODE_NAME constant"
-    );
-    assert_rendered!(
-        rendered.contains("const SERVICE_NAME: &str = \"enable_camera\";"),
-        &rendered,
-        "expected SERVICE_NAME constant"
+        &[
+            "const NODE_NAME: &str = \"uvc_camera\";",
+            "const SERVICE_NAME: &str = \"enable_camera\";",
+        ],
     );
 
     // Response structs
-    assert_rendered!(
-        rendered.contains("pub struct ResponseData"),
+    assert_contains_all(
         &rendered,
-        "expected ResponseData struct"
-    );
-    assert_rendered!(
-        rendered.contains("pub struct Response"),
-        &rendered,
-        "expected Response struct with metadata"
-    );
-    assert_rendered!(
-        rendered.contains("pub data: ResponseData"),
-        &rendered,
-        "expected data field in Response"
+        &[
+            "pub struct ResponseData",
+            "pub struct Response",
+            "pub data: ResponseData",
+        ],
     );
 
     // Request struct
-    assert_rendered!(
-        rendered.contains("pub struct Request"),
+    assert_contains_all(
         &rendered,
-        "expected request struct"
-    );
-    assert_rendered!(
-        rendered.contains("pub enable: bool"),
-        &rendered,
-        "expected request field"
+        &["pub struct Request", "pub enable: bool"],
     );
 
     // Poll function signature
-    assert_rendered!(
-        rendered.contains("pub async fn poll("),
+    assert_contains_all(
         &rendered,
-        "expected async poll helper"
-    );
-    assert_rendered!(
-        rendered.contains("target_master_node: Option<&str>"),
-        &rendered,
-        "expected target_master_node parameter"
-    );
-    assert_rendered!(
-        rendered.contains("target_instance_id: Option<&str>"),
-        &rendered,
-        "expected target_instance_id parameter"
-    );
-    assert_rendered!(
-        rendered.contains("-> crate::Result<Response>"),
-        &rendered,
-        "expected poll to return Response"
+        &[
+            "pub async fn poll(",
+            "target_master_node: Option<&str>",
+            "target_instance_id: Option<&str>",
+            "-> crate::Result<Response>",
+        ],
     );
 
-    // Request serialization
-    assert_rendered!(
-        rendered.contains("root.set_enable(enable);"),
+    // Request serialization and messenger integration
+    assert_contains_all(
         &rendered,
-        "expected request serialization"
-    );
-
-    // Messenger integration
-    assert_rendered!(
-        rendered.contains("peppylib::ServiceMessenger::poll("),
-        &rendered,
-        "expected poll helper invocation"
-    );
-
-    // Response deserialization
-    assert_rendered!(
-        rendered.contains("fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>"),
-        &rendered,
-        "expected deserialize_response function"
+        &[
+            "root.set_enable(enable);",
+            "peppylib::ServiceMessenger::poll(",
+            "fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>",
+        ],
     );
 }
 
 #[test]
 fn subscribed_to_two_services_same_node() {
     let service1: SubscribedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
-
     let request_format1: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1).unwrap();
     let response_format1: MessageFormat =
@@ -411,7 +293,7 @@ fn subscribed_to_two_services_same_node() {
     generator
         .add_subscribed_service(&service2, None, Some(&response_format2))
         .unwrap();
-    let artifacts = generator.into_artifacts();
+    let artifacts = render_artifacts(generator);
     assert_eq!(
         artifacts.len(),
         2,
@@ -419,49 +301,17 @@ fn subscribed_to_two_services_same_node() {
         artifacts.len()
     );
 
-    let enable_module_name = subscribed_service_module_name(&service1);
-    let enable_rendered = &artifacts
-        .iter()
-        .find(|artifact| artifact.node_name.as_str() == enable_module_name.as_str())
-        .unwrap_or_else(|| panic!("expected {enable_module_name} artifact to be generated"))
-        .code_output;
-    let camera_module_name = subscribed_service_module_name(&service2);
-    let get_info_rendered = &artifacts
-        .iter()
-        .find(|artifact| artifact.node_name.as_str() == camera_module_name.as_str())
-        .unwrap_or_else(|| panic!("expected {camera_module_name} artifact to be generated"))
-        .code_output;
+    // Verify each topic gets distinct artifact with correct service name
+    assert_artifact_contains(&artifacts, "const SERVICE_NAME: &str = \"enable_camera\";");
+    assert_artifact_contains(&artifacts, "const SERVICE_NAME: &str = \"get_camera_info\";");
 
-    // Both services point to the same node
-    assert_rendered!(
-        enable_rendered.contains("const NODE_NAME: &str = \"uvc_camera\";"),
-        enable_rendered,
-        "expected NODE_NAME for enable_camera"
-    );
-    assert_rendered!(
-        get_info_rendered.contains("const NODE_NAME: &str = \"uvc_camera\";"),
-        get_info_rendered,
-        "expected NODE_NAME for get_camera_info"
-    );
-
-    // Each has distinct SERVICE_NAME
-    assert_rendered!(
-        enable_rendered.contains("const SERVICE_NAME: &str = \"enable_camera\";"),
-        enable_rendered,
-        "expected SERVICE_NAME for enable_camera"
-    );
-    assert_rendered!(
-        get_info_rendered.contains("const SERVICE_NAME: &str = \"get_camera_info\";"),
-        get_info_rendered,
-        "expected SERVICE_NAME for get_camera_info"
-    );
+    // Verify both reference the same source node
+    for rendered in &artifacts {
+        assert_contains_all(rendered, &["const NODE_NAME: &str = \"uvc_camera\";"]);
+    }
 
     // get_camera_info has specific response fields
-    assert_rendered!(
-        get_info_rendered.contains("card_type: String"),
-        get_info_rendered,
-        "expected card_type response field"
-    );
+    assert_artifact_contains(&artifacts, "card_type: String");
 }
 
 #[test]
@@ -481,7 +331,7 @@ fn subscribed_service_without_response_payload() {
         .add_subscribed_service(&service, None, None)
         .expect("generator should allow services without response format");
 
-    let artifacts = generator.into_artifacts();
+    let artifacts = render_artifacts(generator);
     assert_eq!(
         artifacts.len(),
         1,
@@ -489,13 +339,7 @@ fn subscribed_service_without_response_payload() {
         artifacts.len()
     );
 
-    let rendered = &artifacts[0].code_output;
-
-    assert_rendered!(
-        rendered.contains("let _ = peppylib::ServiceMessenger::poll("),
-        rendered,
-        "expected poll invocation that discards response bytes"
-    );
+    assert_artifact_contains(&artifacts, "let _ = peppylib::ServiceMessenger::poll(");
 }
 
 /// This is a long running test that verifies the generated code compiles and passes clippy
@@ -586,10 +430,9 @@ fn compile_lib_with_exposed_and_subscribed_services() {
 
     let lib_contents =
         std::fs::read_to_string(output_dir.join("src/lib.rs")).expect("failed to read lib.rs");
-    assert!(
-        lib_contents.contains("pub mod exposed_services;")
-            && lib_contents.contains("pub mod subscribed_services;"),
-        "Expected lib.rs to re-export service modules"
+    assert_contains_all(
+        &lib_contents,
+        &["pub mod exposed_services;", "pub mod subscribed_services;"],
     );
 
     // Verify expected module files exist

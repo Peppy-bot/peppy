@@ -110,24 +110,6 @@ fn parse_message_format(example: &str) -> MessageFormat {
     serde_json5::from_str(example).unwrap()
 }
 
-fn render_artifacts(generator: RustGenerator) -> Vec<String> {
-    generator
-        .into_artifacts()
-        .into_iter()
-        .map(|artifact| artifact.code_output)
-        .collect()
-}
-
-fn assert_artifact_contains(artifacts: &[String], pattern: &str) {
-    let rendered = artifacts.join("\n");
-    assert_rendered!(
-        artifacts.iter().any(|artifact| artifact.contains(pattern)),
-        &rendered,
-        "expected an artifact containing pattern: {:?}",
-        pattern
-    );
-}
-
 /// In the case of a topic, an "exposed" topic is an entity that emits messages
 #[test]
 fn expose_topic() {
