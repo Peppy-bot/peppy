@@ -13,7 +13,7 @@ pub fn node_config(name: &str, tag: &str, deps: &[(&str, &str)]) -> NodeConfig {
         .iter()
         .map(|(dep_name, dep_tag)| {
             format!(
-                "{{ node: \"{dep_name}\", name: \"{dep_name}_topic\", tag: \"{dep_tag}\" }}",
+                "{{ id: \"{dep_name}_topic\", node: \"{dep_name}\", name: \"{dep_name}_topic\", tag: \"{dep_tag}\" }}",
                 dep_name = dep_name,
                 dep_tag = dep_tag
             )
