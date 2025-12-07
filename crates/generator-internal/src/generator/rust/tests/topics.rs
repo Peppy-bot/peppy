@@ -98,18 +98,44 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2: &str = r#"
 }
 "#;
 
-/// In the case of a topic, an "exposed" topic is an entity that emits messages
-#[test]
-fn expose_topic() {
-    let topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
+fn parse_exposed_topic(example: &str) -> ExposedTopic {
+    serde_json5::from_str(example).unwrap()
+}
 
-    let mut generator = RustGenerator::new();
-    generator.add_exposed_topic(&topic).unwrap();
-    let artifacts: Vec<String> = generator
+fn parse_subscribed_topic(example: &str) -> SubscribedTopic {
+    serde_json5::from_str(example).unwrap()
+}
+
+fn parse_message_format(example: &str) -> MessageFormat {
+    serde_json5::from_str(example).unwrap()
+}
+
+fn render_artifacts(generator: RustGenerator) -> Vec<String> {
+    generator
         .into_artifacts()
         .into_iter()
         .map(|artifact| artifact.code_output)
-        .collect();
+        .collect()
+}
+
+fn assert_artifact_contains(artifacts: &[String], pattern: &str) {
+    let rendered = artifacts.join("\n");
+    assert_rendered!(
+        artifacts.iter().any(|artifact| artifact.contains(pattern)),
+        &rendered,
+        "expected an artifact containing pattern: {:?}",
+        pattern
+    );
+}
+
+/// In the case of a topic, an "exposed" topic is an entity that emits messages
+#[test]
+fn expose_topic() {
+    let topic = parse_exposed_topic(EXPOSED_TOPIC_EXAMPLE);
+
+    let mut generator = RustGenerator::new();
+    generator.add_exposed_topic(&topic).unwrap();
+    let artifacts = render_artifacts(generator);
     assert_eq!(
         artifacts.len(),
         1,
@@ -119,89 +145,55 @@ fn expose_topic() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     // Core message building
-    assert_rendered!(
-        rendered.contains("let mut message = capnp::message::Builder::new_default();"),
+    assert_contains_all(
         &rendered,
-        "expected capnp message builder"
-    );
-    assert_rendered!(
-        rendered.contains("crate::capnp::push_frame_message_capnp::push_frame_message::Builder"),
-        &rendered,
-        "expected capnp root initialization"
+        &[
+            "let mut message = capnp::message::Builder::new_default();",
+            "crate::capnp::push_frame_message_capnp::push_frame_message::Builder",
+        ],
     );
 
     // Field handling - test different field types
-    assert_rendered!(
-        rendered.contains("root.set_encoding(encoding.as_str());"),
+    assert_contains_all(
         &rendered,
-        "expected string field setter"
-    );
-    assert_rendered!(
-        rendered.contains("root.set_image(image.as_ref());"),
-        &rendered,
-        "expected fixed-size array setter"
-    );
-    assert_rendered!(
-        rendered.contains("root.reborrow().init_header();"),
-        &rendered,
-        "expected nested object initialization"
-    );
-    assert_rendered!(
-        rendered.contains("peppylib::encoding::convert_time"),
-        &rendered,
-        "expected timestamp conversion helper"
+        &[
+            "root.set_encoding(encoding.as_str());",
+            "root.set_image(image.as_ref());",
+            "root.reborrow().init_header();",
+            "peppylib::encoding::convert_time",
+        ],
     );
 
     // Generated structs and function signature
-    assert_rendered!(
-        rendered.contains("pub struct MessageHeader"),
+    assert_contains_all(
         &rendered,
-        "expected generated struct for nested object"
-    );
-    assert_rendered!(
-        rendered.contains("image: [u8; 3]"),
-        &rendered,
-        "expected fixed-size array argument"
-    );
-    assert_rendered!(
-        rendered.contains("pub async fn emit("),
-        &rendered,
-        "expected async emit method"
+        &[
+            "pub struct MessageHeader",
+            "image: [u8; 3]",
+            "pub async fn emit(",
+        ],
     );
 
     // Topic metadata
-    assert_rendered!(
-        rendered.contains("let as_topic = \"push_frame\";"),
+    assert_contains_all(
         &rendered,
-        "expected topic name literal"
-    );
-    assert_rendered!(
-        rendered.contains("let qos = peppylib::config::QoSProfile::SensorData;"),
-        &rendered,
-        "expected qos profile literal"
-    );
-
-    // Messenger integration
-    assert_rendered!(
-        rendered.contains("peppylib::TopicMessenger::emit("),
-        &rendered,
-        "expected messenger emit call"
+        &[
+            "let as_topic = \"push_frame\";",
+            "let qos = peppylib::config::QoSProfile::SensorData;",
+            "peppylib::TopicMessenger::emit(",
+        ],
     );
 }
 
 #[test]
 fn expose_two_topics() {
-    let topic1: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
-    let topic2: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE2).unwrap();
+    let topic1 = parse_exposed_topic(EXPOSED_TOPIC_EXAMPLE);
+    let topic2 = parse_exposed_topic(EXPOSED_TOPIC_EXAMPLE2);
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_topic(&topic1).unwrap();
     generator.add_exposed_topic(&topic2).unwrap();
-    let artifacts: Vec<String> = generator
-        .into_artifacts()
-        .into_iter()
-        .map(|artifact| artifact.code_output)
-        .collect();
+    let artifacts = render_artifacts(generator);
     assert_eq!(
         artifacts.len(),
         2,
@@ -210,33 +202,19 @@ fn expose_two_topics() {
     );
 
     // Verify each topic gets its own distinct artifact with correct schema
-    assert!(
-        artifacts
-            .iter()
-            .any(|r| r.contains("push_frame_message_capnp")),
-        "expected push_frame artifact"
-    );
-    assert!(
-        artifacts
-            .iter()
-            .any(|r| r.contains("push_lidar_object_message_capnp")),
-        "expected push_lidar_object artifact"
-    );
+    assert_artifact_contains(&artifacts, "push_frame_message_capnp");
+    assert_artifact_contains(&artifacts, "push_lidar_object_message_capnp");
 }
 
 /// In the case of a topic, a "subscribed" topic is an entity expects to receive messages from another entity
 #[test]
 fn subscribed_to_topic() {
-    let topic: SubscribedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE1).unwrap();
-    let format: MessageFormat = serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1).unwrap();
+    let topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+    let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
     let mut generator = RustGenerator::new();
     generator.add_subscribed_topic(&topic, format).unwrap();
-    let artifacts: Vec<String> = generator
-        .into_artifacts()
-        .into_iter()
-        .map(|artifact| artifact.code_output)
-        .collect();
+    let artifacts = render_artifacts(generator);
     assert_eq!(
         artifacts.len(),
         1,
@@ -246,97 +224,59 @@ fn subscribed_to_topic() {
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     // Generated structs with various field types
-    assert_rendered!(
-        rendered.contains("pub struct Message"),
+    assert_contains_all(
         &rendered,
-        "expected return struct definition"
-    );
-    assert_rendered!(
-        rendered.contains("pub struct MessageHeader"),
-        &rendered,
-        "expected nested struct definition"
-    );
-    assert_rendered!(
-        rendered.contains("pub stamp: std::time::SystemTime"),
-        &rendered,
-        "expected time field type"
-    );
-    assert_rendered!(
-        rendered.contains("pub image: [u8; 3]"),
-        &rendered,
-        "expected fixed-size array field"
+        &[
+            "pub struct Message",
+            "pub struct MessageHeader",
+            "pub stamp: std::time::SystemTime",
+            "pub image: [u8; 3]",
+        ],
     );
 
     // Subscriber function signature
-    assert_rendered!(
-        rendered.contains("pub async fn on_next_message_received("),
+    assert_contains_all(
         &rendered,
-        "expected async subscriber method"
-    );
-    assert_rendered!(
-        rendered.contains("master_node_target: Option<&str>"),
-        &rendered,
-        "expected master_node_target parameter"
-    );
-    assert_rendered!(
-        rendered.contains("instance_id_target: Option<&str>"),
-        &rendered,
-        "expected instance_id_target parameter"
-    );
-    assert_rendered!(
-        rendered.contains("-> crate::Result<(String, Message)>"),
-        &rendered,
-        "expected subscriber return type including instance id"
+        &[
+            "pub async fn on_next_message_received(",
+            "master_node_target: Option<&str>",
+            "instance_id_target: Option<&str>",
+            "-> crate::Result<(String, Message)>",
+        ],
     );
 
     // Deserialization
-    assert_rendered!(
-        rendered.contains("fn deseralize_payload("),
+    assert_contains_all(
         &rendered,
-        "expected private payload deserializer function"
-    );
-    assert_rendered!(
-        rendered.contains("capnp::serialize::read_message"),
-        &rendered,
-        "expected capnp deserialization"
+        &["fn deseralize_payload(", "capnp::serialize::read_message"],
     );
 
     // Topic metadata
-    assert_rendered!(
-        rendered.contains("let node_name = \"uvc_camera\";"),
+    assert_contains_all(
         &rendered,
-        "expected node_name literal"
-    );
-
-    // Messenger integration
-    assert_rendered!(
-        rendered.contains("peppylib::TopicMessenger::subscribe("),
-        &rendered,
-        "expected subscription helper invocation"
+        &[
+            "let node_name = \"uvc_camera\";",
+            "peppylib::TopicMessenger::subscribe(",
+        ],
     );
 
     // Error variants
-    assert_rendered!(
-        rendered.contains("crate::Error::TopicSubscribe"),
+    assert_contains_all(
         &rendered,
-        "expected topic subscribe error variant"
-    );
-    assert_rendered!(
-        rendered.contains("crate::Error::InvalidFixedBytes"),
-        &rendered,
-        "expected fixed-size byte validation error variant"
+        &[
+            "crate::Error::TopicSubscribe",
+            "crate::Error::InvalidFixedBytes",
+        ],
     );
 }
 
 #[test]
 fn subscribed_to_two_topics_same_node() {
-    let video_topic: SubscribedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE1).unwrap();
-    let video_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1).unwrap();
+    let video_topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+    let video_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
-    let sound_topic: SubscribedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE2).unwrap();
-    let sound_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2).unwrap();
+    let sound_topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
+    let sound_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2);
 
     let mut generator = RustGenerator::new();
     generator
@@ -345,11 +285,7 @@ fn subscribed_to_two_topics_same_node() {
     generator
         .add_subscribed_topic(&sound_topic, sound_format)
         .unwrap();
-    let artifacts: Vec<String> = generator
-        .into_artifacts()
-        .into_iter()
-        .map(|artifact| artifact.code_output)
-        .collect();
+    let artifacts = render_artifacts(generator);
     assert_eq!(
         artifacts.len(),
         2,
@@ -358,26 +294,12 @@ fn subscribed_to_two_topics_same_node() {
     );
 
     // Verify each topic gets distinct artifact with correct topic name
-    assert!(
-        artifacts
-            .iter()
-            .any(|r| r.contains("let topic_name = \"stream\";")),
-        "expected stream topic artifact"
-    );
-    assert!(
-        artifacts
-            .iter()
-            .any(|r| r.contains("let topic_name = \"sound\";")),
-        "expected sound topic artifact"
-    );
+    assert_artifact_contains(&artifacts, "let topic_name = \"stream\";");
+    assert_artifact_contains(&artifacts, "let topic_name = \"sound\";");
 
     // Verify both reference the same source node
     for rendered in &artifacts {
-        assert_rendered!(
-            rendered.contains("let node_name = \"uvc_camera\";"),
-            rendered,
-            "expected node_name to reference source node"
-        );
+        assert_contains_all(rendered, &["let node_name = \"uvc_camera\";"]);
     }
 }
 
@@ -385,16 +307,12 @@ fn subscribed_to_two_topics_same_node() {
 #[test]
 fn compile_lib_with_exposed_and_subscribed_topics() {
     let temp_dir = TempDir::new().unwrap();
-    let exposed_topic1: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
-    let exposed_topic2: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE2).unwrap();
-    let subscribed_topic1: SubscribedTopic =
-        serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE1).unwrap();
-    let subscribed_format1: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1).unwrap();
-    let subscribed_topic2: SubscribedTopic =
-        serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE2).unwrap();
-    let subscribed_format2: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2).unwrap();
+    let exposed_topic1 = parse_exposed_topic(EXPOSED_TOPIC_EXAMPLE);
+    let exposed_topic2 = parse_exposed_topic(EXPOSED_TOPIC_EXAMPLE2);
+    let subscribed_topic1 = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+    let subscribed_format1 = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
+    let subscribed_topic2 = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
+    let subscribed_format2 = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2);
 
     let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
     generator.add_exposed_topic(&exposed_topic1).unwrap();
@@ -455,10 +373,9 @@ fn compile_lib_with_exposed_and_subscribed_topics() {
 
     let lib_contents =
         std::fs::read_to_string(output_dir.join("src/lib.rs")).expect("failed to read lib.rs");
-    assert!(
-        lib_contents.contains("pub mod exposed_topics;")
-            && lib_contents.contains("pub mod subscribed_topics;"),
-        "Expected lib.rs to re-export topic modules"
+    assert_contains_all(
+        &lib_contents,
+        &["pub mod exposed_topics;", "pub mod subscribed_topics;"],
     );
 
     // Verify expected module files exist
