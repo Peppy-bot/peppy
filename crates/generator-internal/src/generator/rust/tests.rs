@@ -19,6 +19,24 @@ fn assert_contains_all(rendered: &str, patterns: &[&str]) {
     }
 }
 
+fn render_artifacts(generator: RustGenerator) -> Vec<String> {
+    generator
+        .into_artifacts()
+        .into_iter()
+        .map(|artifact| artifact.code_output)
+        .collect()
+}
+
+fn assert_artifact_contains(artifacts: &[String], pattern: &str) {
+    let rendered = artifacts.join("\n");
+    assert_rendered!(
+        artifacts.iter().any(|artifact| artifact.contains(pattern)),
+        &rendered,
+        "expected an artifact containing pattern: {:?}",
+        pattern
+    );
+}
+
 mod actions;
 mod libgen;
 mod services;
