@@ -3900,32 +3900,33 @@ fn build_request_deserializer(
     let reader_type = &request_spec.reader_type;
 
     // Common deserialization body builder
-    let build_deserializer_body = |return_ty: TokenStream, result_expr: TokenStream, field_statements: Vec<TokenStream>| {
-        quote! {
-            fn #deserializer_fn_name(payload: &[u8]) -> crate::Result<#return_ty> {
-                let mut cursor = std::io::Cursor::new(payload);
-                let message_reader = capnp::serialize::read_message(
-                        &mut cursor,
-                        capnp::message::ReaderOptions::new(),
-                    )
-                    .map_err(|source| crate::Error::CapnpDeserialize {
-                        context: String::from(#context_expr),
-                        source,
-                    })?;
+    let build_deserializer_body =
+        |return_ty: TokenStream, result_expr: TokenStream, field_statements: Vec<TokenStream>| {
+            quote! {
+                fn #deserializer_fn_name(payload: &[u8]) -> crate::Result<#return_ty> {
+                    let mut cursor = std::io::Cursor::new(payload);
+                    let message_reader = capnp::serialize::read_message(
+                            &mut cursor,
+                            capnp::message::ReaderOptions::new(),
+                        )
+                        .map_err(|source| crate::Error::CapnpDeserialize {
+                            context: String::from(#context_expr),
+                            source,
+                        })?;
 
-                let root = message_reader
-                    .get_root::<#reader_type>()
-                    .map_err(|source| crate::Error::CapnpDeserialize {
-                        context: String::from(#context_expr),
-                        source,
-                    })?;
+                    let root = message_reader
+                        .get_root::<#reader_type>()
+                        .map_err(|source| crate::Error::CapnpDeserialize {
+                            context: String::from(#context_expr),
+                            source,
+                        })?;
 
-                #(#field_statements)*
+                    #(#field_statements)*
 
-                Ok(#result_expr)
+                    Ok(#result_expr)
+                }
             }
-        }
-    };
+        };
 
     if let Some(instance_param) = instance_id_param {
         let instance_ty = &instance_param.ty;
@@ -3975,7 +3976,8 @@ fn build_request_deserializer(
             })
             .collect();
 
-        let request_expr = build_result_expr_from_values(handler_params, &ordered_request_values, request_struct);
+        let request_expr =
+            build_result_expr_from_values(handler_params, &ordered_request_values, request_struct);
         let result_expr = quote!((#instance_value_ident, #request_expr));
 
         build_deserializer_body(return_ty, result_expr, field_statements)
@@ -3983,7 +3985,8 @@ fn build_request_deserializer(
         let return_ty = build_return_type_from_params(handler_params, request_struct);
         let (field_statements, value_idents) =
             deserialize_fields_from_format(request_format, wire_params, label, &field_context_expr);
-        let request_expr = build_result_expr_from_values(handler_params, &value_idents, request_struct);
+        let request_expr =
+            build_result_expr_from_values(handler_params, &value_idents, request_struct);
 
         build_deserializer_body(return_ty, request_expr, field_statements)
     }
@@ -4012,7 +4015,12 @@ fn build_response_serialization_code(
         quote!(String::from(#context_literal))
     };
     let response_ident = Ident::new("response", Span::call_site());
-    let serialization = build_response_payload_tokens(spec, &response_ident, &error_context, service_instance_ident);
+    let serialization = build_response_payload_tokens(
+        spec,
+        &response_ident,
+        &error_context,
+        service_instance_ident,
+    );
 
     quote!({
         let response = #callback_call?;
@@ -4149,7 +4157,8 @@ fn build_action_payload_handler(
     let response_serialization = if let Some(spec) = response_spec {
         let response_ident = Ident::new("response", Span::call_site());
         let error_context = quote!(format!("{} {}", stringify!(#handler_name), ACTION_NAME));
-        let serialization = build_response_payload_tokens(spec, &response_ident, &error_context, None);
+        let serialization =
+            build_response_payload_tokens(spec, &response_ident, &error_context, None);
 
         quote!({
             let response = handler(request)?;
@@ -4220,8 +4229,7 @@ fn build_action_request_deserializer(
     let (field_statements, value_idents) =
         deserialize_fields_from_format(request_format, params, label, &context_expr);
 
-    let request_expr =
-        build_result_expr_from_values(params, &value_idents, request_struct);
+    let request_expr = build_result_expr_from_values(params, &value_idents, request_struct);
 
     quote! {
         fn #deserializer_fn_name(payload: &[u8]) -> crate::Result<#return_ty> {
