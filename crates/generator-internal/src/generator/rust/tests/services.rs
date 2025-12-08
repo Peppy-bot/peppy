@@ -246,10 +246,7 @@ fn subscribed_to_service() {
     );
 
     // Request struct
-    assert_contains_all(
-        &rendered,
-        &["pub struct Request", "pub enable: bool"],
-    );
+    assert_contains_all(&rendered, &["pub struct Request", "pub enable: bool"]);
 
     // Poll function signature
     assert_contains_all(
@@ -303,7 +300,10 @@ fn subscribed_to_two_services_same_node() {
 
     // Verify each topic gets distinct artifact with correct service name
     assert_artifact_contains(&artifacts, "const SERVICE_NAME: &str = \"enable_camera\";");
-    assert_artifact_contains(&artifacts, "const SERVICE_NAME: &str = \"get_camera_info\";");
+    assert_artifact_contains(
+        &artifacts,
+        "const SERVICE_NAME: &str = \"get_camera_info\";",
+    );
 
     // Verify both reference the same source node
     for rendered in &artifacts {

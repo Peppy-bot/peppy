@@ -39,6 +39,7 @@ impl Command for ServiceCommand {
             } => super::serve::ServeCommand {
                 messaging_engine,
                 master_name,
+                shutdown_token: None,
             }
             .execute(&app_ctx),
             ServiceCommands::Install {} => super::install::InstallCommand {}.execute(app_ctx),

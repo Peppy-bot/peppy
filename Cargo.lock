@@ -2218,6 +2218,7 @@ dependencies = [
  "service-manager",
  "tempfile",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]
