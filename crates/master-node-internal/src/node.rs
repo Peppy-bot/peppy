@@ -57,6 +57,14 @@ impl MasterNode {
         &self.node_config
     }
 
+    pub fn node_name(&self) -> &str {
+        self.node_config.manifest.name.as_str()
+    }
+
+    pub fn instance_id(&self) -> &str {
+        self.instance_id.as_str()
+    }
+
     pub async fn start(&self) -> Result<()> {
         let node_name = self.node_config.manifest.name.as_str();
         let master_node_node = "*"; // There is no other node higher in the hierarchy

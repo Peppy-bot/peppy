@@ -105,24 +105,6 @@ impl MessengerBackend for MockAdapter {
                 .push(tx.clone());
         }
 
-        // Send any existing messages for this topic
-        let existing_messages: Result<Vec<_>> = {
-            let messages = self.messages.lock().unwrap();
-            let mut matched = Vec::new();
-            for (msg_topic, msgs) in messages.iter() {
-                if Self::topic_matches(topic, msg_topic) {
-                    for message in msgs {
-                        matched.push(Self::to_response_message(message)?);
-                    }
-                }
-            }
-            Ok(matched)
-        };
-
-        for msg in existing_messages? {
-            let _ = tx.send(msg).await;
-        }
-
         // Create a dummy task that does nothing, just to get an abort handle
         // This maintains compatibility with the Subscription type
         let join_handle = tokio::spawn(async {});
@@ -157,20 +139,66 @@ impl MessengerBackend for MockAdapter {
 }
 
 impl MockAdapter {
+    /// Matches a topic against a pattern using Zenoh key expression semantics.
+    ///
+    /// Zenoh wildcards:
+    /// - `*` matches exactly one chunk (non-empty sequence not containing `/`)
+    /// - `**` matches any number of chunks (including zero)
     fn topic_matches(pattern: &str, topic: &str) -> bool {
-        if let Some(prefix) = pattern.strip_suffix("/**") {
-            if prefix.is_empty() {
-                return true;
+        let pattern_chunks: Vec<&str> = pattern.split('/').collect();
+        let topic_chunks: Vec<&str> = topic.split('/').collect();
+
+        Self::match_chunks(&pattern_chunks, &topic_chunks)
+    }
+
+    fn match_chunks(pattern: &[&str], topic: &[&str]) -> bool {
+        let mut p_idx = 0;
+        let mut t_idx = 0;
+
+        while p_idx < pattern.len() {
+            let p_chunk = pattern[p_idx];
+
+            if p_chunk == "**" {
+                // ** matches zero or more chunks
+                // Try matching the rest of the pattern against all possible positions
+                if p_idx == pattern.len() - 1 {
+                    // ** at the end matches everything remaining
+                    return true;
+                }
+
+                // Try matching the rest of the pattern at each position
+                for try_t_idx in t_idx..=topic.len() {
+                    if Self::match_chunks(&pattern[p_idx + 1..], &topic[try_t_idx..]) {
+                        return true;
+                    }
+                }
+                return false;
             }
-            if topic == prefix {
-                return true;
+
+            // No more topic chunks but pattern has more non-** chunks
+            if t_idx >= topic.len() {
+                return false;
             }
-            topic.starts_with(prefix)
-                && topic.len() > prefix.len()
-                && topic.as_bytes()[prefix.len()] == b'/'
-        } else {
-            pattern == topic
+
+            let t_chunk = topic[t_idx];
+
+            if p_chunk == "*" {
+                // * matches exactly one non-empty chunk
+                if t_chunk.is_empty() {
+                    return false;
+                }
+                // Match succeeds, advance both
+            } else if p_chunk != t_chunk {
+                // Literal chunks must match exactly
+                return false;
+            }
+
+            p_idx += 1;
+            t_idx += 1;
         }
+
+        // Pattern exhausted - topic must also be exhausted
+        t_idx == topic.len()
     }
 
     fn to_response_message(message: &Message) -> Result<TopicMessage> {
@@ -188,7 +216,22 @@ mod tests {
     use crate::types::{MessengerAdapter, PublisherQoS, SubscriberQoS};
     use crate::{Message, Messenger, MessengerBackend};
 
-    const INSTANCE_ID: &str = "test";
+    // Key expression format: target_master/caller_master/target_instance/caller_instance/...
+    // Instance ID is extracted from segment index 3 (caller_instance)
+    // Master node is extracted from segment index 1 (caller_master)
+    const INSTANCE_ID: &str = "test_instance";
+    const MASTER_NODE: &str = "test_master";
+
+    /// Creates a valid key expression with the expected format for TopicMessage
+    fn make_key_expr(topic: &str) -> String {
+        // Format: target_master/caller_master/target_instance/caller_instance/topic
+        // Segments: 0=target_master, 1=caller_master, 2=target_instance, 3=caller_instance
+        // TopicMessage extracts: instance_id from index 3, master_node from index 1
+        format!(
+            "target_master/{}/target_instance/{}/{}",
+            MASTER_NODE, INSTANCE_ID, topic
+        )
+    }
 
     fn create_test_messenger() -> Messenger {
         let adapter = MockAdapter::default();
@@ -225,10 +268,8 @@ mod tests {
         assert!(mock.is_session_connected);
 
         // Test publish - should work when connected
-        let test_message = Message::new(
-            &format!("test_topic/<INSTANCE_ID:{}>", INSTANCE_ID),
-            &[1, 2, 3],
-        );
+        let key = make_key_expr("test_topic");
+        let test_message = Message::new(&key, &[1, 2, 3]);
         assert!(
             mock.publish(test_message, PublisherQoS::Standard)
                 .await
@@ -238,7 +279,6 @@ mod tests {
         // Verify message was stored
         {
             let messages = mock.messages.lock().unwrap();
-            let key = format!("test_topic/<INSTANCE_ID:{}>", INSTANCE_ID);
             assert!(messages.contains_key(&key));
             assert_eq!(messages.get(&key).unwrap().len(), 1);
         }
@@ -254,18 +294,18 @@ mod tests {
         // Test all operations succeed with MockAdapter
         assert!(messenger.start_session().await.is_ok());
 
-        // Test subscribe first
+        // Test subscribe first - pattern must match the key format from make_key_expr
+        // make_key_expr("test/topic/data") = "target_master/test_master/target_instance/test_instance/test/topic/data"
+        // Pattern uses wildcards for first 4 segments and matches rest literally
         let subscription = messenger
-            .subscribe("test/topic/**", SubscriberQoS::Standard)
+            .subscribe("*/*/*/*/test/topic/**", SubscriberQoS::Standard)
             .await;
         assert!(subscription.is_ok());
         let mut subscription = subscription.unwrap();
 
-        // Test publish
-        let message = Message::new(
-            &format!("test/topic/<INSTANCE_ID:{}>", INSTANCE_ID),
-            b"test payload",
-        );
+        // Test publish - use key expression format expected by TopicMessage
+        let key = make_key_expr("test/topic/data");
+        let message = Message::new(&key, b"test payload");
         assert!(
             messenger
                 .publish(message.clone(), PublisherQoS::Standard)
@@ -278,6 +318,7 @@ mod tests {
         assert!(received.is_some());
         let received_msg = received.unwrap();
         assert_eq!(received_msg.instance_id(), INSTANCE_ID);
+        assert_eq!(received_msg.master_node(), MASTER_NODE);
         assert_eq!(received_msg.payload(), message.payload());
 
         // Test shutdown
@@ -333,7 +374,7 @@ mod tests {
         let mut messenger = create_test_messenger();
 
         // Test publishing before start_session should fail
-        let early_message = Message::new("topic/early/<INSTANCE_ID:early>", b"too_early");
+        let early_message = Message::new(&make_key_expr("topic/early"), b"too_early");
         assert!(
             messenger
                 .publish(early_message, PublisherQoS::Standard)
@@ -346,18 +387,9 @@ mod tests {
 
         // Test publishing multiple messages
         let messages = vec![
-            Message::new(
-                "topic/1/<INSTANCE_ID:payload1>",
-                Bytes::from_static(b"payload1"),
-            ),
-            Message::new(
-                "topic/2/<INSTANCE_ID:payload2>",
-                Bytes::from_static(b"payload2"),
-            ),
-            Message::new(
-                "topic/3/<INSTANCE_ID:payload3>",
-                Bytes::from_static(b"payload3"),
-            ),
+            Message::new(&make_key_expr("topic/1"), Bytes::from_static(b"payload1")),
+            Message::new(&make_key_expr("topic/2"), Bytes::from_static(b"payload2")),
+            Message::new(&make_key_expr("topic/3"), Bytes::from_static(b"payload3")),
         ];
 
         for message in messages {
@@ -368,5 +400,129 @@ mod tests {
                     .is_ok()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_mock_messenger_late_subscription_only_receives_new_messages() {
+        let mut messenger = create_test_messenger();
+
+        assert!(messenger.start_session().await.is_ok());
+
+        // Publish before any subscription exists
+        let early_msg = Message::new(&make_key_expr("test/topic/live"), b"early");
+        assert!(
+            messenger
+                .publish(early_msg, PublisherQoS::Standard)
+                .await
+                .is_ok()
+        );
+
+        // Subscribe after the first publish; should not receive the earlier message
+        let mut subscription = messenger
+            .subscribe("*/*/*/*/test/topic/**", SubscriberQoS::Standard)
+            .await
+            .expect("subscription should succeed");
+
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(20), subscription.rx.recv())
+                .await;
+        assert!(
+            result.is_err(),
+            "late subscription should not replay history"
+        );
+
+        // Publish a new message that matches the subscription
+        let live_msg = Message::new(&make_key_expr("test/topic/live"), b"live");
+        assert!(
+            messenger
+                .publish(live_msg.clone(), PublisherQoS::Standard)
+                .await
+                .is_ok()
+        );
+
+        let received =
+            tokio::time::timeout(std::time::Duration::from_millis(50), subscription.rx.recv())
+                .await
+                .expect("should receive live message")
+                .expect("channel should deliver a message");
+        assert_eq!(received.payload(), live_msg.payload());
+
+        assert!(messenger.stop_session().await.is_ok());
+    }
+
+    #[test]
+    fn test_topic_matches_exact() {
+        assert!(MockAdapter::topic_matches("a/b/c", "a/b/c"));
+        assert!(!MockAdapter::topic_matches("a/b/c", "a/b/d"));
+        assert!(!MockAdapter::topic_matches("a/b/c", "a/b"));
+        assert!(!MockAdapter::topic_matches("a/b", "a/b/c"));
+    }
+
+    #[test]
+    fn test_topic_matches_single_wildcard() {
+        // * matches exactly one chunk
+        assert!(MockAdapter::topic_matches("a/*/c", "a/b/c"));
+        assert!(MockAdapter::topic_matches("a/*/c", "a/xyz/c"));
+        assert!(!MockAdapter::topic_matches("a/*/c", "a/b/d"));
+        assert!(!MockAdapter::topic_matches("a/*/c", "a/b/c/d"));
+        assert!(MockAdapter::topic_matches("*/b/c", "a/b/c"));
+        assert!(MockAdapter::topic_matches("a/b/*", "a/b/c"));
+        assert!(MockAdapter::topic_matches("*/*/*/*", "a/b/c/d"));
+    }
+
+    #[test]
+    fn test_topic_matches_double_wildcard() {
+        // ** matches zero or more chunks
+        assert!(MockAdapter::topic_matches("a/**", "a"));
+        assert!(MockAdapter::topic_matches("a/**", "a/b"));
+        assert!(MockAdapter::topic_matches("a/**", "a/b/c"));
+        assert!(MockAdapter::topic_matches("a/**", "a/b/c/d"));
+        assert!(!MockAdapter::topic_matches("a/**", "b"));
+        assert!(!MockAdapter::topic_matches("a/**", "b/a"));
+        assert!(MockAdapter::topic_matches("**", "a"));
+        assert!(MockAdapter::topic_matches("**", "a/b/c"));
+    }
+
+    #[test]
+    fn test_topic_matches_mixed_wildcards() {
+        // Combination of * and **
+        assert!(MockAdapter::topic_matches("a/*/c/**", "a/b/c"));
+        assert!(MockAdapter::topic_matches("a/*/c/**", "a/b/c/d"));
+        assert!(MockAdapter::topic_matches("a/*/c/**", "a/b/c/d/e"));
+        assert!(!MockAdapter::topic_matches("a/*/c/**", "a/b/d"));
+        assert!(MockAdapter::topic_matches(
+            "*/*/service/**",
+            "master/caller/service/ping/request/123"
+        ));
+    }
+
+    #[test]
+    fn test_topic_matches_service_patterns() {
+        // Real patterns from the service messenger
+        // Subscription pattern: {bound_master_node}/*/{as_instance_id}/*/{service_root}/request/**
+        // Request topic: {target_master}/{caller_master}/{target_instance}/{caller_instance}/{service_root}/request/{request_id}
+
+        // Pattern 1: Specific master, specific instance
+        // Service bound to master "listener_master" with instance "listener_instance"
+        let pattern = "listener_master/*/listener_instance/*/service/node/ping/request/**";
+        // Request targeting the specific instance
+        let topic = "listener_master/caller_master/listener_instance/caller_instance/service/node/ping/request/12345";
+        assert!(MockAdapter::topic_matches(pattern, topic));
+
+        // Pattern 3: Broadcast master (_any_), specific instance
+        let pattern = "_any_/*/listener_instance/*/service/node/ping/request/**";
+        let topic =
+            "_any_/caller_master/listener_instance/caller_instance/service/node/ping/request/12345";
+        assert!(MockAdapter::topic_matches(pattern, topic));
+
+        // Pattern 4: Broadcast master, broadcast instance
+        let pattern = "_any_/*/_any_/*/service/node/ping/request/**";
+        let topic = "_any_/caller_master/_any_/caller_instance/service/node/ping/request/12345";
+        assert!(MockAdapter::topic_matches(pattern, topic));
+
+        // Wildcard master in MasterNode (uses "*" as master node)
+        let pattern = "*/*/<INSTANCE_ID:test>/*/service/node/ping/request/**";
+        let topic = "_any_/caller_master/<INSTANCE_ID:test>/caller_instance/service/node/ping/request/12345";
+        assert!(MockAdapter::topic_matches(pattern, topic));
     }
 }
