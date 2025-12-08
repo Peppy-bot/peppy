@@ -1,17 +1,17 @@
 use std::path::Path;
 
 use crate::error::{Error, Result};
-use config::{NodeParameters, node::NodeConfig, runtime::RuntimeConfig};
+use config::{
+    NodeParameters, consts::PEPPY_RUNTIME_CONFIG, node::NodeConfig, runtime::RuntimeConfig,
+};
 use node_stack::NodeStack;
 
-const PEPPY_RUNTIME_CONFIG: &str = "PEPPY_RUNTIME_CONFIG";
-
-pub struct RuntimeProcessor {
-    launch_config: RuntimeConfig,
+/// This struct is launched at runtime everytime a new peppy node is launched
+pub struct Processor {
+    runtime_config: RuntimeConfig,
 }
 
-/// This struct is launched at runtime everytime a new peppy node is launched
-impl RuntimeProcessor {
+impl Processor {
     /// This function takes care of 2 things:
     /// 1. Reads the `PEPPY_RUNTIME_CONFIG` env var passed during runtime from the master node/peppy daemon when the node is started
     /// 2. Checks that the md5 of the peppy_config generated for `peppygen` matches the one we have at runtime as input parameter to this function
@@ -22,19 +22,21 @@ impl RuntimeProcessor {
                 source,
             }
         })?;
-        let launch_config = RuntimeProcessor::get_peppy_deployment_config(&launch_config_path)?;
+        let launch_config = Processor::get_peppy_deployment_config(&launch_config_path)?;
         let node_config: NodeConfig =
             serde_json5::from_str(&std::fs::read_to_string(peppy_config.as_ref())?)?;
-        RuntimeProcessor::check_generated_code_matches_runtime_config(
+        Processor::check_generated_code_matches_runtime_config(
             peppy_config,
             &launch_config.codegen_peppy_config_md5,
         )?;
-        RuntimeProcessor::check_node_config_parameters_types(
+        Processor::check_node_config_parameters_types(
             &launch_config.deployment_instance.parameters,
             &node_config.parameters,
         )?;
 
-        Ok(Self { launch_config })
+        Ok(Self {
+            runtime_config: launch_config,
+        })
     }
 
     fn check_generated_code_matches_runtime_config(
@@ -81,19 +83,19 @@ impl RuntimeProcessor {
     }
 
     pub fn bound_instance_id(&self) -> &str {
-        self.launch_config.deployment_instance.instance_id.as_str()
+        self.runtime_config.deployment_instance.instance_id.as_str()
     }
 
     pub fn bound_master_node(&self) -> &str {
-        self.launch_config.bound_master_node.as_str()
+        self.runtime_config.bound_master_node.as_str()
     }
 
     pub fn input_parameters(&self) -> &NodeParameters {
-        &self.launch_config.deployment_instance.parameters
+        &self.runtime_config.deployment_instance.parameters
     }
 
     pub fn node_name(&self) -> &str {
-        self.launch_config.node_name.as_str()
+        self.runtime_config.node_name.as_str()
     }
 
     pub fn get_node_stack() -> NodeStack {
@@ -105,7 +107,7 @@ impl RuntimeProcessor {
 
 #[cfg(test)]
 mod tests {
-    use super::{PEPPY_RUNTIME_CONFIG, RuntimeProcessor};
+    use super::{PEPPY_RUNTIME_CONFIG, Processor};
     use config::{AnyType, NodeParameters, runtime::RuntimeConfig};
     use std::{collections::BTreeMap, env, sync::Mutex};
     use tempfile::TempDir;
@@ -215,7 +217,7 @@ mod tests {
                 .expect("runtime config path should be valid UTF-8"),
         );
 
-        let runtime_processor = RuntimeProcessor::new_with_peppy_config(&peppy_config_path)
+        let runtime_processor = Processor::new_with_peppy_config(&peppy_config_path)
             .expect("runtime processor should load config from env");
 
         let mut expected_parameters: NodeParameters = NodeParameters::new();
@@ -276,7 +278,7 @@ mod tests {
         let _env_guard =
             EnvVarGuard::set(PEPPY_RUNTIME_CONFIG, runtime_config_path.to_str().unwrap());
 
-        let Err(err) = RuntimeProcessor::new_with_peppy_config(&peppy_config_path) else {
+        let Err(err) = Processor::new_with_peppy_config(&peppy_config_path) else {
             panic!("expected md5 mismatch error");
         };
         let err_string = err.to_string();
@@ -327,7 +329,7 @@ mod tests {
         let _env_guard =
             EnvVarGuard::set(PEPPY_RUNTIME_CONFIG, runtime_config_path.to_str().unwrap());
 
-        let Err(err) = RuntimeProcessor::new_with_peppy_config(&peppy_config_path) else {
+        let Err(err) = Processor::new_with_peppy_config(&peppy_config_path) else {
             panic!("expected missing parameter error");
         };
         let err_string = err.to_string();
@@ -378,7 +380,7 @@ mod tests {
         let _env_guard =
             EnvVarGuard::set(PEPPY_RUNTIME_CONFIG, runtime_config_path.to_str().unwrap());
 
-        let Err(err) = RuntimeProcessor::new_with_peppy_config(&peppy_config_path) else {
+        let Err(err) = Processor::new_with_peppy_config(&peppy_config_path) else {
             panic!("expected type mismatch error");
         };
         let err_string = err.to_string();
@@ -435,7 +437,7 @@ mod tests {
         let _env_guard =
             EnvVarGuard::set(PEPPY_RUNTIME_CONFIG, runtime_config_path.to_str().unwrap());
 
-        let Err(err) = RuntimeProcessor::new_with_peppy_config(&peppy_config_path) else {
+        let Err(err) = Processor::new_with_peppy_config(&peppy_config_path) else {
             panic!("expected type mismatch error");
         };
         let err_string = err.to_string();
@@ -491,7 +493,7 @@ mod tests {
         let _env_guard =
             EnvVarGuard::set(PEPPY_RUNTIME_CONFIG, runtime_config_path.to_str().unwrap());
 
-        let Err(err) = RuntimeProcessor::new_with_peppy_config(&peppy_config_path) else {
+        let Err(err) = Processor::new_with_peppy_config(&peppy_config_path) else {
             panic!("expected type mismatch error");
         };
         let err_string = err.to_string();

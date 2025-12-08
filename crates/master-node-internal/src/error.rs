@@ -14,4 +14,7 @@ pub enum Error {
 
     #[error(transparent)]
     Peppylib(#[from] PeppyError),
+
+    #[error("task join failed: {0}")]
+    Join(#[from] tokio::task::JoinError),
 }
