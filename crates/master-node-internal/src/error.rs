@@ -17,4 +17,7 @@ pub enum Error {
 
     #[error("task join failed: {0}")]
     Join(#[from] tokio::task::JoinError),
+
+    #[error("capnp encoding error: {0}")]
+    Capnp(#[from] capnp::Error),
 }

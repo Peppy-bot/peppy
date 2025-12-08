@@ -1,0 +1,113 @@
+//! Cap'n Proto encoding utilities for master-node messages.
+//!
+//! This module provides utilities for encoding and decoding Cap'n Proto messages
+//! used in the master-node services.
+
+mod ping;
+
+pub use ping::build_ping_response;
+
+use bytes::Bytes;
+use capnp::message::{Builder, HeapAllocator, ReaderOptions};
+use capnp::serialize;
+
+use crate::Result;
+use crate::messages_capnp;
+
+/// Encode a Cap'n Proto message builder into bytes.
+///
+/// # Example
+/// ```ignore
+/// use master_node::encoding::encode_message;
+/// use master_node::messages_capnp;
+///
+/// let mut message = capnp::message::Builder::new_default();
+/// let mut ping = message.init_root::<messages_capnp::ping_response::Builder>();
+/// ping.set_message("pong");
+/// ping.set_timestamp(12345);
+///
+/// let bytes = encode_message(&message)?;
+/// ```
+pub fn encode_message(message: &Builder<HeapAllocator>) -> Result<Bytes> {
+    let mut buffer = Vec::new();
+    serialize::write_message(&mut buffer, message)?;
+    Ok(Bytes::from(buffer))
+}
+
+/// Decode bytes into a Cap'n Proto message reader.
+///
+/// Returns an owned segments reader that can be used to read the message.
+///
+/// # Example
+/// ```ignore
+/// use master_node::encoding::decode_message;
+/// use master_node::messages_capnp;
+///
+/// let reader = decode_message(&bytes)?;
+/// let ping = reader.get_root::<messages_capnp::ping_request::Reader>()?;
+/// let timestamp = ping.get_timestamp();
+/// ```
+pub fn decode_message(
+    data: &[u8],
+) -> Result<capnp::message::Reader<capnp::serialize::OwnedSegments>> {
+    Ok(serialize::read_message(data, ReaderOptions::default())?)
+}
+
+/// Convenience wrapper for building and encoding a status response.
+pub fn build_status_response(status: &str, details: &str, uptime_seconds: u64) -> Result<Bytes> {
+    let mut builder = Builder::new_default();
+    {
+        let mut response = builder.init_root::<messages_capnp::status_response::Builder>();
+        response.set_status(status);
+        response.set_details(details);
+        response.set_uptime_seconds(uptime_seconds);
+    }
+    encode_message(&builder)
+}
+
+/// Convenience wrapper for building and encoding a deployment response.
+pub fn build_deployment_response(
+    success: bool,
+    deployment_id: &str,
+    error_message: &str,
+) -> Result<Bytes> {
+    let mut builder = Builder::new_default();
+    {
+        let mut response = builder.init_root::<messages_capnp::deployment_response::Builder>();
+        response.set_success(success);
+        response.set_deployment_id(deployment_id);
+        response.set_error_message(error_message);
+    }
+    encode_message(&builder)
+}
+
+/// Convenience wrapper for building and encoding an add node response.
+pub fn build_add_node_response(success: bool, node_id: &str, error_message: &str) -> Result<Bytes> {
+    let mut builder = Builder::new_default();
+    {
+        let mut response = builder.init_root::<messages_capnp::add_node_response::Builder>();
+        response.set_success(success);
+        response.set_node_id(node_id);
+        response.set_error_message(error_message);
+    }
+    encode_message(&builder)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_status_response_roundtrip() {
+        let bytes = build_status_response("ok", "All systems operational", 3600).unwrap();
+
+        let reader = decode_message(&bytes).unwrap();
+        let response = reader
+            .get_root::<messages_capnp::status_response::Reader>()
+            .unwrap();
+
+        assert_eq!(response.get_status().unwrap(), "ok");
+        assert_eq!(response.get_details().unwrap(), "All systems operational");
+        assert_eq!(response.get_uptime_seconds(), 3600);
+    }
+}

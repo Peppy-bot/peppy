@@ -1797,6 +1797,8 @@ name = "master-node"
 version = "0.0.1"
 dependencies = [
  "bytes",
+ "capnp",
+ "capnpc",
  "config",
  "futures",
  "names-generator2",
