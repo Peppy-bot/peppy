@@ -1,5 +1,7 @@
 use crate::Result;
-use crate::commands::{listen_for_ping, listen_for_status};
+use crate::commands::{
+    listen_for_add_node, listen_for_launch_deployment, listen_for_ping, listen_for_status,
+};
 use config::{
     node::{Manifest, Name, NodeConfig},
     peppy_config::CURRENT_SCHEMA_VERSION,
@@ -66,6 +68,9 @@ impl MasterNode {
         let handles = vec![
             listen_for_ping(&self.messenger, node_name, master_node_node, instance_id).await?,
             listen_for_status(&self.messenger, node_name, master_node_node, instance_id).await?,
+            listen_for_launch_deployment(&self.messenger, node_name, master_node_node, instance_id)
+                .await?,
+            listen_for_add_node(&self.messenger, node_name, master_node_node, instance_id).await?,
         ];
 
         // Wait for all service handlers
