@@ -12,6 +12,7 @@ use pmi::MessengerAdapter;
 use pmi::MockAdapter;
 use pmi::ZenohAdapter;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 pub struct ServeCommandBuilder {
@@ -20,6 +21,7 @@ pub struct ServeCommandBuilder {
     node_stack: NodeStack,
     master_node_requested: bool,
     master_node_name: Option<String>,
+    shutdown_token: Option<CancellationToken>,
 }
 
 impl ServeCommandBuilder {
@@ -30,7 +32,13 @@ impl ServeCommandBuilder {
             node_stack: NodeStack::new(),
             master_node_requested: false,
             master_node_name: None,
+            shutdown_token: None,
         })
+    }
+
+    pub fn with_shutdown_token(mut self, token: CancellationToken) -> Self {
+        self.shutdown_token = Some(token);
+        self
     }
 
     /// The messaging router (Zenoh/MQTT etc...) is reponsible for message passing between the nodes and between the nodes and the peppy program
@@ -80,6 +88,11 @@ impl ServeCommandBuilder {
             }
         }
 
-        Ok(Serve::new(self.composite_command))
+        let serve = Serve::new(self.composite_command);
+        let serve = match self.shutdown_token {
+            Some(token) => serve.with_shutdown_token(token),
+            None => serve,
+        };
+        Ok(serve)
     }
 }

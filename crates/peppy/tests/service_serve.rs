@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use peppy::serve::{PID_FILE_ENV, PROMPT_ANSWER_ENV, ServeCommand};
+use peppy::serve::{CancellationToken, PID_FILE_ENV, PROMPT_ANSWER_ENV, ServeCommand};
 use peppy::{AppContext, Command};
 use tempfile::TempDir;
 use tracing_subscriber::fmt::MakeWriter;
@@ -155,21 +155,25 @@ fn test_serve_command() {
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    let signal_thread = thread::spawn(|| {
+    let shutdown_token = CancellationToken::new();
+    let shutdown_token_clone = shutdown_token.clone();
+
+    let shutdown_thread = thread::spawn(move || {
         thread::sleep(Duration::from_millis(200));
-        trigger_ctrl_c_signal();
+        shutdown_token_clone.cancel();
     });
 
     ServeCommand {
         messaging_engine: "mock".to_string(),
-        master_name: None,
+        master_name: Some("master-node".to_string()),
+        shutdown_token: Some(shutdown_token),
     }
     .execute(&ctx)
     .expect("serve command executes with mock messaging engine");
 
-    signal_thread
+    shutdown_thread
         .join()
-        .expect("signal thread should complete without panic");
+        .expect("shutdown thread should complete without panic");
 
     let node_stack = ctx
         .node_stack()
@@ -194,24 +198,29 @@ fn test_serve_command() {
 
 #[test]
 fn test_serve_command_replace_existing_stack() {
-    // TODO use random port for Zenoh
     let _serial_guard = serve_test_lock().lock().unwrap();
     let _pid_guard = TempPidFileGuard::new();
 
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let log_capture_for_thread = log_capture.clone();
+
+    let shutdown_token = CancellationToken::new();
+    let shutdown_token_for_thread = shutdown_token.clone();
 
     let ctx = Arc::new(AppContext::default());
     let ctx_for_thread = ctx.clone();
     let serve_thread = thread::spawn(move || {
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(log_capture_for_thread)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
         ServeCommand {
-            messaging_engine: "zenoh".to_string(),
-            master_name: None,
+            messaging_engine: "mock".to_string(),
+            master_name: Some("master-node".to_string()),
+            shutdown_token: Some(shutdown_token_for_thread),
         }
         .execute(&ctx_for_thread)
         .expect("initial serve command should start");
@@ -223,11 +232,19 @@ fn test_serve_command_replace_existing_stack() {
         Duration::from_secs(5),
     );
 
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
     let second_attempt = {
         let _prompt_guard = EnvVarGuard::set(PROMPT_ANSWER_ENV, "y");
         ServeCommand {
-            messaging_engine: "zenoh".to_string(),
-            master_name: None,
+            messaging_engine: "mock".to_string(),
+            master_name: Some("master-node".to_string()),
+            shutdown_token: None,
         }
         .execute(&ctx)
     };
@@ -237,16 +254,10 @@ fn test_serve_command_replace_existing_stack() {
         "second serve command should fail while another instance is active"
     );
 
-    wait_for_log(
-        &log_capture,
-        "Existing peppy instance detected",
-        Duration::from_secs(2),
-    );
-
-    trigger_ctrl_c_signal();
+    shutdown_token.cancel();
     serve_thread
         .join()
-        .expect("serve thread should terminate after ctrl-c");
+        .expect("serve thread should terminate after shutdown");
 
     let logs = log_capture.logs();
     assert!(

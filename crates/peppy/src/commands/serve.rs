@@ -17,6 +17,7 @@ use builder::ServeCommandBuilder;
 use pid_lock::{PidLock, PidLockError};
 
 pub use pid_lock::PID_FILE_ENV;
+pub use tokio_util::sync::CancellationToken;
 
 const EXISTING_INSTANCE_PROMPT: &str =
     "An instance of peppy already exists on this machine. Reset the node stack? [y/n] ";
@@ -80,6 +81,7 @@ impl CompositeCommand {
 
 pub struct Serve {
     composite_command: CompositeCommand,
+    shutdown_token: Option<CancellationToken>,
 }
 
 /// The serve command is the command that runs as a daemon in systemd and maintains a "node stack" (a graph representation of nodes)
@@ -98,7 +100,15 @@ impl Serve {
     }
 
     pub fn new(composite_command: CompositeCommand) -> Self {
-        Self { composite_command }
+        Self {
+            composite_command,
+            shutdown_token: None,
+        }
+    }
+
+    pub fn with_shutdown_token(mut self, token: CancellationToken) -> Self {
+        self.shutdown_token = Some(token);
+        self
     }
 
     pub fn execute(self) -> Result<()> {
@@ -107,6 +117,7 @@ impl Serve {
             .build()?;
 
         let handles = self.composite_command.execute()?;
+        let shutdown_token = self.shutdown_token;
 
         info!("Running serve command...");
         runtime.block_on(async move {
@@ -152,6 +163,17 @@ impl Serve {
                             }
                         }
                     }
+                    _ = async {
+                        if let Some(token) = &shutdown_token {
+                            token.cancelled().await
+                        } else {
+                            std::future::pending::<()>().await
+                        }
+                    } => {
+                        info!("Shutdown signal received");
+                        info!("Waiting for serve handlers to finish...");
+                        break;
+                    }
                     signal = tokio::signal::ctrl_c() => {
                         match signal {
                             Ok(_) => {
@@ -167,6 +189,11 @@ impl Serve {
                 }
             }
 
+            // If shutdown was triggered by the cancellation token, abort remaining tasks
+            // since they may also be waiting on ctrl_c which won't arrive
+            if shutdown_token.is_some() {
+                join_set.abort_all();
+            }
             while let Some(result) = join_set.join_next().await {
                 Self::log_task_result(result);
             }
@@ -180,6 +207,7 @@ impl Serve {
 pub struct ServeCommand {
     pub messaging_engine: String,
     pub master_name: Option<String>,
+    pub shutdown_token: Option<CancellationToken>,
 }
 
 impl Command for ServeCommand {
@@ -199,11 +227,16 @@ impl Command for ServeCommand {
             Err(PidLockError::Io(err)) => return Err(err.into()),
         };
 
-        let executor = ServeCommandBuilder::new()?
+        let mut builder = ServeCommandBuilder::new()?
             .with_messaging_router(self.messaging_engine)
             .with_master_node(self.master_name)?
-            .with_node_stack(ctx)
-            .build()?;
+            .with_node_stack(ctx);
+
+        if let Some(token) = self.shutdown_token {
+            builder = builder.with_shutdown_token(token);
+        }
+
+        let executor = builder.build()?;
 
         match executor.execute() {
             Ok(()) => Ok(()),
