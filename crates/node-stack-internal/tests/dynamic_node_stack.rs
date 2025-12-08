@@ -12,10 +12,11 @@ fn dynamically_add_node_to_node_stack_matching_topic() {
             interfaces: {
                 subscribes_to: {
                     topics: [
-                        { 
-                          node: "lidar", 
-                          name: "push_lidar_object", 
-                          tag: "1.0.0" 
+                        {
+                          id: "lidar_object_sub",
+                          node: "lidar",
+                          name: "push_lidar_object",
+                          tag: "1.0.0"
                         }
                     ]
                 }
@@ -108,10 +109,11 @@ fn dynamically_add_node_to_node_stack_matching_service() {
             interfaces: {
                 subscribes_to: {
                     services: [
-                        { 
-                          node: "lidar", 
-                          name: "reset_sensor", 
-                          tag: "1.0.0" 
+                        {
+                          id: "reset_sensor_sub",
+                          node: "lidar",
+                          name: "reset_sensor",
+                          tag: "1.0.0"
                         }
                     ]
                 }
@@ -200,10 +202,11 @@ fn dynamically_add_node_to_node_stack_matching_action() {
             interfaces: {
                 subscribes_to: {
                     actions: [
-                        { 
-                          node: "controller", 
-                          name: "move_right_arm", 
-                          tag: "1.0.0" 
+                        {
+                          id: "move_right_arm_sub",
+                          node: "controller",
+                          name: "move_right_arm",
+                          tag: "1.0.0"
                         }
                     ]
                 }
@@ -312,10 +315,11 @@ fn dynamically_add_node_to_node_stack_wrong_topic_node_name() {
             interfaces: {
                 subscribes_to: {
                     topics: [
-                        { 
+                        {
+                          id: "lidar_object_sub",
                           node: "uvc_camera", // Wrong node name
-                          name: "push_lidar_object", 
-                          tag: "1.0.0" 
+                          name: "push_lidar_object",
+                          tag: "1.0.0"
                         }
                     ]
                 }
