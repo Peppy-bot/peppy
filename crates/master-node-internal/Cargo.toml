@@ -9,9 +9,13 @@ pmi = { path = "../pmi-internal", features = ["zenoh"] }
 config = { path = "../config-internal" }
 peppylib = { path = "../peppylib" }
 bytes = "1.10"
+capnp = "0.23"
 futures = "0.3"
 names-generator2 = "0.2"
 rand = "0.9"
 thiserror = "2.0"
 tokio = { version = "1.47", features = ["sync", "rt"] }
 tracing = "0.1"
+
+[build-dependencies]
+capnpc = "0.23"

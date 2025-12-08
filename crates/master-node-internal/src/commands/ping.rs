@@ -1,10 +1,11 @@
+use crate::Result;
+use crate::encoding::{build_ping_response, decode_message};
+use crate::messages_capnp;
 use bytes::Bytes;
 use peppylib::messaging::ServiceRequestContext;
-use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
-
-use crate::Result;
 
 pub async fn listen_for_ping(
     messenger: &MessengerHandle,
@@ -32,7 +33,25 @@ pub async fn listen_for_ping(
     Ok(handle)
 }
 
-async fn handle_ping_request(_context: ServiceRequestContext) -> PeppyResult<Bytes> {
-    debug!("Received ping request, sending pong response");
-    Ok(Bytes::from_static(b"pong"))
+async fn handle_ping_request(context: ServiceRequestContext) -> PeppyResult<Bytes> {
+    let instance_id = context.message().instance_id();
+    handle_ping_request_inner(&context).map_err(|e| PeppyError::InvalidServiceRequest {
+        identifier: instance_id.to_string(),
+        reason: e.to_string(),
+    })
+}
+
+fn handle_ping_request_inner(context: &ServiceRequestContext) -> Result<Bytes> {
+    let instance_id = context.message().instance_id();
+    let payload = context.message().payload();
+
+    // Decode incoming request
+    let reader = decode_message(&payload.as_bytes())?;
+    let request = reader.get_root::<messages_capnp::ping_request::Reader>()?;
+    let timestamp = request.get_timestamp();
+
+    debug!("Received ping request from {instance_id}, timestamp={timestamp}");
+
+    // Build and encode response
+    build_ping_response(timestamp, "pong")
 }
