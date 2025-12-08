@@ -67,7 +67,7 @@ impl MasterNode {
 
     pub async fn start(&self) -> Result<()> {
         let node_name = self.node_config.manifest.name.as_str();
-        let master_node_node = "*"; // There is no other node higher in the hierarchy
+        let master_node_node = node_name; // The master node binds to itself as the master scope
         let instance_id = self.instance_id.as_str();
         info!(
             "Starting the master node with name {} and instance_id {}...",
