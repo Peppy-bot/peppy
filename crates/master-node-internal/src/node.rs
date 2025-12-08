@@ -1,10 +1,11 @@
 use crate::Result;
+use crate::commands::{listen_for_ping, listen_for_status};
 use config::{
-    node::{Manifest, Name, NodeConfig, QoSProfile},
+    node::{Manifest, Name, NodeConfig},
     peppy_config::CURRENT_SCHEMA_VERSION,
 };
 use names_generator2::get_random;
-use peppylib::{MessengerHandle, ServiceMessenger};
+use peppylib::MessengerHandle;
 use pmi::Messenger;
 use rand::rng;
 use std::sync::Arc;
@@ -15,6 +16,7 @@ const MASTER_NODE_TAG: &str = "internal";
 
 pub struct MasterNode {
     node_config: NodeConfig,
+    instance_id: Name,
     messenger: MessengerHandle,
 }
 
@@ -40,9 +42,11 @@ impl MasterNode {
         };
 
         let messenger = MessengerHandle::from_shared(messenger);
+        let instance_id = Name::new(get_random(rng())).unwrap();
 
         Self {
             node_config,
+            instance_id,
             messenger,
         }
     }
@@ -53,37 +57,22 @@ impl MasterNode {
 
     pub async fn start(&self) -> Result<()> {
         let node_name = self.node_config.manifest.name.as_str();
-        info!("Starting the master node as {}...", node_name);
+        let master_node_node = "*"; // There is no other node higher in the hierarchy
+        let instance_id = self.instance_id.as_str();
+        info!(
+            "Starting the master node with name {} and instance_id {}...",
+            node_name, instance_id
+        );
+        let handles = vec![
+            listen_for_ping(&self.messenger, node_name, master_node_node, instance_id).await?,
+            listen_for_status(&self.messenger, node_name, master_node_node, instance_id).await?,
+        ];
 
-        // TODO: Finish exposing the service
-        // let mut subscription = ServiceMessenger::subscribe(
-        //     &self.messenger,
-        //     config::consts::MASTER_NODE_NAME,
-        //     config::consts::MASTER_NODE_TOPIC_NAME,
-        //     None,
-        //     QoSProfile::Critical,
-        // )
-        // .await?;
-
-        // loop {
-        //     match subscription.on_next_message().await {
-        //         Some(message) => {
-        //             let payload = String::from_utf8_lossy(message.payload());
-        //             let command = payload.trim();
-
-        //             match command {
-        //                 "ping" => info!("Received 'ping' command over {}", message.identifier()),
-        //                 "status" => info!("Would respond with status for {}", message.identifier()),
-        //                 "shutdown" => info!("Received 'shutdown' command (toy example)"),
-        //                 other => info!("Received unhandled command '{}'", other),
-        //             }
-        //         }
-        //         None => {
-        //             info!("Command subscription closed; no longer listening for messages");
-        //             break;
-        //         }
-        //     }
-        // }
+        // Wait for all service handlers
+        futures::future::try_join_all(handles)
+            .await?
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
 
         info!("Shutting down master node...");
         Ok(())

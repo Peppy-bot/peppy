@@ -1,9 +1,9 @@
-use peppylib::system::RuntimeProcessor;
+use peppylib::runtime::Processor;
 use std::path::Path;
 
 pub struct Messenger {
     messenger: peppylib::MessengerHandle,
-    runtime_processor: RuntimeProcessor,
+    runtime_processor: Processor,
 }
 
 impl Messenger {
@@ -15,14 +15,14 @@ impl Messenger {
         let messenger = peppylib::MessengerHandle::from_host_port(host, port)
             .await
             .map_err(crate::Error::Messaging)?;
-        let runtime_processor = RuntimeProcessor::new_with_peppy_config(peppy_config)?;
+        let runtime_processor = Processor::new_with_peppy_config(peppy_config)?;
         Ok(Self {
             messenger,
             runtime_processor,
         })
     }
 
-    pub fn runtime(&self) -> &RuntimeProcessor {
+    pub fn runtime(&self) -> &Processor {
         &self.runtime_processor
     }
 
