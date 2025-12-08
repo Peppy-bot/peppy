@@ -1,11 +1,11 @@
-use crate::Result;
-use crate::encoding::{build_ping_response, decode_message};
-use crate::messages_capnp;
 use bytes::Bytes;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
+
+use crate::Result;
+use crate::encoding::{PingRequest, PingResponse};
 
 pub async fn listen_for_ping(
     messenger: &MessengerHandle,
@@ -45,13 +45,12 @@ fn handle_ping_request_inner(context: &ServiceRequestContext) -> Result<Bytes> {
     let instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    // Decode incoming request
-    let reader = decode_message(&payload.as_bytes())?;
-    let request = reader.get_root::<messages_capnp::ping_request::Reader>()?;
-    let timestamp = request.get_timestamp();
+    let request = PingRequest::decode(&payload.as_bytes())?;
 
-    debug!("Received ping request from {instance_id}, timestamp={timestamp}");
+    debug!(
+        "Received ping request from {instance_id}, timestamp={}",
+        request.timestamp
+    );
 
-    // Build and encode response
-    build_ping_response(timestamp, "pong")
+    PingResponse::new(request.timestamp, "pong").encode()
 }

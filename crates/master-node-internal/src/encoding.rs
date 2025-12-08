@@ -5,7 +5,7 @@
 
 mod ping;
 
-pub use ping::build_ping_response;
+pub use ping::{PingRequest, PingResponse};
 
 use bytes::Bytes;
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
