@@ -6,34 +6,66 @@ use capnp::message::Builder;
 use crate::Result;
 use crate::messages_capnp;
 
-use super::encode_message;
+use super::{decode_message, encode_message};
 
-/// Convenience wrapper for building and encoding a ping response.
-pub fn build_ping_response(timestamp: u64, message: &str) -> Result<Bytes> {
-    let mut builder = Builder::new_default();
-    {
-        let mut response = builder.init_root::<messages_capnp::ping_response::Builder>();
-        response.set_timestamp(timestamp);
-        response.set_message(message);
-    }
-    encode_message(&builder)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PingRequest {
+    pub timestamp: u64,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::encoding::decode_message;
+impl PingRequest {
+    pub fn new(timestamp: u64) -> Self {
+        Self { timestamp }
+    }
 
-    #[test]
-    fn test_ping_response_roundtrip() {
-        let bytes = build_ping_response(12345, "pong").unwrap();
+    pub fn encode(&self) -> Result<Bytes> {
+        let mut builder = Builder::new_default();
+        {
+            let mut request = builder.init_root::<messages_capnp::ping_request::Builder>();
+            request.set_timestamp(self.timestamp);
+        }
+        encode_message(&builder)
+    }
 
-        let reader = decode_message(&bytes).unwrap();
-        let response = reader
-            .get_root::<messages_capnp::ping_response::Reader>()
-            .unwrap();
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let request = reader.get_root::<messages_capnp::ping_request::Reader>()?;
+        Ok(Self {
+            timestamp: request.get_timestamp(),
+        })
+    }
+}
 
-        assert_eq!(response.get_timestamp(), 12345);
-        assert_eq!(response.get_message().unwrap(), "pong");
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PingResponse {
+    pub timestamp: u64,
+    pub message: String,
+}
+
+impl PingResponse {
+    pub fn new(timestamp: u64, message: impl Into<String>) -> Self {
+        Self {
+            timestamp,
+            message: message.into(),
+        }
+    }
+
+    pub fn encode(&self) -> Result<Bytes> {
+        let mut builder = Builder::new_default();
+        {
+            let mut response = builder.init_root::<messages_capnp::ping_response::Builder>();
+            response.set_timestamp(self.timestamp);
+            response.set_message(&self.message);
+        }
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let response = reader.get_root::<messages_capnp::ping_response::Reader>()?;
+        Ok(Self {
+            timestamp: response.get_timestamp(),
+            message: response.get_message()?.to_str()?.to_owned(),
+        })
     }
 }

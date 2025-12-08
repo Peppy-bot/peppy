@@ -3,15 +3,12 @@
 //! This test verifies that the ping service correctly receives requests and sends responses
 //! using the messaging system with Cap'n Proto encoding/decoding.
 
-use bytes::Bytes;
-use capnp::message::Builder;
 use master_node::MasterNode;
-use master_node::encoding::{decode_message, encode_message};
-use master_node::messages_capnp;
+use master_node::encoding::{PingRequest, PingResponse};
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
 /// Creates a mock messenger with an active session.
@@ -23,16 +20,6 @@ async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
         .await
         .expect("failed to start mock session");
     Arc::new(Mutex::new(messenger))
-}
-
-/// Builds a ping request with the given timestamp and encodes it to bytes.
-fn build_ping_request(timestamp: u64) -> Bytes {
-    let mut builder = Builder::new_default();
-    {
-        let mut request = builder.init_root::<messages_capnp::ping_request::Builder>();
-        request.set_timestamp(timestamp);
-    }
-    encode_message(&builder).expect("failed to encode ping request")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -54,19 +41,15 @@ async fn test_ping_request_response_roundtrip() {
     // Client (caller) configuration
     const CALLER_INSTANCE_ID: &str = "caller_instance";
 
-    let test_timestamp: u64 = 1234567890;
+    // Use current time in milliseconds as the request timestamp
+    let request_timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time went backwards")
+        .as_millis() as u64;
 
     // Build and encode the ping request
-    let request_payload = build_ping_request(test_timestamp);
-
-    // Verify request encoding by decoding it back
-    {
-        let reader = decode_message(&request_payload).expect("should decode request");
-        let request = reader
-            .get_root::<messages_capnp::ping_request::Reader>()
-            .expect("should get ping request");
-        assert_eq!(request.get_timestamp(), test_timestamp);
-    }
+    let request = PingRequest::new(request_timestamp_ms);
+    let request_payload = request.encode().expect("failed to encode ping request");
 
     // Create a client messenger handle from the same shared messenger
     let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
@@ -87,15 +70,24 @@ async fn test_ping_request_response_roundtrip() {
     .expect("caller should receive response");
 
     // Decode and verify the response
-    let response_bytes = response.payload().to_bytes();
-    let reader = decode_message(&response_bytes).expect("should decode response");
-    let ping_response = reader
-        .get_root::<messages_capnp::ping_response::Reader>()
-        .expect("should get ping response");
+    let ping_response =
+        PingResponse::decode(&response.payload().to_bytes()).expect("should decode ping response");
 
-    assert_eq!(ping_response.get_timestamp(), test_timestamp);
-    assert_eq!(ping_response.get_message().unwrap(), "pong");
+    assert_eq!(ping_response.message, "pong");
     assert_eq!(response.instance_id(), instance_id);
+
+    // Calculate latency from timestamps
+    let response_timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time went backwards")
+        .as_millis() as u64;
+    let latency_ms = response_timestamp_ms - ping_response.timestamp;
+
+    // Verify the response echoed back our request timestamp
+    assert_eq!(ping_response.timestamp, request_timestamp_ms);
+
+    // Verify latency is reasonable (should be fast with mock messenger)
+    assert!(latency_ms < 500, "latency too high: {latency_ms}ms");
 
     // Cancel the MasterNode task (it runs forever otherwise)
     master_node_task.abort();
