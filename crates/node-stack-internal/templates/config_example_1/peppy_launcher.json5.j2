@@ -81,7 +81,7 @@
       name: "{{ web_video_stream_node_name }}",
       tag: "0.1.0",
       // Since it's optional, if the node cannot be found, it will be ignored
-      optional: "{{ web_video_stream_optional }}",
+      optional: {{ web_video_stream_optional }},
       instances: [
         {
           instance_id: "stream_1",
