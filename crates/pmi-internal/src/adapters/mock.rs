@@ -520,9 +520,10 @@ mod tests {
         let topic = "_any_/caller_master/_any_/caller_instance/service/node/ping/request/12345";
         assert!(MockAdapter::topic_matches(pattern, topic));
 
-        // Wildcard master in MasterNode (uses "*" as master node)
-        let pattern = "*/*/<INSTANCE_ID:test>/*/service/node/ping/request/**";
-        let topic = "_any_/caller_master/<INSTANCE_ID:test>/caller_instance/service/node/ping/request/12345";
+        // MasterNode uses its own name as the bound master (e.g., "master_node")
+        // This allows targeted requests to reach the master node specifically
+        let pattern = "master_node/*/listener_instance/*/service/node/ping/request/**";
+        let topic = "master_node/caller_master/listener_instance/caller_instance/service/node/ping/request/12345";
         assert!(MockAdapter::topic_matches(pattern, topic));
     }
 }
