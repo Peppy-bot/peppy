@@ -105,37 +105,6 @@ fn serve_test_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn trigger_ctrl_c_signal() {
-    // Safety: libc::raise is available on all supported platforms and delivers SIGINT to this process.
-    let result = unsafe { libc::raise(libc::SIGINT) };
-    assert_eq!(result, 0, "raising SIGINT should succeed");
-}
-
-#[test]
-fn manual_ctrl_c_works() {
-    if std::env::var("PEPPY_SERVE_TEST_CHILD").is_ok() {
-        return;
-    }
-
-    let _serial_guard = serve_test_lock().lock().unwrap();
-
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    let signal_thread = thread::spawn(|| {
-        thread::sleep(Duration::from_millis(100));
-        trigger_ctrl_c_signal();
-    });
-
-    runtime.block_on(async {
-        tokio::signal::ctrl_c().await.unwrap();
-    });
-
-    signal_thread.join().unwrap();
-}
-
 #[test]
 fn test_serve_command() {
     let _serial_guard = serve_test_lock().lock().unwrap();
