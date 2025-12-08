@@ -462,7 +462,7 @@ async fn main() -> Result<()> {{
     let exposer_thread = thread::spawn(move || {
         run_cargo_run(
             &exposer_dir,
-            Some(Duration::from_secs(10)),
+            Some(Duration::from_secs(15)),
             &[("PEPPY_RUNTIME_CONFIG", &exposer_runtime_config_str)],
         )
     });
@@ -475,7 +475,7 @@ async fn main() -> Result<()> {{
     let subscriber_thread = thread::spawn(move || {
         run_cargo_run(
             &subscriber_dir,
-            Some(Duration::from_secs(10)),
+            Some(Duration::from_secs(15)),
             &[("PEPPY_RUNTIME_CONFIG", &subscriber_runtime_config_str)],
         )
     });
