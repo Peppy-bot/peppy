@@ -4,9 +4,11 @@
 //! used in the master-node services.
 
 mod info;
+mod launcher;
 mod ping;
 
 pub use info::{InfoRequest, InfoResponse, InfoType};
+pub use launcher::{LauncherRequest, LauncherResponse};
 pub use ping::{PingRequest, PingResponse};
 
 use bytes::Bytes;
@@ -67,17 +69,12 @@ pub fn build_status_response(status: &str, details: &str, uptime_seconds: u64) -
     encode_message(&builder)
 }
 
-/// Convenience wrapper for building and encoding a deployment response.
-pub fn build_deployment_response(
-    success: bool,
-    deployment_id: &str,
-    error_message: &str,
-) -> Result<Bytes> {
+/// Convenience wrapper for building and encoding a launcher response.
+pub fn build_launcher_response(success: bool, error_message: &str) -> Result<Bytes> {
     let mut builder = Builder::new_default();
     {
-        let mut response = builder.init_root::<messages_capnp::deployment_response::Builder>();
+        let mut response = builder.init_root::<messages_capnp::launcher_response::Builder>();
         response.set_success(success);
-        response.set_deployment_id(deployment_id);
         response.set_error_message(error_message);
     }
     encode_message(&builder)

@@ -12,13 +12,13 @@ pub async fn listen_for_add_node(
     instance_id: &str,
     node_name: &str,
 ) -> Result<JoinHandle<Result<()>>> {
-    let ping_service_name = "add_node";
+    let service_name = "add_node";
     let mut endpoint = ServiceMessenger::listen(
         messenger,
         master_node_node,
         instance_id,
         node_name,
-        &ping_service_name,
+        &service_name,
     )
     .await?;
 

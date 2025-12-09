@@ -309,7 +309,10 @@ mod zenoh_tests {
         wait_for_subscriber_discovery().await;
 
         // Publish a new message
-        let new_msg = Message::new(&key_expr, Bytes::from_static(b"New message for late subscriber"));
+        let new_msg = Message::new(
+            &key_expr,
+            Bytes::from_static(b"New message for late subscriber"),
+        );
         messenger
             .publish(new_msg.clone(), PublisherQoS::Standard)
             .await

@@ -1,19 +1,21 @@
 use bytes::Bytes;
+use peppy_core::AppContext;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
 use crate::Result;
-use crate::encoding::{PingRequest, PingResponse};
+use crate::encoding::{LauncherRequest, LauncherResponse};
 
-pub async fn listen_for_ping(
+pub async fn listen_for_launch_configuration(
     messenger: &MessengerHandle,
     master_node_node: &str,
     instance_id: &str,
     node_name: &str,
+    app_context: &AppContext,
 ) -> Result<JoinHandle<Result<()>>> {
-    let service_name = "ping";
+    let service_name = "launch_configuration";
     let mut endpoint = ServiceMessenger::listen(
         messenger,
         master_node_node,
@@ -25,7 +27,7 @@ pub async fn listen_for_ping(
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(handle_ping_request)
+            .handle_requests(handle_launcher_request)
             .await
             .map_err(Into::into)
     });
@@ -33,24 +35,23 @@ pub async fn listen_for_ping(
     Ok(handle)
 }
 
-async fn handle_ping_request(context: ServiceRequestContext) -> PeppyResult<Bytes> {
+async fn handle_launcher_request(context: ServiceRequestContext) -> PeppyResult<Bytes> {
     let instance_id = context.message().instance_id();
-    handle_ping_request_inner(&context).map_err(|e| PeppyError::InvalidServiceRequest {
+    handle_launcher_request_inner(&context).map_err(|e| PeppyError::InvalidServiceRequest {
         identifier: instance_id.to_string(),
         reason: e.to_string(),
     })
 }
 
-fn handle_ping_request_inner(context: &ServiceRequestContext) -> Result<Bytes> {
+fn handle_launcher_request_inner(context: &ServiceRequestContext) -> Result<Bytes> {
     let instance_id = context.message().instance_id();
     let payload = context.message().payload();
+    debug!("Received launcher request from {instance_id}");
 
-    let request = PingRequest::decode(&payload.as_bytes())?;
+    let request = LauncherRequest::decode(&payload.as_bytes())?;
 
-    debug!(
-        "Received ping request from {instance_id}, timestamp={}",
-        request.timestamp
-    );
+    // TODO: build a config::PeppyLauncher based on request.peppy_launcher_json5
+    // TODO: Use `LocalNodeStackBuilder::from_launch_file` to create a new node stack and use it in place of `app_context.set_node_stack`
 
-    PingResponse::new(request.timestamp, "pong").encode()
+    LauncherResponse::new().encode()
 }
