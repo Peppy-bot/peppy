@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 pub struct ServeCommandBuilder {
+    app_ctx: Arc<AppContext>,
     composite_command: CompositeCommand,
     messenger: Option<Arc<Mutex<Messenger>>>,
     node_stack: NodeStack,
@@ -25,8 +26,9 @@ pub struct ServeCommandBuilder {
 }
 
 impl ServeCommandBuilder {
-    pub fn new() -> Result<Self> {
+    pub fn new(ctx: &Arc<AppContext>) -> Result<Self> {
         Ok(Self {
+            app_ctx: Arc::clone(ctx),
             composite_command: CompositeCommand::default(),
             messenger: None,
             node_stack: NodeStack::new(),
@@ -68,16 +70,19 @@ impl ServeCommandBuilder {
         Ok(self)
     }
 
-    pub fn with_node_stack(self, ctx: &AppContext) -> Self {
-        ctx.set_node_stack(self.node_stack.clone());
+    pub fn with_node_stack(mut self) -> Self {
+        self.app_ctx.set_node_stack(self.node_stack.clone());
         self
     }
 
     pub fn build(mut self) -> Result<Serve> {
         if self.master_node_requested {
             if let Some(messenger) = &self.messenger {
-                let master_node =
-                    MasterNodeRunner::new(Arc::clone(messenger), self.master_node_name.clone());
+                let master_node = MasterNodeRunner::new(
+                    &self.app_ctx,
+                    Arc::clone(messenger),
+                    self.master_node_name.clone(),
+                );
                 self.node_stack.push_config(master_node.config().clone());
                 self.composite_command = self
                     .composite_command

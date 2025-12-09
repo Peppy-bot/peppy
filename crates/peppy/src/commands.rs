@@ -4,10 +4,12 @@ pub mod node;
 pub mod serve;
 pub mod service;
 
+use std::sync::Arc;
+
 use crate::{AppContext, Error, Result};
 
 /// Trait for executable commands
 pub trait Command {
     /// Execute the command
-    fn execute(self, ctx: &AppContext) -> Result<()>;
+    fn execute(self, ctx: &Arc<AppContext>) -> Result<()>;
 }

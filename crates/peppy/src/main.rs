@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use tracing::error;
@@ -51,7 +52,7 @@ fn main() {
         .init();
 
     let cli = Cli::parse();
-    let app_ctx = AppContext::default();
+    let app_ctx = Arc::new(AppContext::default());
 
     let result = match cli.command {
         Commands::Service { command } => service::ServiceCommand { command }.execute(&app_ctx),

@@ -8,9 +8,9 @@ use crate::Result;
 
 pub async fn listen_for_launch_deployment(
     messenger: &MessengerHandle,
-    node_name: &str,
     master_node_node: &str,
     instance_id: &str,
+    node_name: &str,
 ) -> Result<JoinHandle<Result<()>>> {
     let ping_service_name = "launch_deployment";
     let mut endpoint = ServiceMessenger::listen(

@@ -6,6 +6,8 @@ mod pid_lock;
 use std::future::Future;
 use std::io::{self, Write};
 use std::pin::Pin;
+use std::sync::Arc;
+
 use tokio::sync::oneshot;
 use tokio::task::{JoinError, JoinSet};
 use tracing::{error, info};
@@ -211,7 +213,7 @@ pub struct ServeCommand {
 }
 
 impl Command for ServeCommand {
-    fn execute(self, ctx: &AppContext) -> Result<()> {
+    fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
         let _pid_lock = match PidLock::acquire() {
             Ok(lock) => lock,
             Err(PidLockError::AlreadyRunning(pid)) => {
@@ -227,10 +229,10 @@ impl Command for ServeCommand {
             Err(PidLockError::Io(err)) => return Err(err.into()),
         };
 
-        let mut builder = ServeCommandBuilder::new()?
+        let mut builder = ServeCommandBuilder::new(ctx)?
             .with_messaging_router(self.messaging_engine)
             .with_master_node(self.master_name)?
-            .with_node_stack(ctx);
+            .with_node_stack();
 
         if let Some(token) = self.shutdown_token {
             builder = builder.with_shutdown_token(token);

@@ -110,7 +110,7 @@ fn test_serve_command() {
     let _serial_guard = serve_test_lock().lock().unwrap();
     let _pid_guard = TempPidFileGuard::new();
 
-    let ctx = AppContext::default();
+    let ctx = Arc::new(AppContext::default());
     assert!(
         ctx.node_stack().is_none(),
         "node stack should not be initialized before serve runs"

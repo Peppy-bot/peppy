@@ -9,9 +9,9 @@ use crate::encoding::{PingRequest, PingResponse};
 
 pub async fn listen_for_ping(
     messenger: &MessengerHandle,
-    node_name: &str,
     master_node_node: &str,
     instance_id: &str,
+    node_name: &str,
 ) -> Result<JoinHandle<Result<()>>> {
     let ping_service_name = "ping";
     let mut ping_endpoint = ServiceMessenger::listen(

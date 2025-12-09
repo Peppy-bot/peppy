@@ -1,4 +1,4 @@
-use crate::error::{Error, Result};
+use crate::error::Result;
 use config::{peppy_config::DeploymentInstance, runtime::RuntimeConfig};
 
 /// This struct goal is to generate the RuntimeConfig passed to every node at runtime through consts::PEPPY_RUNTIME_CONFIG

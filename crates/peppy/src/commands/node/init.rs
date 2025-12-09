@@ -2,12 +2,14 @@ mod factory;
 mod python;
 mod rust;
 
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
 use super::PackageManager;
 use super::types::NodeName;
 use crate::{AppContext, Error, Result};
 use factory::{NodeContext, create_factory};
-use std::fs;
-use std::path::{Path, PathBuf};
 
 pub struct NodeBuilder {
     to_dir: PathBuf,
@@ -18,7 +20,7 @@ pub struct NodeBuilder {
 }
 
 impl NodeBuilder {
-    pub fn new(ctx: &AppContext, node_name: NodeName) -> Self {
+    pub fn new(ctx: &Arc<AppContext>, node_name: NodeName) -> Self {
         Self {
             to_dir: ctx.root_dir.clone(),
             node_name,

@@ -5,6 +5,7 @@
 
 use master_node::MasterNode;
 use master_node::encoding::{PingRequest, PingResponse};
+use peppy_core::AppContext;
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::sync::Arc;
@@ -27,8 +28,15 @@ async fn test_ping_request_response_roundtrip() {
     // Create a shared mock messenger for both MasterNode and client
     let shared_messenger = create_mock_messenger().await;
 
+    // Create an AppContext for the MasterNode
+    let app_ctx = Arc::new(AppContext::default());
+
     // Create and start the MasterNode (listener)
-    let master_node = MasterNode::new(Arc::clone(&shared_messenger), Some("test_master_node"));
+    let master_node = MasterNode::new(
+        &app_ctx,
+        Arc::clone(&shared_messenger),
+        Some("test_master_node"),
+    );
     let master_node_name = master_node.node_name().to_string();
     let instance_id = master_node.instance_id().to_string();
 

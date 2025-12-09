@@ -2,9 +2,11 @@ mod list;
 mod run;
 mod types;
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use clap::{Subcommand, ValueEnum};
 use core::fmt;
-use std::path::PathBuf;
 use tracing::info;
 
 use super::{Command, Error as CommandError};
@@ -69,7 +71,7 @@ pub struct NodeCommand {
 }
 
 impl Command for NodeCommand {
-    fn execute(self, ctx: &AppContext) -> Result<(), CommandError> {
+    fn execute(self, ctx: &Arc<AppContext>) -> Result<(), CommandError> {
         match self.command {
             NodeCommands::Create {
                 to_dir,
