@@ -4,7 +4,7 @@ use bytes::Bytes;
 use capnp::message::Builder;
 
 use crate::Result;
-use crate::messages_capnp;
+use crate::ping_capnp;
 
 use super::{decode_message, encode_message};
 
@@ -21,7 +21,7 @@ impl PingRequest {
     pub fn encode(&self) -> Result<Bytes> {
         let mut builder = Builder::new_default();
         {
-            let mut request = builder.init_root::<messages_capnp::ping_request::Builder>();
+            let mut request = builder.init_root::<ping_capnp::ping_request::Builder>();
             request.set_timestamp(self.timestamp);
         }
         encode_message(&builder)
@@ -29,7 +29,7 @@ impl PingRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<messages_capnp::ping_request::Reader>()?;
+        let request = reader.get_root::<ping_capnp::ping_request::Reader>()?;
         Ok(Self {
             timestamp: request.get_timestamp(),
         })
@@ -53,7 +53,7 @@ impl PingResponse {
     pub fn encode(&self) -> Result<Bytes> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<messages_capnp::ping_response::Builder>();
+            let mut response = builder.init_root::<ping_capnp::ping_response::Builder>();
             response.set_timestamp(self.timestamp);
             response.set_message(&self.message);
         }
@@ -62,7 +62,7 @@ impl PingResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<messages_capnp::ping_response::Reader>()?;
+        let response = reader.get_root::<ping_capnp::ping_response::Reader>()?;
         Ok(Self {
             timestamp: response.get_timestamp(),
             message: response.get_message()?.to_str()?.to_owned(),
