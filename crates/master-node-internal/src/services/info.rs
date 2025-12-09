@@ -17,13 +17,13 @@ pub async fn listen_for_info(
     node_name: &str,
     _app_context: &AppContext,
 ) -> Result<JoinHandle<Result<()>>> {
-    let info_service_name = "info";
-    let mut info_endpoint = ServiceMessenger::listen(
+    let service_name = "info";
+    let mut endpoint = ServiceMessenger::listen(
         messenger,
         master_node_name,
         instance_id,
         node_name,
-        &info_service_name,
+        &service_name,
     )
     .await?;
 
@@ -32,7 +32,7 @@ pub async fn listen_for_info(
     let start_time = Instant::now();
 
     let handle = tokio::spawn(async move {
-        info_endpoint
+        endpoint
             .handle_requests(move |context| {
                 let master_node_name = master_node_name.clone();
                 let instance_id = instance_id.clone();

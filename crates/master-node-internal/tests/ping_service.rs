@@ -1,6 +1,6 @@
 mod common;
 
-use common::{setup_test_master_node, CALLER_INSTANCE_ID};
+use common::{CALLER_INSTANCE_ID, setup_test_master_node};
 use master_node::encoding::{PingRequest, PingResponse};
 use peppylib::messaging::ServiceMessenger;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
