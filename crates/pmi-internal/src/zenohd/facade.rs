@@ -242,6 +242,14 @@ impl ZenohdFacade {
     }
 }
 
+impl Drop for ZenohdFacade {
+    fn drop(&mut self) {
+        if let Err(e) = self.stop_router() {
+            tracing::warn!("Failed to stop router during drop: {}", e);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::zenohd_support::{pick_free_tcp_port, write_zenohd_config};
