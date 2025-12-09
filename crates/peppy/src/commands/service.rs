@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use clap::Subcommand;
 
 use super::{Command, Error as CommandError};
@@ -26,7 +28,7 @@ pub struct ServiceCommand {
 }
 
 impl Command for ServiceCommand {
-    fn execute(self, app_ctx: &AppContext) -> Result<(), CommandError> {
+    fn execute(self, app_ctx: &Arc<AppContext>) -> Result<(), CommandError> {
         match self.command {
             ServiceCommands::Deploy => {
                 todo!(
@@ -41,7 +43,7 @@ impl Command for ServiceCommand {
                 master_name,
                 shutdown_token: None,
             }
-            .execute(&app_ctx),
+            .execute(app_ctx),
             ServiceCommands::Install {} => super::install::InstallCommand {}.execute(app_ctx),
         }
     }

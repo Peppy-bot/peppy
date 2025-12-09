@@ -7,6 +7,7 @@ use config::{
     peppy_config::CURRENT_SCHEMA_VERSION,
 };
 use names_generator2::get_random;
+use peppy_core::AppContext;
 use peppylib::MessengerHandle;
 use pmi::Messenger;
 use rand::rng;
@@ -17,13 +18,18 @@ use tracing::info;
 const MASTER_NODE_TAG: &str = "internal";
 
 pub struct MasterNode {
+    app_ctx: Arc<AppContext>,
     node_config: NodeConfig,
     instance_id: Name,
     messenger: MessengerHandle,
 }
 
 impl MasterNode {
-    pub fn new(messenger: Arc<Mutex<Messenger>>, node_name: Option<&str>) -> Self {
+    pub fn new(
+        app_ctx: &Arc<AppContext>,
+        messenger: Arc<Mutex<Messenger>>,
+        node_name: Option<&str>,
+    ) -> Self {
         let manifest_name = match node_name {
             Some(name) => Name::new(name).unwrap(),
             None => Name::new(get_random(rng())).unwrap(),
@@ -47,6 +53,7 @@ impl MasterNode {
         let instance_id = Name::new(get_random(rng())).unwrap();
 
         Self {
+            app_ctx: Arc::clone(app_ctx),
             node_config,
             instance_id,
             messenger,
@@ -66,19 +73,42 @@ impl MasterNode {
     }
 
     pub async fn start(&self) -> Result<()> {
-        let node_name = self.node_config.manifest.name.as_str();
-        let master_node_node = node_name; // The master node binds to itself as the master scope
-        let instance_id = self.instance_id.as_str();
+        let master_node_name = self.node_name(); // The master node binds to itself as the master scope
         info!(
             "Starting the master node with name {} and instance_id {}...",
-            node_name, instance_id
+            self.node_name(),
+            self.instance_id(),
         );
         let handles = vec![
-            listen_for_ping(&self.messenger, node_name, master_node_node, instance_id).await?,
-            listen_for_status(&self.messenger, node_name, master_node_node, instance_id).await?,
-            listen_for_launch_deployment(&self.messenger, node_name, master_node_node, instance_id)
-                .await?,
-            listen_for_add_node(&self.messenger, node_name, master_node_node, instance_id).await?,
+            listen_for_ping(
+                &self.messenger,
+                master_node_name,
+                self.instance_id(),
+                self.node_name(),
+            )
+            .await?,
+            listen_for_status(
+                &self.messenger,
+                master_node_name,
+                self.instance_id(),
+                self.node_name(),
+                &self.app_ctx,
+            )
+            .await?,
+            listen_for_launch_deployment(
+                &self.messenger,
+                master_node_name,
+                self.instance_id(),
+                self.node_name(),
+            )
+            .await?,
+            listen_for_add_node(
+                &self.messenger,
+                master_node_name,
+                self.instance_id(),
+                self.node_name(),
+            )
+            .await?,
         ];
 
         // Wait for all service handlers

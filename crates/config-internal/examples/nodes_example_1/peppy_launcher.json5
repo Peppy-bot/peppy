@@ -19,6 +19,7 @@
         repo: "https://github.com/Peppy/nodes.git",
         path: "uvc_camera"
       },
+      // TODO: Add `integrity` to make sure that sha256 integrity has not been tampered with
       tag: "0.1.0", // In that example the tag is a git tag
       // One instance is going to emit on ns /camera/front/stream and another on /camera/rear/stream
       instances: [

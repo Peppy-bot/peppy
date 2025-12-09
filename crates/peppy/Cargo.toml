@@ -7,6 +7,7 @@ edition.workspace = true
 pmi = { path = "../pmi-internal", features = ["zenoh"] }
 config = { path = "../config-internal" }
 peppylib = { path = "../peppylib" }
+peppy-core = { path = "../peppy-core-internal" }
 generator = { path = "../generator-internal" }
 node-stack = { path = "../node-stack-internal" }
 master-node = { path = "../master-node-internal" }

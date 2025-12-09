@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use service_manager::{
     ServiceInstallCtx, ServiceLabel, ServiceManager, ServiceManagerKind, TypedServiceManager,
@@ -14,7 +15,7 @@ const PEPPY_SERVICE_LABEL: &str = "bot.peppy.daemon";
 pub struct InstallCommand {}
 
 impl Command for InstallCommand {
-    fn execute(self, _ctx: &AppContext) -> Result<()> {
+    fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
         install_peppy_daemon(None).map(|_| ())
     }
 }
