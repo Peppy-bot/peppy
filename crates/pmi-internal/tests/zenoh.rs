@@ -5,9 +5,26 @@ mod zenoh_tests {
         Message, Messenger, MessengerBackend, PublisherQoS, SubscriberQoS,
         zenohd_support::{pick_free_tcp_port, prepare_zenohd_test_router},
     };
-    use std::{fs, path::PathBuf};
+    use std::{fs, path::PathBuf, time::Duration};
 
     const INSTANCE_ID: &str = "test-instance";
+    const MASTER_NODE: &str = "test-master";
+
+    /// Creates a valid key expression with the expected format for TopicMessage.
+    /// Format: target_master/caller_master/target_instance/caller_instance/topic
+    /// TopicMessage extracts: instance_id from index 3, master_node from index 1
+    fn make_key_expr(topic: &str) -> String {
+        format!(
+            "target_master/{}/target_instance/{}/{}",
+            MASTER_NODE, INSTANCE_ID, topic
+        )
+    }
+
+    /// Small delay to allow Zenoh's subscriber discovery to propagate.
+    /// This is necessary because Zenoh pub/sub matching takes time to establish.
+    async fn wait_for_subscriber_discovery() {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 
     /// Helper function to create a configured messenger with a unique port
     fn create_test_messenger() -> (Messenger, tempfile::TempDir, PathBuf) {
@@ -91,11 +108,6 @@ mod zenoh_tests {
             "Expected messaging session error without session, got: {:?}",
             publish_err
         );
-
-        messenger
-            .stop_router()
-            .await
-            .expect("Failed to stop router");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -118,12 +130,9 @@ mod zenoh_tests {
             result.is_err(),
             "Publishing before start_session should fail"
         );
-
-        // Shutdown the router
-        messenger.stop_router().await.expect("Failed to shutdown");
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_publish_subscribe() {
         let (mut messenger, _temp_dir, _) = create_test_messenger();
 
@@ -137,17 +146,18 @@ mod zenoh_tests {
             .await
             .expect("Failed to start session");
 
-        // Subscribe to a topic
+        // Subscribe to a topic pattern that matches the key expression format
         let mut sub = messenger
-            .subscribe("test/topic/**", SubscriberQoS::Standard)
+            .subscribe("target_master/**/test_topic", SubscriberQoS::Standard)
             .await
             .expect("Failed to subscribe");
 
-        // Publish a message
-        let msg = Message::new(
-            &format!("test/topic/<INSTANCE_ID:{}>", INSTANCE_ID),
-            Bytes::from_static(b"Hello World"),
-        );
+        // Wait for subscriber discovery to propagate
+        wait_for_subscriber_discovery().await;
+
+        // Publish a message using the correct key expression format
+        let key_expr = make_key_expr("test_topic");
+        let msg = Message::new(&key_expr, Bytes::from_static(b"Hello World"));
         messenger
             .publish(msg.clone(), PublisherQoS::Standard)
             .await
@@ -156,12 +166,11 @@ mod zenoh_tests {
         // Verify subscriber receives the message
         let received = sub.rx.recv().await.expect("Failed to receive message");
         assert_eq!(received.instance_id(), INSTANCE_ID);
+        assert_eq!(received.master_node(), MASTER_NODE);
         assert_eq!(received.payload(), msg.payload());
-
-        messenger.stop_router().await.expect("Failed to shutdown");
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple_topics() {
         let (mut messenger, _temp_dir, _) = create_test_messenger();
 
@@ -177,23 +186,22 @@ mod zenoh_tests {
 
         // Subscribe to multiple topics with different throughput modes
         let mut sub1 = messenger
-            .subscribe("test/topic1/**", SubscriberQoS::Standard)
+            .subscribe("target_master/**/topic1", SubscriberQoS::Standard)
             .await
             .expect("Failed to subscribe to topic1");
         let mut sub2 = messenger
-            .subscribe("test/topic2/**", SubscriberQoS::HighThroughput)
+            .subscribe("target_master/**/topic2", SubscriberQoS::HighThroughput)
             .await
             .expect("Failed to subscribe to topic2");
 
-        // Publish to different topics
-        let msg1 = Message::new(
-            &format!("test/topic1/<INSTANCE_ID:{}>", INSTANCE_ID),
-            Bytes::from_static(b"Message for topic1"),
-        );
-        let msg2 = Message::new(
-            &format!("test/topic2/<INSTANCE_ID:{}>", INSTANCE_ID),
-            Bytes::from_static(b"Message for topic2"),
-        );
+        // Wait for subscriber discovery to propagate
+        wait_for_subscriber_discovery().await;
+
+        // Publish to different topics using correct key expression format
+        let key_expr1 = make_key_expr("topic1");
+        let key_expr2 = make_key_expr("topic2");
+        let msg1 = Message::new(&key_expr1, Bytes::from_static(b"Message for topic1"));
+        let msg2 = Message::new(&key_expr2, Bytes::from_static(b"Message for topic2"));
 
         messenger
             .publish(msg1.clone(), PublisherQoS::Standard)
@@ -207,16 +215,16 @@ mod zenoh_tests {
         // Verify each subscriber receives only its topic's message
         let received1 = sub1.rx.recv().await.expect("Failed to receive on topic1");
         assert_eq!(received1.instance_id(), INSTANCE_ID);
+        assert_eq!(received1.master_node(), MASTER_NODE);
         assert_eq!(received1.payload(), msg1.payload());
 
         let received2 = sub2.rx.recv().await.expect("Failed to receive on topic2");
         assert_eq!(received2.instance_id(), INSTANCE_ID);
+        assert_eq!(received2.master_node(), MASTER_NODE);
         assert_eq!(received2.payload(), msg2.payload());
-
-        messenger.stop_router().await.expect("Failed to shutdown");
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple_messages_same_topic() {
         let (mut messenger, _temp_dir, _) = create_test_messenger();
 
@@ -231,23 +239,18 @@ mod zenoh_tests {
             .expect("Failed to start session");
 
         let mut sub = messenger
-            .subscribe("test/topic/**", SubscriberQoS::Standard)
+            .subscribe("target_master/**/test_topic", SubscriberQoS::Standard)
             .await
             .expect("Failed to subscribe");
 
-        // Publish multiple messages to the same topic
-        let msg1 = Message::new(
-            &format!("test/topic/<INSTANCE_ID:{}>", INSTANCE_ID),
-            Bytes::from_static(b"First message"),
-        );
-        let msg2 = Message::new(
-            &format!("test/topic/<INSTANCE_ID:{}>", INSTANCE_ID),
-            Bytes::from_static(b"Second message"),
-        );
-        let msg3 = Message::new(
-            &format!("test/topic/<INSTANCE_ID:{}>", INSTANCE_ID),
-            Bytes::from_static(b"Third message"),
-        );
+        // Wait for subscriber discovery to propagate
+        wait_for_subscriber_discovery().await;
+
+        // Publish multiple messages to the same topic using correct key expression format
+        let key_expr = make_key_expr("test_topic");
+        let msg1 = Message::new(&key_expr, Bytes::from_static(b"First message"));
+        let msg2 = Message::new(&key_expr, Bytes::from_static(b"Second message"));
+        let msg3 = Message::new(&key_expr, Bytes::from_static(b"Third message"));
 
         messenger
             .publish(msg1.clone(), PublisherQoS::Standard)
@@ -271,11 +274,9 @@ mod zenoh_tests {
 
         let received3 = sub.rx.recv().await.expect("Failed to receive msg3");
         assert_eq!(received3.payload(), msg3.payload());
-
-        messenger.stop_router().await.expect("Failed to shutdown");
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_late_subscription() {
         let (mut messenger, _temp_dir, _) = create_test_messenger();
 
@@ -289,11 +290,10 @@ mod zenoh_tests {
             .await
             .expect("Failed to start session");
 
+        let key_expr = make_key_expr("test_topic");
+
         // Publish a message before any subscription
-        let early_msg = Message::new(
-            &format!("test/topic/<INSTANCE_ID:{}>", INSTANCE_ID),
-            Bytes::from_static(b"Early message"),
-        );
+        let early_msg = Message::new(&key_expr, Bytes::from_static(b"Early message"));
         messenger
             .publish(early_msg.clone(), PublisherQoS::Standard)
             .await
@@ -301,15 +301,15 @@ mod zenoh_tests {
 
         // Create subscription after the message was published
         let mut late_sub = messenger
-            .subscribe("test/topic/**", SubscriberQoS::Standard)
+            .subscribe("target_master/**/test_topic", SubscriberQoS::Standard)
             .await
             .expect("Failed to create late subscription");
 
+        // Wait for subscriber discovery to propagate
+        wait_for_subscriber_discovery().await;
+
         // Publish a new message
-        let new_msg = Message::new(
-            &format!("test/topic/<INSTANCE_ID:{}>", INSTANCE_ID),
-            Bytes::from_static(b"New message for late subscriber"),
-        );
+        let new_msg = Message::new(&key_expr, Bytes::from_static(b"New message for late subscriber"));
         messenger
             .publish(new_msg.clone(), PublisherQoS::Standard)
             .await
@@ -318,8 +318,7 @@ mod zenoh_tests {
         // Late subscriber should only receive the new message, not the early one
         let received = late_sub.rx.recv().await.expect("Failed to receive message");
         assert_eq!(received.instance_id(), INSTANCE_ID);
+        assert_eq!(received.master_node(), MASTER_NODE);
         assert_eq!(received.payload(), new_msg.payload());
-
-        messenger.stop_router().await.expect("Failed to shutdown");
     }
 }
