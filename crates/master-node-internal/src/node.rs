@@ -1,6 +1,6 @@
 use crate::Result;
-use crate::commands::{
-    listen_for_add_node, listen_for_launch_deployment, listen_for_ping, listen_for_status,
+use crate::services::{
+    listen_for_add_node, listen_for_info, listen_for_launch_deployment, listen_for_ping,
 };
 use config::{
     node::{Manifest, Name, NodeConfig},
@@ -87,7 +87,7 @@ impl MasterNode {
                 self.node_name(),
             )
             .await?,
-            listen_for_status(
+            listen_for_info(
                 &self.messenger,
                 master_node_name,
                 self.instance_id(),

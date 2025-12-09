@@ -21,6 +21,9 @@ pub enum Error {
     #[error("capnp encoding error: {0}")]
     Capnp(#[from] capnp::Error),
 
+    #[error("capnp schema error: {0}")]
+    CapnpNotInSchema(#[from] capnp::NotInSchema),
+
     #[error("invalid UTF-8 in message: {0}")]
     Utf8(#[from] std::str::Utf8Error),
 }

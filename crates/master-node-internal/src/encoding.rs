@@ -3,8 +3,10 @@
 //! This module provides utilities for encoding and decoding Cap'n Proto messages
 //! used in the master-node services.
 
+mod info;
 mod ping;
 
+pub use info::{InfoRequest, InfoResponse, InfoType};
 pub use ping::{PingRequest, PingResponse};
 
 use bytes::Bytes;

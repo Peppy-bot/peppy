@@ -70,7 +70,7 @@ impl ServeCommandBuilder {
         Ok(self)
     }
 
-    pub fn with_node_stack(mut self) -> Self {
+    pub fn with_node_stack(self) -> Self {
         self.app_ctx.set_node_stack(self.node_stack.clone());
         self
     }
