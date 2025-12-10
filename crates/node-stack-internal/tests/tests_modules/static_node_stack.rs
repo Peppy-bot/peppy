@@ -5,13 +5,8 @@ use node_stack::{LocalNodeStackBuilder, NodeStackError};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
-#[path = "./helpers/config.rs"]
-mod helper_config;
-
-#[path = "./helpers/config_common.rs"]
-mod config_common;
-
-use config_common::master_node_config;
+use crate::helpers::config as helper_config;
+use crate::helpers::config_common::master_node_config;
 
 /// Launches the following nodes:
 /// - brain
