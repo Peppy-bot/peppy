@@ -9,18 +9,11 @@ use node_stack::{LocalNodeStackBuilder, NodeStack};
 use std::path::PathBuf;
 use tempfile::tempdir;
 
-#[path = "./helpers/config_common.rs"]
-mod helper_config;
-#[path = "./helpers/git.rs"]
-mod helper_git;
-#[path = "./helpers/resolver.rs"]
-mod helper_resolver;
-
-use helper_config::{
+use crate::helpers::config_common::{
     create_http_bundle, deployment, master_node_config, node_config, write_config,
 };
-use helper_git::{create_git_repository, push_git_commit};
-use helper_resolver::StaticResolver;
+use crate::helpers::git::{create_git_repository, push_git_commit};
+use crate::helpers::resolver::StaticResolver;
 
 #[test]
 fn http_bundle_is_downloaded_and_resolved() {

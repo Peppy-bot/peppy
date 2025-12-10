@@ -1,10 +1,7 @@
 use config::node::Name;
 use node_stack::NodeStack;
 
-#[path = "./helpers/config_common.rs"]
-mod config_common;
-
-use config_common::master_node_config;
+use crate::helpers::config_common::master_node_config;
 
 #[test]
 fn dynamically_add_node_to_node_stack_matching_topic() {
