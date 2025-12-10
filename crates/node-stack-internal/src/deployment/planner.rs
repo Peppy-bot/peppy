@@ -248,12 +248,12 @@ impl LauncherPlanner {
                             map.node_source().source(),
                             Some(DeploymentNodeSource::Local(_))
                         ) {
-                            let node = map.node_source().node().clone();
+                            let node = map.node_source().node();
                             if !self
                                 .node_stack
                                 .contains(node.manifest.name.as_str(), &node.manifest.tag)
                             {
-                                self.node_stack.push_config(node);
+                                self.node_stack.push_config(node.clone());
                             }
                         }
                     }
