@@ -1,11 +1,13 @@
+use std::sync::Arc;
+
 use bytes::Bytes;
+use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
 use crate::Result;
-use crate::context::MasterContext;
 use crate::encoding::{LauncherRequest, LauncherResponse};
 
 pub async fn listen_for_launch_configuration(
@@ -13,7 +15,7 @@ pub async fn listen_for_launch_configuration(
     master_node_node: &str,
     instance_id: &str,
     node_name: &str,
-    app_context: &MasterContext,
+    node_stack: Arc<NodeStack>,
 ) -> Result<JoinHandle<Result<()>>> {
     let service_name = "launch_configuration";
     let mut endpoint = ServiceMessenger::listen(

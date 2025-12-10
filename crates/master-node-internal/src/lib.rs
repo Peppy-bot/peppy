@@ -1,8 +1,8 @@
-mod context;
+/// The master node is a special kind of node that has access to the whole context of the peppy daemon and runs as part of the same process
 pub mod encoding;
+
 mod error;
 mod node;
-/// The master node is a special kind of node that has access to the whole context of the peppy daemon and runs as part of the same process
 mod services;
 
 // Generated Cap'n Proto types - must be at crate root for correct path resolution
