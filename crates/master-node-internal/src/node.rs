@@ -1,5 +1,4 @@
 use crate::Result;
-use crate::context::MasterContext;
 use crate::services::{
     listen_for_add_node, listen_for_info, listen_for_launch_configuration, listen_for_ping,
 };
@@ -8,6 +7,7 @@ use config::{
     peppy_config::CURRENT_SCHEMA_VERSION,
 };
 use names_generator2::get_random;
+use node_stack::NodeStack;
 use peppylib::MessengerHandle;
 use pmi::Messenger;
 use rand::rng;
@@ -18,7 +18,7 @@ use tracing::info;
 const MASTER_NODE_TAG: &str = "internal";
 
 pub struct MasterNode {
-    context: Arc<MasterContext>,
+    node_stack: Arc<NodeStack>,
     node_config: NodeConfig,
     instance_id: Name,
     messenger: MessengerHandle,
@@ -47,15 +47,26 @@ impl MasterNode {
 
         let messenger = MessengerHandle::from_shared(messenger);
         let instance_id = Name::new(get_random(rng())).unwrap();
+        let node_stack = NodeStack::new();
+        // TODO create a NodeInstance
+        // let node_instance = NodeInstance::new();
 
-        let context = Arc::new(MasterContext::default());
+        // node_stack.push_config(node); // TODO add itself as root node
 
         Self {
-            context: Arc::clone(&context),
+            node_stack: Arc::new(node_stack),
             node_config,
             instance_id,
             messenger,
         }
+    }
+
+    pub fn node_stack(&self) -> &NodeStack {
+        &self.node_stack
+    }
+
+    pub fn set_node_stack(&mut self, node_stack: NodeStack) {
+        self.node_stack = Arc::new(node_stack);
     }
 
     pub fn node_config(&self) -> &NodeConfig {
@@ -90,7 +101,7 @@ impl MasterNode {
                 master_node_name,
                 self.instance_id(),
                 self.node_name(),
-                &self.context,
+                Arc::clone(&self.node_stack),
             )
             .await?,
             listen_for_launch_configuration(
@@ -98,7 +109,7 @@ impl MasterNode {
                 master_node_name,
                 self.instance_id(),
                 self.node_name(),
-                &self.context,
+                Arc::clone(&self.node_stack),
             )
             .await?,
             listen_for_add_node(
