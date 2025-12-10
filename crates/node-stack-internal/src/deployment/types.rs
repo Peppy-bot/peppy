@@ -1,17 +1,40 @@
+use crate::error::{Error, Result};
+use config::node::{Name, NodeConfig};
+use config::peppy_config::{Deployment, DeploymentNodeSource};
+use names_generator2::get_random;
+use petgraph::{
+    Direction,
+    stable_graph::{NodeIndex, StableDiGraph},
+    visit::EdgeRef,
+};
+use rand::rng;
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{Arc, RwLock},
 };
 
-use crate::error::{Error, Result};
-use config::node::NodeConfig;
-use config::peppy_config::{Deployment, DeploymentNodeSource};
-use petgraph::{
-    Direction,
-    stable_graph::{NodeIndex, StableDiGraph},
-    visit::EdgeRef,
-};
+/// This represent a single entity with n instances inside the node_stack
+pub struct NodeEntity {
+    config: NodeConfig,
+    instances: Vec<NodeInstance>,
+}
+
+impl NodeEntity {
+    pub fn new(config: NodeConfig) -> Self {
+        Self {
+            config,
+            instances: Vec::new(),
+        }
+    }
+
+    pub fn from_instances_list(config: NodeConfig, instances: &[NodeInstance]) -> Self {
+        Self {
+            config,
+            instances: Vec::from(instances),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ResolvedNodeSource {
@@ -84,35 +107,27 @@ impl DeploymentMap {
 
 #[derive(Debug, Clone)]
 pub struct NodeInstance {
-    config: NodeConfig,
-    filepath: Option<PathBuf>,
+    instance_id: Name,
+    root_path: Option<PathBuf>,
 }
 
 impl NodeInstance {
-    pub fn new(config: NodeConfig) -> Self {
+    pub fn new(instance_id: &str) -> Self {
         Self {
-            config,
-            filepath: None,
+            instance_id: Name::new(instance_id),
+            root_path: None,
         }
     }
 
-    pub fn with_path<P: Into<PathBuf>>(config: NodeConfig, filepath: P) -> Self {
+    pub fn with_path<P: Into<PathBuf>>(instance_id: &str, filepath: P) -> Self {
         Self {
-            config,
-            filepath: Some(filepath.into()),
+            instance_id: Name::new(instance_id),
+            root_path: Some(filepath.into()),
         }
     }
 
-    pub fn config(&self) -> &NodeConfig {
-        &self.config
-    }
-
-    pub fn file_path(&self) -> Option<&PathBuf> {
-        self.filepath.as_ref()
-    }
-
-    pub fn into_config(self) -> NodeConfig {
-        self.config
+    pub fn root_path(&self) -> Option<&PathBuf> {
+        self.root_path.as_ref()
     }
 }
 
@@ -294,7 +309,7 @@ pub(super) fn interface_kind_label(kind: InterfaceKind) -> &'static str {
 }
 
 struct NodeStackInner {
-    graph: StableDiGraph<NodeInstance, ()>,
+    graph: StableDiGraph<NodeEntity, ()>,
     key_to_index: HashMap<NodeKey, NodeIndex>,
     pending_requirements: HashMap<NodeKey, Vec<PendingRequirement>>,
 }
@@ -311,12 +326,12 @@ impl NodeStackInner {
     fn from_instances(nodes: Vec<NodeInstance>) -> Self {
         let mut inner = Self::new();
         for node in nodes {
-            inner.insert_node(node);
+            inner.insert_entity(node);
         }
         inner
     }
 
-    fn insert_node(&mut self, node: NodeInstance) {
+    fn insert_entity(&mut self, node: NodeEntity) {
         let key = NodeKey::from(&node);
         let index = if let Some(&existing_index) = self.key_to_index.get(&key) {
             self.graph[existing_index] = node;
@@ -522,14 +537,8 @@ impl NodeStack {
     }
 
     pub fn from_configs(nodes: Vec<NodeConfig>) -> Self {
-        let instances = nodes.into_iter().map(NodeInstance::new).collect();
+        let instances = nodes.into_iter().map(NodeEntity::new).collect();
         Self::from_instances(instances)
-    }
-
-    pub fn from_instances(nodes: Vec<NodeInstance>) -> Self {
-        Self {
-            shared: Arc::new(RwLock::new(NodeStackInner::from_instances(nodes))),
-        }
     }
 
     pub fn replace(&self, nodes: Vec<NodeInstance>) {
@@ -555,13 +564,19 @@ impl NodeStack {
         guard.find(&NodeKey::new(name, tag))
     }
 
-    pub fn push_config(&self, node: NodeConfig) {
-        self.push_instance(NodeInstance::new(node));
+    pub fn push_config(&self, config: NodeConfig, instance_id: Option<&str>) -> Result<()> {
+        let instance_id = match instance_id {
+            Some(name) => Name::new(name),
+            None => Name::new(get_random(rng()))?,
+        };
+        let instance = NodeInstance::new(instance_id);
+        let entity = NodeEntity::from_instances_list(config, &[instance]);
+        self.push_entity(entity);
     }
 
-    pub fn push_instance(&self, node: NodeInstance) {
+    fn push_entity(&self, entity: NodeEntity) {
         let mut guard = self.shared.write().expect("node stack poisoned");
-        guard.insert_node(node);
+        guard.insert_entity(entity);
     }
 
     pub fn snapshot(&self) -> Vec<NodeInstance> {
