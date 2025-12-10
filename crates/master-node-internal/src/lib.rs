@@ -5,8 +5,6 @@ mod node;
 /// The master node is a special kind of node that has access to the whole context of the peppy daemon and runs as part of the same process
 mod services;
 
-pub use context::{AppContext, AppEvent, DEFAULT_CHANNEL_CAPACITY};
-
 // Generated Cap'n Proto types - must be at crate root for correct path resolution
 #[allow(clippy::all)]
 pub mod ping_capnp {

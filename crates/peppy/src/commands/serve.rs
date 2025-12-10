@@ -13,7 +13,8 @@ use tokio::task::{JoinError, JoinSet};
 use tracing::{error, info};
 
 use super::Command;
-use crate::{AppContext, Error, Result};
+use crate::context::AppContext;
+use crate::error::{Error, Result};
 
 use builder::ServeCommandBuilder;
 use pid_lock::{PidLock, PidLockError};

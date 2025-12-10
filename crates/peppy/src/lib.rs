@@ -1,8 +1,7 @@
 mod commands;
+mod context;
 mod error;
 
 pub use commands::*;
 pub use config::consts::*;
-
-pub use error::{Error, Result};
-pub use master_node::{AppContext, AppEvent};
+pub use context::AppContext;

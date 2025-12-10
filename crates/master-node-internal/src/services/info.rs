@@ -1,6 +1,5 @@
 use std::time::Instant;
 
-use crate::AppContext;
 use bytes::Bytes;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -8,6 +7,7 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 
 use crate::Result;
+use crate::context::MasterContext;
 use crate::encoding::{InfoRequest, InfoResponse, InfoType};
 
 pub async fn listen_for_info(
@@ -15,7 +15,7 @@ pub async fn listen_for_info(
     master_node_name: &str,
     instance_id: &str,
     node_name: &str,
-    _app_context: &AppContext,
+    _app_context: &MasterContext,
 ) -> Result<JoinHandle<Result<()>>> {
     let service_name = "info";
     let mut endpoint = ServiceMessenger::listen(

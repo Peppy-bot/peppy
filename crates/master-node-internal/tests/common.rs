@@ -1,4 +1,3 @@
-use master_node::AppContext;
 use master_node::MasterNode;
 use peppylib::messaging::MessengerHandle;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
@@ -25,13 +24,7 @@ pub const CALLER_INSTANCE_ID: &str = "caller_instance";
 pub async fn setup_test_master_node() -> TestMasterNode {
     let shared_messenger = create_mock_messenger().await;
 
-    let app_ctx = Arc::new(AppContext::default());
-
-    let master_node = MasterNode::new(
-        &app_ctx,
-        Arc::clone(&shared_messenger),
-        Some("test_master_node"),
-    );
+    let master_node = MasterNode::new(Arc::clone(&shared_messenger), Some("test_master_node"));
     let master_node_name = master_node.node_name().to_string();
     let instance_id = master_node.instance_id().to_string();
 

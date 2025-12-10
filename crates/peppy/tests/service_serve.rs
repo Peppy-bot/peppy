@@ -111,11 +111,6 @@ fn test_serve_command() {
     let _pid_guard = TempPidFileGuard::new();
 
     let ctx = Arc::new(AppContext::default());
-    assert!(
-        ctx.node_stack().is_none(),
-        "node stack should not be initialized before serve runs"
-    );
-
     let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
@@ -143,14 +138,6 @@ fn test_serve_command() {
     shutdown_thread
         .join()
         .expect("shutdown thread should complete without panic");
-
-    let node_stack = ctx
-        .node_stack()
-        .expect("node stack should be initialized by ServeCommand");
-    assert!(
-        node_stack.contains("master-node", "internal"),
-        "node stack should register the master node"
-    );
 
     let logs = log_capture.logs();
     assert!(

@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use clap::Subcommand;
 
-use super::{Command, Error as CommandError};
-use crate::AppContext;
+use super::Command;
+use crate::{context::AppContext, error::Error as CommandError};
 
 #[derive(Subcommand)]
 pub enum ServiceCommands {

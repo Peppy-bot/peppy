@@ -9,8 +9,8 @@ use clap::{Subcommand, ValueEnum};
 use core::fmt;
 use tracing::info;
 
-use super::{Command, Error as CommandError};
-use crate::AppContext;
+use super::Command;
+use crate::{context::AppContext, error::Error as CommandError};
 
 use init::NodeBuilder;
 
