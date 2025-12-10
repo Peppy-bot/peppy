@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use service_manager::{
-    ServiceInstallCtx, ServiceLabel, ServiceManager, ServiceManagerKind, TypedServiceManager,
+    RestartPolicy, ServiceInstallCtx, ServiceLabel, ServiceManager, ServiceManagerKind,
+    TypedServiceManager,
 };
 
 use super::Command;
@@ -62,7 +63,9 @@ fn make_install_context(
         working_directory: Some(working_dir),
         environment: Some(vec![("PEPPY_ENV".to_string(), "PROD".to_string())]),
         autostart,
-        disable_restart_on_failure: false,
+        restart_policy: RestartPolicy::OnFailure {
+            delay_secs: Some(5),
+        },
     })
 }
 
@@ -136,11 +139,28 @@ fn render_systemd_service(ctx: &ServiceInstallCtx) -> String {
 
     lines.push(format!("ExecStart={}", build_exec_command(ctx)));
 
-    if ctx.disable_restart_on_failure {
-        lines.push("Restart=no".to_string());
-    } else {
-        lines.push("Restart=on-failure".to_string());
-        lines.push("RestartSec=5".to_string());
+    match &ctx.restart_policy {
+        RestartPolicy::Never => {
+            lines.push("Restart=no".to_string());
+        }
+        RestartPolicy::Always { delay_secs } => {
+            lines.push("Restart=always".to_string());
+            if let Some(secs) = delay_secs {
+                lines.push(format!("RestartSec={secs}"));
+            }
+        }
+        RestartPolicy::OnFailure { delay_secs } => {
+            lines.push("Restart=on-failure".to_string());
+            if let Some(secs) = delay_secs {
+                lines.push(format!("RestartSec={secs}"));
+            }
+        }
+        RestartPolicy::OnSuccess { delay_secs } => {
+            lines.push("Restart=on-success".to_string());
+            if let Some(secs) = delay_secs {
+                lines.push(format!("RestartSec={secs}"));
+            }
+        }
     }
 
     lines.push(String::new());
@@ -197,7 +217,7 @@ fn render_launchd_plist(ctx: &ServiceInstallCtx) -> String {
         lines.push("    <false/>".to_string());
     }
 
-    if !ctx.disable_restart_on_failure {
+    if !matches!(ctx.restart_policy, RestartPolicy::Never) {
         lines.push("    <key>KeepAlive</key>".to_string());
         lines.push("    <true/>".to_string());
     }

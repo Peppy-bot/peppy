@@ -6,7 +6,6 @@ use super::Serve;
 use super::master_node::MasterNodeRunner;
 use super::messaging_router::MessagingRouter;
 use crate::{AppContext, Error, Result};
-use node_stack::NodeStack;
 use pmi::Messenger;
 use pmi::MessengerAdapter;
 use pmi::MockAdapter;
@@ -19,7 +18,6 @@ pub struct ServeCommandBuilder {
     app_ctx: Arc<AppContext>,
     composite_command: CompositeCommand,
     messenger: Option<Arc<Mutex<Messenger>>>,
-    node_stack: NodeStack,
     master_node_requested: bool,
     master_node_name: Option<String>,
     shutdown_token: Option<CancellationToken>,
@@ -31,7 +29,6 @@ impl ServeCommandBuilder {
             app_ctx: Arc::clone(ctx),
             composite_command: CompositeCommand::default(),
             messenger: None,
-            node_stack: NodeStack::new(),
             master_node_requested: false,
             master_node_name: None,
             shutdown_token: None,
@@ -70,11 +67,6 @@ impl ServeCommandBuilder {
         Ok(self)
     }
 
-    pub fn with_node_stack(self) -> Self {
-        self.app_ctx.set_node_stack(self.node_stack.clone());
-        self
-    }
-
     pub fn build(mut self) -> Result<Serve> {
         if self.master_node_requested {
             if let Some(messenger) = &self.messenger {
@@ -83,7 +75,6 @@ impl ServeCommandBuilder {
                     Arc::clone(messenger),
                     self.master_node_name.clone(),
                 );
-                self.node_stack.push_config(master_node.config().clone());
                 self.composite_command = self
                     .composite_command
                     .add_async_command(Box::new(master_node));

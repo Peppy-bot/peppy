@@ -231,8 +231,7 @@ impl Command for ServeCommand {
 
         let mut builder = ServeCommandBuilder::new(ctx)?
             .with_messaging_router(self.messaging_engine)
-            .with_master_node(self.master_name)?
-            .with_node_stack();
+            .with_master_node(self.master_name)?;
 
         if let Some(token) = self.shutdown_token {
             builder = builder.with_shutdown_token(token);
