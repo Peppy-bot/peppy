@@ -49,6 +49,12 @@ pub enum Error {
         interface_name: String,
     },
 
+    // -- node stack errors
+    #[error("Cannot modify the root node (it always has exactly one instance)")]
+    CannotModifyRootNode,
+    #[error("NodeStack requires at least one node (the root)")]
+    EmptyNodeStack,
+
     // -- deployment errors
     // {0}: node_name + tag, {1}: Reason
     #[error("Failed to resolve deployment {0}: {1}")]

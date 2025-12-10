@@ -153,16 +153,17 @@ impl LocalNodeStackBuilder {
         PeppyLauncherParser::from_path(&self.launch_file).map_err(Error::Config)
     }
 
-    fn load_nodes_from_fs(root_dir: &Path) -> Result<NodeStack> {
+    fn load_nodes_from_fs(root_dir: &Path, master_node: NodeConfig) -> Result<NodeStack> {
         let watcher = FSNodeConfigWatcher::new(root_dir)?;
         let state_snapshot = watcher.subscribe().borrow().clone();
 
-        let mut local_node_configs = Vec::new();
+        // Create the stack with the master node as root, then add any local nodes found
+        let stack = NodeStack::new(master_node);
         for node_config in state_snapshot.into_values().flatten() {
-            local_node_configs.push(node_config);
+            stack.push_config(node_config);
         }
 
-        Ok(NodeStack::from_configs(local_node_configs))
+        Ok(stack)
     }
 
     fn finish(self, node_stack: NodeStack) -> Result<LauncherPlanner> {
@@ -177,8 +178,9 @@ impl LocalNodeStackBuilder {
 
     /// Create the initial node stack based on the peppy config and its
     /// children in the same folder using the filesystem-backed loader.
-    pub fn build(self) -> Result<LauncherPlanner> {
-        let local_node_configs = Self::load_nodes_from_fs(&self.root_dir)?;
+    /// The master node is the root of the node stack and cannot be removed.
+    pub fn build(self, master_node: NodeConfig) -> Result<LauncherPlanner> {
+        let local_node_configs = Self::load_nodes_from_fs(&self.root_dir, master_node)?;
         self.finish(local_node_configs)
     }
 

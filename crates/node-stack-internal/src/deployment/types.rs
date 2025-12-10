@@ -365,15 +365,20 @@ struct NodeStackInner {
     graph: StableDiGraph<NodeEntity, ()>,
     key_to_index: HashMap<NodeKey, NodeIndex>,
     pending_requirements: HashMap<NodeKey, Vec<PendingRequirement>>,
+    root_key: NodeKey,
 }
 
 impl NodeStackInner {
-    fn new() -> Self {
-        Self {
+    fn new(root: NodeEntity) -> Self {
+        let root_key = NodeKey::from(&root);
+        let mut inner = Self {
             graph: StableDiGraph::default(),
             key_to_index: HashMap::new(),
             pending_requirements: HashMap::new(),
-        }
+            root_key,
+        };
+        inner.insert_entity(root);
+        inner
     }
 
     fn insert_entity(&mut self, node: NodeEntity) {
@@ -510,6 +515,15 @@ impl NodeStackInner {
             .cloned()
     }
 
+    fn root(&self) -> NodeEntity {
+        self.find(&self.root_key)
+            .expect("root node must always exist in NodeStack")
+    }
+
+    fn is_root(&self, key: &NodeKey) -> bool {
+        &self.root_key == key
+    }
+
     fn entities_snapshot(&self) -> Vec<NodeEntity> {
         self.graph.node_weights().cloned().collect()
     }
@@ -543,13 +557,20 @@ impl NodeStackInner {
     /// Adds an instance to an existing entity or creates a new entity if not present.
     /// If instance_id is None, generates a random one.
     /// Returns the instance_id that was used.
+    /// Returns Err(CannotRemoveRootNode) if trying to add an instance to the root node
+    /// (the root node always has exactly one instance).
     fn add_instance(&mut self, config: &NodeConfig, instance_id: Option<&Name>) -> Result<Name> {
+        let key = NodeKey::new(config.manifest.name.as_str(), &config.manifest.tag);
+
+        // The root node always has exactly one instance and cannot be modified
+        if self.is_root(&key) {
+            return Err(Error::CannotModifyRootNode);
+        }
+
         let instance_id = match instance_id {
             Some(id) => id.clone(),
             None => Name::new(get_random(rng())).map_err(|e| Error::Config(e.into()))?,
         };
-
-        let key = NodeKey::new(config.manifest.name.as_str(), &config.manifest.tag);
 
         if let Some(&index) = self.key_to_index.get(&key) {
             // Entity exists, add instance to it
@@ -568,21 +589,28 @@ impl NodeStackInner {
     }
 
     /// Removes an instance from an entity. If the entity has no instances left, removes the entity.
-    /// Returns true if the instance was found and removed.
-    fn remove_instance(&mut self, name: &str, tag: &str, instance_id: &Name) -> bool {
+    /// Returns Ok(true) if the instance was found and removed, Ok(false) if not found.
+    /// Returns Err(CannotRemoveRootNode) if trying to remove an instance from the root node.
+    /// The root node always has exactly one instance and cannot be modified.
+    fn remove_instance(&mut self, name: &str, tag: &str, instance_id: &Name) -> Result<bool> {
         let key = NodeKey::new(name, tag);
 
+        // The root node always has exactly one instance and cannot be modified
+        if self.is_root(&key) {
+            return Err(Error::CannotModifyRootNode);
+        }
+
         let Some(&index) = self.key_to_index.get(&key) else {
-            return false;
+            return Ok(false);
         };
 
         let should_remove_entity = {
             let Some(entity) = self.graph.node_weight_mut(index) else {
-                return false;
+                return Ok(false);
             };
 
             if !entity.remove_instance(instance_id) {
-                return false;
+                return Ok(false);
             }
 
             entity.instance_count() == 0
@@ -592,7 +620,7 @@ impl NodeStackInner {
             self.remove_entity(&key);
         }
 
-        true
+        Ok(true)
     }
 
     /// Removes an entity entirely from the graph
@@ -603,11 +631,20 @@ impl NodeStackInner {
         }
     }
 
-    /// Clears the entire stack
+    /// Clears all nodes except the root node from the stack.
+    /// The root node is preserved as it cannot be removed.
     fn clear(&mut self) {
+        // Get the root entity before clearing
+        let root_entity = self.root();
+
+        // Clear everything
         self.graph.clear();
         self.key_to_index.clear();
         self.pending_requirements.clear();
+
+        // Re-insert the root node
+        let idx = self.graph.add_node(root_entity);
+        self.key_to_index.insert(self.root_key.clone(), idx);
     }
 }
 
@@ -638,33 +675,46 @@ pub struct NodeStack {
     shared: Arc<RwLock<NodeStackInner>>,
 }
 
-impl Default for NodeStack {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl NodeStack {
-    pub fn new() -> Self {
+    /// Creates a new NodeStack with the given root node configuration.
+    /// The root node (master node) is the parent of all other nodes in the graph
+    /// and cannot be removed from the stack.
+    pub fn new(root_config: NodeConfig) -> Self {
+        let instance_id = Name::new(get_random(rng())).expect("random name generation failed");
+        Self::with_root_instance_id(root_config, instance_id)
+    }
+
+    /// Creates a new NodeStack with the given root node configuration and a specific instance ID.
+    pub fn with_root_instance_id(root_config: NodeConfig, instance_id: Name) -> Self {
+        let instance = NodeInstance::new(instance_id);
+        let root_entity = NodeEntity::new(root_config, instance);
         Self {
-            shared: Arc::new(RwLock::new(NodeStackInner::new())),
+            shared: Arc::new(RwLock::new(NodeStackInner::new(root_entity))),
         }
     }
 
-    pub fn from_configs(nodes: Vec<NodeConfig>) -> Self {
-        let stack = Self::new();
-        for config in nodes {
+    /// Creates a NodeStack from a list of configurations.
+    /// The first configuration becomes the root node.
+    /// Returns an error if the list is empty.
+    pub fn from_configs(nodes: Vec<NodeConfig>) -> Result<Self> {
+        let mut iter = nodes.into_iter();
+        let root = iter.next().ok_or(Error::EmptyNodeStack)?;
+        let stack = Self::new(root);
+        for config in iter {
             stack.push_config(config);
         }
-        stack
+        Ok(stack)
     }
 
     pub fn len(&self) -> usize {
         self.shared.read().expect("node stack poisoned").len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
+    /// Returns the root node (master node) of this stack.
+    /// The root node is guaranteed to always exist.
+    pub fn root(&self) -> NodeEntity {
+        let guard = self.shared.read().expect("node stack poisoned");
+        guard.root()
     }
 
     pub fn contains(&self, name: &str, tag: &str) -> bool {
@@ -717,13 +767,16 @@ impl NodeStack {
     }
 
     /// Removes an instance from an entity. If the entity has no instances left, removes the entity.
-    /// Returns true if the instance was found and removed.
-    pub fn remove_instance(&self, name: &str, tag: &str, instance_id: &Name) -> bool {
+    /// Returns Ok(true) if the instance was found and removed, Ok(false) if not found.
+    /// Returns Err(CannotModifyRootNode) if trying to modify the root node.
+    /// The root node always has exactly one instance and cannot be modified.
+    pub fn remove_instance(&self, name: &str, tag: &str, instance_id: &Name) -> Result<bool> {
         let mut guard = self.shared.write().expect("node stack poisoned");
         guard.remove_instance(name, tag, instance_id)
     }
 
-    /// Clears the entire stack, removing all entities and instances.
+    /// Clears all nodes except the root node from the stack.
+    /// The root node is preserved as it cannot be removed.
     pub fn reset(&self) {
         let mut guard = self.shared.write().expect("node stack poisoned");
         guard.clear();

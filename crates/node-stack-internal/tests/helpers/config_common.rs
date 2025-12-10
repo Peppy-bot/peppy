@@ -8,6 +8,21 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Returns a minimal master/root node configuration for tests.
+/// The master node is the required root of every NodeStack.
+pub fn master_node_config() -> NodeConfig {
+    NodeConfigParser::from_content(
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "master",
+                tag: "1.0.0"
+            }
+        }"#,
+    )
+    .expect("parse master node config")
+}
+
 pub fn node_config(name: &str, tag: &str, deps: &[(&str, &str)]) -> NodeConfig {
     let topics = deps
         .iter()
