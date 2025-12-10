@@ -308,9 +308,9 @@ fn dynamically_add_node_to_node_stack_wrong_topic_node_name() {
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
-            manifest: { 
-              name: "brain", 
-              tag: "1.0.0" 
+            manifest: {
+              name: "brain",
+              tag: "1.0.0"
             },
             interfaces: {
                 subscribes_to: {
@@ -331,9 +331,9 @@ fn dynamically_add_node_to_node_stack_wrong_topic_node_name() {
     let dependency: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
-            manifest: { 
-              name: "lidar", 
-              tag: "1.0.0" 
+            manifest: {
+              name: "lidar",
+              tag: "1.0.0"
             },
             interfaces: {
                 exposes: {
@@ -378,5 +378,335 @@ fn dynamically_add_node_to_node_stack_wrong_topic_node_name() {
     assert!(
         stack.dependents_of("lidar", "1.0.0").is_empty(),
         "node with mismatched name should not have dependents registered"
+    );
+}
+
+#[test]
+fn add_instance_to_new_entity() {
+    let config: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "sensor",
+              tag: "1.0.0"
+            }
+        }"#,
+    )
+    .expect("valid node config");
+
+    let stack = NodeStack::new();
+    assert!(stack.is_empty(), "stack should start empty");
+
+    // Add instance without specifying instance_id (should generate one)
+    let instance_id = stack
+        .add_instance(&config, None)
+        .expect("should add instance");
+
+    assert_eq!(stack.len(), 1, "stack should have one entity");
+    assert!(
+        stack.contains("sensor", "1.0.0"),
+        "entity should be findable"
+    );
+
+    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    assert_eq!(
+        entity.instances().len(),
+        1,
+        "entity should have one instance"
+    );
+    assert_eq!(
+        entity.instances()[0].instance_id(),
+        &instance_id,
+        "instance ID should match the returned one"
+    );
+}
+
+#[test]
+fn add_instance_to_existing_entity() {
+    let config: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "sensor",
+              tag: "1.0.0"
+            }
+        }"#,
+    )
+    .expect("valid node config");
+
+    let stack = NodeStack::new();
+
+    // Add first instance
+    let first_id = stack
+        .add_instance(&config, None)
+        .expect("should add first instance");
+
+    assert_eq!(stack.len(), 1, "stack should have one entity");
+    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    assert_eq!(
+        entity.instances().len(),
+        1,
+        "entity should have one instance"
+    );
+
+    // Add second instance to same entity
+    let second_id = stack
+        .add_instance(&config, None)
+        .expect("should add second instance");
+
+    assert_eq!(stack.len(), 1, "stack should still have one entity");
+
+    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    assert_eq!(
+        entity.instances().len(),
+        2,
+        "entity should have two instances"
+    );
+
+    let instance_ids: Vec<_> = entity
+        .instances()
+        .iter()
+        .map(|i| i.instance_id().clone())
+        .collect();
+    assert!(
+        instance_ids.contains(&first_id),
+        "first instance should be present"
+    );
+    assert!(
+        instance_ids.contains(&second_id),
+        "second instance should be present"
+    );
+}
+
+#[test]
+fn add_instance_with_specific_id() {
+    use config::node::Name;
+
+    let config: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "sensor",
+              tag: "1.0.0"
+            }
+        }"#,
+    )
+    .expect("valid node config");
+
+    let stack = NodeStack::new();
+    let custom_id = Name::new("my-custom-instance").expect("valid name");
+
+    let returned_id = stack
+        .add_instance(&config, Some(&custom_id))
+        .expect("should add instance");
+
+    assert_eq!(
+        returned_id, custom_id,
+        "returned ID should match the provided one"
+    );
+
+    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    assert_eq!(
+        entity.instances()[0].instance_id(),
+        &custom_id,
+        "instance should have the custom ID"
+    );
+}
+
+#[test]
+fn remove_instance_from_entity_with_multiple_instances() {
+    use config::node::Name;
+
+    let config: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "sensor",
+              tag: "1.0.0"
+            }
+        }"#,
+    )
+    .expect("valid node config");
+
+    let stack = NodeStack::new();
+    let first_id = Name::new("instance-1").expect("valid name");
+    let second_id = Name::new("instance-2").expect("valid name");
+
+    stack
+        .add_instance(&config, Some(&first_id))
+        .expect("should add first instance");
+    stack
+        .add_instance(&config, Some(&second_id))
+        .expect("should add second instance");
+
+    assert_eq!(stack.len(), 1, "stack should have one entity");
+    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    assert_eq!(
+        entity.instances().len(),
+        2,
+        "entity should have two instances before removal"
+    );
+
+    // Remove first instance
+    let removed = stack.remove_instance("sensor", "1.0.0", &first_id);
+    assert!(removed, "instance should be removed");
+
+    // Entity should still exist with one instance
+    assert_eq!(stack.len(), 1, "entity should still exist");
+    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    assert_eq!(
+        entity.instances().len(),
+        1,
+        "entity should have one instance after removal"
+    );
+    assert_eq!(
+        entity.instances()[0].instance_id(),
+        &second_id,
+        "remaining instance should be the second one"
+    );
+}
+
+#[test]
+fn remove_last_instance_removes_entity() {
+    use config::node::Name;
+
+    let config: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "sensor",
+              tag: "1.0.0"
+            }
+        }"#,
+    )
+    .expect("valid node config");
+
+    let stack = NodeStack::new();
+    let instance_id = Name::new("only-instance").expect("valid name");
+
+    stack
+        .add_instance(&config, Some(&instance_id))
+        .expect("should add instance");
+    assert_eq!(stack.len(), 1, "stack should have one entity");
+    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    assert_eq!(
+        entity.instances().len(),
+        1,
+        "entity should have one instance"
+    );
+
+    // Remove the only instance
+    let removed = stack.remove_instance("sensor", "1.0.0", &instance_id);
+    assert!(removed, "instance should be removed");
+
+    // Entity should be gone
+    assert!(stack.is_empty(), "stack should be empty");
+    assert!(
+        stack.find("sensor", "1.0.0").is_none(),
+        "entity should not exist"
+    );
+}
+
+#[test]
+fn remove_nonexistent_instance_returns_false() {
+    use config::node::Name;
+
+    let config: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "sensor",
+              tag: "1.0.0"
+            }
+        }"#,
+    )
+    .expect("valid node config");
+
+    let stack = NodeStack::new();
+    let instance_id = Name::new("real-instance").expect("valid name");
+    let fake_id = Name::new("fake-instance").expect("valid name");
+
+    stack
+        .add_instance(&config, Some(&instance_id))
+        .expect("should add instance");
+
+    // Try to remove non-existent instance
+    let removed = stack.remove_instance("sensor", "1.0.0", &fake_id);
+    assert!(!removed, "should return false for non-existent instance");
+
+    // Try to remove from non-existent entity
+    let removed = stack.remove_instance("nonexistent", "1.0.0", &instance_id);
+    assert!(!removed, "should return false for non-existent entity");
+
+    // Original instance should still be there
+    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    assert_eq!(entity.instances().len(), 1, "instance should still exist");
+}
+
+#[test]
+fn reset_clears_entire_stack() {
+    let config1: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "sensor1",
+              tag: "1.0.0"
+            }
+        }"#,
+    )
+    .expect("valid node config");
+
+    let config2: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "sensor2",
+              tag: "1.0.0"
+            }
+        }"#,
+    )
+    .expect("valid node config");
+
+    let stack = NodeStack::from_configs(vec![config1, config2]);
+    assert_eq!(stack.len(), 2, "stack should have two entities");
+
+    stack.reset();
+
+    assert!(stack.is_empty(), "stack should be empty after reset");
+    assert!(
+        stack.find("sensor1", "1.0.0").is_none(),
+        "sensor1 should not exist"
+    );
+    assert!(
+        stack.find("sensor2", "1.0.0").is_none(),
+        "sensor2 should not exist"
+    );
+}
+
+#[test]
+fn reset_allows_adding_new_entities() {
+    let config: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "sensor",
+              tag: "1.0.0"
+            }
+        }"#,
+    )
+    .expect("valid node config");
+
+    let stack = NodeStack::from_configs(vec![config.clone()]);
+    assert_eq!(stack.len(), 1, "stack should have one entity");
+
+    stack.reset();
+    assert!(stack.is_empty(), "stack should be empty after reset");
+
+    // Should be able to add entities again
+    stack.push_config(config);
+    assert_eq!(
+        stack.len(),
+        1,
+        "stack should have one entity after re-adding"
     );
 }

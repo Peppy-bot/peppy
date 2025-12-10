@@ -74,6 +74,30 @@ impl NodeEntity {
     pub fn instances(&self) -> &[NodeInstance] {
         &self.instances
     }
+
+    /// Adds an instance to this entity
+    fn add_instance(&mut self, instance: NodeInstance) {
+        self.instances.push(instance);
+    }
+
+    /// Removes an instance by its ID. Returns true if the instance was found and removed.
+    fn remove_instance(&mut self, instance_id: &Name) -> bool {
+        if let Some(pos) = self
+            .instances
+            .iter()
+            .position(|i| i.instance_id() == instance_id)
+        {
+            self.instances.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns the number of instances
+    fn instance_count(&self) -> usize {
+        self.instances.len()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -515,6 +539,76 @@ impl NodeStackInner {
             })
             .unwrap_or_default()
     }
+
+    /// Adds an instance to an existing entity or creates a new entity if not present.
+    /// If instance_id is None, generates a random one.
+    /// Returns the instance_id that was used.
+    fn add_instance(&mut self, config: &NodeConfig, instance_id: Option<&Name>) -> Result<Name> {
+        let instance_id = match instance_id {
+            Some(id) => id.clone(),
+            None => Name::new(get_random(rng())).map_err(|e| Error::Config(e.into()))?,
+        };
+
+        let key = NodeKey::new(config.manifest.name.as_str(), &config.manifest.tag);
+
+        if let Some(&index) = self.key_to_index.get(&key) {
+            // Entity exists, add instance to it
+            if let Some(entity) = self.graph.node_weight_mut(index) {
+                let instance = NodeInstance::new(instance_id.clone());
+                entity.add_instance(instance);
+            }
+        } else {
+            // Entity doesn't exist, create new one
+            let instance = NodeInstance::new(instance_id.clone());
+            let entity = NodeEntity::new(config.clone(), instance);
+            self.insert_entity(entity);
+        }
+
+        Ok(instance_id)
+    }
+
+    /// Removes an instance from an entity. If the entity has no instances left, removes the entity.
+    /// Returns true if the instance was found and removed.
+    fn remove_instance(&mut self, name: &str, tag: &str, instance_id: &Name) -> bool {
+        let key = NodeKey::new(name, tag);
+
+        let Some(&index) = self.key_to_index.get(&key) else {
+            return false;
+        };
+
+        let should_remove_entity = {
+            let Some(entity) = self.graph.node_weight_mut(index) else {
+                return false;
+            };
+
+            if !entity.remove_instance(instance_id) {
+                return false;
+            }
+
+            entity.instance_count() == 0
+        };
+
+        if should_remove_entity {
+            self.remove_entity(&key);
+        }
+
+        true
+    }
+
+    /// Removes an entity entirely from the graph
+    fn remove_entity(&mut self, key: &NodeKey) {
+        if let Some(index) = self.key_to_index.remove(key) {
+            self.graph.remove_node(index);
+            self.clear_pending_requirements_for(index);
+        }
+    }
+
+    /// Clears the entire stack
+    fn clear(&mut self) {
+        self.graph.clear();
+        self.key_to_index.clear();
+        self.pending_requirements.clear();
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -612,5 +706,26 @@ impl NodeStack {
     pub fn dependents_of(&self, name: &str, tag: &str) -> Vec<NodeEntity> {
         let guard = self.shared.read().expect("node stack poisoned");
         guard.dependents_of(&NodeKey::new(name, tag))
+    }
+
+    /// Adds an instance to an existing entity or creates a new entity if not present.
+    /// If instance_id is None, generates a random one.
+    /// Returns the instance_id that was used.
+    pub fn add_instance(&self, config: &NodeConfig, instance_id: Option<&Name>) -> Result<Name> {
+        let mut guard = self.shared.write().expect("node stack poisoned");
+        guard.add_instance(config, instance_id)
+    }
+
+    /// Removes an instance from an entity. If the entity has no instances left, removes the entity.
+    /// Returns true if the instance was found and removed.
+    pub fn remove_instance(&self, name: &str, tag: &str, instance_id: &Name) -> bool {
+        let mut guard = self.shared.write().expect("node stack poisoned");
+        guard.remove_instance(name, tag, instance_id)
+    }
+
+    /// Clears the entire stack, removing all entities and instances.
+    pub fn reset(&self) {
+        let mut guard = self.shared.write().expect("node stack poisoned");
+        guard.clear();
     }
 }
