@@ -5,4 +5,4 @@ pub use commands::*;
 pub use config::consts::*;
 
 pub use error::{Error, Result};
-pub use peppy_core::{AppContext, AppEvent};
+pub use master_node::{AppContext, AppEvent};

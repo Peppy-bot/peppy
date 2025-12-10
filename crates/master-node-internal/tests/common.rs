@@ -1,5 +1,5 @@
+use master_node::AppContext;
 use master_node::MasterNode;
-use peppy_core::AppContext;
 use peppylib::messaging::MessengerHandle;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::sync::Arc;
