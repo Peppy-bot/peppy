@@ -4,112 +4,123 @@ use common::{CALLER_INSTANCE_ID, setup_test_master_node};
 use master_node::encoding::{LauncherRequest, LauncherResponse};
 use peppylib::messaging::ServiceMessenger;
 use std::time::Duration;
+use tempfile::TempDir;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_launch_config_request() {
     let test_node = setup_test_master_node().await;
-    // TODO create a working directory with the nodes of the config as subfolders (the command is supposed to find all the `peppy.json5` recursively. There is a feature like that available in the project)
+
+    // TODO Create a askama template dir?
+
+    // Create a working directory with the nodes of the config as subfolders
+    let working_dir = TempDir::new().expect("failed to create temp directory");
+    let nodes = ["uvc_camera", "web_video_stream", "esp32_board"];
+    for node in &nodes {
+        std::fs::create_dir(working_dir.path().join(node))
+            .expect("failed to create node directory");
+    }
 
     let launcher_config = r#"
-    deployments: [
+{
+  "deployments": [
+    {
+      "name": "uvc_camera",
+      "source": {
+        "repo": "https://github.com/Peppy/nodes.git",
+        "path": "uvc_camera"
+      },
+      "tag": "0.1.0",
+      "instances": [
         {
-        name: "uvc_camera",
-        source: {
-            repo: "https://github.com/Peppy/nodes.git",
-            path: "uvc_camera"
-        },
-        tag: "0.1.0",
-        instances: [
-            {
-            instance_id: "camera_front",
-            parameters: {
-                device: {
-                physical: "/dev/video_right",
-                sim: "mujoco:camera_right",
-                priority: "physical"
-                },
-                video: {
-                frame_rate: 30,
-                resolution: {
-                    width: 1920,
-                    height: 1080,
-                },
-                encoding: "yuyv",
-                },
-            }
+          "instance_id": "camera_front",
+          "parameters": {
+            "device": {
+              "physical": "/dev/video_right",
+              "sim": "mujoco:camera_right",
+              "priority": "physical"
             },
-            {
-            instance_id: "camera_rear",
-            parameters: {
-                device: {
-                physical: "/dev/video_left",
-                sim: "mujoco:camera_left",
-                priority: "physical"
-                },
-                video: {
-                frame_rate: 30,
-                resolution: {
-                    width: 1920,
-                    height: 1080,
-                },
-                encoding: "yuyv",
-                },
+            "video": {
+              "frame_rate": 30,
+              "resolution": {
+                "width": 1920,
+                "height": 1080
+              },
+              "encoding": "yuyv"
             }
-            }
-        ]
+          }
         },
         {
-        name: "web_video_stream",
-        tag: "0.1.0",
-        optional: true,
-        instances: [
-            {
-            instance_id: "video_stream1",
-            parameters: {
-                camera_instances_ids: [
-                "camera_front",
-                "camera_rear"
-                ],
-                http: {
-                host: "0.0.0.0",
-                port: 8083,
-                cors_enabled: false,
-                cors_origins: "*",
-                max_connections: "2000",
-                request_timeout_ms: "3000",
-                },
-                video_stream: {
-                format: "mjpeg",
-                quality: 3,
-                max_fps: 30,
-                },
-            }
-            }
-        ]
-        },
-        {
-        name: "esp32_board",
-        tag: "0.1.0",
-        instances: [
-            {
-            instance_id: "esp32_1",
-            env_vars: {
-                ESP32_DEVICE: "/dev/tty.usbmodem585A0076841"
+          "instance_id": "camera_rear",
+          "parameters": {
+            "device": {
+              "physical": "/dev/video_left",
+              "sim": "mujoco:camera_left",
+              "priority": "physical"
             },
+            "video": {
+              "frame_rate": 30,
+              "resolution": {
+                "width": 1920,
+                "height": 1080
+              },
+              "encoding": "yuyv"
             }
-        ]
-        },
-    ],
-    logging: {
-        min_level: "info",
-        file_name: "peppy_root.log",
-        max_file_size_mb: 100,
-        format: "text"
+          }
+        }
+      ]
+    },
+    {
+      "name": "web_video_stream",
+      "tag": "0.1.0",
+      "optional": true,
+      "instances": [
+        {
+          "instance_id": "video_stream1",
+          "parameters": {
+            "camera_instances_ids": [
+              "camera_front",
+              "camera_rear"
+            ],
+            "http": {
+              "host": "0.0.0.0",
+              "port": 8083,
+              "cors_enabled": false,
+              "cors_origins": "*",
+              "max_connections": "2000",
+              "request_timeout_ms": "3000"
+            },
+            "video_stream": {
+              "format": "mjpeg",
+              "quality": 3,
+              "max_fps": 30
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "esp32_board",
+      "tag": "0.1.0",
+      "instances": [
+        {
+          "instance_id": "esp32_1",
+          "env_vars": {
+            "ESP32_DEVICE": "/dev/tty.usbmodem585A0076841"
+          }
+        }
+      ]
     }
-    }
+  ],
+  "logging": {
+    "min_level": "info",
+    "file_name": "peppy_root.log",
+    "max_file_size_mb": 100,
+    "format": "text"
+  }
+}
     "#;
 
-    let request = LauncherRequest::new(launcher_config);
+    let request = LauncherRequest::new(launcher_config, working_dir.path().to_str().unwrap());
     let request_payload = request.encode().expect("failed to encode info request");
 
     let response = ServiceMessenger::poll(
