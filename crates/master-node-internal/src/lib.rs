@@ -1,15 +1,13 @@
+mod context;
 pub mod encoding;
 mod error;
 mod node;
 /// The master node is a special kind of node that has access to the whole context of the peppy daemon and runs as part of the same process
 mod services;
 
-// Generated Cap'n Proto types - must be at crate root for correct path resolution
-#[allow(clippy::all)]
-pub mod messages_capnp {
-    include!(concat!(env!("OUT_DIR"), "/messages_capnp.rs"));
-}
+pub use context::{AppContext, AppEvent, DEFAULT_CHANNEL_CAPACITY};
 
+// Generated Cap'n Proto types - must be at crate root for correct path resolution
 #[allow(clippy::all)]
 pub mod ping_capnp {
     include!(concat!(env!("OUT_DIR"), "/ping_capnp.rs"));
@@ -18,6 +16,16 @@ pub mod ping_capnp {
 #[allow(clippy::all)]
 pub mod info_capnp {
     include!(concat!(env!("OUT_DIR"), "/info_capnp.rs"));
+}
+
+#[allow(clippy::all)]
+pub mod launcher_capnp {
+    include!(concat!(env!("OUT_DIR"), "/launcher_capnp.rs"));
+}
+
+#[allow(clippy::all)]
+pub mod node_capnp {
+    include!(concat!(env!("OUT_DIR"), "/node_capnp.rs"));
 }
 
 pub use error::{Error, Result};

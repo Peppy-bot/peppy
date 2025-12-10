@@ -1802,7 +1802,7 @@ dependencies = [
  "config",
  "futures",
  "names-generator2",
- "peppy-core",
+ "node-stack",
  "peppylib",
  "pmi",
  "rand 0.9.2",
@@ -2216,7 +2216,6 @@ dependencies = [
  "master-node",
  "netdev",
  "node-stack",
- "peppy-core",
  "peppylib",
  "pmi",
  "rayon",
@@ -2226,15 +2225,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "peppy-core"
-version = "0.0.1"
-dependencies = [
- "config",
- "node-stack",
- "tokio",
 ]
 
 [[package]]

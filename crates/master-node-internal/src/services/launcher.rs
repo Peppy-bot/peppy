@@ -1,5 +1,5 @@
+use crate::AppContext;
 use bytes::Bytes;
-use peppy_core::AppContext;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
