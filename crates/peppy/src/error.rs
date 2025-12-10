@@ -38,10 +38,6 @@ pub enum Error {
     #[from]
     GeneratorError(generator::GeneratorError),
 
-    // -- node-stack-internal
-    #[from]
-    NodeStackError(node_stack::NodeStackError),
-
     // -- config-internal
     PeppyConfig(config::ConfigError),
 
