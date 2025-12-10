@@ -1,13 +1,19 @@
+use config::node::Name;
 use node_stack::NodeStack;
+
+#[path = "./helpers/config_common.rs"]
+mod config_common;
+
+use config_common::master_node_config;
 
 #[test]
 fn dynamically_add_node_to_node_stack_matching_topic() {
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
-            manifest: { 
-              name: "brain", 
-              tag: "1.0.0" 
+            manifest: {
+              name: "brain",
+              tag: "1.0.0"
             },
             interfaces: {
                 subscribes_to: {
@@ -28,9 +34,9 @@ fn dynamically_add_node_to_node_stack_matching_topic() {
     let dependency: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
-            manifest: { 
-              name: "lidar", 
-              tag: "1.0.0" 
+            manifest: {
+              name: "lidar",
+              tag: "1.0.0"
             },
             interfaces: {
                 exposes: {
@@ -59,15 +65,16 @@ fn dynamically_add_node_to_node_stack_matching_topic() {
     )
     .expect("valid dependency node config");
 
-    let stack = NodeStack::from_configs(vec![dependent]);
-    assert_eq!(stack.len(), 1, "stack should start with a single node");
+    let stack = NodeStack::new(master_node_config());
+    stack.push_config(dependent);
+    assert_eq!(stack.len(), 2, "stack should have master + dependent node");
     assert!(
         stack.dependencies_of("brain", "1.0.0").is_empty(),
         "dependency edge is deferred until the dependency is registered"
     );
 
     stack.push_config(dependency);
-    assert_eq!(stack.len(), 2, "stack should include the newly added node");
+    assert_eq!(stack.len(), 3, "stack should include the newly added node");
 
     let deps = stack
         .dependencies_of("brain", "1.0.0")
@@ -102,9 +109,9 @@ fn dynamically_add_node_to_node_stack_matching_service() {
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
-            manifest: { 
-              name: "brain", 
-              tag: "1.0.0" 
+            manifest: {
+              name: "brain",
+              tag: "1.0.0"
             },
             interfaces: {
                 subscribes_to: {
@@ -125,9 +132,9 @@ fn dynamically_add_node_to_node_stack_matching_service() {
     let dependency: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
-            manifest: { 
-              name: "lidar", 
-              tag: "1.0.0" 
+            manifest: {
+              name: "lidar",
+              tag: "1.0.0"
             },
             interfaces: {
                 exposes: {
@@ -152,15 +159,16 @@ fn dynamically_add_node_to_node_stack_matching_service() {
     )
     .expect("valid dependency node config");
 
-    let stack = NodeStack::from_configs(vec![dependent]);
-    assert_eq!(stack.len(), 1, "stack should start with a single node");
+    let stack = NodeStack::new(master_node_config());
+    stack.push_config(dependent);
+    assert_eq!(stack.len(), 2, "stack should have master + dependent node");
     assert!(
         stack.dependencies_of("brain", "1.0.0").is_empty(),
         "dependency edge is deferred until the dependency is registered"
     );
 
     stack.push_config(dependency);
-    assert_eq!(stack.len(), 2, "stack should include the newly added node");
+    assert_eq!(stack.len(), 3, "stack should include the newly added node");
 
     let deps = stack
         .dependencies_of("brain", "1.0.0")
@@ -195,9 +203,9 @@ fn dynamically_add_node_to_node_stack_matching_action() {
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
-            manifest: { 
-              name: "brain", 
-              tag: "1.0.0" 
+            manifest: {
+              name: "brain",
+              tag: "1.0.0"
             },
             interfaces: {
                 subscribes_to: {
@@ -218,9 +226,9 @@ fn dynamically_add_node_to_node_stack_matching_action() {
     let dependency: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
-            manifest: { 
-              name: "controller", 
-              tag: "1.0.0" 
+            manifest: {
+              name: "controller",
+              tag: "1.0.0"
             },
             interfaces: {
                 exposes: {
@@ -265,15 +273,16 @@ fn dynamically_add_node_to_node_stack_matching_action() {
     )
     .expect("valid dependency node config");
 
-    let stack = NodeStack::from_configs(vec![dependent]);
-    assert_eq!(stack.len(), 1, "stack should start with a single node");
+    let stack = NodeStack::new(master_node_config());
+    stack.push_config(dependent);
+    assert_eq!(stack.len(), 2, "stack should have master + dependent node");
     assert!(
         stack.dependencies_of("brain", "1.0.0").is_empty(),
         "dependency edge is deferred until the dependency is registered"
     );
 
     stack.push_config(dependency);
-    assert_eq!(stack.len(), 2, "stack should include the newly added node");
+    assert_eq!(stack.len(), 3, "stack should include the newly added node");
 
     let deps = stack
         .dependencies_of("brain", "1.0.0")
@@ -362,15 +371,16 @@ fn dynamically_add_node_to_node_stack_wrong_topic_node_name() {
     )
     .expect("valid dependency node config");
 
-    let stack = NodeStack::from_configs(vec![dependent]);
-    assert_eq!(stack.len(), 1, "stack should start with a single node");
+    let stack = NodeStack::new(master_node_config());
+    stack.push_config(dependent);
+    assert_eq!(stack.len(), 2, "stack should have master + dependent node");
     assert!(
         stack.dependencies_of("brain", "1.0.0").is_empty(),
         "missing dependency cannot be fulfilled until a matching node is added"
     );
 
     stack.push_config(dependency);
-    assert_eq!(stack.len(), 2, "stack should include the newly added node");
+    assert_eq!(stack.len(), 3, "stack should include the newly added node");
     assert!(
         stack.dependencies_of("brain", "1.0.0").is_empty(),
         "node names must match for dependency edges to be wired"
@@ -394,15 +404,15 @@ fn add_instance_to_new_entity() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new();
-    assert!(stack.is_empty(), "stack should start empty");
+    let stack = NodeStack::new(master_node_config());
+    assert_eq!(stack.len(), 1, "stack should start with root node only");
 
     // Add instance without specifying instance_id (should generate one)
     let instance_id = stack
         .add_instance(&config, None)
         .expect("should add instance");
 
-    assert_eq!(stack.len(), 1, "stack should have one entity");
+    assert_eq!(stack.len(), 2, "stack should have root + one entity");
     assert!(
         stack.contains("sensor", "1.0.0"),
         "entity should be findable"
@@ -434,14 +444,14 @@ fn add_instance_to_existing_entity() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new();
+    let stack = NodeStack::new(master_node_config());
 
     // Add first instance
     let first_id = stack
         .add_instance(&config, None)
         .expect("should add first instance");
 
-    assert_eq!(stack.len(), 1, "stack should have one entity");
+    assert_eq!(stack.len(), 2, "stack should have root + one entity");
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
         entity.instances().len(),
@@ -454,7 +464,7 @@ fn add_instance_to_existing_entity() {
         .add_instance(&config, None)
         .expect("should add second instance");
 
-    assert_eq!(stack.len(), 1, "stack should still have one entity");
+    assert_eq!(stack.len(), 2, "stack should still have root + one entity");
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
@@ -480,8 +490,6 @@ fn add_instance_to_existing_entity() {
 
 #[test]
 fn add_instance_with_specific_id() {
-    use config::node::Name;
-
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -493,7 +501,7 @@ fn add_instance_with_specific_id() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new();
+    let stack = NodeStack::new(master_node_config());
     let custom_id = Name::new("my-custom-instance").expect("valid name");
 
     let returned_id = stack
@@ -515,8 +523,6 @@ fn add_instance_with_specific_id() {
 
 #[test]
 fn remove_instance_from_entity_with_multiple_instances() {
-    use config::node::Name;
-
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -528,7 +534,7 @@ fn remove_instance_from_entity_with_multiple_instances() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new();
+    let stack = NodeStack::new(master_node_config());
     let first_id = Name::new("instance-1").expect("valid name");
     let second_id = Name::new("instance-2").expect("valid name");
 
@@ -539,7 +545,7 @@ fn remove_instance_from_entity_with_multiple_instances() {
         .add_instance(&config, Some(&second_id))
         .expect("should add second instance");
 
-    assert_eq!(stack.len(), 1, "stack should have one entity");
+    assert_eq!(stack.len(), 2, "stack should have root + one entity");
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
         entity.instances().len(),
@@ -548,11 +554,13 @@ fn remove_instance_from_entity_with_multiple_instances() {
     );
 
     // Remove first instance
-    let removed = stack.remove_instance("sensor", "1.0.0", &first_id);
+    let removed = stack
+        .remove_instance("sensor", "1.0.0", &first_id)
+        .expect("should succeed");
     assert!(removed, "instance should be removed");
 
     // Entity should still exist with one instance
-    assert_eq!(stack.len(), 1, "entity should still exist");
+    assert_eq!(stack.len(), 2, "entity should still exist");
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
         entity.instances().len(),
@@ -568,8 +576,6 @@ fn remove_instance_from_entity_with_multiple_instances() {
 
 #[test]
 fn remove_last_instance_removes_entity() {
-    use config::node::Name;
-
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -581,13 +587,13 @@ fn remove_last_instance_removes_entity() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new();
+    let stack = NodeStack::new(master_node_config());
     let instance_id = Name::new("only-instance").expect("valid name");
 
     stack
         .add_instance(&config, Some(&instance_id))
         .expect("should add instance");
-    assert_eq!(stack.len(), 1, "stack should have one entity");
+    assert_eq!(stack.len(), 2, "stack should have root + one entity");
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
         entity.instances().len(),
@@ -596,11 +602,13 @@ fn remove_last_instance_removes_entity() {
     );
 
     // Remove the only instance
-    let removed = stack.remove_instance("sensor", "1.0.0", &instance_id);
+    let removed = stack
+        .remove_instance("sensor", "1.0.0", &instance_id)
+        .expect("should succeed");
     assert!(removed, "instance should be removed");
 
-    // Entity should be gone
-    assert!(stack.is_empty(), "stack should be empty");
+    // Entity should be gone, but root remains
+    assert_eq!(stack.len(), 1, "stack should only have root");
     assert!(
         stack.find("sensor", "1.0.0").is_none(),
         "entity should not exist"
@@ -609,8 +617,6 @@ fn remove_last_instance_removes_entity() {
 
 #[test]
 fn remove_nonexistent_instance_returns_false() {
-    use config::node::Name;
-
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -622,7 +628,7 @@ fn remove_nonexistent_instance_returns_false() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new();
+    let stack = NodeStack::new(master_node_config());
     let instance_id = Name::new("real-instance").expect("valid name");
     let fake_id = Name::new("fake-instance").expect("valid name");
 
@@ -631,11 +637,15 @@ fn remove_nonexistent_instance_returns_false() {
         .expect("should add instance");
 
     // Try to remove non-existent instance
-    let removed = stack.remove_instance("sensor", "1.0.0", &fake_id);
+    let removed = stack
+        .remove_instance("sensor", "1.0.0", &fake_id)
+        .expect("should succeed");
     assert!(!removed, "should return false for non-existent instance");
 
     // Try to remove from non-existent entity
-    let removed = stack.remove_instance("nonexistent", "1.0.0", &instance_id);
+    let removed = stack
+        .remove_instance("nonexistent", "1.0.0", &instance_id)
+        .expect("should succeed");
     assert!(!removed, "should return false for non-existent entity");
 
     // Original instance should still be there
@@ -644,7 +654,7 @@ fn remove_nonexistent_instance_returns_false() {
 }
 
 #[test]
-fn reset_clears_entire_stack() {
+fn reset_clears_all_except_root() {
     let config1: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -667,12 +677,18 @@ fn reset_clears_entire_stack() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::from_configs(vec![config1, config2]);
-    assert_eq!(stack.len(), 2, "stack should have two entities");
+    let stack = NodeStack::new(master_node_config());
+    stack.push_config(config1);
+    stack.push_config(config2);
+    assert_eq!(stack.len(), 3, "stack should have root + two entities");
 
     stack.reset();
 
-    assert!(stack.is_empty(), "stack should be empty after reset");
+    assert_eq!(stack.len(), 1, "stack should only have root after reset");
+    assert!(
+        stack.contains("master", "1.0.0"),
+        "root should still exist after reset"
+    );
     assert!(
         stack.find("sensor1", "1.0.0").is_none(),
         "sensor1 should not exist"
@@ -696,17 +712,109 @@ fn reset_allows_adding_new_entities() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::from_configs(vec![config.clone()]);
-    assert_eq!(stack.len(), 1, "stack should have one entity");
+    let stack = NodeStack::new(master_node_config());
+    stack.push_config(config.clone());
+    assert_eq!(stack.len(), 2, "stack should have root + one entity");
 
     stack.reset();
-    assert!(stack.is_empty(), "stack should be empty after reset");
+    assert_eq!(stack.len(), 1, "stack should only have root after reset");
 
     // Should be able to add entities again
     stack.push_config(config);
     assert_eq!(
         stack.len(),
+        2,
+        "stack should have root + one entity after re-adding"
+    );
+}
+
+#[test]
+fn root_returns_the_master_node() {
+    let stack = NodeStack::new(master_node_config());
+
+    let root = stack.root();
+    assert_eq!(
+        root.config().manifest.name.as_str(),
+        "master",
+        "root should be master node"
+    );
+    assert_eq!(
+        root.config().manifest.tag,
+        "1.0.0",
+        "root should have correct tag"
+    );
+    assert_eq!(
+        root.instances().len(),
         1,
-        "stack should have one entity after re-adding"
+        "root should have exactly one instance"
+    );
+}
+
+#[test]
+fn cannot_modify_root_node() {
+    let stack = NodeStack::new(master_node_config());
+    let root_instance_id = stack.root().instances()[0].instance_id().clone();
+
+    // Try to remove the root's instance
+    let result = stack.remove_instance("master", "1.0.0", &root_instance_id);
+    assert!(
+        result.is_err(),
+        "should not be able to remove root node instance"
+    );
+
+    // Try to add another instance to root
+    let result = stack.add_instance(&master_node_config(), None);
+    assert!(
+        result.is_err(),
+        "should not be able to add instance to root node"
+    );
+
+    // Root should still be intact
+    let root = stack.root();
+    assert_eq!(
+        root.instances().len(),
+        1,
+        "root should still have exactly one instance"
+    );
+}
+
+#[test]
+fn from_configs_with_empty_list_returns_error() {
+    let result = NodeStack::from_configs(Vec::new());
+    assert!(result.is_err(), "from_configs with empty list should fail");
+}
+
+#[test]
+fn from_configs_uses_first_as_root() {
+    let config1: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "first",
+              tag: "1.0.0"
+            }
+        }"#,
+    )
+    .expect("valid node config");
+
+    let config2: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "second",
+              tag: "1.0.0"
+            }
+        }"#,
+    )
+    .expect("valid node config");
+
+    let stack = NodeStack::from_configs(vec![config1, config2]).expect("should create stack");
+    assert_eq!(stack.len(), 2, "stack should have two nodes");
+
+    let root = stack.root();
+    assert_eq!(
+        root.config().manifest.name.as_str(),
+        "first",
+        "first config should be root"
     );
 }

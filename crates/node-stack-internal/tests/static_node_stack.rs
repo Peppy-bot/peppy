@@ -8,6 +8,11 @@ use tempfile::TempDir;
 #[path = "./helpers/config.rs"]
 mod helper_config;
 
+#[path = "./helpers/config_common.rs"]
+mod config_common;
+
+use config_common::master_node_config;
+
 /// Launches the following nodes:
 /// - brain
 /// - controller
@@ -82,10 +87,10 @@ fn local_stack_example_builds_dependencies() {
     // DO NOT add lidar_sensor and uvc_camera to the node stack, they will be automatically pulled fromt the local github repo
 
     let mapper = LocalNodeStackBuilder::from_launch_file(launch_file, None).unwrap();
-    let planner = mapper.build().unwrap();
+    let planner = mapper.build(master_node_config()).unwrap();
 
-    // Supposed to contain the local nodes stacked in the project directory
-    assert_eq!(planner.node_stack().len(), 3);
+    // Supposed to contain the master node + local nodes stacked in the project directory
+    assert_eq!(planner.node_stack().len(), 4);
 
     // Now take care of the deployments (git pull etc...)
     let deployment_tree = planner.map_deployments_to_nodes();
@@ -268,11 +273,12 @@ fn optional_node_ignored() {
     std::fs::write(&launch_file, launch_content).expect("failed to write launch config");
 
     let mapper = LocalNodeStackBuilder::from_launch_file(&launch_file, None).unwrap();
-    let planner = mapper.build().unwrap();
+    let planner = mapper.build(master_node_config()).unwrap();
 
-    assert!(
-        planner.node_stack().is_empty(),
-        "optional node test config should rely on remote nodes only"
+    assert_eq!(
+        planner.node_stack().len(),
+        1,
+        "optional node test config should only have root node (no local nodes)"
     );
 
     let graph = planner.map_deployments_to_nodes();
@@ -346,11 +352,12 @@ fn remote_git_tag_mismatch_is_unresolvable() {
     );
 
     let mapper = LocalNodeStackBuilder::from_launch_file(launch_file, None).unwrap();
-    let planner = mapper.build().unwrap();
+    let planner = mapper.build(master_node_config()).unwrap();
 
-    assert!(
-        planner.node_stack().is_empty(),
-        "example 2 config should not include local nodes"
+    assert_eq!(
+        planner.node_stack().len(),
+        1,
+        "example 2 config should only have root node (no local nodes)"
     );
 
     let graph = planner.map_deployments_to_nodes();
@@ -453,11 +460,12 @@ fn remote_bundle_manifest_tag_mismatch_is_unresolvable() {
     );
 
     let mapper = LocalNodeStackBuilder::from_launch_file(launch_file, None).unwrap();
-    let planner = mapper.build().unwrap();
+    let planner = mapper.build(master_node_config()).unwrap();
 
-    assert!(
-        planner.node_stack().is_empty(),
-        "example 3 config should not include local nodes"
+    assert_eq!(
+        planner.node_stack().len(),
+        1,
+        "example 3 config should only have root node (no local nodes)"
     );
 
     let graph = planner.map_deployments_to_nodes();
@@ -532,11 +540,12 @@ fn remote_git_parameter_mismatch_is_rejected() {
     );
 
     let mapper = LocalNodeStackBuilder::from_launch_file(launch_file, None).unwrap();
-    let planner = mapper.build().unwrap();
+    let planner = mapper.build(master_node_config()).unwrap();
 
-    assert!(
-        planner.node_stack().is_empty(),
-        "example 4 config should not include local nodes"
+    assert_eq!(
+        planner.node_stack().len(),
+        1,
+        "example 4 config should only have root node (no local nodes)"
     );
 
     let graph = planner.map_deployments_to_nodes();

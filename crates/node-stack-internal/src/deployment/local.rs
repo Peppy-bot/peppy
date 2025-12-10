@@ -30,7 +30,7 @@ mod tests {
     fn resolve_local_deployment_success() {
         let config = sample_config_camera();
         let deployment = sample_deployment();
-        let stack = NodeStack::new();
+        let stack = NodeStack::new(master_node_config());
         stack.push_config_with_instance_id(config.clone(), Name::new("test-instance").unwrap());
 
         let map = resolve_local_deployment(&deployment, &stack).expect("local deployment resolves");
@@ -51,8 +51,8 @@ mod tests {
 
     #[test]
     fn resolve_local_deployment_missing_node() {
-        let empty_stack = NodeStack::new();
-        let err = resolve_local_deployment(&sample_deployment(), &empty_stack)
+        let stack = NodeStack::new(master_node_config());
+        let err = resolve_local_deployment(&sample_deployment(), &stack)
             .expect_err("should report missing local node");
 
         let Error::NodeNotFound(name) = err else {
@@ -60,9 +60,8 @@ mod tests {
         };
         assert_eq!(name, "uvc_camera");
 
-        let config = sample_config_lidar();
-        let stack = NodeStack::new();
-        stack.push_config_with_instance_id(config, Name::new("test-instance").unwrap());
+        let stack = NodeStack::new(master_node_config());
+        stack.push_config(sample_config_lidar());
 
         let err = resolve_local_deployment(&sample_deployment(), &stack)
             .expect_err("should report missing local node");
@@ -71,6 +70,19 @@ mod tests {
             panic!("unexpected error");
         };
         assert_eq!(name, "uvc_camera");
+    }
+
+    fn master_node_config() -> config::node::NodeConfig {
+        serde_json5::from_str(
+            r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "master",
+                    tag: "1.0.0"
+                }
+            }"#,
+        )
+        .expect("valid master node json5")
     }
 
     fn sample_config_camera() -> config::node::NodeConfig {
