@@ -1,5 +1,5 @@
 use super::{ServeAsyncCommand, ServeAsyncHandle};
-use crate::Error;
+use crate::error::Error;
 use pmi::{Messenger, MessengerBackend};
 use std::sync::Arc;
 use tokio::sync::{Mutex, oneshot};

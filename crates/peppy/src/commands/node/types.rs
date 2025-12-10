@@ -1,7 +1,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use crate::{Error, Result};
+use crate::error::{Error, Result};
 
 /// A validated node name that ensures it follows naming conventions.
 /// Node names must start with a letter and contain only alphanumeric characters,

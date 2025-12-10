@@ -1,7 +1,7 @@
 use super::super::types::NodeName;
 use super::PackageManager;
 use super::{python, rust};
-use crate::{Error, Result};
+use crate::error::{Error, Result};
 use askama::Template;
 use config::node::NodeConfigCreator;
 use std::fs;

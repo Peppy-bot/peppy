@@ -1,4 +1,4 @@
-use crate::{Error, Result};
+use crate::error::{Error, Result};
 use askama::Template;
 use std::fs;
 use std::io::Write;

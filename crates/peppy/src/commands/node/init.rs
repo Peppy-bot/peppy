@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use super::PackageManager;
 use super::types::NodeName;
-use crate::{AppContext, Error, Result};
+use crate::context::AppContext;
+use crate::error::{Error, Result};
 use factory::{NodeContext, create_factory};
 
 pub struct NodeBuilder {

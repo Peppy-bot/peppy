@@ -1,5 +1,5 @@
-use crate::AppContext;
 use crate::Result;
+use crate::context::MasterContext;
 use crate::services::{
     listen_for_add_node, listen_for_info, listen_for_launch_configuration, listen_for_ping,
 };
@@ -18,18 +18,14 @@ use tracing::info;
 const MASTER_NODE_TAG: &str = "internal";
 
 pub struct MasterNode {
-    app_ctx: Arc<AppContext>,
+    context: Arc<MasterContext>,
     node_config: NodeConfig,
     instance_id: Name,
     messenger: MessengerHandle,
 }
 
 impl MasterNode {
-    pub fn new(
-        app_ctx: &Arc<AppContext>,
-        messenger: Arc<Mutex<Messenger>>,
-        node_name: Option<&str>,
-    ) -> Self {
+    pub fn new(messenger: Arc<Mutex<Messenger>>, node_name: Option<&str>) -> Self {
         let manifest_name = match node_name {
             Some(name) => Name::new(name).unwrap(),
             None => Name::new(get_random(rng())).unwrap(),
@@ -52,8 +48,10 @@ impl MasterNode {
         let messenger = MessengerHandle::from_shared(messenger);
         let instance_id = Name::new(get_random(rng())).unwrap();
 
+        let context = Arc::new(MasterContext::default());
+
         Self {
-            app_ctx: Arc::clone(app_ctx),
+            context: Arc::clone(&context),
             node_config,
             instance_id,
             messenger,
@@ -92,7 +90,7 @@ impl MasterNode {
                 master_node_name,
                 self.instance_id(),
                 self.node_name(),
-                &self.app_ctx,
+                &self.context,
             )
             .await?,
             listen_for_launch_configuration(
@@ -100,7 +98,7 @@ impl MasterNode {
                 master_node_name,
                 self.instance_id(),
                 self.node_name(),
-                &self.app_ctx,
+                &self.context,
             )
             .await?,
             listen_for_add_node(

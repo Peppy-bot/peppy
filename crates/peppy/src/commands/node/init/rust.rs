@@ -1,5 +1,5 @@
-use crate::Result;
 use crate::commands::node::types::NodeName;
+use crate::error::Result;
 use askama::Template;
 use std::fs;
 use std::path::Path;
