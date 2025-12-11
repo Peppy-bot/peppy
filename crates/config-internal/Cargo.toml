@@ -20,5 +20,10 @@ capnpc = "0.23"
 tempfile = "3.8"
 indexmap = { version = "2.2", features = ["serde"] }
 md5 = "0.8"
+git2 = { version = "0.20", optional = true }
 
 [dev-dependencies]
+
+[features]
+default = []
+test_helpers = ["git2"]

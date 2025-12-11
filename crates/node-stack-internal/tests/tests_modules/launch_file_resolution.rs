@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use config::test_helpers;
 use httptest::{Expectation, Server, matchers::request, responders::status_code};
 use node_stack::{LocalNodeStackBuilder, NodeStackError};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
-use crate::helpers::config as helper_config;
 use crate::helpers::config_common::master_node_config;
 
 /// Launches the following nodes:
@@ -21,62 +21,62 @@ use crate::helpers::config_common::master_node_config;
 /// - `controller` does not declare dependencies in this example
 /// - `web_video_stream` depends on `uvc_camera` (`subscribes_to.topics` property)
 #[test]
-fn local_stack_example_builds_dependencies() {
+fn local_stack_resolves_dependency_graph() {
     // Create a local git repo that host 2 different nodes (only uvc_camera and lidar_sensor will be pulled in this test)
     let git_repo_temp_dir = TempDir::new().unwrap();
-    let git_repo_path = helper_config::create_git_repo(&git_repo_temp_dir);
+    let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
 
     // The directory in which the peppy config lives will contain a `.peppy/nodes` folder where cached nodes will be pulled from a local git repo
     let root_temp_dir = TempDir::new().unwrap();
     let root = root_temp_dir.path();
     // Only pull uvc_camera and lidar_sensor from git
     let git_repo_path = git_repo_path.to_str().unwrap().to_owned();
-    let lidar_remote = format!("nodes/{}", helper_config::LIDAR_SENSOR_NODE_NAME);
-    let uvc_remote = format!("nodes/{}", helper_config::UVC_CAMERA_NODE_NAME);
+    let lidar_remote = format!("nodes/{}", test_helpers::LIDAR_SENSOR_NODE_NAME);
+    let uvc_remote = format!("nodes/{}", test_helpers::UVC_CAMERA_NODE_NAME);
 
-    let launch_file = helper_config::render_peppy_config_template(
+    let launch_file = test_helpers::render_peppy_config_template(
         &root_temp_dir,
-        helper_config::PeppyConfigTemplateExample1 {
-            lidar_sensor_node_name: helper_config::LIDAR_SENSOR_NODE_NAME,
+        test_helpers::PeppyConfigTemplateExample1 {
+            lidar_sensor_node_name: test_helpers::LIDAR_SENSOR_NODE_NAME,
             lidar_sensor_github_repo: &git_repo_path,
             lidar_sensor_github_repo_path: lidar_remote.as_str(),
             lidar_sensor_github_tag: "0.1.0",
-            uvc_camera_node_name: helper_config::UVC_CAMERA_NODE_NAME,
+            uvc_camera_node_name: test_helpers::UVC_CAMERA_NODE_NAME,
             uvc_camera_github_repo: &git_repo_path,
             uvc_camera_github_repo_path: uvc_remote.as_str(),
-            web_video_stream_node_name: helper_config::WEB_VIDEO_STREAM_NODE_NAME,
+            web_video_stream_node_name: test_helpers::WEB_VIDEO_STREAM_NODE_NAME,
             web_video_stream_optional: false,
-            brain_node_name: helper_config::BRAIN_NODE_NAME,
-            controller_node_name: helper_config::CONTROLLER_NODE_NAME,
+            brain_node_name: test_helpers::BRAIN_NODE_NAME,
+            controller_node_name: test_helpers::CONTROLLER_NODE_NAME,
         },
     );
 
     let node_path = |name: &str| root.join(name).join("peppy.json5");
 
     // Add web_video_stream locally to the node_stack
-    helper_config::add_local_web_video_stream(
-        node_path(helper_config::WEB_VIDEO_STREAM_NODE_NAME),
-        helper_config::WebStreamVideoStreamNodeTemplate::new(
-            helper_config::WEB_VIDEO_STREAM_NODE_NAME,
-            helper_config::UVC_CAMERA_NODE_NAME,
+    test_helpers::add_local_web_video_stream(
+        node_path(test_helpers::WEB_VIDEO_STREAM_NODE_NAME),
+        test_helpers::WebStreamVideoStreamNodeTemplate::new(
+            test_helpers::WEB_VIDEO_STREAM_NODE_NAME,
+            test_helpers::UVC_CAMERA_NODE_NAME,
         ),
     );
 
     // Add brain locally to the node_stack
-    helper_config::add_local_web_video_stream(
-        node_path(helper_config::BRAIN_NODE_NAME),
-        helper_config::BrainNodeTemplate::new(
-            helper_config::BRAIN_NODE_NAME,
-            helper_config::UVC_CAMERA_NODE_NAME,
-            helper_config::LIDAR_SENSOR_NODE_NAME,
-            helper_config::CONTROLLER_NODE_NAME,
+    test_helpers::add_local_web_video_stream(
+        node_path(test_helpers::BRAIN_NODE_NAME),
+        test_helpers::BrainNodeTemplate::new(
+            test_helpers::BRAIN_NODE_NAME,
+            test_helpers::UVC_CAMERA_NODE_NAME,
+            test_helpers::LIDAR_SENSOR_NODE_NAME,
+            test_helpers::CONTROLLER_NODE_NAME,
         ),
     );
 
     // Add controller locally to the node_stack
-    helper_config::add_local_web_video_stream(
-        node_path(helper_config::CONTROLLER_NODE_NAME),
-        helper_config::ControllerNodeTemplate::new(helper_config::CONTROLLER_NODE_NAME),
+    test_helpers::add_local_web_video_stream(
+        node_path(test_helpers::CONTROLLER_NODE_NAME),
+        test_helpers::ControllerNodeTemplate::new(test_helpers::CONTROLLER_NODE_NAME),
     );
 
     // DO NOT add lidar_sensor and uvc_camera to the node stack, they will be automatically pulled fromt the local github repo
@@ -97,12 +97,12 @@ fn local_stack_example_builds_dependencies() {
         nodes_cache_dir
     );
     assert!(
-        helper_config::cached_node_exists(&nodes_cache_dir, helper_config::UVC_CAMERA_NODE_NAME),
+        test_helpers::cached_node_exists(&nodes_cache_dir, test_helpers::UVC_CAMERA_NODE_NAME),
         "uvc_camera should be cached under {:?}",
         nodes_cache_dir
     );
     assert!(
-        helper_config::cached_node_exists(&nodes_cache_dir, helper_config::LIDAR_SENSOR_NODE_NAME),
+        test_helpers::cached_node_exists(&nodes_cache_dir, test_helpers::LIDAR_SENSOR_NODE_NAME),
         "lidar_sensor should be cached under {:?}",
         nodes_cache_dir
     );
@@ -157,39 +157,39 @@ fn local_stack_example_builds_dependencies() {
     };
 
     assert_eq!(
-        actual(helper_config::BRAIN_NODE_NAME),
+        actual(test_helpers::BRAIN_NODE_NAME),
         expected(&[
-            helper_config::CONTROLLER_NODE_NAME,
-            helper_config::LIDAR_SENSOR_NODE_NAME,
-            helper_config::UVC_CAMERA_NODE_NAME,
+            test_helpers::CONTROLLER_NODE_NAME,
+            test_helpers::LIDAR_SENSOR_NODE_NAME,
+            test_helpers::UVC_CAMERA_NODE_NAME,
         ]),
         "brain dependencies"
     );
     assert_eq!(
-        actual(helper_config::CONTROLLER_NODE_NAME),
+        actual(test_helpers::CONTROLLER_NODE_NAME),
         expected(&[]),
         "controller dependencies"
     );
     assert_eq!(
-        actual(helper_config::WEB_VIDEO_STREAM_NODE_NAME),
-        expected(&[helper_config::UVC_CAMERA_NODE_NAME]),
+        actual(test_helpers::WEB_VIDEO_STREAM_NODE_NAME),
+        expected(&[test_helpers::UVC_CAMERA_NODE_NAME]),
         "web_video_stream dependencies"
     );
 
-    helper_config::print_dependency_summary(&deps_by_name);
+    test_helpers::print_dependency_summary(&deps_by_name);
 }
 
 #[test]
-fn optional_node_ignored() {
+fn optional_node_excluded_when_unresolvable() {
     let git_repo_temp_dir = TempDir::new().unwrap();
-    let git_repo_path = helper_config::create_git_repo(&git_repo_temp_dir);
+    let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
 
     let root_temp_dir = TempDir::new().unwrap();
     let root = root_temp_dir.path();
 
     let git_repo_path = git_repo_path.to_str().unwrap().to_owned();
-    let uvc_remote = format!("nodes/{}", helper_config::UVC_CAMERA_NODE_NAME);
-    let web_remote = format!("nodes/{}", helper_config::WEB_VIDEO_STREAM_NODE_NAME);
+    let uvc_remote = format!("nodes/{}", test_helpers::UVC_CAMERA_NODE_NAME);
+    let web_remote = format!("nodes/{}", test_helpers::WEB_VIDEO_STREAM_NODE_NAME);
 
     let launch_content = format!(
         r#"{{
@@ -257,10 +257,10 @@ fn optional_node_ignored() {
     format: "text"
   }}
 }}"#,
-        uvc = helper_config::UVC_CAMERA_NODE_NAME,
+        uvc = test_helpers::UVC_CAMERA_NODE_NAME,
         repo = git_repo_path,
         uvc_remote = uvc_remote,
-        web = helper_config::WEB_VIDEO_STREAM_NODE_NAME,
+        web = test_helpers::WEB_VIDEO_STREAM_NODE_NAME,
         web_remote = web_remote,
     );
 
@@ -290,7 +290,7 @@ fn optional_node_ignored() {
     assert!(required.is_resolved(), "required deployment must resolve");
     assert_eq!(
         required.deployment().name,
-        helper_config::UVC_CAMERA_NODE_NAME,
+        test_helpers::UVC_CAMERA_NODE_NAME,
         "only the required deployment should remain in the graph"
     );
 
@@ -307,7 +307,7 @@ fn optional_node_ignored() {
         })
         .collect();
     assert!(
-        !present_names.contains(helper_config::WEB_VIDEO_STREAM_NODE_NAME),
+        !present_names.contains(test_helpers::WEB_VIDEO_STREAM_NODE_NAME),
         "optional deployment should not appear when it fails to resolve"
     );
 
@@ -318,7 +318,7 @@ fn optional_node_ignored() {
         nodes_cache_dir
     );
     assert!(
-        helper_config::cached_node_exists(&nodes_cache_dir, helper_config::UVC_CAMERA_NODE_NAME),
+        test_helpers::cached_node_exists(&nodes_cache_dir, test_helpers::UVC_CAMERA_NODE_NAME),
         "required node should be cached under {:?}",
         nodes_cache_dir
     );
@@ -328,19 +328,19 @@ fn optional_node_ignored() {
 /// repository only exposes `v1.0`. The deployment must remain unresolved when
 /// the requested tag differs from what is available.
 #[test]
-fn remote_git_tag_mismatch_is_unresolvable() {
+fn remote_git_tag_not_found_is_unresolvable() {
     let git_repo_temp_dir = TempDir::new().unwrap();
-    let git_repo_path = helper_config::create_git_repo(&git_repo_temp_dir);
+    let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
 
     let root_temp_dir = TempDir::new().unwrap();
     let root = root_temp_dir.path();
 
-    let lidar_remote_path = format!("nodes/{}", helper_config::LIDAR_SENSOR_NODE_NAME);
+    let lidar_remote_path = format!("nodes/{}", test_helpers::LIDAR_SENSOR_NODE_NAME);
     let git_repo_path = git_repo_path.to_str().unwrap().to_owned();
-    let launch_file = helper_config::render_peppy_config_template(
+    let launch_file = test_helpers::render_peppy_config_template(
         &root_temp_dir,
-        helper_config::PeppyConfigTemplateExample2 {
-            lidar_sensor_node_name: helper_config::LIDAR_SENSOR_NODE_NAME,
+        test_helpers::PeppyConfigTemplateExample2 {
+            lidar_sensor_node_name: test_helpers::LIDAR_SENSOR_NODE_NAME,
             lidar_sensor_github_repo: &git_repo_path,
             lidar_sensor_github_repo_path: lidar_remote_path.as_str(),
         },
@@ -382,7 +382,7 @@ fn remote_git_tag_mismatch_is_unresolvable() {
 
     let expected = format!(
         "{}:{}",
-        helper_config::LIDAR_SENSOR_NODE_NAME,
+        test_helpers::LIDAR_SENSOR_NODE_NAME,
         lidar_deployment.deployment().tag
     );
     assert_eq!(deployment, &expected);
@@ -428,7 +428,7 @@ fn remote_bundle_manifest_tag_mismatch_is_unresolvable() {
 
     let manifest_content = format!(
         "{{\n            schema_version: 1,\n            manifest: {{ name: \"{}\", tag: \"9.9.9\" }}\n        }}",
-        helper_config::LIDAR_SENSOR_NODE_NAME
+        test_helpers::LIDAR_SENSOR_NODE_NAME
     );
     let bundle_bytes = build_bundle(manifest_content.as_str());
 
@@ -445,10 +445,10 @@ fn remote_bundle_manifest_tag_mismatch_is_unresolvable() {
     let root = root_temp_dir.path();
 
     let bundle_url = server.url(BUNDLE_PATH).to_string();
-    let launch_file = helper_config::render_peppy_config_template(
+    let launch_file = test_helpers::render_peppy_config_template(
         &root_temp_dir,
-        helper_config::PeppyConfigTemplateExample3 {
-            lidar_sensor_node_name: helper_config::LIDAR_SENSOR_NODE_NAME,
+        test_helpers::PeppyConfigTemplateExample3 {
+            lidar_sensor_node_name: test_helpers::LIDAR_SENSOR_NODE_NAME,
             lidar_sensor_url: bundle_url.as_str(),
             lidar_sensor_sha256: checksum.as_str(),
         },
@@ -490,12 +490,12 @@ fn remote_bundle_manifest_tag_mismatch_is_unresolvable() {
 
     let expected_identifier = format!(
         "{}:{}",
-        helper_config::LIDAR_SENSOR_NODE_NAME,
+        test_helpers::LIDAR_SENSOR_NODE_NAME,
         lidar_deployment.deployment().tag
     );
     assert_eq!(identifier, &expected_identifier);
     assert!(
-        reason.contains(helper_config::LIDAR_SENSOR_NODE_NAME),
+        reason.contains(test_helpers::LIDAR_SENSOR_NODE_NAME),
         "error reason should mention lidar sensor, got: {}",
         reason
     );
@@ -516,19 +516,19 @@ fn remote_bundle_manifest_tag_mismatch_is_unresolvable() {
 /// Uses the example where lidar parameters reference fields unsupported by the
 /// node manifest. The deployment should surface a `WrongInputParameters` error.
 #[test]
-fn remote_git_parameter_mismatch_is_rejected() {
+fn remote_git_invalid_parameters_rejected() {
     let git_repo_temp_dir = TempDir::new().unwrap();
-    let git_repo_path = helper_config::create_git_repo(&git_repo_temp_dir);
+    let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
 
     let root_temp_dir = TempDir::new().unwrap();
     let root = root_temp_dir.path();
 
-    let lidar_remote_path = format!("nodes/{}", helper_config::LIDAR_SENSOR_NODE_NAME);
+    let lidar_remote_path = format!("nodes/{}", test_helpers::LIDAR_SENSOR_NODE_NAME);
     let git_repo_path = git_repo_path.to_str().unwrap().to_owned();
-    let launch_file = helper_config::render_peppy_config_template(
+    let launch_file = test_helpers::render_peppy_config_template(
         &root_temp_dir,
-        helper_config::PeppyConfigTemplateExample4 {
-            lidar_sensor_node_name: helper_config::LIDAR_SENSOR_NODE_NAME,
+        test_helpers::PeppyConfigTemplateExample4 {
+            lidar_sensor_node_name: test_helpers::LIDAR_SENSOR_NODE_NAME,
             lidar_sensor_github_repo: &git_repo_path,
             lidar_sensor_github_repo_path: lidar_remote_path.as_str(),
         },
@@ -575,7 +575,7 @@ fn remote_git_parameter_mismatch_is_rejected() {
 
     let expected_identifier = format!(
         "{}:{}",
-        helper_config::LIDAR_SENSOR_NODE_NAME,
+        test_helpers::LIDAR_SENSOR_NODE_NAME,
         lidar_deployment.deployment().tag
     );
     assert_eq!(deployment, &expected_identifier);

@@ -11,6 +11,9 @@ pub mod peppy_config {
     pub use crate::config::*;
 }
 
+#[cfg(feature = "test_helpers")]
+pub mod test_helpers;
+
 pub use common::{AnyType, NodeParameters, TypeMismatch};
 
 // To watch projects
