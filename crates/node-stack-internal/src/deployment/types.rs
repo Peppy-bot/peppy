@@ -679,9 +679,9 @@ impl NodeStack {
     /// Creates a new NodeStack with the given root node configuration.
     /// The root node (master node) is the parent of all other nodes in the graph
     /// and cannot be removed from the stack.
-    pub fn new(root_config: NodeConfig) -> Self {
+    pub fn new(master_node: NodeConfig) -> Self {
         let instance_id = Name::new(get_random(rng())).expect("random name generation failed");
-        Self::with_root_instance_id(root_config, instance_id)
+        Self::with_root_instance_id(master_node, instance_id)
     }
 
     /// Creates a new NodeStack with the given root node configuration and a specific instance ID.
