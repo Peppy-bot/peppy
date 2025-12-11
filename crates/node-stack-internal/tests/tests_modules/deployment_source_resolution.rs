@@ -12,7 +12,7 @@ use tempfile::tempdir;
 use crate::helpers::config_common::{
     create_http_bundle, deployment, master_node_config, node_config, write_config,
 };
-use crate::helpers::git::{create_git_repository, push_git_commit};
+use crate::helpers::git::{create_simple_git_repo, push_git_commit};
 use crate::helpers::resolver::StaticResolver;
 
 #[test]
@@ -210,7 +210,7 @@ fn git_repo_is_cloned_and_resolved() {
             schema_version: 1,
             manifest: { name: "uvc_camera", tag: "1.2.3" }
         }"#;
-    let remote = create_git_repository(manifest_content, "1.2.3");
+    let remote = create_simple_git_repo(manifest_content, "1.2.3");
 
     let spec = GitRemoteSpec {
         repo: remote.path().to_string_lossy().to_string(),
@@ -264,7 +264,7 @@ fn git_repo_is_cloned_and_name_not_resolved() {
             schema_version: 1,
             manifest: { name: "uvc_camera_wrong", tag: "1.2.3" }
         }"#;
-    let remote = create_git_repository(manifest_content, "1.2.3");
+    let remote = create_simple_git_repo(manifest_content, "1.2.3");
 
     let spec = GitRemoteSpec {
         repo: remote.path().to_string_lossy().to_string(),
@@ -327,7 +327,7 @@ fn git_repo_is_cloned_and_tag_not_resolved() {
             schema_version: 1,
             manifest: { name: "uvc_camera", tag: "9.9.9" }
         }"#;
-    let remote = create_git_repository(manifest_content, "1.2.3");
+    let remote = create_simple_git_repo(manifest_content, "1.2.3");
 
     let spec = GitRemoteSpec {
         repo: remote.path().to_string_lossy().to_string(),
@@ -387,7 +387,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
             schema_version: 1,
             manifest: { name: "uvc_camera", tag: "1.0.0", launch_cmd: ["run_v1"] }
         }"#;
-    let remote = create_git_repository(manifest_v1, "1.0.0");
+    let remote = create_simple_git_repo(manifest_v1, "1.0.0");
 
     let spec = GitRemoteSpec {
         repo: remote.path().to_string_lossy().to_string(),

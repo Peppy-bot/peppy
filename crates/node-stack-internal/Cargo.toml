@@ -5,7 +5,7 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-config = { path = "../config-internal" }
+config = { path = "../config-internal", features = ["test_helpers"] }
 git2 = "0.20"
 petgraph = "0.8.3"
 thiserror = "2.0"
@@ -19,7 +19,6 @@ names-generator2 = "0.2"
 
 
 [dev-dependencies]
-askama = "0.14.0"
 serde_json5 = "0.2.1"
 tempfile = "3.10"
 tracing = "0.1.41"

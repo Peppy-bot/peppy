@@ -3,7 +3,7 @@ use std::{fs, path::Path};
 use git2::{ObjectType, Repository, Signature};
 use tempfile::{TempDir, tempdir};
 
-pub fn create_git_repository(manifest_content: &str, tag: &str) -> TempDir {
+pub fn create_simple_git_repo(manifest_content: &str, tag: &str) -> TempDir {
     let remote_dir = tempdir().expect("remote temp dir");
     let repo = Repository::init(remote_dir.path()).expect("init git repo");
 
