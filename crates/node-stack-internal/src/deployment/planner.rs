@@ -53,13 +53,7 @@ impl DeploymentSourceResolver for DefaultDeploymentResolver {
     }
 }
 
-pub struct LocalNodeStackBuilder {
-    nodes_cache_dir: PathBuf,
-    root_dir: PathBuf,
-    launch_file: PathBuf,
-}
-
-pub struct LauncherPlanner {
+pub struct DeploymentPlanner {
     peppy_launcher: PeppyLauncher,
     nodes_cache_dir: PathBuf,
     node_stack: NodeStack,
@@ -110,47 +104,83 @@ impl DeploymentGraph {
     }
 }
 
-/// Given a deployment list, finds the corresponding nodes required by
-impl LocalNodeStackBuilder {
+impl DeploymentPlanner {
+    /// Creates a new planner by loading the launch file and discovering nodes from the filesystem.
+    ///
     /// # Arguments
+    /// * `master_node` - The root node configuration for the stack
     /// * `launch_file` - Path to the peppy launch file
-    /// * `nodes_cache_dir` - The dir where nodes are cached (the ones that are pulled remotely or pushed with `peppy push`). Provide `None` to default to `.peppy/nodes`
+    /// * `nodes_cache_dir` - The dir where nodes are cached. Provide `None` to default to `.peppy/nodes`
     pub fn from_launch_file(
+        master_node: NodeConfig,
         launch_file: impl AsRef<Path>,
         nodes_cache_dir: Option<PathBuf>,
     ) -> Result<Self> {
         let launch_file = PathBuf::from(launch_file.as_ref());
 
-        let root_dir_canon = launch_file
+        let root_dir = launch_file
             .canonicalize()?
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
 
-        if !root_dir_canon.exists() {
+        if !root_dir.exists() {
             return Err(Error::FileNotFound(launch_file.clone()));
         }
 
-        let nodes_cache_dir_canon = match nodes_cache_dir {
+        let nodes_cache_dir = match nodes_cache_dir {
             Some(path) => std::fs::canonicalize(path)?,
-            None => root_dir_canon.clone().join(".peppy").join("nodes"),
+            None => root_dir.join(".peppy").join("nodes"),
         };
 
+        let peppy_launcher = Self::load_peppy_launcher(&launch_file)?;
+        let node_stack = Self::load_nodes_from_fs(&root_dir, master_node)?;
+
         Ok(Self {
-            nodes_cache_dir: nodes_cache_dir_canon,
-            root_dir: root_dir_canon,
-            launch_file,
+            peppy_launcher,
+            nodes_cache_dir,
+            node_stack,
+            resolver: Box::new(DefaultDeploymentResolver),
         })
     }
 
-    fn load_peppy_launcher(&self) -> Result<PeppyLauncher> {
-        let path = &self.launch_file;
+    /// Creates a new planner with a pre-built node stack.
+    ///
+    /// This is useful for testing or when nodes are provided from a source other than the filesystem.
+    pub fn with_nodes(
+        launch_file: impl AsRef<Path>,
+        nodes_cache_dir: Option<PathBuf>,
+        node_stack: NodeStack,
+    ) -> Result<Self> {
+        let launch_file = PathBuf::from(launch_file.as_ref());
 
-        if !path.exists() || !path.is_file() {
-            return Err(Error::FileNotFound(path.clone()));
+        let root_dir = launch_file
+            .canonicalize()?
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let nodes_cache_dir = match nodes_cache_dir {
+            Some(path) => std::fs::canonicalize(path)?,
+            None => root_dir.join(".peppy").join("nodes"),
+        };
+
+        let peppy_launcher = Self::load_peppy_launcher(&launch_file)?;
+
+        Ok(Self {
+            peppy_launcher,
+            nodes_cache_dir,
+            node_stack,
+            resolver: Box::new(DefaultDeploymentResolver),
+        })
+    }
+
+    fn load_peppy_launcher(launch_file: &Path) -> Result<PeppyLauncher> {
+        if !launch_file.exists() || !launch_file.is_file() {
+            return Err(Error::FileNotFound(launch_file.to_path_buf()));
         }
 
-        PeppyLauncherParser::from_path(&self.launch_file).map_err(Error::Config)
+        PeppyLauncherParser::from_path(launch_file).map_err(Error::Config)
     }
 
     fn load_nodes_from_fs(root_dir: &Path, master_node: NodeConfig) -> Result<NodeStack> {
@@ -166,44 +196,6 @@ impl LocalNodeStackBuilder {
         Ok(stack)
     }
 
-    fn finish(self, node_stack: NodeStack) -> Result<LauncherPlanner> {
-        let peppy_config = self.load_peppy_launcher()?;
-
-        Ok(LauncherPlanner::new(
-            peppy_config,
-            self.nodes_cache_dir,
-            node_stack,
-        ))
-    }
-
-    /// Create the initial node stack based on the peppy config and its
-    /// children in the same folder using the filesystem-backed loader.
-    /// The master node is the root of the node stack and cannot be removed.
-    pub fn build(self, master_node: NodeConfig) -> Result<LauncherPlanner> {
-        let local_node_configs = Self::load_nodes_from_fs(&self.root_dir, master_node)?;
-        self.finish(local_node_configs)
-    }
-
-    /// Same as [`Self::build`] but allows providing the node stack directly.
-    pub fn build_with_nodes(self, node_stack: NodeStack) -> Result<LauncherPlanner> {
-        self.finish(node_stack)
-    }
-}
-
-impl LauncherPlanner {
-    fn new(
-        peppy_launcher: PeppyLauncher,
-        nodes_cache_dir: impl AsRef<Path>,
-        node_stack: NodeStack,
-    ) -> Self {
-        Self {
-            peppy_launcher,
-            nodes_cache_dir: nodes_cache_dir.as_ref().to_owned(),
-            node_stack,
-            resolver: Box::new(DefaultDeploymentResolver),
-        }
-    }
-
     pub fn with_resolver(mut self, resolver: impl DeploymentSourceResolver + 'static) -> Self {
         self.resolver = Box::new(resolver);
         self
@@ -213,7 +205,7 @@ impl LauncherPlanner {
         &self.node_stack
     }
 
-    pub fn map_deployments_to_nodes(mut self) -> DeploymentGraph {
+    pub fn create_deployment_graph(mut self) -> DeploymentGraph {
         let mut nodes = self.collect_deployment_entries();
         Self::validate_dependency_interfaces(&mut nodes);
         Self::build_deployment_graph(nodes)
