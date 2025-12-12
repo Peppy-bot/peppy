@@ -193,9 +193,10 @@ impl DeploymentPlanner {
         // Create the stack with the master node as root
         let stack = NodeStack::new(master_node, None);
 
-        // Topologically sort local nodes and add them iteratively
-        // Nodes with external dependencies will fail but can be added in the next round
-        // once their local dependencies are in the stack
+        // Topologically sort local nodes and add them iteratively.
+        // Nodes with missing dependencies are retried until no progress can be made.
+        // Any remaining nodes are inserted leniently so that launch planning can
+        // proceed even when some dependencies are remote.
         let mut pending = Self::topological_sort_local_nodes(local_nodes);
 
         // Keep trying to add nodes until we make no progress
@@ -208,8 +209,7 @@ impl DeploymentPlanner {
                     Ok(_) => {
                         made_progress = true;
                     }
-                    Err(Error::MissingInterface { .. }) => {
-                        // Dependency not available yet - might be another local node or external
+                    Err(Error::MissingDependency { .. } | Error::MissingInterface { .. }) => {
                         still_pending.push(node_config);
                     }
                     Err(e) => return Err(e),
@@ -221,8 +221,9 @@ impl DeploymentPlanner {
             }
 
             if !made_progress {
-                // No progress made - remaining nodes have external dependencies
-                // These will be validated during deployment when remote nodes are available
+                for node_config in still_pending {
+                    stack.push_config_allow_missing(&node_config, None)?;
+                }
                 break;
             }
 
