@@ -209,14 +209,14 @@ impl From<&NodeEntity> for NodeKey {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) enum InterfaceKind {
+pub enum InterfaceKind {
     Topic,
     Service,
     Action,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) struct InterfaceRequirement {
+pub struct InterfaceRequirement {
     kind: InterfaceKind,
     name: String,
 }
@@ -229,20 +229,20 @@ impl InterfaceRequirement {
         }
     }
 
-    pub(super) fn kind(&self) -> InterfaceKind {
+    pub fn kind(&self) -> InterfaceKind {
         self.kind
     }
 
-    pub(super) fn name(&self) -> &str {
+    pub fn name(&self) -> &str {
         &self.name
     }
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct DependencySpec {
-    pub(super) node_name: String,
-    pub(super) node_tag: String,
-    pub(super) interface: InterfaceRequirement,
+pub struct DependencySpec {
+    pub node_name: String,
+    pub node_tag: String,
+    pub interface: InterfaceRequirement,
 }
 
 /// Compares two Interfaces structs by serializing them to JSON.
@@ -337,7 +337,7 @@ pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
         .collect()
 }
 
-pub(super) fn exposes_interface(node: &NodeConfig, requirement: &InterfaceRequirement) -> bool {
+pub fn exposes_interface(node: &NodeConfig, requirement: &InterfaceRequirement) -> bool {
     let Some(exposes) = node.interfaces.exposes.as_ref() else {
         return false;
     };
@@ -361,7 +361,7 @@ pub(super) fn exposes_interface(node: &NodeConfig, requirement: &InterfaceRequir
     }
 }
 
-pub(super) fn interface_kind_label(kind: InterfaceKind) -> &'static str {
+pub fn interface_kind_label(kind: InterfaceKind) -> &'static str {
     match kind {
         InterfaceKind::Topic => "topic",
         InterfaceKind::Service => "service",
@@ -476,6 +476,22 @@ impl NodeStackInner {
         // Validate all dependencies exist and expose the required interfaces
         self.validate_dependencies(&node)?;
 
+        let key = NodeKey::from(&node);
+        let index = if let Some(&existing_index) = self.key_to_index.get(&key) {
+            self.graph[existing_index] = node;
+            existing_index
+        } else {
+            let idx = self.graph.add_node(node);
+            self.key_to_index.insert(key.clone(), idx);
+            idx
+        };
+
+        self.rewire_dependencies(index);
+        self.resolve_pending_requirements(&key);
+        Ok(())
+    }
+
+    fn insert_entity_lenient(&mut self, node: NodeEntity) -> Result<()> {
         let key = NodeKey::from(&node);
         let index = if let Some(&existing_index) = self.key_to_index.get(&key) {
             self.graph[existing_index] = node;
@@ -692,7 +708,12 @@ impl NodeStackInner {
     /// Returns the instance_id that was used.
     /// Returns Err(CannotRemoveRootNode) if trying to add an instance to the root node
     /// (the root node always has exactly one instance).
-    fn add_instance(&mut self, config: &NodeConfig, instance_id: Option<&Name>) -> Result<Name> {
+    fn add_instance_impl(
+        &mut self,
+        config: &NodeConfig,
+        instance_id: Option<&Name>,
+        allow_missing_dependencies: bool,
+    ) -> Result<Name> {
         let key = NodeKey::new(config.manifest.name.as_str(), &config.manifest.tag);
 
         // The root node always has exactly one instance and cannot be modified
@@ -722,10 +743,29 @@ impl NodeStackInner {
             // Entity doesn't exist, create new one
             let instance = NodeInstance::new(instance_id.clone());
             let entity = NodeEntity::new(config.clone(), instance);
-            self.insert_entity(entity)?;
+            if allow_missing_dependencies {
+                self.insert_entity_lenient(entity)?;
+            } else {
+                self.insert_entity(entity)?;
+            }
         }
 
         Ok(instance_id)
+    }
+
+    /// Inserts a node without requiring its dependencies to be present.
+    /// Missing dependencies are tracked as pending requirements and will be wired
+    /// once the dependency nodes are added to the stack.
+    fn add_instance_allow_missing(
+        &mut self,
+        config: &NodeConfig,
+        instance_id: Option<&Name>,
+    ) -> Result<Name> {
+        self.add_instance_impl(config, instance_id, true)
+    }
+
+    fn add_instance(&mut self, config: &NodeConfig, instance_id: Option<&Name>) -> Result<Name> {
+        self.add_instance_impl(config, instance_id, false)
     }
 
     /// Removes an instance from an entity. If the entity has no instances left, removes the entity.
@@ -881,6 +921,15 @@ impl NodeStack {
     pub fn push_config(&self, config: &NodeConfig, instance_id: Option<&Name>) -> Result<Name> {
         let mut guard = self.shared.write().expect("node stack poisoned");
         guard.add_instance(config, instance_id)
+    }
+
+    pub fn push_config_allow_missing(
+        &self,
+        config: &NodeConfig,
+        instance_id: Option<&Name>,
+    ) -> Result<Name> {
+        let mut guard = self.shared.write().expect("node stack poisoned");
+        guard.add_instance_allow_missing(config, instance_id)
     }
 
     pub fn snapshot(&self) -> Vec<NodeEntity> {
