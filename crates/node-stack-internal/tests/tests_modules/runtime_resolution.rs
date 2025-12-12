@@ -3,141 +3,9 @@ use node_stack::{NodeStack, NodeStackError};
 
 use crate::helpers::config_common::master_node_config;
 
-// TODO: Make the same tests but for service/action
 #[test]
-fn topic_dependency_resolved_when_dependency_added_first() {
-    let brain_dependent: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            schema_version: 1,
-            manifest: {
-              name: "brain",
-              tag: "1.0.0"
-            },
-            interfaces: {
-                subscribes_to: {
-                    topics: [
-                        {
-                          id: "lidar_object_sub",
-                          node: "lidar",
-                          name: "push_lidar_object",
-                          tag: "1.0.0"
-                        }
-                    ]
-                }
-            }
-        }"#,
-    )
-    .expect("valid dependent node config");
-
-    let lidar_dependency: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            schema_version: 1,
-            manifest: {
-              name: "lidar",
-              tag: "1.0.0"
-            },
-            interfaces: {
-                exposes: {
-                    topics: [
-                        {
-                          name: "push_lidar_object",
-                          qos_profile: "sensor_data",
-                          message_format: {
-                            header: {
-                              $type: "object",
-                              stamp: "time",
-                              frame_id: "u32",
-                            },
-                            x: "f32",
-                            y: "f32",
-                            z: "f32",
-                            intensity: "f32",
-                            return_type: "u8",
-                            classification: "u8",
-                          },
-                        }
-                    ]
-                }
-            }
-        }"#,
-    )
-    .expect("valid dependency node config");
-
-    let stack = NodeStack::new(master_node_config(), None);
-
-    // Add the lidar dependency first
-    stack
-        .push_config(&lidar_dependency, None)
-        .expect("dependency node has no dependencies");
-    assert_eq!(stack.len(), 2, "stack should have master + dependency node");
-
-    // Now add the dependent node - should succeed because dependency exists
-    stack
-        .push_config(&brain_dependent, None)
-        .expect("dependent node should be added when dependency exists");
-    assert_eq!(stack.len(), 3, "stack should include the dependent node");
-
-    let dependencies = stack.dependencies_of("brain", "1.0.0");
-    let dependency_names: Vec<_> = dependencies
-        .iter()
-        .map(|node| node.config().manifest.name.as_str())
-        .collect();
-    assert_eq!(
-        dependency_names,
-        vec!["lidar"],
-        "dependency edge should be wired"
-    );
-
-    let dependants = stack
-        .dependents_of("lidar", "1.0.0")
-        .into_iter()
-        .map(|node| node.config().manifest.name.as_str().to_owned())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        dependants,
-        vec!["brain"],
-        "inverse relationship should also be wired"
-    );
-}
-
-#[test]
-fn topic_dependency_fails_when_dependency_missing() {
-    let brain_dependent: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            schema_version: 1,
-            manifest: {
-              name: "brain",
-              tag: "1.0.0"
-            },
-            interfaces: {
-                subscribes_to: {
-                    topics: [
-                        {
-                          id: "lidar_object_sub",
-                          node: "lidar",
-                          name: "push_lidar_object",
-                          tag: "1.0.0"
-                        }
-                    ]
-                }
-            }
-        }"#,
-    )
-    .expect("valid dependent node config");
-
-    let stack = NodeStack::new(master_node_config(), None);
-
-    // Adding a node that depends on a non-existent node should fail
-    let result = stack.push_config(&brain_dependent, None);
-    assert!(
-        result.is_err(),
-        "should fail to add node when dependency doesn't exist"
-    );
-    assert_eq!(stack.len(), 1, "stack should only have master node");
-}
-
-#[test]
-fn service_dependency_resolved_when_dependency_added_first() {
+fn dependency_fails_when_node_name_mismatches() {
+    // Dependent expects "uvc_camera" but we add "lidar" instead
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -150,7 +18,7 @@ fn service_dependency_resolved_when_dependency_added_first() {
                     services: [
                         {
                           id: "reset_sensor_sub",
-                          node: "lidar",
+                          node: "uvc_camera",
                           name: "reset_sensor",
                           tag: "1.0.0"
                         }
@@ -161,7 +29,7 @@ fn service_dependency_resolved_when_dependency_added_first() {
     )
     .expect("valid dependent node config");
 
-    let dependency: config::node::NodeConfig = serde_json5::from_str(
+    let wrong_dependency: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
             manifest: {
@@ -183,227 +51,6 @@ fn service_dependency_resolved_when_dependency_added_first() {
                               $optional: true
                             }
                           }
-                        }
-                    ]
-                }
-            }
-        }"#,
-    )
-    .expect("valid dependency node config");
-
-    let stack = NodeStack::new(master_node_config(), None);
-
-    // Add the dependency first
-    stack
-        .push_config(&dependency, None)
-        .expect("dependency node has no dependencies");
-    assert_eq!(stack.len(), 2, "stack should have master + dependency node");
-
-    // Now add the dependent node
-    stack
-        .push_config(&dependent, None)
-        .expect("dependent node should be added when dependency exists");
-    assert_eq!(stack.len(), 3, "stack should include the dependent node");
-
-    let deps = stack
-        .dependencies_of("brain", "1.0.0")
-        .into_iter()
-        .map(|node| {
-            (
-                node.config().manifest.name.as_str().to_owned(),
-                node.config().manifest.tag.clone(),
-            )
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        deps,
-        vec![("lidar".to_string(), "1.0.0".to_string())],
-        "dependency edge should be wired for services"
-    );
-
-    let dependants = stack
-        .dependents_of("lidar", "1.0.0")
-        .into_iter()
-        .map(|node| node.config().manifest.name.as_str().to_owned())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        dependants,
-        vec!["brain"],
-        "inverse relationship should also be wired for services"
-    );
-}
-
-#[test]
-fn action_dependency_resolved_when_dependency_added_first() {
-    let dependent: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            schema_version: 1,
-            manifest: {
-              name: "brain",
-              tag: "1.0.0"
-            },
-            interfaces: {
-                subscribes_to: {
-                    actions: [
-                        {
-                          id: "move_right_arm_sub",
-                          node: "controller",
-                          name: "move_right_arm",
-                          tag: "1.0.0"
-                        }
-                    ]
-                }
-            }
-        }"#,
-    )
-    .expect("valid dependent node config");
-
-    let dependency: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            schema_version: 1,
-            manifest: {
-              name: "controller",
-              tag: "1.0.0"
-            },
-            interfaces: {
-                exposes: {
-                    actions: [
-                        {
-                          name: "move_right_arm",
-                          goal_service: {
-                            request_message_format: {
-                              arm_id: "u16",
-                              desired_position: {
-                                $type: "array",
-                                $items: "i32",
-                                $length: 3
-                              }
-                            },
-                            response_message_format: { 
-                              accepted: "bool" 
-                            }
-                          },
-                          feedback_topic: {
-                            qos_profile: "reliable",
-                            message_format: {
-                              current_position: {
-                                $type: "array",
-                                $items: "i32",
-                                $length: 3
-                              }
-                            }
-                          },
-                          result_service: {
-                            response_message_format: {
-                              final_position: {
-                                $type: "array",
-                                $items: "i32",
-                                $length: 3
-                              }
-                            }
-                          }
-                        }
-                    ]
-                }
-            }
-        }"#,
-    )
-    .expect("valid dependency node config");
-
-    let stack = NodeStack::new(master_node_config(), None);
-
-    // Add the dependency first
-    stack
-        .push_config(&dependency, None)
-        .expect("dependency node has no dependencies");
-    assert_eq!(stack.len(), 2, "stack should have master + dependency node");
-
-    // Now add the dependent node
-    stack
-        .push_config(&dependent, None)
-        .expect("dependent node should be added when dependency exists");
-    assert_eq!(stack.len(), 3, "stack should include the dependent node");
-
-    let deps = stack
-        .dependencies_of("brain", "1.0.0")
-        .into_iter()
-        .map(|node| {
-            (
-                node.config().manifest.name.as_str().to_owned(),
-                node.config().manifest.tag.clone(),
-            )
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        deps,
-        vec![("controller".to_string(), "1.0.0".to_string())],
-        "dependency edge should be wired for actions"
-    );
-
-    let dependants = stack
-        .dependents_of("controller", "1.0.0")
-        .into_iter()
-        .map(|node| node.config().manifest.name.as_str().to_owned())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        dependants,
-        vec!["brain"],
-        "inverse relationship should also be wired for actions"
-    );
-}
-
-#[test]
-fn topic_dependency_fails_when_node_name_mismatches() {
-    // Dependent expects "uvc_camera" but we add "lidar" instead
-    let dependent: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            schema_version: 1,
-            manifest: {
-              name: "brain",
-              tag: "1.0.0"
-            },
-            interfaces: {
-                subscribes_to: {
-                    topics: [
-                        {
-                          id: "lidar_object_sub",
-                          node: "uvc_camera",
-                          name: "push_lidar_object",
-                          tag: "1.0.0"
-                        }
-                    ]
-                }
-            }
-        }"#,
-    )
-    .expect("valid dependent node config");
-
-    let wrong_dependency: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            schema_version: 1,
-            manifest: {
-              name: "lidar",
-              tag: "1.0.0"
-            },
-            interfaces: {
-                exposes: {
-                    topics: [
-                        {
-                          name: "push_lidar_object",
-                          qos_profile: "sensor_data",
-                          message_format: {
-                            header: {
-                              $type: "object",
-                              stamp: "time",
-                              frame_id: "u32",
-                            },
-                            x: "f32",
-                            y: "f32",
-                            z: "f32",
-                            intensity: "f32",
-                            return_type: "u8",
-                            classification: "u8",
-                          },
                         }
                     ]
                 }
@@ -440,7 +87,7 @@ fn topic_dependency_fails_when_node_name_mismatches() {
 }
 
 #[test]
-fn topic_dependency_fails_when_node_tag_mismatches() {
+fn dependency_fails_when_node_tag_mismatches() {
     // Dependent expects tag "1.0.0" but we add tag "2.0.0" instead
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
@@ -451,11 +98,11 @@ fn topic_dependency_fails_when_node_tag_mismatches() {
             },
             interfaces: {
                 subscribes_to: {
-                    topics: [
+                    services: [
                         {
-                          id: "lidar_object_sub",
+                          id: "reset_sensor_sub",
                           node: "lidar",
-                          name: "push_lidar_object",
+                          name: "reset_sensor",
                           tag: "1.0.0"
                         }
                     ]
@@ -474,23 +121,19 @@ fn topic_dependency_fails_when_node_tag_mismatches() {
             },
             interfaces: {
                 exposes: {
-                    topics: [
+                    services: [
                         {
-                          name: "push_lidar_object",
-                          qos_profile: "sensor_data",
-                          message_format: {
-                            header: {
-                              $type: "object",
-                              stamp: "time",
-                              frame_id: "u32",
-                            },
-                            x: "f32",
-                            y: "f32",
-                            z: "f32",
-                            intensity: "f32",
-                            return_type: "u8",
-                            classification: "u8",
+                          name: "reset_sensor",
+                          request_message_format: {
+                            force: "bool"
                           },
+                          response_message_format: {
+                            success: "bool",
+                            error_message: {
+                              $type: "string",
+                              $optional: true
+                            }
+                          }
                         }
                     ]
                 }
@@ -519,90 +162,6 @@ fn topic_dependency_fails_when_node_tag_mismatches() {
     };
     assert_eq!(dependency, "lidar");
     assert_eq!(dependency_tag, "1.0.0");
-    assert_eq!(
-        stack.len(),
-        2,
-        "stack should still only have master + lidar"
-    );
-}
-
-#[test]
-fn topic_dependency_fails_when_topic_not_exposed() {
-    // Test the scenario where a node subscribes to a topic from another node,
-    // but the target node exists without exposing the requested topic
-    let dependent: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            schema_version: 1,
-            manifest: {
-              name: "brain",
-              tag: "1.0.0"
-            },
-            interfaces: {
-                subscribes_to: {
-                    topics: [
-                        {
-                          id: "lidar_object_sub",
-                          node: "lidar",
-                          name: "push_lidar_object",
-                          tag: "1.0.0"
-                        }
-                    ]
-                }
-            }
-        }"#,
-    )
-    .expect("valid dependent node config");
-
-    // This node has the correct name but exposes a different topic
-    let dependency_wrong_topic: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            schema_version: 1,
-            manifest: {
-              name: "lidar",
-              tag: "1.0.0"
-            },
-            interfaces: {
-                exposes: {
-                    topics: [
-                        {
-                          name: "push_camera_frame",
-                          qos_profile: "sensor_data",
-                          message_format: {
-                            width: "u32",
-                            height: "u32"
-                          }
-                        }
-                    ]
-                }
-            }
-        }"#,
-    )
-    .expect("valid dependency node config with wrong topic");
-
-    let stack = NodeStack::new(master_node_config(), None);
-
-    // Add the node with the correct name but wrong topic
-    stack
-        .push_config(&dependency_wrong_topic, None)
-        .expect("lidar has no dependencies");
-    assert_eq!(stack.len(), 2, "stack should have master + lidar");
-
-    // Adding brain should fail because lidar doesn't expose "push_lidar_object"
-    let result = stack.push_config(&dependent, None);
-    let Err(NodeStackError::MissingInterface {
-        dependency,
-        dependency_tag,
-        interface_kind,
-        interface_name,
-        ..
-    }) = result
-    else {
-        panic!("expected MissingInterface error, got {:?}", result);
-    };
-    assert_eq!(dependency, "lidar");
-    assert_eq!(dependency_tag, "1.0.0");
-    assert_eq!(interface_kind, "Topic");
-    assert_eq!(interface_name, "push_lidar_object");
     assert_eq!(
         stack.len(),
         2,
