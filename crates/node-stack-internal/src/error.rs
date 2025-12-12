@@ -48,12 +48,23 @@ pub enum Error {
         interface_kind: String,
         interface_name: String,
     },
+    #[error(
+        "`{dependant}`:{dependant_tag} depends on `{dependency}`:{dependency_tag}, but it does not exist in the stack"
+    )]
+    MissingDependency {
+        dependant: String,
+        dependant_tag: String,
+        dependency: String,
+        dependency_tag: String,
+    },
 
     // -- node stack errors
     #[error("Cannot modify the root node (it always has exactly one instance)")]
     CannotModifyRootNode,
     #[error("NodeStack requires at least one node (the root)")]
     EmptyNodeStack,
+    #[error("Config mismatch for `{name}`:{tag}: existing entity has different interfaces")]
+    ConfigMismatch { name: String, tag: String },
 
     // -- deployment errors
     // {0}: node_name + tag, {1}: Reason

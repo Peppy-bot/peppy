@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use config::node::{Name, NodeConfig};
+use config::node::{Interfaces, Name, NodeConfig};
 use config::peppy_config::{Deployment, DeploymentNodeSource};
 use names_generator2::get_random;
 use petgraph::{
@@ -245,7 +245,15 @@ pub(super) struct DependencySpec {
     pub(super) interface: InterfaceRequirement,
 }
 
-pub(super) fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
+/// Compares two Interfaces structs by serializing them to JSON.
+/// Returns true if both serialize to the same JSON representation.
+fn interfaces_match(a: &Interfaces, b: &Interfaces) -> bool {
+    let a_json = serde_json::to_string(a).unwrap_or_default();
+    let b_json = serde_json::to_string(b).unwrap_or_default();
+    a_json == b_json
+}
+
+pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
     let Some(subscriptions) = node.interfaces.subscribes_to.as_ref() else {
         return Vec::new();
     };
@@ -361,6 +369,86 @@ pub(super) fn interface_kind_label(kind: InterfaceKind) -> &'static str {
     }
 }
 
+/// Topologically sorts node configurations so that dependencies come before dependents.
+/// Uses Kahn's algorithm. Nodes with unresolvable dependencies are placed at the end.
+fn topological_sort_configs(configs: Vec<NodeConfig>) -> Vec<NodeConfig> {
+    if configs.is_empty() {
+        return configs;
+    }
+
+    // Build a map of node key -> index for quick lookup
+    let key_to_idx: HashMap<(String, String), usize> = configs
+        .iter()
+        .enumerate()
+        .map(|(idx, config)| {
+            (
+                (
+                    config.manifest.name.as_str().to_owned(),
+                    config.manifest.tag.clone(),
+                ),
+                idx,
+            )
+        })
+        .collect();
+
+    // Build adjacency list and in-degree count
+    // An edge from A to B means A depends on B (B must come before A)
+    let mut in_degree = vec![0usize; configs.len()];
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); configs.len()];
+
+    for (idx, config) in configs.iter().enumerate() {
+        let specs = collect_dependency_specs(config);
+        for spec in specs {
+            let dep_key = (spec.node_name, spec.node_tag);
+            if let Some(&dep_idx) = key_to_idx.get(&dep_key) {
+                // idx depends on dep_idx, so dep_idx must come first
+                in_degree[idx] += 1;
+                dependents[dep_idx].push(idx);
+            }
+            // If dependency is not in the list, ignore (might be external or root)
+        }
+    }
+
+    // Kahn's algorithm
+    let mut queue: Vec<usize> = in_degree
+        .iter()
+        .enumerate()
+        .filter(|&(_, deg)| *deg == 0)
+        .map(|(idx, _)| idx)
+        .collect();
+
+    let mut sorted_indices = Vec::with_capacity(configs.len());
+
+    while let Some(idx) = queue.pop() {
+        sorted_indices.push(idx);
+        for &dependent_idx in &dependents[idx] {
+            in_degree[dependent_idx] -= 1;
+            if in_degree[dependent_idx] == 0 {
+                queue.push(dependent_idx);
+            }
+        }
+    }
+
+    // Any remaining nodes have circular dependencies or depend on external nodes
+    // Add them at the end (they will fail validation later)
+    for (idx, deg) in in_degree.iter().enumerate() {
+        if *deg > 0 {
+            sorted_indices.push(idx);
+        }
+    }
+
+    // Rebuild by sorted order - need to be careful with ownership
+    let mut indexed_configs: Vec<Option<NodeConfig>> = configs.into_iter().map(Some).collect();
+    let mut result = Vec::with_capacity(indexed_configs.len());
+    for idx in sorted_indices {
+        if let Some(config) = indexed_configs[idx].take() {
+            result.push(config);
+        }
+    }
+
+    result
+}
+
 struct NodeStackInner {
     graph: StableDiGraph<NodeEntity, ()>,
     key_to_index: HashMap<NodeKey, NodeIndex>,
@@ -377,11 +465,17 @@ impl NodeStackInner {
             pending_requirements: HashMap::new(),
             root_key,
         };
-        inner.insert_entity(root);
+        // Root node has no dependencies, so this should never fail
+        inner
+            .insert_entity(root)
+            .expect("root node should have no dependencies");
         inner
     }
 
-    fn insert_entity(&mut self, node: NodeEntity) {
+    fn insert_entity(&mut self, node: NodeEntity) -> Result<()> {
+        // Validate all dependencies exist and expose the required interfaces
+        self.validate_dependencies(&node)?;
+
         let key = NodeKey::from(&node);
         let index = if let Some(&existing_index) = self.key_to_index.get(&key) {
             self.graph[existing_index] = node;
@@ -394,6 +488,45 @@ impl NodeStackInner {
 
         self.rewire_dependencies(index);
         self.resolve_pending_requirements(&key);
+        Ok(())
+    }
+
+    fn validate_dependencies(&self, node: &NodeEntity) -> Result<()> {
+        let specs = collect_dependency_specs(node.config());
+
+        for spec in specs {
+            let key = NodeKey::new(&spec.node_name, &spec.node_tag);
+
+            // Check if the dependency node exists in the stack
+            let Some(&dependency_index) = self.key_to_index.get(&key) else {
+                // Dependency node doesn't exist in the stack - fail
+                return Err(Error::MissingDependency {
+                    dependant: node.config().manifest.name.as_str().to_owned(),
+                    dependant_tag: node.config().manifest.tag.clone(),
+                    dependency: spec.node_name,
+                    dependency_tag: spec.node_tag,
+                });
+            };
+
+            // Dependency exists - check if it exposes the required interface
+            let Some(dependency_node) = self.graph.node_weight(dependency_index) else {
+                continue;
+            };
+
+            // If the dependency exists but doesn't expose the required interface, fail
+            if !exposes_interface(dependency_node.config(), &spec.interface) {
+                return Err(Error::MissingInterface {
+                    dependant: node.config().manifest.name.as_str().to_owned(),
+                    dependant_tag: node.config().manifest.tag.clone(),
+                    dependency: spec.node_name,
+                    dependency_tag: spec.node_tag,
+                    interface_kind: format!("{:?}", spec.interface.kind()),
+                    interface_name: spec.interface.name().to_owned(),
+                });
+            }
+        }
+
+        Ok(())
     }
 
     fn rewire_dependencies(&mut self, index: NodeIndex) {
@@ -575,6 +708,13 @@ impl NodeStackInner {
         if let Some(&index) = self.key_to_index.get(&key) {
             // Entity exists, add instance to it
             if let Some(entity) = self.graph.node_weight_mut(index) {
+                // Check that the interfaces match (same name+tag must have identical interfaces)
+                if !interfaces_match(&entity.config().interfaces, &config.interfaces) {
+                    return Err(Error::ConfigMismatch {
+                        name: config.manifest.name.as_str().to_string(),
+                        tag: config.manifest.tag.clone(),
+                    });
+                }
                 let instance = NodeInstance::new(instance_id.clone());
                 entity.add_instance(instance);
             }
@@ -582,7 +722,7 @@ impl NodeStackInner {
             // Entity doesn't exist, create new one
             let instance = NodeInstance::new(instance_id.clone());
             let entity = NodeEntity::new(config.clone(), instance);
-            self.insert_entity(entity);
+            self.insert_entity(entity)?;
         }
 
         Ok(instance_id)
@@ -679,13 +819,12 @@ impl NodeStack {
     /// Creates a new NodeStack with the given root node configuration.
     /// The root node (master node) is the parent of all other nodes in the graph
     /// and cannot be removed from the stack.
-    pub fn new(master_node: NodeConfig) -> Self {
-        let instance_id = Name::new(get_random(rng())).expect("random name generation failed");
-        Self::with_root_instance_id(master_node, instance_id)
-    }
-
-    /// Creates a new NodeStack with the given root node configuration and a specific instance ID.
-    pub fn with_root_instance_id(root_config: NodeConfig, instance_id: Name) -> Self {
+    ///
+    /// If `instance_id` is `None`, a random instance ID will be generated.
+    pub fn new(root_config: NodeConfig, instance_id: Option<Name>) -> Self {
+        let instance_id = instance_id.unwrap_or_else(|| {
+            Name::new(get_random(rng())).expect("random name generation failed")
+        });
         let instance = NodeInstance::new(instance_id);
         let root_entity = NodeEntity::new(root_config, instance);
         Self {
@@ -695,13 +834,22 @@ impl NodeStack {
 
     /// Creates a NodeStack from a list of configurations.
     /// The first configuration becomes the root node.
-    /// Returns an error if the list is empty.
+    /// Remaining configurations are topologically sorted so dependencies are added before dependents.
+    /// Returns an error if the list is empty or if any node has unmet dependencies.
     pub fn from_configs(nodes: Vec<NodeConfig>) -> Result<Self> {
-        let mut iter = nodes.into_iter();
-        let root = iter.next().ok_or(Error::EmptyNodeStack)?;
-        let stack = Self::new(root);
-        for config in iter {
-            stack.push_config(config);
+        if nodes.is_empty() {
+            return Err(Error::EmptyNodeStack);
+        }
+
+        let mut nodes = nodes;
+        let root = nodes.remove(0);
+        let stack = Self::new(root, None);
+
+        // Topologically sort the remaining nodes
+        let sorted = topological_sort_configs(nodes);
+
+        for config in sorted {
+            stack.push_config(&config, None)?;
         }
         Ok(stack)
     }
@@ -727,20 +875,12 @@ impl NodeStack {
         guard.find(&NodeKey::new(name, tag))
     }
 
-    pub fn push_config(&self, config: NodeConfig) {
-        let instance_id = Name::new(get_random(rng())).expect("random name generation failed");
-        self.push_config_with_instance_id(config, instance_id);
-    }
-
-    pub fn push_config_with_instance_id(&self, config: NodeConfig, instance_id: Name) {
-        let instance = NodeInstance::new(instance_id);
-        let entity = NodeEntity::new(config, instance);
-        self.push_entity(entity);
-    }
-
-    fn push_entity(&self, entity: NodeEntity) {
+    /// Adds an instance to an existing entity or creates a new entity if not present.
+    /// If instance_id is None, generates a random one.
+    /// Returns the instance_id that was used.
+    pub fn push_config(&self, config: &NodeConfig, instance_id: Option<&Name>) -> Result<Name> {
         let mut guard = self.shared.write().expect("node stack poisoned");
-        guard.insert_entity(entity);
+        guard.add_instance(config, instance_id)
     }
 
     pub fn snapshot(&self) -> Vec<NodeEntity> {
@@ -756,14 +896,6 @@ impl NodeStack {
     pub fn dependents_of(&self, name: &str, tag: &str) -> Vec<NodeEntity> {
         let guard = self.shared.read().expect("node stack poisoned");
         guard.dependents_of(&NodeKey::new(name, tag))
-    }
-
-    /// Adds an instance to an existing entity or creates a new entity if not present.
-    /// If instance_id is None, generates a random one.
-    /// Returns the instance_id that was used.
-    pub fn add_instance(&self, config: &NodeConfig, instance_id: Option<&Name>) -> Result<Name> {
-        let mut guard = self.shared.write().expect("node stack poisoned");
-        guard.add_instance(config, instance_id)
     }
 
     /// Removes an instance from an entity. If the entity has no instances left, removes the entity.

@@ -187,13 +187,123 @@ impl DeploymentPlanner {
         let watcher = FSNodeConfigWatcher::new(root_dir)?;
         let state_snapshot = watcher.subscribe().borrow().clone();
 
-        // Create the stack with the master node as root, then add any local nodes found
-        let stack = NodeStack::new(master_node);
-        for node_config in state_snapshot.into_values().flatten() {
-            stack.push_config(node_config);
+        // Collect all local nodes
+        let local_nodes: Vec<NodeConfig> = state_snapshot.into_values().flatten().collect();
+
+        // Create the stack with the master node as root
+        let stack = NodeStack::new(master_node, None);
+
+        // Topologically sort local nodes and add them iteratively
+        // Nodes with external dependencies will fail but can be added in the next round
+        // once their local dependencies are in the stack
+        let mut pending = Self::topological_sort_local_nodes(local_nodes);
+
+        // Keep trying to add nodes until we make no progress
+        loop {
+            let mut made_progress = false;
+            let mut still_pending = Vec::new();
+
+            for node_config in pending {
+                match stack.push_config(&node_config, None) {
+                    Ok(_) => {
+                        made_progress = true;
+                    }
+                    Err(Error::MissingInterface { .. }) => {
+                        // Dependency not available yet - might be another local node or external
+                        still_pending.push(node_config);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+
+            if still_pending.is_empty() {
+                break;
+            }
+
+            if !made_progress {
+                // No progress made - remaining nodes have external dependencies
+                // These will be validated during deployment when remote nodes are available
+                break;
+            }
+
+            pending = still_pending;
         }
 
         Ok(stack)
+    }
+
+    fn topological_sort_local_nodes(configs: Vec<NodeConfig>) -> Vec<NodeConfig> {
+        if configs.is_empty() {
+            return configs;
+        }
+
+        // Build a map of node key -> index
+        let key_to_idx: HashMap<(String, String), usize> = configs
+            .iter()
+            .enumerate()
+            .map(|(idx, config)| {
+                (
+                    (
+                        config.manifest.name.as_str().to_owned(),
+                        config.manifest.tag.clone(),
+                    ),
+                    idx,
+                )
+            })
+            .collect();
+
+        // Build in-degree count based on dependencies (only among local nodes)
+        let mut in_degree = vec![0usize; configs.len()];
+        let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); configs.len()];
+
+        for (idx, config) in configs.iter().enumerate() {
+            let specs = collect_dependency_specs(config);
+            for spec in specs {
+                let dep_key = (spec.node_name, spec.node_tag);
+                if let Some(&dep_idx) = key_to_idx.get(&dep_key) {
+                    in_degree[idx] += 1;
+                    dependents[dep_idx].push(idx);
+                }
+            }
+        }
+
+        // Kahn's algorithm
+        let mut queue: Vec<usize> = in_degree
+            .iter()
+            .enumerate()
+            .filter(|&(_, deg)| *deg == 0)
+            .map(|(idx, _)| idx)
+            .collect();
+
+        let mut sorted_indices = Vec::with_capacity(configs.len());
+
+        while let Some(idx) = queue.pop() {
+            sorted_indices.push(idx);
+            for &dependent_idx in &dependents[idx] {
+                in_degree[dependent_idx] -= 1;
+                if in_degree[dependent_idx] == 0 {
+                    queue.push(dependent_idx);
+                }
+            }
+        }
+
+        // Add remaining (circular deps) at the end
+        for (idx, deg) in in_degree.iter().enumerate() {
+            if *deg > 0 {
+                sorted_indices.push(idx);
+            }
+        }
+
+        // Rebuild in sorted order
+        let mut indexed_configs: Vec<Option<NodeConfig>> = configs.into_iter().map(Some).collect();
+        let mut result = Vec::with_capacity(indexed_configs.len());
+        for idx in sorted_indices {
+            if let Some(config) = indexed_configs[idx].take() {
+                result.push(config);
+            }
+        }
+
+        result
     }
 
     pub fn with_resolver(mut self, resolver: impl DeploymentSourceResolver + 'static) -> Self {
@@ -214,7 +324,9 @@ impl DeploymentPlanner {
     fn collect_deployment_entries(&mut self) -> Vec<NodeEntry> {
         let deployments = self.peppy_launcher.deployments.take().unwrap_or_default();
 
-        let mut entries = Vec::new();
+        // Phase 1: Resolve all deployments and collect entries (without adding to stack yet)
+        let mut resolved_entries: Vec<(NodeEntry, Option<NodeConfig>)> = Vec::new();
+        let mut unresolved_entries: Vec<NodeEntry> = Vec::new();
 
         for deployment in deployments {
             match self
@@ -230,7 +342,7 @@ impl DeploymentPlanner {
                             let deployment = map.deployment().clone();
                             let key = (deployment.name.to_string(), deployment.tag.clone());
                             let map = DeploymentMap::unresolved(deployment, err);
-                            entries.push(NodeEntry {
+                            unresolved_entries.push(NodeEntry {
                                 key,
                                 map,
                                 dependencies: Vec::new(),
@@ -238,7 +350,14 @@ impl DeploymentPlanner {
                             continue;
                         }
 
-                        if !matches!(
+                        let dependencies = Self::collect_dependencies(&map);
+                        let key = (
+                            map.deployment().name.to_string(),
+                            map.deployment().tag.clone(),
+                        );
+
+                        // Determine if we need to add this node to the stack
+                        let node_to_add = if !matches!(
                             map.node_source().source(),
                             Some(DeploymentNodeSource::Local(_))
                         ) {
@@ -247,23 +366,35 @@ impl DeploymentPlanner {
                                 .node_stack
                                 .contains(node.manifest.name.as_str(), &node.manifest.tag)
                             {
-                                self.node_stack.push_config(node.clone());
+                                Some(node.clone())
+                            } else {
+                                None
                             }
-                        }
+                        } else {
+                            None
+                        };
+
+                        resolved_entries.push((
+                            NodeEntry {
+                                key,
+                                map,
+                                dependencies,
+                            },
+                            node_to_add,
+                        ));
+                    } else {
+                        // Unresolved but not an error
+                        let dependencies = Self::collect_dependencies(&map);
+                        let key = (
+                            map.deployment().name.to_string(),
+                            map.deployment().tag.clone(),
+                        );
+                        unresolved_entries.push(NodeEntry {
+                            key,
+                            map,
+                            dependencies,
+                        });
                     }
-
-                    let dependencies = Self::collect_dependencies(&map);
-
-                    let key = (
-                        map.deployment().name.to_string(),
-                        map.deployment().tag.clone(),
-                    );
-
-                    entries.push(NodeEntry {
-                        key,
-                        map,
-                        dependencies,
-                    });
                 }
                 Err(err) => {
                     let reason = err.to_string();
@@ -272,7 +403,7 @@ impl DeploymentPlanner {
                         reason,
                     );
                     let map = DeploymentMap::unresolved(deployment.clone(), unresolved_error);
-                    entries.push(NodeEntry {
+                    unresolved_entries.push(NodeEntry {
                         key: (deployment.name.to_string(), deployment.tag.clone()),
                         map,
                         dependencies: Vec::new(),
@@ -281,7 +412,93 @@ impl DeploymentPlanner {
             }
         }
 
+        // Phase 2: Topologically sort resolved entries
+        let sorted_entries = Self::topological_sort_entries(resolved_entries);
+
+        // Phase 3: Add nodes to stack in sorted order, marking failures as unresolved
+        let mut entries = Vec::new();
+        for (mut entry, node_to_add) in sorted_entries {
+            if let Some(node) = node_to_add {
+                if let Err(err) = self.node_stack.push_config(&node, None) {
+                    let deployment = entry.map.deployment().clone();
+                    entry.map = DeploymentMap::unresolved(deployment, err);
+                    entry.dependencies = Vec::new();
+                }
+            }
+            entries.push(entry);
+        }
+
+        // Add unresolved entries at the end
+        entries.extend(unresolved_entries);
+
         entries
+    }
+
+    fn topological_sort_entries(
+        entries: Vec<(NodeEntry, Option<NodeConfig>)>,
+    ) -> Vec<(NodeEntry, Option<NodeConfig>)> {
+        if entries.is_empty() {
+            return entries;
+        }
+
+        // Build a map of node key -> index
+        let key_to_idx: HashMap<(String, String), usize> = entries
+            .iter()
+            .enumerate()
+            .map(|(idx, (entry, _))| (entry.key.clone(), idx))
+            .collect();
+
+        // Build in-degree count based on dependencies
+        let mut in_degree = vec![0usize; entries.len()];
+        let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); entries.len()];
+
+        for (idx, (entry, _)) in entries.iter().enumerate() {
+            for dep in &entry.dependencies {
+                if let Some(&dep_idx) = key_to_idx.get(&dep.key) {
+                    in_degree[idx] += 1;
+                    dependents[dep_idx].push(idx);
+                }
+            }
+        }
+
+        // Kahn's algorithm
+        let mut queue: Vec<usize> = in_degree
+            .iter()
+            .enumerate()
+            .filter(|&(_, deg)| *deg == 0)
+            .map(|(idx, _)| idx)
+            .collect();
+
+        let mut sorted_indices = Vec::with_capacity(entries.len());
+
+        while let Some(idx) = queue.pop() {
+            sorted_indices.push(idx);
+            for &dependent_idx in &dependents[idx] {
+                in_degree[dependent_idx] -= 1;
+                if in_degree[dependent_idx] == 0 {
+                    queue.push(dependent_idx);
+                }
+            }
+        }
+
+        // Add any remaining (circular deps or external deps) at the end
+        for (idx, deg) in in_degree.iter().enumerate() {
+            if *deg > 0 {
+                sorted_indices.push(idx);
+            }
+        }
+
+        // Rebuild in sorted order
+        let mut indexed_entries: Vec<Option<(NodeEntry, Option<NodeConfig>)>> =
+            entries.into_iter().map(Some).collect();
+        let mut result = Vec::with_capacity(indexed_entries.len());
+        for idx in sorted_indices {
+            if let Some(entry) = indexed_entries[idx].take() {
+                result.push(entry);
+            }
+        }
+
+        result
     }
 
     fn validate_dependency_interfaces(entries: &mut [NodeEntry]) {
