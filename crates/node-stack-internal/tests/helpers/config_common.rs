@@ -90,6 +90,12 @@ pub fn write_config(path: PathBuf, launcher_config: PeppyLauncher) -> PathBuf {
     path
 }
 
+pub fn write_config_str(path: PathBuf, content: &str) -> PathBuf {
+    fs::create_dir_all(path.parent().expect("dir")).expect("create config directory");
+    fs::write(&path, content).expect("write config");
+    path
+}
+
 pub fn create_http_bundle(temp_dir: &Path, bundle_name: &str, manifest_content: &str) -> Vec<u8> {
     let manifest_path = temp_dir.join("peppy.json5");
     fs::write(&manifest_path, manifest_content).expect("write manifest");

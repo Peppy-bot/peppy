@@ -1,12 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use config::test_helpers;
-use httptest::{Expectation, Server, matchers::request, responders::status_code};
-use node_stack::{DeploymentPlanner, NodeStackError};
-use sha2::{Digest, Sha256};
-use tempfile::TempDir;
-
 use crate::helpers::config_common::master_node_config;
+use crate::helpers::config_common::{node_config, write_config_str};
+use crate::helpers::resolver::StaticResolver;
+use config::node::NodeConfig;
+use config::test_helpers;
+use node_stack::NodeStackError as Error;
+use node_stack::{DeploymentPlanner, NodeStack};
+use tempfile::TempDir;
+use tempfile::tempdir;
+
+// TODO: Create a test that makes sure that each `deployment` has at least one instance. Creating a deployment with 0 instance should result in an error.
 
 /// Launches the following nodes:
 /// - brain
@@ -329,6 +333,271 @@ fn launcher_file_resolves_dependency_graph() {
 }
 
 #[test]
+fn optional_dependency_from_launcher_missing_is_unresolved() {
+    let temp_dir = tempdir().expect("temp dir");
+
+    let alpha_source = format!("file://{}/alpha", temp_dir.path().display());
+    let launch_file = write_config_str(
+        temp_dir.path().join("peppy_launcher.json5"),
+        &r#"{
+            deployments: [
+                {
+                    name: "alpha",
+                    tag: "1.0.0",
+                    source: "$ALPHA_SOURCE",
+                    instances: [{ instance_id: "alpha_1" }]
+                },
+                {
+                    name: "beta",
+                    tag: "1.0.0",
+                    source: { repo: "https://example.com/repo.git" },
+                    optional: true,
+                    instances: [{ instance_id: "beta_1" }]
+                }
+            ]
+        }"#
+        .replace("$ALPHA_SOURCE", &alpha_source),
+    );
+
+    let alpha_node = node_config("alpha", "1.0.0", &[("beta", "1.0.0")]);
+
+    let resolver = StaticResolver::new(vec![alpha_node.clone()]);
+
+    let planner = DeploymentPlanner::with_nodes(
+        &launch_file,
+        None,
+        NodeStack::new(master_node_config(), None),
+    )
+    .expect("planner")
+    .with_resolver(resolver);
+
+    let graph = planner.create_deployment_graph();
+
+    assert_eq!(
+        graph.len(),
+        2,
+        "missing optional deployment should still surface as unresolved when required",
+    );
+
+    let root = graph.root_index();
+    let deployment_map = graph.get(root).expect("root node");
+    assert_eq!(deployment_map.deployment().name, "alpha");
+    assert!(!deployment_map.is_resolved());
+    let root_error = deployment_map
+        .error()
+        .expect("alpha should carry resolution error");
+    assert!(matches!(root_error, Error::MissingDependency { .. }));
+
+    let beta_map = graph
+        .children(root)
+        .into_iter()
+        .filter_map(|idx| graph.get(idx))
+        .find(|map| map.deployment().name == "beta")
+        .expect("beta dependency should be present even when optional");
+
+    assert!(!beta_map.is_resolved());
+    let error = beta_map
+        .error()
+        .expect("beta should carry resolution error");
+    assert!(matches!(error, Error::DeploymentNotResolvable(_, _)));
+}
+
+#[test]
+fn optional_dependency_from_launcher_with_wrong_tag_is_unresolved() {
+    let temp_dir = tempdir().expect("temp dir");
+
+    // The deployment exists on disk, but the tag does not
+    let alpha_source = format!("file://{}/alpha", temp_dir.path().display());
+    let beta_source = format!("file://{}/beta", temp_dir.path().display());
+    let launch_file = write_config_str(
+        temp_dir.path().join("peppy_launcher.json5"),
+        &r#"{
+            deployments: [
+                {
+                    name: "alpha",
+                    tag: "1.0.0",
+                    source: "$ALPHA_SOURCE",
+                    instances: [{ instance_id: "alpha_1" }]
+                },
+                {
+                    name: "beta",
+                    tag: "2.0.0",
+                    source: "$BETA_SOURCE",
+                    optional: true,
+                    instances: [{ instance_id: "beta_1" }]
+                }
+            ]
+        }"#
+        .replace("$ALPHA_SOURCE", &alpha_source)
+        .replace("$BETA_SOURCE", &beta_source),
+    );
+
+    let alpha_node = node_config("alpha", "1.0.0", &[("beta", "2.0.0")]);
+    let beta_node = node_config("beta", "1.0.0", &[]);
+
+    let resolver = StaticResolver::new(vec![alpha_node.clone(), beta_node]);
+
+    let planner = DeploymentPlanner::with_nodes(
+        &launch_file,
+        None,
+        NodeStack::new(master_node_config(), None),
+    )
+    .expect("planner")
+    .with_resolver(resolver);
+
+    let graph = planner.create_deployment_graph();
+
+    assert_eq!(
+        graph.len(),
+        2,
+        "optional deployment with mismatched tag should surface as unresolved",
+    );
+
+    let root = graph.root_index();
+    let root_map = graph.get(root).expect("root node");
+    assert_eq!(root_map.deployment().name, "alpha");
+    assert!(!root_map.is_resolved());
+    let root_error = root_map
+        .error()
+        .expect("alpha should carry resolution error");
+    assert!(matches!(root_error, Error::MissingDependency { .. }));
+
+    let beta_map = graph
+        .children(root)
+        .into_iter()
+        .filter_map(|idx| graph.get(idx))
+        .find(|map| map.deployment().name == "beta")
+        .expect("beta dependency should be present even when unresolved");
+
+    assert!(!beta_map.is_resolved());
+    let error: &Error = beta_map
+        .error()
+        .expect("beta should carry resolution error");
+    assert!(matches!(error, Error::DeploymentNotResolvable(_, _)));
+}
+
+#[test]
+fn optional_dependency_resolved_allows_dependant_to_resolve() {
+    let temp_dir = tempdir().expect("temp dir");
+
+    let alpha_source = format!("file://{}/alpha", temp_dir.path().display());
+    let beta_source = format!("file://{}/beta", temp_dir.path().display());
+    let launch_file = write_config_str(
+        temp_dir.path().join("peppy_launcher.json5"),
+        &r#"{
+            deployments: [
+                {
+                    name: "alpha",
+                    tag: "1.0.0",
+                    source: "$ALPHA_SOURCE",
+                    instances: [{ instance_id: "alpha_1" }]
+                },
+                {
+                    name: "beta",
+                    tag: "1.0.0",
+                    source: "$BETA_SOURCE",
+                    optional: true,
+                    instances: [{ instance_id: "beta_1" }]
+                }
+            ]
+        }"#
+        .replace("$ALPHA_SOURCE", &alpha_source)
+        .replace("$BETA_SOURCE", &beta_source),
+    );
+
+    let alpha_node = node_config("alpha", "1.0.0", &[("beta", "1.0.0")]);
+    let beta_node = node_config("beta", "1.0.0", &[]);
+
+    let resolver = StaticResolver::new(vec![alpha_node.clone(), beta_node.clone()]);
+
+    let planner = DeploymentPlanner::with_nodes(
+        &launch_file,
+        None,
+        NodeStack::new(master_node_config(), None),
+    )
+    .expect("planner")
+    .with_resolver(resolver);
+
+    let graph = planner.create_deployment_graph();
+
+    assert_eq!(graph.len(), 2);
+
+    let alpha_index = graph
+        .indices()
+        .into_iter()
+        .find(|idx| {
+            graph
+                .get(*idx)
+                .map(|m| m.deployment().name == "alpha")
+                .unwrap_or(false)
+        })
+        .expect("alpha should be present");
+    let alpha_map = graph.get(alpha_index).expect("alpha map");
+    assert!(alpha_map.is_resolved());
+
+    let beta_map = graph
+        .children(alpha_index)
+        .into_iter()
+        .filter_map(|idx| graph.get(idx))
+        .find(|map| map.deployment().name == "beta")
+        .expect("beta dependency should be present");
+
+    assert!(beta_map.is_resolved());
+}
+
+#[test]
+fn optional_dependency_unresolved_causes_dependant_error() {
+    let temp_dir = tempdir().expect("temp dir");
+
+    let alpha_source = format!("file://{}/alpha", temp_dir.path().display());
+    let launch_file = write_config_str(
+        temp_dir.path().join("peppy_launcher.json5"),
+        &r#"{
+            deployments: [
+                {
+                    name: "alpha",
+                    tag: "1.0.0",
+                    source: "$ALPHA_SOURCE",
+                    instances: [{ instance_id: "alpha_1" }]
+                },
+                {
+                    name: "beta",
+                    tag: "1.0.0",
+                    source: { repo: "https://example.com/repo.git" },
+                    optional: true,
+                    instances: [{ instance_id: "beta_1" }]
+                }
+            ]
+        }"#
+        .replace("$ALPHA_SOURCE", &alpha_source),
+    );
+
+    let alpha_node = node_config("alpha", "1.0.0", &[("beta", "1.0.0")]);
+    let resolver = StaticResolver::new(vec![alpha_node.clone()]);
+
+    let planner = DeploymentPlanner::with_nodes(
+        &launch_file,
+        None,
+        NodeStack::new(master_node_config(), None),
+    )
+    .expect("planner")
+    .with_resolver(resolver);
+
+    let graph = planner.create_deployment_graph();
+
+    assert_eq!(graph.len(), 2);
+
+    let root = graph.root_index();
+    let alpha_map = graph.get(root).expect("root node");
+    assert_eq!(alpha_map.deployment().name, "alpha");
+    assert!(!alpha_map.is_resolved());
+    let error = alpha_map
+        .error()
+        .expect("alpha should carry resolution error");
+    assert!(matches!(error, Error::MissingDependency { .. }));
+}
+
+#[test]
 fn optional_node_excluded_when_unresolvable() {
     let git_repo_temp_dir = TempDir::new().unwrap();
     let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
@@ -473,295 +742,317 @@ fn optional_node_excluded_when_unresolvable() {
     );
 }
 
-/// Uses config example 2 where the lidar sensor requests tag `v2.0` but the
-/// repository only exposes `v1.0`. The deployment must remain unresolved when
-/// the requested tag differs from what is available.
 #[test]
-fn remote_git_tag_not_found_is_unresolvable() {
-    let git_repo_temp_dir = TempDir::new().unwrap();
-    let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
+fn required_optional_dependency_surfaces_error() {
+    let temp_dir = tempdir().expect("temp dir");
 
-    let root_temp_dir = TempDir::new().unwrap();
-    let root = root_temp_dir.path();
-
-    let lidar_remote_path = format!("nodes/{}", test_helpers::LIDAR_SENSOR_NODE_NAME);
-    let git_repo_path = git_repo_path.to_str().unwrap().to_owned();
-    let launch_file = test_helpers::render_peppy_config_template(
-        &root_temp_dir,
-        test_helpers::PeppyConfigTemplateExample2 {
-            lidar_sensor_node_name: test_helpers::LIDAR_SENSOR_NODE_NAME,
-            lidar_sensor_github_repo: &git_repo_path,
-            lidar_sensor_github_repo_path: lidar_remote_path.as_str(),
-        },
+    // Alpha cannot be optional here since beta depends on it and it itself non-optional
+    let alpha_source = format!("file://{}/alpha", temp_dir.path().display());
+    let beta_source = format!("file://{}/beta", temp_dir.path().display());
+    let launch_file = write_config_str(
+        temp_dir.path().join("peppy_launcher.json5"),
+        &r#"{
+            deployments: [
+                {
+                    name: "alpha",
+                    tag: "1.0.0",
+                    source: "$ALPHA_SOURCE",
+                    optional: true,
+                    instances: [{ instance_id: "alpha_1" }]
+                },
+                {
+                    name: "beta",
+                    tag: "2.0.0",
+                    source: "$BETA_SOURCE",
+                    instances: [{ instance_id: "beta_1" }]
+                }
+            ]
+        }"#
+        .replace("$ALPHA_SOURCE", &alpha_source)
+        .replace("$BETA_SOURCE", &beta_source),
     );
 
-    let planner =
-        DeploymentPlanner::from_launch_file(master_node_config(), launch_file, None).unwrap();
+    let beta_node = node_config("beta", "2.0.0", &[("alpha", "1.0.0")]);
 
-    assert_eq!(
-        planner.node_stack().len(),
-        1,
-        "example 2 config should only have root node (no local nodes)"
-    );
+    let resolver = StaticResolver::new(vec![beta_node.clone()]);
+
+    let planner = DeploymentPlanner::with_nodes(
+        &launch_file,
+        None,
+        NodeStack::new(master_node_config(), None),
+    )
+    .expect("planner")
+    .with_resolver(resolver);
 
     let graph = planner.create_deployment_graph();
+
     assert_eq!(
         graph.len(),
-        1,
-        "only the lidar deployment should be present"
+        2,
+        "optional dependency should surface as unresolved when required by a non-optional deployment",
     );
 
-    let root_index = graph.root_index();
-    let lidar_deployment = graph
-        .get(root_index)
-        .expect("deployment graph should contain the lidar node");
+    let root = graph.root_index();
+    let root_map = graph.get(root).expect("root node");
+    assert_eq!(root_map.deployment().name, "beta");
+    assert!(!root_map.is_resolved());
+    let root_error = root_map.error().expect("beta should have error");
+    assert!(matches!(root_error, Error::MissingDependency { .. }));
 
-    assert!(
-        !lidar_deployment.is_resolved(),
-        "lidar deployment should fail to resolve when tag differs"
-    );
+    let alpha_map = graph
+        .children(root)
+        .into_iter()
+        .filter_map(|idx| graph.get(idx))
+        .find(|map| map.deployment().name == "alpha")
+        .expect("alpha dependency should be present as unresolved");
 
-    let error = lidar_deployment
+    assert!(!alpha_map.is_resolved());
+    let error = alpha_map
         .error()
-        .expect("deployment must report the resolution failure");
+        .expect("alpha should carry resolution error");
 
-    let NodeStackError::DeploymentNotResolvable(deployment, reason) = error else {
-        panic!("unexpected error type: {error:?}");
-    };
+    assert!(matches!(error, Error::DeploymentNotResolvable(_, _)));
+}
 
-    let expected = format!(
-        "{}:{}",
-        test_helpers::LIDAR_SENSOR_NODE_NAME,
-        lidar_deployment.deployment().tag
+#[test]
+fn unresolved_deployments_remain_in_graph() {
+    let temp_dir = tempdir().expect("temp dir");
+
+    // Alpha cannot be optional here since beta depends on it and is itself non-optional
+    // gamma version 3.0.0 does not exist
+    let alpha_source = format!("file://{}/alpha", temp_dir.path().display());
+    let beta_source = format!("file://{}/beta", temp_dir.path().display());
+    let launch_file = write_config_str(
+        temp_dir.path().join("peppy_launcher.json5"),
+        &r#"{
+            deployments: [
+                {
+                    name: "alpha",
+                    tag: "1.0.0",
+                    source: "$ALPHA_SOURCE",
+                    optional: true,
+                    instances: [{ instance_id: "alpha_1" }]
+                },
+                {
+                    name: "beta",
+                    tag: "2.0.0",
+                    source: "$BETA_SOURCE",
+                    instances: [{ instance_id: "beta_1" }]
+                },
+                {
+                    name: "gamma",
+                    tag: "3.0.0",
+                    source: "$BETA_SOURCE",
+                    instances: [{ instance_id: "gamma_1" }]
+                }
+            ]
+        }"#
+        .replace("$ALPHA_SOURCE", &alpha_source)
+        .replace("$BETA_SOURCE", &beta_source),
     );
-    assert_eq!(deployment, &expected);
-    assert!(
-        reason.contains("Cannot find the node"),
-        "expected missing node reason, got: {}",
-        reason
+
+    let beta_node = node_config("beta", "2.0.0", &[("alpha", "1.0.0")]);
+
+    let resolver = StaticResolver::new(vec![beta_node.clone()]);
+
+    let planner = DeploymentPlanner::with_nodes(
+        &launch_file,
+        None,
+        NodeStack::new(master_node_config(), None),
+    )
+    .expect("planner")
+    .with_resolver(resolver);
+
+    let graph = planner.create_deployment_graph();
+
+    assert_eq!(
+        graph.len(),
+        3,
+        "entire deployment list should be represented"
     );
 
-    let nodes_cache_dir = root.join(".peppy").join("nodes");
+    let unresolved: Vec<_> = graph
+        .indices()
+        .into_iter()
+        .filter_map(|idx| graph.get(idx))
+        .filter(|map| !map.is_resolved())
+        .collect();
+
+    let mut unresolved_names: Vec<_> = unresolved
+        .iter()
+        .map(|map| map.deployment().name.clone())
+        .collect();
+    unresolved_names.sort();
+    assert_eq!(
+        unresolved_names.len(),
+        3,
+        "three deployments should contain errors"
+    );
+
+    assert_eq!(
+        unresolved_names,
+        vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]
+    );
+
+    let unresolved_errors: Vec<_> = unresolved
+        .iter()
+        .map(|map| {
+            map.error()
+                .expect("unresolved deployment should carry error")
+        })
+        .collect();
+
     assert!(
-        nodes_cache_dir.is_dir(),
-        "nodes cache dir {:?} should be created even on failure",
-        nodes_cache_dir
+        unresolved_errors.iter().all(|error| matches!(
+            error,
+            Error::DeploymentNotResolvable(_, _) | Error::MissingDependency { .. }
+        )),
+        "unexpected unresolved deployment error kind",
+    );
+
+    let beta_map = graph
+        .indices()
+        .into_iter()
+        .filter_map(|idx| graph.get(idx))
+        .find(|map| map.deployment().name == "beta")
+        .expect("beta deployment should be present");
+
+    assert!(!beta_map.is_resolved());
+}
+
+#[test]
+fn missing_dependency_becomes_unresolved_node() {
+    let temp_dir = tempdir().expect("temp dir");
+
+    let alpha_source = format!("file://{}/alpha", temp_dir.path().display());
+    let launch_file = write_config_str(
+        temp_dir.path().join("peppy_launcher.json5"),
+        &r#"{
+            deployments: [
+                {
+                    name: "alpha",
+                    tag: "1.0.0",
+                    source: "$ALPHA_SOURCE",
+                    instances: [{ instance_id: "alpha_1" }]
+                }
+            ]
+        }"#
+        .replace("$ALPHA_SOURCE", &alpha_source),
+    );
+
+    let alpha_node = node_config("alpha", "1.0.0", &[("delta", "1.0.0")]);
+    let resolver = StaticResolver::new(vec![alpha_node.clone()]);
+
+    let planner = DeploymentPlanner::with_nodes(
+        &launch_file,
+        None,
+        NodeStack::new(master_node_config(), None),
+    )
+    .expect("planner")
+    .with_resolver(resolver);
+
+    let graph = planner.create_deployment_graph();
+
+    assert_eq!(
+        graph.len(),
+        2,
+        "missing dependency should be inserted as unresolved"
+    );
+
+    let delta_map = graph
+        .indices()
+        .into_iter()
+        .filter_map(|index| graph.get(index))
+        .find(|map| map.deployment().name == "delta")
+        .expect("graph should contain unresolved delta dependency");
+
+    assert!(!delta_map.is_resolved());
+    let error = delta_map.error().expect("delta should carry error");
+    let message = error.to_string();
+    assert!(
+        message.contains("dependency declared but missing"),
+        "unexpected error message: {message}"
     );
 }
 
-/// Uses the example where the lidar bundle is reachable but the manifest inside
-/// advertises a different tag than the one requested in the deployment.
 #[test]
-fn remote_bundle_manifest_tag_mismatch_is_unresolvable() {
-    const BUNDLE_PATH: &str = "/bundles/lidar_sensor.tar.zst";
+fn dependant_fails_when_dependency_missing_topic_interface() {
+    let temp_dir = tempdir().expect("temp dir");
 
-    let server = Server::run();
-
-    let build_bundle = |manifest: &str| -> Vec<u8> {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let manifest_path = temp_dir.path().join("peppy.json5");
-        std::fs::write(&manifest_path, manifest).expect("write manifest");
-
-        let mut tar_data = Vec::new();
-        {
-            let mut tar_builder = tar::Builder::new(&mut tar_data);
-            tar_builder
-                .append_path_with_name(&manifest_path, "peppy.json5")
-                .expect("append manifest to tar");
-            tar_builder.finish().expect("finish tar");
-        }
-
-        let cursor = std::io::Cursor::new(tar_data);
-        zstd::stream::encode_all(cursor, 0).expect("compress bundle")
-    };
-
-    let manifest_content = format!(
-        "{{\n            schema_version: 1,\n            manifest: {{ name: \"{}\", tag: \"9.9.9\" }}\n        }}",
-        test_helpers::LIDAR_SENSOR_NODE_NAME
-    );
-    let bundle_bytes = build_bundle(manifest_content.as_str());
-
-    let mut hasher = Sha256::new();
-    hasher.update(&bundle_bytes);
-    let checksum = format!("sha256:{:x}", hasher.finalize());
-
-    server.expect(
-        Expectation::matching(request::method_path("GET", BUNDLE_PATH))
-            .respond_with(status_code(200).body(bundle_bytes.clone())),
+    let brain_source = format!("file://{}/brain", temp_dir.path().display());
+    let lidar_source = format!("file://{}/lidar", temp_dir.path().display());
+    let launch_file = write_config_str(
+        temp_dir.path().join("peppy_launcher.json5"),
+        &r#"{
+            deployments: [
+                {
+                    name: "brain",
+                    tag: "1.0.0",
+                    source: "$BRAIN_SOURCE",
+                    instances: [{ instance_id: "brain_1" }]
+                },
+                {
+                    name: "lidar",
+                    tag: "1.0.0",
+                    source: "$LIDAR_SOURCE",
+                    instances: [{ instance_id: "lidar_1" }]
+                }
+            ]
+        }"#
+        .replace("$BRAIN_SOURCE", &brain_source)
+        .replace("$LIDAR_SOURCE", &lidar_source),
     );
 
-    let root_temp_dir = TempDir::new().unwrap();
-    let root = root_temp_dir.path();
+    let brain_node = node_config("brain", "1.0.0", &[("lidar", "1.0.0")]);
+    let lidar_node: NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: { name: "lidar", tag: "1.0.0" }
+        }"#,
+    )
+    .expect("valid lidar node without exposes");
 
-    let bundle_url = server.url(BUNDLE_PATH).to_string();
-    let launch_file = test_helpers::render_peppy_config_template(
-        &root_temp_dir,
-        test_helpers::PeppyConfigTemplateExample3 {
-            lidar_sensor_node_name: test_helpers::LIDAR_SENSOR_NODE_NAME,
-            lidar_sensor_url: bundle_url.as_str(),
-            lidar_sensor_sha256: checksum.as_str(),
-        },
-    );
+    let resolver = StaticResolver::new(vec![brain_node.clone(), lidar_node]);
 
-    let planner =
-        DeploymentPlanner::from_launch_file(master_node_config(), launch_file, None).unwrap();
-
-    assert_eq!(
-        planner.node_stack().len(),
-        1,
-        "example 3 config should only have root node (no local nodes)"
-    );
+    let planner = DeploymentPlanner::with_nodes(
+        &launch_file,
+        None,
+        NodeStack::new(master_node_config(), None),
+    )
+    .expect("planner")
+    .with_resolver(resolver);
 
     let graph = planner.create_deployment_graph();
     assert_eq!(
         graph.len(),
-        1,
-        "only the lidar deployment should be present"
+        2,
+        "both deployments should remain in the graph"
     );
 
-    let root_index = graph.root_index();
-    let lidar_deployment = graph
-        .get(root_index)
-        .expect("deployment graph should contain the lidar node");
-
+    // Find brain deployment - it should be unresolved because lidar doesn't expose the required topic
+    let brain_map = graph
+        .indices()
+        .into_iter()
+        .filter_map(|index| graph.get(index))
+        .find(|map| map.deployment().name == "brain")
+        .expect("brain deployment present");
     assert!(
-        !lidar_deployment.is_resolved(),
-        "lidar deployment should fail to resolve when manifest tag differs"
+        !brain_map.is_resolved(),
+        "brain should fail to resolve without exposed lidar topic"
     );
-
-    let error = lidar_deployment
-        .error()
-        .expect("deployment must report the resolution failure");
-
-    let NodeStackError::DeploymentNotResolvable(identifier, reason) = error else {
-        panic!("unexpected error type: {error:?}");
-    };
-
-    let expected_identifier = format!(
-        "{}:{}",
-        test_helpers::LIDAR_SENSOR_NODE_NAME,
-        lidar_deployment.deployment().tag
-    );
-    assert_eq!(identifier, &expected_identifier);
-    assert!(
-        reason.contains(test_helpers::LIDAR_SENSOR_NODE_NAME),
-        "error reason should mention lidar sensor, got: {}",
-        reason
-    );
-    assert!(
-        reason.contains(lidar_deployment.deployment().tag.as_str()),
-        "error reason should mention expected tag, got: {}",
-        reason
-    );
-
-    let nodes_cache_dir = root.join(".peppy").join("nodes");
-    assert!(
-        nodes_cache_dir.is_dir(),
-        "nodes cache dir {:?} should be created even on failure",
-        nodes_cache_dir
-    );
-}
-
-/// Uses the example where lidar parameters reference fields unsupported by the
-/// node manifest. The deployment should surface a `WrongInputParameters` error.
-#[test]
-fn remote_git_invalid_parameters_rejected() {
-    let git_repo_temp_dir = TempDir::new().unwrap();
-    let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
-
-    let root_temp_dir = TempDir::new().unwrap();
-    let root = root_temp_dir.path();
-
-    let lidar_remote_path = format!("nodes/{}", test_helpers::LIDAR_SENSOR_NODE_NAME);
-    let git_repo_path = git_repo_path.to_str().unwrap().to_owned();
-    let launch_file = test_helpers::render_peppy_config_template(
-        &root_temp_dir,
-        test_helpers::PeppyConfigTemplateExample4 {
-            lidar_sensor_node_name: test_helpers::LIDAR_SENSOR_NODE_NAME,
-            lidar_sensor_github_repo: &git_repo_path,
-            lidar_sensor_github_repo_path: lidar_remote_path.as_str(),
-        },
-    );
-
-    let planner =
-        DeploymentPlanner::from_launch_file(master_node_config(), launch_file, None).unwrap();
-
-    assert_eq!(
-        planner.node_stack().len(),
-        1,
-        "example 4 config should only have root node (no local nodes)"
-    );
-
-    let graph = planner.create_deployment_graph();
-    assert_eq!(
-        graph.len(),
-        1,
-        "only the lidar deployment should be present"
-    );
-
-    let root_index = graph.root_index();
-    let lidar_deployment = graph
-        .get(root_index)
-        .expect("deployment graph should contain the lidar node");
-
-    assert!(
-        !lidar_deployment.is_resolved(),
-        "lidar deployment should fail to resolve when parameters mismatch"
-    );
-
-    let error = lidar_deployment
-        .error()
-        .expect("deployment must report the parameter validation failure");
-
-    let NodeStackError::WrongInputParameters {
-        deployment,
-        expected,
-        unexpected,
+    let error = brain_map.error().expect("brain error surfaces");
+    let Error::MissingInterface {
+        dependant,
+        dependency,
+        interface_kind,
+        interface_name,
+        ..
     } = error
     else {
         panic!("unexpected error type: {error:?}");
     };
-
-    let expected_identifier = format!(
-        "{}:{}",
-        test_helpers::LIDAR_SENSOR_NODE_NAME,
-        lidar_deployment.deployment().tag
-    );
-    assert_eq!(deployment, &expected_identifier);
-
-    let expected_parameters: BTreeSet<String> = [
-        "device.physical",
-        "device.priority",
-        "device.sim",
-        "lidar_point.classification",
-        "lidar_point.intensity",
-        "lidar_point.return_type",
-        "lidar_point.timestamp",
-        "lidar_point.x",
-        "lidar_point.y",
-        "lidar_point.z",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect();
-    let actual_expected: BTreeSet<String> = expected.iter().cloned().collect();
-    assert_eq!(
-        actual_expected, expected_parameters,
-        "expected parameters should list all manifest fields"
-    );
-
-    let actual_unexpected: BTreeSet<String> = unexpected.iter().cloned().collect();
-    let unexpected_parameters: BTreeSet<String> =
-        [String::from("lidar_point.fps")].into_iter().collect();
-    assert_eq!(
-        actual_unexpected, unexpected_parameters,
-        "unexpected parameters should only include lidar_point.fps"
-    );
-
-    let nodes_cache_dir = root.join(".peppy").join("nodes");
-    assert!(
-        nodes_cache_dir.is_dir(),
-        "nodes cache dir {:?} should be created even on failure",
-        nodes_cache_dir
-    );
+    assert_eq!(dependant, "brain");
+    assert_eq!(dependency, "lidar");
+    assert_eq!(interface_kind, "topic");
+    assert_eq!(interface_name, "lidar_topic");
 }
