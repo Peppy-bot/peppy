@@ -330,6 +330,20 @@ impl DeploymentPlanner {
         let mut unresolved_entries: Vec<NodeEntry> = Vec::new();
 
         for deployment in deployments {
+            if deployment.instances.is_empty() {
+                let error = Error::DeploymentNotResolvable(
+                    format!("{}:{}", deployment.name, deployment.tag),
+                    "deployment must have at least one instance".to_string(),
+                );
+                let map = DeploymentMap::unresolved(deployment.clone(), error);
+                unresolved_entries.push(NodeEntry {
+                    key: (deployment.name.to_string(), deployment.tag.clone()),
+                    map,
+                    dependencies: Vec::new(),
+                });
+                continue;
+            }
+
             match self
                 .resolver
                 .resolve(&self.nodes_cache_dir, &deployment, &self.node_stack)
