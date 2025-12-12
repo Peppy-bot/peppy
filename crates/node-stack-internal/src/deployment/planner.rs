@@ -618,6 +618,7 @@ impl DeploymentPlanner {
         }
 
         let mut inserted_edges: HashSet<(NodeIndex, NodeIndex)> = HashSet::new();
+        let mut missing_optional_links: Vec<(NodeIndex, (String, String))> = Vec::new();
 
         for (from_index, dependencies) in dependencies_to_link {
             let dependant_optional = graph
@@ -627,6 +628,13 @@ impl DeploymentPlanner {
 
             for dependency in dependencies {
                 if let Some(&to_index) = node_indices.get(&dependency.key) {
+                    if !dependant_optional {
+                        if let Some(dep_map) = graph.node_weight(to_index) {
+                            if dep_map.deployment().optional && !dep_map.is_resolved() {
+                                missing_optional_links.push((from_index, dependency.key.clone()));
+                            }
+                        }
+                    }
                     if from_index != to_index && inserted_edges.insert((from_index, to_index)) {
                         graph.add_edge(from_index, to_index, ());
                     }
@@ -634,6 +642,8 @@ impl DeploymentPlanner {
                     if dependant_optional {
                         continue;
                     }
+
+                    missing_optional_links.push((from_index, dependency.key.clone()));
 
                     let (dep_name, dep_tag) = dependency.key.clone();
                     let identifier = format!("{}:{}", dep_name, dep_tag);
@@ -690,6 +700,32 @@ impl DeploymentPlanner {
                     {
                         graph.add_edge(from_index, missing_index, ());
                     }
+                }
+            }
+        }
+
+        // Mark non-optional dependants unresolved if they rely on an optional deployment
+        // that cannot be resolved.
+        for (dependant_index, dep_key) in missing_optional_links {
+            let dependant_optional = graph
+                .node_weight(dependant_index)
+                .map(|map| map.deployment().optional)
+                .unwrap_or(false);
+            if dependant_optional {
+                continue;
+            }
+
+            if let Some(map) = graph.node_weight_mut(dependant_index) {
+                if map.is_resolved() {
+                    let (dep_name, dep_tag) = dep_key;
+                    let error = Error::MissingDependency {
+                        dependant: map.deployment().name.to_string(),
+                        dependant_tag: map.deployment().tag.clone(),
+                        dependency: dep_name,
+                        dependency_tag: dep_tag,
+                    };
+                    let deployment = map.deployment().clone();
+                    *map = DeploymentMap::unresolved(deployment, error);
                 }
             }
         }
