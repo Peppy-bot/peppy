@@ -10,8 +10,6 @@ use node_stack::{DeploymentPlanner, NodeStack};
 use tempfile::TempDir;
 use tempfile::tempdir;
 
-// TODO: Create a test that makes sure that each `deployment` has at least one instance. Creating a deployment with 0 instance should result in an error.
-
 /// Launches the following nodes:
 /// - brain
 /// - controller
@@ -330,6 +328,55 @@ fn launcher_file_resolves_dependency_graph() {
     );
 
     test_helpers::print_dependency_summary(&deps_by_name);
+}
+
+#[test]
+fn deployment_with_zero_instances_is_unresolved() {
+    let temp_dir = tempdir().expect("temp dir");
+
+    let alpha_source = format!("file://{}/alpha", temp_dir.path().display());
+    let launch_file = write_config_str(
+        temp_dir.path().join("peppy_launcher.json5"),
+        &r#"{
+            deployments: [
+                {
+                    name: "alpha",
+                    tag: "1.0.0",
+                    source: "$ALPHA_SOURCE",
+                    instances: []
+                }
+            ]
+        }"#
+        .replace("$ALPHA_SOURCE", &alpha_source),
+    );
+
+    let alpha_node = node_config("alpha", "1.0.0", &[]);
+    let resolver = StaticResolver::new(vec![alpha_node]);
+
+    let planner = DeploymentPlanner::with_nodes(
+        &launch_file,
+        None,
+        NodeStack::new(master_node_config(), None),
+    )
+    .expect("planner")
+    .with_resolver(resolver);
+
+    let graph = planner.create_deployment_graph();
+
+    assert_eq!(graph.len(), 1);
+    let root = graph.root_index();
+    let alpha_map = graph.get(root).expect("root node");
+    assert_eq!(alpha_map.deployment().name, "alpha");
+    assert!(!alpha_map.is_resolved());
+
+    let error = alpha_map.error().expect("alpha should carry an error");
+    let Error::DeploymentNotResolvable(_, reason) = error else {
+        panic!("expected DeploymentNotResolvable, got {error:?}");
+    };
+    assert!(
+        reason.contains("at least one instance"),
+        "unexpected reason: {reason}"
+    );
 }
 
 #[test]
@@ -742,6 +789,20 @@ fn optional_node_excluded_when_unresolvable() {
     );
 }
 
+/// Tests that an optional deployment becomes required when a non-optional deployment depends on it.
+///
+/// Scenario:
+/// - "alpha" is declared as `optional: true` in the launch file
+/// - "beta" is non-optional and depends on "alpha"
+/// - "alpha" cannot be resolved (no node config provided to the resolver)
+///
+/// Expected behavior:
+/// - The deployment graph should contain both deployments as unresolved
+/// - "beta" should have a `MissingDependency` error because its required dependency "alpha" is missing
+/// - "alpha" should have a `DeploymentNotResolvable` error
+///
+/// This ensures that the optionality of a deployment is overridden when another
+/// non-optional deployment has a hard dependency on it.
 #[test]
 fn required_optional_dependency_surfaces_error() {
     let temp_dir = tempdir().expect("temp dir");
@@ -814,6 +875,7 @@ fn required_optional_dependency_surfaces_error() {
     assert!(matches!(error, Error::DeploymentNotResolvable(_, _)));
 }
 
+/// Verifies that unresolved deployments are kept in the graph rather than discarded.
 #[test]
 fn unresolved_deployments_remain_in_graph() {
     let temp_dir = tempdir().expect("temp dir");
