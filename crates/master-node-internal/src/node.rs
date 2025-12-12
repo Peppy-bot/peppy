@@ -48,7 +48,7 @@ impl MasterNode {
         let messenger = MessengerHandle::from_shared(messenger);
         let instance_id = Name::new(get_random(rng())).unwrap();
         // The master node is the root of the node stack
-        let node_stack = NodeStack::new(node_config.clone());
+        let node_stack = NodeStack::new(node_config.clone(), None);
 
         Self {
             node_stack: Arc::new(node_stack),

@@ -502,13 +502,12 @@ fn optional_dependency_from_launcher_missing_is_unresolved() {
 
     let alpha_node = node_config("alpha", "1.0.0", &[("beta", "1.0.0")]);
 
-    let loader_nodes = vec![alpha_node.clone()];
     let resolver = StaticResolver::new(vec![alpha_node.clone()]);
 
     let planner = DeploymentPlanner::with_nodes(
         &launch_file,
         None,
-        NodeStack::from_configs(loader_nodes).expect("node stack from loader nodes"),
+        NodeStack::new(master_node_config(), None),
     )
     .expect("planner")
     .with_resolver(resolver);
@@ -568,13 +567,12 @@ fn optional_dependency_from_launcher_with_wrong_tag_is_unresolved() {
     let alpha_node = node_config("alpha", "1.0.0", &[("beta", "2.0.0")]);
     let beta_node = node_config("beta", "1.0.0", &[]);
 
-    let loader_nodes = vec![alpha_node.clone(), beta_node.clone()];
     let resolver = StaticResolver::new(vec![alpha_node.clone(), beta_node]);
 
     let planner = DeploymentPlanner::with_nodes(
         &launch_file,
         None,
-        NodeStack::from_configs(loader_nodes).expect("node stack from loader nodes"),
+        NodeStack::new(master_node_config(), None),
     )
     .expect("planner")
     .with_resolver(resolver);
@@ -633,13 +631,12 @@ fn required_optional_dependency_surfaces_error() {
 
     let beta_node = node_config("beta", "2.0.0", &[("alpha", "1.0.0")]);
 
-    let loader_nodes = vec![beta_node.clone()];
     let resolver = StaticResolver::new(vec![beta_node.clone()]);
 
     let planner = DeploymentPlanner::with_nodes(
         &launch_file,
         None,
-        NodeStack::from_configs(loader_nodes).expect("node stack from loader nodes"),
+        NodeStack::new(master_node_config(), None),
     )
     .expect("planner")
     .with_resolver(resolver);
@@ -705,13 +702,12 @@ fn unresolved_deployments_remain_in_graph() {
 
     let beta_node = node_config("beta", "2.0.0", &[("alpha", "1.0.0")]);
 
-    let loader_nodes = vec![beta_node.clone()];
     let resolver = StaticResolver::new(vec![beta_node.clone()]);
 
     let planner = DeploymentPlanner::with_nodes(
         &launch_file,
         None,
-        NodeStack::from_configs(loader_nodes).expect("node stack from loader nodes"),
+        NodeStack::new(master_node_config(), None),
     )
     .expect("planner")
     .with_resolver(resolver);
@@ -790,13 +786,12 @@ fn missing_dependency_becomes_unresolved_node() {
     let launch_file = write_config(temp_dir.path().join("peppy_launcher.json5"), config);
 
     let alpha_node = node_config("alpha", "1.0.0", &[("delta", "1.0.0")]);
-    let loader_nodes = vec![alpha_node.clone()];
     let resolver = StaticResolver::new(vec![alpha_node.clone()]);
 
     let planner = DeploymentPlanner::with_nodes(
         &launch_file,
         None,
-        NodeStack::from_configs(loader_nodes).expect("node stack from loader nodes"),
+        NodeStack::new(master_node_config(), None),
     )
     .expect("planner")
     .with_resolver(resolver);
@@ -859,13 +854,12 @@ fn dependant_fails_when_dependency_missing_topic_interface() {
     )
     .expect("valid lidar node without exposes");
 
-    let loader_nodes = vec![brain_node.clone(), lidar_node.clone()];
     let resolver = StaticResolver::new(vec![brain_node.clone(), lidar_node]);
 
     let planner = DeploymentPlanner::with_nodes(
         &launch_file,
         None,
-        NodeStack::from_configs(loader_nodes).expect("node stack from loader nodes"),
+        NodeStack::new(master_node_config(), None),
     )
     .expect("planner")
     .with_resolver(resolver);
@@ -877,9 +871,13 @@ fn dependant_fails_when_dependency_missing_topic_interface() {
         "both deployments should remain in the graph"
     );
 
-    let root = graph.root_index();
-    let brain_map = graph.get(root).expect("brain deployment present");
-    assert_eq!(brain_map.deployment().name, "brain");
+    // Find brain deployment - it should be unresolved because lidar doesn't expose the required topic
+    let brain_map = graph
+        .indices()
+        .into_iter()
+        .filter_map(|index| graph.get(index))
+        .find(|map| map.deployment().name == "brain")
+        .expect("brain deployment present");
     assert!(
         !brain_map.is_resolved(),
         "brain should fail to resolve without exposed lidar topic"

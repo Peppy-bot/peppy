@@ -30,8 +30,10 @@ mod tests {
     fn resolve_local_deployment_success() {
         let config = sample_config_camera();
         let deployment = sample_deployment();
-        let stack = NodeStack::new(master_node_config());
-        stack.push_config_with_instance_id(config.clone(), Name::new("test-instance").unwrap());
+        let stack = NodeStack::new(master_node_config(), None);
+        stack
+            .push_config(&config, Some(&Name::new("test-instance").unwrap()))
+            .expect("config has no dependencies");
 
         let map = resolve_local_deployment(&deployment, &stack).expect("local deployment resolves");
 
@@ -51,7 +53,7 @@ mod tests {
 
     #[test]
     fn resolve_local_deployment_missing_node() {
-        let stack = NodeStack::new(master_node_config());
+        let stack = NodeStack::new(master_node_config(), None);
         let err = resolve_local_deployment(&sample_deployment(), &stack)
             .expect_err("should report missing local node");
 
@@ -60,8 +62,10 @@ mod tests {
         };
         assert_eq!(name, "uvc_camera");
 
-        let stack = NodeStack::new(master_node_config());
-        stack.push_config(sample_config_lidar());
+        let stack = NodeStack::new(master_node_config(), None);
+        stack
+            .push_config(&sample_config_lidar(), None)
+            .expect("config has no dependencies");
 
         let err = resolve_local_deployment(&sample_deployment(), &stack)
             .expect_err("should report missing local node");
