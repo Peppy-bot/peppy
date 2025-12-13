@@ -131,8 +131,8 @@ fn launcher_file_resolves_dependency_graph() {
                   port: 8083,
                   cors_enabled: false,
                   cors_origins: "*",
-                  max_connections: "2000",
-                  request_timeout_ms: "3000",
+                  max_connections: 2000,
+                  request_timeout_ms: 3000,
                 },
                 video_stream: {
                   format: "mjpeg",
@@ -649,11 +649,81 @@ fn deployment_with_invalid_parameters_is_unresolved() {
     );
 }
 
+/// Uses a scenario where a deployment instance provides a parameter at a valid path
+/// but with an incorrect type. The deployment should surface a `WrongParameterType` error.
 #[test]
 fn deployment_parameters_with_invalid_type_is_unresolved() {
-    todo!(
-        "Similar to deployment_with_invalid_parameters_is_unresolved, but uses an expected parameter path with an invalid type"
+    let temp_dir = tempdir().expect("temp dir");
+    let launch_file = write_config_str(
+        temp_dir.path().join("peppy_launcher.json5"),
+        r#"{
+            deployments: [
+                {
+                    name: "sensor",
+                    tag: "1.0.0",
+                    source: "file://./sensor",
+                    instances: [
+                        {
+                            instance_id: "sensor_1",
+                            parameters: {
+                                enabled: "yes",
+                                sample_rate: 100
+                            }
+                        }
+                    ]
+                }
+            ]
+        }"#,
+    );
+
+    // Node manifest declares `enabled` as bool and `sample_rate` as f32
+    let sensor_node: NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "sensor",
+                tag: "1.0.0"
+            },
+            parameters: {
+                enabled: "bool",
+                sample_rate: "f32"
+            }
+        }"#,
     )
+    .expect("valid sensor node config");
+
+    let input_stack = NodeStack::new(master_node_config(), None);
+    input_stack
+        .push_config_allow_missing(&sensor_node, None)
+        .expect("sensor node inserted");
+
+    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+
+    assert_eq!(plan.node_stack().len(), 1, "only master should be present");
+
+    let sensor = plan
+        .report()
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "sensor")
+        .expect("sensor planned");
+    assert!(!sensor.is_resolved(), "sensor should be unresolved");
+
+    let error = sensor.error().expect("sensor should carry an error");
+    let Error::WrongParameterType {
+        deployment,
+        path,
+        expected,
+        actual,
+    } = error
+    else {
+        panic!("unexpected error variant: {error:?}");
+    };
+
+    assert_eq!(deployment, "sensor:1.0.0");
+    assert_eq!(path, "enabled");
+    assert_eq!(expected, "bool");
+    assert_eq!(actual, "string");
 }
 
 #[test]

@@ -78,4 +78,13 @@ pub enum Error {
         expected: Vec<String>,
         unexpected: Vec<String>,
     },
+    #[error(
+        "The deployment `{deployment}` has a parameter type mismatch at `{path}`: expected `{expected}`, got `{actual}`"
+    )]
+    WrongParameterType {
+        deployment: String,
+        path: String,
+        expected: String,
+        actual: String,
+    },
 }

@@ -85,6 +85,8 @@ impl AnyType {
                 matches!(self, AnyType::Float(_) | AnyType::Int(_) | AnyType::UInt(_))
             }
             "null" => matches!(self, AnyType::Null),
+            // "time" accepts integers (timestamps) or unsigned integers
+            "time" => matches!(self, AnyType::Int(_) | AnyType::UInt(_)),
             _ => {
                 return Err(TypeMismatch {
                     path: path.to_string(),
@@ -272,6 +274,32 @@ mod tests {
         assert_eq!(err.path, "test");
         assert_eq!(err.expected, "u32");
         assert_eq!(err.actual, "int");
+    }
+
+    #[test]
+    fn matches_time_spec_with_int() {
+        let value = AnyType::Int(1696285145999);
+        let spec = AnyType::String("time".to_string());
+        assert!(value.matches_type_spec(&spec, "test").is_ok());
+    }
+
+    #[test]
+    fn matches_time_spec_with_uint() {
+        let value = AnyType::UInt(1696285145999);
+        let spec = AnyType::String("time".to_string());
+        assert!(value.matches_type_spec(&spec, "test").is_ok());
+    }
+
+    #[test]
+    fn string_fails_time_spec() {
+        let value = AnyType::String("2023-10-02T12:00:00Z".to_string());
+        let spec = AnyType::String("time".to_string());
+        let result = value.matches_type_spec(&spec, "timestamp");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.path, "timestamp");
+        assert_eq!(err.expected, "time");
+        assert_eq!(err.actual, "string");
     }
 
     #[test]
