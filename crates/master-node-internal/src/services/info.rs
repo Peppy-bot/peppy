@@ -16,7 +16,7 @@ pub async fn listen_for_info(
     master_node_name: &str,
     instance_id: &str,
     node_name: &str,
-    node_stack: Arc<NodeStack>,
+    _node_stack: Arc<NodeStack>,
 ) -> Result<JoinHandle<Result<()>>> {
     let service_name = "info";
     let mut endpoint = ServiceMessenger::listen(
@@ -86,6 +86,7 @@ fn handle_info_request_inner(
         }
         InfoType::MasterNodeName => master_node_name.to_string(),
         InfoType::MasterNodeInstanceId => instance_id.to_string(),
+        InfoType::HostName => todo!(),
     };
 
     InfoResponse::new(request.info_type, value).encode()

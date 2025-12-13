@@ -15,7 +15,7 @@ pub async fn listen_for_launch_configuration(
     master_node_node: &str,
     instance_id: &str,
     node_name: &str,
-    node_stack: Arc<NodeStack>,
+    _node_stack: Arc<NodeStack>,
 ) -> Result<JoinHandle<Result<()>>> {
     let service_name = "launch_configuration";
     let mut endpoint = ServiceMessenger::listen(

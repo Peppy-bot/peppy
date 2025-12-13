@@ -11,6 +11,7 @@ use super::{decode_message, encode_message};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InfoType {
     Uptime,
+    HostName,
     MasterNodeName,
     MasterNodeInstanceId,
 }
@@ -21,6 +22,7 @@ impl From<InfoType> for info_capnp::InfoType {
             InfoType::Uptime => info_capnp::InfoType::Uptime,
             InfoType::MasterNodeName => info_capnp::InfoType::MasterNodeName,
             InfoType::MasterNodeInstanceId => info_capnp::InfoType::MasterNodeInstanceId,
+            InfoType::HostName => todo!(),
         }
     }
 }
