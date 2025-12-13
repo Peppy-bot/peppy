@@ -61,13 +61,13 @@ fn service_dependency_resolved_when_dependency_added_first() {
 
     // Add the dependency first
     stack
-        .push_config(&dependency, None)
+        .push_config(&dependency, None, false)
         .expect("dependency node has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have master + dependency node");
 
     // Now add the dependent node
     stack
-        .push_config(&dependent, None)
+        .push_config(&dependent, None, false)
         .expect("dependent node should be added when dependency exists");
     assert_eq!(stack.len(), 3, "stack should include the dependent node");
 
@@ -127,7 +127,7 @@ fn service_dependency_fails_when_dependency_is_missing() {
     let stack = NodeStack::new(master_node_config(), None);
 
     // Adding a node that depends on a non-existent service provider should fail
-    let result = stack.push_config(&dependent, None);
+    let result = stack.push_config(&dependent, None, false);
     let Err(NodeStackError::MissingDependency {
         dependency,
         dependency_tag,
@@ -199,12 +199,12 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
 
     // Add the node with the correct name but wrong service
     stack
-        .push_config(&dependency_wrong_service, None)
+        .push_config(&dependency_wrong_service, None, false)
         .expect("lidar has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have master + lidar");
 
     // Adding brain should fail because lidar doesn't expose "reset_sensor"
-    let result = stack.push_config(&dependent, None);
+    let result = stack.push_config(&dependent, None, false);
     let Err(NodeStackError::MissingInterface {
         dependency,
         dependency_tag,

@@ -685,21 +685,6 @@ impl NodeStackInner {
         Ok(instance_id)
     }
 
-    /// Inserts a node without requiring its dependencies to be present.
-    /// Missing dependencies are tracked as pending requirements and will be wired
-    /// once the dependency nodes are added to the stack.
-    fn add_instance_allow_missing(
-        &mut self,
-        config: &NodeConfig,
-        instance_id: Option<&Name>,
-    ) -> Result<Name> {
-        self.add_instance_impl(config, instance_id, true)
-    }
-
-    fn add_instance(&mut self, config: &NodeConfig, instance_id: Option<&Name>) -> Result<Name> {
-        self.add_instance_impl(config, instance_id, false)
-    }
-
     /// Removes an instance from an entity. If the entity has no instances left, removes the entity.
     /// Returns Ok(true) if the instance was found and removed, Ok(false) if not found.
     /// Returns Err(CannotRemoveRootNode) if trying to remove an instance from the root node.
@@ -821,7 +806,7 @@ impl NodeStack {
         let sorted = topological_sort_configs(nodes);
 
         for config in sorted {
-            stack.push_config(&config, None)?;
+            stack.push_config(&config, None, false)?;
         }
         Ok(stack)
     }
@@ -849,19 +834,17 @@ impl NodeStack {
 
     /// Adds an instance to an existing entity or creates a new entity if not present.
     /// If instance_id is None, generates a random one.
+    /// If allow_missing_dependencies is true, missing dependencies are tracked as pending
+    /// requirements and will be wired once the dependency nodes are added to the stack.
     /// Returns the instance_id that was used.
-    pub fn push_config(&self, config: &NodeConfig, instance_id: Option<&Name>) -> Result<Name> {
-        let mut guard = self.shared.write().expect("node stack poisoned");
-        guard.add_instance(config, instance_id)
-    }
-
-    pub fn push_config_allow_missing(
+    pub fn push_config(
         &self,
         config: &NodeConfig,
         instance_id: Option<&Name>,
+        allow_missing_dependencies: bool,
     ) -> Result<Name> {
         let mut guard = self.shared.write().expect("node stack poisoned");
-        guard.add_instance_allow_missing(config, instance_id)
+        guard.add_instance_impl(config, instance_id, allow_missing_dependencies)
     }
 
     pub fn snapshot(&self) -> Vec<NodeEntity> {
