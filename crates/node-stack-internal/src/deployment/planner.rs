@@ -169,7 +169,7 @@ fn load_nodes_from_fs(root_dir: &Path, master_node: NodeConfig) -> Result<NodeSt
         let mut still_pending = Vec::new();
 
         for node_config in pending {
-            match stack.push_config(&node_config, None) {
+            match stack.push_config(&node_config, None, false) {
                 Ok(_) => {
                     made_progress = true;
                 }
@@ -186,7 +186,7 @@ fn load_nodes_from_fs(root_dir: &Path, master_node: NodeConfig) -> Result<NodeSt
 
         if !made_progress {
             for node_config in still_pending {
-                stack.push_config_allow_missing(&node_config, None)?;
+                stack.push_config(&node_config, None, true)?;
             }
             break;
         }
@@ -340,7 +340,7 @@ fn build_launch_plan(
                 break;
             };
 
-            if let Err(err) = stack.push_config_allow_missing(&node, Some(&instance_id)) {
+            if let Err(err) = stack.push_config(&node, Some(&instance_id), true) {
                 add_failed = Some(err);
                 break;
             }

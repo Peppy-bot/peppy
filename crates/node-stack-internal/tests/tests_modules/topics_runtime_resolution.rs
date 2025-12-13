@@ -65,13 +65,13 @@ fn topic_dependency_resolved_when_dependency_added_first() {
 
     // Add the lidar dependency first
     stack
-        .push_config(&lidar_dependency, None)
+        .push_config(&lidar_dependency, None, false)
         .expect("dependency node has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have master + dependency node");
 
     // Now add the dependent node - should succeed because dependency exists
     stack
-        .push_config(&brain_dependent, None)
+        .push_config(&brain_dependent, None, false)
         .expect("dependent node should be added when dependency exists");
     assert_eq!(stack.len(), 3, "stack should include the dependent node");
 
@@ -126,7 +126,7 @@ fn topic_dependency_fails_when_dependency_is_missing() {
     let stack = NodeStack::new(master_node_config(), None);
 
     // Adding a node that depends on a non-existent node should fail
-    let result = stack.push_config(&brain_dependent, None);
+    let result = stack.push_config(&brain_dependent, None, false);
     let Err(NodeStackError::MissingDependency {
         dependency,
         dependency_tag,
@@ -197,12 +197,12 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
 
     // Add the node with the correct name but wrong topic
     stack
-        .push_config(&dependency_wrong_topic, None)
+        .push_config(&dependency_wrong_topic, None, false)
         .expect("lidar has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have master + lidar");
 
     // Adding brain should fail because lidar doesn't expose "push_lidar_object"
-    let result = stack.push_config(&dependent, None);
+    let result = stack.push_config(&dependent, None, false);
     let Err(NodeStackError::MissingInterface {
         dependency,
         dependency_tag,

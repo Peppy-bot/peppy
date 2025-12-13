@@ -29,7 +29,7 @@ mod tests {
         let deployment = sample_deployment();
         let stack = NodeStack::new(master_node_config(), None);
         stack
-            .push_config(&config, Some(&Name::new("test-instance").unwrap()))
+            .push_config(&config, Some(&Name::new("test-instance").unwrap()), false)
             .expect("config has no dependencies");
 
         let node =
@@ -53,7 +53,7 @@ mod tests {
 
         let stack = NodeStack::new(master_node_config(), None);
         stack
-            .push_config(&sample_config_lidar(), None)
+            .push_config(&sample_config_lidar(), None, false)
             .expect("config has no dependencies");
 
         let err = resolve_local_deployment(&sample_deployment(), &stack)

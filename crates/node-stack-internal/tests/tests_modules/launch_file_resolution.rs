@@ -272,10 +272,10 @@ fn launcher_file_resolves_dependency_graph() {
         })
         .collect();
 
-    let expected = |names: &[&str]| -> BTreeSet<String> {
+    let deps = |names: &[&str]| -> BTreeSet<String> {
         names.iter().map(|name| (*name).to_string()).collect()
     };
-    let actual = |name: &str| -> BTreeSet<String> {
+    let deps_of = |name: &str| -> BTreeSet<String> {
         deps_by_name
             .get(name)
             .cloned()
@@ -285,8 +285,8 @@ fn launcher_file_resolves_dependency_graph() {
     };
 
     assert_eq!(
-        actual(test_helpers::BRAIN_NODE_NAME),
-        expected(&[
+        deps_of(test_helpers::BRAIN_NODE_NAME),
+        deps(&[
             test_helpers::CONTROLLER_NODE_NAME,
             test_helpers::LIDAR_SENSOR_NODE_NAME,
             test_helpers::UVC_CAMERA_NODE_NAME,
@@ -294,13 +294,13 @@ fn launcher_file_resolves_dependency_graph() {
         "brain dependencies"
     );
     assert_eq!(
-        actual(test_helpers::CONTROLLER_NODE_NAME),
-        expected(&[]),
+        deps_of(test_helpers::CONTROLLER_NODE_NAME),
+        deps(&[]),
         "controller dependencies"
     );
     assert_eq!(
-        actual(test_helpers::WEB_VIDEO_STREAM_NODE_NAME),
-        expected(&[test_helpers::UVC_CAMERA_NODE_NAME]),
+        deps_of(test_helpers::WEB_VIDEO_STREAM_NODE_NAME),
+        deps(&[test_helpers::UVC_CAMERA_NODE_NAME]),
         "web_video_stream dependencies"
     );
 
@@ -592,7 +592,7 @@ fn deployment_with_invalid_parameters_is_unresolved() {
 
     let input_stack = NodeStack::new(master_node_config(), None);
     input_stack
-        .push_config_allow_missing(&lidar_node, None)
+        .push_config(&lidar_node, None, true)
         .expect("lidar node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
@@ -694,7 +694,7 @@ fn deployment_parameters_with_invalid_type_is_unresolved() {
 
     let input_stack = NodeStack::new(master_node_config(), None);
     input_stack
-        .push_config_allow_missing(&sensor_node, None)
+        .push_config(&sensor_node, None, true)
         .expect("sensor node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
@@ -752,7 +752,7 @@ fn build_node_stack_uses_deployment_instance_ids() {
     let alpha_node = node_config("alpha", "1.0.0", &[]);
     let input_stack = NodeStack::new(master_node_config(), None);
     input_stack
-        .push_config_allow_missing(&alpha_node, None)
+        .push_config(&alpha_node, None, true)
         .expect("alpha node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
@@ -814,7 +814,7 @@ fn optional_dependency_from_launcher_missing_is_unresolved() {
 
     let input_stack = NodeStack::new(master_node_config(), None);
     input_stack
-        .push_config_allow_missing(&alpha_node, None)
+        .push_config(&alpha_node, None, true)
         .expect("alpha node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
@@ -888,10 +888,10 @@ fn optional_dependency_from_launcher_with_wrong_tag_is_unresolved() {
 
     let input_stack = NodeStack::new(master_node_config(), None);
     input_stack
-        .push_config_allow_missing(&alpha_node, None)
+        .push_config(&alpha_node, None, true)
         .expect("alpha node inserted");
     input_stack
-        .push_config_allow_missing(&beta_node, None)
+        .push_config(&beta_node, None, true)
         .expect("beta v1 inserted (but deployment expects v2)");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
@@ -964,10 +964,10 @@ fn optional_dependency_resolved_allows_dependant_to_resolve() {
 
     let input_stack = NodeStack::new(master_node_config(), None);
     input_stack
-        .push_config_allow_missing(&alpha_node, None)
+        .push_config(&alpha_node, None, true)
         .expect("alpha node inserted");
     input_stack
-        .push_config_allow_missing(&beta_node, None)
+        .push_config(&beta_node, None, true)
         .expect("beta node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
@@ -1037,7 +1037,7 @@ fn optional_dependency_unresolved_causes_dependant_error() {
 
     let input_stack = NodeStack::new(master_node_config(), None);
     input_stack
-        .push_config_allow_missing(&alpha_node, None)
+        .push_config(&alpha_node, None, true)
         .expect("alpha node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
@@ -1280,7 +1280,7 @@ fn required_optional_dependency_surfaces_error() {
 
     let input_stack = NodeStack::new(master_node_config(), None);
     input_stack
-        .push_config_allow_missing(&beta_node, None)
+        .push_config(&beta_node, None, true)
         .expect("beta node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
@@ -1362,7 +1362,7 @@ fn unresolved_deployments_remain_in_graph() {
 
     let input_stack = NodeStack::new(master_node_config(), None);
     input_stack
-        .push_config_allow_missing(&beta_node, None)
+        .push_config(&beta_node, None, true)
         .expect("beta node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
@@ -1448,7 +1448,7 @@ fn missing_dependency_becomes_unresolved_node() {
 
     let input_stack = NodeStack::new(master_node_config(), None);
     input_stack
-        .push_config_allow_missing(&alpha_node, None)
+        .push_config(&alpha_node, None, true)
         .expect("alpha node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
@@ -1515,10 +1515,10 @@ fn dependant_fails_when_dependency_missing_topic_interface() {
 
     let input_stack = NodeStack::new(master_node_config(), None);
     input_stack
-        .push_config_allow_missing(&brain_node, None)
+        .push_config(&brain_node, None, true)
         .expect("brain node inserted");
     input_stack
-        .push_config_allow_missing(&lidar_node, None)
+        .push_config(&lidar_node, None, true)
         .expect("lidar node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
