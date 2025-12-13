@@ -4,8 +4,7 @@ use std::fs;
 use config::peppy_config::{DeploymentNodeSource, GitRemoteSpec, PeppyLauncher};
 use config::test_helpers;
 use git2::{ObjectType, Repository, Signature};
-use node_stack::DeploymentPlanner;
-use node_stack::NodeStackError;
+use node_stack::{LaunchPlan, NodeStackError};
 use tempfile::{TempDir, tempdir};
 
 use crate::helpers::config_common::{
@@ -43,26 +42,24 @@ fn git_repo_is_cloned_and_resolved() {
         launcher_config,
     );
 
-    let planner = DeploymentPlanner::from_launch_file(master_node_config(), &launch_file, None)
-        .expect("planner");
+    let plan =
+        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    let stack = plan.node_stack();
+    let report = plan.report();
 
-    let graph = planner.create_deployment_graph();
+    assert_eq!(stack.len(), 2, "master + uvc_camera");
+    assert!(stack.contains("uvc_camera", "1.2.3"));
 
-    assert_eq!(
-        graph.len(),
-        1,
-        "git deployment should resolve to single node"
-    );
+    let deployment = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "uvc_camera")
+        .expect("uvc_camera planned");
+    assert!(deployment.is_resolved());
 
-    let root = graph.root_index();
-    let node_map = graph.get(root).expect("root node map");
-    assert!(node_map.is_resolved(), "git deployment should be resolved");
-    assert_eq!(node_map.deployment().name, "uvc_camera");
-    assert_eq!(node_map.node_source().node().manifest.tag, "1.2.3");
-    assert_eq!(
-        node_map.node_source().node().manifest.name.as_str(),
-        "uvc_camera"
-    );
+    let node = deployment.node().expect("resolved node config");
+    assert_eq!(node.manifest.tag, "1.2.3");
+    assert_eq!(node.manifest.name.as_str(), "uvc_camera");
 }
 
 /// The lidar sensor requests tag `v2.0` but the repository is only tagged `0.1.0` (and `v1.0`).
@@ -100,26 +97,23 @@ fn git_repo_missing_tag_is_unresolvable() {
     let launch_file =
         write_config_str(project_root.join("peppy_launcher.json5"), &launcher_content);
 
-    let planner =
-        DeploymentPlanner::from_launch_file(master_node_config(), launch_file, None).unwrap();
+    let plan = LaunchPlan::from_launch_file(master_node_config(), launch_file, None).expect("plan");
+    let stack = plan.node_stack();
+    let report = plan.report();
 
     assert_eq!(
-        planner.node_stack().len(),
+        stack.len(),
         1,
-        "launcher config should only have root node (no local nodes)"
+        "node stack should contain only the master node"
     );
 
-    let graph = planner.create_deployment_graph();
-    assert_eq!(
-        graph.len(),
-        1,
-        "only the lidar deployment should be present"
-    );
-
-    let root_index = graph.root_index();
-    let lidar_deployment = graph
-        .get(root_index)
-        .expect("deployment graph should contain the lidar node");
+    let lidar_deployment = report
+        .deployments()
+        .iter()
+        .find(|deployment| {
+            deployment.deployment().name.as_str() == test_helpers::LIDAR_SENSOR_NODE_NAME
+        })
+        .expect("lidar planned");
 
     assert!(
         !lidar_deployment.is_resolved(),
@@ -184,23 +178,23 @@ fn git_repo_is_cloned_and_name_not_resolved() {
         launcher_config,
     );
 
-    let planner = DeploymentPlanner::from_launch_file(master_node_config(), &launch_file, None)
-        .expect("planner");
+    let plan =
+        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    let stack = plan.node_stack();
+    let report = plan.report();
 
-    let graph = planner.create_deployment_graph();
+    assert_eq!(stack.len(), 1, "only master should be present");
 
-    assert_eq!(
-        graph.len(),
-        1,
-        "git deployment should be tracked even when unresolved"
-    );
-    let root = graph.root_index();
-    let node_map = graph.get(root).expect("root node map");
+    let deployment = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "uvc_camera")
+        .expect("uvc_camera planned");
     assert!(
-        !node_map.is_resolved(),
+        !deployment.is_resolved(),
         "manifest name mismatch should fail resolution"
     );
-    let error = node_map
+    let error = deployment
         .error()
         .expect("unresolved deployment should carry error");
     let NodeStackError::DeploymentNotResolvable(identifier, reason) = error else {
@@ -243,23 +237,23 @@ fn git_repo_is_cloned_and_tag_not_resolved() {
         launcher_config,
     );
 
-    let planner = DeploymentPlanner::from_launch_file(master_node_config(), &launch_file, None)
-        .expect("planner");
+    let plan =
+        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    let stack = plan.node_stack();
+    let report = plan.report();
 
-    let graph = planner.create_deployment_graph();
+    assert_eq!(stack.len(), 1, "only master should be present");
 
-    assert_eq!(
-        graph.len(),
-        1,
-        "git deployment should be tracked even when unresolved"
-    );
-    let root = graph.root_index();
-    let node_map = graph.get(root).expect("root node map");
+    let deployment = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "uvc_camera")
+        .expect("uvc_camera planned");
     assert!(
-        !node_map.is_resolved(),
+        !deployment.is_resolved(),
         "manifest tag mismatch should fail resolution"
     );
-    let error = node_map
+    let error = deployment
         .error()
         .expect("unresolved deployment should carry error");
     let NodeStackError::DeploymentNotResolvable(identifier, reason) = error else {
@@ -299,23 +293,19 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
         launcher_config,
     );
 
-    let planner = DeploymentPlanner::from_launch_file(master_node_config(), &launch_file, None)
-        .expect("planner");
-
-    let graph = planner.create_deployment_graph();
-
-    assert_eq!(
-        graph.len(),
-        1,
-        "git deployment should resolve to single node on first fetch"
-    );
-
-    let root = graph.root_index();
-    let node_map = graph.get(root).expect("root node map");
-    assert!(node_map.is_resolved(), "git deployment should resolve");
-    let launch_cmd_v1 = node_map
-        .node_source()
+    let plan =
+        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    assert_eq!(plan.node_stack().len(), 2, "master + uvc_camera");
+    let deployment = plan
+        .report()
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "uvc_camera")
+        .expect("uvc_camera planned");
+    assert!(deployment.is_resolved(), "git deployment should resolve");
+    let launch_cmd_v1 = deployment
         .node()
+        .expect("resolved node config")
         .manifest
         .launch_cmd
         .clone()
@@ -343,24 +333,22 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
     repo.tag("1.0.0", &commit, &signature, "tag", true)
         .expect("retag commit");
 
-    let planner = DeploymentPlanner::from_launch_file(master_node_config(), &launch_file, None)
-        .expect("planner");
-
-    let graph = planner.create_deployment_graph();
-    assert_eq!(
-        graph.len(),
-        1,
-        "git deployment should resolve to single node on subsequent fetch"
-    );
-    let root = graph.root_index();
-    let node_map = graph.get(root).expect("root node map");
+    let plan =
+        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    assert_eq!(plan.node_stack().len(), 2, "master + uvc_camera");
+    let deployment = plan
+        .report()
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "uvc_camera")
+        .expect("uvc_camera planned");
     assert!(
-        node_map.is_resolved(),
+        deployment.is_resolved(),
         "git deployment should still resolve"
     );
-    let launch_cmd_v2 = node_map
-        .node_source()
+    let launch_cmd_v2 = deployment
         .node()
+        .expect("resolved node config after update")
         .manifest
         .launch_cmd
         .clone()
@@ -477,26 +465,20 @@ fn git_repo_invalid_parameters_rejected() {
         &launcher_content,
     );
 
-    let planner =
-        DeploymentPlanner::from_launch_file(master_node_config(), launch_file, None).unwrap();
+    let plan =
+        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    let stack = plan.node_stack();
+    let report = plan.report();
 
-    assert_eq!(
-        planner.node_stack().len(),
-        1,
-        "example 4 config should only have root node (no local nodes)"
-    );
+    assert_eq!(stack.len(), 1, "config should only have the master node");
 
-    let graph = planner.create_deployment_graph();
-    assert_eq!(
-        graph.len(),
-        1,
-        "only the lidar deployment should be present"
-    );
-
-    let root_index = graph.root_index();
-    let lidar_deployment = graph
-        .get(root_index)
-        .expect("deployment graph should contain the lidar node");
+    let lidar_deployment = report
+        .deployments()
+        .iter()
+        .find(|deployment| {
+            deployment.deployment().name.as_str() == test_helpers::LIDAR_SENSOR_NODE_NAME
+        })
+        .expect("lidar deployment should be planned");
 
     assert!(
         !lidar_deployment.is_resolved(),
@@ -558,4 +540,11 @@ fn git_repo_invalid_parameters_rejected() {
         "nodes cache dir {:?} should be created even on failure",
         nodes_cache_dir
     );
+}
+
+#[test]
+fn git_repo_correct_parameters_with_invalid_type_rejected() {
+    todo!(
+        "A bit similar to `git_repo_invalid_parameters_rejected` but the `fps` parameter is of type `string` instead of `i32`"
+    )
 }

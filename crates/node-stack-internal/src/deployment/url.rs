@@ -1,4 +1,3 @@
-use super::types::{DeploymentMap, ResolvedNodeSource};
 use crate::error::{Error, Result};
 use config::consts::PEPPY_NODE_CONFIG_FILE;
 use config::{
@@ -21,7 +20,7 @@ pub fn resolve_remote_url(
     nodes_cache_dir: &Path,
     deployment: &Deployment,
     spec: HttpRemoteSpec,
-) -> Result<DeploymentMap> {
+) -> Result<NodeConfig> {
     fs::create_dir_all(nodes_cache_dir)?;
 
     let cache_dir = build_bundle_cache_path(nodes_cache_dir, &spec.bundle_url);
@@ -34,8 +33,7 @@ pub fn resolve_remote_url(
         load_manifest(&cache_dir, deployment)?
     };
 
-    let node_source = ResolvedNodeSource::new(deployment.source.clone(), node);
-    Ok(DeploymentMap::new(deployment.clone(), node_source))
+    Ok(node)
 }
 
 fn refresh_bundle(
