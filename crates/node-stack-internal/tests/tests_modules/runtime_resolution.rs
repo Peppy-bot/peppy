@@ -41,6 +41,33 @@ fn add_instance_creates_new_entity() {
         &instance_id,
         "instance ID should match the returned one"
     );
+
+    // Verify sensor is in the stack but is not the root (master node is the root/parent)
+    let root = stack.root();
+    assert_eq!(
+        root.config().manifest.name.as_str(),
+        "master",
+        "root should be master node, not sensor"
+    );
+    assert_ne!(
+        entity.config().manifest.name.as_str(),
+        root.config().manifest.name.as_str(),
+        "sensor should not be the root node"
+    );
+
+    // Verify sensor is in the stack's snapshot alongside master
+    let snapshot = stack.snapshot();
+    assert_eq!(
+        snapshot.len(),
+        2,
+        "snapshot should contain master and sensor"
+    );
+    let names: Vec<_> = snapshot
+        .iter()
+        .map(|e| e.config().manifest.name.as_str())
+        .collect();
+    assert!(names.contains(&"master"), "snapshot should contain master");
+    assert!(names.contains(&"sensor"), "snapshot should contain sensor");
 }
 
 #[test]
