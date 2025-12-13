@@ -2,8 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::helpers::config_common::master_node_config;
 use crate::helpers::config_common::{node_config, write_config_str};
+use crate::helpers::git::create_simple_git_repo;
+use crate::helpers::http::create_http_bundle;
 use config::node::NodeConfig;
 use config::test_helpers;
+use httptest::{Expectation, Server, matchers::request, responders::status_code};
 use node_stack::NodeStackError as Error;
 use node_stack::{LaunchPlan, NodeStack};
 use tempfile::TempDir;
@@ -349,6 +352,308 @@ fn deployment_with_zero_instances_is_unresolved() {
         reason.contains("at least one instance"),
         "unexpected reason: {reason}"
     );
+}
+
+fn assert_deployment_not_resolvable(
+    launch_file: &std::path::Path,
+    deployment_name: &str,
+    expected_identifier: &str,
+    expected_reason_substring: &str,
+) {
+    let plan = LaunchPlan::from_launch_file(master_node_config(), launch_file, None).expect("plan");
+
+    assert_eq!(plan.node_stack().len(), 1, "only master should be present");
+
+    let planned = plan
+        .report()
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == deployment_name)
+        .unwrap_or_else(|| panic!("{deployment_name} planned"));
+    assert!(
+        !planned.is_resolved(),
+        "{deployment_name} should be unresolved"
+    );
+
+    let error = planned
+        .error()
+        .expect("unresolved deployment should carry error");
+    let Error::DeploymentNotResolvable(identifier, reason) = error else {
+        panic!("unexpected error variant: {error:?}");
+    };
+    assert_eq!(identifier, expected_identifier);
+    assert!(
+        reason.contains(expected_reason_substring),
+        "unexpected error reason: {reason}"
+    );
+}
+
+#[test]
+fn remote_deployment_manifest_name_mismatch_is_unresolved() {
+    let expected_identifier = "uvc_camera:1.2.3";
+
+    {
+        let temp_dir = tempdir().expect("temp dir");
+        let manifest_content = r#"{
+            schema_version: 1,
+            manifest: { name: "uvc_camera_wrong", tag: "1.2.3" }
+        }"#;
+        let remote = create_simple_git_repo(manifest_content, "1.2.3");
+
+        let launch_file = write_config_str(
+            temp_dir.path().join("peppy_launcher.json5"),
+            &r#"{
+                deployments: [
+                    {
+                        name: "uvc_camera",
+                        source: { repo: "$GIT_REPO" },
+                        tag: "1.2.3",
+                        instances: [{ instance_id: "uvc_camera_1", parameters: {} }]
+                    }
+                ]
+            }"#
+            .replace("$GIT_REPO", &remote.path().to_string_lossy()),
+        );
+
+        assert_deployment_not_resolvable(
+            &launch_file,
+            "uvc_camera",
+            expected_identifier,
+            "node name",
+        );
+    }
+
+    {
+        let temp_dir = tempdir().expect("temp dir");
+        let bundle_dir = tempdir().expect("bundle dir");
+        let server = Server::run();
+
+        let manifest_content = r#"{
+            schema_version: 1,
+            manifest: { name: "uvc_camera_wrong", tag: "1.2.3" }
+        }"#;
+        let bundle_bytes =
+            create_http_bundle(bundle_dir.path(), "uvc_camera.tar.zst", manifest_content);
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/bundles/uvc_camera.tar.zst"))
+                .respond_with(status_code(200).body(bundle_bytes)),
+        );
+
+        let url = server.url("/bundles/uvc_camera.tar.zst");
+        let launch_file = write_config_str(
+            temp_dir.path().join("peppy_launcher.json5"),
+            &r#"{
+                deployments: [
+                    {
+                        name: "uvc_camera",
+                        tag: "1.2.3",
+                        source: { bundle_url: "$URL" },
+                        instances: [{ instance_id: "uvc_camera_1", parameters: {} }]
+                    }
+                ]
+            }"#
+            .replace("$URL", &url.to_string()),
+        );
+
+        assert_deployment_not_resolvable(
+            &launch_file,
+            "uvc_camera",
+            expected_identifier,
+            "node name",
+        );
+    }
+}
+
+#[test]
+fn remote_deployment_manifest_tag_mismatch_is_unresolved() {
+    let expected_identifier = "uvc_camera:1.2.3";
+
+    {
+        let temp_dir = tempdir().expect("temp dir");
+        let manifest_content = r#"{
+            schema_version: 1,
+            manifest: { name: "uvc_camera", tag: "9.9.9" }
+        }"#;
+        let remote = create_simple_git_repo(manifest_content, "1.2.3");
+
+        let launch_file = write_config_str(
+            temp_dir.path().join("peppy_launcher.json5"),
+            &r#"{
+                deployments: [
+                    {
+                        name: "uvc_camera",
+                        source: { repo: "$GIT_REPO" },
+                        tag: "1.2.3",
+                        instances: [{ instance_id: "uvc_camera_1", parameters: {} }]
+                    }
+                ]
+            }"#
+            .replace("$GIT_REPO", &remote.path().to_string_lossy()),
+        );
+
+        assert_deployment_not_resolvable(&launch_file, "uvc_camera", expected_identifier, "tag");
+    }
+
+    {
+        let temp_dir = tempdir().expect("temp dir");
+        let bundle_dir = tempdir().expect("bundle dir");
+        let server = Server::run();
+
+        let manifest_content = r#"{
+            schema_version: 1,
+            manifest: { name: "uvc_camera", tag: "9.9.9" }
+        }"#;
+        let bundle_bytes =
+            create_http_bundle(bundle_dir.path(), "uvc_camera.tar.zst", manifest_content);
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/bundles/uvc_camera.tar.zst"))
+                .respond_with(status_code(200).body(bundle_bytes)),
+        );
+
+        let url = server.url("/bundles/uvc_camera.tar.zst");
+        let launch_file = write_config_str(
+            temp_dir.path().join("peppy_launcher.json5"),
+            &r#"{
+                deployments: [
+                    {
+                        name: "uvc_camera",
+                        tag: "1.2.3",
+                        source: { bundle_url: "$URL" },
+                        instances: [{ instance_id: "uvc_camera_1", parameters: {} }]
+                    }
+                ]
+            }"#
+            .replace("$URL", &url.to_string()),
+        );
+
+        assert_deployment_not_resolvable(&launch_file, "uvc_camera", expected_identifier, "tag");
+    }
+}
+
+/// Uses the example where lidar parameters reference fields unsupported by the
+/// node manifest. The deployment should surface a `WrongInputParameters` error.
+#[test]
+fn deployment_with_invalid_parameters_is_unresolved() {
+    let temp_dir = tempdir().expect("temp dir");
+    let launch_file = write_config_str(
+        temp_dir.path().join("peppy_launcher.json5"),
+        r#"{
+            deployments: [
+                {
+                    name: "lidar_sensor",
+                    tag: "0.1.0",
+                    source: "file://./lidar_sensor",
+                    instances: [
+                        {
+                            instance_id: "lidar_1",
+                            parameters: {
+                                device: {
+                                    physical: "/dev/lidar1",
+                                    sim: "mujoco:lidar1",
+                                    priority: "sim"
+                                },
+                                lidar_point: {
+                                    fps: 30
+                                }
+                            }
+                        }
+                    ]
+                }
+            ]
+        }"#,
+    );
+
+    let lidar_node: NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "lidar_sensor",
+                tag: "0.1.0"
+            },
+            parameters: {
+                device: {
+                    physical: "string",
+                    sim: "string",
+                    priority: "string"
+                },
+                lidar_point: {
+                    x: "f32",
+                    y: "f32",
+                    z: "f32",
+                    intensity: "f32",
+                    return_type: "u8",
+                    classification: "u8",
+                    timestamp: "time"
+                }
+            }
+        }"#,
+    )
+    .expect("valid lidar node config");
+
+    let input_stack = NodeStack::new(master_node_config(), None);
+    input_stack
+        .push_config_allow_missing(&lidar_node, None)
+        .expect("lidar node inserted");
+
+    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+
+    assert_eq!(plan.node_stack().len(), 1, "only master should be present");
+
+    let lidar = plan
+        .report()
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "lidar_sensor")
+        .expect("lidar planned");
+    assert!(!lidar.is_resolved(), "lidar should be unresolved");
+
+    let error = lidar.error().expect("lidar should carry an error");
+    let Error::WrongInputParameters {
+        deployment,
+        expected,
+        unexpected,
+    } = error
+    else {
+        panic!("unexpected error variant: {error:?}");
+    };
+
+    assert_eq!(deployment, "lidar_sensor:0.1.0");
+
+    let expected_parameters: BTreeSet<String> = [
+        "device.physical",
+        "device.priority",
+        "device.sim",
+        "lidar_point.classification",
+        "lidar_point.intensity",
+        "lidar_point.return_type",
+        "lidar_point.timestamp",
+        "lidar_point.x",
+        "lidar_point.y",
+        "lidar_point.z",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let actual_expected: BTreeSet<String> = expected.iter().cloned().collect();
+    assert_eq!(
+        actual_expected, expected_parameters,
+        "expected parameters should list all manifest fields"
+    );
+
+    let actual_unexpected: BTreeSet<String> = unexpected.iter().cloned().collect();
+    let unexpected_parameters: BTreeSet<String> =
+        [String::from("lidar_point.fps")].into_iter().collect();
+    assert_eq!(
+        actual_unexpected, unexpected_parameters,
+        "unexpected parameters should only include lidar_point.fps"
+    );
+}
+
+#[test]
+fn deployment_parameters_with_invalid_type_is_unresolved() {
+    todo!(
+        "Similar to deployment_with_invalid_parameters_is_unresolved, but uses an expected parameter path with an invalid type"
+    )
 }
 
 #[test]
