@@ -787,3 +787,62 @@ fn from_configs_uses_first_entity_as_root() {
         "first config should be root"
     );
 }
+
+#[test]
+fn node_stack_wires_dependencies_for_dependants() {
+    let dependency: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "lidar",
+              tag: "1.0.0"
+            },
+            interfaces: {
+                exposes: {
+                    services: [
+                        { name: "reset_sensor" }
+                    ]
+                }
+            }
+        }"#,
+    )
+    .expect("valid dependency node config");
+
+    let dependent: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "brain",
+              tag: "1.0.0"
+            },
+            interfaces: {
+                subscribes_to: {
+                    services: [
+                        {
+                          id: "reset_sensor_sub",
+                          node: "lidar",
+                          name: "reset_sensor",
+                          tag: "1.0.0"
+                        }
+                    ]
+                }
+            }
+        }"#,
+    )
+    .expect("valid dependent node config");
+
+    let stack = NodeStack::new(master_node_config(), None);
+    stack
+        .push_config(&dependency, None)
+        .expect("dependency has no dependencies");
+    stack
+        .push_config(&dependent, None)
+        .expect("dependent dependency is present");
+
+    let deps = stack.dependencies_of("brain", "1.0.0");
+    assert!(
+        deps.iter()
+            .any(|entity| entity.config().manifest.name.as_str() == "lidar"),
+        "brain should depend on lidar in the stack"
+    );
+}

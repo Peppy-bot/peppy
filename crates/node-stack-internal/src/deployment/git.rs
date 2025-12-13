@@ -3,10 +3,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::types::{DeploymentMap, ResolvedNodeSource};
 use crate::error::{Error, Result};
 use config::peppy_config::Deployment;
-use config::{node::NodeConfigParser, peppy_config::GitRemoteSpec};
+use config::{
+    node::{NodeConfig, NodeConfigParser},
+    peppy_config::GitRemoteSpec,
+};
 use git2::{AutotagOption, FetchOptions, ObjectType, Repository};
 
 fn node_config_path(spec: &GitRemoteSpec) -> PathBuf {
@@ -99,7 +101,7 @@ pub fn resolve_remote_git(
     nodes_cache_dir: &Path,
     deployment: &Deployment,
     spec: GitRemoteSpec,
-) -> Result<DeploymentMap> {
+) -> Result<NodeConfig> {
     fs::create_dir_all(nodes_cache_dir)?;
 
     let repo_dir = build_repo_cache_path(nodes_cache_dir, &spec.repo);
@@ -127,8 +129,7 @@ pub fn resolve_remote_git(
         ));
     }
 
-    let node_source = ResolvedNodeSource::new(deployment.source.clone(), node);
-    Ok(DeploymentMap::new(deployment.clone(), node_source))
+    Ok(node)
 }
 
 #[cfg(test)]
@@ -227,10 +228,8 @@ mod tests {
         let deployment = sample_remote_deployment(DeploymentNodeSource::Git(spec.clone()));
         let cache_dir = tempfile::tempdir().expect("cache dir");
 
-        let map = resolve_remote_git(cache_dir.path(), &deployment, spec)
+        let node = resolve_remote_git(cache_dir.path(), &deployment, spec)
             .expect("remote deployment resolves");
-
-        let node = map.node_source().node();
         assert_eq!(node.manifest.name.as_str(), deployment.name);
         assert_eq!(node.manifest.tag, deployment.tag);
     }
@@ -245,10 +244,8 @@ mod tests {
         let deployment = sample_remote_deployment(DeploymentNodeSource::Git(spec.clone()));
         let cache_dir = tempfile::tempdir().expect("cache dir");
 
-        let map = resolve_remote_git(cache_dir.path(), &deployment, spec)
+        let node = resolve_remote_git(cache_dir.path(), &deployment, spec)
             .expect("remote deployment resolves");
-
-        let node = map.node_source().node();
         assert_eq!(node.manifest.name.as_str(), deployment.name);
         assert_eq!(node.manifest.tag, deployment.tag);
     }
@@ -275,10 +272,8 @@ mod tests {
         }
         let cache_dir = tempfile::tempdir().expect("cache dir");
 
-        let map = resolve_remote_git(cache_dir.path(), &deployment, spec)
+        let node = resolve_remote_git(cache_dir.path(), &deployment, spec)
             .expect("remote deployment resolves");
-
-        let node = map.node_source().node();
         assert_eq!(node.manifest.name.as_str(), deployment.name);
         assert_eq!(node.manifest.tag, deployment.tag);
     }

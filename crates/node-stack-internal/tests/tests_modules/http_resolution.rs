@@ -8,8 +8,7 @@ use httptest::{
     matchers::request,
     responders::{cycle, status_code},
 };
-use node_stack::DeploymentPlanner;
-use node_stack::NodeStackError;
+use node_stack::{LaunchPlan, NodeStackError};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use tempfile::tempdir;
@@ -78,25 +77,27 @@ fn http_bundle_is_downloaded_and_resolved() {
         launcher_config,
     );
 
-    let planner = DeploymentPlanner::from_launch_file(master_node_config(), &launch_file, None)
-        .expect("planner");
+    let plan =
+        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    let stack = plan.node_stack();
+    let report = plan.report();
 
-    let graph = planner.create_deployment_graph();
+    assert_eq!(stack.len(), 2, "master + uvc_camera");
+    assert!(stack.contains("uvc_camera", "1.2.3"));
 
-    assert_eq!(
-        graph.len(),
-        1,
-        "http deployment should resolve to single node"
+    let deployment = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "uvc_camera")
+        .expect("uvc_camera planned");
+    assert!(
+        deployment.is_resolved(),
+        "http deployment should be resolved"
     );
-    let root = graph.root_index();
-    let node_map = graph.get(root).expect("root node map");
-    assert!(node_map.is_resolved(), "http deployment should be resolved");
-    assert_eq!(node_map.deployment().name, "uvc_camera");
-    assert_eq!(node_map.node_source().node().manifest.tag, "1.2.3");
-    assert_eq!(
-        node_map.node_source().node().manifest.name.as_str(),
-        "uvc_camera"
-    );
+
+    let node = deployment.node().expect("resolved node config");
+    assert_eq!(node.manifest.tag, "1.2.3");
+    assert_eq!(node.manifest.name.as_str(), "uvc_camera");
 }
 
 #[test]
@@ -133,23 +134,23 @@ fn http_bundle_is_downloaded_and_name_not_resolved() {
         launcher_config,
     );
 
-    let planner = DeploymentPlanner::from_launch_file(master_node_config(), &launch_file, None)
-        .expect("planner");
+    let plan =
+        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    let stack = plan.node_stack();
+    let report = plan.report();
 
-    let graph = planner.create_deployment_graph();
+    assert_eq!(stack.len(), 1, "only master should be present");
 
-    assert_eq!(
-        graph.len(),
-        1,
-        "http deployment should be tracked even when unresolved"
-    );
-    let root = graph.root_index();
-    let node_map = graph.get(root).expect("root node map");
+    let deployment = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "uvc_camera")
+        .expect("uvc_camera planned");
     assert!(
-        !node_map.is_resolved(),
+        !deployment.is_resolved(),
         "manifest name mismatch should fail resolution"
     );
-    let error = node_map
+    let error = deployment
         .error()
         .expect("unresolved deployment should carry error");
     let NodeStackError::DeploymentNotResolvable(identifier, reason) = error else {
@@ -196,23 +197,23 @@ fn http_bundle_is_downloaded_and_tag_not_resolved() {
         launcher_config,
     );
 
-    let planner = DeploymentPlanner::from_launch_file(master_node_config(), &launch_file, None)
-        .expect("planner");
+    let plan =
+        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    let stack = plan.node_stack();
+    let report = plan.report();
 
-    let graph = planner.create_deployment_graph();
+    assert_eq!(stack.len(), 1, "only master should be present");
 
-    assert_eq!(
-        graph.len(),
-        1,
-        "http deployment should be tracked even when unresolved"
-    );
-    let root = graph.root_index();
-    let node_map = graph.get(root).expect("root node map");
+    let deployment = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "uvc_camera")
+        .expect("uvc_camera planned");
     assert!(
-        !node_map.is_resolved(),
+        !deployment.is_resolved(),
         "manifest tag mismatch should fail resolution"
     );
-    let error = node_map
+    let error = deployment
         .error()
         .expect("unresolved deployment should carry error");
     let NodeStackError::DeploymentNotResolvable(identifier, reason) = error else {
@@ -271,23 +272,19 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
         launcher_config,
     );
 
-    let planner = DeploymentPlanner::from_launch_file(master_node_config(), &launch_file, None)
-        .expect("planner");
-
-    let graph = planner.create_deployment_graph();
-
-    assert_eq!(
-        graph.len(),
-        1,
-        "http deployment should resolve to single node on first fetch"
-    );
-
-    let root = graph.root_index();
-    let node_map = graph.get(root).expect("root node map");
-    assert!(node_map.is_resolved(), "http deployment should resolve");
-    let launch_cmd_v1 = node_map
-        .node_source()
+    let plan =
+        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    assert_eq!(plan.node_stack().len(), 2, "master + uvc_camera");
+    let planned = plan
+        .report()
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "uvc_camera")
+        .expect("uvc_camera planned");
+    assert!(planned.is_resolved(), "http deployment should resolve");
+    let launch_cmd_v1 = planned
         .node()
+        .expect("resolved node config")
         .manifest
         .launch_cmd
         .clone()
@@ -308,24 +305,22 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
     };
     write_config(launch_file.clone(), launcher_config);
 
-    let planner = DeploymentPlanner::from_launch_file(master_node_config(), &launch_file, None)
-        .expect("planner");
-
-    let graph = planner.create_deployment_graph();
-    assert_eq!(
-        graph.len(),
-        1,
-        "http deployment should resolve to single node on subsequent fetch"
-    );
-    let root = graph.root_index();
-    let node_map = graph.get(root).expect("root node map");
+    let plan =
+        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    assert_eq!(plan.node_stack().len(), 2, "master + uvc_camera");
+    let planned = plan
+        .report()
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "uvc_camera")
+        .expect("uvc_camera planned");
     assert!(
-        node_map.is_resolved(),
+        planned.is_resolved(),
         "http deployment should still resolve"
     );
-    let launch_cmd_v2 = node_map
-        .node_source()
+    let launch_cmd_v2 = planned
         .node()
+        .expect("resolved node config after update")
         .manifest
         .launch_cmd
         .clone()
@@ -411,25 +406,18 @@ fn http_bundle_invalid_parameters_rejected() {
     let launch_file = temp_dir.path().join("peppy_launcher.json5");
     std::fs::write(&launch_file, launcher_content).expect("write launcher config");
 
-    let planner = DeploymentPlanner::from_launch_file(master_node_config(), &launch_file, None)
-        .expect("planner");
-    assert_eq!(
-        planner.node_stack().len(),
-        1,
-        "config should only have root node (no local nodes)"
-    );
+    let plan =
+        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    let stack = plan.node_stack();
+    let report = plan.report();
 
-    let graph = planner.create_deployment_graph();
-    assert_eq!(
-        graph.len(),
-        1,
-        "only the lidar deployment should be present"
-    );
+    assert_eq!(stack.len(), 1, "config should only have the master node");
 
-    let root_index = graph.root_index();
-    let lidar_deployment = graph
-        .get(root_index)
-        .expect("deployment graph should contain the lidar node");
+    let lidar_deployment = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "lidar_sensor")
+        .expect("lidar deployment should be planned");
 
     assert!(
         !lidar_deployment.is_resolved(),
@@ -487,4 +475,11 @@ fn http_bundle_invalid_parameters_rejected() {
         "nodes cache dir {:?} should be created even on failure",
         nodes_cache_dir
     );
+}
+
+#[test]
+fn http_bundle_correct_parameters_with_invalid_type_rejected() {
+    todo!(
+        "A bit similar to `http_bundle_invalid_parameters_rejected` but the `fps` parameter is of type `string` instead of `i32`"
+    )
 }

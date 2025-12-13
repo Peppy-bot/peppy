@@ -2,11 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::helpers::config_common::master_node_config;
 use crate::helpers::config_common::{node_config, write_config_str};
-use crate::helpers::resolver::StaticResolver;
 use config::node::NodeConfig;
 use config::test_helpers;
 use node_stack::NodeStackError as Error;
-use node_stack::{DeploymentPlanner, NodeStack};
+use node_stack::{LaunchPlan, NodeStack};
 use tempfile::TempDir;
 use tempfile::tempdir;
 
@@ -213,14 +212,29 @@ fn launcher_file_resolves_dependency_graph() {
 
     // DO NOT add lidar_sensor and uvc_camera to project_dir, they will be automatically pulled fromt the local github repo
 
-    let planner =
-        DeploymentPlanner::from_launch_file(master_node_config(), launch_file, None).unwrap();
+    let plan =
+        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    let stack = plan.node_stack();
 
-    // Supposed to contain the master node + brain + controller + web_video_stream stacked in the project directory
-    assert_eq!(planner.node_stack().len(), 4);
-
-    // Now take care of the deployments (git pull etc...)
-    let deployment_tree = planner.create_deployment_graph();
+    assert_eq!(
+        stack.len(),
+        6,
+        "stack should contain master + all launcher deployments"
+    );
+    assert!(
+        plan.report().dependency_errors().is_empty(),
+        "expected no dependency errors, got: {:?}",
+        plan.report().dependency_errors()
+    );
+    for deployment in plan.report().deployments() {
+        assert!(
+            deployment.is_resolved(),
+            "deployment {}:{} should resolve, got {:?}",
+            deployment.deployment().name.as_str(),
+            deployment.deployment().tag,
+            deployment.error()
+        );
+    }
 
     let nodes_cache_dir = project_dir.join(".peppy").join("nodes");
     assert!(
@@ -239,40 +253,19 @@ fn launcher_file_resolves_dependency_graph() {
         nodes_cache_dir
     );
 
-    assert!(
-        deployment_tree.len() >= 5,
-        "deployment graph should contain all nodes"
-    );
-
-    let deps_by_name: BTreeMap<String, Vec<String>> = deployment_tree
-        .indices()
+    let deps_by_name: BTreeMap<String, Vec<String>> = stack
+        .snapshot()
         .into_iter()
-        .map(|index| {
-            let map = deployment_tree
-                .get(index)
-                .expect("deployment graph should return node for index");
-
-            assert!(
-                map.is_resolved(),
-                "deployment {}:{} must resolve",
-                map.deployment().name,
-                map.deployment().tag
-            );
-
-            let deps = deployment_tree
-                .children(index)
+        .filter(|entity| entity.config().manifest.name.as_str() != "master")
+        .map(|entity| {
+            let name = entity.config().manifest.name.as_str().to_string();
+            let tag = entity.config().manifest.tag.clone();
+            let deps = stack
+                .dependencies_of(&name, &tag)
                 .into_iter()
-                .map(|child| {
-                    deployment_tree
-                        .get(child)
-                        .expect("dependency node must exist")
-                        .deployment()
-                        .name
-                        .to_string()
-                })
+                .map(|dependency| dependency.config().manifest.name.as_str().to_string())
                 .collect();
-
-            (map.deployment().name.to_string(), deps)
+            (name, deps)
         })
         .collect();
 
@@ -331,26 +324,24 @@ fn deployment_with_zero_instances_is_unresolved() {
         .replace("$ALPHA_SOURCE", &alpha_source),
     );
 
-    let alpha_node = node_config("alpha", "1.0.0", &[]);
-    let resolver = StaticResolver::new(vec![alpha_node]);
-
-    let planner = DeploymentPlanner::with_nodes(
+    let plan = LaunchPlan::with_nodes(
         &launch_file,
         None,
         NodeStack::new(master_node_config(), None),
     )
-    .expect("planner")
-    .with_resolver(resolver);
+    .expect("plan");
 
-    let graph = planner.create_deployment_graph();
+    assert_eq!(plan.node_stack().len(), 1, "only master should be present");
 
-    assert_eq!(graph.len(), 1);
-    let root = graph.root_index();
-    let alpha_map = graph.get(root).expect("root node");
-    assert_eq!(alpha_map.deployment().name, "alpha");
-    assert!(!alpha_map.is_resolved());
+    let alpha = plan
+        .report()
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "alpha")
+        .expect("alpha deployment should be present");
+    assert!(!alpha.is_resolved(), "alpha should be unresolved");
 
-    let error = alpha_map.error().expect("alpha should carry an error");
+    let error = alpha.error().expect("alpha should carry an error");
     let Error::DeploymentNotResolvable(_, reason) = error else {
         panic!("expected DeploymentNotResolvable, got {error:?}");
     };
@@ -361,10 +352,66 @@ fn deployment_with_zero_instances_is_unresolved() {
 }
 
 #[test]
+fn build_node_stack_uses_deployment_instance_ids() {
+    let temp_dir = tempdir().expect("temp dir");
+
+    let alpha_source = format!("file://{}/alpha", temp_dir.path().display());
+    let launch_file = write_config_str(
+        temp_dir.path().join("peppy_launcher.json5"),
+        &r#"{
+            deployments: [
+                {
+                    name: "alpha",
+                    tag: "1.0.0",
+                    source: "$ALPHA_SOURCE",
+                    instances: [
+                        { instance_id: "alpha_1", parameters: {} },
+                        { instance_id: "alpha_2", parameters: {} }
+                    ]
+                }
+            ]
+        }"#
+        .replace("$ALPHA_SOURCE", &alpha_source),
+    );
+
+    let alpha_node = node_config("alpha", "1.0.0", &[]);
+    let input_stack = NodeStack::new(master_node_config(), None);
+    input_stack
+        .push_config_allow_missing(&alpha_node, None)
+        .expect("alpha node inserted");
+
+    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+    let stack = plan.node_stack();
+
+    assert_eq!(
+        stack.len(),
+        2,
+        "node stack should contain the master node + alpha"
+    );
+
+    let alpha = stack
+        .find("alpha", "1.0.0")
+        .expect("alpha should be in the stack");
+
+    let instance_ids: BTreeSet<_> = alpha
+        .instances()
+        .iter()
+        .map(|instance| instance.instance_id().as_str().to_owned())
+        .collect();
+
+    assert_eq!(
+        instance_ids,
+        BTreeSet::from(["alpha_1".to_string(), "alpha_2".to_string()]),
+        "alpha instance IDs should match the deployment"
+    );
+}
+
+#[test]
 fn optional_dependency_from_launcher_missing_is_unresolved() {
     let temp_dir = tempdir().expect("temp dir");
 
     let alpha_source = format!("file://{}/alpha", temp_dir.path().display());
+    let beta_source = format!("file://{}/beta", temp_dir.path().display());
     let launch_file = write_config_str(
         temp_dir.path().join("peppy_launcher.json5"),
         &r#"{
@@ -378,56 +425,57 @@ fn optional_dependency_from_launcher_missing_is_unresolved() {
                 {
                     name: "beta",
                     tag: "1.0.0",
-                    source: { repo: "https://example.com/repo.git" },
+                    source: "$BETA_SOURCE",
                     optional: true,
                     instances: [{ instance_id: "beta_1" }]
                 }
             ]
         }"#
-        .replace("$ALPHA_SOURCE", &alpha_source),
+        .replace("$ALPHA_SOURCE", &alpha_source)
+        .replace("$BETA_SOURCE", &beta_source),
     );
 
     let alpha_node = node_config("alpha", "1.0.0", &[("beta", "1.0.0")]);
 
-    let resolver = StaticResolver::new(vec![alpha_node.clone()]);
+    let input_stack = NodeStack::new(master_node_config(), None);
+    input_stack
+        .push_config_allow_missing(&alpha_node, None)
+        .expect("alpha node inserted");
 
-    let planner = DeploymentPlanner::with_nodes(
-        &launch_file,
-        None,
-        NodeStack::new(master_node_config(), None),
-    )
-    .expect("planner")
-    .with_resolver(resolver);
+    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+    let stack = plan.node_stack();
+    let report = plan.report();
 
-    let graph = planner.create_deployment_graph();
+    assert!(stack.contains("alpha", "1.0.0"));
+    assert!(!stack.contains("beta", "1.0.0"));
 
-    assert_eq!(
-        graph.len(),
-        2,
-        "missing optional deployment should still surface as unresolved when required",
+    let alpha = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "alpha")
+        .expect("alpha planned");
+    assert!(alpha.is_resolved(), "alpha node config should resolve");
+
+    let beta = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "beta")
+        .expect("beta planned");
+    assert!(!beta.is_resolved(), "beta should be unresolved");
+    assert!(matches!(
+        beta.error().expect("beta error"),
+        Error::DeploymentNotResolvable(_, _)
+    ));
+
+    assert!(
+        report.dependency_errors().iter().any(|error| matches!(
+            error,
+            Error::MissingDependency { dependant, dependency, .. }
+                if dependant == "alpha" && dependency == "beta"
+        )),
+        "expected alpha -> beta missing dependency error, got: {:?}",
+        report.dependency_errors()
     );
-
-    let root = graph.root_index();
-    let deployment_map = graph.get(root).expect("root node");
-    assert_eq!(deployment_map.deployment().name, "alpha");
-    assert!(!deployment_map.is_resolved());
-    let root_error = deployment_map
-        .error()
-        .expect("alpha should carry resolution error");
-    assert!(matches!(root_error, Error::MissingDependency { .. }));
-
-    let beta_map = graph
-        .children(root)
-        .into_iter()
-        .filter_map(|idx| graph.get(idx))
-        .find(|map| map.deployment().name == "beta")
-        .expect("beta dependency should be present even when optional");
-
-    assert!(!beta_map.is_resolved());
-    let error = beta_map
-        .error()
-        .expect("beta should carry resolution error");
-    assert!(matches!(error, Error::DeploymentNotResolvable(_, _)));
 }
 
 #[test]
@@ -463,45 +511,48 @@ fn optional_dependency_from_launcher_with_wrong_tag_is_unresolved() {
     let alpha_node = node_config("alpha", "1.0.0", &[("beta", "2.0.0")]);
     let beta_node = node_config("beta", "1.0.0", &[]);
 
-    let resolver = StaticResolver::new(vec![alpha_node.clone(), beta_node]);
+    let input_stack = NodeStack::new(master_node_config(), None);
+    input_stack
+        .push_config_allow_missing(&alpha_node, None)
+        .expect("alpha node inserted");
+    input_stack
+        .push_config_allow_missing(&beta_node, None)
+        .expect("beta v1 inserted (but deployment expects v2)");
 
-    let planner = DeploymentPlanner::with_nodes(
-        &launch_file,
-        None,
-        NodeStack::new(master_node_config(), None),
-    )
-    .expect("planner")
-    .with_resolver(resolver);
+    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+    let stack = plan.node_stack();
+    let report = plan.report();
 
-    let graph = planner.create_deployment_graph();
+    assert!(stack.contains("alpha", "1.0.0"));
+    assert!(!stack.contains("beta", "2.0.0"));
 
-    assert_eq!(
-        graph.len(),
-        2,
-        "optional deployment with mismatched tag should surface as unresolved",
+    let alpha = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "alpha")
+        .expect("alpha planned");
+    assert!(alpha.is_resolved(), "alpha node config should resolve");
+
+    let beta = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "beta")
+        .expect("beta planned");
+    assert!(!beta.is_resolved(), "beta should be unresolved");
+    assert!(matches!(
+        beta.error().expect("beta error"),
+        Error::DeploymentNotResolvable(_, _)
+    ));
+
+    assert!(
+        report.dependency_errors().iter().any(|error| matches!(
+            error,
+            Error::MissingDependency { dependant, dependency, dependency_tag, .. }
+                if dependant == "alpha" && dependency == "beta" && dependency_tag == "2.0.0"
+        )),
+        "expected alpha -> beta:2.0.0 missing dependency error, got: {:?}",
+        report.dependency_errors()
     );
-
-    let root = graph.root_index();
-    let root_map = graph.get(root).expect("root node");
-    assert_eq!(root_map.deployment().name, "alpha");
-    assert!(!root_map.is_resolved());
-    let root_error = root_map
-        .error()
-        .expect("alpha should carry resolution error");
-    assert!(matches!(root_error, Error::MissingDependency { .. }));
-
-    let beta_map = graph
-        .children(root)
-        .into_iter()
-        .filter_map(|idx| graph.get(idx))
-        .find(|map| map.deployment().name == "beta")
-        .expect("beta dependency should be present even when unresolved");
-
-    assert!(!beta_map.is_resolved());
-    let error: &Error = beta_map
-        .error()
-        .expect("beta should carry resolution error");
-    assert!(matches!(error, Error::DeploymentNotResolvable(_, _)));
 }
 
 #[test]
@@ -536,41 +587,46 @@ fn optional_dependency_resolved_allows_dependant_to_resolve() {
     let alpha_node = node_config("alpha", "1.0.0", &[("beta", "1.0.0")]);
     let beta_node = node_config("beta", "1.0.0", &[]);
 
-    let resolver = StaticResolver::new(vec![alpha_node.clone(), beta_node.clone()]);
+    let input_stack = NodeStack::new(master_node_config(), None);
+    input_stack
+        .push_config_allow_missing(&alpha_node, None)
+        .expect("alpha node inserted");
+    input_stack
+        .push_config_allow_missing(&beta_node, None)
+        .expect("beta node inserted");
 
-    let planner = DeploymentPlanner::with_nodes(
-        &launch_file,
-        None,
-        NodeStack::new(master_node_config(), None),
-    )
-    .expect("planner")
-    .with_resolver(resolver);
+    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+    let stack = plan.node_stack();
+    let report = plan.report();
 
-    let graph = planner.create_deployment_graph();
+    assert!(stack.contains("alpha", "1.0.0"));
+    assert!(stack.contains("beta", "1.0.0"));
+    assert!(
+        report.dependency_errors().is_empty(),
+        "expected no dependency errors, got: {:?}",
+        report.dependency_errors()
+    );
 
-    assert_eq!(graph.len(), 2);
+    let alpha = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "alpha")
+        .expect("alpha planned");
+    assert!(alpha.is_resolved());
 
-    let alpha_index = graph
-        .indices()
-        .into_iter()
-        .find(|idx| {
-            graph
-                .get(*idx)
-                .map(|m| m.deployment().name == "alpha")
-                .unwrap_or(false)
-        })
-        .expect("alpha should be present");
-    let alpha_map = graph.get(alpha_index).expect("alpha map");
-    assert!(alpha_map.is_resolved());
+    let beta = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "beta")
+        .expect("beta planned");
+    assert!(beta.is_resolved());
 
-    let beta_map = graph
-        .children(alpha_index)
-        .into_iter()
-        .filter_map(|idx| graph.get(idx))
-        .find(|map| map.deployment().name == "beta")
-        .expect("beta dependency should be present");
-
-    assert!(beta_map.is_resolved());
+    let deps = stack.dependencies_of("alpha", "1.0.0");
+    assert!(
+        deps.iter()
+            .any(|entity| entity.config().manifest.name.as_str() == "beta"),
+        "alpha should depend on beta in the stack"
+    );
 }
 
 #[test]
@@ -578,6 +634,7 @@ fn optional_dependency_unresolved_causes_dependant_error() {
     let temp_dir = tempdir().expect("temp dir");
 
     let alpha_source = format!("file://{}/alpha", temp_dir.path().display());
+    let beta_source = format!("file://{}/beta", temp_dir.path().display());
     let launch_file = write_config_str(
         temp_dir.path().join("peppy_launcher.json5"),
         &r#"{
@@ -591,38 +648,60 @@ fn optional_dependency_unresolved_causes_dependant_error() {
                 {
                     name: "beta",
                     tag: "1.0.0",
-                    source: { repo: "https://example.com/repo.git" },
+                    source: "$BETA_SOURCE",
                     optional: true,
-                    instances: [{ instance_id: "beta_1" }]
+                    instances: []
                 }
             ]
         }"#
-        .replace("$ALPHA_SOURCE", &alpha_source),
+        .replace("$ALPHA_SOURCE", &alpha_source)
+        .replace("$BETA_SOURCE", &beta_source),
     );
 
     let alpha_node = node_config("alpha", "1.0.0", &[("beta", "1.0.0")]);
-    let resolver = StaticResolver::new(vec![alpha_node.clone()]);
 
-    let planner = DeploymentPlanner::with_nodes(
-        &launch_file,
-        None,
-        NodeStack::new(master_node_config(), None),
-    )
-    .expect("planner")
-    .with_resolver(resolver);
+    let input_stack = NodeStack::new(master_node_config(), None);
+    input_stack
+        .push_config_allow_missing(&alpha_node, None)
+        .expect("alpha node inserted");
 
-    let graph = planner.create_deployment_graph();
+    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+    let stack = plan.node_stack();
+    let report = plan.report();
 
-    assert_eq!(graph.len(), 2);
+    assert!(stack.contains("alpha", "1.0.0"));
+    assert!(!stack.contains("beta", "1.0.0"));
 
-    let root = graph.root_index();
-    let alpha_map = graph.get(root).expect("root node");
-    assert_eq!(alpha_map.deployment().name, "alpha");
-    assert!(!alpha_map.is_resolved());
-    let error = alpha_map
-        .error()
-        .expect("alpha should carry resolution error");
-    assert!(matches!(error, Error::MissingDependency { .. }));
+    let alpha = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "alpha")
+        .expect("alpha planned");
+    assert!(alpha.is_resolved(), "alpha node config should resolve");
+
+    let beta = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "beta")
+        .expect("beta planned");
+    assert!(!beta.is_resolved(), "beta should be unresolved");
+    let Error::DeploymentNotResolvable(_, reason) = beta.error().expect("beta error") else {
+        panic!("expected DeploymentNotResolvable for beta");
+    };
+    assert!(
+        reason.contains("at least one instance"),
+        "unexpected beta reason: {reason}"
+    );
+
+    assert!(
+        report.dependency_errors().iter().any(|error| matches!(
+            error,
+            Error::MissingDependency { dependant, dependency, .. }
+                if dependant == "alpha" && dependency == "beta"
+        )),
+        "expected alpha -> beta missing dependency error, got: {:?}",
+        report.dependency_errors()
+    );
 }
 
 #[test]
@@ -713,48 +792,56 @@ fn optional_node_excluded_when_unresolvable() {
     let launch_file = root.join("peppy_launcher.json5");
     std::fs::write(&launch_file, launch_content).expect("failed to write launch config");
 
-    let planner =
-        DeploymentPlanner::from_launch_file(master_node_config(), &launch_file, None).unwrap();
+    let plan =
+        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    let stack = plan.node_stack();
+    let report = plan.report();
 
     assert_eq!(
-        planner.node_stack().len(),
-        1,
-        "optional node test config should only have root node (no local nodes)"
+        stack.len(),
+        2,
+        "stack should contain master + required deployment"
+    );
+    assert!(stack.contains(test_helpers::UVC_CAMERA_NODE_NAME, "0.1.0"));
+    assert!(
+        !stack.contains(test_helpers::WEB_VIDEO_STREAM_NODE_NAME, "9.9.9"),
+        "unresolvable optional deployment should not be inserted"
+    );
+    assert!(
+        report.dependency_errors().is_empty(),
+        "expected no dependency errors, got: {:?}",
+        report.dependency_errors()
     );
 
-    let graph = planner.create_deployment_graph();
-    assert_eq!(
-        graph.len(),
-        1,
-        "optional deployment should be ignored when it cannot resolve"
-    );
-
-    let root_index = graph.root_index();
-    let required = graph
-        .get(root_index)
-        .expect("graph should contain the required deployment");
-    assert!(required.is_resolved(), "required deployment must resolve");
-    assert_eq!(
-        required.deployment().name,
-        test_helpers::UVC_CAMERA_NODE_NAME,
-        "only the required deployment should remain in the graph"
-    );
-
-    let present_names: BTreeSet<String> = graph
-        .indices()
-        .into_iter()
-        .map(|index| {
-            graph
-                .get(index)
-                .expect("deployment must exist")
-                .deployment()
-                .name
-                .to_string()
+    let required = report
+        .deployments()
+        .iter()
+        .find(|deployment| {
+            deployment.deployment().name.as_str() == test_helpers::UVC_CAMERA_NODE_NAME
         })
+        .expect("required deployment planned");
+    assert!(required.is_resolved(), "required deployment must resolve");
+
+    let optional = report
+        .deployments()
+        .iter()
+        .find(|deployment| {
+            deployment.deployment().name.as_str() == test_helpers::WEB_VIDEO_STREAM_NODE_NAME
+        })
+        .expect("optional deployment planned");
+    assert!(
+        !optional.is_resolved(),
+        "optional deployment should be unresolved"
+    );
+
+    let present_names: BTreeSet<String> = stack
+        .snapshot()
+        .into_iter()
+        .map(|entity| entity.config().manifest.name.as_str().to_owned())
         .collect();
     assert!(
         !present_names.contains(test_helpers::WEB_VIDEO_STREAM_NODE_NAME),
-        "optional deployment should not appear when it fails to resolve"
+        "optional deployment should not appear in the stack when it fails to resolve"
     );
 
     let nodes_cache_dir = root.join(".peppy").join("nodes");
@@ -778,9 +865,9 @@ fn optional_node_excluded_when_unresolvable() {
 /// - "alpha" cannot be resolved (no node config provided to the resolver)
 ///
 /// Expected behavior:
-/// - The deployment graph should contain both deployments as unresolved
-/// - "beta" should have a `MissingDependency` error because its required dependency "alpha" is missing
-/// - "alpha" should have a `DeploymentNotResolvable` error
+/// - The plan report should include both deployments (alpha unresolved, beta resolved)
+/// - The node stack should only contain resolved deployments
+/// - The report should include a `MissingDependency` error for beta -> alpha
 ///
 /// This ensures that the optionality of a deployment is overridden when another
 /// non-optional deployment has a hard dependency on it.
@@ -816,48 +903,49 @@ fn required_optional_dependency_surfaces_error() {
 
     let beta_node = node_config("beta", "2.0.0", &[("alpha", "1.0.0")]);
 
-    let resolver = StaticResolver::new(vec![beta_node.clone()]);
+    let input_stack = NodeStack::new(master_node_config(), None);
+    input_stack
+        .push_config_allow_missing(&beta_node, None)
+        .expect("beta node inserted");
 
-    let planner = DeploymentPlanner::with_nodes(
-        &launch_file,
-        None,
-        NodeStack::new(master_node_config(), None),
-    )
-    .expect("planner")
-    .with_resolver(resolver);
+    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+    let stack = plan.node_stack();
+    let report = plan.report();
 
-    let graph = planner.create_deployment_graph();
+    assert!(stack.contains("beta", "2.0.0"));
+    assert!(!stack.contains("alpha", "1.0.0"));
 
-    assert_eq!(
-        graph.len(),
-        2,
-        "optional dependency should surface as unresolved when required by a non-optional deployment",
+    let alpha = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "alpha")
+        .expect("alpha planned");
+    assert!(!alpha.is_resolved());
+    assert!(matches!(
+        alpha.error().expect("alpha error"),
+        Error::DeploymentNotResolvable(_, _)
+    ));
+
+    let beta = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "beta")
+        .expect("beta planned");
+    assert!(beta.is_resolved());
+
+    assert!(
+        report.dependency_errors().iter().any(|error| matches!(
+            error,
+            Error::MissingDependency { dependant, dependency, .. }
+                if dependant == "beta" && dependency == "alpha"
+        )),
+        "expected beta -> alpha missing dependency error, got: {:?}",
+        report.dependency_errors()
     );
-
-    let root = graph.root_index();
-    let root_map = graph.get(root).expect("root node");
-    assert_eq!(root_map.deployment().name, "beta");
-    assert!(!root_map.is_resolved());
-    let root_error = root_map.error().expect("beta should have error");
-    assert!(matches!(root_error, Error::MissingDependency { .. }));
-
-    let alpha_map = graph
-        .children(root)
-        .into_iter()
-        .filter_map(|idx| graph.get(idx))
-        .find(|map| map.deployment().name == "alpha")
-        .expect("alpha dependency should be present as unresolved");
-
-    assert!(!alpha_map.is_resolved());
-    let error = alpha_map
-        .error()
-        .expect("alpha should carry resolution error");
-
-    assert!(matches!(error, Error::DeploymentNotResolvable(_, _)));
 }
 
 // TODO: Double check, unresolved OPTIONAL `deployments` should be fine, unresolved `NodeEntity` in a node stack is not
-/// Verifies that unresolved deployments are kept in the graph rather than discarded.
+/// Verifies that unresolved deployments remain visible in the plan report.
 #[test]
 fn unresolved_deployments_remain_in_graph() {
     let temp_dir = tempdir().expect("temp dir");
@@ -897,71 +985,68 @@ fn unresolved_deployments_remain_in_graph() {
 
     let beta_node = node_config("beta", "2.0.0", &[("alpha", "1.0.0")]);
 
-    let resolver = StaticResolver::new(vec![beta_node.clone()]);
+    let input_stack = NodeStack::new(master_node_config(), None);
+    input_stack
+        .push_config_allow_missing(&beta_node, None)
+        .expect("beta node inserted");
 
-    let planner = DeploymentPlanner::with_nodes(
-        &launch_file,
-        None,
-        NodeStack::new(master_node_config(), None),
-    )
-    .expect("planner")
-    .with_resolver(resolver);
+    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+    let stack = plan.node_stack();
+    let report = plan.report();
 
-    let graph = planner.create_deployment_graph();
+    assert_eq!(report.deployments().len(), 3, "three deployments planned");
 
-    assert_eq!(
-        graph.len(),
-        3,
-        "entire deployment list should be represented"
-    );
-
-    let unresolved: Vec<_> = graph
-        .indices()
-        .into_iter()
-        .filter_map(|idx| graph.get(idx))
-        .filter(|map| !map.is_resolved())
-        .collect();
-
-    let mut unresolved_names: Vec<_> = unresolved
+    let unresolved_names: BTreeSet<_> = report
+        .deployments()
         .iter()
-        .map(|map| map.deployment().name.clone())
+        .filter(|deployment| !deployment.is_resolved())
+        .map(|deployment| deployment.deployment().name.as_str().to_owned())
         .collect();
-    unresolved_names.sort();
-    assert_eq!(
-        unresolved_names.len(),
-        3,
-        "three deployments should contain errors"
-    );
-
     assert_eq!(
         unresolved_names,
-        vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]
+        BTreeSet::from(["alpha".to_string(), "gamma".to_string()])
     );
 
-    let unresolved_errors: Vec<_> = unresolved
+    let alpha = report
+        .deployments()
         .iter()
-        .map(|map| {
-            map.error()
-                .expect("unresolved deployment should carry error")
-        })
-        .collect();
+        .find(|deployment| deployment.deployment().name.as_str() == "alpha")
+        .expect("alpha planned");
+    assert!(matches!(
+        alpha.error().expect("alpha error"),
+        Error::DeploymentNotResolvable(_, _)
+    ));
+
+    let gamma = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "gamma")
+        .expect("gamma planned");
+    assert!(matches!(
+        gamma.error().expect("gamma error"),
+        Error::DeploymentNotResolvable(_, _)
+    ));
+
+    let beta = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "beta")
+        .expect("beta planned");
+    assert!(beta.is_resolved(), "beta node config should resolve");
+
+    assert!(stack.contains("beta", "2.0.0"));
+    assert!(!stack.contains("alpha", "1.0.0"));
+    assert!(!stack.contains("gamma", "3.0.0"));
 
     assert!(
-        unresolved_errors.iter().all(|error| matches!(
+        report.dependency_errors().iter().any(|error| matches!(
             error,
-            Error::DeploymentNotResolvable(_, _) | Error::MissingDependency { .. }
+            Error::MissingDependency { dependant, dependency, .. }
+                if dependant == "beta" && dependency == "alpha"
         )),
-        "unexpected unresolved deployment error kind",
+        "expected beta -> alpha missing dependency error, got: {:?}",
+        report.dependency_errors()
     );
-
-    let beta_map = graph
-        .indices()
-        .into_iter()
-        .filter_map(|idx| graph.get(idx))
-        .find(|map| map.deployment().name == "beta")
-        .expect("beta deployment should be present");
-
-    assert!(!beta_map.is_resolved());
 }
 
 #[test]
@@ -985,37 +1070,34 @@ fn missing_dependency_becomes_unresolved_node() {
     );
 
     let alpha_node = node_config("alpha", "1.0.0", &[("delta", "1.0.0")]);
-    let resolver = StaticResolver::new(vec![alpha_node.clone()]);
 
-    let planner = DeploymentPlanner::with_nodes(
-        &launch_file,
-        None,
-        NodeStack::new(master_node_config(), None),
-    )
-    .expect("planner")
-    .with_resolver(resolver);
+    let input_stack = NodeStack::new(master_node_config(), None);
+    input_stack
+        .push_config_allow_missing(&alpha_node, None)
+        .expect("alpha node inserted");
 
-    let graph = planner.create_deployment_graph();
+    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+    let stack = plan.node_stack();
+    let report = plan.report();
 
-    assert_eq!(
-        graph.len(),
-        2,
-        "missing dependency should be inserted as unresolved"
-    );
+    assert!(stack.contains("alpha", "1.0.0"));
+    assert!(!stack.contains("delta", "1.0.0"));
 
-    let delta_map = graph
-        .indices()
-        .into_iter()
-        .filter_map(|index| graph.get(index))
-        .find(|map| map.deployment().name == "delta")
-        .expect("graph should contain unresolved delta dependency");
+    let alpha = report
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == "alpha")
+        .expect("alpha planned");
+    assert!(alpha.is_resolved(), "alpha node config should resolve");
 
-    assert!(!delta_map.is_resolved());
-    let error = delta_map.error().expect("delta should carry error");
-    let message = error.to_string();
     assert!(
-        message.contains("dependency declared but missing"),
-        "unexpected error message: {message}"
+        report.dependency_errors().iter().any(|error| matches!(
+            error,
+            Error::MissingDependency { dependant, dependency, dependency_tag, .. }
+                if dependant == "alpha" && dependency == "delta" && dependency_tag == "1.0.0"
+        )),
+        "expected alpha -> delta:1.0.0 missing dependency error, got: {:?}",
+        report.dependency_errors()
     );
 }
 
@@ -1056,45 +1138,38 @@ fn dependant_fails_when_dependency_missing_topic_interface() {
     )
     .expect("valid lidar node without exposes");
 
-    let resolver = StaticResolver::new(vec![brain_node.clone(), lidar_node]);
+    let input_stack = NodeStack::new(master_node_config(), None);
+    input_stack
+        .push_config_allow_missing(&brain_node, None)
+        .expect("brain node inserted");
+    input_stack
+        .push_config_allow_missing(&lidar_node, None)
+        .expect("lidar node inserted");
 
-    let planner = DeploymentPlanner::with_nodes(
-        &launch_file,
-        None,
-        NodeStack::new(master_node_config(), None),
-    )
-    .expect("planner")
-    .with_resolver(resolver);
+    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+    let stack = plan.node_stack();
+    let report = plan.report();
 
-    let graph = planner.create_deployment_graph();
-    assert_eq!(
-        graph.len(),
-        2,
-        "both deployments should remain in the graph"
-    );
+    assert!(stack.contains("brain", "1.0.0"));
+    assert!(stack.contains("lidar", "1.0.0"));
 
-    // Find brain deployment - it should be unresolved because lidar doesn't expose the required topic
-    let brain_map = graph
-        .indices()
-        .into_iter()
-        .filter_map(|index| graph.get(index))
-        .find(|map| map.deployment().name == "brain")
-        .expect("brain deployment present");
-    assert!(
-        !brain_map.is_resolved(),
-        "brain should fail to resolve without exposed lidar topic"
-    );
-    let error = brain_map.error().expect("brain error surfaces");
+    let missing_interface = report
+        .dependency_errors()
+        .iter()
+        .find(|error| matches!(error, Error::MissingInterface { dependant, dependency, .. } if dependant == "brain" && dependency == "lidar"))
+        .expect("missing interface error should be reported");
+
     let Error::MissingInterface {
         dependant,
         dependency,
         interface_kind,
         interface_name,
         ..
-    } = error
+    } = missing_interface
     else {
-        panic!("unexpected error type: {error:?}");
+        panic!("expected MissingInterface error");
     };
+
     assert_eq!(dependant, "brain");
     assert_eq!(dependency, "lidar");
     assert_eq!(interface_kind, "topic");
