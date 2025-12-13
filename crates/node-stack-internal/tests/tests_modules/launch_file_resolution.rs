@@ -875,6 +875,7 @@ fn required_optional_dependency_surfaces_error() {
     assert!(matches!(error, Error::DeploymentNotResolvable(_, _)));
 }
 
+// TODO: Double check, unresolved OPTIONAL `deployments` should be fine, unresolved `NodeEntity` in a node stack is not
 /// Verifies that unresolved deployments are kept in the graph rather than discarded.
 #[test]
 fn unresolved_deployments_remain_in_graph() {

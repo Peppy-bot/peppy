@@ -1,14 +1,48 @@
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::Path;
+
 use config::peppy_config::{DeploymentNodeSource, HttpRemoteSpec, PeppyLauncher};
-use config::test_helpers;
-use httptest::{Expectation, Server, matchers::request, responders::status_code};
+use httptest::{
+    Expectation, Server,
+    matchers::request,
+    responders::{cycle, status_code},
+};
 use node_stack::DeploymentPlanner;
 use node_stack::NodeStackError;
 use sha2::{Digest, Sha256};
-use tempfile::{TempDir, tempdir};
+use std::io::Write;
+use tempfile::tempdir;
 
-use crate::helpers::config_common::{
-    create_http_bundle, deployment, master_node_config, write_config,
-};
+use crate::helpers::config_common::{deployment, master_node_config, write_config};
+
+fn sha256_checksum(bytes: &[u8]) -> String {
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+pub fn create_http_bundle(temp_dir: &Path, bundle_name: &str, manifest_content: &str) -> Vec<u8> {
+    let manifest_path = temp_dir.join("peppy.json5");
+    fs::write(&manifest_path, manifest_content).expect("write manifest");
+
+    let mut tar_data = Vec::new();
+    {
+        let mut tar_builder = tar::Builder::new(&mut tar_data);
+        tar_builder
+            .append_path_with_name(&manifest_path, "peppy.json5")
+            .expect("append manifest");
+        tar_builder.finish().expect("finish tar");
+    }
+
+    let bundle_path = temp_dir.join(bundle_name);
+    let bundle_file = fs::File::create(&bundle_path).expect("create bundle");
+    let mut encoder = zstd::Encoder::new(bundle_file, 0).expect("create zstd encoder");
+    encoder
+        .write_all(&tar_data)
+        .expect("write compressed bundle");
+    encoder.finish().expect("finish encoder");
+
+    fs::read(&bundle_path).expect("read bundle")
+}
 
 #[test]
 fn http_bundle_is_downloaded_and_resolved() {
@@ -188,67 +222,201 @@ fn http_bundle_is_downloaded_and_tag_not_resolved() {
     assert!(reason.contains("tag"), "unexpected error reason: {reason}");
 }
 
-/// Uses the example where the lidar bundle is reachable but the manifest inside
-/// advertises a different tag than the one requested in the deployment.
 #[test]
-fn remote_bundle_manifest_tag_mismatch_is_unresolvable() {
-    const BUNDLE_PATH: &str = "/bundles/lidar_sensor.tar.zst";
-
+fn http_bundle_is_cloned_and_same_tag_updates_code() {
+    let temp_dir = tempdir().expect("temp dir");
     let server = Server::run();
 
-    let build_bundle = |manifest: &str| -> Vec<u8> {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let manifest_path = temp_dir.path().join("peppy.json5");
-        std::fs::write(&manifest_path, manifest).expect("write manifest");
+    let manifest_v1 = r#"{
+            schema_version: 1,
+            manifest: { name: "uvc_camera", tag: "1.0.0", launch_cmd: ["run_v1"] }
+        }"#;
+    let bundle_bytes_v1 = create_http_bundle(temp_dir.path(), "uvc_camera.tar.zst", manifest_v1);
+    let checksum_v1 = sha256_checksum(&bundle_bytes_v1);
 
-        let mut tar_data = Vec::new();
-        {
-            let mut tar_builder = tar::Builder::new(&mut tar_data);
-            tar_builder
-                .append_path_with_name(&manifest_path, "peppy.json5")
-                .expect("append manifest to tar");
-            tar_builder.finish().expect("finish tar");
-        }
-
-        let cursor = std::io::Cursor::new(tar_data);
-        zstd::stream::encode_all(cursor, 0).expect("compress bundle")
-    };
-
-    let manifest_content = format!(
-        "{{\n            schema_version: 1,\n            manifest: {{ name: \"{}\", tag: \"9.9.9\" }}\n        }}",
-        test_helpers::LIDAR_SENSOR_NODE_NAME
-    );
-    let bundle_bytes = build_bundle(manifest_content.as_str());
-
-    let mut hasher = Sha256::new();
-    hasher.update(&bundle_bytes);
-    let checksum = format!("sha256:{:x}", hasher.finalize());
+    let manifest_v2 = r#"{
+            schema_version: 1,
+            manifest: { name: "uvc_camera", tag: "1.0.0", launch_cmd: ["run_v2"] }
+        }"#;
+    let bundle_bytes_v2 = create_http_bundle(temp_dir.path(), "uvc_camera.tar.zst", manifest_v2);
+    let checksum_v2 = sha256_checksum(&bundle_bytes_v2);
 
     server.expect(
-        Expectation::matching(request::method_path("GET", BUNDLE_PATH))
-            .respond_with(status_code(200).body(bundle_bytes.clone())),
+        Expectation::matching(request::method_path("GET", "/bundles/uvc_camera.tar.zst"))
+            .times(2)
+            .respond_with(cycle(vec![
+                Box::new(status_code(200).body(bundle_bytes_v1)),
+                Box::new(status_code(200).body(bundle_bytes_v2)),
+            ])),
     );
 
-    let root_temp_dir = TempDir::new().unwrap();
-    let root = root_temp_dir.path();
+    let url = server.url("/bundles/uvc_camera.tar.zst");
 
-    let bundle_url = server.url(BUNDLE_PATH).to_string();
-    let launch_file = test_helpers::render_peppy_config_template(
-        &root_temp_dir,
-        test_helpers::PeppyConfigTemplateExample3 {
-            lidar_sensor_node_name: test_helpers::LIDAR_SENSOR_NODE_NAME,
-            lidar_sensor_url: bundle_url.as_str(),
-            lidar_sensor_sha256: checksum.as_str(),
+    let http_spec_v1 = HttpRemoteSpec::new(url.to_string(), Some(checksum_v1))
+        .expect("valid http deployment spec");
+
+    let deployments = vec![deployment(
+        "uvc_camera",
+        "1.0.0",
+        Some(DeploymentNodeSource::Http(http_spec_v1)),
+        false,
+    )];
+
+    let launcher_config = PeppyLauncher {
+        deployments: Some(deployments),
+        logging: None,
+    };
+    let launch_file = write_config(
+        temp_dir.path().join("peppy_launcher.json5"),
+        launcher_config,
+    );
+
+    let planner = DeploymentPlanner::from_launch_file(master_node_config(), &launch_file, None)
+        .expect("planner");
+
+    let graph = planner.create_deployment_graph();
+
+    assert_eq!(
+        graph.len(),
+        1,
+        "http deployment should resolve to single node on first fetch"
+    );
+
+    let root = graph.root_index();
+    let node_map = graph.get(root).expect("root node map");
+    assert!(node_map.is_resolved(), "http deployment should resolve");
+    let launch_cmd_v1 = node_map
+        .node_source()
+        .node()
+        .manifest
+        .launch_cmd
+        .clone()
+        .expect("launch command present");
+    assert_eq!(launch_cmd_v1, vec!["run_v1".to_string()]);
+
+    let http_spec_v2 = HttpRemoteSpec::new(url.to_string(), Some(checksum_v2))
+        .expect("valid http deployment spec");
+    let deployments = vec![deployment(
+        "uvc_camera",
+        "1.0.0",
+        Some(DeploymentNodeSource::Http(http_spec_v2)),
+        false,
+    )];
+    let launcher_config = PeppyLauncher {
+        deployments: Some(deployments),
+        logging: None,
+    };
+    write_config(launch_file.clone(), launcher_config);
+
+    let planner = DeploymentPlanner::from_launch_file(master_node_config(), &launch_file, None)
+        .expect("planner");
+
+    let graph = planner.create_deployment_graph();
+    assert_eq!(
+        graph.len(),
+        1,
+        "http deployment should resolve to single node on subsequent fetch"
+    );
+    let root = graph.root_index();
+    let node_map = graph.get(root).expect("root node map");
+    assert!(
+        node_map.is_resolved(),
+        "http deployment should still resolve"
+    );
+    let launch_cmd_v2 = node_map
+        .node_source()
+        .node()
+        .manifest
+        .launch_cmd
+        .clone()
+        .expect("launch command present after update");
+
+    assert_eq!(launch_cmd_v2, vec!["run_v2".to_string()]);
+    assert_ne!(launch_cmd_v1, launch_cmd_v2);
+}
+
+/// Uses the example where lidar parameters reference fields unsupported by the
+/// node manifest. The deployment should surface a `WrongInputParameters` error.
+#[test]
+fn http_bundle_invalid_parameters_rejected() {
+    let temp_dir = tempdir().expect("temp dir");
+    let bundle_dir = tempdir().expect("bundle dir");
+    let server = Server::run();
+
+    let peppy_json_content = r#"{
+      schema_version: 1,
+      manifest: {
+        name: "lidar_sensor",
+        tag: "0.1.0"
+      },
+      parameters: {
+        device: {
+          physical: "string",
+          sim: "string",
+          priority: "string"
         },
+        lidar_point: {
+          x: "f32",
+          y: "f32",
+          z: "f32",
+          intensity: "f32",
+          return_type: "u8",
+          classification: "u8",
+          timestamp: "time",
+        }
+      }
+    }"#;
+    let bundle_bytes = create_http_bundle(
+        bundle_dir.path(),
+        "lidar_sensor.tar.zst",
+        peppy_json_content,
+    );
+    let checksum = sha256_checksum(&bundle_bytes);
+    server.expect(
+        Expectation::matching(request::method_path("GET", "/bundles/lidar_sensor.tar.zst"))
+            .respond_with(status_code(200).body(bundle_bytes)),
     );
 
-    let planner =
-        DeploymentPlanner::from_launch_file(master_node_config(), launch_file, None).unwrap();
+    let url = server.url("/bundles/lidar_sensor.tar.zst");
+    let launcher_content = r#"{
+      deployments: [
+        {
+          name: "lidar_sensor",
+          tag: "0.1.0",
+          source: {
+            bundle_url: "$URL_PLACEHOLDER",
+            checksum: "$CHECKSUM_PLACEHOLDER"
+          },
+          instances: [
+            {
+              instance_id: "lidar_1",
+              parameters: {
+                device: {
+                  physical: "/dev/lidar1",
+                  sim: "mujoco:lidar1",
+                  priority: "sim"
+                },
+                lidar_point: {
+                  fps: 30
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }"#
+    .replace("$URL_PLACEHOLDER", &url.to_string())
+    .replace("$CHECKSUM_PLACEHOLDER", &checksum);
 
+    let launch_file = temp_dir.path().join("peppy_launcher.json5");
+    std::fs::write(&launch_file, launcher_content).expect("write launcher config");
+
+    let planner = DeploymentPlanner::from_launch_file(master_node_config(), &launch_file, None)
+        .expect("planner");
     assert_eq!(
         planner.node_stack().len(),
         1,
-        "example 3 config should only have root node (no local nodes)"
+        "config should only have root node (no local nodes)"
     );
 
     let graph = planner.create_deployment_graph();
@@ -265,35 +433,55 @@ fn remote_bundle_manifest_tag_mismatch_is_unresolvable() {
 
     assert!(
         !lidar_deployment.is_resolved(),
-        "lidar deployment should fail to resolve when manifest tag differs"
+        "lidar deployment should fail to resolve when parameters mismatch"
     );
 
     let error = lidar_deployment
         .error()
-        .expect("deployment must report the resolution failure");
+        .expect("deployment must report the parameter validation failure");
 
-    let NodeStackError::DeploymentNotResolvable(identifier, reason) = error else {
+    let NodeStackError::WrongInputParameters {
+        deployment,
+        expected,
+        unexpected,
+    } = error
+    else {
         panic!("unexpected error type: {error:?}");
     };
 
-    let expected_identifier = format!(
-        "{}:{}",
-        test_helpers::LIDAR_SENSOR_NODE_NAME,
-        lidar_deployment.deployment().tag
-    );
-    assert_eq!(identifier, &expected_identifier);
-    assert!(
-        reason.contains(test_helpers::LIDAR_SENSOR_NODE_NAME),
-        "error reason should mention lidar sensor, got: {}",
-        reason
-    );
-    assert!(
-        reason.contains(lidar_deployment.deployment().tag.as_str()),
-        "error reason should mention expected tag, got: {}",
-        reason
+    let expected_identifier = format!("{}:{}", "lidar_sensor", lidar_deployment.deployment().tag);
+    assert_eq!(deployment, &expected_identifier);
+
+    let expected_parameters: BTreeSet<String> = [
+        "device.physical",
+        "device.priority",
+        "device.sim",
+        "lidar_point.classification",
+        "lidar_point.intensity",
+        "lidar_point.return_type",
+        "lidar_point.timestamp",
+        "lidar_point.x",
+        "lidar_point.y",
+        "lidar_point.z",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let actual_expected: BTreeSet<String> = expected.iter().cloned().collect();
+    assert_eq!(
+        actual_expected, expected_parameters,
+        "expected parameters should list all manifest fields"
     );
 
-    let nodes_cache_dir = root.join(".peppy").join("nodes");
+    let actual_unexpected: BTreeSet<String> = unexpected.iter().cloned().collect();
+    let unexpected_parameters: BTreeSet<String> =
+        [String::from("lidar_point.fps")].into_iter().collect();
+    assert_eq!(
+        actual_unexpected, unexpected_parameters,
+        "unexpected parameters should only include lidar_point.fps"
+    );
+
+    let nodes_cache_dir = temp_dir.path().join(".peppy").join("nodes");
     assert!(
         nodes_cache_dir.is_dir(),
         "nodes cache dir {:?} should be created even on failure",
