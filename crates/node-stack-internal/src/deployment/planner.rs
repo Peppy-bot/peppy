@@ -202,58 +202,60 @@ fn topological_sort_local_nodes(configs: Vec<NodeConfig>) -> Vec<NodeConfig> {
         return configs;
     }
 
-    let key_to_idx: HashMap<(String, String), usize> = configs
-        .iter()
-        .enumerate()
-        .map(|(idx, config)| {
-            (
+    // Compute the sorted indices in a nested scope so we can borrow from `configs`
+    // without blocking its move when rebuilding the output vector.
+    let sorted_indices = {
+        let key_to_idx: HashMap<(&str, &str), usize> = configs
+            .iter()
+            .enumerate()
+            .map(|(idx, config)| {
                 (
-                    config.manifest.name.as_str().to_owned(),
-                    config.manifest.tag.clone(),
-                ),
-                idx,
-            )
-        })
-        .collect();
+                    (config.manifest.name.as_str(), config.manifest.tag.as_str()),
+                    idx,
+                )
+            })
+            .collect();
 
-    let mut in_degree = vec![0usize; configs.len()];
-    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); configs.len()];
+        let mut in_degree = vec![0usize; configs.len()];
+        let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); configs.len()];
 
-    for (idx, config) in configs.iter().enumerate() {
-        let specs = collect_dependency_specs(config);
-        for spec in specs {
-            let dep_key = (spec.node_name, spec.node_tag);
-            if let Some(&dep_idx) = key_to_idx.get(&dep_key) {
-                in_degree[idx] += 1;
-                dependents[dep_idx].push(idx);
+        for (idx, config) in configs.iter().enumerate() {
+            for spec in collect_dependency_specs(config) {
+                let dep_key = (spec.node_name.as_str(), spec.node_tag.as_str());
+                if let Some(&dep_idx) = key_to_idx.get(&dep_key) {
+                    in_degree[idx] += 1;
+                    dependents[dep_idx].push(idx);
+                }
             }
         }
-    }
 
-    let mut queue: Vec<usize> = in_degree
-        .iter()
-        .enumerate()
-        .filter(|&(_, deg)| *deg == 0)
-        .map(|(idx, _)| idx)
-        .collect();
+        let mut queue: Vec<usize> = in_degree
+            .iter()
+            .enumerate()
+            .filter(|&(_, deg)| *deg == 0)
+            .map(|(idx, _)| idx)
+            .collect();
 
-    let mut sorted_indices = Vec::with_capacity(configs.len());
+        let mut sorted_indices = Vec::with_capacity(configs.len());
 
-    while let Some(idx) = queue.pop() {
-        sorted_indices.push(idx);
-        for &dependent_idx in &dependents[idx] {
-            in_degree[dependent_idx] -= 1;
-            if in_degree[dependent_idx] == 0 {
-                queue.push(dependent_idx);
-            }
-        }
-    }
-
-    for (idx, deg) in in_degree.iter().enumerate() {
-        if *deg > 0 {
+        while let Some(idx) = queue.pop() {
             sorted_indices.push(idx);
+            for &dependent_idx in &dependents[idx] {
+                in_degree[dependent_idx] -= 1;
+                if in_degree[dependent_idx] == 0 {
+                    queue.push(dependent_idx);
+                }
+            }
         }
-    }
+
+        for (idx, deg) in in_degree.iter().enumerate() {
+            if *deg > 0 {
+                sorted_indices.push(idx);
+            }
+        }
+
+        sorted_indices
+    };
 
     let mut indexed_configs: Vec<Option<NodeConfig>> = configs.into_iter().map(Some).collect();
     let mut result = Vec::with_capacity(indexed_configs.len());
@@ -375,10 +377,11 @@ fn validate_instance_parameters(
     let mut unexpected: BTreeSet<String> = BTreeSet::new();
 
     for instance in &deployment.instances {
-        let actual = parameter_leaf_paths(&instance.parameters);
-        for value in actual.difference(&expected) {
-            unexpected.insert(value.clone());
-        }
+        for_each_parameter_leaf_path(&instance.parameters, |path| {
+            if !expected.contains(path) {
+                unexpected.insert(path.to_owned());
+            }
+        });
 
         // Validate parameter types
         if let Err(type_mismatch) =
@@ -408,27 +411,42 @@ fn parameter_leaf_paths(
     parameters: &std::collections::BTreeMap<String, AnyType>,
 ) -> BTreeSet<String> {
     let mut acc = BTreeSet::new();
-    for (key, value) in parameters {
-        collect_parameter_paths(value, key.clone(), &mut acc);
-    }
+    for_each_parameter_leaf_path(parameters, |path| {
+        acc.insert(path.to_owned());
+    });
     acc
 }
 
-fn collect_parameter_paths(value: &AnyType, current: String, acc: &mut BTreeSet<String>) {
+fn for_each_parameter_leaf_path(
+    parameters: &std::collections::BTreeMap<String, AnyType>,
+    mut visit: impl FnMut(&str),
+) {
+    let mut path = String::new();
+    for (key, value) in parameters {
+        path.clear();
+        path.push_str(key);
+        visit_parameter_leaf_paths(value, &mut path, &mut visit);
+    }
+}
+
+fn visit_parameter_leaf_paths(value: &AnyType, path: &mut String, visit: &mut dyn FnMut(&str)) {
     match value {
         AnyType::Object(map) if !map.is_empty() => {
             if is_array_parameter_schema(map) {
-                acc.insert(current);
+                visit(path.as_str());
                 return;
             }
 
             for (child_key, child_value) in map {
-                let next = format!("{current}.{child_key}");
-                collect_parameter_paths(child_value, next, acc);
+                let original_len = path.len();
+                path.push('.');
+                path.push_str(child_key);
+                visit_parameter_leaf_paths(child_value, path, visit);
+                path.truncate(original_len);
             }
         }
         _ => {
-            acc.insert(current);
+            visit(path.as_str());
         }
     }
 }
@@ -519,23 +537,43 @@ fn validate_stack_dependencies(
 ) -> Vec<Error> {
     let mut errors = Vec::new();
 
-    for entity in stack.snapshot() {
+    let snapshot = stack.snapshot();
+    let node_index: HashMap<(&str, &str), &NodeConfig> = snapshot
+        .iter()
+        .map(|entity| {
+            let config = entity.config();
+            (
+                (config.manifest.name.as_str(), config.manifest.tag.as_str()),
+                config,
+            )
+        })
+        .collect();
+
+    let deployment_optional_index: HashMap<(&str, &str), bool> = deployment_optional
+        .iter()
+        .map(|((name, tag), optional)| ((name.as_str(), tag.as_str()), *optional))
+        .collect();
+
+    for entity in &snapshot {
         let dependant_name = entity.config().manifest.name.as_str().to_owned();
         let dependant_tag = entity.config().manifest.tag.clone();
-        let dependant_key = (dependant_name.clone(), dependant_tag.clone());
-        let dependant_optional = deployment_optional
+        let dependant_key = (dependant_name.as_str(), dependant_tag.as_str());
+        let dependant_optional = deployment_optional_index
             .get(&dependant_key)
             .copied()
             .unwrap_or(false);
 
         for spec in collect_dependency_specs(entity.config()) {
-            let dependency_key = (spec.node_name.clone(), spec.node_tag.clone());
-            let dependency_optional = deployment_optional
+            let dependency_name = spec.node_name;
+            let dependency_tag = spec.node_tag;
+            let dependency_key = (dependency_name.as_str(), dependency_tag.as_str());
+
+            let dependency_optional = deployment_optional_index
                 .get(&dependency_key)
                 .copied()
                 .unwrap_or(false);
 
-            if !stack.contains(&spec.node_name, &spec.node_tag) {
+            let Some(dependency_config) = node_index.get(&dependency_key).copied() else {
                 if dependant_optional && dependency_optional {
                     continue;
                 }
@@ -543,22 +581,18 @@ fn validate_stack_dependencies(
                 errors.push(Error::MissingDependency {
                     dependant: dependant_name.clone(),
                     dependant_tag: dependant_tag.clone(),
-                    dependency: spec.node_name,
-                    dependency_tag: spec.node_tag,
+                    dependency: dependency_name,
+                    dependency_tag,
                 });
-                continue;
-            }
-
-            let Some(dependency_entity) = stack.find(&spec.node_name, &spec.node_tag) else {
                 continue;
             };
 
-            if !exposes_interface(dependency_entity.config(), &spec.interface) {
+            if !exposes_interface(dependency_config, &spec.interface) {
                 errors.push(Error::MissingInterface {
                     dependant: dependant_name.clone(),
                     dependant_tag: dependant_tag.clone(),
-                    dependency: spec.node_name,
-                    dependency_tag: spec.node_tag,
+                    dependency: dependency_name,
+                    dependency_tag,
                     interface_kind: spec.interface.kind().to_string(),
                     interface_name: spec.interface.name().to_owned(),
                 });
