@@ -4,172 +4,6 @@ use node_stack::{NodeStack, NodeStackError};
 use crate::helpers::config_common::master_node_config;
 
 #[test]
-fn dependency_fails_when_node_name_mismatches() {
-    // Dependent expects "uvc_camera" but we add "lidar" instead
-    let dependent: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            schema_version: 1,
-            manifest: {
-              name: "brain",
-              tag: "1.0.0"
-            },
-            interfaces: {
-                subscribes_to: {
-                    services: [
-                        {
-                          id: "reset_sensor_sub",
-                          node: "uvc_camera",
-                          name: "reset_sensor",
-                          tag: "1.0.0"
-                        }
-                    ]
-                }
-            }
-        }"#,
-    )
-    .expect("valid dependent node config");
-
-    let wrong_dependency: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            schema_version: 1,
-            manifest: {
-              name: "lidar",
-              tag: "1.0.0"
-            },
-            interfaces: {
-                exposes: {
-                    services: [
-                        {
-                          name: "reset_sensor",
-                          request_message_format: {
-                            force: "bool"
-                          },
-                          response_message_format: {
-                            success: "bool",
-                            error_message: {
-                              $type: "string",
-                              $optional: true
-                            }
-                          }
-                        }
-                    ]
-                }
-            }
-        }"#,
-    )
-    .expect("valid dependency node config");
-
-    let stack = NodeStack::new(master_node_config(), None);
-
-    // Add lidar (which is NOT the expected dependency "uvc_camera")
-    stack
-        .push_config(&wrong_dependency, None)
-        .expect("lidar has no dependencies");
-    assert_eq!(stack.len(), 2, "stack should have master + lidar");
-
-    // Adding brain should fail because it expects "uvc_camera", not "lidar"
-    let result = stack.push_config(&dependent, None);
-    let Err(NodeStackError::MissingDependency {
-        dependency,
-        dependency_tag,
-        ..
-    }) = result
-    else {
-        panic!("expected MissingDependency error, got {:?}", result);
-    };
-    assert_eq!(dependency, "uvc_camera");
-    assert_eq!(dependency_tag, "1.0.0");
-    assert_eq!(
-        stack.len(),
-        2,
-        "stack should still only have master + lidar"
-    );
-}
-
-#[test]
-fn dependency_fails_when_node_tag_mismatches() {
-    // Dependent expects tag "1.0.0" but we add tag "2.0.0" instead
-    let dependent: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            schema_version: 1,
-            manifest: {
-              name: "brain",
-              tag: "1.0.0"
-            },
-            interfaces: {
-                subscribes_to: {
-                    services: [
-                        {
-                          id: "reset_sensor_sub",
-                          node: "lidar",
-                          name: "reset_sensor",
-                          tag: "1.0.0"
-                        }
-                    ]
-                }
-            }
-        }"#,
-    )
-    .expect("valid dependent node config");
-
-    let wrong_tag_dependency: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            schema_version: 1,
-            manifest: {
-              name: "lidar",
-              tag: "2.0.0"
-            },
-            interfaces: {
-                exposes: {
-                    services: [
-                        {
-                          name: "reset_sensor",
-                          request_message_format: {
-                            force: "bool"
-                          },
-                          response_message_format: {
-                            success: "bool",
-                            error_message: {
-                              $type: "string",
-                              $optional: true
-                            }
-                          }
-                        }
-                    ]
-                }
-            }
-        }"#,
-    )
-    .expect("valid dependency node config");
-
-    let stack = NodeStack::new(master_node_config(), None);
-
-    // Add lidar with tag "2.0.0" (NOT the expected tag "1.0.0")
-    stack
-        .push_config(&wrong_tag_dependency, None)
-        .expect("lidar has no dependencies");
-    assert_eq!(stack.len(), 2, "stack should have master + lidar");
-
-    // Adding brain should fail because it expects lidar with tag "1.0.0", not "2.0.0"
-    let result = stack.push_config(&dependent, None);
-    let Err(NodeStackError::MissingDependency {
-        dependency,
-        dependency_tag,
-        ..
-    }) = result
-    else {
-        panic!("expected MissingDependency error, got {:?}", result);
-    };
-    assert_eq!(dependency, "lidar");
-    assert_eq!(dependency_tag, "1.0.0");
-    assert_eq!(
-        stack.len(),
-        2,
-        "stack should still only have master + lidar"
-    );
-}
-
-#[test]
 fn add_instance_creates_new_entity() {
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
@@ -844,5 +678,171 @@ fn node_stack_wires_dependencies_for_dependants() {
         deps.iter()
             .any(|entity| entity.config().manifest.name.as_str() == "lidar"),
         "brain should depend on lidar in the stack"
+    );
+}
+
+#[test]
+fn dependency_fails_when_node_name_mismatches() {
+    // Dependent expects "uvc_camera" but we add "lidar" instead
+    let dependent: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "brain",
+              tag: "1.0.0"
+            },
+            interfaces: {
+                subscribes_to: {
+                    services: [
+                        {
+                          id: "reset_sensor_sub",
+                          node: "uvc_camera",
+                          name: "reset_sensor",
+                          tag: "1.0.0"
+                        }
+                    ]
+                }
+            }
+        }"#,
+    )
+    .expect("valid dependent node config");
+
+    let wrong_dependency: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "lidar",
+              tag: "1.0.0"
+            },
+            interfaces: {
+                exposes: {
+                    services: [
+                        {
+                          name: "reset_sensor",
+                          request_message_format: {
+                            force: "bool"
+                          },
+                          response_message_format: {
+                            success: "bool",
+                            error_message: {
+                              $type: "string",
+                              $optional: true
+                            }
+                          }
+                        }
+                    ]
+                }
+            }
+        }"#,
+    )
+    .expect("valid dependency node config");
+
+    let stack = NodeStack::new(master_node_config(), None);
+
+    // Add lidar (which is NOT the expected dependency "uvc_camera")
+    stack
+        .push_config(&wrong_dependency, None)
+        .expect("lidar has no dependencies");
+    assert_eq!(stack.len(), 2, "stack should have master + lidar");
+
+    // Adding brain should fail because it expects "uvc_camera", not "lidar"
+    let result = stack.push_config(&dependent, None);
+    let Err(NodeStackError::MissingDependency {
+        dependency,
+        dependency_tag,
+        ..
+    }) = result
+    else {
+        panic!("expected MissingDependency error, got {:?}", result);
+    };
+    assert_eq!(dependency, "uvc_camera");
+    assert_eq!(dependency_tag, "1.0.0");
+    assert_eq!(
+        stack.len(),
+        2,
+        "stack should still only have master + lidar"
+    );
+}
+
+#[test]
+fn dependency_fails_when_node_tag_mismatches() {
+    // Dependent expects tag "1.0.0" but we add tag "2.0.0" instead
+    let dependent: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "brain",
+              tag: "1.0.0"
+            },
+            interfaces: {
+                subscribes_to: {
+                    services: [
+                        {
+                          id: "reset_sensor_sub",
+                          node: "lidar",
+                          name: "reset_sensor",
+                          tag: "1.0.0"
+                        }
+                    ]
+                }
+            }
+        }"#,
+    )
+    .expect("valid dependent node config");
+
+    let wrong_tag_dependency: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "lidar",
+              tag: "2.0.0"
+            },
+            interfaces: {
+                exposes: {
+                    services: [
+                        {
+                          name: "reset_sensor",
+                          request_message_format: {
+                            force: "bool"
+                          },
+                          response_message_format: {
+                            success: "bool",
+                            error_message: {
+                              $type: "string",
+                              $optional: true
+                            }
+                          }
+                        }
+                    ]
+                }
+            }
+        }"#,
+    )
+    .expect("valid dependency node config");
+
+    let stack = NodeStack::new(master_node_config(), None);
+
+    // Add lidar with tag "2.0.0" (NOT the expected tag "1.0.0")
+    stack
+        .push_config(&wrong_tag_dependency, None)
+        .expect("lidar has no dependencies");
+    assert_eq!(stack.len(), 2, "stack should have master + lidar");
+
+    // Adding brain should fail because it expects lidar with tag "1.0.0", not "2.0.0"
+    let result = stack.push_config(&dependent, None);
+    let Err(NodeStackError::MissingDependency {
+        dependency,
+        dependency_tag,
+        ..
+    }) = result
+    else {
+        panic!("expected MissingDependency error, got {:?}", result);
+    };
+    assert_eq!(dependency, "lidar");
+    assert_eq!(dependency_tag, "1.0.0");
+    assert_eq!(
+        stack.len(),
+        2,
+        "stack should still only have master + lidar"
     );
 }
