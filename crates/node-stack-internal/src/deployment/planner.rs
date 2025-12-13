@@ -6,7 +6,7 @@ use super::{git::resolve_remote_git, local::resolve_local_deployment, url::resol
 use crate::error::{Error, Result};
 use config::node::NodeConfig;
 use config::peppy_config::{Deployment, DeploymentNodeSource, PeppyLauncher, PeppyLauncherParser};
-use config::{AnyType, FSNodeConfigWatcher};
+use config::{AnyType, FSNodeConfigWatcher, TypeMismatch};
 
 #[derive(Debug)]
 pub enum PlannedDeployment {
@@ -379,6 +379,18 @@ fn validate_instance_parameters(
         for value in actual.difference(&expected) {
             unexpected.insert(value.clone());
         }
+
+        // Validate parameter types
+        if let Err(type_mismatch) =
+            validate_parameter_types(&instance.parameters, &node.parameters, "")
+        {
+            return Err(Error::WrongParameterType {
+                deployment: format!("{}:{}", deployment.name, deployment.tag),
+                path: type_mismatch.path,
+                expected: type_mismatch.expected,
+                actual: type_mismatch.actual,
+            });
+        }
     }
 
     if unexpected.is_empty() {
@@ -426,6 +438,79 @@ fn is_array_parameter_schema(map: &std::collections::BTreeMap<String, AnyType>) 
         map.get("type"),
         Some(AnyType::String(kind)) if kind.eq_ignore_ascii_case("array")
     )
+}
+
+/// Validates that instance parameter values match the types declared in the node manifest.
+/// Recursively walks through nested objects to validate each leaf value.
+fn validate_parameter_types(
+    instance_params: &std::collections::BTreeMap<String, AnyType>,
+    manifest_params: &std::collections::BTreeMap<String, AnyType>,
+    prefix: &str,
+) -> std::result::Result<(), TypeMismatch> {
+    for (key, instance_value) in instance_params {
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{}.{}", prefix, key)
+        };
+
+        let Some(manifest_value) = manifest_params.get(key) else {
+            // Unknown parameter - handled by WrongInputParameters check
+            continue;
+        };
+
+        match (instance_value, manifest_value) {
+            // Both are objects - recurse into nested structure
+            (AnyType::Object(inst_map), AnyType::Object(man_map)) => {
+                // Check if manifest defines an array schema
+                if is_array_parameter_schema(man_map) {
+                    // Instance should provide an array value, not an object
+                    return Err(TypeMismatch {
+                        path,
+                        expected: "array".to_string(),
+                        actual: "object".to_string(),
+                    });
+                }
+                validate_parameter_types(inst_map, man_map, &path)?;
+            }
+            // Manifest declares a type (string like "f32", "bool", etc.)
+            (instance_value, AnyType::String(_)) => {
+                instance_value.matches_type_spec(manifest_value, &path)?;
+            }
+            // Manifest declares an object schema but instance provides a non-object
+            (instance_value, AnyType::Object(man_map)) => {
+                if is_array_parameter_schema(man_map) {
+                    // Expect an array
+                    if !matches!(instance_value, AnyType::Array(_)) {
+                        return Err(TypeMismatch {
+                            path,
+                            expected: "array".to_string(),
+                            actual: instance_value.type_name().to_string(),
+                        });
+                    }
+                    // Validate array items if $items is specified
+                    if let (AnyType::Array(items), Some(item_spec)) =
+                        (instance_value, man_map.get("items"))
+                    {
+                        for (i, item) in items.iter().enumerate() {
+                            let item_path = format!("{}[{}]", path, i);
+                            item.matches_type_spec(item_spec, &item_path)?;
+                        }
+                    }
+                } else {
+                    // Manifest expects an object but got something else
+                    return Err(TypeMismatch {
+                        path,
+                        expected: "object".to_string(),
+                        actual: instance_value.type_name().to_string(),
+                    });
+                }
+            }
+            // Other cases (e.g., manifest has a literal value) - skip validation
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn validate_stack_dependencies(
