@@ -12,6 +12,40 @@ use node_stack::{LaunchPlan, NodeStack};
 use tempfile::TempDir;
 use tempfile::tempdir;
 
+fn assert_deployment_not_resolvable(
+    launch_file: &std::path::Path,
+    deployment_name: &str,
+    expected_identifier: &str,
+    expected_reason_substring: &str,
+) {
+    let plan = LaunchPlan::from_launch_file(master_node_config(), launch_file, None).expect("plan");
+
+    assert_eq!(plan.node_stack().len(), 1, "only master should be present");
+
+    let planned = plan
+        .report()
+        .deployments()
+        .iter()
+        .find(|deployment| deployment.deployment().name.as_str() == deployment_name)
+        .unwrap_or_else(|| panic!("{deployment_name} planned"));
+    assert!(
+        !planned.is_resolved(),
+        "{deployment_name} should be unresolved"
+    );
+
+    let error = planned
+        .error()
+        .expect("unresolved deployment should carry error");
+    let Error::DeploymentNotResolvable(identifier, reason) = error else {
+        panic!("unexpected error variant: {error:?}");
+    };
+    assert_eq!(identifier, expected_identifier);
+    assert!(
+        reason.contains(expected_reason_substring),
+        "unexpected error reason: {reason}"
+    );
+}
+
 /// Launches the following nodes:
 /// - brain
 /// - controller
@@ -320,6 +354,7 @@ fn deployment_with_zero_instances_is_unresolved() {
                     name: "alpha",
                     tag: "1.0.0",
                     source: "$ALPHA_SOURCE",
+                    // This should not work
                     instances: []
                 }
             ]
@@ -351,40 +386,6 @@ fn deployment_with_zero_instances_is_unresolved() {
     assert!(
         reason.contains("at least one instance"),
         "unexpected reason: {reason}"
-    );
-}
-
-fn assert_deployment_not_resolvable(
-    launch_file: &std::path::Path,
-    deployment_name: &str,
-    expected_identifier: &str,
-    expected_reason_substring: &str,
-) {
-    let plan = LaunchPlan::from_launch_file(master_node_config(), launch_file, None).expect("plan");
-
-    assert_eq!(plan.node_stack().len(), 1, "only master should be present");
-
-    let planned = plan
-        .report()
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == deployment_name)
-        .unwrap_or_else(|| panic!("{deployment_name} planned"));
-    assert!(
-        !planned.is_resolved(),
-        "{deployment_name} should be unresolved"
-    );
-
-    let error = planned
-        .error()
-        .expect("unresolved deployment should carry error");
-    let Error::DeploymentNotResolvable(identifier, reason) = error else {
-        panic!("unexpected error variant: {error:?}");
-    };
-    assert_eq!(identifier, expected_identifier);
-    assert!(
-        reason.contains(expected_reason_substring),
-        "unexpected error reason: {reason}"
     );
 }
 
