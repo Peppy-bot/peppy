@@ -36,171 +36,152 @@ fn launcher_file_resolves_dependency_graph() {
     let lidar_remote = format!("nodes/{}", test_helpers::LIDAR_SENSOR_NODE_NAME);
     let uvc_remote = format!("nodes/{}", test_helpers::UVC_CAMERA_NODE_NAME);
 
-    let launch_file = test_helpers::render_peppy_config_template(
-        &project_dir,
-        test_helpers::PeppyConfigTemplateExample1 {
-            lidar_sensor_node_name: test_helpers::LIDAR_SENSOR_NODE_NAME,
-            lidar_sensor_github_repo: &git_repo_path,
-            lidar_sensor_github_repo_path: lidar_remote.as_str(),
-            lidar_sensor_github_tag: "0.1.0",
-            uvc_camera_node_name: test_helpers::UVC_CAMERA_NODE_NAME,
-            uvc_camera_github_repo: &git_repo_path,
-            uvc_camera_github_repo_path: uvc_remote.as_str(),
-            web_video_stream_node_name: test_helpers::WEB_VIDEO_STREAM_NODE_NAME,
-            web_video_stream_optional: false,
-            brain_node_name: test_helpers::BRAIN_NODE_NAME,
-            controller_node_name: test_helpers::CONTROLLER_NODE_NAME,
+    let launch_content = r#"{
+      deployments: [
+        {
+          name: "$LIDAR_SENSOR",
+          source: {
+            repo: "$GIT_REPO",
+            path: "$LIDAR_REMOTE"
+          },
+          tag: "0.1.0",
+          instances: [
+            {
+              instance_id: "lidar_1",
+              parameters: {
+                device: {
+                  physical: "/dev/lidar1",
+                  sim: "mujoco:lidar1",
+                  priority: "sim"
+                },
+                lidar_point: {
+                  x: 12.34, // meters, X coordinate in 3D space
+                  y: -7.56, // meters, Y coordinate in 3D space
+                  z: 1.23, // meters, Z coordinate in 3D space (height)
+                  intensity: 0.85, // normalized intensity of return signal (0 to 1)
+                  return_type: 1, // e.g. 1 = first return, 2 = last return
+                  classification: 2, // e.g. 2 = ground, 5 = vegetation
+                  timestamp: 1696285145999, // Unix timestamp in milliseconds
+                }
+              }
+            }
+          ]
         },
-    );
-    // Verify the rendered launch file content
-    let launch_content = std::fs::read_to_string(&launch_file).expect("failed to read launch file");
-    let expected_launch_content = format!(
-        r#"{{
-  deployments: [
-    {{
-      name: "{lidar_sensor}",
-      source: {{
-        repo: "{git_repo}",
-        path: "{lidar_remote}"
-      }},
-      tag: "0.1.0",
-      instances: [
-        {{
-          instance_id: "lidar_1",
-          parameters: {{
-            device: {{
-              physical: "/dev/lidar1",
-              sim: "mujoco:lidar1",
-              priority: "sim"
-            }},
-            lidar_point: {{
-              x: 12.34, // meters, X coordinate in 3D space
-              y: -7.56, // meters, Y coordinate in 3D space
-              z: 1.23, // meters, Z coordinate in 3D space (height)
-              intensity: 0.85, // normalized intensity of return signal (0 to 1)
-              return_type: 1, // e.g. 1 = first return, 2 = last return
-              classification: 2, // e.g. 2 = ground, 5 = vegetation
-              timestamp: 1696285145999, // Unix timestamp in milliseconds
-            }}
-          }}
-        }}
-      ]
-    }},
-    {{
-      name: "{uvc_camera}",
-      source: {{
-        repo: "{git_repo}",
-        path: "{uvc_remote}"
-      }},
-      tag: "0.1.0",
-      instances: [
-        {{
-          instance_id: "camera_right",
-          parameters: {{
-            device: {{
-              physical: "/dev/video_right",
-              sim: "mujoco:camera_right",
-              priority: "physical"
-            }},
-            video: {{
-              frame_rate: 30,
-              resolution: {{
-                width: 1920,
-                height: 1080,
-              }},
-              encoding: "yuyv",
-            }},
-          }}
-        }},
-        {{
-          instance_id: "camera_left",
-          parameters: {{
-            device: {{
-              physical: "/dev/video_left",
-              sim: "mujoco:camera_left",
-              priority: "physical"
-            }},
-            video: {{
-              frame_rate: 30,
-              resolution: {{
-                width: 1920,
-                height: 1080,
-              }},
-              encoding: "yuyv",
-            }},
-          }}
-        }}
-      ]
-    }},
-    // `web_video_stream` depends on `uvc_camera`
-    {{
-      // The test will add the web_video_stream to the local stack
-      name: "{web_video_stream}",
-      tag: "0.1.0",
-      // Since it's optional, if the node cannot be found, it will be ignored
-      optional: false,
-      instances: [
-        {{
-          instance_id: "stream_1",
-          parameters: {{
-            http: {{
-              host: "0.0.0.0",
-              port: 8083,
-              cors_enabled: false,
-              cors_origins: "*",
-              max_connections: "2000",
-              request_timeout_ms: "3000",
-            }},
-            video_stream: {{
-              format: "mjpeg",
-              quality: 3,
-              max_fps: 30,
-            }},
-          }}
-        }}
-      ]
-    }},
-    {{
-      name: "{brain}",
-      // The test will add the brain_node to the local stack
-      tag: "0.1.0",
-      instances: [
-        {{
-          instance_id: "the_brain",
-          parameters: {{}}
-        }}
+        {
+          name: "$UVC_CAMERA",
+          source: {
+            repo: "$GIT_REPO",
+            path: "$UVC_REMOTE"
+          },
+          tag: "0.1.0",
+          instances: [
+            {
+              instance_id: "camera_right",
+              parameters: {
+                device: {
+                  physical: "/dev/video_right",
+                  sim: "mujoco:camera_right",
+                  priority: "physical"
+                },
+                video: {
+                  frame_rate: 30,
+                  resolution: {
+                    width: 1920,
+                    height: 1080,
+                  },
+                  encoding: "yuyv",
+                },
+              }
+            },
+            {
+              instance_id: "camera_left",
+              parameters: {
+                device: {
+                  physical: "/dev/video_left",
+                  sim: "mujoco:camera_left",
+                  priority: "physical"
+                },
+                video: {
+                  frame_rate: 30,
+                  resolution: {
+                    width: 1920,
+                    height: 1080,
+                  },
+                  encoding: "yuyv",
+                },
+              }
+            }
+          ]
+        },
+        // `web_video_stream` depends on `uvc_camera`
+        {
+          // The test will add the web_video_stream to the local stack
+          name: "$WEB_VIDEO_STREAM",
+          tag: "0.1.0",
+          // Since it's optional, if the node cannot be found, it will be ignored
+          optional: false,
+          instances: [
+            {
+              instance_id: "stream_1",
+              parameters: {
+                http: {
+                  host: "0.0.0.0",
+                  port: 8083,
+                  cors_enabled: false,
+                  cors_origins: "*",
+                  max_connections: "2000",
+                  request_timeout_ms: "3000",
+                },
+                video_stream: {
+                  format: "mjpeg",
+                  quality: 3,
+                  max_fps: 30,
+                },
+              }
+            }
+          ]
+        },
+        {
+          name: "$BRAIN",
+          // The test will add the brain_node to the local stack
+          tag: "0.1.0",
+          instances: [
+            {
+              instance_id: "the_brain",
+              parameters: {}
+            }
+          ],
+        },
+        {
+          name: "$CONTROLLER",
+          // The test will add the controller_node to the local stack
+          tag: "0.1.0",
+          instances: [
+            {
+              instance_id: "the_nervous_system",
+              parameters: {}
+            }
+          ]
+        },
       ],
-    }},
-    {{
-      name: "{controller}",
-      // The test will add the controller_node to the local stack
-      tag: "0.1.0",
-      instances: [
-        {{
-          instance_id: "the_nervous_system",
-          parameters: {{}}
-        }}
-      ]
-    }},
-  ],
-  logging: {{
-    min_level: "info",
-    format: "text"
-  }}
-}}"#,
-        lidar_sensor = test_helpers::LIDAR_SENSOR_NODE_NAME,
-        git_repo = git_repo_path,
-        lidar_remote = lidar_remote,
-        uvc_camera = test_helpers::UVC_CAMERA_NODE_NAME,
-        uvc_remote = uvc_remote,
-        web_video_stream = test_helpers::WEB_VIDEO_STREAM_NODE_NAME,
-        brain = test_helpers::BRAIN_NODE_NAME,
-        controller = test_helpers::CONTROLLER_NODE_NAME,
-    );
-    assert_eq!(
-        launch_content, expected_launch_content,
-        "rendered launch file content should match expected json5"
-    );
+      logging: {
+        min_level: "info",
+        format: "text"
+      }
+    }"#
+    .replace("$LIDAR_SENSOR", test_helpers::LIDAR_SENSOR_NODE_NAME)
+    .replace("$GIT_REPO", &git_repo_path)
+    .replace("$LIDAR_REMOTE", &lidar_remote)
+    .replace("$UVC_CAMERA", test_helpers::UVC_CAMERA_NODE_NAME)
+    .replace("$UVC_REMOTE", &uvc_remote)
+    .replace(
+        "$WEB_VIDEO_STREAM",
+        test_helpers::WEB_VIDEO_STREAM_NODE_NAME,
+    )
+    .replace("$BRAIN", test_helpers::BRAIN_NODE_NAME)
+    .replace("$CONTROLLER", test_helpers::CONTROLLER_NODE_NAME);
+
+    let launch_file = write_config_str(project_dir.join("peppy_launcher.json5"), &launch_content);
 
     let node_path = |name: &str| project_dir.join(name).join("peppy.json5");
 
