@@ -53,9 +53,7 @@ fn http_bundle_is_downloaded_and_resolved() {
     assert!(stack.contains("uvc_camera", "1.2.3"));
 
     let deployment = report
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "uvc_camera")
+        .find_deployment_by_name("uvc_camera")
         .expect("uvc_camera planned");
     assert!(
         deployment.is_resolved(),
@@ -121,9 +119,7 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
     assert_eq!(plan.node_stack().len(), 2, "master + uvc_camera");
     let planned = plan
         .report()
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "uvc_camera")
+        .find_deployment_by_name("uvc_camera")
         .expect("uvc_camera planned");
     assert!(planned.is_resolved(), "http deployment should resolve");
     let launch_cmd_v1 = planned
@@ -154,9 +150,7 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
     assert_eq!(plan.node_stack().len(), 2, "master + uvc_camera");
     let planned = plan
         .report()
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "uvc_camera")
+        .find_deployment_by_name("uvc_camera")
         .expect("uvc_camera planned");
     assert!(
         planned.is_resolved(),

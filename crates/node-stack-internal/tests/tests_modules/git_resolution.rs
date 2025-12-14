@@ -48,9 +48,7 @@ fn git_repo_is_cloned_and_resolved() {
     assert!(stack.contains("uvc_camera", "1.2.3"));
 
     let deployment = report
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "uvc_camera")
+        .find_deployment_by_name("uvc_camera")
         .expect("uvc_camera planned");
     assert!(deployment.is_resolved());
 
@@ -105,11 +103,7 @@ fn git_repo_missing_tag_is_unresolvable() {
     );
 
     let lidar_deployment = report
-        .deployments()
-        .iter()
-        .find(|deployment| {
-            deployment.deployment().name.as_str() == test_helpers::LIDAR_SENSOR_NODE_NAME
-        })
+        .find_deployment_by_name(test_helpers::LIDAR_SENSOR_NODE_NAME)
         .expect("lidar planned");
 
     assert!(
@@ -180,9 +174,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
     assert_eq!(plan.node_stack().len(), 2, "master + uvc_camera");
     let deployment = plan
         .report()
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "uvc_camera")
+        .find_deployment_by_name("uvc_camera")
         .expect("uvc_camera planned");
     assert!(deployment.is_resolved(), "git deployment should resolve");
     let launch_cmd_v1 = deployment
@@ -220,9 +212,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
     assert_eq!(plan.node_stack().len(), 2, "master + uvc_camera");
     let deployment = plan
         .report()
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "uvc_camera")
+        .find_deployment_by_name("uvc_camera")
         .expect("uvc_camera planned");
     assert!(
         deployment.is_resolved(),

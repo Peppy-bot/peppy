@@ -1,5 +1,3 @@
-use std::collections::{BTreeMap, BTreeSet};
-
 use crate::helpers::config_common::master_node_config;
 use crate::helpers::config_common::{node_config, write_config_str};
 use crate::helpers::git::create_simple_git_repo;
@@ -9,25 +7,34 @@ use config::test_helpers;
 use httptest::{Expectation, Server, matchers::request, responders::status_code};
 use node_stack::NodeStackError as Error;
 use node_stack::{LaunchPlan, NodeStack};
+use std::collections::{BTreeMap, BTreeSet};
 use tempfile::TempDir;
 use tempfile::tempdir;
 
+fn deps(names: &[&str]) -> BTreeSet<String> {
+    names.iter().map(|name| (*name).to_string()).collect()
+}
+
+fn deps_of(name: &str, deps_by_name: &BTreeMap<String, Vec<String>>) -> BTreeSet<String> {
+    deps_by_name
+        .get(name)
+        .cloned()
+        .unwrap_or_else(|| panic!("{} node should be present", name))
+        .into_iter()
+        .collect()
+}
+
 fn assert_deployment_not_resolvable(
-    launch_file: &std::path::Path,
+    plan: &LaunchPlan,
     deployment_name: &str,
     expected_identifier: &str,
     expected_reason_substring: &str,
 ) {
-    let plan = LaunchPlan::from_launch_file(master_node_config(), launch_file, None).expect("plan");
-
-    assert_eq!(plan.node_stack().len(), 1, "only master should be present");
-
     let planned = plan
         .report()
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == deployment_name)
-        .unwrap_or_else(|| panic!("{deployment_name} planned"));
+        .find_deployment_by_name(deployment_name)
+        .unwrap_or_else(|| panic!("deployment '{deployment_name}' not found"));
+
     assert!(
         !planned.is_resolved(),
         "{deployment_name} should be unresolved"
@@ -37,12 +44,13 @@ fn assert_deployment_not_resolvable(
         .error()
         .expect("unresolved deployment should carry error");
     let Error::DeploymentNotResolvable(identifier, reason) = error else {
-        panic!("unexpected error variant: {error:?}");
+        panic!("expected DeploymentNotResolvable, got: {error:?}");
     };
+
     assert_eq!(identifier, expected_identifier);
     assert!(
         reason.contains(expected_reason_substring),
-        "unexpected error reason: {reason}"
+        "reason '{reason}' should contain '{expected_reason_substring}'"
     );
 }
 
@@ -306,20 +314,8 @@ fn launcher_file_resolves_dependency_graph() {
         })
         .collect();
 
-    let deps = |names: &[&str]| -> BTreeSet<String> {
-        names.iter().map(|name| (*name).to_string()).collect()
-    };
-    let deps_of = |name: &str| -> BTreeSet<String> {
-        deps_by_name
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| panic!("{} node should be present", name))
-            .into_iter()
-            .collect()
-    };
-
     assert_eq!(
-        deps_of(test_helpers::BRAIN_NODE_NAME),
+        deps_of(test_helpers::BRAIN_NODE_NAME, &deps_by_name),
         deps(&[
             test_helpers::CONTROLLER_NODE_NAME,
             test_helpers::LIDAR_SENSOR_NODE_NAME,
@@ -328,12 +324,12 @@ fn launcher_file_resolves_dependency_graph() {
         "brain dependencies"
     );
     assert_eq!(
-        deps_of(test_helpers::CONTROLLER_NODE_NAME),
+        deps_of(test_helpers::CONTROLLER_NODE_NAME, &deps_by_name),
         deps(&[]),
         "controller dependencies"
     );
     assert_eq!(
-        deps_of(test_helpers::WEB_VIDEO_STREAM_NODE_NAME),
+        deps_of(test_helpers::WEB_VIDEO_STREAM_NODE_NAME, &deps_by_name),
         deps(&[test_helpers::UVC_CAMERA_NODE_NAME]),
         "web_video_stream dependencies"
     );
@@ -342,7 +338,7 @@ fn launcher_file_resolves_dependency_graph() {
 }
 
 #[test]
-fn deployment_with_zero_instances_is_unresolved() {
+fn launcher_deployment_with_zero_instances_is_unresolved() {
     let temp_dir = tempdir().expect("temp dir");
 
     let alpha_source = format!("file://{}/alpha", temp_dir.path().display());
@@ -373,9 +369,7 @@ fn deployment_with_zero_instances_is_unresolved() {
 
     let alpha = plan
         .report()
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "alpha")
+        .find_deployment_by_name("alpha")
         .expect("alpha deployment should be present");
     assert!(!alpha.is_resolved(), "alpha should be unresolved");
 
@@ -389,146 +383,95 @@ fn deployment_with_zero_instances_is_unresolved() {
     );
 }
 
+/// Mismatched manifest fields (name or tag) in downloaded node vs launcher config makes remote deployment unresolvable.
 #[test]
-fn remote_deployment_manifest_name_mismatch_is_unresolved() {
-    let expected_identifier = "uvc_camera:1.2.3";
-
-    {
-        let temp_dir = tempdir().expect("temp dir");
-        let manifest_content = r#"{
-            schema_version: 1,
-            manifest: { name: "uvc_camera_wrong", tag: "1.2.3" }
-        }"#;
-        let remote = create_simple_git_repo(manifest_content, "1.2.3");
-
-        let launch_file = write_config_str(
-            temp_dir.path().join("peppy_launcher.json5"),
-            &r#"{
-                deployments: [
-                    {
-                        name: "uvc_camera",
-                        source: { repo: "$GIT_REPO" },
-                        tag: "1.2.3",
-                        instances: [{ instance_id: "uvc_camera_1", parameters: {} }]
-                    }
-                ]
-            }"#
-            .replace("$GIT_REPO", &remote.path().to_string_lossy()),
+fn remote_deployment_manifest_mismatch_is_unresolved() {
+    fn assert_mismatch(manifest_name: &str, manifest_tag: &str, expected_reason_substring: &str) {
+        let expected_identifier = "uvc_camera:1.2.3";
+        let manifest_content = format!(
+            r#"{{
+                schema_version: 1,
+                manifest: {{ name: "{manifest_name}", tag: "{manifest_tag}" }}
+            }}"#
         );
 
-        assert_deployment_not_resolvable(
-            &launch_file,
-            "uvc_camera",
-            expected_identifier,
-            "node name",
-        );
+        // Test with git source
+        {
+            let temp_dir = tempdir().expect("temp dir");
+            let remote = create_simple_git_repo(&manifest_content, "1.2.3");
+
+            let launch_file = write_config_str(
+                temp_dir.path().join("peppy_launcher.json5"),
+                &r#"{
+                    deployments: [
+                        {
+                            name: "uvc_camera",
+                            source: { repo: "$GIT_REPO" },
+                            tag: "1.2.3",
+                            instances: [{ instance_id: "uvc_camera_1", parameters: {} }]
+                        }
+                    ]
+                }"#
+                .replace("$GIT_REPO", &remote.path().to_string_lossy()),
+            );
+
+            let plan = LaunchPlan::from_launch_file(master_node_config(), &launch_file, None)
+                .expect("plan");
+            assert_eq!(plan.node_stack().len(), 1, "only master should be present");
+            assert_deployment_not_resolvable(
+                &plan,
+                "uvc_camera",
+                expected_identifier,
+                expected_reason_substring,
+            );
+        }
+
+        // Test with http source
+        {
+            let temp_dir = tempdir().expect("temp dir");
+            let bundle_dir = tempdir().expect("bundle dir");
+            let server = Server::run();
+
+            let bundle_bytes =
+                create_http_bundle(bundle_dir.path(), "uvc_camera.tar.zst", &manifest_content);
+            server.expect(
+                Expectation::matching(request::method_path("GET", "/bundles/uvc_camera.tar.zst"))
+                    .respond_with(status_code(200).body(bundle_bytes)),
+            );
+
+            let url = server.url("/bundles/uvc_camera.tar.zst");
+            let launch_file = write_config_str(
+                temp_dir.path().join("peppy_launcher.json5"),
+                &r#"{
+                    deployments: [
+                        {
+                            name: "uvc_camera",
+                            tag: "1.2.3",
+                            source: { bundle_url: "$URL" },
+                            instances: [{ instance_id: "uvc_camera_1", parameters: {} }]
+                        }
+                    ]
+                }"#
+                .replace("$URL", &url.to_string()),
+            );
+
+            let plan = LaunchPlan::from_launch_file(master_node_config(), &launch_file, None)
+                .expect("plan");
+            assert_eq!(plan.node_stack().len(), 1, "only master should be present");
+            assert_deployment_not_resolvable(
+                &plan,
+                "uvc_camera",
+                expected_identifier,
+                expected_reason_substring,
+            );
+        }
     }
 
-    {
-        let temp_dir = tempdir().expect("temp dir");
-        let bundle_dir = tempdir().expect("bundle dir");
-        let server = Server::run();
+    // Name mismatch: manifest has wrong name
+    assert_mismatch("uvc_camera_wrong", "1.2.3", "node name");
 
-        let manifest_content = r#"{
-            schema_version: 1,
-            manifest: { name: "uvc_camera_wrong", tag: "1.2.3" }
-        }"#;
-        let bundle_bytes =
-            create_http_bundle(bundle_dir.path(), "uvc_camera.tar.zst", manifest_content);
-        server.expect(
-            Expectation::matching(request::method_path("GET", "/bundles/uvc_camera.tar.zst"))
-                .respond_with(status_code(200).body(bundle_bytes)),
-        );
-
-        let url = server.url("/bundles/uvc_camera.tar.zst");
-        let launch_file = write_config_str(
-            temp_dir.path().join("peppy_launcher.json5"),
-            &r#"{
-                deployments: [
-                    {
-                        name: "uvc_camera",
-                        tag: "1.2.3",
-                        source: { bundle_url: "$URL" },
-                        instances: [{ instance_id: "uvc_camera_1", parameters: {} }]
-                    }
-                ]
-            }"#
-            .replace("$URL", &url.to_string()),
-        );
-
-        assert_deployment_not_resolvable(
-            &launch_file,
-            "uvc_camera",
-            expected_identifier,
-            "node name",
-        );
-    }
-}
-
-#[test]
-fn remote_deployment_manifest_tag_mismatch_is_unresolved() {
-    let expected_identifier = "uvc_camera:1.2.3";
-
-    {
-        let temp_dir = tempdir().expect("temp dir");
-        let manifest_content = r#"{
-            schema_version: 1,
-            manifest: { name: "uvc_camera", tag: "9.9.9" }
-        }"#;
-        let remote = create_simple_git_repo(manifest_content, "1.2.3");
-
-        let launch_file = write_config_str(
-            temp_dir.path().join("peppy_launcher.json5"),
-            &r#"{
-                deployments: [
-                    {
-                        name: "uvc_camera",
-                        source: { repo: "$GIT_REPO" },
-                        tag: "1.2.3",
-                        instances: [{ instance_id: "uvc_camera_1", parameters: {} }]
-                    }
-                ]
-            }"#
-            .replace("$GIT_REPO", &remote.path().to_string_lossy()),
-        );
-
-        assert_deployment_not_resolvable(&launch_file, "uvc_camera", expected_identifier, "tag");
-    }
-
-    {
-        let temp_dir = tempdir().expect("temp dir");
-        let bundle_dir = tempdir().expect("bundle dir");
-        let server = Server::run();
-
-        let manifest_content = r#"{
-            schema_version: 1,
-            manifest: { name: "uvc_camera", tag: "9.9.9" }
-        }"#;
-        let bundle_bytes =
-            create_http_bundle(bundle_dir.path(), "uvc_camera.tar.zst", manifest_content);
-        server.expect(
-            Expectation::matching(request::method_path("GET", "/bundles/uvc_camera.tar.zst"))
-                .respond_with(status_code(200).body(bundle_bytes)),
-        );
-
-        let url = server.url("/bundles/uvc_camera.tar.zst");
-        let launch_file = write_config_str(
-            temp_dir.path().join("peppy_launcher.json5"),
-            &r#"{
-                deployments: [
-                    {
-                        name: "uvc_camera",
-                        tag: "1.2.3",
-                        source: { bundle_url: "$URL" },
-                        instances: [{ instance_id: "uvc_camera_1", parameters: {} }]
-                    }
-                ]
-            }"#
-            .replace("$URL", &url.to_string()),
-        );
-
-        assert_deployment_not_resolvable(&launch_file, "uvc_camera", expected_identifier, "tag");
-    }
+    // Tag mismatch: manifest has wrong tag
+    assert_mismatch("uvc_camera", "9.9.9", "tag");
 }
 
 /// Uses the example where lidar parameters reference fields unsupported by the
@@ -539,55 +482,55 @@ fn deployment_with_invalid_parameters_is_unresolved() {
     let launch_file = write_config_str(
         temp_dir.path().join("peppy_launcher.json5"),
         r#"{
-            deployments: [
+          deployments: [
+            {
+              name: "lidar_sensor",
+              tag: "0.1.0",
+              source: "file://./lidar_sensor",
+              instances: [
                 {
-                    name: "lidar_sensor",
-                    tag: "0.1.0",
-                    source: "file://./lidar_sensor",
-                    instances: [
-                        {
-                            instance_id: "lidar_1",
-                            parameters: {
-                                device: {
-                                    physical: "/dev/lidar1",
-                                    sim: "mujoco:lidar1",
-                                    priority: "sim"
-                                },
-                                lidar_point: {
-                                    fps: 30
-                                }
-                            }
-                        }
-                    ]
+                  instance_id: "lidar_1",
+                  parameters: {
+                    device: {
+                      physical: "/dev/lidar1",
+                      sim: "mujoco:lidar1",
+                      priority: "sim"
+                    },
+                  lidar_point: {
+                    fps: 30
+                  }
                 }
+              }
             ]
-        }"#,
+          }
+        ]
+    }"#,
     );
 
     let lidar_node: NodeConfig = serde_json5::from_str(
         r#"{
-            schema_version: 1,
-            manifest: {
-                name: "lidar_sensor",
-                tag: "0.1.0"
-            },
-            parameters: {
-                device: {
-                    physical: "string",
-                    sim: "string",
-                    priority: "string"
-                },
-                lidar_point: {
-                    x: "f32",
-                    y: "f32",
-                    z: "f32",
-                    intensity: "f32",
-                    return_type: "u8",
-                    classification: "u8",
-                    timestamp: "time"
-                }
-            }
-        }"#,
+        schema_version: 1,
+        manifest: {
+          name: "lidar_sensor",
+          tag: "0.1.0"
+        },
+        parameters: {
+          device: {
+            physical: "string",
+            sim: "string",
+            priority: "string"
+          },
+          lidar_point: {
+            x: "f32",
+            y: "f32",
+            z: "f32",
+            intensity: "f32",
+            return_type: "u8",
+            classification: "u8",
+            timestamp: "time"
+          }
+        }
+    }"#,
     )
     .expect("valid lidar node config");
 
@@ -602,9 +545,7 @@ fn deployment_with_invalid_parameters_is_unresolved() {
 
     let lidar = plan
         .report()
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "lidar_sensor")
+        .find_deployment_by_name("lidar_sensor")
         .expect("lidar planned");
     assert!(!lidar.is_resolved(), "lidar should be unresolved");
 
@@ -704,9 +645,7 @@ fn deployment_parameters_with_invalid_type_is_unresolved() {
 
     let sensor = plan
         .report()
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "sensor")
+        .find_deployment_by_name("sensor")
         .expect("sensor planned");
     assert!(!sensor.is_resolved(), "sensor should be unresolved");
 
@@ -727,6 +666,8 @@ fn deployment_parameters_with_invalid_type_is_unresolved() {
     assert_eq!(actual, "string");
 }
 
+/// Verifies that instance IDs explicitly defined in deployment configurations
+/// are preserved in the resulting node stack, rather than being auto-generated.
 #[test]
 fn build_node_stack_uses_deployment_instance_ids() {
     let temp_dir = tempdir().expect("temp dir");
@@ -783,6 +724,149 @@ fn build_node_stack_uses_deployment_instance_ids() {
 }
 
 #[test]
+fn optional_node_excluded_when_unresolvable() {
+    let git_repo_temp_dir = TempDir::new().unwrap();
+    let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
+
+    let root_temp_dir = TempDir::new().unwrap();
+    let root = root_temp_dir.path();
+
+    let git_repo_path = git_repo_path.to_str().unwrap().to_owned();
+    let uvc_remote = format!("nodes/{}", test_helpers::UVC_CAMERA_NODE_NAME);
+    let web_remote = format!("nodes/{}", test_helpers::WEB_VIDEO_STREAM_NODE_NAME);
+
+    let launch_content = r#"{
+  deployments: [
+    {
+      name: "$UVC",
+      source: {
+        repo: "$REPO",
+        path: "$UVC_REMOTE"
+      },
+      tag: "0.1.0",
+      instances: [
+        {
+          instance_id: "camera_right",
+          parameters: {
+            device: {
+              physical: "/dev/video_right",
+              sim: "mujoco:camera_right",
+              priority: "physical"
+            },
+            video: {
+              frame_rate: 30,
+              resolution: {
+                width: 1920,
+                height: 1080,
+              },
+              encoding: "yuyv",
+            },
+          }
+        }
+      ]
+    },
+    {
+      name: "$WEB",
+      source: {
+        repo: "$REPO",
+        path: "$WEB_REMOTE"
+      },
+      optional: true,
+      tag: "9.9.9",
+      instances: [
+        {
+          instance_id: "video_stream1",
+          parameters: {
+            http: {
+              host: "0.0.0.0",
+              port: 8083,
+              cors_enabled: false,
+              cors_origins: "*",
+              max_connections: "2000",
+              request_timeout_ms: "3000",
+            },
+            video_stream: {
+              format: "mjpeg",
+              quality: 3,
+              max_fps: 30,
+            },
+          }
+        }
+      ]
+    }
+  ],
+  logging: {
+    min_level: "info",
+    format: "text"
+  }
+}"#
+    .replace("$UVC", test_helpers::UVC_CAMERA_NODE_NAME)
+    .replace("$REPO", &git_repo_path)
+    .replace("$UVC_REMOTE", &uvc_remote)
+    .replace("$WEB", test_helpers::WEB_VIDEO_STREAM_NODE_NAME)
+    .replace("$WEB_REMOTE", &web_remote);
+
+    let launch_file = root.join("peppy_launcher.json5");
+    std::fs::write(&launch_file, launch_content).expect("failed to write launch config");
+
+    let plan =
+        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    let stack = plan.node_stack();
+    let report = plan.report();
+
+    assert_eq!(
+        stack.len(),
+        2,
+        "stack should contain master + required deployment"
+    );
+    assert!(stack.contains(test_helpers::UVC_CAMERA_NODE_NAME, "0.1.0"));
+    assert!(
+        !stack.contains(test_helpers::WEB_VIDEO_STREAM_NODE_NAME, "9.9.9"),
+        "unresolvable optional deployment should not be inserted"
+    );
+    assert!(
+        report.dependency_errors().is_empty(),
+        "expected no dependency errors, got: {:?}",
+        report.dependency_errors()
+    );
+
+    let required = report
+        .find_deployment_by_name(test_helpers::UVC_CAMERA_NODE_NAME)
+        .expect("required deployment planned");
+    assert!(required.is_resolved(), "required deployment must resolve");
+
+    let optional = report
+        .find_deployment_by_name(test_helpers::WEB_VIDEO_STREAM_NODE_NAME)
+        .expect("optional deployment planned");
+    assert!(
+        !optional.is_resolved(),
+        "optional deployment should be unresolved"
+    );
+
+    let present_names: BTreeSet<String> = stack
+        .snapshot()
+        .into_iter()
+        .map(|entity| entity.config().manifest.name.as_str().to_owned())
+        .collect();
+    assert!(
+        !present_names.contains(test_helpers::WEB_VIDEO_STREAM_NODE_NAME),
+        "optional deployment should not appear in the stack when it fails to resolve"
+    );
+
+    let nodes_cache_dir = root.join(".peppy").join("nodes");
+    assert!(
+        nodes_cache_dir.is_dir(),
+        "nodes cache dir {:?} should exist",
+        nodes_cache_dir
+    );
+    assert!(
+        test_helpers::cached_node_exists(&nodes_cache_dir, test_helpers::UVC_CAMERA_NODE_NAME),
+        "required node should be cached under {:?}",
+        nodes_cache_dir
+    );
+}
+
+#[test]
 fn optional_dependency_from_launcher_missing_is_unresolved() {
     let temp_dir = tempdir().expect("temp dir");
 
@@ -826,16 +910,12 @@ fn optional_dependency_from_launcher_missing_is_unresolved() {
     assert!(!stack.contains("beta", "1.0.0"));
 
     let alpha = report
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "alpha")
+        .find_deployment_by_name("alpha")
         .expect("alpha planned");
     assert!(alpha.is_resolved(), "alpha node config should resolve");
 
     let beta = report
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "beta")
+        .find_deployment_by_name("beta")
         .expect("beta planned");
     assert!(!beta.is_resolved(), "beta should be unresolved");
     assert!(matches!(
@@ -843,6 +923,10 @@ fn optional_dependency_from_launcher_missing_is_unresolved() {
         Error::DeploymentNotResolvable(_, _)
     ));
 
+    assert!(
+        !report.dependency_errors().is_empty(),
+        "expected dependency errors but got none"
+    );
     assert!(
         report.dependency_errors().iter().any(|error| matches!(
             error,
@@ -903,16 +987,12 @@ fn optional_dependency_from_launcher_with_wrong_tag_is_unresolved() {
     assert!(!stack.contains("beta", "2.0.0"));
 
     let alpha = report
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "alpha")
+        .find_deployment_by_name("alpha")
         .expect("alpha planned");
     assert!(alpha.is_resolved(), "alpha node config should resolve");
 
     let beta = report
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "beta")
+        .find_deployment_by_name("beta")
         .expect("beta planned");
     assert!(!beta.is_resolved(), "beta should be unresolved");
     assert!(matches!(
@@ -920,6 +1000,10 @@ fn optional_dependency_from_launcher_with_wrong_tag_is_unresolved() {
         Error::DeploymentNotResolvable(_, _)
     ));
 
+    assert!(
+        !report.dependency_errors().is_empty(),
+        "expected dependency errors but got none"
+    );
     assert!(
         report.dependency_errors().iter().any(|error| matches!(
             error,
@@ -932,7 +1016,7 @@ fn optional_dependency_from_launcher_with_wrong_tag_is_unresolved() {
 }
 
 #[test]
-fn optional_dependency_resolved_allows_dependant_to_resolve() {
+fn dependant_resolves_when_optional_dependency_resolves() {
     let temp_dir = tempdir().expect("temp dir");
 
     let alpha_source = format!("file://{}/alpha", temp_dir.path().display());
@@ -984,16 +1068,12 @@ fn optional_dependency_resolved_allows_dependant_to_resolve() {
     );
 
     let alpha = report
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "alpha")
+        .find_deployment_by_name("alpha")
         .expect("alpha planned");
     assert!(alpha.is_resolved());
 
     let beta = report
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "beta")
+        .find_deployment_by_name("beta")
         .expect("beta planned");
     assert!(beta.is_resolved());
 
@@ -1006,11 +1086,18 @@ fn optional_dependency_resolved_allows_dependant_to_resolve() {
 }
 
 #[test]
-fn optional_dependency_unresolved_causes_dependant_error() {
+fn dependant_errors_when_optional_dependency_unresolved() {
+    // alpha: non-optional, no dependencies
+    // beta: optional, cannot resolve (no instances)
+    // gamma: non-optional, depends on beta
+    //
+    // Expected: gamma cannot resolve because beta (its dependency) is unresolved.
+    // Even though beta is optional, it must have at least one instance to be valid.
     let temp_dir = tempdir().expect("temp dir");
 
     let alpha_source = format!("file://{}/alpha", temp_dir.path().display());
     let beta_source = format!("file://{}/beta", temp_dir.path().display());
+    let gamma_source = format!("file://{}/gamma", temp_dir.path().display());
     let launch_file = write_config_str(
         temp_dir.path().join("peppy_launcher.json5"),
         &r#"{
@@ -1027,19 +1114,30 @@ fn optional_dependency_unresolved_causes_dependant_error() {
                     source: "$BETA_SOURCE",
                     optional: true,
                     instances: []
+                },
+                {
+                    name: "gamma",
+                    tag: "1.0.0",
+                    source: "$GAMMA_SOURCE",
+                    instances: [{ instance_id: "gamma_1" }]
                 }
             ]
         }"#
         .replace("$ALPHA_SOURCE", &alpha_source)
-        .replace("$BETA_SOURCE", &beta_source),
+        .replace("$BETA_SOURCE", &beta_source)
+        .replace("$GAMMA_SOURCE", &gamma_source),
     );
 
-    let alpha_node = node_config("alpha", "1.0.0", &[("beta", "1.0.0")]);
+    let alpha_node = node_config("alpha", "1.0.0", &[]);
+    let gamma_node = node_config("gamma", "1.0.0", &[("beta", "1.0.0")]);
 
     let input_stack = NodeStack::new(master_node_config(), None);
     input_stack
         .push_config(&alpha_node, None, true)
         .expect("alpha node inserted");
+    input_stack
+        .push_config(&gamma_node, None, true)
+        .expect("gamma node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
     let stack = plan.node_stack();
@@ -1047,18 +1145,15 @@ fn optional_dependency_unresolved_causes_dependant_error() {
 
     assert!(stack.contains("alpha", "1.0.0"));
     assert!(!stack.contains("beta", "1.0.0"));
+    assert!(stack.contains("gamma", "1.0.0"));
 
     let alpha = report
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "alpha")
+        .find_deployment_by_name("alpha")
         .expect("alpha planned");
     assert!(alpha.is_resolved(), "alpha node config should resolve");
 
     let beta = report
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "beta")
+        .find_deployment_by_name("beta")
         .expect("beta planned");
     assert!(!beta.is_resolved(), "beta should be unresolved");
     let Error::DeploymentNotResolvable(_, reason) = beta.error().expect("beta error") else {
@@ -1069,180 +1164,38 @@ fn optional_dependency_unresolved_causes_dependant_error() {
         "unexpected beta reason: {reason}"
     );
 
+    let gamma = report
+        .find_deployment_by_name("gamma")
+        .expect("gamma planned");
+    assert!(gamma.is_resolved(), "gamma node config should resolve");
+
+    assert!(
+        !report.dependency_errors().is_empty(),
+        "expected dependency errors but got none"
+    );
     assert!(
         report.dependency_errors().iter().any(|error| matches!(
             error,
             Error::MissingDependency { dependant, dependency, .. }
-                if dependant == "alpha" && dependency == "beta"
+                if dependant == "gamma" && dependency == "beta"
         )),
-        "expected alpha -> beta missing dependency error, got: {:?}",
+        "expected gamma -> beta missing dependency error, got: {:?}",
         report.dependency_errors()
     );
 }
 
-#[test]
-fn optional_node_excluded_when_unresolvable() {
-    let git_repo_temp_dir = TempDir::new().unwrap();
-    let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
-
-    let root_temp_dir = TempDir::new().unwrap();
-    let root = root_temp_dir.path();
-
-    let git_repo_path = git_repo_path.to_str().unwrap().to_owned();
-    let uvc_remote = format!("nodes/{}", test_helpers::UVC_CAMERA_NODE_NAME);
-    let web_remote = format!("nodes/{}", test_helpers::WEB_VIDEO_STREAM_NODE_NAME);
-
-    let launch_content = format!(
-        r#"{{
-  deployments: [
-    {{
-      name: "{uvc}",
-      source: {{
-        repo: "{repo}",
-        path: "{uvc_remote}"
-      }},
-      tag: "0.1.0",
-      instances: [
-        {{
-          instance_id: "camera_right",
-          parameters: {{
-            device: {{
-              physical: "/dev/video_right",
-              sim: "mujoco:camera_right",
-              priority: "physical"
-            }},
-            video: {{
-              frame_rate: 30,
-              resolution: {{
-                width: 1920,
-                height: 1080,
-              }},
-              encoding: "yuyv",
-            }},
-          }}
-        }}
-      ]
-    }},
-    {{
-      name: "{web}",
-      source: {{
-        repo: "{repo}",
-        path: "{web_remote}"
-      }},
-      optional: true,
-      tag: "9.9.9",
-      instances: [
-        {{
-          instance_id: "video_stream1",
-          parameters: {{
-            http: {{
-              host: "0.0.0.0",
-              port: 8083,
-              cors_enabled: false,
-              cors_origins: "*",
-              max_connections: "2000",
-              request_timeout_ms: "3000",
-            }},
-            video_stream: {{
-              format: "mjpeg",
-              quality: 3,
-              max_fps: 30,
-            }},
-          }}
-        }}
-      ]
-    }}
-  ],
-  logging: {{
-    min_level: "info",
-    format: "text"
-  }}
-}}"#,
-        uvc = test_helpers::UVC_CAMERA_NODE_NAME,
-        repo = git_repo_path,
-        uvc_remote = uvc_remote,
-        web = test_helpers::WEB_VIDEO_STREAM_NODE_NAME,
-        web_remote = web_remote,
-    );
-
-    let launch_file = root.join("peppy_launcher.json5");
-    std::fs::write(&launch_file, launch_content).expect("failed to write launch config");
-
-    let plan =
-        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
-    let stack = plan.node_stack();
-    let report = plan.report();
-
-    assert_eq!(
-        stack.len(),
-        2,
-        "stack should contain master + required deployment"
-    );
-    assert!(stack.contains(test_helpers::UVC_CAMERA_NODE_NAME, "0.1.0"));
-    assert!(
-        !stack.contains(test_helpers::WEB_VIDEO_STREAM_NODE_NAME, "9.9.9"),
-        "unresolvable optional deployment should not be inserted"
-    );
-    assert!(
-        report.dependency_errors().is_empty(),
-        "expected no dependency errors, got: {:?}",
-        report.dependency_errors()
-    );
-
-    let required = report
-        .deployments()
-        .iter()
-        .find(|deployment| {
-            deployment.deployment().name.as_str() == test_helpers::UVC_CAMERA_NODE_NAME
-        })
-        .expect("required deployment planned");
-    assert!(required.is_resolved(), "required deployment must resolve");
-
-    let optional = report
-        .deployments()
-        .iter()
-        .find(|deployment| {
-            deployment.deployment().name.as_str() == test_helpers::WEB_VIDEO_STREAM_NODE_NAME
-        })
-        .expect("optional deployment planned");
-    assert!(
-        !optional.is_resolved(),
-        "optional deployment should be unresolved"
-    );
-
-    let present_names: BTreeSet<String> = stack
-        .snapshot()
-        .into_iter()
-        .map(|entity| entity.config().manifest.name.as_str().to_owned())
-        .collect();
-    assert!(
-        !present_names.contains(test_helpers::WEB_VIDEO_STREAM_NODE_NAME),
-        "optional deployment should not appear in the stack when it fails to resolve"
-    );
-
-    let nodes_cache_dir = root.join(".peppy").join("nodes");
-    assert!(
-        nodes_cache_dir.is_dir(),
-        "nodes cache dir {:?} should exist",
-        nodes_cache_dir
-    );
-    assert!(
-        test_helpers::cached_node_exists(&nodes_cache_dir, test_helpers::UVC_CAMERA_NODE_NAME),
-        "required node should be cached under {:?}",
-        nodes_cache_dir
-    );
-}
-
-/// Tests that an optional deployment becomes required when a non-optional deployment depends on it.
+/// Tests that an optional deployment becomes required when a non-optional deployment depends on it,
+/// and verifies that unresolved deployments remain visible in the plan report.
 ///
 /// Scenario:
 /// - "alpha" is declared as `optional: true` in the launch file
 /// - "beta" is non-optional and depends on "alpha"
+/// - "gamma" is non-optional but has no matching node config (version 3.0.0 doesn't exist)
 /// - "alpha" cannot be resolved (no node config provided to the resolver)
 ///
 /// Expected behavior:
-/// - The plan report should include both deployments (alpha unresolved, beta resolved)
-/// - The node stack should only contain resolved deployments
+/// - The plan report should include all three deployments (alpha and gamma unresolved, beta resolved)
+/// - The node stack should only contain resolved deployments (master + beta)
 /// - The report should include a `MissingDependency` error for beta -> alpha
 ///
 /// This ensures that the optionality of a deployment is overridden when another
@@ -1252,81 +1205,6 @@ fn required_optional_dependency_surfaces_error() {
     let temp_dir = tempdir().expect("temp dir");
 
     // Alpha cannot be optional here since beta depends on it and it itself non-optional
-    let alpha_source = format!("file://{}/alpha", temp_dir.path().display());
-    let beta_source = format!("file://{}/beta", temp_dir.path().display());
-    let launch_file = write_config_str(
-        temp_dir.path().join("peppy_launcher.json5"),
-        &r#"{
-            deployments: [
-                {
-                    name: "alpha",
-                    tag: "1.0.0",
-                    source: "$ALPHA_SOURCE",
-                    optional: true,
-                    instances: [{ instance_id: "alpha_1" }]
-                },
-                {
-                    name: "beta",
-                    tag: "2.0.0",
-                    source: "$BETA_SOURCE",
-                    instances: [{ instance_id: "beta_1" }]
-                }
-            ]
-        }"#
-        .replace("$ALPHA_SOURCE", &alpha_source)
-        .replace("$BETA_SOURCE", &beta_source),
-    );
-
-    let beta_node = node_config("beta", "2.0.0", &[("alpha", "1.0.0")]);
-
-    let input_stack = NodeStack::new(master_node_config(), None);
-    input_stack
-        .push_config(&beta_node, None, true)
-        .expect("beta node inserted");
-
-    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
-    let stack = plan.node_stack();
-    let report = plan.report();
-
-    assert!(stack.contains("beta", "2.0.0"));
-    assert!(!stack.contains("alpha", "1.0.0"));
-
-    let alpha = report
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "alpha")
-        .expect("alpha planned");
-    assert!(!alpha.is_resolved());
-    assert!(matches!(
-        alpha.error().expect("alpha error"),
-        Error::DeploymentNotResolvable(_, _)
-    ));
-
-    let beta = report
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "beta")
-        .expect("beta planned");
-    assert!(beta.is_resolved());
-
-    assert!(
-        report.dependency_errors().iter().any(|error| matches!(
-            error,
-            Error::MissingDependency { dependant, dependency, .. }
-                if dependant == "beta" && dependency == "alpha"
-        )),
-        "expected beta -> alpha missing dependency error, got: {:?}",
-        report.dependency_errors()
-    );
-}
-
-// TODO: Double check, unresolved OPTIONAL `deployments` should be fine, unresolved `NodeEntity` in a node stack is not
-/// Verifies that unresolved deployments remain visible in the plan report.
-#[test]
-fn unresolved_deployments_remain_in_graph() {
-    let temp_dir = tempdir().expect("temp dir");
-
-    // Alpha cannot be optional here since beta depends on it and is itself non-optional
     // gamma version 3.0.0 does not exist
     let alpha_source = format!("file://{}/alpha", temp_dir.path().display());
     let beta_source = format!("file://{}/beta", temp_dir.path().display());
@@ -1372,6 +1250,7 @@ fn unresolved_deployments_remain_in_graph() {
 
     assert_eq!(report.deployments().len(), 3, "three deployments planned");
 
+    // Verify unresolved deployments remain visible in the report
     let unresolved_names: BTreeSet<_> = report
         .deployments()
         .iter()
@@ -1383,37 +1262,41 @@ fn unresolved_deployments_remain_in_graph() {
         BTreeSet::from(["alpha".to_string(), "gamma".to_string()])
     );
 
+    // Verify alpha is unresolved with expected error
     let alpha = report
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "alpha")
+        .find_deployment_by_name("alpha")
         .expect("alpha planned");
+    assert!(!alpha.is_resolved());
     assert!(matches!(
         alpha.error().expect("alpha error"),
         Error::DeploymentNotResolvable(_, _)
     ));
 
+    // Verify gamma is unresolved with expected error
     let gamma = report
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "gamma")
+        .find_deployment_by_name("gamma")
         .expect("gamma planned");
     assert!(matches!(
         gamma.error().expect("gamma error"),
         Error::DeploymentNotResolvable(_, _)
     ));
 
+    // Verify beta resolves successfully
     let beta = report
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "beta")
+        .find_deployment_by_name("beta")
         .expect("beta planned");
     assert!(beta.is_resolved(), "beta node config should resolve");
 
+    // Verify node stack only contains resolved deployments
     assert!(stack.contains("beta", "2.0.0"));
     assert!(!stack.contains("alpha", "1.0.0"));
     assert!(!stack.contains("gamma", "3.0.0"));
 
+    // Verify dependency error is reported
+    assert!(
+        !report.dependency_errors().is_empty(),
+        "expected dependency errors but got none"
+    );
     assert!(
         report.dependency_errors().iter().any(|error| matches!(
             error,
@@ -1426,7 +1309,7 @@ fn unresolved_deployments_remain_in_graph() {
 }
 
 #[test]
-fn missing_dependency_becomes_unresolved_node() {
+fn unlisted_dependency_reports_missing_error() {
     let temp_dir = tempdir().expect("temp dir");
 
     let alpha_source = format!("file://{}/alpha", temp_dir.path().display());
@@ -1460,12 +1343,14 @@ fn missing_dependency_becomes_unresolved_node() {
     assert!(!stack.contains("delta", "1.0.0"));
 
     let alpha = report
-        .deployments()
-        .iter()
-        .find(|deployment| deployment.deployment().name.as_str() == "alpha")
+        .find_deployment_by_name("alpha")
         .expect("alpha planned");
     assert!(alpha.is_resolved(), "alpha node config should resolve");
 
+    assert!(
+        !report.dependency_errors().is_empty(),
+        "expected dependency errors but got none"
+    );
     assert!(
         report.dependency_errors().iter().any(|error| matches!(
             error,
@@ -1478,7 +1363,7 @@ fn missing_dependency_becomes_unresolved_node() {
 }
 
 #[test]
-fn dependant_fails_when_dependency_missing_topic_interface() {
+fn missing_interface_on_dependency_is_reported() {
     let temp_dir = tempdir().expect("temp dir");
 
     let brain_source = format!("file://{}/brain", temp_dir.path().display());

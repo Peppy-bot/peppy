@@ -65,6 +65,12 @@ impl PlanReport {
         &self.deployments
     }
 
+    pub fn find_deployment_by_name(&self, name: &str) -> Option<&PlannedDeployment> {
+        self.deployments
+            .iter()
+            .find(|d| d.deployment().name.as_str() == name)
+    }
+
     pub fn dependency_errors(&self) -> &[Error] {
         &self.dependency_errors
     }
