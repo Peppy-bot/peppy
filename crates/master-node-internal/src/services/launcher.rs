@@ -15,7 +15,7 @@ pub async fn listen_for_launch_configuration(
     master_node_node: &str,
     instance_id: &str,
     node_name: &str,
-    _node_stack: Arc<NodeStack>,
+    node_stack: Arc<NodeStack>,
 ) -> Result<JoinHandle<Result<()>>> {
     let service_name = "launch_configuration";
     let mut endpoint = ServiceMessenger::listen(
@@ -53,8 +53,8 @@ fn handle_launcher_request_inner(context: &ServiceRequestContext) -> Result<Byte
     let request = LauncherRequest::decode(&payload.as_bytes())?;
 
     // TODO: build a config::PeppyLauncher based on request.peppy_launcher_json5
-    // TODO the command is supposed to find all the `peppy.json5` recursively in the `request.from_directory` folder. There is a feature like that available in the project
-    // TODO: Use `LocalNodeStackBuilder::from_launch_file` to create a new node stack and use it in place of `app_context.set_node_stack`
+    // TODO the command is supposed to find all the `peppy.json5` recursively in the `request.from_directory` folder. There is a feature like that available in the project already, `launcher_file_resolves_dependency_graph` gives an overview of how it's done
+    // TODO: Use `LaunchPlan::from_launch_file` to create a new node stack with the current master node and replace the `node_stack: Arc<NodeStack>` passed to `listen_for_launch_configuration` with this one
 
     LauncherResponse::new().encode()
 }
