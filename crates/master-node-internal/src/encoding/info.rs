@@ -8,75 +8,52 @@ use crate::info_capnp;
 
 use super::{decode_message, encode_message};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InfoType {
-    Uptime,
-    HostName,
-    MasterNodeName,
-    MasterNodeInstanceId,
-}
-
-impl From<InfoType> for info_capnp::InfoType {
-    fn from(value: InfoType) -> Self {
-        match value {
-            InfoType::Uptime => info_capnp::InfoType::Uptime,
-            InfoType::MasterNodeName => info_capnp::InfoType::MasterNodeName,
-            InfoType::MasterNodeInstanceId => info_capnp::InfoType::MasterNodeInstanceId,
-            InfoType::HostName => info_capnp::InfoType::HostName,
-        }
-    }
-}
-
-impl From<info_capnp::InfoType> for InfoType {
-    fn from(value: info_capnp::InfoType) -> Self {
-        match value {
-            info_capnp::InfoType::Uptime => InfoType::Uptime,
-            info_capnp::InfoType::MasterNodeName => InfoType::MasterNodeName,
-            info_capnp::InfoType::MasterNodeInstanceId => InfoType::MasterNodeInstanceId,
-            info_capnp::InfoType::HostName => InfoType::HostName,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InfoRequest {
-    pub info_type: InfoType,
-}
+pub struct InfoRequest {}
 
 impl InfoRequest {
-    pub fn new(info_type: InfoType) -> Self {
-        Self { info_type }
+    pub fn new() -> Self {
+        Self {}
     }
 
     pub fn encode(&self) -> Result<Bytes> {
         let mut builder = Builder::new_default();
         {
-            let mut request = builder.init_root::<info_capnp::info_request::Builder>();
-            request.set_info_type(self.info_type.into());
+            builder.init_root::<info_capnp::info_request::Builder>();
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<info_capnp::info_request::Reader>()?;
-        Ok(Self {
-            info_type: request.get_info_type()?.into(),
-        })
+        reader.get_root::<info_capnp::info_request::Reader>()?;
+        Ok(Self {})
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InfoResponse {
-    pub info_type: InfoType,
-    pub value: String,
+    pub uptime_secs: u64,
+    pub master_node_name: String,
+    pub master_node_instance_id: String,
+    pub host_name: String,
+    pub node_count: u32,
 }
 
 impl InfoResponse {
-    pub fn new(info_type: InfoType, value: impl Into<String>) -> Self {
+    pub fn new(
+        uptime_secs: u64,
+        master_node_name: impl Into<String>,
+        master_node_instance_id: impl Into<String>,
+        host_name: impl Into<String>,
+        node_count: u32,
+    ) -> Self {
         Self {
-            info_type,
-            value: value.into(),
+            uptime_secs,
+            master_node_name: master_node_name.into(),
+            master_node_instance_id: master_node_instance_id.into(),
+            host_name: host_name.into(),
+            node_count,
         }
     }
 
@@ -84,8 +61,11 @@ impl InfoResponse {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<info_capnp::info_response::Builder>();
-            response.set_info_type(self.info_type.into());
-            response.set_value(&self.value);
+            response.set_uptime_secs(self.uptime_secs);
+            response.set_master_node_name(&self.master_node_name);
+            response.set_master_node_instance_id(&self.master_node_instance_id);
+            response.set_host_name(&self.host_name);
+            response.set_node_count(self.node_count);
         }
         encode_message(&builder)
     }
@@ -94,8 +74,14 @@ impl InfoResponse {
         let reader = decode_message(data)?;
         let response = reader.get_root::<info_capnp::info_response::Reader>()?;
         Ok(Self {
-            info_type: response.get_info_type()?.into(),
-            value: response.get_value()?.to_str()?.to_owned(),
+            uptime_secs: response.get_uptime_secs(),
+            master_node_name: response.get_master_node_name()?.to_str()?.to_owned(),
+            master_node_instance_id: response
+                .get_master_node_instance_id()?
+                .to_str()?
+                .to_owned(),
+            host_name: response.get_host_name()?.to_str()?.to_owned(),
+            node_count: response.get_node_count(),
         })
     }
 }
