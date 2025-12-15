@@ -2,21 +2,13 @@
 
 # Info message structures for master-node services
 
-enum InfoType {
-    uptime @0;
-    masterNodeName @1;
-    masterNodeInstanceId @2;
-    hostName @3;
-}
-
 struct InfoRequest {
-    # Type of info requested
-    infoType @0 :InfoType;
 }
 
 struct InfoResponse {
-    # Type of info returned
-    infoType @0 :InfoType;
-    # The value of the requested info (string representation)
-    value @1 :Text;
+    uptimeSecs @0 :UInt64;
+    masterNodeName @1 :Text;
+    masterNodeInstanceId @2 :Text;
+    hostName @3 :Text;
+    nodeCount @4 :UInt32;
 }

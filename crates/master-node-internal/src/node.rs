@@ -12,6 +12,7 @@ use peppylib::MessengerHandle;
 use pmi::Messenger;
 use rand::rng;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
 use tracing::info;
 
@@ -23,6 +24,7 @@ pub struct MasterNode {
     node_config: NodeConfig,
     instance_id: Name,
     messenger: MessengerHandle,
+    start_time: Instant,
 }
 
 impl MasterNode {
@@ -56,6 +58,7 @@ impl MasterNode {
             node_config,
             instance_id,
             messenger,
+            start_time: Instant::now(),
         }
     }
 
@@ -100,6 +103,7 @@ impl MasterNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
+                self.start_time,
             )
             .await?,
             listen_for_launch_configuration(
