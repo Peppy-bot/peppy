@@ -3,6 +3,7 @@ use config::node::{Interfaces, Name, NodeConfig};
 use names_generator2::get_random;
 use petgraph::{
     Direction,
+    dot::{Config, Dot},
     stable_graph::{NodeIndex, StableDiGraph},
     visit::EdgeRef,
 };
@@ -15,7 +16,7 @@ use std::{
 
 /// This represent a single entity with n instances inside the node_stack.
 /// A NodeEntity always has at least one instance.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct NodeEntity {
     config: NodeConfig,
     root_path: Option<PathBuf>,
@@ -743,6 +744,28 @@ impl NodeStackInner {
         let idx = self.graph.add_node(root_entity);
         self.key_to_index.insert(self.root_key.clone(), idx);
     }
+
+    /// Returns the graph in DOT format for visualization.
+    fn to_dot(&self) -> String {
+        let dot = Dot::with_attr_getters(
+            &self.graph,
+            &[Config::EdgeNoLabel, Config::NodeNoLabel],
+            &|_, _| String::new(),
+            &|_, (_, node)| {
+                let name = node.config().manifest.name.as_str();
+                let tag = &node.config().manifest.tag;
+                let instance_count = node.instances().len();
+                format!(
+                    "label=\"{}:{}\\n({} instance{})\"",
+                    name,
+                    tag,
+                    instance_count,
+                    if instance_count == 1 { "" } else { "s" }
+                )
+            },
+        );
+        format!("{:?}", dot)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -876,5 +899,11 @@ impl NodeStack {
     pub fn reset(&self) {
         let mut guard = self.shared.write().expect("node stack poisoned");
         guard.clear();
+    }
+
+    /// Returns the graph in DOT format for visualization.
+    pub fn to_dot(&self) -> String {
+        let guard = self.shared.read().expect("node stack poisoned");
+        guard.to_dot()
     }
 }

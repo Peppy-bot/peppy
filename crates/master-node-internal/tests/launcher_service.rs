@@ -13,13 +13,13 @@ fn write_minimal_peppy_nodes(working_dir: &Path, node_names: &[&str]) {
             dir.join("peppy.json5"),
             format!(
                 r#"{{
-  schema_version: 1,
-  manifest: {{
-    name: "{node_name}",
-    tag: "0.1.0"
-  }}
-}}
-"#
+              schema_version: 1,
+              manifest: {{
+                name: "{node_name}",
+                tag: "0.1.0"
+              }}
+            }}
+            "#
             ),
         )
         .expect("failed to write peppy.json5");

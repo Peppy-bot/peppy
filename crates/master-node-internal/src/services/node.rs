@@ -66,7 +66,7 @@ fn handle_listen_for_node_cmd_inner(
 
     let value = match request.cmd {
         NodeCmd::Add => String::new(),
-        NodeCmd::List => "[]".to_string(),
+        NodeCmd::List => node_stack.to_dot(),
         NodeCmd::Synchronize => String::new(),
     };
 
