@@ -1,144 +1,329 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, setup_test_master_node};
-use master_node::encoding::{LauncherRequest, LauncherResponse};
-use peppylib::messaging::ServiceMessenger;
-use std::time::Duration;
+use common::setup_test_master_node;
+use std::collections::BTreeSet;
+use std::path::Path;
 use tempfile::TempDir;
+
+fn write_minimal_peppy_nodes(working_dir: &Path, node_names: &[&str]) {
+    for node_name in node_names {
+        let dir = working_dir.join(node_name);
+        std::fs::create_dir(&dir).expect("failed to create node directory");
+        std::fs::write(
+            dir.join("peppy.json5"),
+            format!(
+                r#"{{
+  schema_version: 1,
+  manifest: {{
+    name: "{node_name}",
+    tag: "0.1.0"
+  }}
+}}
+"#
+            ),
+        )
+        .expect("failed to write peppy.json5");
+    }
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_launch_config_request() {
-    let test_node = setup_test_master_node().await;
+    let (client, server) = setup_test_master_node().await;
 
-    // TODO Create a askama template dir?
-
-    // Create a working directory with the nodes of the config as subfolders
     let working_dir = TempDir::new().expect("failed to create temp directory");
-    let nodes = ["uvc_camera", "web_video_stream", "esp32_board"];
-    for node in &nodes {
-        std::fs::create_dir(working_dir.path().join(node))
-            .expect("failed to create node directory");
-    }
 
-    let launcher_config = r#"
-{
-  deployments: [
-    {
-      name: "uvc_camera",
-      source: {
-        repo: "https://github.com/Peppy/nodes.git",
-        path: "uvc_camera"
-      },
-      tag: "0.1.0",
-      instances: [
+    // Create a working directory with local nodes (peppy.json5) under it.
+    write_minimal_peppy_nodes(working_dir.path(), &["uvc_camera", "esp32_board"]);
+
+    let launcher_config = r#"{
+      deployments: [
         {
-          instance_id: "camera_front",
-          parameters: {
-            device: {
-              physical: "/dev/video_right",
-              sim: "mujoco:camera_right",
-              priority: "physical"
-            },
-            video: {
-              frame_rate: 30,
-              resolution: {
-                width: 1920,
-                height: 1080
-              },
-              encoding: "yuyv"
-            }
-          }
+          name: "uvc_camera",
+          tag: "0.1.0",
+          instances: [
+            { instance_id: "camera_front" },
+            { instance_id: "camera_rear" }
+          ]
         },
         {
-          instance_id: "camera_rear",
-          parameters: {
-            device: {
-              physical: "/dev/video_left",
-              sim: "mujoco:camera_left",
-              priority: "physical"
-            },
-            video: {
-              frame_rate: 30,
-              resolution: {
-                width: 1920,
-                height: 1080
-              },
-              encoding: "yuyv"
-            }
-          }
-        }
-      ]
-    },
-    {
-      name: "web_video_stream",
-      tag: "0.1.0",
-      optional: true,
-      instances: [
+          name: "web_video_stream",
+          tag: "0.1.0",
+          optional: true,
+          instances: [
+            { instance_id: "video_stream1" }
+          ]
+        },
         {
-          instance_id: "video_stream1",
-          parameters: {
-            camera_instances_ids: [
-              "camera_front",
-              "camera_rear"
-            ],
-            http: {
-              host: "0.0.0.0",
-              port: 8083,
-              cors_enabled: false,
-              cors_origins: "*",
-              max_connections: "2000",
-              request_timeout_ms: "3000"
-            },
-            video_stream: {
-              format: "mjpeg",
-              quality: 3,
-              max_fps: 30
-            }
-          }
+          name: "esp32_board",
+          tag: "0.1.0",
+          instances: [
+            { instance_id: "esp32_1" }
+          ]
         }
       ]
-    },
-    {
-      name: "esp32_board",
-      tag: "0.1.0",
-      instances: [
-        {
-          instance_id: "esp32_1",
-          env_vars: {
-            "ESP32_DEVICE": "/dev/tty.usbmodem585A0076841"
-          }
-        }
-      ]
-    }
-  ],
-  logging: {
-    min_level: "info",
-    file_name: "peppy_root.log",
-    max_file_size_mb: 100,
-    format: "text"
-  }
+    }"#;
+
+    let response = client
+        .poll_launcher(launcher_config, working_dir.path())
+        .await;
+
+    assert!(
+        response.success,
+        "launcher request should succeed, got error: {}",
+        response.error_message
+    );
+
+    assert_eq!(server.node_stack.len(), 3);
+    assert!(server.node_stack.contains("uvc_camera", "0.1.0"));
+    assert!(server.node_stack.contains("esp32_board", "0.1.0"));
+    assert!(
+        !server.node_stack.contains("web_video_stream", "0.1.0"),
+        "unresolvable optional deployment should not be inserted"
+    );
+
+    let uvc_entity = server
+        .node_stack
+        .find("uvc_camera", "0.1.0")
+        .expect("uvc_camera should exist");
+    let uvc_instances: BTreeSet<String> = uvc_entity
+        .instances()
+        .iter()
+        .map(|instance| instance.instance_id().as_str().to_owned())
+        .collect();
+    assert_eq!(
+        uvc_instances,
+        BTreeSet::from(["camera_front".to_string(), "camera_rear".to_string()])
+    );
+
+    let esp_entity = server
+        .node_stack
+        .find("esp32_board", "0.1.0")
+        .expect("esp32_board should exist");
+    let esp_instances: BTreeSet<String> = esp_entity
+        .instances()
+        .iter()
+        .map(|instance| instance.instance_id().as_str().to_owned())
+        .collect();
+    assert_eq!(esp_instances, BTreeSet::from(["esp32_1".to_string()]));
 }
-    "#;
 
-    let request = LauncherRequest::new(launcher_config, working_dir.path().to_str().unwrap());
-    let request_payload = request.encode().expect("failed to encode info request");
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_launch_config_invalid_json5_returns_error_and_does_not_mutate_stack() {
+    let (client, _server) = setup_test_master_node().await;
 
-    let response = ServiceMessenger::poll(
-        &test_node.caller_handle,
-        &test_node.master_node_name,
-        CALLER_INSTANCE_ID,
-        &test_node.master_node_name,
-        "info",
-        None,
-        Some(&test_node.instance_id),
-        request_payload,
-        Duration::from_secs(2),
+    let working_dir = TempDir::new().expect("failed to create temp directory");
+
+    let invalid_launcher_config = r#"{ deployments: [ }"#;
+    let response = client
+        .poll_launcher(invalid_launcher_config, working_dir.path())
+        .await;
+
+    assert!(!response.success);
+    assert!(
+        response
+            .error_message
+            .contains("invalid peppy_launcher_json5")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_launch_config_nodes_directory_must_be_a_directory() {
+    let (client, server) = setup_test_master_node().await;
+    assert_eq!(server.node_stack.len(), 1);
+
+    let working_dir = TempDir::new().expect("failed to create temp directory");
+    let nodes_directory_file = working_dir.path().join("not_a_dir");
+    std::fs::write(&nodes_directory_file, "x").expect("failed to write file");
+
+    let launcher_config = r#"{}"#;
+    let response = client
+        .poll_launcher(launcher_config, &nodes_directory_file)
+        .await;
+
+    assert!(!response.success);
+    assert!(
+        response
+            .error_message
+            .contains("nodes_directory is not a directory")
+    );
+    assert_eq!(server.node_stack.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_launch_config_missing_required_deployment_does_not_apply_partial_plan() {
+    let (client, server) = setup_test_master_node().await;
+    assert_eq!(server.node_stack.len(), 1);
+
+    let working_dir = TempDir::new().expect("failed to create temp directory");
+
+    // The node is missing from the disk
+    write_minimal_peppy_nodes(working_dir.path(), &["uvc_camera"]);
+
+    let launcher_config = r#"{
+      deployments: [
+        {
+          name: "uvc_camera",
+          tag: "0.1.0",
+          instances: [{ instance_id: "camera_1" }]
+        },
+        {
+          name: "missing_node",
+          tag: "0.1.0",
+          instances: [{ instance_id: "missing_1" }]
+        }
+      ]
+    }"#;
+
+    let response = client
+        .poll_launcher(launcher_config, working_dir.path())
+        .await;
+
+    assert!(!response.success);
+    assert!(
+        response.error_message.contains("missing_node"),
+        "expected error to mention the missing deployment, got: {}",
+        response.error_message
+    );
+
+    assert_eq!(
+        server.node_stack.len(),
+        1,
+        "node stack should not change when the plan is invalid"
+    );
+    assert!(
+        !server.node_stack.contains("uvc_camera", "0.1.0"),
+        "service should not apply a partial plan"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_launch_config_dependency_errors_are_rejected() {
+    let (client, server) = setup_test_master_node().await;
+    assert_eq!(server.node_stack.len(), 1);
+
+    let working_dir = TempDir::new().expect("failed to create temp directory");
+
+    let alpha_dir = working_dir.path().join("alpha");
+    std::fs::create_dir(&alpha_dir).expect("failed to create alpha node directory");
+    std::fs::write(
+        alpha_dir.join("peppy.json5"),
+        r#"{
+        schema_version: 1,
+        manifest: {
+          name: "alpha",
+          tag: "0.1.0"
+        },
+        interfaces: {
+          subscribes_to: {
+            topics: [
+              { 
+                id: "beta_stream", 
+                node: "beta", 
+                name: "stream", 
+                tag: "0.1.0" 
+              }
+            ]
+          }
+        }
+      }
+      "#,
     )
-    .await
-    .expect("caller should receive response");
+    .expect("failed to write alpha peppy.json5");
 
-    let response = LauncherResponse::decode(&response.payload().to_bytes())
-        .expect("should decode info response");
+    let launcher_config = r#"{
+      deployments: [
+        {
+          name: "alpha",
+          tag: "0.1.0",
+          instances: [
+            { 
+              instance_id: "alpha_1" 
+            }
+          ]
+        }
+      ]
+    }"#;
 
-    todo!("Check the node_stack");
+    let response = client
+        .poll_launcher(launcher_config, working_dir.path())
+        .await;
+
+    assert!(!response.success);
+    assert!(
+        response.error_message.contains("depends on") && response.error_message.contains("beta"),
+        "expected missing dependency error, got: {}",
+        response.error_message
+    );
+    assert_eq!(server.node_stack.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_launch_config_second_request_replaces_existing_stack() {
+    let (client, server) = setup_test_master_node().await;
+    assert_eq!(server.node_stack.len(), 1);
+
+    let working_dir = TempDir::new().expect("failed to create temp directory");
+    write_minimal_peppy_nodes(
+        working_dir.path(),
+        &["uvc_camera", "esp32_board", "lidar_sensor"],
+    );
+
+    let first_config = r#"{
+      deployments: [
+        {
+          name: "uvc_camera",
+          tag: "0.1.0",
+          instances: [{ instance_id: "camera_front" }]
+        },
+        {
+          name: "esp32_board",
+          tag: "0.1.0",
+          instances: [{ instance_id: "esp32_1" }]
+        }
+      ]
+    }"#;
+
+    let response = client.poll_launcher(first_config, working_dir.path()).await;
+    assert!(response.success, "first config should succeed");
+
+    assert_eq!(server.node_stack.len(), 3);
+    assert!(server.node_stack.contains("uvc_camera", "0.1.0"));
+    assert!(server.node_stack.contains("esp32_board", "0.1.0"));
+
+    let second_config = r#"{
+      deployments: [
+        {
+          name: "lidar_sensor",
+          tag: "0.1.0",
+          instances: [{ instance_id: "lidar_only" }]
+        }
+      ]
+    }"#;
+
+    let response = client
+        .poll_launcher(second_config, working_dir.path())
+        .await;
+    assert!(response.success, "second config should succeed");
+
+    assert_eq!(
+        server.node_stack.len(),
+        2,
+        "stack should be replaced (master + lidar_sensor)"
+    );
+    assert!(server.node_stack.contains("lidar_sensor", "0.1.0"));
+    assert!(
+        !server.node_stack.contains("esp32_board", "0.1.0"),
+        "nodes absent from the new plan should be removed"
+    );
+
+    let lidar_entity = server
+        .node_stack
+        .find("lidar_sensor", "0.1.0")
+        .expect("lidar_sensor should exist");
+    let lidar_instances: BTreeSet<String> = lidar_entity
+        .instances()
+        .iter()
+        .map(|instance| instance.instance_id().as_str().to_owned())
+        .collect();
+    assert_eq!(lidar_instances, BTreeSet::from(["lidar_only".to_string()]));
 }

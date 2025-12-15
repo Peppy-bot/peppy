@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_ping_request_response_roundtrip() {
-    let test_node = setup_test_master_node().await;
+    let (client, _server) = setup_test_master_node().await;
 
     // Use current time in milliseconds as the request timestamp
     let request_timestamp_ms = SystemTime::now()
@@ -21,13 +21,13 @@ async fn test_ping_request_response_roundtrip() {
 
     // Client sends a ping request and receives the response
     let response = ServiceMessenger::poll(
-        &test_node.caller_handle,
-        &test_node.master_node_name,
+        &client.caller_handle,
+        &client.master_node_name,
         CALLER_INSTANCE_ID,
-        &test_node.master_node_name,
+        &client.master_node_name,
         "ping",
         None,
-        Some(&test_node.instance_id),
+        Some(&client.instance_id),
         request_payload,
         Duration::from_secs(2),
     )
@@ -39,7 +39,7 @@ async fn test_ping_request_response_roundtrip() {
         PingResponse::decode(&response.payload().to_bytes()).expect("should decode ping response");
 
     assert_eq!(ping_response.message, "pong");
-    assert_eq!(response.instance_id(), test_node.instance_id);
+    assert_eq!(response.instance_id(), client.instance_id);
 
     // Calculate latency from timestamps
     let response_timestamp_ms = SystemTime::now()

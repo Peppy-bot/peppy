@@ -82,6 +82,7 @@ pub struct LaunchPlan {
 }
 
 impl LaunchPlan {
+    // TODO Might not be needed, we might always just want to use `from_config`
     pub fn from_launch_file(
         master_node: NodeConfig,
         launch_file: impl AsRef<Path>,
@@ -99,9 +100,29 @@ impl LaunchPlan {
             return Err(Error::FileNotFound(launch_file.clone()));
         }
 
-        let nodes_cache_dir = nodes_cache_dir_for(&root_dir, nodes_cache_dir)?;
         let peppy_launcher = load_peppy_launcher(&launch_file)?;
-        let node_stack = load_nodes_from_fs(&root_dir, master_node)?;
+
+        Self::from_config(master_node, peppy_launcher, &root_dir, nodes_cache_dir)
+    }
+
+    /// Creates a launch plan from an already-parsed launcher configuration.
+    ///
+    /// This is useful when the launcher config has been received over the wire
+    /// (e.g., via RPC) rather than read from a local file.
+    pub fn from_config(
+        master_node: NodeConfig,
+        peppy_launcher: PeppyLauncher,
+        nodes_directory: impl AsRef<Path>,
+        nodes_cache_dir: Option<PathBuf>,
+    ) -> Result<Self> {
+        let nodes_directory = nodes_directory.as_ref();
+
+        if !nodes_directory.exists() {
+            return Err(Error::FileNotFound(nodes_directory.to_path_buf()));
+        }
+
+        let nodes_cache_dir = nodes_cache_dir_for(nodes_directory, nodes_cache_dir)?;
+        let node_stack = load_nodes_from_fs(nodes_directory, master_node)?;
 
         Ok(build_launch_plan(
             peppy_launcher,
