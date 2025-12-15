@@ -6,6 +6,7 @@ enum InfoType {
     uptime @0;
     masterNodeName @1;
     masterNodeInstanceId @2;
+    hostName @3;
 }
 
 struct InfoRequest {
