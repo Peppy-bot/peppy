@@ -86,7 +86,10 @@ fn handle_info_request_inner(
         }
         InfoType::MasterNodeName => master_node_name.to_string(),
         InfoType::MasterNodeInstanceId => instance_id.to_string(),
-        InfoType::HostName => todo!(),
+        InfoType::HostName => hostname::get()
+            .ok()
+            .and_then(|h| h.into_string().ok())
+            .unwrap_or_else(|| "unknown".to_string()),
     };
 
     InfoResponse::new(request.info_type, value).encode()

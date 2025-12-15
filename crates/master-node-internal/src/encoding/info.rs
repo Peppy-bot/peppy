@@ -22,7 +22,7 @@ impl From<InfoType> for info_capnp::InfoType {
             InfoType::Uptime => info_capnp::InfoType::Uptime,
             InfoType::MasterNodeName => info_capnp::InfoType::MasterNodeName,
             InfoType::MasterNodeInstanceId => info_capnp::InfoType::MasterNodeInstanceId,
-            InfoType::HostName => todo!(),
+            InfoType::HostName => info_capnp::InfoType::HostName,
         }
     }
 }
@@ -33,6 +33,7 @@ impl From<info_capnp::InfoType> for InfoType {
             info_capnp::InfoType::Uptime => InfoType::Uptime,
             info_capnp::InfoType::MasterNodeName => InfoType::MasterNodeName,
             info_capnp::InfoType::MasterNodeInstanceId => InfoType::MasterNodeInstanceId,
+            info_capnp::InfoType::HostName => InfoType::HostName,
         }
     }
 }
