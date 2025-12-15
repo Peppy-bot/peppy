@@ -1,19 +1,49 @@
+#![allow(dead_code)]
 use master_node::MasterNode;
+use master_node::encoding::{LauncherRequest, LauncherResponse};
+use node_stack::NodeStack;
 use peppylib::messaging::MessengerHandle;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-pub struct TestMasterNode {
+/// Client for sending requests to a MasterNode.
+pub struct MasterNodeClient {
+    pub caller_handle: MessengerHandle,
     pub master_node_name: String,
     pub instance_id: String,
-    pub caller_handle: MessengerHandle,
-    pub task: JoinHandle<master_node::Result<()>>,
 }
 
-impl Drop for TestMasterNode {
+/// Server-side handle to a running MasterNode, providing access to its state.
+pub struct MasterNodeServer {
+    pub node_stack: NodeStack,
+    task: JoinHandle<master_node::Result<()>>,
+}
+
+impl MasterNodeClient {
+    pub async fn poll_launcher(
+        &self,
+        launcher_config: &str,
+        nodes_directory: &Path,
+    ) -> LauncherResponse {
+        LauncherRequest::new(launcher_config, nodes_directory)
+            .poll(
+                &self.caller_handle,
+                &self.master_node_name,
+                CALLER_INSTANCE_ID,
+                &self.master_node_name,
+                Some(&self.instance_id),
+                Duration::from_secs(2),
+            )
+            .await
+            .expect("poll should succeed")
+    }
+}
+
+impl Drop for MasterNodeServer {
     fn drop(&mut self) {
         self.task.abort();
     }
@@ -21,12 +51,13 @@ impl Drop for TestMasterNode {
 
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
 
-pub async fn setup_test_master_node() -> TestMasterNode {
+pub async fn setup_test_master_node() -> (MasterNodeClient, MasterNodeServer) {
     let shared_messenger = create_mock_messenger().await;
 
     let master_node = MasterNode::new(Arc::clone(&shared_messenger), Some("test_master_node"));
     let master_node_name = master_node.node_name().to_string();
     let instance_id = master_node.instance_id().to_string();
+    let node_stack = master_node.node_stack().clone();
 
     let task = tokio::spawn(async move { master_node.start().await });
 
@@ -35,12 +66,15 @@ pub async fn setup_test_master_node() -> TestMasterNode {
 
     let caller_handle = MessengerHandle::from_shared(shared_messenger);
 
-    TestMasterNode {
+    let client = MasterNodeClient {
+        caller_handle,
         master_node_name,
         instance_id,
-        caller_handle,
-        task,
-    }
+    };
+
+    let server = MasterNodeServer { node_stack, task };
+
+    (client, server)
 }
 
 async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {

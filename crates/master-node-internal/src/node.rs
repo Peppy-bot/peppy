@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 use tracing::info;
 
 const MASTER_NODE_TAG: &str = "internal";
+pub const LAUNCH_CONFIGURATION_SERVICE: &str = "launch_configuration";
 
 pub struct MasterNode {
     node_stack: Arc<NodeStack>,
@@ -103,6 +104,7 @@ impl MasterNode {
             .await?,
             listen_for_launch_configuration(
                 &self.messenger,
+                LAUNCH_CONFIGURATION_SERVICE,
                 master_node_name,
                 self.instance_id(),
                 self.node_name(),

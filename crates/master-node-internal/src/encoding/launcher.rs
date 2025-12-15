@@ -1,29 +1,30 @@
-//! Cap'n Proto encoding utilities for launcher messages.
-
 use std::path::PathBuf;
+use std::time::Duration;
 
 use bytes::Bytes;
 use capnp::message::Builder;
+use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
 use crate::launcher_capnp;
+use crate::node::LAUNCH_CONFIGURATION_SERVICE;
 
 use super::{decode_message, encode_message};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LauncherRequest {
     pub peppy_launcher_json5: String,
-    pub from_directory: PathBuf,
+    pub nodes_directory: PathBuf,
 }
 
 impl LauncherRequest {
     pub fn new(
         peppy_launcher_json5: impl Into<String>,
-        from_directory: impl Into<PathBuf>,
+        nodes_directory: impl Into<PathBuf>,
     ) -> Self {
         Self {
             peppy_launcher_json5: peppy_launcher_json5.into(),
-            from_directory: from_directory.into(),
+            nodes_directory: nodes_directory.into(),
         }
     }
 
@@ -32,7 +33,7 @@ impl LauncherRequest {
         {
             let mut request = builder.init_root::<launcher_capnp::launcher_request::Builder>();
             request.set_peppy_launcher_json5(&self.peppy_launcher_json5);
-            request.set_from_directory(&self.from_directory.to_string_lossy());
+            request.set_nodes_directory(&self.nodes_directory.to_string_lossy());
         }
         encode_message(&builder)
     }
@@ -42,8 +43,33 @@ impl LauncherRequest {
         let request = reader.get_root::<launcher_capnp::launcher_request::Reader>()?;
         Ok(Self {
             peppy_launcher_json5: request.get_peppy_launcher_json5()?.to_str()?.to_owned(),
-            from_directory: PathBuf::from(request.get_from_directory()?.to_str()?),
+            nodes_directory: PathBuf::from(request.get_nodes_directory()?.to_str()?),
         })
+    }
+
+    pub async fn poll(
+        &self,
+        messenger: &MessengerHandle,
+        bound_master_node: &str,
+        as_instance_id: &str,
+        target_node_name: &str,
+        target_instance_id: Option<&str>,
+        response_timeout: Duration,
+    ) -> Result<LauncherResponse> {
+        let request_payload = self.encode()?;
+        let response = ServiceMessenger::poll(
+            messenger,
+            bound_master_node,
+            as_instance_id,
+            target_node_name,
+            LAUNCH_CONFIGURATION_SERVICE,
+            None,
+            target_instance_id,
+            request_payload,
+            response_timeout,
+        )
+        .await?;
+        LauncherResponse::decode(&response.payload().to_bytes())
     }
 }
 
