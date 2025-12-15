@@ -5,10 +5,12 @@
 
 mod info;
 mod launcher;
+mod node;
 mod ping;
 
 pub use info::{InfoRequest, InfoResponse, InfoType};
 pub use launcher::{LauncherRequest, LauncherResponse};
+pub use node::{NodeCmd, NodeRequest, NodeResponse};
 pub use ping::{PingRequest, PingResponse};
 
 use bytes::Bytes;

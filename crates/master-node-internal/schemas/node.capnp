@@ -2,6 +2,21 @@
 
 # Node message structures for master-node services
 
+enum NodeCmd {
+    add @0;
+    list @1;
+    synchronize @2;
+}
+
+struct NodeRequest {
+    cmd @0 :NodeCmd;
+}
+
+struct NodeResponse {
+    cmd @0 :NodeCmd;
+    value @1 :Text;
+}
+
 struct AddNodeRequest {
     # Name of the node to add
     nodeName @0 :Text;
