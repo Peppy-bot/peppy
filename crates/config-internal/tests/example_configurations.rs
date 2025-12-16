@@ -57,7 +57,9 @@ fn test_example_project_parsing() {
 
         // Ensure at least the root peppy.json5 is discovered
         assert!(
-            state.keys().any(|p| p.ends_with("peppy.json5")),
+            state
+                .keys()
+                .any(|p| p.ends_with(config::consts::PEPPY_NODE_CONFIG_FILE)),
             "No peppy.json5 discovered in project {}",
             project.display()
         );

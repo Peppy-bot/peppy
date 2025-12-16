@@ -453,6 +453,7 @@ dependencies = [
  "askama",
  "capnp",
  "capnpc",
+ "clap",
  "git2",
  "indexmap 2.12.1",
  "md5",

@@ -5,8 +5,8 @@ mod types;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use clap::{Subcommand, ValueEnum};
-use core::fmt;
+use clap::Subcommand;
+use config::peppy_config::BuildSystem;
 use tracing::info;
 
 use super::Command;
@@ -16,24 +16,6 @@ use init::NodeBuilder;
 
 pub mod init;
 pub use types::NodeName;
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
-pub enum PackageManager {
-    #[default]
-    Rust, // Defaults to Cargo
-    Python, // Defaults to uv
-    Cargo,
-    Uv,
-}
-
-impl fmt::Display for PackageManager {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PackageManager::Python | PackageManager::Uv => write!(f, "uv"),
-            PackageManager::Rust | PackageManager::Cargo => write!(f, "cargo"),
-        }
-    }
-}
 
 #[derive(Subcommand)]
 pub enum NodeCommands {
@@ -50,9 +32,9 @@ pub enum NodeCommands {
         /// Optional: target directory (defaults to current directory)
         #[arg(long)]
         to_dir: Option<PathBuf>,
-        /// Programming language for the node, either `rust` or `python`
-        #[arg(long, value_enum, default_value_t = PackageManager::Rust)]
-        lang: PackageManager,
+        /// Build system for the node: `rust`, `python`, `cargo`, or `uv`
+        #[arg(long, value_enum, default_value_t = BuildSystem::Rust)]
+        build_system: BuildSystem,
     },
     /// Runs a specific node
     Run {
@@ -75,13 +57,13 @@ impl Command for NodeCommand {
         match self.command {
             NodeCommands::Create {
                 to_dir,
-                lang,
+                build_system,
                 node_name,
                 description,
                 full,
             } => {
                 let mut node_builder = NodeBuilder::new(ctx, node_name)
-                    .lang(lang)
+                    .build_system(build_system)
                     .description(description)
                     .full(full);
 

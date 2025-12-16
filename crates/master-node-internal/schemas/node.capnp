@@ -33,7 +33,10 @@ struct NodeAddResponse {
 
 # Node Sync service
 struct NodeSyncRequest {
-    # Empty for now - could add sync parameters later
+    # Root directory of the node/workspace
+    nodeRootDir @0 :Text;
+    # Generator language ("rust" or "python")
+    language @1 :Text;
 }
 
 struct NodeSyncResponse {

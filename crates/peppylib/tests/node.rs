@@ -23,7 +23,7 @@ async fn test_setup_node_from_config_file() {
         launch_cmd: "cargo run --release",
     };
     let rendered = tmpl.render().expect("failed to render template");
-    let config_path = tmpdir.path().join("peppy.json5");
+    let config_path = tmpdir.path().join(config::consts::PEPPY_NODE_CONFIG_FILE);
     fs::write(&config_path, rendered).expect("failed to write config file");
 
     // Invoke setup_node with the generated config file

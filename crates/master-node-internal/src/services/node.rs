@@ -6,8 +6,7 @@ use crate::encoding::{
     NodeSyncResponse,
 };
 use bytes::Bytes;
-use config::node::Name;
-use config::node::NodeConfigParser;
+use config::node::{Name, NodeConfigParser};
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -219,12 +218,33 @@ fn handle_node_sync_request_inner(
 
     let request = NodeSyncRequest::decode(&payload.as_bytes())?;
 
-    // TODO: The request should have a node_config_json5 that is serialized to a `config::NodeConfig`
-    // TODO: The request should have a generator::Language parameter to determine how to generate `peppygen`
-    // TODO: The request should have a `node_root_dir` to check where the node root dir is located
-
     debug!("Received `node_sync` request from {sender_instance_id}");
 
-    // TODO: Implement actual node synchronization logic. This command calls generator::generate_lib_for_language
+    if request.node_root_dir.as_os_str().is_empty() {
+        return NodeSyncResponse::failure("Missing `node_root_dir` in node_sync request").encode();
+    }
+
+    if !request.node_root_dir.exists() {
+        return NodeSyncResponse::failure(format!(
+            "`node_root_dir` does not exist: {}",
+            request.node_root_dir.display()
+        ))
+        .encode();
+    }
+
+    if !request.node_root_dir.is_dir() {
+        return NodeSyncResponse::failure(format!(
+            "`node_root_dir` is not a directory: {}",
+            request.node_root_dir.display()
+        ))
+        .encode();
+    }
+
+    if let Err(e) =
+        generator::generate_lib_for_build_system(request.build_system, &request.node_root_dir)
+    {
+        return NodeSyncResponse::failure(format!("Failed to generate peppygen: {}", e)).encode();
+    }
+
     NodeSyncResponse::success().encode()
 }

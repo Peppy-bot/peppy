@@ -165,7 +165,9 @@ where
 }
 
 pub fn cached_node_exists(base: &Path, node_name: &str) -> bool {
-    let target = Path::new("nodes").join(node_name).join("peppy.json5");
+    let target = Path::new("nodes")
+        .join(node_name)
+        .join(crate::consts::PEPPY_NODE_CONFIG_FILE);
 
     fn walk(dir: &Path, target: &Path) -> bool {
         if dir.join(target).exists() {

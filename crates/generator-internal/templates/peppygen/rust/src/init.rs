@@ -5,8 +5,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const NODE_CONFIG_FILE: &str = "peppy.json5";
-
 #[derive(Debug)]
 pub enum InitNodeError {
     OutOfSyncNode { message: String },
@@ -38,7 +36,7 @@ impl std::error::Error for InitNodeError {
 
 pub async fn init_node() -> InitNodeResult<()> {
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let config_path = crate_root.join(NODE_CONFIG_FILE);
+    let config_path = crate_root.join(peppylib::config::PEPPY_NODE_CONFIG_FILE);
 
     ensure_config_is_in_sync(&config_path, &crate_root)?;
     peppylib::setup_node(Some(config_path))
@@ -117,24 +115,17 @@ mod tests {
     struct NodeConfigFixture {
         config_path: PathBuf,
         fingerprint_path: PathBuf,
-        fingerprint_dir: PathBuf,
         original_config: Option<Vec<u8>>,
         original_fingerprint: Option<Vec<u8>>,
-        had_fingerprint_dir: bool,
     }
 
     impl NodeConfigFixture {
         fn install(crate_root: &Path, config_contents: &str, fingerprint: &str) -> Self {
-            let config_path = crate_root.join(super::NODE_CONFIG_FILE);
-            let fingerprint_dir = crate_root.join(".peppygen");
-            let fingerprint_path = fingerprint_dir.join("node_config.sha256");
+            let config_path = crate_root.join(peppylib::config::PEPPY_NODE_CONFIG_FILE);
+            let fingerprint_path = crate_root.join("node_config.sha256");
 
             let original_config = fs::read(&config_path).ok();
             let original_fingerprint = fs::read(&fingerprint_path).ok();
-            let had_fingerprint_dir = fingerprint_dir.exists();
-
-            fs::create_dir_all(&fingerprint_dir)
-                .expect("failed to create .peppygen directory for test");
 
             fs::write(&config_path, config_contents)
                 .expect("failed to write config fixture for init_node test");
@@ -144,10 +135,8 @@ mod tests {
             Self {
                 config_path,
                 fingerprint_path,
-                fingerprint_dir,
                 original_config,
                 original_fingerprint,
-                had_fingerprint_dir,
             }
         }
     }
@@ -164,10 +153,6 @@ mod tests {
                 let _ = fs::write(&self.fingerprint_path, bytes);
             } else {
                 let _ = fs::remove_file(&self.fingerprint_path);
-            }
-
-            if !self.had_fingerprint_dir {
-                let _ = fs::remove_dir(&self.fingerprint_dir);
             }
         }
     }

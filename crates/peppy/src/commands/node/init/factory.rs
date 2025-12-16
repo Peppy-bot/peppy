@@ -1,9 +1,9 @@
 use super::super::types::NodeName;
-use super::PackageManager;
 use super::{python, rust};
 use crate::error::{Error, Result};
 use askama::Template;
 use config::node::NodeConfigCreator;
+use config::peppy_config::BuildSystem;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -23,7 +23,7 @@ pub trait NodeFactory {
     /// Creates the peppy.json5 config (language-agnostic default)
     fn create_peppy_node_config(&self, full: bool) -> Result<PathBuf> {
         let ctx = self.ctx();
-        let peppy_config_path = ctx.node_path.join("peppy.json5");
+        let peppy_config_path = ctx.node_path.join(config::consts::PEPPY_NODE_CONFIG_FILE);
 
         let builder = if full {
             NodeConfigCreator::full_node(ctx.node_name.as_str())
@@ -48,7 +48,7 @@ pub trait NodeFactory {
 /// Bundles common data needed to create a node
 #[derive(Clone)]
 pub struct NodeContext {
-    pub language: PackageManager,
+    pub language: BuildSystem,
     pub node_name: NodeName,
     pub node_path: PathBuf,
     pub description: String,
@@ -59,7 +59,7 @@ impl NodeContext {
         node_name: NodeName,
         node_path: impl AsRef<Path>,
         description: impl Into<String>,
-        language: PackageManager,
+        language: BuildSystem,
     ) -> Self {
         Self {
             language,
@@ -147,8 +147,8 @@ impl NodeFactory for RustNodeFactory {
 /// Creates a factory for the specified language
 pub fn create_factory(ctx: NodeContext) -> Box<dyn NodeFactory> {
     match ctx.language {
-        PackageManager::Python | PackageManager::Uv => Box::new(PythonNodeFactory::new(ctx)),
-        PackageManager::Rust | PackageManager::Cargo => Box::new(RustNodeFactory::new(ctx)),
+        BuildSystem::Python | BuildSystem::Uv => Box::new(PythonNodeFactory::new(ctx)),
+        BuildSystem::Rust | BuildSystem::Cargo => Box::new(RustNodeFactory::new(ctx)),
     }
 }
 

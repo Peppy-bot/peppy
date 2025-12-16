@@ -7,7 +7,9 @@ pub fn create_simple_git_repo(manifest_content: &str, tag: &str) -> TempDir {
     let remote_dir = tempdir().expect("remote temp dir");
     let repo = Repository::init(remote_dir.path()).expect("init git repo");
 
-    let file_path = remote_dir.path().join("peppy.json5");
+    let file_path = remote_dir
+        .path()
+        .join(config::consts::PEPPY_NODE_CONFIG_FILE);
     fs::write(&file_path, manifest_content).expect("write manifest");
 
     let rel_path = file_path
