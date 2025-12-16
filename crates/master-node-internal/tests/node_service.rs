@@ -2,10 +2,11 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, setup_test_master_node};
 use config::node::NodeConfigParser;
-use master_node::encoding::{NodeAddRequest, NodeListRequest, NodeSyncRequest, NodeSyncResponse};
-use peppylib::messaging::ServiceMessenger;
+use config::peppy_config::BuildSystem;
+use master_node::encoding::{NodeAddRequest, NodeListRequest, NodeSyncRequest};
 use std::path::PathBuf;
 use std::time::Duration;
+use tempfile::Builder;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_node_list_returns_dot_graph() {
@@ -271,29 +272,94 @@ async fn test_node_add_dependency_not_resolved() {
 async fn test_node_sync_success() {
     let (client, _server) = setup_test_master_node().await;
 
-    let request = NodeSyncRequest::new();
-    let request_payload = request
-        .encode()
-        .expect("failed to encode node_sync request");
+    let temp_dir = Builder::new()
+        .prefix("node_sync")
+        .tempdir()
+        .expect("failed to create tempdir");
+    let node_root_dir = temp_dir.path().to_path_buf();
 
-    let response = ServiceMessenger::poll(
-        &client.caller_handle,
-        &client.master_node_name,
-        CALLER_INSTANCE_ID,
-        &client.master_node_name,
-        "node_sync",
-        None,
-        Some(&client.instance_id),
-        request_payload,
-        Duration::from_secs(2),
+    let peppy_json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "sensor_node",
+                tag: "1.0.0"
+            },
+            interfaces: {
+                exposes: {
+                    topics: [
+                        {
+                            name: "sensor_data",
+                            qos_profile: "sensor_data",
+                            message_format: {
+                                value: "f32"
+                            }
+                        }
+                    ]
+                }
+            }
+        }"#;
+
+    std::fs::write(
+        node_root_dir.join(config::consts::PEPPY_NODE_CONFIG_FILE),
+        peppy_json5,
     )
-    .await
-    .expect("caller should receive response");
+    .expect("failed to write node config");
 
-    let node_sync_response = NodeSyncResponse::decode(&response.payload().to_bytes())
-        .expect("should decode node_sync response");
+    let request = NodeSyncRequest::new(&node_root_dir).with_build_system(BuildSystem::Rust);
+
+    let node_sync_response = request
+        .poll(
+            &client.caller_handle,
+            &client.master_node_name,
+            CALLER_INSTANCE_ID,
+            &client.master_node_name,
+            Some(&client.instance_id),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("poll should succeed");
 
     assert!(node_sync_response.success);
-    assert!(node_sync_response.error_message.is_empty());
-    todo!("Verify the sync was successful");
+    assert!(
+        node_sync_response.error_message.is_empty(),
+        "expected empty error message, got: {}",
+        node_sync_response.error_message
+    );
+
+    let output_dir = node_root_dir.join(".peppy/libs/peppygen");
+    assert!(
+        output_dir.join("Cargo.toml").exists(),
+        "expected generated peppygen Cargo.toml at {}",
+        output_dir.display()
+    );
+    assert!(
+        output_dir.join("src/lib.rs").exists(),
+        "expected generated peppygen src/lib.rs at {}",
+        output_dir.display()
+    );
+
+    assert!(
+        output_dir.join("src/exposed_topics.rs").exists(),
+        "expected generated exposed_topics module at {}",
+        output_dir.display()
+    );
+    assert!(
+        output_dir
+            .join("src/exposed_topics/sensor_data.rs")
+            .exists(),
+        "expected generated sensor_data topic module at {}",
+        output_dir.display()
+    );
+
+    assert!(
+        output_dir.join(".peppygen/node_config.sha256").exists(),
+        "expected node config fingerprint at {}",
+        output_dir.display()
+    );
+    assert!(
+        !output_dir
+            .join(config::consts::PEPPY_NODE_CONFIG_FILE)
+            .exists(),
+        "peppy.json5 should not be copied into the generated crate"
+    );
 }

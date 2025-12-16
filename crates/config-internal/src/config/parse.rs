@@ -154,14 +154,14 @@ mod tests {
     #[test]
     fn test_from_path_rejects_wrong_file_name() {
         let dir = tempdir().unwrap();
-        let wrong_path = dir.path().join("peppy.json5");
+        let wrong_path = dir.path().join(crate::consts::PEPPY_NODE_CONFIG_FILE);
         std::fs::write(&wrong_path, "{}").unwrap();
 
         let err = PeppyLauncherParser::from_path(&wrong_path).unwrap_err();
         assert!(matches!(
             err,
             Error::Parsing(ParsingError::InvalidFileName { ref expected, ref found })
-                if expected == PEPPY_LAUNCHER_FILE_NAME && found == "peppy.json5"
+                if expected == PEPPY_LAUNCHER_FILE_NAME && found == crate::consts::PEPPY_NODE_CONFIG_FILE
         ));
     }
 

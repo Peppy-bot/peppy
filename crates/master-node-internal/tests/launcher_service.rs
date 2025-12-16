@@ -12,7 +12,7 @@ fn write_minimal_peppy_nodes(working_dir: &Path, node_names: &[&str]) {
         let dir = working_dir.join(node_name);
         std::fs::create_dir(&dir).expect("failed to create node directory");
         std::fs::write(
-            dir.join("peppy.json5"),
+            dir.join(config::consts::PEPPY_NODE_CONFIG_FILE),
             format!(
                 r#"{{
               schema_version: 1,
@@ -240,7 +240,7 @@ async fn test_launch_config_dependency_errors_are_rejected() {
     let alpha_dir = working_dir.path().join("alpha");
     std::fs::create_dir(&alpha_dir).expect("failed to create alpha node directory");
     std::fs::write(
-        alpha_dir.join("peppy.json5"),
+        alpha_dir.join(config::consts::PEPPY_NODE_CONFIG_FILE),
         r#"{
         schema_version: 1,
         manifest: {

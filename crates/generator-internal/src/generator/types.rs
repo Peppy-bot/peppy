@@ -5,13 +5,6 @@ use config::node::{
 };
 use std::path::Path;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Language {
-    Python,
-    #[default]
-    Rust,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterfaceKind {
     ExposedTopic,

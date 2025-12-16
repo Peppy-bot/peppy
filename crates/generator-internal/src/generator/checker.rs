@@ -2,7 +2,7 @@ use crate::error::Result;
 use sha2::{Digest, Sha256};
 use std::{fs, path::Path};
 
-const NODE_CONFIG_FINGERPRINT_FILE: &str = ".peppygen/node_config.sha256";
+const NODE_CONFIG_FINGERPRINT_FILE: &str = "node_config.sha256";
 
 /// Generates the initial node fingerprint
 pub fn generate_node_config_fingerprint(
@@ -43,7 +43,7 @@ mod tests {
     #[test]
     fn generate_node_config_fingerprint_writes_expected_digest() {
         let tmp = TempDir::new().expect("failed to create temp dir");
-        let config_path = tmp.path().join("peppy.json5");
+        let config_path = tmp.path().join(config::consts::PEPPY_NODE_CONFIG_FILE);
         let generated_crate = prepare_generated_crate(&tmp);
 
         let config_contents =
@@ -62,12 +62,14 @@ mod tests {
     }
 
     #[test]
-    fn generate_node_config_fingerprint_creates_directory() {
+    fn generate_node_config_fingerprint_overwrites_existing() {
         let tmp = TempDir::new().expect("failed to create temp dir");
-        let config_path = tmp.path().join("peppy.json5");
+        let config_path = tmp.path().join(config::consts::PEPPY_NODE_CONFIG_FILE);
         let generated_crate = prepare_generated_crate(&tmp);
-        let fingerprint_dir = generated_crate.join(".peppygen");
-        fs::remove_dir_all(&fingerprint_dir).expect("failed to remove .peppygen");
+
+        // Write initial fingerprint
+        let fingerprint_path = generated_crate.join(NODE_CONFIG_FINGERPRINT_FILE);
+        fs::write(&fingerprint_path, "old_fingerprint\n").expect("failed to write old fingerprint");
 
         let config_contents =
             r#"{ schema_version: 1, manifest: { name: "camera", tag: "0.1.0" } }"#;
@@ -76,12 +78,7 @@ mod tests {
         generate_node_config_fingerprint(&config_path, &generated_crate)
             .expect("failed to generate fingerprint");
 
-        assert!(
-            fingerprint_dir.exists(),
-            "expected fingerprint directory to be recreated"
-        );
-        let written =
-            fs::read_to_string(generated_crate.join(NODE_CONFIG_FINGERPRINT_FILE)).unwrap();
+        let written = fs::read_to_string(&fingerprint_path).unwrap();
         assert_eq!(
             written.trim(),
             fingerprint_for_bytes(config_contents.as_bytes())
@@ -91,7 +88,6 @@ mod tests {
     fn prepare_generated_crate(tmp: &TempDir) -> std::path::PathBuf {
         let crate_dir = tmp.path().join("generated_crate");
         fs::create_dir_all(crate_dir.join("src")).expect("failed to create src directory");
-        fs::create_dir_all(crate_dir.join(".peppygen")).expect("failed to create .peppygen");
 
         fs::write(
             crate_dir.join("Cargo.toml"),

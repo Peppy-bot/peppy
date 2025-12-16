@@ -227,7 +227,11 @@ fn launcher_file_resolves_dependency_graph() {
 
     let launch_file = write_config_str(project_dir.join("peppy_launcher.json5"), &launch_content);
 
-    let node_path = |name: &str| project_dir.join(name).join("peppy.json5");
+    let node_path = |name: &str| {
+        project_dir
+            .join(name)
+            .join(config::consts::PEPPY_NODE_CONFIG_FILE)
+    };
 
     // Add web_video_stream to a child folder where launch_file is located
     test_helpers::add_local_web_video_stream(

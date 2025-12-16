@@ -194,7 +194,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
 
     let commit_id = push_git_commit(
         remote.path(),
-        &[("peppy.json5", manifest_v2)],
+        &[(config::consts::PEPPY_NODE_CONFIG_FILE, manifest_v2)],
         "update manifest",
     );
 

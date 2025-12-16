@@ -1,7 +1,7 @@
 use sha2::{Digest, Sha256};
 use std::{fs, path::Path};
 
-const NODE_CONFIG_FINGERPRINT_FILE: &str = ".peppygen/node_config.sha256";
+const NODE_CONFIG_FINGERPRINT_FILE: &str = "node_config.sha256";
 
 /// Checks that the generated node crate is in sync with the node configuration file.
 pub fn check_node_config_up_to_date(
@@ -87,7 +87,7 @@ mod tests {
     #[test]
     fn passes_when_fingerprints_match() {
         let tmp = TestDir::new();
-        let config_path = tmp.path().join("peppy.json5");
+        let config_path = tmp.path().join(config::consts::PEPPY_NODE_CONFIG_FILE);
         let generated_crate = prepare_generated_crate(tmp.path());
         let fingerprint_file = generated_crate.join(super::NODE_CONFIG_FINGERPRINT_FILE);
 
@@ -105,7 +105,7 @@ mod tests {
     #[test]
     fn panics_when_fingerprint_is_missing() {
         let tmp = TestDir::new();
-        let config_path = tmp.path().join("peppy.json5");
+        let config_path = tmp.path().join(config::consts::PEPPY_NODE_CONFIG_FILE);
         let generated_crate = prepare_generated_crate(tmp.path());
         fs::write(&config_path, "{}").expect("failed to write config");
 
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn panics_when_fingerprint_differs() {
         let tmp = TestDir::new();
-        let config_path = tmp.path().join("peppy.json5");
+        let config_path = tmp.path().join(config::consts::PEPPY_NODE_CONFIG_FILE);
         let generated_crate = prepare_generated_crate(tmp.path());
         let fingerprint_file = generated_crate.join(super::NODE_CONFIG_FINGERPRINT_FILE);
 
@@ -170,7 +170,6 @@ mod tests {
     fn prepare_generated_crate(base: &Path) -> PathBuf {
         let crate_dir = base.join("generated_crate");
         fs::create_dir_all(crate_dir.join("src")).expect("failed to create src directory");
-        fs::create_dir_all(crate_dir.join(".peppygen")).expect("failed to create .peppygen");
 
         fs::write(
             crate_dir.join("Cargo.toml"),

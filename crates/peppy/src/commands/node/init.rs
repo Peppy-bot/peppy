@@ -6,16 +6,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::PackageManager;
 use super::types::NodeName;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+use config::peppy_config::BuildSystem;
 use factory::{NodeContext, create_factory};
 
 pub struct NodeBuilder {
     to_dir: PathBuf,
     node_name: NodeName,
-    package_manager: PackageManager,
+    package_manager: BuildSystem,
     description: Option<String>,
     full: bool,
 }
@@ -25,7 +25,7 @@ impl NodeBuilder {
         Self {
             to_dir: ctx.root_dir.clone(),
             node_name,
-            package_manager: PackageManager::Rust,
+            package_manager: BuildSystem::Rust,
             description: None,
             full: false,
         }
@@ -38,8 +38,8 @@ impl NodeBuilder {
         self
     }
 
-    pub fn lang(mut self, lang: PackageManager) -> Self {
-        self.package_manager = lang;
+    pub fn build_system(mut self, build_system: BuildSystem) -> Self {
+        self.package_manager = build_system;
         self
     }
 
@@ -69,7 +69,7 @@ impl NodeBuilder {
 pub fn init_project(
     to_dir: impl AsRef<Path>,
     node_name: NodeName,
-    language: PackageManager,
+    language: BuildSystem,
     description: Option<&str>,
     full: bool,
 ) -> Result<()> {
@@ -116,14 +116,14 @@ mod tests {
             NodeName::new(node_name).unwrap(),
             temp_dir.path(),
             "Test node",
-            PackageManager::Rust,
+            BuildSystem::Rust,
         );
         let factory = create_factory(ctx);
 
         let result = factory.create_peppy_node_config(false);
         assert!(result.is_ok());
 
-        let peppy_path = temp_dir.path().join("peppy.json5");
+        let peppy_path = temp_dir.path().join(config::consts::PEPPY_NODE_CONFIG_FILE);
         assert!(peppy_path.exists());
     }
 
@@ -142,7 +142,7 @@ mod tests {
         let result = init_project(
             temp_dir.path(),
             NodeName::new(node_name).unwrap(),
-            PackageManager::Python,
+            BuildSystem::Python,
             Some("Test node"),
             false,
         );
@@ -164,7 +164,7 @@ mod tests {
             NodeName::new("py_node").unwrap(),
             temp_dir.path(),
             "desc",
-            PackageManager::Python,
+            BuildSystem::Python,
         );
         let factory = PythonNodeFactory::new(ctx);
 
@@ -188,7 +188,7 @@ mod tests {
             NodeName::new("rs_node").unwrap(),
             temp_dir.path(),
             "desc",
-            PackageManager::Rust,
+            BuildSystem::Rust,
         );
         let factory = RustNodeFactory::new(ctx);
 

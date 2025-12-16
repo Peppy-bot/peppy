@@ -1,6 +1,7 @@
+use config::peppy_config::BuildSystem;
 use tempfile::TempDir;
 
-use peppy::node::{NodeName, PackageManager, init};
+use peppy::node::{NodeName, init};
 
 mod helpers;
 
@@ -13,7 +14,7 @@ fn test_init_command_default_directory() {
     let result = init::init_project(
         temp_dir.path(),
         NodeName::new(node_name).unwrap(),
-        PackageManager::Rust,
+        BuildSystem::Rust,
         None,
         false,
     );
@@ -24,7 +25,9 @@ fn test_init_command_default_directory() {
     assert!(node_path.is_dir(), "Node should be a directory");
 
     assert!(
-        node_path.join("peppy.json5").exists(),
+        node_path
+            .join(config::consts::PEPPY_NODE_CONFIG_FILE)
+            .exists(),
         "peppy.json5 should exist"
     );
 }
@@ -39,7 +42,7 @@ fn test_create_command_with_to_dir() {
     let result = init::init_project(
         temp_dir.path(),
         NodeName::new(node_name).unwrap(),
-        PackageManager::Rust,
+        BuildSystem::Rust,
         None,
         false,
     );
@@ -49,7 +52,9 @@ fn test_create_command_with_to_dir() {
     assert!(target_path.is_dir(), "Target should be a directory");
 
     assert!(
-        target_path.join("peppy.json5").exists(),
+        target_path
+            .join(config::consts::PEPPY_NODE_CONFIG_FILE)
+            .exists(),
         "peppy.json5 should exist"
     );
 }
