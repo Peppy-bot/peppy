@@ -217,10 +217,14 @@ fn handle_node_sync_request_inner(
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    let _request = NodeSyncRequest::decode(&payload.as_bytes())?;
+    let request = NodeSyncRequest::decode(&payload.as_bytes())?;
+
+    // TODO: The request should have a node_config_json5 that is serialized to a `config::NodeConfig`
+    // TODO: The request should have a generator::Language parameter to determine how to generate `peppygen`
+    // TODO: The request should have a `node_root_dir` to check where the node root dir is located
 
     debug!("Received `node_sync` request from {sender_instance_id}");
 
-    // TODO: Implement actual node synchronization logic
+    // TODO: Implement actual node synchronization logic. This command calls generator::generate_lib_for_language
     NodeSyncResponse::success().encode()
 }
