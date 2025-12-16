@@ -1,8 +1,10 @@
 mod common;
 
-use common::setup_test_master_node;
+use common::{CALLER_INSTANCE_ID, setup_test_master_node};
+use master_node::encoding::LauncherRequest;
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::time::Duration;
 use tempfile::TempDir;
 
 fn write_minimal_peppy_nodes(working_dir: &Path, node_names: &[&str]) {
@@ -63,9 +65,17 @@ async fn test_launch_config_request() {
       ]
     }"#;
 
-    let response = client
-        .poll_launcher(launcher_config, working_dir.path())
-        .await;
+    let response = LauncherRequest::new(launcher_config, working_dir.path())
+        .poll(
+            &client.caller_handle,
+            &client.master_node_name,
+            CALLER_INSTANCE_ID,
+            &client.master_node_name,
+            Some(&client.instance_id),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("poll should succeed");
 
     assert!(
         response.success,
@@ -114,9 +124,17 @@ async fn test_launch_config_invalid_json5_returns_error_and_does_not_mutate_stac
     let working_dir = TempDir::new().expect("failed to create temp directory");
 
     let invalid_launcher_config = r#"{ deployments: [ }"#;
-    let response = client
-        .poll_launcher(invalid_launcher_config, working_dir.path())
-        .await;
+    let response = LauncherRequest::new(invalid_launcher_config, working_dir.path())
+        .poll(
+            &client.caller_handle,
+            &client.master_node_name,
+            CALLER_INSTANCE_ID,
+            &client.master_node_name,
+            Some(&client.instance_id),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("poll should succeed");
 
     assert!(!response.success);
     assert!(
@@ -136,9 +154,17 @@ async fn test_launch_config_nodes_directory_must_be_a_directory() {
     std::fs::write(&nodes_directory_file, "x").expect("failed to write file");
 
     let launcher_config = r#"{}"#;
-    let response = client
-        .poll_launcher(launcher_config, &nodes_directory_file)
-        .await;
+    let response = LauncherRequest::new(launcher_config, &nodes_directory_file)
+        .poll(
+            &client.caller_handle,
+            &client.master_node_name,
+            CALLER_INSTANCE_ID,
+            &client.master_node_name,
+            Some(&client.instance_id),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("poll should succeed");
 
     assert!(!response.success);
     assert!(
@@ -174,9 +200,17 @@ async fn test_launch_config_missing_required_deployment_does_not_apply_partial_p
       ]
     }"#;
 
-    let response = client
-        .poll_launcher(launcher_config, working_dir.path())
-        .await;
+    let response = LauncherRequest::new(launcher_config, working_dir.path())
+        .poll(
+            &client.caller_handle,
+            &client.master_node_name,
+            CALLER_INSTANCE_ID,
+            &client.master_node_name,
+            Some(&client.instance_id),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("poll should succeed");
 
     assert!(!response.success);
     assert!(
@@ -244,9 +278,17 @@ async fn test_launch_config_dependency_errors_are_rejected() {
       ]
     }"#;
 
-    let response = client
-        .poll_launcher(launcher_config, working_dir.path())
-        .await;
+    let response = LauncherRequest::new(launcher_config, working_dir.path())
+        .poll(
+            &client.caller_handle,
+            &client.master_node_name,
+            CALLER_INSTANCE_ID,
+            &client.master_node_name,
+            Some(&client.instance_id),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("poll should succeed");
 
     assert!(!response.success);
     assert!(
@@ -283,7 +325,17 @@ async fn test_launch_config_second_request_replaces_existing_stack() {
       ]
     }"#;
 
-    let response = client.poll_launcher(first_config, working_dir.path()).await;
+    let response = LauncherRequest::new(first_config, working_dir.path())
+        .poll(
+            &client.caller_handle,
+            &client.master_node_name,
+            CALLER_INSTANCE_ID,
+            &client.master_node_name,
+            Some(&client.instance_id),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("poll should succeed");
     assert!(response.success, "first config should succeed");
 
     assert_eq!(server.node_stack.len(), 3);
@@ -300,9 +352,17 @@ async fn test_launch_config_second_request_replaces_existing_stack() {
       ]
     }"#;
 
-    let response = client
-        .poll_launcher(second_config, working_dir.path())
-        .await;
+    let response = LauncherRequest::new(second_config, working_dir.path())
+        .poll(
+            &client.caller_handle,
+            &client.master_node_name,
+            CALLER_INSTANCE_ID,
+            &client.master_node_name,
+            Some(&client.instance_id),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("poll should succeed");
     assert!(response.success, "second config should succeed");
 
     assert_eq!(

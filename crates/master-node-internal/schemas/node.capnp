@@ -18,6 +18,8 @@ struct NodeAddRequest {
     peppyJson5 @0 :Text;
     # Directory the configuration was loaded from
     fromDir @1 :Text;
+    # Optional instance ID to use for the node
+    instanceId @2 :Text;
 }
 
 struct NodeAddResponse {

@@ -1,10 +1,7 @@
-#![allow(dead_code)]
 use master_node::MasterNode;
-use master_node::encoding::{LauncherRequest, LauncherResponse};
 use node_stack::NodeStack;
 use peppylib::messaging::MessengerHandle;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -21,26 +18,6 @@ pub struct MasterNodeClient {
 pub struct MasterNodeServer {
     pub node_stack: NodeStack,
     task: JoinHandle<master_node::Result<()>>,
-}
-
-impl MasterNodeClient {
-    pub async fn poll_launcher(
-        &self,
-        launcher_config: &str,
-        nodes_directory: &Path,
-    ) -> LauncherResponse {
-        LauncherRequest::new(launcher_config, nodes_directory)
-            .poll(
-                &self.caller_handle,
-                &self.master_node_name,
-                CALLER_INSTANCE_ID,
-                &self.master_node_name,
-                Some(&self.instance_id),
-                Duration::from_secs(2),
-            )
-            .await
-            .expect("poll should succeed")
-    }
 }
 
 impl Drop for MasterNodeServer {

@@ -2,10 +2,7 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, setup_test_master_node};
 use config::node::NodeConfigParser;
-use master_node::encoding::{
-    NodeAddRequest, NodeAddResponse, NodeListRequest, NodeListResponse, NodeSyncRequest,
-    NodeSyncResponse,
-};
+use master_node::encoding::{NodeAddRequest, NodeListRequest, NodeSyncRequest, NodeSyncResponse};
 use peppylib::messaging::ServiceMessenger;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -75,26 +72,17 @@ async fn test_node_list_returns_dot_graph() {
 
     // Request the node list via the service
     let request = NodeListRequest::new();
-    let request_payload = request
-        .encode()
-        .expect("failed to encode node_list request");
-
-    let response = ServiceMessenger::poll(
-        &client.caller_handle,
-        &client.master_node_name,
-        CALLER_INSTANCE_ID,
-        &client.master_node_name,
-        "node_list",
-        None,
-        Some(&client.instance_id),
-        request_payload,
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("caller should receive response");
-
-    let node_list_response = NodeListResponse::decode(&response.payload().to_bytes())
-        .expect("should decode node_list response");
+    let node_list_response = request
+        .poll(
+            &client.caller_handle,
+            &client.master_node_name,
+            CALLER_INSTANCE_ID,
+            &client.master_node_name,
+            Some(&client.instance_id),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("poll should succeed");
 
     let dot_graph = &node_list_response.dot_graph;
 
@@ -141,7 +129,7 @@ async fn test_node_list_returns_dot_graph() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_node_add_success() {
-    let (client, _server) = setup_test_master_node().await;
+    let (client, server) = setup_test_master_node().await;
 
     // Add a provider node that exposes a topic
     let peppy_json5 = r#"{
@@ -166,34 +154,36 @@ async fn test_node_add_success() {
         }"#;
 
     let from_dir = PathBuf::from("/tmp/test");
+    let custom_instance_id = "my_custom_sensor_instance";
 
-    let request = NodeAddRequest::new(peppy_json5, from_dir);
-    let request_payload = request.encode().expect("failed to encode node_add request");
-
-    let response = ServiceMessenger::poll(
-        &client.caller_handle,
-        &client.master_node_name,
-        CALLER_INSTANCE_ID,
-        &client.master_node_name,
-        "node_add",
-        None,
-        Some(&client.instance_id),
-        request_payload,
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("caller should receive response");
-
-    let node_add_response = NodeAddResponse::decode(&response.payload().to_bytes())
-        .expect("should decode node_add response");
+    let request = NodeAddRequest::new(peppy_json5, from_dir).with_instance_id(custom_instance_id);
+    let node_add_response = request
+        .poll(
+            &client.caller_handle,
+            &client.master_node_name,
+            CALLER_INSTANCE_ID,
+            &client.master_node_name,
+            Some(&client.instance_id),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("poll should succeed");
 
     assert!(node_add_response.success);
     assert!(node_add_response.error_message.is_empty());
-    todo!("Verify the node was added successfully");
+    assert_eq!(
+        node_add_response.node_id, custom_instance_id,
+        "node_id should match the custom instance_id provided in the request"
+    );
+
+    // Verify the node was added to the node stack
+    assert!(
+        server.node_stack.contains("sensor_node", "1.0.0"),
+        "sensor_node:1.0.0 should be present in the node stack after node_add"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "validation not implemented yet - test will pass once node_add validates config"]
 async fn test_node_add_invalid_config() {
     let (client, _server) = setup_test_master_node().await;
 
@@ -201,28 +191,80 @@ async fn test_node_add_invalid_config() {
     let from_dir = PathBuf::from("/tmp/test");
 
     let request = NodeAddRequest::new(peppy_json5, from_dir);
-    let request_payload = request.encode().expect("failed to encode node_add request");
-
-    let response = ServiceMessenger::poll(
-        &client.caller_handle,
-        &client.master_node_name,
-        CALLER_INSTANCE_ID,
-        &client.master_node_name,
-        "node_add",
-        None,
-        Some(&client.instance_id),
-        request_payload,
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("caller should receive response");
-
-    let node_add_response = NodeAddResponse::decode(&response.payload().to_bytes())
-        .expect("should decode node_add response");
+    let node_add_response = request
+        .poll(
+            &client.caller_handle,
+            &client.master_node_name,
+            CALLER_INSTANCE_ID,
+            &client.master_node_name,
+            Some(&client.instance_id),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("poll should succeed");
 
     assert!(!node_add_response.success);
-    assert!(!node_add_response.error_message.is_empty());
-    todo!("Verify the node addition failed with an error");
+    assert!(
+        node_add_response.error_message.contains("Failed to parse"),
+        "Error message should indicate parsing failure, got: {}",
+        node_add_response.error_message
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_node_add_dependency_not_resolved() {
+    let (client, server) = setup_test_master_node().await;
+
+    // Try to add a consumer node that depends on a non-existent provider
+    let peppy_json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "consumer_node",
+                tag: "1.0.0"
+            },
+            interfaces: {
+                subscribes_to: {
+                    topics: [
+                        {
+                            id: "sensor_input",
+                            node: "non_existent_node",
+                            name: "sensor_data",
+                            tag: "1.0.0"
+                        }
+                    ]
+                }
+            }
+        }"#;
+
+    let from_dir = PathBuf::from("/tmp/test");
+
+    let request = NodeAddRequest::new(peppy_json5, from_dir);
+    let node_add_response = request
+        .poll(
+            &client.caller_handle,
+            &client.master_node_name,
+            CALLER_INSTANCE_ID,
+            &client.master_node_name,
+            Some(&client.instance_id),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("poll should succeed");
+
+    assert!(!node_add_response.success);
+    assert!(
+        node_add_response
+            .error_message
+            .contains("non_existent_node"),
+        "Error message should mention the missing dependency, got: {}",
+        node_add_response.error_message
+    );
+
+    // Verify the node was NOT added to the node stack
+    assert!(
+        !server.node_stack.contains("consumer_node", "1.0.0"),
+        "consumer_node:1.0.0 should NOT be present in the node stack"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
