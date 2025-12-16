@@ -41,7 +41,10 @@ async fn test_info_request() {
     );
 
     // Hostname should be a non-empty string
-    assert!(!info_response.host_name.is_empty(), "hostname should not be empty");
+    assert!(
+        !info_response.host_name.is_empty(),
+        "hostname should not be empty"
+    );
 
     // Node count should be at least 1 (the master node itself)
     assert!(

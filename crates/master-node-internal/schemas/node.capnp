@@ -2,35 +2,41 @@
 
 # Node message structures for master-node services
 
-enum NodeCmd {
-    add @0;
-    list @1;
-    synchronize @2;
+# Node List service
+struct NodeListRequest {
+    # Empty for now - could add filters later
 }
 
-struct NodeRequest {
-    cmd @0 :NodeCmd;
+struct NodeListResponse {
+    # DOT graph representation of the node stack
+    dotGraph @0 :Text;
 }
 
-struct NodeResponse {
-    cmd @0 :NodeCmd;
-    value @1 :Text;
+# Node Add service
+struct NodeAddRequest {
+    # Peppy configuration in JSON5 format
+    peppyJson5 @0 :Text;
+    # Directory the configuration was loaded from
+    fromDir @1 :Text;
 }
 
-struct AddNodeRequest {
-    # Name of the node to add
-    nodeName @0 :Text;
-    # Node type/role
-    nodeType @1 :Text;
-    # Node address
-    address @2 :Text;
-}
-
-struct AddNodeResponse {
+struct NodeAddResponse {
     # Whether the node was added successfully
     success @0 :Bool;
     # Assigned node ID
     nodeId @1 :Text;
     # Error message if failed
     errorMessage @2 :Text;
+}
+
+# Node Sync service
+struct NodeSyncRequest {
+    # Empty for now - could add sync parameters later
+}
+
+struct NodeSyncResponse {
+    # Whether the sync was successful
+    success @0 :Bool;
+    # Error message if failed
+    errorMessage @1 :Text;
 }

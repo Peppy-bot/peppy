@@ -10,7 +10,10 @@ mod ping;
 
 pub use info::{InfoRequest, InfoResponse};
 pub use launcher::{LauncherRequest, LauncherResponse};
-pub use node::{NodeCmd, NodeRequest, NodeResponse};
+pub use node::{
+    NodeAddRequest, NodeAddResponse, NodeListRequest, NodeListResponse, NodeSyncRequest,
+    NodeSyncResponse,
+};
 pub use ping::{PingRequest, PingResponse};
 
 use bytes::Bytes;
@@ -19,7 +22,6 @@ use capnp::serialize;
 
 use crate::Result;
 use crate::launcher_capnp;
-use crate::node_capnp;
 
 /// Encode a Cap'n Proto message builder into bytes.
 ///
@@ -66,18 +68,6 @@ pub fn build_launcher_response(success: bool, error_message: &str) -> Result<Byt
     {
         let mut response = builder.init_root::<launcher_capnp::launcher_response::Builder>();
         response.set_success(success);
-        response.set_error_message(error_message);
-    }
-    encode_message(&builder)
-}
-
-/// Convenience wrapper for building and encoding an add node response.
-pub fn build_add_node_response(success: bool, node_id: &str, error_message: &str) -> Result<Bytes> {
-    let mut builder = Builder::new_default();
-    {
-        let mut response = builder.init_root::<node_capnp::add_node_response::Builder>();
-        response.set_success(success);
-        response.set_node_id(node_id);
         response.set_error_message(error_message);
     }
     encode_message(&builder)
