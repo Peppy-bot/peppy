@@ -1,17 +1,18 @@
 use std::sync::Arc;
 
-use bytes::Bytes;
-use node_stack::NodeStack;
-use peppylib::messaging::ServiceRequestContext;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
-use tokio::task::JoinHandle;
-use tracing::debug;
-
 use crate::Result;
 use crate::encoding::{
     NodeAddRequest, NodeAddResponse, NodeListRequest, NodeListResponse, NodeSyncRequest,
     NodeSyncResponse,
 };
+use bytes::Bytes;
+use config::node::Name;
+use config::node::NodeConfigParser;
+use node_stack::NodeStack;
+use peppylib::messaging::ServiceRequestContext;
+use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use tokio::task::JoinHandle;
+use tracing::debug;
 
 // ============================================================================
 // Node List Service
@@ -118,7 +119,7 @@ async fn handle_node_add_request(
 
 fn handle_node_add_request_inner(
     context: &ServiceRequestContext,
-    _node_stack: Arc<NodeStack>,
+    node_stack: Arc<NodeStack>,
 ) -> Result<Bytes> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -130,8 +131,39 @@ fn handle_node_add_request_inner(
         request.from_dir.display()
     );
 
-    // TODO: Implement actual node addition logic
-    NodeAddResponse::success("").encode()
+    // Parse the node configuration from JSON5
+    let node_config = match NodeConfigParser::from_content(&request.peppy_json5) {
+        Ok(config) => config,
+        Err(e) => {
+            return NodeAddResponse::failure(format!("Failed to parse node config: {}", e))
+                .encode();
+        }
+    };
+
+    // Parse the optional instance_id
+    let instance_id = match request.instance_id {
+        Some(ref id) => match Name::new(id) {
+            Ok(name) => Some(name),
+            Err(e) => {
+                return NodeAddResponse::failure(format!("Invalid instance_id: {}", e)).encode();
+            }
+        },
+        None => None,
+    };
+
+    // Add the node to the stack (all dependencies must be satisfied)
+    match node_stack.push_config(&node_config, instance_id.as_ref(), false) {
+        Ok(instance_id) => {
+            debug!(
+                "Added node {}:{} with instance_id {}",
+                node_config.manifest.name.as_str(),
+                node_config.manifest.tag,
+                instance_id.as_str()
+            );
+            NodeAddResponse::success(instance_id.as_str()).encode()
+        }
+        Err(e) => NodeAddResponse::failure(format!("Failed to add node: {}", e)).encode(),
+    }
 }
 
 // ============================================================================
