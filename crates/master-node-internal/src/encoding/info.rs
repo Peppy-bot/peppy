@@ -76,10 +76,7 @@ impl InfoResponse {
         Ok(Self {
             uptime_secs: response.get_uptime_secs(),
             master_node_name: response.get_master_node_name()?.to_str()?.to_owned(),
-            master_node_instance_id: response
-                .get_master_node_instance_id()?
-                .to_str()?
-                .to_owned(),
+            master_node_instance_id: response.get_master_node_instance_id()?.to_str()?.to_owned(),
             host_name: response.get_host_name()?.to_str()?.to_owned(),
             node_count: response.get_node_count(),
         })

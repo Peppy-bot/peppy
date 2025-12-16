@@ -39,7 +39,14 @@ pub async fn listen_for_info(
                 let instance_id = instance_id.clone();
                 let node_stack = Arc::clone(&node_stack);
                 async move {
-                    handle_info_request(context, &master_node_name, &instance_id, start_time, &node_stack).await
+                    handle_info_request(
+                        context,
+                        &master_node_name,
+                        &instance_id,
+                        start_time,
+                        &node_stack,
+                    )
+                    .await
                 }
             })
             .await
@@ -57,11 +64,16 @@ async fn handle_info_request(
     node_stack: &NodeStack,
 ) -> PeppyResult<Bytes> {
     let sender_instance_id = context.message().instance_id();
-    handle_info_request_inner(&context, master_node_name, instance_id, start_time, node_stack).map_err(|e| {
-        PeppyError::InvalidServiceRequest {
-            identifier: sender_instance_id.to_string(),
-            reason: e.to_string(),
-        }
+    handle_info_request_inner(
+        &context,
+        master_node_name,
+        instance_id,
+        start_time,
+        node_stack,
+    )
+    .map_err(|e| PeppyError::InvalidServiceRequest {
+        identifier: sender_instance_id.to_string(),
+        reason: e.to_string(),
     })
 }
 
@@ -86,5 +98,12 @@ fn handle_info_request_inner(
         .unwrap_or_else(|| "unknown".to_string());
     let node_count = node_stack.len() as u32;
 
-    InfoResponse::new(uptime_secs, master_node_name, instance_id, host_name, node_count).encode()
+    InfoResponse::new(
+        uptime_secs,
+        master_node_name,
+        instance_id,
+        host_name,
+        node_count,
+    )
+    .encode()
 }
