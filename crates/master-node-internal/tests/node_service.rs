@@ -143,7 +143,28 @@ async fn test_node_list_returns_dot_graph() {
 async fn test_node_add_success() {
     let (client, _server) = setup_test_master_node().await;
 
-    let peppy_json5 = r#"{ "name": "test_node" }"#;
+    // Add a provider node that exposes a topic
+    let peppy_json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "sensor_node",
+                tag: "1.0.0"
+            },
+            interfaces: {
+                exposes: {
+                    topics: [
+                        {
+                            name: "sensor_data",
+                            qos_profile: "sensor_data",
+                            message_format: {
+                                value: "f32"
+                            }
+                        }
+                    ]
+                }
+            }
+        }"#;
+
     let from_dir = PathBuf::from("/tmp/test");
 
     let request = NodeAddRequest::new(peppy_json5, from_dir);
