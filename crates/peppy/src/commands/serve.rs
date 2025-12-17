@@ -214,7 +214,7 @@ pub struct ServeCommand {
 }
 
 impl Command for ServeCommand {
-    fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
+    fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
         let _pid_lock = match PidLock::acquire() {
             Ok(lock) => lock,
             Err(PidLockError::AlreadyRunning(pid)) => {
@@ -230,7 +230,7 @@ impl Command for ServeCommand {
             Err(PidLockError::Io(err)) => return Err(err.into()),
         };
 
-        let mut builder = ServeCommandBuilder::new(ctx)?
+        let mut builder = ServeCommandBuilder::new()?
             .with_messaging_router(self.messaging_engine)
             .with_master_node(self.master_name)?;
 

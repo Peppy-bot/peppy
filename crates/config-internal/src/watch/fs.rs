@@ -1,5 +1,5 @@
 use super::discovery::find_peppy_nodes_from_dir;
-use crate::consts::PEPPY_NODE_CONFIG_FILE;
+use crate::consts::NODE_CONFIG_FILE;
 use crate::error::{Error, Result};
 use notify::event::{AccessKind, AccessMode, ModifyKind, RenameMode};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -62,7 +62,7 @@ pub async fn watch_files(
                     Err(_) => raw_path.clone(),
                 };
 
-                if path.file_name() != Some(std::ffi::OsStr::new(PEPPY_NODE_CONFIG_FILE)) {
+                if path.file_name() != Some(std::ffi::OsStr::new(NODE_CONFIG_FILE)) {
                     continue;
                 }
 
@@ -137,7 +137,7 @@ pub async fn watch_files(
 mod tests {
     use super::super::events::NodeConfigEvent;
     use super::*;
-    use crate::consts::PEPPY_NODE_CONFIG_FILE;
+    use crate::consts::NODE_CONFIG_FILE;
     use std::fs;
     use std::time::Duration;
     use tempfile::TempDir;
@@ -154,7 +154,7 @@ mod tests {
         let watch_handle = watch_files(tx, watch_dir).await.expect("watcher init");
 
         // Create a peppy config file
-        let peppy_file = temp_dir.path().join(PEPPY_NODE_CONFIG_FILE);
+        let peppy_file = temp_dir.path().join(NODE_CONFIG_FILE);
         fs::write(&peppy_file, "node: test").unwrap();
 
         // Wait for the event with timeout
@@ -177,7 +177,7 @@ mod tests {
     #[tokio::test]
     async fn test_watch_files_detects_modified_config() {
         let temp_dir = TempDir::new().unwrap();
-        let peppy_file = temp_dir.path().join(PEPPY_NODE_CONFIG_FILE);
+        let peppy_file = temp_dir.path().join(NODE_CONFIG_FILE);
 
         // Create file before starting watcher
         fs::write(&peppy_file, "node: test").unwrap();
@@ -210,7 +210,7 @@ mod tests {
     #[tokio::test]
     async fn test_watch_files_detects_deleted_config() {
         let temp_dir = TempDir::new().unwrap();
-        let peppy_file = temp_dir.path().join(PEPPY_NODE_CONFIG_FILE);
+        let peppy_file = temp_dir.path().join(NODE_CONFIG_FILE);
 
         // Create file before starting watcher
         fs::write(&peppy_file, "node: test").unwrap();
@@ -277,7 +277,7 @@ mod tests {
         let watch_handle = watch_files(tx, watch_dir).await.expect("watcher init");
 
         // Create a peppy config in nested directory
-        let nested_peppy = nested_dir.join(PEPPY_NODE_CONFIG_FILE);
+        let nested_peppy = nested_dir.join(NODE_CONFIG_FILE);
         fs::write(&nested_peppy, "node: nested").unwrap();
 
         // Wait for the event
@@ -309,7 +309,7 @@ mod tests {
         let watch_handle = watch_files(tx, watch_dir).await.expect("watcher init");
 
         // Create first peppy config file
-        let peppy1 = temp_dir.path().join(PEPPY_NODE_CONFIG_FILE);
+        let peppy1 = temp_dir.path().join(NODE_CONFIG_FILE);
         fs::write(&peppy1, "node: one").unwrap();
 
         // Wait for first event

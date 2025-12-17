@@ -46,7 +46,7 @@ fn run_generate_peppygen_lib_test(build_system: BuildSystem) -> (TempDir, std::p
     let node_dir = temp_dir.path();
 
     // Write the peppy.json5 config
-    let config_path = node_dir.join(config::consts::PEPPY_NODE_CONFIG_FILE);
+    let config_path = node_dir.join(config::consts::NODE_CONFIG_FILE);
     fs::write(&config_path, PEPPY_JSON5_CONFIG).expect("failed to write peppy.json5");
 
     // Generate the library
@@ -61,7 +61,7 @@ fn run_generate_peppygen_lib_test(build_system: BuildSystem) -> (TempDir, std::p
     );
 
     // Check that the fingerprint was created
-    let fingerprint_path = peppygen_dir.join("node_config.sha256");
+    let fingerprint_path = peppygen_dir.join(config::consts::NODE_CONFIG_FINGERPRINT_FILE);
     assert!(
         fingerprint_path.exists(),
         "fingerprint file should exist at {}",
@@ -91,7 +91,7 @@ fn generate_peppygen_lib_minimal_config() {
       }
     }"#;
 
-    let config_path = node_dir.join(config::consts::PEPPY_NODE_CONFIG_FILE);
+    let config_path = node_dir.join(config::consts::NODE_CONFIG_FILE);
     fs::write(&config_path, minimal_config).expect("failed to write peppy.json5");
 
     // Generate should succeed even with no interfaces

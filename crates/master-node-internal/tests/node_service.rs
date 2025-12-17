@@ -268,7 +268,7 @@ async fn test_node_add_dependency_not_resolved() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn test_node_sync_success() {
     let (client, _server) = setup_test_master_node().await;
 
@@ -300,7 +300,7 @@ async fn test_node_sync_success() {
         }"#;
 
     std::fs::write(
-        node_root_dir.join(config::consts::PEPPY_NODE_CONFIG_FILE),
+        node_root_dir.join(config::consts::NODE_CONFIG_FILE),
         peppy_json5,
     )
     .expect("failed to write node config");
@@ -352,18 +352,19 @@ async fn test_node_sync_success() {
     );
 
     assert!(
-        peppygen_dir.join("node_config.sha256").exists(),
+        peppygen_dir
+            .join(config::consts::NODE_CONFIG_FINGERPRINT_FILE)
+            .exists(),
         "expected node config fingerprint at {}",
         peppygen_dir.display()
     );
     assert!(
-        !peppygen_dir
-            .join(config::consts::PEPPY_NODE_CONFIG_FILE)
-            .exists(),
+        !peppygen_dir.join(config::consts::NODE_CONFIG_FILE).exists(),
         "peppy.json5 should not be copied into the generated crate"
     );
 }
 
+// Long running test
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_node_init_rust_success() {
     let (client, _server) = setup_test_master_node().await;
@@ -411,15 +412,13 @@ async fn test_node_init_rust_success() {
 
     // Verify peppy.json5 was created
     assert!(
-        node_dir
-            .join(config::consts::PEPPY_NODE_CONFIG_FILE)
-            .exists(),
+        node_dir.join(config::consts::NODE_CONFIG_FILE).exists(),
         "expected peppy.json5 to be created"
     );
 
     // Verify peppy.json5 can be parsed
     let peppy_config =
-        NodeConfigParser::from_path(&node_dir.join(config::consts::PEPPY_NODE_CONFIG_FILE))
+        NodeConfigParser::from_path(&node_dir.join(config::consts::NODE_CONFIG_FILE))
             .expect("peppy.json5 should be valid");
     assert_eq!(peppy_config.manifest.name.as_str(), node_name);
 
@@ -471,7 +470,19 @@ async fn test_node_init_rust_success() {
         peppygen_dir.display()
     );
 
-    // TODO: Compile the project and check that the compilation went fine
+    // Compile the project and check that the compilation went fine
+    let cargo_output = std::process::Command::new("cargo")
+        .arg("build")
+        .current_dir(&node_dir)
+        .output()
+        .expect("failed to invoke cargo build on generated node");
+    assert!(
+        cargo_output.status.success(),
+        "cargo build failed for generated node with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        cargo_output.status.code(),
+        String::from_utf8_lossy(&cargo_output.stdout),
+        String::from_utf8_lossy(&cargo_output.stderr)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -516,9 +527,7 @@ async fn test_node_init_python_success() {
 
     // Verify peppy.json5 was created
     assert!(
-        node_dir
-            .join(config::consts::PEPPY_NODE_CONFIG_FILE)
-            .exists(),
+        node_dir.join(config::consts::NODE_CONFIG_FILE).exists(),
         "expected peppy.json5 to be created"
     );
 

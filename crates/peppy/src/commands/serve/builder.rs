@@ -5,7 +5,6 @@ use super::CompositeCommand;
 use super::Serve;
 use super::master_node::MasterNodeRunner;
 use super::messaging_router::MessagingRouter;
-use crate::context::AppContext;
 use crate::error::{Error, Result};
 use pmi::Messenger;
 use pmi::MessengerAdapter;
@@ -16,7 +15,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 pub struct ServeCommandBuilder {
-    app_ctx: Arc<AppContext>,
     composite_command: CompositeCommand,
     messenger: Option<Arc<Mutex<Messenger>>>,
     master_node_requested: bool,
@@ -25,9 +23,8 @@ pub struct ServeCommandBuilder {
 }
 
 impl ServeCommandBuilder {
-    pub fn new(ctx: &Arc<AppContext>) -> Result<Self> {
+    pub fn new() -> Result<Self> {
         Ok(Self {
-            app_ctx: Arc::clone(ctx),
             composite_command: CompositeCommand::default(),
             messenger: None,
             master_node_requested: false,
@@ -71,11 +68,8 @@ impl ServeCommandBuilder {
     pub fn build(mut self) -> Result<Serve> {
         if self.master_node_requested {
             if let Some(messenger) = &self.messenger {
-                let master_node = MasterNodeRunner::new(
-                    &self.app_ctx,
-                    Arc::clone(messenger),
-                    self.master_node_name.clone(),
-                );
+                let master_node =
+                    MasterNodeRunner::new(Arc::clone(messenger), self.master_node_name.clone());
                 self.composite_command = self
                     .composite_command
                     .add_async_command(Box::new(master_node));

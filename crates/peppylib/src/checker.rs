@@ -1,7 +1,6 @@
+use config::consts::NODE_CONFIG_FINGERPRINT_FILE;
 use sha2::{Digest, Sha256};
 use std::{fs, path::Path};
-
-const NODE_CONFIG_FINGERPRINT_FILE: &str = "node_config.sha256";
 
 /// Checks that the generated node crate is in sync with the node configuration file.
 pub fn check_node_config_up_to_date(
@@ -87,9 +86,9 @@ mod tests {
     #[test]
     fn passes_when_fingerprints_match() {
         let tmp = TestDir::new();
-        let config_path = tmp.path().join(config::consts::PEPPY_NODE_CONFIG_FILE);
+        let config_path = tmp.path().join(config::consts::NODE_CONFIG_FILE);
         let generated_crate = prepare_generated_crate(tmp.path());
-        let fingerprint_file = generated_crate.join(super::NODE_CONFIG_FINGERPRINT_FILE);
+        let fingerprint_file = generated_crate.join(NODE_CONFIG_FINGERPRINT_FILE);
 
         let config_contents =
             r#"{ schema_version: 1, manifest: { name: "camera", tag: "0.1.0" } }"#;
@@ -105,7 +104,7 @@ mod tests {
     #[test]
     fn panics_when_fingerprint_is_missing() {
         let tmp = TestDir::new();
-        let config_path = tmp.path().join(config::consts::PEPPY_NODE_CONFIG_FILE);
+        let config_path = tmp.path().join(config::consts::NODE_CONFIG_FILE);
         let generated_crate = prepare_generated_crate(tmp.path());
         fs::write(&config_path, "{}").expect("failed to write config");
 
@@ -119,7 +118,7 @@ mod tests {
             "unexpected panic message: {panic_message}"
         );
         assert!(
-            panic_message.contains(super::NODE_CONFIG_FINGERPRINT_FILE),
+            panic_message.contains(NODE_CONFIG_FINGERPRINT_FILE),
             "panic should mention fingerprint file path: {panic_message}"
         );
     }
@@ -127,9 +126,9 @@ mod tests {
     #[test]
     fn panics_when_fingerprint_differs() {
         let tmp = TestDir::new();
-        let config_path = tmp.path().join(config::consts::PEPPY_NODE_CONFIG_FILE);
+        let config_path = tmp.path().join(config::consts::NODE_CONFIG_FILE);
         let generated_crate = prepare_generated_crate(tmp.path());
-        let fingerprint_file = generated_crate.join(super::NODE_CONFIG_FINGERPRINT_FILE);
+        let fingerprint_file = generated_crate.join(NODE_CONFIG_FINGERPRINT_FILE);
 
         let original_config =
             r#"{ schema_version: 1, manifest: { name: "camera", tag: "0.1.0" } }"#;

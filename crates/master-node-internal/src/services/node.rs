@@ -233,7 +233,7 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Byt
 
     // Create peppy.json5
     if let Err(e) = NodeConfigCreator::simple_node(&request.node_name)
-        .and_then(|creator| creator.write_to(node_dir.join(config::consts::PEPPY_NODE_CONFIG_FILE)))
+        .and_then(|creator| creator.write_to(node_dir.join(config::consts::NODE_CONFIG_FILE)))
     {
         return NodeInitResponse::failure(format!("Failed to create peppy.json5: {}", e)).encode();
     }
@@ -294,10 +294,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-peppylib = "*"
-
-[dependencies.peppygen]
-path = "{}"
+peppygen = {{ path = "{}" }}
 "#,
         node_name,
         config::consts::PEPPYGEN_OUTPUT_PATH

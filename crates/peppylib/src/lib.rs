@@ -14,6 +14,6 @@ pub use pmi::start_zenohd_process;
 
 // Reexport useful modules for the user of the lib
 pub mod config {
-    pub use config::consts::PEPPY_NODE_CONFIG_FILE;
+    pub use config::consts::{NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE};
     pub use config::node::*;
 }

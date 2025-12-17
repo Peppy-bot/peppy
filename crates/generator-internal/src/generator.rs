@@ -5,7 +5,7 @@ mod rust;
 pub mod types;
 
 use crate::error::{Error, Result};
-use config::{consts::PEPPY_NODE_CONFIG_FILE, node::NodeConfigParser, peppy_config::BuildSystem};
+use config::{consts::NODE_CONFIG_FILE, node::NodeConfigParser, peppy_config::BuildSystem};
 use python::PythonGenerator;
 use rust::RustGenerator;
 use std::{fs, path::Path};
@@ -32,7 +32,7 @@ pub fn generate_lib_for_build_system(
     node_dir: impl AsRef<Path>,
 ) -> Result<()> {
     let node_dir = node_dir.as_ref();
-    let node_config_path = node_dir.join(PEPPY_NODE_CONFIG_FILE);
+    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
 
     if !node_config_path.exists() {
         return Err(Error::NodeNotFound(node_dir.display().to_string()));
@@ -59,7 +59,7 @@ pub fn generate_lib_for_build_system(
     };
 
     // Lastly generate the codegen fingerprint based on the peppy.json5 config file
-    let node_config_path = node_dir.join(PEPPY_NODE_CONFIG_FILE);
+    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
     checker::generate_node_config_fingerprint(&node_config_path, &output_dir)?;
 
     result

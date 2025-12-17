@@ -17,8 +17,8 @@ fn node_config_path(spec: &GitRemoteSpec) -> PathBuf {
         Some(path) if path.extension().and_then(|ext| ext.to_str()) == Some("json5") => {
             PathBuf::from(path)
         }
-        Some(path) => path.join(config::consts::PEPPY_NODE_CONFIG_FILE),
-        None => PathBuf::from(config::consts::PEPPY_NODE_CONFIG_FILE),
+        Some(path) => path.join(config::consts::NODE_CONFIG_FILE),
+        None => PathBuf::from(config::consts::NODE_CONFIG_FILE),
     }
 }
 
@@ -175,11 +175,9 @@ mod tests {
         let file_path = if let Some(path) = path_within_repo {
             let dir = remote_dir.path().join(path);
             std::fs::create_dir_all(&dir).expect("create nested directory");
-            dir.join(config::consts::PEPPY_NODE_CONFIG_FILE)
+            dir.join(config::consts::NODE_CONFIG_FILE)
         } else {
-            remote_dir
-                .path()
-                .join(config::consts::PEPPY_NODE_CONFIG_FILE)
+            remote_dir.path().join(config::consts::NODE_CONFIG_FILE)
         };
 
         std::fs::write(

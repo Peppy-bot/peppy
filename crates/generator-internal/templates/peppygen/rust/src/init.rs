@@ -36,7 +36,7 @@ impl std::error::Error for InitNodeError {
 
 pub async fn init_node() -> InitNodeResult<()> {
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let config_path = crate_root.join(peppylib::config::PEPPY_NODE_CONFIG_FILE);
+    let config_path = crate_root.join(peppylib::config::NODE_CONFIG_FILE);
 
     ensure_config_is_in_sync(&config_path, &crate_root)?;
     peppylib::setup_node(Some(config_path))
@@ -121,8 +121,8 @@ mod tests {
 
     impl NodeConfigFixture {
         fn install(crate_root: &Path, config_contents: &str, fingerprint: &str) -> Self {
-            let config_path = crate_root.join(peppylib::config::PEPPY_NODE_CONFIG_FILE);
-            let fingerprint_path = crate_root.join("node_config.sha256");
+            let config_path = crate_root.join(peppylib::config::NODE_CONFIG_FILE);
+            let fingerprint_path = crate_root.join(peppylib::config::NODE_CONFIG_FINGERPRINT_FILE);
 
             let original_config = fs::read(&config_path).ok();
             let original_fingerprint = fs::read(&fingerprint_path).ok();

@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use config::consts::PEPPY_NODE_CONFIG_FILE;
+use config::consts::NODE_CONFIG_FILE;
 use config::{
     node::{NodeConfig, NodeConfigParser},
     peppy_config::{Deployment, HttpRemoteSpec},
@@ -79,11 +79,11 @@ fn load_manifest(cache_dir: &Path, deployment: &Deployment) -> Result<NodeConfig
 }
 
 fn load_manifest_inner(dir: &Path, deployment: &Deployment) -> Result<NodeConfig> {
-    let manifest_path = dir.join(PEPPY_NODE_CONFIG_FILE);
+    let manifest_path = dir.join(NODE_CONFIG_FILE);
     if !manifest_path.is_file() {
         return Err(Error::BundleExtraction {
             url: manifest_path.display().to_string(),
-            reason: format!("{PEPPY_NODE_CONFIG_FILE} is missing from bundle"),
+            reason: format!("{NODE_CONFIG_FILE} is missing from bundle"),
         });
     }
 
@@ -102,7 +102,7 @@ fn load_manifest_inner(dir: &Path, deployment: &Deployment) -> Result<NodeConfig
 }
 
 fn should_refresh(cache_dir: &Path, expected_checksum: Option<&str>) -> bool {
-    let manifest_path = cache_dir.join(PEPPY_NODE_CONFIG_FILE);
+    let manifest_path = cache_dir.join(NODE_CONFIG_FILE);
     if !manifest_path.is_file() {
         return true;
     }
