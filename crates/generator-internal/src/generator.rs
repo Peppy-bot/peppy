@@ -9,10 +9,8 @@ use config::{consts::PEPPY_NODE_CONFIG_FILE, node::NodeConfigParser, peppy_confi
 use python::PythonGenerator;
 use rust::RustGenerator;
 use std::{fs, path::Path};
+use toml::Value;
 use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
-
-/// The standard output directory for generated peppygen libraries relative to node_dir.
-const PEPPYGEN_OUTPUT_PATH: &str = ".peppy/libs/peppygen";
 
 /// Generate an interface library for the given build system from a node directory.
 ///
@@ -44,26 +42,25 @@ pub fn generate_lib_for_build_system(
         .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
 
     let interfaces = collect_exposed_interfaces(&node_config);
-
     // Create the output directory
-    let output_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
+    let output_dir = node_dir.join(config::consts::PEPPYGEN_OUTPUT_PATH);
     fs::create_dir_all(&output_dir)?;
-
-    // Temporarily copy peppy.json5 to the output directory (required for fingerprinting during build)
-    let output_config_path = output_dir.join(PEPPY_NODE_CONFIG_FILE);
-    fs::copy(&node_config_path, &output_config_path)?;
 
     let result = match build_system {
         BuildSystem::Rust | BuildSystem::Cargo => {
-            generate_with_backend(RustGenerator::new(), &interfaces, &output_dir)
+            generate_with_backend(RustGenerator::new(), &interfaces, &output_dir)?;
+            // Create or update the node's Cargo.toml with peppygen dependency
+            ensure_node_cargo_toml(node_dir, &node_config.manifest.name.as_str())?;
+            Ok(())
         }
         BuildSystem::Python | BuildSystem::Uv => {
             generate_with_backend(PythonGenerator::new(), &interfaces, &output_dir)
         }
     };
 
-    // Clean up the temporary config copy
-    let _ = fs::remove_file(&output_config_path);
+    // Lastly generate the codegen fingerprint based on the peppy.json5 config file
+    let node_config_path = node_dir.join(PEPPY_NODE_CONFIG_FILE);
+    checker::generate_node_config_fingerprint(&node_config_path, &output_dir)?;
 
     result
 }
@@ -113,4 +110,208 @@ where
         interface.register_with(&mut backend)?;
     }
     backend.build(output_dir)
+}
+
+/// Creates or updates the node's Cargo.toml with the peppygen dependency.
+///
+/// If the Cargo.toml doesn't exist, it creates a new one with the node name.
+/// If it exists, it ensures the peppygen dependency is present.
+fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
+    use std::io::ErrorKind;
+    use toml::map::Map;
+
+    let cargo_toml_path = node_dir.join("Cargo.toml");
+
+    let mut doc: Value = if cargo_toml_path.exists() {
+        let contents = fs::read_to_string(&cargo_toml_path)?;
+        toml::from_str(&contents).map_err(|e| {
+            Error::Io(std::io::Error::new(
+                ErrorKind::InvalidData,
+                format!("failed to parse Cargo.toml: {}", e),
+            ))
+        })?
+    } else {
+        // Create new Cargo.toml structure
+        let mut doc = Map::new();
+
+        let mut package = Map::new();
+        package.insert("name".to_string(), Value::String(node_name.to_string()));
+        package.insert("version".to_string(), Value::String("0.1.0".to_string()));
+        package.insert("edition".to_string(), Value::String("2024".to_string()));
+        doc.insert("package".to_string(), Value::Table(package));
+
+        doc.insert("dependencies".to_string(), Value::Table(Map::new()));
+
+        Value::Table(doc)
+    };
+
+    // Ensure dependencies section exists and add peppygen
+    if let Value::Table(ref mut root) = doc {
+        let dependencies = root
+            .entry("dependencies".to_string())
+            .or_insert_with(|| Value::Table(Map::new()));
+
+        if let Value::Table(deps) = dependencies {
+            if !deps.contains_key("peppygen") {
+                let mut peppygen_dep = Map::new();
+                peppygen_dep.insert(
+                    "path".to_string(),
+                    Value::String(config::consts::PEPPYGEN_OUTPUT_PATH.to_string()),
+                );
+                deps.insert("peppygen".to_string(), Value::Table(peppygen_dep));
+            }
+        }
+    }
+
+    let serialized = toml::to_string_pretty(&doc).map_err(|e| {
+        Error::Io(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("failed to serialize Cargo.toml: {}", e),
+        ))
+    })?;
+    fs::write(&cargo_toml_path, serialized)?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn ensure_node_cargo_toml_creates_new_file_with_peppygen_dependency() {
+        let temp_dir = TempDir::new().expect("failed to create temp directory");
+        let node_dir = temp_dir.path();
+
+        let cargo_toml_path = node_dir.join("Cargo.toml");
+        assert!(!cargo_toml_path.exists());
+
+        ensure_node_cargo_toml(node_dir, "my_test_node").expect("should succeed");
+
+        assert!(cargo_toml_path.exists(), "Cargo.toml should be created");
+
+        let contents = fs::read_to_string(&cargo_toml_path).expect("failed to read Cargo.toml");
+        let doc: Value = toml::from_str(&contents).expect("should be valid TOML");
+
+        let package_name = doc
+            .get("package")
+            .and_then(|p| p.get("name"))
+            .and_then(|n| n.as_str())
+            .expect("should have package.name");
+        assert_eq!(package_name, "my_test_node");
+
+        let peppygen_path = doc
+            .get("dependencies")
+            .and_then(|d| d.get("peppygen"))
+            .and_then(|p| p.get("path"))
+            .and_then(|p| p.as_str())
+            .expect("should have peppygen dependency with path");
+        assert_eq!(peppygen_path, config::consts::PEPPYGEN_OUTPUT_PATH);
+    }
+
+    #[test]
+    fn ensure_node_cargo_toml_adds_peppygen_to_existing_file() {
+        let temp_dir = TempDir::new().expect("failed to create temp directory");
+        let node_dir = temp_dir.path();
+        let cargo_toml_path = node_dir.join("Cargo.toml");
+
+        let existing_content = r#"
+            [package]
+            name = "existing_node"
+            version = "1.0.0"
+            edition = "2021"
+
+            [dependencies]
+            serde = "1.0"
+        "#;
+        fs::write(&cargo_toml_path, existing_content).expect("failed to write existing Cargo.toml");
+
+        ensure_node_cargo_toml(node_dir, "existing_node").expect("should succeed");
+
+        let contents = fs::read_to_string(&cargo_toml_path).expect("failed to read Cargo.toml");
+        let doc: Value = toml::from_str(&contents).expect("should be valid TOML");
+
+        let package_name = doc
+            .get("package")
+            .and_then(|p| p.get("name"))
+            .and_then(|n| n.as_str())
+            .expect("should have package.name");
+        assert_eq!(package_name, "existing_node");
+
+        let serde_dep = doc
+            .get("dependencies")
+            .and_then(|d| d.get("serde"))
+            .and_then(|s| s.as_str())
+            .expect("should have serde dependency");
+        assert_eq!(serde_dep, "1.0");
+
+        let peppygen_path = doc
+            .get("dependencies")
+            .and_then(|d| d.get("peppygen"))
+            .and_then(|p| p.get("path"))
+            .and_then(|p| p.as_str())
+            .expect("should have peppygen dependency with path");
+        assert_eq!(peppygen_path, config::consts::PEPPYGEN_OUTPUT_PATH);
+    }
+
+    #[test]
+    fn ensure_node_cargo_toml_does_nothing_if_peppygen_already_exists() {
+        let temp_dir = TempDir::new().expect("failed to create temp directory");
+        let node_dir = temp_dir.path();
+        let cargo_toml_path = node_dir.join("Cargo.toml");
+
+        let existing_content = r#"
+            [package]
+            name = "node_with_peppygen"
+            version = "2.0.0"
+            edition = "2021"
+
+            [dependencies]
+            serde = "1.0"
+
+            [dependencies.peppygen]
+            path = ".peppy/libs/peppygen"
+        "#;
+        fs::write(&cargo_toml_path, existing_content).expect("failed to write existing Cargo.toml");
+
+        let content_before = fs::read_to_string(&cargo_toml_path).expect("failed to read");
+
+        ensure_node_cargo_toml(node_dir, "node_with_peppygen").expect("should succeed");
+
+        let contents = fs::read_to_string(&cargo_toml_path).expect("failed to read Cargo.toml");
+        let doc: Value = toml::from_str(&contents).expect("should be valid TOML");
+
+        let package_name = doc
+            .get("package")
+            .and_then(|p| p.get("name"))
+            .and_then(|n| n.as_str())
+            .expect("should have package.name");
+        assert_eq!(package_name, "node_with_peppygen");
+
+        let package_version = doc
+            .get("package")
+            .and_then(|p| p.get("version"))
+            .and_then(|v| v.as_str())
+            .expect("should have package.version");
+        assert_eq!(package_version, "2.0.0");
+
+        let serde_dep = doc
+            .get("dependencies")
+            .and_then(|d| d.get("serde"))
+            .and_then(|s| s.as_str())
+            .expect("should have serde dependency");
+        assert_eq!(serde_dep, "1.0");
+
+        let peppygen_path = doc
+            .get("dependencies")
+            .and_then(|d| d.get("peppygen"))
+            .and_then(|p| p.get("path"))
+            .and_then(|p| p.as_str())
+            .expect("should have peppygen dependency with path");
+        assert_eq!(peppygen_path, config::consts::PEPPYGEN_OUTPUT_PATH);
+
+        let doc_before: Value = toml::from_str(&content_before).expect("should be valid TOML");
+        assert_eq!(doc, doc_before, "logical content should be unchanged");
+    }
 }
