@@ -742,10 +742,10 @@ fn optional_node_excluded_when_unresolvable() {
     let launch_content = r#"{
   deployments: [
     {
-      name: "$UVC",
+      name: "$UVC_NAME",
       source: {
         repo: "$REPO",
-        path: "$UVC_REMOTE"
+        path: "$UVC_PATH"
       },
       tag: "0.1.0",
       instances: [
@@ -770,10 +770,10 @@ fn optional_node_excluded_when_unresolvable() {
       ]
     },
     {
-      name: "$WEB",
+      name: "$WEB_NAME",
       source: {
         repo: "$REPO",
-        path: "$WEB_REMOTE"
+        path: "$WEB_PATH"
       },
       optional: true,
       tag: "9.9.9",
@@ -804,11 +804,11 @@ fn optional_node_excluded_when_unresolvable() {
     format: "text"
   }
 }"#
-    .replace("$UVC", test_helpers::UVC_CAMERA_NODE_NAME)
-    .replace("$REPO", &git_repo_path)
-    .replace("$UVC_REMOTE", &uvc_remote)
-    .replace("$WEB", test_helpers::WEB_VIDEO_STREAM_NODE_NAME)
-    .replace("$WEB_REMOTE", &web_remote);
+    .replace("$UVC_NAME", test_helpers::UVC_CAMERA_NODE_NAME)
+    .replace("$UVC_PATH", &uvc_remote)
+    .replace("$WEB_NAME", test_helpers::WEB_VIDEO_STREAM_NODE_NAME)
+    .replace("$WEB_PATH", &web_remote)
+    .replace("$REPO", &git_repo_path);
 
     let launch_file = root.join("peppy_launcher.json5");
     std::fs::write(&launch_file, launch_content).expect("failed to write launch config");
