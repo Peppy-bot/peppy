@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::error::{Error, Result};
 use config::{
-    NodeParameters, consts::PEPPY_RUNTIME_CONFIG, node::NodeConfig, runtime::RuntimeConfig,
+    NodeParameters, consts::PEPPY_RUNTIME_CONFIG_VAR_NAME, node::NodeConfig, runtime::RuntimeConfig,
 };
 use node_stack::NodeStack;
 
@@ -16,12 +16,13 @@ impl Processor {
     /// 1. Reads the `PEPPY_RUNTIME_CONFIG` env var passed during runtime from the master node/peppy daemon when the node is started
     /// 2. Checks that the md5 of the peppy_config generated for `peppygen` matches the one we have at runtime as input parameter to this function
     pub fn new_with_peppy_config(peppy_config: impl AsRef<Path>) -> Result<Self> {
-        let launch_config_path = std::env::var(PEPPY_RUNTIME_CONFIG).map_err(|source| {
-            Error::MissingInstanceIdEnvVar {
-                var: PEPPY_RUNTIME_CONFIG,
-                source,
-            }
-        })?;
+        let launch_config_path =
+            std::env::var(PEPPY_RUNTIME_CONFIG_VAR_NAME).map_err(|source| {
+                Error::MissingInstanceIdEnvVar {
+                    var: PEPPY_RUNTIME_CONFIG_VAR_NAME,
+                    source,
+                }
+            })?;
         let launch_config = Processor::get_peppy_deployment_config(&launch_config_path)?;
         let node_config: NodeConfig =
             serde_json5::from_str(&std::fs::read_to_string(peppy_config.as_ref())?)?;
@@ -107,7 +108,7 @@ impl Processor {
 
 #[cfg(test)]
 mod tests {
-    use super::{PEPPY_RUNTIME_CONFIG, Processor};
+    use super::{PEPPY_RUNTIME_CONFIG_VAR_NAME, Processor};
     use config::{AnyType, NodeParameters, runtime::RuntimeConfig};
     use std::{collections::BTreeMap, env, sync::Mutex};
     use tempfile::TempDir;
@@ -211,7 +212,7 @@ mod tests {
             .expect("runtime config should be saved");
 
         let _env_guard = EnvVarGuard::set(
-            PEPPY_RUNTIME_CONFIG,
+            PEPPY_RUNTIME_CONFIG_VAR_NAME,
             runtime_config_path
                 .to_str()
                 .expect("runtime config path should be valid UTF-8"),
@@ -275,8 +276,10 @@ mod tests {
             .save_json5_launch_config(&runtime_config_path)
             .expect("runtime config should be saved");
 
-        let _env_guard =
-            EnvVarGuard::set(PEPPY_RUNTIME_CONFIG, runtime_config_path.to_str().unwrap());
+        let _env_guard = EnvVarGuard::set(
+            PEPPY_RUNTIME_CONFIG_VAR_NAME,
+            runtime_config_path.to_str().unwrap(),
+        );
 
         let Err(err) = Processor::new_with_peppy_config(&peppy_config_path) else {
             panic!("expected md5 mismatch error");
@@ -326,8 +329,10 @@ mod tests {
             .save_json5_launch_config(&runtime_config_path)
             .expect("runtime config should be saved");
 
-        let _env_guard =
-            EnvVarGuard::set(PEPPY_RUNTIME_CONFIG, runtime_config_path.to_str().unwrap());
+        let _env_guard = EnvVarGuard::set(
+            PEPPY_RUNTIME_CONFIG_VAR_NAME,
+            runtime_config_path.to_str().unwrap(),
+        );
 
         let Err(err) = Processor::new_with_peppy_config(&peppy_config_path) else {
             panic!("expected missing parameter error");
@@ -377,8 +382,10 @@ mod tests {
             .save_json5_launch_config(&runtime_config_path)
             .expect("runtime config should be saved");
 
-        let _env_guard =
-            EnvVarGuard::set(PEPPY_RUNTIME_CONFIG, runtime_config_path.to_str().unwrap());
+        let _env_guard = EnvVarGuard::set(
+            PEPPY_RUNTIME_CONFIG_VAR_NAME,
+            runtime_config_path.to_str().unwrap(),
+        );
 
         let Err(err) = Processor::new_with_peppy_config(&peppy_config_path) else {
             panic!("expected type mismatch error");
@@ -434,8 +441,10 @@ mod tests {
             .save_json5_launch_config(&runtime_config_path)
             .expect("runtime config should be saved");
 
-        let _env_guard =
-            EnvVarGuard::set(PEPPY_RUNTIME_CONFIG, runtime_config_path.to_str().unwrap());
+        let _env_guard = EnvVarGuard::set(
+            PEPPY_RUNTIME_CONFIG_VAR_NAME,
+            runtime_config_path.to_str().unwrap(),
+        );
 
         let Err(err) = Processor::new_with_peppy_config(&peppy_config_path) else {
             panic!("expected type mismatch error");
@@ -490,8 +499,10 @@ mod tests {
             .save_json5_launch_config(&runtime_config_path)
             .expect("runtime config should be saved");
 
-        let _env_guard =
-            EnvVarGuard::set(PEPPY_RUNTIME_CONFIG, runtime_config_path.to_str().unwrap());
+        let _env_guard = EnvVarGuard::set(
+            PEPPY_RUNTIME_CONFIG_VAR_NAME,
+            runtime_config_path.to_str().unwrap(),
+        );
 
         let Err(err) = Processor::new_with_peppy_config(&peppy_config_path) else {
             panic!("expected type mismatch error");

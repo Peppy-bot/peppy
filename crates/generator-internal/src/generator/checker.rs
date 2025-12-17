@@ -7,10 +7,10 @@ const NODE_CONFIG_FINGERPRINT_FILE: &str = "node_config.sha256";
 /// Generates the initial node fingerprint
 pub fn generate_node_config_fingerprint(
     node_config: impl AsRef<Path>,
-    generated_crate: impl AsRef<Path>,
+    output_path: impl AsRef<Path>,
 ) -> Result<()> {
     let node_config = node_config.as_ref();
-    let generated_crate = generated_crate.as_ref();
+    let generated_crate = output_path.as_ref();
     let fingerprint_path = generated_crate.join(NODE_CONFIG_FINGERPRINT_FILE);
 
     let config_bytes = fs::read(node_config)?;

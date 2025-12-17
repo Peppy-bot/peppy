@@ -326,38 +326,38 @@ async fn test_node_sync_success() {
         node_sync_response.error_message
     );
 
-    let output_dir = node_root_dir.join(".peppy/libs/peppygen");
+    let peppygen_dir = node_root_dir.join(".peppy/libs/peppygen");
     assert!(
-        output_dir.join("Cargo.toml").exists(),
+        peppygen_dir.join("Cargo.toml").exists(),
         "expected generated peppygen Cargo.toml at {}",
-        output_dir.display()
+        peppygen_dir.display()
     );
     assert!(
-        output_dir.join("src/lib.rs").exists(),
+        peppygen_dir.join("src/lib.rs").exists(),
         "expected generated peppygen src/lib.rs at {}",
-        output_dir.display()
+        peppygen_dir.display()
     );
 
     assert!(
-        output_dir.join("src/exposed_topics.rs").exists(),
+        peppygen_dir.join("src/exposed_topics.rs").exists(),
         "expected generated exposed_topics module at {}",
-        output_dir.display()
+        peppygen_dir.display()
     );
     assert!(
-        output_dir
+        peppygen_dir
             .join("src/exposed_topics/sensor_data.rs")
             .exists(),
         "expected generated sensor_data topic module at {}",
-        output_dir.display()
+        peppygen_dir.display()
     );
 
     assert!(
-        output_dir.join(".peppygen/node_config.sha256").exists(),
+        peppygen_dir.join("node_config.sha256").exists(),
         "expected node config fingerprint at {}",
-        output_dir.display()
+        peppygen_dir.display()
     );
     assert!(
-        !output_dir
+        !peppygen_dir
             .join(config::consts::PEPPY_NODE_CONFIG_FILE)
             .exists(),
         "peppy.json5 should not be copied into the generated crate"
