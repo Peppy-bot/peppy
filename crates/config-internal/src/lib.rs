@@ -19,4 +19,4 @@ pub use common::{AnyType, NodeParameters, TypeMismatch};
 // To watch projects
 pub use watch::{FSNodeConfigWatcher, NodeIndexState};
 
-pub use error::{Error as ConfigError, Result as ConfigResult};
+pub use error::{Error as ConfigError, ParsingError, Result as ConfigResult};

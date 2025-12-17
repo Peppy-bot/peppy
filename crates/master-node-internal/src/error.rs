@@ -30,4 +30,8 @@ pub enum Error {
     // -- generator-internal
     #[error(transparent)]
     GeneratorError(#[from] generator::GeneratorError),
+
+    // -- config parsing
+    #[error(transparent)]
+    ParsingError(#[from] config::ParsingError),
 }
