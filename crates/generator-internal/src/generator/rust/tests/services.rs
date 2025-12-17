@@ -424,7 +424,7 @@ fn compile_lib_with_exposed_and_subscribed_services() {
         "Expected Cargo.toml to be generated"
     );
     assert!(
-        !output_dir.join(PEPPY_NODE_CONFIG_FILE).exists(),
+        !output_dir.join(NODE_CONFIG_FILE).exists(),
         "Generated crate should not keep a copy of the node configuration file"
     );
 

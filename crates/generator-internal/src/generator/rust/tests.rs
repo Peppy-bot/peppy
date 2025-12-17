@@ -43,7 +43,7 @@ mod services;
 mod topics;
 
 use super::*;
-use config::consts::PEPPY_NODE_CONFIG_FILE;
+use config::consts::NODE_CONFIG_FILE;
 use std::path::Path;
 use std::{
     fs,
@@ -73,7 +73,7 @@ fn prepare_directories(
 ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
     let output_dir = temp_dir.path().join(".peppy/libs/peppygen");
     let user_node = temp_dir.path().join("user_node");
-    let peppy_node_config = user_node.join(PEPPY_NODE_CONFIG_FILE);
+    let peppy_node_config = user_node.join(NODE_CONFIG_FILE);
     fs::create_dir_all(&output_dir).unwrap();
     fs::create_dir_all(&user_node).unwrap();
     fs::write(&peppy_node_config, STUB_NODE_CONFIG).unwrap();
@@ -195,8 +195,8 @@ fn run_cargo_run(
 }
 
 fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> std::path::PathBuf {
-    let source = user_node.join(PEPPY_NODE_CONFIG_FILE);
-    let destination = output_dir.join(PEPPY_NODE_CONFIG_FILE);
+    let source = user_node.join(NODE_CONFIG_FILE);
+    let destination = output_dir.join(NODE_CONFIG_FILE);
     fs::copy(&source, &destination).unwrap();
     destination
 }

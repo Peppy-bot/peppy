@@ -9,14 +9,14 @@ pub fn sha256_checksum(bytes: &[u8]) -> String {
 }
 
 pub fn create_http_bundle(temp_dir: &Path, bundle_name: &str, manifest_content: &str) -> Vec<u8> {
-    let manifest_path = temp_dir.join(config::consts::PEPPY_NODE_CONFIG_FILE);
+    let manifest_path = temp_dir.join(config::consts::NODE_CONFIG_FILE);
     fs::write(&manifest_path, manifest_content).expect("write manifest");
 
     let mut tar_data = Vec::new();
     {
         let mut tar_builder = tar::Builder::new(&mut tar_data);
         tar_builder
-            .append_path_with_name(&manifest_path, config::consts::PEPPY_NODE_CONFIG_FILE)
+            .append_path_with_name(&manifest_path, config::consts::NODE_CONFIG_FILE)
             .expect("append manifest");
         tar_builder.finish().expect("finish tar");
     }

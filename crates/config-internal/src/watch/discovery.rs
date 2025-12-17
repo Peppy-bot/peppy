@@ -1,4 +1,4 @@
-use crate::consts::PEPPY_NODE_CONFIG_FILE;
+use crate::consts::NODE_CONFIG_FILE;
 use std::path::{Path, PathBuf};
 
 /// Finds the `PEPPY_CONFIG_FILE` recursively starting at `from_dir`
@@ -17,8 +17,7 @@ pub fn find_peppy_nodes_from_dir(from_dir: impl AsRef<Path>) -> Vec<PathBuf> {
 
     for entry in walker {
         let path = entry.path();
-        if path.is_file() && path.file_name() == Some(std::ffi::OsStr::new(PEPPY_NODE_CONFIG_FILE))
-        {
+        if path.is_file() && path.file_name() == Some(std::ffi::OsStr::new(NODE_CONFIG_FILE)) {
             peppy_files.push(path.to_path_buf());
         }
     }
@@ -58,7 +57,7 @@ mod tests {
     #[test]
     fn test_find_single_peppy_node() {
         let temp_dir = TempDir::new().unwrap();
-        let peppy_file = temp_dir.path().join(PEPPY_NODE_CONFIG_FILE);
+        let peppy_file = temp_dir.path().join(NODE_CONFIG_FILE);
         fs::write(&peppy_file, "node_config: test").unwrap();
 
         let result = find_peppy_nodes_from_dir(temp_dir.path());
@@ -71,19 +70,19 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
 
         // Create peppy.json5 in root
-        let root_peppy = temp_dir.path().join(PEPPY_NODE_CONFIG_FILE);
+        let root_peppy = temp_dir.path().join(NODE_CONFIG_FILE);
         fs::write(&root_peppy, "node_config: root").unwrap();
 
         // Create nested directory with peppy.json5
         let nested_dir = temp_dir.path().join("nested");
         fs::create_dir(&nested_dir).unwrap();
-        let nested_peppy = nested_dir.join(PEPPY_NODE_CONFIG_FILE);
+        let nested_peppy = nested_dir.join(NODE_CONFIG_FILE);
         fs::write(&nested_peppy, "node_config: nested").unwrap();
 
         // Create deeply nested directory with peppy.json5
         let deep_dir = nested_dir.join("deep");
         fs::create_dir(&deep_dir).unwrap();
-        let deep_peppy = deep_dir.join(PEPPY_NODE_CONFIG_FILE);
+        let deep_peppy = deep_dir.join(NODE_CONFIG_FILE);
         fs::write(&deep_peppy, "node_config: deep").unwrap();
 
         let result = find_peppy_nodes_from_dir(temp_dir.path());
@@ -98,7 +97,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
 
         // Create peppy.json5
-        let peppy_file = temp_dir.path().join(PEPPY_NODE_CONFIG_FILE);
+        let peppy_file = temp_dir.path().join(NODE_CONFIG_FILE);
         fs::write(&peppy_file, "node: test").unwrap();
 
         // Create other files that should be ignored
@@ -117,7 +116,7 @@ mod tests {
         let external_dir = TempDir::new().unwrap();
 
         // Create peppy.json5 in external directory
-        let external_peppy = external_dir.path().join(PEPPY_NODE_CONFIG_FILE);
+        let external_peppy = external_dir.path().join(NODE_CONFIG_FILE);
         fs::write(&external_peppy, "node: external").unwrap();
 
         // Create symlink to external directory
@@ -128,7 +127,7 @@ mod tests {
         std::os::windows::fs::symlink_dir(external_dir.path(), &symlink_path).unwrap();
 
         // Create peppy.json5 in main directory
-        let main_peppy = temp_dir.path().join(PEPPY_NODE_CONFIG_FILE);
+        let main_peppy = temp_dir.path().join(NODE_CONFIG_FILE);
         fs::write(&main_peppy, "node: main").unwrap();
 
         let result = find_peppy_nodes_from_dir(temp_dir.path());
@@ -147,13 +146,13 @@ mod tests {
             let temp_dir = TempDir::new().unwrap();
 
             // Create accessible peppy.json5
-            let accessible_peppy = temp_dir.path().join(PEPPY_NODE_CONFIG_FILE);
+            let accessible_peppy = temp_dir.path().join(NODE_CONFIG_FILE);
             fs::write(&accessible_peppy, "node: accessible").unwrap();
 
             // Create directory with restricted permissions
             let restricted_dir = temp_dir.path().join("restricted");
             fs::create_dir(&restricted_dir).unwrap();
-            let restricted_peppy = restricted_dir.join(PEPPY_NODE_CONFIG_FILE);
+            let restricted_peppy = restricted_dir.join(NODE_CONFIG_FILE);
             fs::write(&restricted_peppy, "node: restricted").unwrap();
 
             // Remove read permissions from the directory

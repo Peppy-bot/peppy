@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use crate::{context::AppContext, error::Error};
-use config::node::NodeConfig;
+use crate::error::Error;
 use master_node::MasterNode;
 use pmi::Messenger;
 use tokio::sync::Mutex;
@@ -12,17 +11,9 @@ pub struct MasterNodeRunner {
 }
 
 impl MasterNodeRunner {
-    pub fn new(
-        app_ctx: &Arc<AppContext>,
-        messenger: Arc<Mutex<Messenger>>,
-        master_name: Option<String>,
-    ) -> Self {
+    pub fn new(messenger: Arc<Mutex<Messenger>>, master_name: Option<String>) -> Self {
         let master_node = MasterNode::new(messenger, master_name.as_deref());
         Self { master_node }
-    }
-
-    pub fn config(&self) -> &NodeConfig {
-        self.master_node.node_config()
     }
 }
 

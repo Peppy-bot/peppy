@@ -59,7 +59,7 @@ fn test_example_project_parsing() {
         assert!(
             state
                 .keys()
-                .any(|p| p.ends_with(config::consts::PEPPY_NODE_CONFIG_FILE)),
+                .any(|p| p.ends_with(config::consts::NODE_CONFIG_FILE)),
             "No peppy.json5 discovered in project {}",
             project.display()
         );

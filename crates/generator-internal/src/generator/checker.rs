@@ -2,8 +2,6 @@ use crate::error::Result;
 use sha2::{Digest, Sha256};
 use std::{fs, path::Path};
 
-const NODE_CONFIG_FINGERPRINT_FILE: &str = "node_config.sha256";
-
 /// Generates the initial node fingerprint
 pub fn generate_node_config_fingerprint(
     node_config: impl AsRef<Path>,
@@ -11,7 +9,7 @@ pub fn generate_node_config_fingerprint(
 ) -> Result<()> {
     let node_config = node_config.as_ref();
     let generated_crate = output_path.as_ref();
-    let fingerprint_path = generated_crate.join(NODE_CONFIG_FINGERPRINT_FILE);
+    let fingerprint_path = generated_crate.join(config::consts::NODE_CONFIG_FINGERPRINT_FILE);
 
     let config_bytes = fs::read(node_config)?;
 
@@ -43,7 +41,7 @@ mod tests {
     #[test]
     fn generate_node_config_fingerprint_writes_expected_digest() {
         let tmp = TempDir::new().expect("failed to create temp dir");
-        let config_path = tmp.path().join(config::consts::PEPPY_NODE_CONFIG_FILE);
+        let config_path = tmp.path().join(config::consts::NODE_CONFIG_FILE);
         let generated_crate = prepare_generated_crate(&tmp);
 
         let config_contents =
@@ -54,7 +52,8 @@ mod tests {
             .expect("failed to generate fingerprint");
 
         let written =
-            fs::read_to_string(generated_crate.join(NODE_CONFIG_FINGERPRINT_FILE)).unwrap();
+            fs::read_to_string(generated_crate.join(config::consts::NODE_CONFIG_FINGERPRINT_FILE))
+                .unwrap();
         assert_eq!(
             written.trim(),
             fingerprint_for_bytes(config_contents.as_bytes())
@@ -64,11 +63,11 @@ mod tests {
     #[test]
     fn generate_node_config_fingerprint_overwrites_existing() {
         let tmp = TempDir::new().expect("failed to create temp dir");
-        let config_path = tmp.path().join(config::consts::PEPPY_NODE_CONFIG_FILE);
+        let config_path = tmp.path().join(config::consts::NODE_CONFIG_FILE);
         let generated_crate = prepare_generated_crate(&tmp);
 
         // Write initial fingerprint
-        let fingerprint_path = generated_crate.join(NODE_CONFIG_FINGERPRINT_FILE);
+        let fingerprint_path = generated_crate.join(config::consts::NODE_CONFIG_FINGERPRINT_FILE);
         fs::write(&fingerprint_path, "old_fingerprint\n").expect("failed to write old fingerprint");
 
         let config_contents =

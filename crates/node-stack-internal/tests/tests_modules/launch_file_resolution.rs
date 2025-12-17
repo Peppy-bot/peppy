@@ -230,7 +230,7 @@ fn launcher_file_resolves_dependency_graph() {
     let node_path = |name: &str| {
         project_dir
             .join(name)
-            .join(config::consts::PEPPY_NODE_CONFIG_FILE)
+            .join(config::consts::NODE_CONFIG_FILE)
     };
 
     // Add web_video_stream to a child folder where launch_file is located
