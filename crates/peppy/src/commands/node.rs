@@ -20,6 +20,7 @@ pub use types::NodeName;
 #[derive(Subcommand)]
 pub enum NodeCommands {
     /// Create a new peppy node
+    #[command(visible_alias = "init")]
     Create {
         /// Name of the node directory to create
         node_name: NodeName,
@@ -27,7 +28,7 @@ pub enum NodeCommands {
         #[arg(long)]
         to_dir: Option<PathBuf>,
         /// Build system for the node: `rust`, `python`, `cargo`, or `uv`
-        #[arg(long, value_enum, default_value_t = BuildSystem::Rust)]
+        #[arg(long, visible_alias = "lang", value_enum, default_value_t = BuildSystem::Rust)]
         build_system: BuildSystem,
     },
     /// Runs a specific node

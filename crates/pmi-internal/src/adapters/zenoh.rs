@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use std::path::{Path, PathBuf};
 use std::{collections::HashMap, env, sync::Arc};
-use tracing::{debug, info};
+use tracing::info;
 
 use zenoh::qos::{CongestionControl, Priority};
 use zenoh::sample::SampleFields;
@@ -243,13 +243,18 @@ impl MessengerBackend for ZenohAdapter {
                     })?,
             );
 
+            #[cfg(debug_assertions)]
+            let key_expr = identifier.clone();
             new_publisher
                 .matching_listener()
-                .callback(|matching_status| {
-                    if matching_status.matching() {
-                        info!("Publisher has matching subscribers");
-                    } else {
-                        debug!("Publisher has no more matching subscribers");
+                .callback(move |_matching_status| {
+                    #[cfg(debug_assertions)]
+                    {
+                        if _matching_status.matching() {
+                            info!("Publisher '{}' has matching subscribers", key_expr);
+                        } else {
+                            info!("Publisher '{}' has no more matching subscribers", key_expr);
+                        }
                     }
                 })
                 .background()

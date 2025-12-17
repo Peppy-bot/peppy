@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use peppylib::MessengerHandle;
-use tokio::sync::OnceCell;
+use pmi::Messenger;
+use tokio::sync::{Mutex, OnceCell};
 
 use crate::error::Result;
 
@@ -18,6 +20,16 @@ impl AppContext {
             root_dir: PathBuf::from(root_dir.as_ref()),
             messenger_handle: OnceCell::new(),
         }
+    }
+
+    /// Creates an AppContext with a pre-initialized messenger handle.
+    /// This is useful for testing with a shared mock messenger.
+    pub fn with_messenger(root_dir: impl AsRef<Path>, messenger: Arc<Mutex<Messenger>>) -> Self {
+        let ctx = Self::new(root_dir);
+        let _ = ctx
+            .messenger_handle
+            .set(MessengerHandle::from_shared(messenger));
+        ctx
     }
 
     pub async fn connect(&self) -> Result<()> {

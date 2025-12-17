@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use super::CompositeCommand;
 use super::Serve;
+use super::daemon_state::DaemonState;
 use super::master_node::MasterNodeRunner;
 use super::messaging_router::MessagingRouter;
 use crate::error::{Error, Result};
@@ -12,7 +13,7 @@ use pmi::MockAdapter;
 use pmi::ZenohAdapter;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tracing::{info, warn};
 
 pub struct ServeCommandBuilder {
     composite_command: CompositeCommand,
@@ -65,11 +66,30 @@ impl ServeCommandBuilder {
         Ok(self)
     }
 
+    /// Returns a clone of the shared messenger, if one has been configured.
+    /// This is useful for tests that need to share the messenger with other components.
+    pub fn messenger(&self) -> Option<Arc<Mutex<Messenger>>> {
+        self.messenger.clone()
+    }
+
     pub fn build(mut self) -> Result<Serve> {
         if self.master_node_requested {
             if let Some(messenger) = &self.messenger {
                 let master_node =
                     MasterNodeRunner::new(Arc::clone(messenger), self.master_node_name.clone());
+
+                // Write the daemon state file with the master node name
+                let master_node_name = master_node.node_name().to_string();
+                let daemon_state = DaemonState::new(&master_node_name);
+                let state_path = daemon_state.write().map_err(|e| {
+                    Error::ExecutionFailed(format!("Failed to write daemon state: {}", e))
+                })?;
+                info!(
+                    "Wrote daemon state to {} with master_node_name={}",
+                    state_path.display(),
+                    master_node_name
+                );
+
                 self.composite_command = self
                     .composite_command
                     .add_async_command(Box::new(master_node));

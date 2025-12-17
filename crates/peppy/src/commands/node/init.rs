@@ -7,11 +7,11 @@ use master_node::encoding::NodeInitRequest;
 use tracing::info;
 
 use super::types::NodeName;
+use crate::commands::serve::DaemonState;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
-const MASTER_NODE_NAME: &str = "master_node";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct NodeBuilder {
@@ -47,10 +47,20 @@ impl NodeBuilder {
     }
 
     async fn build_async(self) -> Result<()> {
+        // Read the daemon state to discover the master node name
+        let daemon_state = DaemonState::read().map_err(|e| {
+            Error::ExecutionFailed(format!(
+                "Failed to read daemon state. Is the peppy daemon running? Error: {}",
+                e
+            ))
+        })?;
+        let master_node_name = &daemon_state.master_node_name;
+
         info!(
-            "Creating node '{}' in {}",
+            "Creating node '{}' in {} and master node '{}'",
             self.node_name,
-            self.to_dir.display()
+            self.to_dir.display(),
+            &master_node_name
         );
 
         // Connect to the daemon if not already connected
@@ -67,9 +77,9 @@ impl NodeBuilder {
         let response = request
             .poll(
                 messenger_handle,
-                MASTER_NODE_NAME,
+                master_node_name,
                 CALLER_INSTANCE_ID,
-                MASTER_NODE_NAME,
+                master_node_name,
                 None,
                 REQUEST_TIMEOUT,
             )
