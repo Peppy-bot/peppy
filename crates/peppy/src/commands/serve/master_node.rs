@@ -15,6 +15,10 @@ impl MasterNodeRunner {
         let master_node = MasterNode::new(messenger, master_name.as_deref());
         Self { master_node }
     }
+
+    pub fn node_name(&self) -> &str {
+        self.master_node.node_name()
+    }
 }
 
 impl super::ServeAsyncCommand for MasterNodeRunner {

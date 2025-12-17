@@ -3,7 +3,7 @@ use std::fs;
 use peppy::install::install_peppy_daemon;
 
 #[test]
-fn test_install_peppy_command() {
+fn install_peppy_command() {
     use tempfile::TempDir;
 
     let temp_dir = TempDir::new().unwrap();

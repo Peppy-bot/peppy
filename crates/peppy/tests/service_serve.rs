@@ -106,7 +106,7 @@ fn serve_test_lock() -> &'static Mutex<()> {
 }
 
 #[test]
-fn test_serve_command() {
+fn serve_command() {
     let _serial_guard = serve_test_lock().lock().unwrap();
     let _pid_guard = TempPidFileGuard::new();
 
@@ -153,7 +153,7 @@ fn test_serve_command() {
 }
 
 #[test]
-fn test_serve_command_replace_existing_stack() {
+fn serve_command_replace_existing_stack() {
     let _serial_guard = serve_test_lock().lock().unwrap();
     let _pid_guard = TempPidFileGuard::new();
 

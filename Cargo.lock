@@ -2234,6 +2234,8 @@ dependencies = [
  "peppylib",
  "pmi",
  "rayon",
+ "serde",
+ "serde_json",
  "service-manager",
  "tempfile",
  "tokio",
