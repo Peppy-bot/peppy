@@ -1,3 +1,4 @@
+mod init;
 mod list;
 mod run;
 mod types;
@@ -14,7 +15,6 @@ use crate::{context::AppContext, error::Error as CommandError};
 
 use init::NodeBuilder;
 
-pub mod init;
 pub use types::NodeName;
 
 #[derive(Subcommand)]
@@ -23,12 +23,6 @@ pub enum NodeCommands {
     Create {
         /// Name of the node directory to create
         node_name: NodeName,
-        /// Optional: Create the node with a more detailed configuration & defaults
-        #[arg(long, default_value_t = false)]
-        full: bool,
-        /// Optional: Description for the node
-        #[arg(long)]
-        description: Option<String>,
         /// Optional: target directory (defaults to current directory)
         #[arg(long)]
         to_dir: Option<PathBuf>,
@@ -59,13 +53,8 @@ impl Command for NodeCommand {
                 to_dir,
                 build_system,
                 node_name,
-                description,
-                full,
             } => {
-                let mut node_builder = NodeBuilder::new(ctx, node_name)
-                    .build_system(build_system)
-                    .description(description)
-                    .full(full);
+                let mut node_builder = NodeBuilder::new(ctx, node_name).build_system(build_system);
 
                 if let Some(dir) = to_dir {
                     node_builder = node_builder.to_dir(dir);

@@ -30,6 +30,18 @@ impl fmt::Display for BuildSystem {
     }
 }
 
+impl FromStr for BuildSystem {
+    type Err = ParsingError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "rust" | "cargo" => Ok(BuildSystem::Cargo),
+            "python" | "uv" => Ok(BuildSystem::Uv),
+            _ => Err(ParsingError::InvalidBuildSystem(s.to_owned())),
+        }
+    }
+}
+
 /// Version identifier embedded in node `peppy.json5` manifests.
 /// Using a simple alias keeps serialization straightforward while making the intent explicit.
 pub type SchemaVersion = u16;

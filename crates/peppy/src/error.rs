@@ -20,13 +20,7 @@ pub enum Error {
     Sync(String),
 
     // -- Node
-    UnsupportedLanguage,
-    FolderAlreadyExist(String),
     InvalidNodeName(String),
-    GitConfigCreation(String),
-    PeppyConfigCreation(String),
-    RustConfigCreation(String),
-    PythonConfigCreation(String),
 
     // -- NodeWatcher
     NodeWatcher(String),
@@ -37,8 +31,9 @@ pub enum Error {
     // -- config-internal
     PeppyConfig(config::ConfigError),
 
-    // -- libs
-    Askama(String),
+    // -- peppylib
+    #[from]
+    Peppy(peppylib::PeppyError),
 }
 
 impl Display for Error {

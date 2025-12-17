@@ -41,6 +41,10 @@ pub enum ParsingError {
     #[error("Invalid deployment source: {0}")]
     InvalidDeploymentSource(String),
 
+    // -- build system
+    #[error("Invalid build system: {0}")]
+    InvalidBuildSystem(String),
+
     #[error("{0}")]
     Structured(String),
 }

@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod tests;
 
-use super::checker;
 use super::common;
 use super::types::{
     CapnpSchema, InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage,
@@ -9,12 +8,9 @@ use super::types::{
 use crate::error::Error;
 use crate::error::Result;
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam, MessageFormatMapper};
-use config::{
-    consts::PEPPY_NODE_CONFIG_FILE,
-    node::{
-        ArraySchema, ExposedAction, ExposedService, ExposedTopic, MessageFormat, PrimitiveSchema,
-        QoSProfile, SchemaType, SubscribedAction, SubscribedService, SubscribedTopic, TypeToken,
-    },
+use config::node::{
+    ArraySchema, ExposedAction, ExposedService, ExposedTopic, MessageFormat, PrimitiveSchema,
+    QoSProfile, SchemaType, SubscribedAction, SubscribedService, SubscribedTopic, TypeToken,
 };
 use indexmap::IndexMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};

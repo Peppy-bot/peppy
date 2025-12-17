@@ -31,6 +31,23 @@ struct NodeAddResponse {
     errorMessage @2 :Text;
 }
 
+# Node Init service
+struct NodeInitRequest {
+    # Root directory where the node will be created
+    nodeRootDir @0 :Text;
+    # Build system ("rust", "cargo", "python", or "uv")
+    buildSystem @1 :Text;
+    # Name of the node (used for directory and package name)
+    nodeName @2 :Text;
+}
+
+struct NodeInitResponse {
+    # Whether the init was successful
+    success @0 :Bool;
+    # Error message if failed
+    errorMessage @1 :Text;
+}
+
 # Node Sync service
 struct NodeSyncRequest {
     # Root directory of the node/workspace

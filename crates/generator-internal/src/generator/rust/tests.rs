@@ -43,6 +43,7 @@ mod services;
 mod topics;
 
 use super::*;
+use config::consts::PEPPY_NODE_CONFIG_FILE;
 use std::path::Path;
 use std::{
     fs,

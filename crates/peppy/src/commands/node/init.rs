@@ -1,204 +1,93 @@
-mod factory;
-mod python;
-mod rust;
-
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
+
+use config::peppy_config::BuildSystem;
+use master_node::encoding::NodeInitRequest;
+use tracing::info;
 
 use super::types::NodeName;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use config::peppy_config::BuildSystem;
-use factory::{NodeContext, create_factory};
+
+const CALLER_INSTANCE_ID: &str = "peppy-cli";
+const MASTER_NODE_NAME: &str = "master_node";
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct NodeBuilder {
+    ctx: Arc<AppContext>,
     to_dir: PathBuf,
     node_name: NodeName,
-    package_manager: BuildSystem,
-    description: Option<String>,
-    full: bool,
+    build_system: BuildSystem,
 }
 
 impl NodeBuilder {
     pub fn new(ctx: &Arc<AppContext>, node_name: NodeName) -> Self {
         Self {
+            ctx: Arc::clone(ctx),
             to_dir: ctx.root_dir.clone(),
             node_name,
-            package_manager: BuildSystem::Rust,
-            description: None,
-            full: false,
+            build_system: BuildSystem::Rust,
         }
     }
 
-    /// If to_dir is provided, this is the path used for NodeBuilder, otherwise defaults to the one
-    /// provided by AppContext
-    pub fn to_dir(mut self, dir: impl AsRef<Path>) -> Self {
-        self.to_dir = PathBuf::from(dir.as_ref());
+    pub fn to_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.to_dir = dir.into();
         self
     }
 
     pub fn build_system(mut self, build_system: BuildSystem) -> Self {
-        self.package_manager = build_system;
-        self
-    }
-
-    pub fn description(mut self, description: Option<String>) -> Self {
-        self.description = description;
-        self
-    }
-
-    pub fn full(mut self, full: bool) -> Self {
-        self.full = full;
+        self.build_system = build_system;
         self
     }
 
     pub fn build(self) -> Result<()> {
-        init_project(
-            self.to_dir,
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(self.build_async())
+    }
+
+    async fn build_async(self) -> Result<()> {
+        info!(
+            "Creating node '{}' in {}",
             self.node_name,
-            self.package_manager,
-            self.description.as_deref(),
-            self.full,
-        )?;
-        Ok(())
-    }
-}
-
-/// Creates a new node and updates the peppy.json5 configuration file where the command is run
-pub fn init_project(
-    to_dir: impl AsRef<Path>,
-    node_name: NodeName,
-    language: BuildSystem,
-    description: Option<&str>,
-    full: bool,
-) -> Result<()> {
-    let node_path = to_dir.as_ref().join(node_name.as_str());
-
-    if node_path.exists() {
-        return Err(Error::FolderAlreadyExist(node_path.display().to_string()));
-    }
-
-    fs::create_dir_all(&node_path)?;
-
-    // Use factory pattern for language-specific operations
-    let ctx = NodeContext::new(
-        node_name.clone(),
-        &node_path,
-        description.unwrap_or(&format!("{} {} node", node_name.as_str(), language)),
-        language,
-    );
-
-    let factory = create_factory(ctx);
-
-    factory.create_gitignore()?;
-    factory
-        .create_peppy_node_config(full)
-        .map_err(|e| Error::PeppyConfigCreation(e.to_string()))?;
-    factory.create_language_config()?;
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Can be run from the command line with:
-    // cargo run --manifest-path <path_to_root_Cargo.toml> -- node create my_node
-    #[test]
-    fn test_create_peppy_config() {
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new().unwrap();
-        let node_name = "test_node";
-
-        let ctx = NodeContext::new(
-            NodeName::new(node_name).unwrap(),
-            temp_dir.path(),
-            "Test node",
-            BuildSystem::Rust,
-        );
-        let factory = create_factory(ctx);
-
-        let result = factory.create_peppy_node_config(false);
-        assert!(result.is_ok());
-
-        let peppy_path = temp_dir.path().join(config::consts::PEPPY_NODE_CONFIG_FILE);
-        assert!(peppy_path.exists());
-    }
-
-    #[test]
-    fn test_folder_already_exists_error() {
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new().unwrap();
-        let node_name = "existing_node";
-
-        // Create a directory with the same name as the node
-        let existing_dir = temp_dir.path().join(node_name);
-        fs::create_dir(&existing_dir).unwrap();
-
-        // Try to create a node with the same name
-        let result = init_project(
-            temp_dir.path(),
-            NodeName::new(node_name).unwrap(),
-            BuildSystem::Python,
-            Some("Test node"),
-            false,
+            self.to_dir.display()
         );
 
-        assert!(matches!(result, Err(Error::FolderAlreadyExist(_))));
+        // Connect to the daemon if not already connected
+        self.ctx.connect().await?;
 
-        if let Err(Error::FolderAlreadyExist(path)) = result {
-            assert!(path.contains(node_name));
+        let messenger_handle = self
+            .ctx
+            .messenger_handle()
+            .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
+
+        let request = NodeInitRequest::new(&self.to_dir, self.node_name.as_str())
+            .with_build_system(self.build_system);
+
+        let response = request
+            .poll(
+                messenger_handle,
+                MASTER_NODE_NAME,
+                CALLER_INSTANCE_ID,
+                MASTER_NODE_NAME,
+                None,
+                REQUEST_TIMEOUT,
+            )
+            .await
+            .map_err(|e| {
+                Error::ExecutionFailed(format!("Failed to call node_init service: {}", e))
+            })?;
+
+        if response.success {
+            info!(
+                "Successfully created node '{}' at {}/{}",
+                self.node_name,
+                self.to_dir.display(),
+                self.node_name
+            );
+            Ok(())
+        } else {
+            Err(Error::ExecutionFailed(response.error_message))
         }
-    }
-
-    #[test]
-    fn test_create_gitignore_python() {
-        use super::factory::{NodeContext, NodeFactory, PythonNodeFactory};
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new().unwrap();
-        let ctx = NodeContext::new(
-            NodeName::new("py_node").unwrap(),
-            temp_dir.path(),
-            "desc",
-            BuildSystem::Python,
-        );
-        let factory = PythonNodeFactory::new(ctx);
-
-        let result = factory.create_gitignore();
-        assert!(result.is_ok());
-
-        let gitignore_path = temp_dir.path().join(".gitignore");
-        assert!(gitignore_path.exists());
-
-        let content = fs::read_to_string(gitignore_path).unwrap();
-        assert!(content.contains("__pycache__"));
-    }
-
-    #[test]
-    fn test_create_gitignore_rust() {
-        use super::factory::{NodeContext, NodeFactory, RustNodeFactory};
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new().unwrap();
-        let ctx = NodeContext::new(
-            NodeName::new("rs_node").unwrap(),
-            temp_dir.path(),
-            "desc",
-            BuildSystem::Rust,
-        );
-        let factory = RustNodeFactory::new(ctx);
-
-        let result = factory.create_gitignore();
-        assert!(result.is_ok());
-
-        let gitignore_path = temp_dir.path().join(".gitignore");
-        assert!(gitignore_path.exists());
-
-        let content = fs::read_to_string(gitignore_path).unwrap();
-        assert!(content.contains("/target/"));
     }
 }

@@ -11,8 +11,8 @@ mod ping;
 pub use info::{InfoRequest, InfoResponse};
 pub use launcher::{LauncherRequest, LauncherResponse};
 pub use node::{
-    NodeAddRequest, NodeAddResponse, NodeListRequest, NodeListResponse, NodeSyncRequest,
-    NodeSyncResponse,
+    NodeAddRequest, NodeAddResponse, NodeInitRequest, NodeInitResponse, NodeListRequest,
+    NodeListResponse, NodeSyncRequest, NodeSyncResponse,
 };
 pub use ping::{PingRequest, PingResponse};
 
