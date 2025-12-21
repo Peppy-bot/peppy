@@ -35,11 +35,11 @@ enum Commands {
 }
 
 fn main() {
-    // Set app env based on PEPPY_ENV environment variable
-    let env = if std::env::var("PEPPY_ENV").unwrap_or_default() == "PROD" {
-        AppEnv::Prod
-    } else {
+    // Set app env based on build profile (release = Prod, debug = Dev)
+    let env = if cfg!(debug_assertions) {
         AppEnv::Dev
+    } else {
+        AppEnv::Prod
     };
     config::consts::set_app_env(env);
 

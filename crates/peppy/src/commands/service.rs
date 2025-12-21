@@ -7,8 +7,6 @@ use crate::{context::AppContext, error::Error as CommandError};
 
 #[derive(Subcommand)]
 pub enum ServiceCommands {
-    /// Installs the service on the system in prod mode
-    Deploy,
     /// Run the peppy service that listen to node communication, node configuration file changes and also act as a Zenoh router.
     /// This is the background service that runs with the systemd peppy service.
     Serve {
@@ -30,11 +28,6 @@ pub struct ServiceCommand {
 impl Command for ServiceCommand {
     fn execute(self, app_ctx: &Arc<AppContext>) -> Result<(), CommandError> {
         match self.command {
-            ServiceCommands::Deploy => {
-                todo!(
-                    "Set PEPPY_ENV=PROD in the systemd/launchctl env var when the service is installed"
-                );
-            }
             ServiceCommands::Serve {
                 messaging_engine,
                 master_name,
