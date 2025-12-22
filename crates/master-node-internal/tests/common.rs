@@ -16,6 +16,7 @@ pub struct MasterNodeClient {
 
 /// Server-side handle to a running MasterNode, providing access to its state.
 pub struct MasterNodeServer {
+    #[allow(dead_code)]
     pub node_stack: NodeStack,
     task: JoinHandle<master_node::Result<()>>,
 }
