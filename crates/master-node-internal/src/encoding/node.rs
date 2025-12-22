@@ -110,6 +110,7 @@ pub struct NodeAddRequest {
     pub peppy_json5: String,
     pub from_dir: PathBuf,
     pub instance_id: Option<String>,
+    pub run_immediately: bool,
 }
 
 impl NodeAddRequest {
@@ -118,11 +119,17 @@ impl NodeAddRequest {
             peppy_json5: peppy_json5.into(),
             from_dir: from_dir.into(),
             instance_id: None,
+            run_immediately: false,
         }
     }
 
     pub fn with_instance_id(mut self, instance_id: impl Into<String>) -> Self {
         self.instance_id = Some(instance_id.into());
+        self
+    }
+
+    pub fn with_run_immediately(mut self, run_immediately: bool) -> Self {
+        self.run_immediately = run_immediately;
         self
     }
 
@@ -135,6 +142,7 @@ impl NodeAddRequest {
             if let Some(ref instance_id) = self.instance_id {
                 request.set_instance_id(instance_id);
             }
+            request.set_run_immediately(self.run_immediately);
         }
         encode_message(&builder)
     }
@@ -152,6 +160,7 @@ impl NodeAddRequest {
             peppy_json5: request.get_peppy_json5()?.to_str()?.to_owned(),
             from_dir: PathBuf::from(request.get_from_dir()?.to_str()?),
             instance_id,
+            run_immediately: request.get_run_immediately(),
         })
     }
 
@@ -184,29 +193,32 @@ impl NodeAddRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeAddResponse {
     pub success: bool,
-    pub node_id: String,
-    pub error_message: String,
+    pub is_running: bool,
+    pub node_instance_id: String,
+    pub error_message: Option<String>,
 }
 
 impl NodeAddResponse {
     pub fn new(
         success: bool,
-        node_id: impl Into<String>,
-        error_message: impl Into<String>,
+        is_running: bool,
+        node_instance_id: impl Into<String>,
+        error_message: Option<String>,
     ) -> Self {
         Self {
             success,
-            node_id: node_id.into(),
-            error_message: error_message.into(),
+            is_running,
+            node_instance_id: node_instance_id.into(),
+            error_message,
         }
     }
 
-    pub fn success(node_id: impl Into<String>) -> Self {
-        Self::new(true, node_id, "")
+    pub fn success(node_instance_id: impl Into<String>, is_running: bool) -> Self {
+        Self::new(true, is_running, node_instance_id, None)
     }
 
     pub fn failure(error_message: impl Into<String>) -> Self {
-        Self::new(false, "", error_message)
+        Self::new(false, false, "", Some(error_message.into()))
     }
 
     pub fn encode(&self) -> Result<Bytes> {
@@ -214,8 +226,11 @@ impl NodeAddResponse {
         {
             let mut response = builder.init_root::<node_capnp::node_add_response::Builder>();
             response.set_success(self.success);
-            response.set_node_id(&self.node_id);
-            response.set_error_message(&self.error_message);
+            response.set_is_running(self.is_running);
+            response.set_node_instance_id(&self.node_instance_id);
+            if let Some(ref error_message) = self.error_message {
+                response.set_error_message(error_message);
+            }
         }
         encode_message(&builder)
     }
@@ -223,10 +238,17 @@ impl NodeAddResponse {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let response = reader.get_root::<node_capnp::node_add_response::Reader>()?;
+        let error_message_str = response.get_error_message()?.to_str()?;
+        let error_message = if error_message_str.is_empty() {
+            None
+        } else {
+            Some(error_message_str.to_owned())
+        };
         Ok(Self {
             success: response.get_success(),
-            node_id: response.get_node_id()?.to_str()?.to_owned(),
-            error_message: response.get_error_message()?.to_str()?.to_owned(),
+            is_running: response.get_is_running(),
+            node_instance_id: response.get_node_instance_id()?.to_str()?.to_owned(),
+            error_message,
         })
     }
 }
@@ -455,6 +477,115 @@ impl NodeSyncResponse {
         Ok(Self {
             success: response.get_success(),
             error_message: response.get_error_message()?.to_str()?.to_owned(),
+        })
+    }
+}
+
+// ============================================================================
+// Node Run
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeRunRequest {
+    pub instance_id: String,
+}
+
+impl NodeRunRequest {
+    pub fn new(instance_id: impl Into<String>) -> Self {
+        Self {
+            instance_id: instance_id.into(),
+        }
+    }
+
+    fn encode(&self) -> Result<Bytes> {
+        let mut builder = Builder::new_default();
+        {
+            let mut request = builder.init_root::<node_capnp::node_run_request::Builder>();
+            request.set_instance_id(&self.instance_id);
+        }
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let request = reader.get_root::<node_capnp::node_run_request::Reader>()?;
+        Ok(Self {
+            instance_id: request.get_instance_id()?.to_str()?.to_owned(),
+        })
+    }
+
+    pub async fn poll(
+        &self,
+        messenger: &MessengerHandle,
+        bound_master_node: &str,
+        as_instance_id: &str,
+        target_node_name: &str,
+        target_instance_id: Option<&str>,
+        response_timeout: Duration,
+    ) -> Result<NodeRunResponse> {
+        let request_payload = self.encode()?;
+        let response = ServiceMessenger::poll(
+            messenger,
+            bound_master_node,
+            as_instance_id,
+            target_node_name,
+            "node_run",
+            None,
+            target_instance_id,
+            request_payload,
+            response_timeout,
+        )
+        .await?;
+        NodeRunResponse::decode(&response.payload().to_bytes())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeRunResponse {
+    pub success: bool,
+    pub error_message: Option<String>,
+}
+
+impl NodeRunResponse {
+    pub fn new(success: bool, error_message: Option<String>) -> Self {
+        Self {
+            success,
+            error_message,
+        }
+    }
+
+    pub fn success() -> Self {
+        Self::new(true, None)
+    }
+
+    pub fn failure(error_message: impl Into<String>) -> Self {
+        Self::new(false, Some(error_message.into()))
+    }
+
+    pub fn encode(&self) -> Result<Bytes> {
+        let mut builder = Builder::new_default();
+        {
+            let mut response = builder.init_root::<node_capnp::node_run_response::Builder>();
+            response.set_success(self.success);
+            if let Some(ref error_message) = self.error_message {
+                response.set_error_message(error_message);
+            }
+        }
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let response = reader.get_root::<node_capnp::node_run_response::Reader>()?;
+        let error_message_str = response.get_error_message()?.to_str()?;
+        let error_message = if error_message_str.is_empty() {
+            None
+        } else {
+            Some(error_message_str.to_owned())
+        };
+        Ok(Self {
+            success: response.get_success(),
+            error_message,
         })
     }
 }
