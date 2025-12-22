@@ -1809,6 +1809,7 @@ checksum = "d3d25b0e0b648a86960ac23b7ad4abb9717601dec6f66c165f5b037f3f03065f"
 name = "master-node"
 version = "0.0.1"
 dependencies = [
+ "askama",
  "bytes",
  "capnp",
  "capnpc",

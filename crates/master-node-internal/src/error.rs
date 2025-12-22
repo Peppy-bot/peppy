@@ -34,4 +34,8 @@ pub enum Error {
     // -- config parsing
     #[error(transparent)]
     ParsingError(#[from] config::ParsingError),
+
+    // -- templates
+    #[error("template rendering error: {0}")]
+    Template(#[from] askama::Error),
 }

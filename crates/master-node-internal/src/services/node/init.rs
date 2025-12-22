@@ -7,6 +7,8 @@ use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
+use super::templates::{apply_python_templates, apply_rust_templates};
+
 pub async fn listen_for_node_init(
     messenger: &MessengerHandle,
     master_node_node: &str,
@@ -85,7 +87,7 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Byt
     // Create language-specific configuration
     match request.build_system {
         config::peppy_config::BuildSystem::Rust | config::peppy_config::BuildSystem::Cargo => {
-            if let Err(e) = create_rust_node_config(&request.node_name, &node_dir) {
+            if let Err(e) = apply_rust_templates(&request.node_name, &node_dir) {
                 return NodeInitResponse::failure(format!(
                     "Failed to create Rust configuration: {}",
                     e
@@ -94,7 +96,7 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Byt
             }
         }
         config::peppy_config::BuildSystem::Python | config::peppy_config::BuildSystem::Uv => {
-            if let Err(e) = create_python_node_config(&request.node_name, &node_dir) {
+            if let Err(e) = apply_python_templates(&request.node_name, &node_dir) {
                 return NodeInitResponse::failure(format!(
                     "Failed to create Python configuration: {}",
                     e
@@ -110,73 +112,6 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Byt
     }
 
     NodeInitResponse::success().encode()
-}
-
-fn create_rust_node_config(node_name: &str, node_dir: &std::path::Path) -> std::io::Result<()> {
-    // Create src directory
-    let src_dir = node_dir.join("src");
-    std::fs::create_dir_all(&src_dir)?;
-
-    // Create main.rs
-    let main_rs_content = r#"fn main() {
-    println!("Hello from {}!");
-}
-"#
-    .replace("{}", node_name);
-    std::fs::write(src_dir.join("main.rs"), main_rs_content)?;
-
-    // Create Cargo.toml with peppygen dependency
-    let cargo_toml_content = format!(
-        r#"[package]
-name = "{}"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-peppygen = {{ path = "{}" }}
-"#,
-        node_name,
-        config::consts::PEPPYGEN_OUTPUT_PATH
-    );
-    std::fs::write(node_dir.join("Cargo.toml"), cargo_toml_content)?;
-
-    Ok(())
-}
-
-fn create_python_node_config(node_name: &str, node_dir: &std::path::Path) -> std::io::Result<()> {
-    // Create pyproject.toml
-    let pyproject_content = format!(
-        r#"[project]
-name = "{}"
-version = "0.1.0"
-description = "{} peppy node"
-requires-python = ">=3.10"
-
-[tool.uv]
-dev-dependencies = []
-"#,
-        node_name, node_name
-    );
-    std::fs::write(node_dir.join("pyproject.toml"), pyproject_content)?;
-
-    // Create main.py
-    let main_py_content = format!(
-        r#"#!/usr/bin/env python3
-"""Main entry point for {} node."""
-
-
-def main():
-    print("Hello from {}!")
-
-
-if __name__ == "__main__":
-    main()
-"#,
-        node_name, node_name
-    );
-    std::fs::write(node_dir.join("main.py"), main_py_content)?;
-
-    Ok(())
 }
 
 fn create_gitignore(
