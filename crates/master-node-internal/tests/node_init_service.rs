@@ -126,6 +126,8 @@ async fn test_node_init_rust_success() {
         String::from_utf8_lossy(&cargo_output.stdout),
         String::from_utf8_lossy(&cargo_output.stderr)
     );
+
+    todo!("Actually run the project and check that the node is spinning")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

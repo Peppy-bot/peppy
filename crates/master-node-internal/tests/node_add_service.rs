@@ -62,6 +62,11 @@ async fn test_node_add_success() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_node_add_with_run_immadiately_success() {
+    todo!("Finish")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_node_add_invalid_config() {
     let (client, _server) = setup_test_master_node().await;
 
