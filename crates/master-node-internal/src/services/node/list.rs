@@ -9,6 +9,8 @@ use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
+use crate::services::names;
+
 pub async fn listen_for_node_list(
     messenger: &MessengerHandle,
     master_node_node: &str,
@@ -16,13 +18,12 @@ pub async fn listen_for_node_list(
     node_name: &str,
     node_stack: Arc<NodeStack>,
 ) -> Result<JoinHandle<Result<()>>> {
-    let service_name = "node_list";
     let mut endpoint = ServiceMessenger::listen(
         messenger,
         master_node_node,
         instance_id,
         node_name,
-        &service_name,
+        names::NODE_LIST,
     )
     .await?;
 

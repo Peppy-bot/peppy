@@ -11,6 +11,8 @@ use tracing::debug;
 use crate::Result;
 use crate::encoding::{InfoRequest, InfoResponse};
 
+use super::names;
+
 pub async fn listen_for_info(
     messenger: &MessengerHandle,
     master_node_name: &str,
@@ -19,13 +21,12 @@ pub async fn listen_for_info(
     node_stack: Arc<NodeStack>,
     start_time: Instant,
 ) -> Result<JoinHandle<Result<()>>> {
-    let service_name = "info";
     let mut endpoint = ServiceMessenger::listen(
         messenger,
         master_node_name,
         instance_id,
         node_name,
-        &service_name,
+        names::INFO,
     )
     .await?;
 

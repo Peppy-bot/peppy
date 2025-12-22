@@ -1,0 +1,16 @@
+{
+  schema_version: 1,
+  manifest: {
+    name: "{{ node_name }}",
+    tag: "0.1.0",
+    launch_cmd: [
+      "uv",
+      "run",
+      "main.py"
+    ]
+  },
+  logging: {
+    min_level: "info",
+    format: "text"
+  }
+}

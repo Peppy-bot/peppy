@@ -1,13 +1,13 @@
 use crate::Result;
 use crate::encoding::{NodeInitRequest, NodeInitResponse};
 use bytes::Bytes;
-use config::node::NodeConfigCreator;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
 use super::templates::{apply_python_templates, apply_rust_templates};
+use crate::services::names;
 
 pub async fn listen_for_node_init(
     messenger: &MessengerHandle,
@@ -15,14 +15,12 @@ pub async fn listen_for_node_init(
     instance_id: &str,
     node_name: &str,
 ) -> Result<JoinHandle<Result<()>>> {
-    let service_name = "node_init";
-
     let mut endpoint = ServiceMessenger::listen(
         messenger,
         master_node_node,
         instance_id,
         node_name,
-        &service_name,
+        names::NODE_INIT,
     )
     .await?;
 
@@ -70,13 +68,6 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Byt
     if let Err(e) = std::fs::create_dir_all(&node_dir) {
         return NodeInitResponse::failure(format!("Failed to create node directory: {}", e))
             .encode();
-    }
-
-    // Create peppy.json5
-    if let Err(e) = NodeConfigCreator::simple_node(&request.node_name)
-        .and_then(|creator| creator.write_to(node_dir.join(config::consts::NODE_CONFIG_FILE)))
-    {
-        return NodeInitResponse::failure(format!("Failed to create peppy.json5: {}", e)).encode();
     }
 
     // Generate peppygen library

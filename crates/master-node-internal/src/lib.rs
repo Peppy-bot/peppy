@@ -33,3 +33,4 @@ pub mod health_capnp {
 
 pub use error::{Error, Result};
 pub use node::MasterNode;
+pub use services::names;

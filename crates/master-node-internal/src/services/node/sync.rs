@@ -6,19 +6,20 @@ use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
+use crate::services::names;
+
 pub async fn listen_for_node_sync(
     messenger: &MessengerHandle,
     master_node_node: &str,
     instance_id: &str,
     node_name: &str,
 ) -> Result<JoinHandle<Result<()>>> {
-    let service_name = "node_sync";
     let mut endpoint = ServiceMessenger::listen(
         messenger,
         master_node_node,
         instance_id,
         node_name,
-        &service_name,
+        names::NODE_SYNC,
     )
     .await?;
 

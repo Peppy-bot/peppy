@@ -11,9 +11,10 @@ use tracing::debug;
 use crate::Result;
 use crate::encoding::{LauncherRequest, LauncherResponse};
 
+use super::names;
+
 pub async fn listen_for_launch_configuration(
     messenger: &MessengerHandle,
-    service_name: &str,
     master_node_node: &str,
     instance_id: &str,
     node_name: &str,
@@ -24,7 +25,7 @@ pub async fn listen_for_launch_configuration(
         master_node_node,
         instance_id,
         node_name,
-        &service_name,
+        names::LAUNCHER,
     )
     .await?;
 

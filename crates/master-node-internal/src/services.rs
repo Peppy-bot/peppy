@@ -1,5 +1,6 @@
 mod info;
 mod launcher;
+pub mod names;
 mod node;
 mod ping;
 

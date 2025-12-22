@@ -7,19 +7,20 @@ use tracing::debug;
 use crate::Result;
 use crate::encoding::{PingRequest, PingResponse};
 
+use super::names;
+
 pub async fn listen_for_ping(
     messenger: &MessengerHandle,
     master_node_node: &str,
     instance_id: &str,
     node_name: &str,
 ) -> Result<JoinHandle<Result<()>>> {
-    let service_name = "ping";
     let mut endpoint = ServiceMessenger::listen(
         messenger,
         master_node_node,
         instance_id,
         node_name,
-        &service_name,
+        names::PING,
     )
     .await?;
 

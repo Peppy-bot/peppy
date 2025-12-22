@@ -10,6 +10,7 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 
 use super::run::run_node;
+use crate::services::names;
 
 pub async fn listen_for_node_add(
     messenger: &MessengerHandle,
@@ -18,13 +19,12 @@ pub async fn listen_for_node_add(
     node_name: &str,
     node_stack: Arc<NodeStack>,
 ) -> Result<JoinHandle<Result<()>>> {
-    let service_name = "node_add";
     let mut endpoint = ServiceMessenger::listen(
         messenger,
         master_node_node,
         instance_id,
         node_name,
-        &service_name,
+        names::NODE_ADD,
     )
     .await?;
 

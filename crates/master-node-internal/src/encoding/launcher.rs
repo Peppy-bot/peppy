@@ -7,7 +7,7 @@ use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
 use crate::launcher_capnp;
-use crate::node::LAUNCH_CONFIGURATION_SERVICE;
+use crate::services::names;
 
 use super::{decode_message, encode_message};
 
@@ -62,7 +62,7 @@ impl LauncherRequest {
             bound_master_node,
             as_instance_id,
             target_node_name,
-            LAUNCH_CONFIGURATION_SERVICE,
+            names::LAUNCHER,
             None,
             target_instance_id,
             request_payload,
