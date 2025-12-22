@@ -5,4 +5,7 @@ mod generator;
 pub use error::Error as GeneratorError;
 
 pub use generator::generate_lib_for_build_system;
-pub use generator::types::{DeploymentInterface, InterfaceVariant, SubscribedActionMessage};
+pub use generator::rust::RustGenerator;
+pub use generator::types::{
+    DeploymentInterface, InterfaceVariant, LanguageGenerator, SubscribedActionMessage,
+};

@@ -1,7 +1,7 @@
 mod checker;
 mod common;
 mod python;
-mod rust;
+pub mod rust;
 pub mod types;
 
 use crate::error::{Error, Result};
