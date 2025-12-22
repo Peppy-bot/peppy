@@ -4,6 +4,7 @@ mod init;
 mod list;
 mod run;
 mod sync;
+mod templates;
 
 pub use add::listen_for_node_add;
 pub use health::listen_for_node_health;

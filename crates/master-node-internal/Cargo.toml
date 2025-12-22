@@ -19,6 +19,7 @@ rand = "0.9"
 thiserror = "2.0"
 tokio = { version = "1.47", features = ["sync", "rt"] }
 tracing = "0.1"
+askama = "0.14"
 
 [build-dependencies]
 capnpc = "0.23"
