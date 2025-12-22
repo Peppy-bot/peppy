@@ -2,6 +2,7 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, setup_test_master_node};
 use master_node::encoding::{NodeHealthRequest, NodeHealthResponse};
+use master_node::names;
 use peppylib::messaging::ServiceMessenger;
 use std::time::Duration;
 
@@ -19,7 +20,7 @@ async fn test_node_health_request_response_roundtrip() {
         &client.master_node_name,
         CALLER_INSTANCE_ID,
         &client.master_node_name,
-        "node_health",
+        names::NODE_HEALTH,
         None,
         Some(&client.instance_id),
         request_payload,

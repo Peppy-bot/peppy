@@ -1,0 +1,30 @@
+{
+  schema_version: 1,
+  manifest: {
+    name: "{{ node_name }}",
+    tag: "0.1.0",
+    launch_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
+  interfaces: {
+    exposes: {
+      topics: [
+        {
+          name: "hello_world",
+          qos_profile: "sensor_data",
+          message_format: {
+            timestamp: "time",
+            message: "string"
+          }
+        }
+      ],
+    }
+  },
+  logging: {
+    min_level: "info",
+    format: "text"
+  }
+}

@@ -2,6 +2,7 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, setup_test_master_node};
 use master_node::encoding::{PingRequest, PingResponse};
+use master_node::names;
 use peppylib::messaging::ServiceMessenger;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -25,7 +26,7 @@ async fn test_ping_request_response_roundtrip() {
         &client.master_node_name,
         CALLER_INSTANCE_ID,
         &client.master_node_name,
-        "ping",
+        names::PING,
         None,
         Some(&client.instance_id),
         request_payload,

@@ -2,6 +2,7 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, setup_test_master_node};
 use master_node::encoding::{InfoRequest, InfoResponse};
+use master_node::names;
 use peppylib::messaging::ServiceMessenger;
 use std::time::Duration;
 
@@ -17,7 +18,7 @@ async fn test_info_request() {
         &client.master_node_name,
         CALLER_INSTANCE_ID,
         &client.master_node_name,
-        "info",
+        names::INFO,
         None,
         Some(&client.instance_id),
         request_payload,
