@@ -3,11 +3,13 @@
 //! This module provides utilities for encoding and decoding Cap'n Proto messages
 //! used in the master-node services.
 
+mod health;
 mod info;
 mod launcher;
 mod node;
 mod ping;
 
+pub use health::{NodeHealthRequest, NodeHealthResponse};
 pub use info::{InfoRequest, InfoResponse};
 pub use launcher::{LauncherRequest, LauncherResponse};
 pub use node::{
