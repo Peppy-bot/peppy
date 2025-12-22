@@ -12,7 +12,7 @@ pub use info::{InfoRequest, InfoResponse};
 pub use launcher::{LauncherRequest, LauncherResponse};
 pub use node::{
     NodeAddRequest, NodeAddResponse, NodeInitRequest, NodeInitResponse, NodeListRequest,
-    NodeListResponse, NodeSyncRequest, NodeSyncResponse,
+    NodeListResponse, NodeRunRequest, NodeRunResponse, NodeSyncRequest, NodeSyncResponse,
 };
 pub use ping::{PingRequest, PingResponse};
 

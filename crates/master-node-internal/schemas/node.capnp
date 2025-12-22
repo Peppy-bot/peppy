@@ -20,15 +20,19 @@ struct NodeAddRequest {
     fromDir @1 :Text;
     # Optional instance ID to use for the node
     instanceId @2 :Text;
+    # Whether to run the node immediately after adding
+    runImmediately @3 :Bool;
 }
 
 struct NodeAddResponse {
     # Whether the node was added successfully
     success @0 :Bool;
-    # Assigned node ID
-    nodeId @1 :Text;
+    # Assigned node instance ID
+    nodeInstanceId @1 :Text;
     # Error message if failed
     errorMessage @2 :Text;
+    # Whether the node is currently running
+    isRunning @3 :Bool;
 }
 
 # Node Init service
@@ -60,5 +64,18 @@ struct NodeSyncResponse {
     # Whether the sync was successful
     success @0 :Bool;
     # Error message if failed
+    errorMessage @1 :Text;
+}
+
+# Node Run service
+struct NodeRunRequest {
+    # Instance ID of the node to run
+    instanceId @0 :Text;
+}
+
+struct NodeRunResponse {
+    # Whether the run was successful
+    success @0 :Bool;
+    # Error message if failed (optional)
     errorMessage @1 :Text;
 }

@@ -597,6 +597,14 @@ impl NodeStackInner {
             .cloned()
     }
 
+    fn find_by_instance_id(&self, instance_id: &Name) -> Option<NodeInstance> {
+        self.graph
+            .node_weights()
+            .flat_map(|entity| entity.instances())
+            .find(|inst| inst.instance_id() == instance_id)
+            .cloned()
+    }
+
     fn root(&self) -> NodeEntity {
         self.find(&self.root_key)
             .expect("root node must always exist in NodeStack")
@@ -853,6 +861,13 @@ impl NodeStack {
     pub fn find(&self, name: &str, tag: &str) -> Option<NodeEntity> {
         let guard = self.shared.read().expect("node stack poisoned");
         guard.find(&NodeKey::new(name, tag))
+    }
+
+    /// Finds a node instance by its instance_id across all entities in the stack.
+    /// Returns the NodeInstance if found, None otherwise.
+    pub fn find_by_instance_id(&self, instance_id: &Name) -> Option<NodeInstance> {
+        let guard = self.shared.read().expect("node stack poisoned");
+        guard.find_by_instance_id(instance_id)
     }
 
     /// Adds an instance to an existing entity or creates a new entity if not present.

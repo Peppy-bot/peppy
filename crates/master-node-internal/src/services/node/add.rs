@@ -2,12 +2,14 @@ use crate::Result;
 use crate::encoding::{NodeAddRequest, NodeAddResponse};
 use bytes::Bytes;
 use config::node::{Name, NodeConfigParser};
-use node_stack::NodeStack;
+use node_stack::{NodeInstance, NodeStack};
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
+
+use super::run::run_node;
 
 pub async fn listen_for_node_add(
     messenger: &MessengerHandle,
@@ -41,15 +43,15 @@ async fn handle_node_add_request(
     node_stack: Arc<NodeStack>,
 ) -> PeppyResult<Bytes> {
     let sender_instance_id = context.message().instance_id();
-    handle_node_add_request_inner(&context, node_stack).map_err(|e| {
-        PeppyError::InvalidServiceRequest {
+    handle_node_add_request_inner(&context, node_stack)
+        .await
+        .map_err(|e| PeppyError::InvalidServiceRequest {
             identifier: sender_instance_id.to_string(),
             reason: e.to_string(),
-        }
-    })
+        })
 }
 
-fn handle_node_add_request_inner(
+async fn handle_node_add_request_inner(
     context: &ServiceRequestContext,
     node_stack: Arc<NodeStack>,
 ) -> Result<Bytes> {
@@ -84,15 +86,31 @@ fn handle_node_add_request_inner(
     };
 
     // Add the node to the stack (all dependencies must be satisfied)
-    match node_stack.push_config(&node_config, instance_id.as_ref(), false) {
+    match node_stack.push_config(&node_config, instance_id.as_ref(), request.run_immediately) {
         Ok(instance_id) => {
             debug!(
-                "Added node {}:{} with instance_id {}",
+                "Added node {}:{} with instance_id {}, run_immediately={}",
                 node_config.manifest.name.as_str(),
                 node_config.manifest.tag,
-                instance_id.as_str()
+                instance_id.as_str(),
+                request.run_immediately
             );
-            NodeAddResponse::success(instance_id.as_str()).encode()
+
+            // If run_immediately is requested, attempt to run the node
+            let (is_running, error_message) = if request.run_immediately {
+                let node_instance = NodeInstance::new(instance_id.clone());
+                match run_node(&node_instance).await {
+                    Ok(running) => (running, None),
+                    Err(e) => {
+                        debug!("Failed to run node: {}", e);
+                        (false, Some(format!("Failed to run node: {}", e)))
+                    }
+                }
+            } else {
+                (false, None)
+            };
+
+            NodeAddResponse::new(true, is_running, instance_id.as_str(), error_message).encode()
         }
         Err(e) => NodeAddResponse::failure(format!("Failed to add node: {}", e)).encode(),
     }
