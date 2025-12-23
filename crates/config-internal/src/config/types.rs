@@ -73,7 +73,7 @@ pub struct Deployment {
 #[serde(deny_unknown_fields)]
 pub struct DeploymentInstance {
     pub instance_id: Name,
-    #[serde(default)]
+    #[serde(default, alias = "parameters")]
     pub arguments: NodeArguments,
 }
 

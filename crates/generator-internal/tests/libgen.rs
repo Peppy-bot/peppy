@@ -293,6 +293,8 @@ fn topics_communication() {
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let subscriber_runtime_config = RuntimeConfig::new(
+        config::consts::DEFAULT_ZENOH_HOST,
+        config::consts::DEFAULT_ZENOH_PORT,
         DeploymentInstance {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
@@ -346,6 +348,8 @@ async fn main() -> Result<()> {{
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let exposer_runtime_config = RuntimeConfig::new(
+        config::consts::DEFAULT_ZENOH_HOST,
+        config::consts::DEFAULT_ZENOH_PORT,
         DeploymentInstance {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
@@ -543,6 +547,8 @@ fn services_communication_no_target_instance_id() {
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let subscriber_runtime_config = RuntimeConfig::new(
+        config::consts::DEFAULT_ZENOH_HOST,
+        config::consts::DEFAULT_ZENOH_PORT,
         DeploymentInstance {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
@@ -603,6 +609,8 @@ async fn main() -> Result<()> {{
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let exposer_runtime_config = RuntimeConfig::new(
+        config::consts::DEFAULT_ZENOH_HOST,
+        config::consts::DEFAULT_ZENOH_PORT,
         DeploymentInstance {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
@@ -766,6 +774,8 @@ fn services_communication_multiple_exposed_instances_same_service() {
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let subscriber_runtime_config = RuntimeConfig::new(
+        config::consts::DEFAULT_ZENOH_HOST,
+        config::consts::DEFAULT_ZENOH_PORT,
         DeploymentInstance {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
@@ -825,6 +835,8 @@ async fn main() -> Result<()> {{
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let exposer1_runtime_config = RuntimeConfig::new(
+        config::consts::DEFAULT_ZENOH_HOST,
+        config::consts::DEFAULT_ZENOH_PORT,
         DeploymentInstance {
             instance_id: Name::new(exposer1_instance_id).unwrap(),
             arguments: Default::default(),
@@ -885,6 +897,8 @@ async fn main() -> Result<()> {{
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let exposer2_runtime_config = RuntimeConfig::new(
+        config::consts::DEFAULT_ZENOH_HOST,
+        config::consts::DEFAULT_ZENOH_PORT,
         DeploymentInstance {
             instance_id: Name::new(exposer2_instance_id).unwrap(),
             arguments: Default::default(),
@@ -1167,6 +1181,8 @@ fn actions_communication() {
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let subscriber_runtime_config = RuntimeConfig::new(
+        config::consts::DEFAULT_ZENOH_HOST,
+        config::consts::DEFAULT_ZENOH_PORT,
         DeploymentInstance {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
@@ -1243,6 +1259,8 @@ async fn main() -> Result<()> {{
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let exposer_runtime_config = RuntimeConfig::new(
+        config::consts::DEFAULT_ZENOH_HOST,
+        config::consts::DEFAULT_ZENOH_PORT,
         DeploymentInstance {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
@@ -1429,6 +1447,8 @@ fn actions_communication_cancel_goal() {
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let subscriber_runtime_config = RuntimeConfig::new(
+        config::consts::DEFAULT_ZENOH_HOST,
+        config::consts::DEFAULT_ZENOH_PORT,
         DeploymentInstance {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
@@ -1503,6 +1523,8 @@ async fn main() -> Result<()> {{
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let exposer_runtime_config = RuntimeConfig::new(
+        config::consts::DEFAULT_ZENOH_HOST,
+        config::consts::DEFAULT_ZENOH_PORT,
         DeploymentInstance {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),

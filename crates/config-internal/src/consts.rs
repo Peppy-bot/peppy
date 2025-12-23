@@ -5,6 +5,8 @@ pub const RUNTIME_CONFIG_VAR_NAME: &str = "PEPPY_RUNTIME_CONFIG";
 /// The standard output directory for generated peppygen libraries relative to node_dir.
 pub const PEPPYGEN_OUTPUT_PATH: &str = ".peppy/libs/peppygen";
 // 7447 is the default port but we avoid using it to avoid conflicts with other services using Zenoh
+pub const DEFAULT_ZENOH_HOST: &str = "127.0.0.1";
+// 7447 is the default port but we avoid using it to avoid conflicts with other services using Zenoh
 pub const DEFAULT_ZENOH_PORT: u16 = 7448;
 
 pub const ALLOWED_CONFIG_CHARS: &str =

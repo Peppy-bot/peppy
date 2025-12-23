@@ -22,21 +22,19 @@ impl Processor {
                 source,
             }
         })?;
-        let launch_config = Processor::get_peppy_deployment_config(&launch_config_path)?;
+        let runtime_config = Processor::get_peppy_deployment_config(&launch_config_path)?;
         let node_config: NodeConfig =
             serde_json5::from_str(&std::fs::read_to_string(peppy_config.as_ref())?)?;
         Processor::check_generated_code_matches_runtime_config(
             peppy_config,
-            &launch_config.codegen_peppy_config_md5,
+            &runtime_config.codegen_peppy_config_md5,
         )?;
         Processor::check_node_config_parameters_types(
-            &launch_config.deployment_instance.arguments,
+            &runtime_config.deployment_instance.arguments,
             &node_config.parameters,
         )?;
 
-        Ok(Self {
-            runtime_config: launch_config,
-        })
+        Ok(Self { runtime_config })
     }
 
     fn check_generated_code_matches_runtime_config(
@@ -96,6 +94,14 @@ impl Processor {
 
     pub fn node_name(&self) -> &str {
         self.runtime_config.node_name.as_str()
+    }
+
+    pub fn messaging_host(&self) -> &str {
+        &self.runtime_config.messaging_host
+    }
+
+    pub fn messaging_port(&self) -> u16 {
+        self.runtime_config.messaging_port
     }
 
     pub fn get_node_stack() -> NodeStack {

@@ -73,11 +73,15 @@ mod tests {
                         {
                             instance_id: "camera_rear",
                             parameters: {
-                                device: { physical: "/dev/video_rear", sim: "mujoco:camera_rear", priority: "sim" },
+                                device: { 
+                                  physical: "/dev/video_rear", 
+                                  sim: "mujoco:camera_rear", 
+                                  priority: "sim" 
+                                },
                                 video: {
-                                    frame_rate: 30,
-                                    resolution: { width: 1280, height: 720 },
-                                    encoding: "mjpeg"
+                                  frame_rate: 30,
+                                  resolution: { width: 1280, height: 720 },
+                                  encoding: "mjpeg"
                                 }
                             }
                         }

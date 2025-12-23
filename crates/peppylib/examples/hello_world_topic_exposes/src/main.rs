@@ -42,32 +42,3 @@ async fn main() {
     .expect("Should send the payload");
     println!("Payload sent");
 }
-
-// fn main() -> peppygen::Result<()> {
-//     peppygen::run(|args, messenger| {
-//         let handle = messenger.handle().clone();
-//         let master_node = args.master_node.clone();
-//         let instance_id = args.instance_id.clone();
-
-//         // Send once, then keep node alive
-//         tokio::spawn(async move {
-//             let payload = Bytes::from_static(b"Hello world");
-
-//             println!("Sending payload as {instance_id}...");
-//             TopicMessenger::emit(
-//                 &handle,
-//                 &master_node,
-//                 &instance_id,
-//                 "hello_node",
-//                 "hello_msg",
-//                 QoSProfile::Reliable,
-//                 payload,
-//             )
-//             .await
-//             .expect("Should send the payload");
-//             println!("Payload sent");
-//         });
-
-//         Ok(())
-//     })
-// }
