@@ -30,6 +30,7 @@ impl NodeRunner {
     }
 }
 
+#[allow(dead_code)]
 pub fn run<F>(setup_fn: F) -> crate::Result<()>
 where
     F: FnOnce(&peppylib::config::NodeArguments, &NodeRunner) -> crate::Result<()>,
@@ -55,7 +56,7 @@ where
         // TODO: Maybe turn those input arguments into a simple struct in the future?
         let args = node_runner.runtime().input_arguments();
 
-        setup_fn(&args, &node_runner)?;
+        setup_fn(args, &node_runner)?;
 
         // Spin until shutdown signal
         shutdown_signal().await;

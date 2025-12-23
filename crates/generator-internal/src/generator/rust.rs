@@ -2723,9 +2723,9 @@ fn build_topic_emit(
     }
 
     let method_signature = if method_param_tokens.is_empty() {
-        quote!(messenger: &crate::MessengerHandle)
+        quote!(node_runner: &crate::NodeRunner)
     } else {
-        quote!(messenger: &crate::MessengerHandle, #(#method_param_tokens),*)
+        quote!(node_runner: &crate::NodeRunner, #(#method_param_tokens),*)
     };
     let topic_literal = Literal::string(topic.name.as_str());
     let qos_tokens = qos_profile_tokens(&topic.qos_profile);
@@ -2787,7 +2787,7 @@ fn build_topic_emit(
             quote! {
                 #[allow(clippy::too_many_arguments)]
                 pub async fn #method_ident(#method_signature) -> crate::Result<()> {
-                    let _ = messenger;
+                    let _ = node_runner;
                     #(#ignore_params)*
                     Err(crate::Error::MessageFormatUnavailable {
                         context: String::from(#label_literal),
