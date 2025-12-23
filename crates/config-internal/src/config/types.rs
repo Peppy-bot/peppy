@@ -1,4 +1,4 @@
-use crate::{common::NodeParameters, error::ParsingError, node::Logging};
+use crate::{common::NodeArguments, error::ParsingError, node::Logging};
 use core::fmt;
 use serde::{
     Deserialize, Serialize,
@@ -74,7 +74,7 @@ pub struct Deployment {
 pub struct DeploymentInstance {
     pub instance_id: Name,
     #[serde(default)]
-    pub parameters: NodeParameters,
+    pub arguments: NodeArguments,
 }
 
 fn deserialize_instances<'de, D>(deserializer: D) -> Result<Vec<DeploymentInstance>, D::Error>

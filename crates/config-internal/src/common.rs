@@ -215,8 +215,8 @@ impl std::fmt::Display for TypeMismatch {
 
 impl std::error::Error for TypeMismatch {}
 
-// Node parameters with open-ended structure
-pub type NodeParameters = BTreeMap<String, AnyType>;
+// Node arguments with open-ended structure
+pub type NodeArguments = BTreeMap<String, AnyType>;
 
 #[cfg(test)]
 mod tests {
