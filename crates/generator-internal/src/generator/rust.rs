@@ -273,7 +273,7 @@ impl RustGenerator {
 
             quote! {
                 pub async fn fire_goal(
-                    messenger: &crate::Messenger,
+                    node_runner: &crate::NodeRunner,
                     timeout: std::time::Duration,
                     target_master_node: Option<&str>,
                     target_instance_id: Option<&str>,
@@ -283,9 +283,9 @@ impl RustGenerator {
                     #goal_payload_tokens
 
                     let action_handle = peppylib::ActionMessenger::send_goal(
-                        messenger.handle(),
-                        messenger.runtime().bound_master_node(),
-                        messenger.runtime().bound_instance_id(),
+                        node_runner.messenger(),
+                        node_runner.runtime().bound_master_node(),
+                        node_runner.runtime().bound_instance_id(),
                         TARGET_NODE_NAME,
                         TARGET_ACTION_NAME,
                         target_master_node,
@@ -357,7 +357,7 @@ impl RustGenerator {
 
             quote! {
                 pub async fn fire_goal(
-                    messenger: &crate::Messenger,
+                    node_runner: &crate::NodeRunner,
                     timeout: std::time::Duration,
                     target_master_node: Option<&str>,
                     target_instance_id: Option<&str>,
@@ -367,9 +367,9 @@ impl RustGenerator {
                     #goal_payload_tokens
 
                     let action_handle = peppylib::ActionMessenger::send_goal(
-                        messenger.handle(),
-                        messenger.runtime().bound_master_node(),
-                        messenger.runtime().bound_instance_id(),
+                        node_runner.messenger(),
+                        node_runner.runtime().bound_master_node(),
+                        node_runner.runtime().bound_instance_id(),
                         TARGET_NODE_NAME,
                         TARGET_ACTION_NAME,
                         target_master_node,
@@ -488,12 +488,12 @@ impl RustGenerator {
 
         let method_tokens = quote! {
             pub async fn cancel_goal(
-                messenger: &crate::Messenger,
+                node_runner: &crate::NodeRunner,
                 action_handle: &peppylib::messaging::ActionGoalHandle,
                 timeout: std::time::Duration,
             ) -> crate::Result<#cancel_response_ident> {
                 let response = peppylib::ActionMessenger::cancel_goal(
-                    messenger.handle(),
+                    node_runner.messenger(),
                     action_handle,
                     timeout,
                 )
@@ -722,12 +722,12 @@ impl RustGenerator {
 
             quote! {
                 pub async fn get_result(
-                    messenger: &crate::Messenger,
+                    node_runner: &crate::NodeRunner,
                     action_handle: &peppylib::messaging::ActionGoalHandle,
                     timeout: std::time::Duration,
                 ) -> crate::Result<#result_response_ident> {
                     let response = peppylib::ActionMessenger::request_result(
-                        messenger.handle(),
+                        node_runner.messenger(),
                         action_handle,
                         timeout,
                     )
@@ -752,12 +752,12 @@ impl RustGenerator {
 
             quote! {
                 pub async fn get_result(
-                    messenger: &crate::Messenger,
+                    node_runner: &crate::NodeRunner,
                     action_handle: &peppylib::messaging::ActionGoalHandle,
                     timeout: std::time::Duration,
                 ) -> crate::Result<#result_response_ident> {
                     let response = peppylib::ActionMessenger::request_result(
-                        messenger.handle(),
+                        node_runner.messenger(),
                         action_handle,
                         timeout,
                     )
@@ -1538,7 +1538,7 @@ impl LanguageGenerator for RustGenerator {
 
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
-                messenger.handle(),
+                messenger.messenger(),
                 messenger.runtime().bound_master_node(),
                 messenger.runtime().bound_instance_id(),
                 NODE_NAME,
@@ -1662,7 +1662,7 @@ impl LanguageGenerator for RustGenerator {
         };
 
         let mut fn_param_tokens = vec![
-            quote!(messenger: &crate::Messenger),
+            quote!(messenger: &crate::MessengerHandle),
             quote!(timeout: std::time::Duration),
             quote!(target_master_node: Option<&str>),
             quote!(target_instance_id: Option<&str>),
@@ -2723,9 +2723,9 @@ fn build_topic_emit(
     }
 
     let method_signature = if method_param_tokens.is_empty() {
-        quote!(messenger: &crate::Messenger)
+        quote!(messenger: &crate::MessengerHandle)
     } else {
-        quote!(messenger: &crate::Messenger, #(#method_param_tokens),*)
+        quote!(messenger: &crate::MessengerHandle, #(#method_param_tokens),*)
     };
     let topic_literal = Literal::string(topic.name.as_str());
     let qos_tokens = qos_profile_tokens(&topic.qos_profile);
@@ -2757,12 +2757,12 @@ fn build_topic_emit(
                     let payload = bytes::Bytes::from(buffer);
                     let qos = #qos_tokens;
                     let as_topic = #topic_literal;
-                    let as_node_name = messenger.runtime().node_name();
-                    let as_instance_id = messenger.runtime().bound_instance_id();
-                    let with_master_node = messenger.runtime().bound_master_node();
+                    let as_node_name = node_runner.runtime().node_name();
+                    let as_instance_id = node_runner.runtime().bound_instance_id();
+                    let with_master_node = node_runner.runtime().bound_master_node();
 
                     peppylib::TopicMessenger::emit(
-                        messenger.handle(),
+                        node_runner.messenger(),
                         with_master_node,
                         as_instance_id,
                         as_node_name,
@@ -2837,7 +2837,7 @@ fn build_subscribed_topic_callback(
 
     quote! {
         pub async fn #fn_name(
-            messenger: &crate::Messenger,
+            node_runner: &crate::NodeRunner,
             master_node_target: Option<&str>,
             instance_id_target: Option<&str>,
         ) -> crate::Result<(String, #args_struct_ident)> {
@@ -2847,9 +2847,9 @@ fn build_subscribed_topic_callback(
 
             let message = {
                 let subscription_future = peppylib::TopicMessenger::subscribe(
-                    messenger.handle(),
-                    messenger.runtime().bound_master_node(),
-                    messenger.runtime().bound_instance_id(),
+                    node_runner.messenger(),
+                    node_runner.runtime().bound_master_node(),
+                    node_runner.runtime().bound_instance_id(),
                     node_name,
                     topic_name,
                     master_node_target,
@@ -3715,17 +3715,17 @@ fn build_exposed_service_method(
     let method = if use_service_name_const {
         quote! {
             pub async fn #handler_fn_name<F>(
-                messenger: &crate::Messenger,
+                node_runner: &crate::NodeRunner,
                 handler: F,
             ) -> crate::Result<()>
             where
                 F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
             {
                 let mut service = peppylib::ServiceMessenger::listen(
-                    messenger.handle(),
-                    messenger.runtime().bound_master_node(),
-                    messenger.runtime().bound_instance_id(),
-                    messenger.runtime().node_name(),
+                    node_runner.messenger(),
+                    node_runner.runtime().bound_master_node(),
+                    node_runner.runtime().bound_instance_id(),
+                    node_runner.runtime().node_name(),
                     #service_name_ref,
                 )
                 .await?;
@@ -3762,19 +3762,19 @@ fn build_exposed_service_method(
 
         quote! {
             pub async fn #handler_fn_name<F>(
-                messenger: &crate::Messenger,
+                node_runner: &crate::NodeRunner,
                 handler: F,
             ) -> crate::Result<()>
             where
                 F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
             {
                 #service_instance_env_stmt
-                let node_name = messenger.node_name();
+                let node_name = node_runner.node_name();
                 #service_name_binding
 
                 let mut service = peppylib::ServiceMessenger::listen(
-                    messenger.handle(),
-                    messenger.master_node(),
+                    node_runner.messenger(),
+                    node_runner.master_node(),
                     service_instance_id.as_str(),
                     node_name,
                     service_name,
@@ -4043,12 +4043,12 @@ fn build_action_handle_struct(has_goal: bool, has_feedback: bool, has_result: bo
 
 fn build_action_expose_method() -> TokenStream {
     quote! {
-        pub async fn expose(messenger: &crate::Messenger) -> crate::Result<Self> {
+        pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self> {
             let action = peppylib::ActionMessenger::expose(
-                messenger.handle(),
-                messenger.runtime().bound_master_node(),
-                messenger.runtime().bound_instance_id(),
-                messenger.runtime().node_name(),
+                node_runner.messenger(),
+                node_runner.runtime().bound_master_node(),
+                node_runner.runtime().bound_instance_id(),
+                node_runner.runtime().node_name(),
                 ACTION_NAME,
             )
             .await?;
