@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::error::{Error, Result};
 use config::{
-    NodeParameters, consts::RUNTIME_CONFIG_VAR_NAME, node::NodeConfig, runtime::RuntimeConfig,
+    NodeArguments, consts::RUNTIME_CONFIG_VAR_NAME, node::NodeConfig, runtime::RuntimeConfig,
 };
 use node_stack::NodeStack;
 
@@ -30,7 +30,7 @@ impl Processor {
             &launch_config.codegen_peppy_config_md5,
         )?;
         Processor::check_node_config_parameters_types(
-            &launch_config.deployment_instance.parameters,
+            &launch_config.deployment_instance.arguments,
             &node_config.parameters,
         )?;
 
@@ -57,8 +57,8 @@ impl Processor {
     }
 
     fn check_node_config_parameters_types(
-        runtime_parameters: &NodeParameters,
-        compiled_node_parameters: &NodeParameters,
+        runtime_parameters: &NodeArguments,
+        compiled_node_parameters: &NodeArguments,
     ) -> Result<()> {
         for (key, runtime_value) in runtime_parameters {
             let compiled_type = compiled_node_parameters
@@ -90,8 +90,8 @@ impl Processor {
         self.runtime_config.bound_master_node.as_str()
     }
 
-    pub fn input_parameters(&self) -> &NodeParameters {
-        &self.runtime_config.deployment_instance.parameters
+    pub fn input_arguments(&self) -> &NodeArguments {
+        &self.runtime_config.deployment_instance.arguments
     }
 
     pub fn node_name(&self) -> &str {
@@ -108,7 +108,7 @@ impl Processor {
 #[cfg(test)]
 mod tests {
     use super::{Processor, RUNTIME_CONFIG_VAR_NAME};
-    use config::{AnyType, NodeParameters, runtime::RuntimeConfig};
+    use config::{AnyType, NodeArguments, runtime::RuntimeConfig};
     use std::{collections::BTreeMap, env, sync::Mutex};
     use tempfile::TempDir;
 
@@ -144,6 +144,11 @@ mod tests {
                 unsafe { env::remove_var(self.key) };
             }
         }
+    }
+
+    #[test]
+    fn get_node_stack() {
+        todo!("Finish. Get the node stack from the `Processor` object")
     }
 
     #[test]
@@ -220,7 +225,7 @@ mod tests {
         let runtime_processor = Processor::new_with_peppy_config(&peppy_config_path)
             .expect("runtime processor should load config from env");
 
-        let mut expected_parameters: NodeParameters = NodeParameters::new();
+        let mut expected_parameters: NodeArguments = NodeArguments::new();
         expected_parameters.insert("exposure".into(), AnyType::Float(0.25));
         expected_parameters.insert(
             "flags".into(),
@@ -241,7 +246,7 @@ mod tests {
         assert_eq!(runtime_processor.bound_instance_id(), bound_instance_id);
         assert_eq!(runtime_processor.bound_master_node(), bound_master_node);
         assert_eq!(runtime_processor.node_name(), bound_node_name);
-        assert_eq!(runtime_processor.input_parameters(), &expected_parameters);
+        assert_eq!(runtime_processor.input_arguments(), &expected_parameters);
     }
 
     #[test]

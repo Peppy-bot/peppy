@@ -72,7 +72,7 @@ pub fn deployment(
 ) -> Deployment {
     let instance = DeploymentInstance {
         instance_id: Name::new("default").unwrap(),
-        parameters: Default::default(),
+        arguments: Default::default(),
     };
 
     Deployment {

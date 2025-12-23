@@ -14,7 +14,7 @@ pub mod peppy_config {
 #[cfg(feature = "test_helpers")]
 pub mod test_helpers;
 
-pub use common::{AnyType, NodeParameters, TypeMismatch};
+pub use common::{AnyType, NodeArguments, TypeMismatch};
 
 // To watch projects
 pub use watch::{FSNodeConfigWatcher, NodeIndexState};

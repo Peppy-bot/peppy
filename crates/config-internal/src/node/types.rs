@@ -1,4 +1,4 @@
-use crate::{common::NodeParameters, config::SchemaVersion, error::ParsingError};
+use crate::{common::NodeArguments, config::SchemaVersion, error::ParsingError};
 use indexmap::IndexMap;
 use serde::{
     Deserialize, Serialize,
@@ -15,7 +15,7 @@ pub struct NodeConfig {
     pub schema_version: SchemaVersion,
     pub manifest: Manifest,
     #[serde(default)]
-    pub parameters: NodeParameters,
+    pub parameters: NodeArguments,
     #[serde(default)]
     pub interfaces: Interfaces,
     #[serde(default, skip_serializing_if = "Option::is_none")]

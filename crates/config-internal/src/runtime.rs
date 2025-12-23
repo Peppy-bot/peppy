@@ -13,6 +13,8 @@ use crate::config::Name;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeConfig {
+    pub messaging_host: String,
+    pub messaging_port: u16,
     pub node_name: Name,
     pub bound_master_node: Name,
     pub deployment_instance: DeploymentInstance,
@@ -21,12 +23,16 @@ pub struct RuntimeConfig {
 
 impl RuntimeConfig {
     pub fn new(
+        messaging_host: &str,
+        messaging_port: u16,
         deployment_instance: DeploymentInstance,
         node_name: impl Into<String>,
         bound_master_node: impl Into<String>,
         codegen_peppy_config_md5: &str,
     ) -> Result<Self> {
         Ok(Self {
+            messaging_host: messaging_host.to_owned(),
+            messaging_port,
             deployment_instance,
             node_name: Name::new(node_name.into())?,
             bound_master_node: Name::new(bound_master_node.into())?,
@@ -97,7 +103,7 @@ mod tests {
             parsed.deployment_instance.instance_id,
             config.deployment_instance.instance_id
         );
-        assert!(parsed.deployment_instance.parameters.is_empty());
+        assert!(parsed.deployment_instance.arguments.is_empty());
     }
 
     #[test]

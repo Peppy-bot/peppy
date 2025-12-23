@@ -404,7 +404,7 @@ fn validate_instance_parameters(
     let mut unexpected: BTreeSet<String> = BTreeSet::new();
 
     for instance in &deployment.instances {
-        for_each_parameter_leaf_path(&instance.parameters, |path| {
+        for_each_parameter_leaf_path(&instance.arguments, |path| {
             if !expected.contains(path) {
                 unexpected.insert(path.to_owned());
             }
@@ -412,7 +412,7 @@ fn validate_instance_parameters(
 
         // Validate parameter types
         if let Err(type_mismatch) =
-            validate_parameter_types(&instance.parameters, &node.parameters, "")
+            validate_parameter_types(&instance.arguments, &node.parameters, "")
         {
             return Err(Error::WrongParameterType {
                 deployment: format!("{}:{}", deployment.name, deployment.tag),
