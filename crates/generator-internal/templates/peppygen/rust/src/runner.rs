@@ -25,8 +25,8 @@ impl NodeRunner {
 
         rt.block_on(async move {
             let messenger: MessengerHandle = peppylib::MessengerHandle::from_host_port(
-                &runtime_processor.messaging_host,
-                &runtime_processor.messaging_port,
+                runtime_processor.messaging_host(),
+                runtime_processor.messaging_port(),
             )
             .await
             .map_err(crate::Error::Messaging)?;

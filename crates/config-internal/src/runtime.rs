@@ -69,6 +69,8 @@ mod tests {
 
     fn runtime_config_from_json(instance_id: &str) -> Result<RuntimeConfig> {
         let json = r#"{
+            messaging_host: "$MESSAGING_HOST",
+            messaging_port: $MESSAGING_PORT,
             deployment_instance: {
                 instance_id: "$INSTANCE_ID"
             },
@@ -77,7 +79,13 @@ mod tests {
             codegen_peppy_config_md5: "d41d8cd98f00b204e9800998ecf8427e"
         }"#;
 
-        let populated = json.replace("$INSTANCE_ID", instance_id);
+        let populated = json
+            .replace("$INSTANCE_ID", instance_id)
+            .replace("$MESSAGING_HOST", crate::consts::DEFAULT_ZENOH_HOST)
+            .replace(
+                "$MESSAGING_PORT",
+                &crate::consts::DEFAULT_ZENOH_PORT.to_string(),
+            );
         serde_json5::from_str(&populated).map_err(|err| Error::Parsing(err.into()))
     }
 
