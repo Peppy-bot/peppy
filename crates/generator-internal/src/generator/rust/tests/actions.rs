@@ -244,7 +244,7 @@ fn exposed_action() {
     assert_contains_all(
         &rendered,
         &[
-            "pub async fn expose(messenger: &crate::MessengerHandle) -> crate::Result<Self>",
+            "pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self>",
             "peppylib::ActionMessenger::expose",
         ],
     );
