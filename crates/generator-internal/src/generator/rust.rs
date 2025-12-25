@@ -4493,12 +4493,9 @@ fn to_camel_case(raw: &str) -> String {
 /// or nested objects) and generates Rust struct definitions with proper typing.
 ///
 /// Each top-level parameter field gets its own module to namespace nested types.
+/// Always generates a `Parameters` struct, even if empty.
 pub fn generate_parameters_struct(parameters: &config::NodeArguments) -> String {
     use config::AnyType;
-
-    if parameters.is_empty() {
-        return String::new();
-    }
 
     let mut main_fields = Vec::new();
     let mut modules = Vec::new();

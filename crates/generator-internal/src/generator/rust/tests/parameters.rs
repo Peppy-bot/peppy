@@ -98,3 +98,29 @@ fn generate_parameters_struct() {
     // Verify derive attributes
     assert_contains_all(&generated, &["#[derive(Debug, Clone, serde::Deserialize)]"]);
 }
+
+#[test]
+fn generate_empty_parameters_struct() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let (generator, output_dir, _, _) = init_test_env(&temp_dir);
+    // Don't set any parameters - use the default empty parameters
+    generator.build(&output_dir).unwrap();
+
+    let parameters_file = output_dir.join("src/parameters.rs");
+    assert!(
+        parameters_file.exists(),
+        "Expected parameters.rs to be generated"
+    );
+
+    let generated = fs::read_to_string(&parameters_file).expect("failed to read parameters.rs");
+
+    // Even with no parameters, we should have a valid Parameters struct with derives
+    assert_contains_all(
+        &generated,
+        &[
+            "#[derive(Debug, Clone, serde::Deserialize)]",
+            "pub struct Parameters",
+        ],
+    );
+}
