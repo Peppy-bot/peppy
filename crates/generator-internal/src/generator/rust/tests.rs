@@ -38,6 +38,7 @@ fn assert_artifact_contains(artifacts: &[String], pattern: &str) {
 }
 
 mod actions;
+mod parameters;
 mod services;
 mod topics;
 
