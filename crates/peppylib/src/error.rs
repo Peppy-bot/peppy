@@ -99,6 +99,9 @@ pub enum Error {
 
     #[error("missing parameter `{path}` in compiled node parameters")]
     MissingCompiledParameter { path: String },
+
+    #[error("parameter deserialization error: {0}")]
+    ParameterDeserialization(String),
 }
 
 struct InstanceSuffix<'a>(Option<&'a str>);

@@ -49,7 +49,6 @@ fn generate_parameters_struct() {
     generator.set_parameters(node_config.parameters);
     generator.build(&output_dir).unwrap();
 
-    // Read the generated parameters.rs file
     let parameters_file = output_dir.join("src/parameters.rs");
     assert!(
         parameters_file.exists(),
@@ -57,8 +56,6 @@ fn generate_parameters_struct() {
     );
 
     let generated = fs::read_to_string(&parameters_file).expect("failed to read parameters.rs");
-
-    // Verify the main Parameters struct references module-qualified types
     assert_contains_all(
         &generated,
         &[
