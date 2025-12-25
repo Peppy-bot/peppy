@@ -72,4 +72,6 @@ pub enum Error {
         #[source]
         source: VarError,
     },
+    #[error(transparent)]
+    Peppy(#[from] PeppyError),
 }
