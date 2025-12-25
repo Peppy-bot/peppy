@@ -24,6 +24,7 @@ pub struct RustGenerator {
     sections: Vec<InterfaceArtifact>,
     schemas: HashMap<String, CapnpSchema>,
     pending_exposed_services: Option<ExposedServicesModule>,
+    parameters: config::NodeArguments,
 }
 
 impl RustGenerator {
@@ -32,7 +33,13 @@ impl RustGenerator {
             sections: Vec::new(),
             schemas: HashMap::new(),
             pending_exposed_services: None,
+            parameters: config::NodeArguments::default(),
         }
+    }
+
+    /// Sets the node parameters for code generation.
+    pub fn set_parameters(&mut self, parameters: config::NodeArguments) {
+        self.parameters = parameters;
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -1820,6 +1827,8 @@ impl LanguageGenerator for RustGenerator {
         common::write_capnp_schemas(&self.schemas, to_path.as_ref())?;
         // Add the content to the Rust files
         common::add_artifacts_to_lib(&to_path, self.sections)?;
+        // Generate the parameters struct
+        common::add_parameters_to_lib(&to_path, &self.parameters)?;
         Ok(())
     }
 }
@@ -4476,4 +4485,147 @@ fn to_camel_case(raw: &str) -> String {
     }
 
     out
+}
+
+/// Generates Rust struct code from node parameters configuration.
+///
+/// This function takes a `NodeArguments` map (where values are type specifications like "string", "u16", etc.
+/// or nested objects) and generates Rust struct definitions with proper typing.
+///
+/// Each top-level parameter field gets its own module to namespace nested types.
+pub fn generate_parameters_struct(parameters: &config::NodeArguments) -> String {
+    use config::AnyType;
+
+    if parameters.is_empty() {
+        return String::new();
+    }
+
+    let mut main_fields = Vec::new();
+    let mut modules = Vec::new();
+
+    for (field_name, type_spec) in parameters {
+        let field_ident = Ident::new(&sanitize_component(field_name), Span::call_site());
+        let module_name = sanitize_component(field_name);
+        let module_ident = Ident::new(&module_name, Span::call_site());
+
+        match type_spec {
+            AnyType::Object(_) => {
+                // For object types, create a module containing the struct and any nested types
+                let struct_name = to_camel_case(field_name);
+                let struct_ident = Ident::new(&struct_name, Span::call_site());
+                let module_contents = generate_parameter_module_contents(type_spec, &struct_name);
+
+                modules.push(quote! {
+                    pub mod #module_ident {
+                        #module_contents
+                    }
+                });
+
+                main_fields.push(quote!(pub #field_ident: #module_ident::#struct_ident));
+            }
+            AnyType::String(type_name) => {
+                // For primitive types, just add the field directly
+                let rust_type = type_name_to_rust_type(type_name);
+                main_fields.push(quote!(pub #field_ident: #rust_type));
+            }
+            _ => {
+                // Skip unsupported types
+            }
+        }
+    }
+
+    // Generate the main Parameters struct
+    let main_struct = quote! {
+        #[derive(Debug, Clone, serde::Deserialize)]
+        pub struct Parameters {
+            #( #main_fields ),*
+        }
+    };
+
+    // Combine: main struct first, then all modules
+    let mut all_tokens = main_struct;
+    for module in modules {
+        all_tokens = quote! { #all_tokens #module };
+    }
+
+    render_tokens(all_tokens)
+}
+
+/// Generates the contents of a parameter module (structs for the type and any nested types).
+fn generate_parameter_module_contents(
+    type_spec: &config::AnyType,
+    struct_name: &str,
+) -> TokenStream {
+    let mut structs = Vec::new();
+    generate_parameter_struct(type_spec, struct_name, &mut structs);
+
+    let tokens: TokenStream = structs.into_iter().collect();
+    tokens
+}
+
+/// Recursively generates struct definitions for a parameter type.
+/// Structs are added to the `structs` vector in dependency order (nested types first).
+fn generate_parameter_struct(
+    type_spec: &config::AnyType,
+    struct_name: &str,
+    structs: &mut Vec<TokenStream>,
+) {
+    use config::AnyType;
+
+    if let AnyType::Object(fields) = type_spec {
+        let struct_ident = Ident::new(struct_name, Span::call_site());
+        let mut field_tokens = Vec::new();
+
+        for (field_name, field_spec) in fields {
+            let field_ident = Ident::new(&sanitize_component(field_name), Span::call_site());
+
+            match field_spec {
+                AnyType::String(type_name) => {
+                    let rust_type = type_name_to_rust_type(type_name);
+                    field_tokens.push(quote!(pub #field_ident: #rust_type));
+                }
+                AnyType::Object(_) => {
+                    // Generate nested struct with simple name (no prefix needed, we're in a module)
+                    let nested_struct_name = to_camel_case(field_name);
+                    let nested_struct_ident = Ident::new(&nested_struct_name, Span::call_site());
+
+                    // Recursively generate the nested struct first
+                    generate_parameter_struct(field_spec, &nested_struct_name, structs);
+
+                    field_tokens.push(quote!(pub #field_ident: #nested_struct_ident));
+                }
+                _ => {}
+            }
+        }
+
+        // Add this struct after its dependencies
+        structs.push(quote! {
+            #[derive(Debug, Clone, serde::Deserialize)]
+            pub struct #struct_ident {
+                #( #field_tokens ),*
+            }
+        });
+    }
+}
+
+/// Converts a type name string to its Rust type TokenStream.
+/// This mirrors the TypeToken mapping but works from string input.
+fn type_name_to_rust_type(type_name: &str) -> TokenStream {
+    match type_name {
+        "bool" => quote!(bool),
+        "string" | "str" => quote!(String),
+        "bytes" => quote!(Vec<u8>),
+        "time" => quote!(std::time::SystemTime),
+        "u8" => quote!(u8),
+        "u16" => quote!(u16),
+        "u32" => quote!(u32),
+        "u64" => quote!(u64),
+        "i8" => quote!(i8),
+        "i16" => quote!(i16),
+        "i32" => quote!(i32),
+        "i64" => quote!(i64),
+        "f32" | "float" => quote!(f32),
+        "f64" | "double" => quote!(f64),
+        _ => quote!(String), // Default to String for unknown types
+    }
 }

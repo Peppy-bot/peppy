@@ -79,6 +79,31 @@ pub fn add_artifacts_to_lib(
     Ok(())
 }
 
+/// Generates and writes the parameters struct to the library.
+///
+/// This function takes the node's parameters configuration and generates a Rust struct
+/// that can be used to deserialize parameter values at runtime.
+pub fn add_parameters_to_lib(
+    lib_path: impl AsRef<Path>,
+    parameters: &config::NodeArguments,
+) -> Result<()> {
+    let lib_path = lib_path.as_ref();
+    let src_dir = lib_path.join("src");
+    fs::create_dir_all(&src_dir)?;
+
+    let parameters_file = src_dir.join("parameters.rs");
+
+    let code = super::rust::generate_parameters_struct(parameters);
+    if code.is_empty() {
+        // Write an empty module if there are no parameters
+        fs::write(&parameters_file, "// No parameters defined.\n")?;
+    } else {
+        fs::write(&parameters_file, code)?;
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ModuleCategory {
     ExposedTopics,
