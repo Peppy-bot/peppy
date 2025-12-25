@@ -1,5 +1,6 @@
 use peppylib::MessengerHandle;
 use peppylib::runtime::Processor;
+use std::sync::Arc;
 
 pub struct NodeRunner {
     messenger: MessengerHandle,
@@ -31,32 +32,25 @@ impl NodeRunner {
 }
 
 #[allow(dead_code)]
-pub fn run<F>(setup_fn: F) -> crate::Result<()>
+pub fn run<F, Fut>(setup_fn: F) -> crate::Result<()>
 where
-    F: FnOnce(crate::parameters::Parameters, &NodeRunner) -> crate::Result<()>,
+    F: FnOnce(crate::parameters::Parameters, Arc<NodeRunner>) -> Fut,
+    Fut: std::future::Future<Output = crate::Result<()>>,
 {
     let rt =
         tokio::runtime::Runtime::new().map_err(|source| crate::Error::RuntimeInitialization {
             context: "node runner".to_string(),
             source,
         })?;
-    let peppy_config = {
-        let var_name = peppylib::config::RUNTIME_CONFIG_VAR_NAME;
-        let peppy_config_path =
-            std::env::var(var_name).map_err(|source| crate::Error::MissingInstanceIdEnvVar {
-                var: var_name,
-                source,
-            })?;
-        std::path::PathBuf::from(peppy_config_path)
-    };
+    let peppy_config = std::path::PathBuf::from(peppylib::config::NODE_CONFIG_FILE);
     let runtime_processor = Processor::new_with_peppy_config(peppy_config)?;
 
     rt.block_on(async move {
-        let node_runner = NodeRunner::new(runtime_processor).await?;
+        let node_runner = Arc::new(NodeRunner::new(runtime_processor).await?);
         let parameters: crate::parameters::Parameters =
             peppylib::config::deserialize_parameters(node_runner.runtime().input_arguments())?;
 
-        setup_fn(parameters, &node_runner)?;
+        setup_fn(parameters, node_runner).await?;
 
         // Spin until shutdown signal
         shutdown_signal().await;

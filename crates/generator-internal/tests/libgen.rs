@@ -99,8 +99,8 @@ fn topics_communication() {
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let subscriber_runtime_config = RuntimeConfig::new(
-        config::consts::DEFAULT_ZENOH_HOST,
-        config::consts::DEFAULT_ZENOH_PORT,
+        &router_host,
+        router_port,
         DeploymentInstance {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
@@ -116,27 +116,23 @@ fn topics_communication() {
         .unwrap();
 
     init_cargo_user_node(&user_node_subscriber);
-    let peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
-    let subscriber_main = format!(
-        "
+    // TODO: An exit signal should be sent to the subscriber to terminate the process
+    let subscriber_main = r#"
+use peppygen::runner;
 use peppygen::subscribed_topics::uvc_camera_push_frame::on_next_message_received;
-use peppygen::{{Messenger, Result}};
+use peppygen::Result;
 
-#[tokio::main]
-async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
-
-    let (instance_id, frame) = on_next_message_received(&messenger, None, None).await?;
-    println!(
-        \"got {{}}x{{}} frame encoded as {{}} from {{}}\",
-        frame.width, frame.height, frame.encoding, &instance_id
-    );
-
-    Ok(())
-}}
-",
-        peppy_config_path_str, router_host, router_port
-    );
+fn main() -> Result<()> {
+    runner::run(|_parameters, node_runner| async move {
+        let (instance_id, frame) = on_next_message_received(&node_runner, None, None).await?;
+        println!(
+            "got {}x{} frame encoded as {} from {}",
+            frame.width, frame.height, frame.encoding, &instance_id
+        );
+        Ok(())
+    })
+}
+"#;
     let main_file = user_node_subscriber.join("src").join("main.rs");
     fs::write(main_file, &subscriber_main).expect("failed to write main file");
 
@@ -146,6 +142,9 @@ async fn main() -> Result<()> {{
     let exposed_topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
     let (mut generator, output_dir1, user_node_exposer, peppy_node_config_path) =
         init_test_env(&temp_dir_proj1);
+    let exposer_parameters: config::NodeArguments =
+        serde_json5::from_str(r#"{ frequency: "f64" }"#).unwrap();
+    generator.set_parameters(exposer_parameters);
     generator.add_exposed_topic(&exposed_topic).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir1);
     generator.build(&output_dir1).unwrap();
@@ -154,8 +153,8 @@ async fn main() -> Result<()> {{
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let exposer_runtime_config = RuntimeConfig::new(
-        config::consts::DEFAULT_ZENOH_HOST,
-        config::consts::DEFAULT_ZENOH_PORT,
+        &router_host,
+        router_port,
         DeploymentInstance {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
@@ -171,34 +170,44 @@ async fn main() -> Result<()> {{
         .unwrap();
 
     init_cargo_user_node(&user_node_exposer);
-    let peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
-    let exposer_main = format!(
-        "
+    // TODO: An exit signal should be sent to the exposer to terminate the process
+    let exposer_main = r#"
 use peppygen::exposed_topics::push_frame;
-use peppygen::{{Messenger, Result}};
+use peppygen::runner;
+use peppygen::Result;
+use std::time::Duration;
 
-#[tokio::main]
-async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
+fn main() -> Result<()> {
+    runner::run(|parameters, node_runner| async move {
+        let frequency_hz: f64 = parameters.frequency;
+        let interval = Duration::from_secs_f64(1.0 / frequency_hz);
 
-    push_frame::emit(
-        &messenger,
-        push_frame::MessageHeader {{
-            stamp: std::time::SystemTime::now(),
-            frame_id: 42,
-        }},
-        \"rgb8\".to_owned(),
-        640,
-        480,
-        [1, 2, 3],
-    )
-    .await?;
+        let node_runner_clone = node_runner.clone();
+        tokio::spawn(async move {
+            let mut frame_id = 0u32;
+            loop {
+                let _ = push_frame::emit(
+                    &node_runner_clone,
+                    push_frame::MessageHeader {
+                        stamp: std::time::SystemTime::now(),
+                        frame_id,
+                    },
+                    "rgb8".to_owned(),
+                    640,
+                    480,
+                    [1, 2, 3],
+                )
+                .await;
 
-    Ok(())
-}}
-",
-        peppy_config_path_str, router_host, router_port
-    );
+                frame_id = frame_id.wrapping_add(1);
+                tokio::time::sleep(interval).await;
+            }
+        });
+
+        Ok(())
+    })
+}
+"#;
 
     let main_file = user_node_exposer.join("src").join("main.rs");
     fs::write(main_file, &exposer_main).expect("failed to write main file");
@@ -353,8 +362,8 @@ fn services_communication_no_target_instance_id() {
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let subscriber_runtime_config = RuntimeConfig::new(
-        config::consts::DEFAULT_ZENOH_HOST,
-        config::consts::DEFAULT_ZENOH_PORT,
+        &router_host,
+        router_port,
         DeploymentInstance {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
@@ -415,8 +424,8 @@ async fn main() -> Result<()> {{
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let exposer_runtime_config = RuntimeConfig::new(
-        config::consts::DEFAULT_ZENOH_HOST,
-        config::consts::DEFAULT_ZENOH_PORT,
+        &router_host,
+        router_port,
         DeploymentInstance {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
@@ -580,8 +589,8 @@ fn services_communication_multiple_exposed_instances_same_service() {
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let subscriber_runtime_config = RuntimeConfig::new(
-        config::consts::DEFAULT_ZENOH_HOST,
-        config::consts::DEFAULT_ZENOH_PORT,
+        &router_host,
+        router_port,
         DeploymentInstance {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
@@ -641,8 +650,8 @@ async fn main() -> Result<()> {{
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let exposer1_runtime_config = RuntimeConfig::new(
-        config::consts::DEFAULT_ZENOH_HOST,
-        config::consts::DEFAULT_ZENOH_PORT,
+        &router_host,
+        router_port,
         DeploymentInstance {
             instance_id: Name::new(exposer1_instance_id).unwrap(),
             arguments: Default::default(),
@@ -703,8 +712,8 @@ async fn main() -> Result<()> {{
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let exposer2_runtime_config = RuntimeConfig::new(
-        config::consts::DEFAULT_ZENOH_HOST,
-        config::consts::DEFAULT_ZENOH_PORT,
+        &router_host,
+        router_port,
         DeploymentInstance {
             instance_id: Name::new(exposer2_instance_id).unwrap(),
             arguments: Default::default(),
@@ -987,8 +996,8 @@ fn actions_communication() {
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let subscriber_runtime_config = RuntimeConfig::new(
-        config::consts::DEFAULT_ZENOH_HOST,
-        config::consts::DEFAULT_ZENOH_PORT,
+        &router_host,
+        router_port,
         DeploymentInstance {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
@@ -1065,8 +1074,8 @@ async fn main() -> Result<()> {{
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let exposer_runtime_config = RuntimeConfig::new(
-        config::consts::DEFAULT_ZENOH_HOST,
-        config::consts::DEFAULT_ZENOH_PORT,
+        &router_host,
+        router_port,
         DeploymentInstance {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
@@ -1253,8 +1262,8 @@ fn actions_communication_cancel_goal() {
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let subscriber_runtime_config = RuntimeConfig::new(
-        config::consts::DEFAULT_ZENOH_HOST,
-        config::consts::DEFAULT_ZENOH_PORT,
+        &router_host,
+        router_port,
         DeploymentInstance {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
@@ -1329,8 +1338,8 @@ async fn main() -> Result<()> {{
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let exposer_runtime_config = RuntimeConfig::new(
-        config::consts::DEFAULT_ZENOH_HOST,
-        config::consts::DEFAULT_ZENOH_PORT,
+        &router_host,
+        router_port,
         DeploymentInstance {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
