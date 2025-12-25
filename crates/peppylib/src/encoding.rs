@@ -1,6 +1,10 @@
 mod health;
 mod shutdown;
 
+use crate::error::Result;
+use bytes::Bytes;
+use capnp::message::{Builder, HeapAllocator, ReaderOptions};
+use capnp::serialize;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const NANOS_PER_SEC: u32 = 1_000_000_000;
@@ -52,4 +56,43 @@ pub fn convert_time_from_capnp(timestamp: CapnpTimestamp) -> SystemTime {
 
         UNIX_EPOCH - Duration::new(secs_to_epoch, nanos_to_epoch)
     }
+}
+
+/// Encode a Cap'n Proto message builder into bytes.
+///
+/// # Example
+/// ```ignore
+/// use master_node::encoding::encode_message;
+/// use master_node::messages_capnp;
+///
+/// let mut message = capnp::message::Builder::new_default();
+/// let mut ping = message.init_root::<messages_capnp::ping_response::Builder>();
+/// ping.set_message("pong");
+/// ping.set_timestamp(12345);
+///
+/// let bytes = encode_message(&message)?;
+/// ```
+pub fn encode_message(message: &Builder<HeapAllocator>) -> Result<Bytes> {
+    let mut buffer = Vec::new();
+    serialize::write_message(&mut buffer, message)?;
+    Ok(Bytes::from(buffer))
+}
+
+/// Decode bytes into a Cap'n Proto message reader.
+///
+/// Returns an owned segments reader that can be used to read the message.
+///
+/// # Example
+/// ```ignore
+/// use master_node::encoding::decode_message;
+/// use master_node::messages_capnp;
+///
+/// let reader = decode_message(&bytes)?;
+/// let ping = reader.get_root::<messages_capnp::ping_request::Reader>()?;
+/// let timestamp = ping.get_timestamp();
+/// ```
+pub fn decode_message(
+    data: &[u8],
+) -> Result<capnp::message::Reader<capnp::serialize::OwnedSegments>> {
+    Ok(serialize::read_message(data, ReaderOptions::default())?)
 }

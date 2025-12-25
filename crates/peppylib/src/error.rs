@@ -102,6 +102,13 @@ pub enum Error {
 
     #[error("parameter deserialization error: {0}")]
     ParameterDeserialization(String),
+
+    // -- Capnp
+    #[error("capnp encoding error: {0}")]
+    Capnp(#[from] capnp::Error),
+
+    #[error("capnp schema error: {0}")]
+    CapnpNotInSchema(#[from] capnp::NotInSchema),
 }
 
 struct InstanceSuffix<'a>(Option<&'a str>);
