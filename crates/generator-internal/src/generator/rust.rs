@@ -1545,9 +1545,9 @@ impl LanguageGenerator for RustGenerator {
 
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
-                messenger.messenger(),
-                messenger.runtime().bound_master_node(),
-                messenger.runtime().bound_instance_id(),
+                node_runner.messenger(),
+                node_runner.runtime().bound_master_node(),
+                node_runner.runtime().bound_instance_id(),
                 NODE_NAME,
                 SERVICE_NAME,
                 target_master_node,
@@ -1669,7 +1669,7 @@ impl LanguageGenerator for RustGenerator {
         };
 
         let mut fn_param_tokens = vec![
-            quote!(messenger: &crate::MessengerHandle),
+            quote!(node_runner: &crate::NodeRunner),
             quote!(timeout: std::time::Duration),
             quote!(target_master_node: Option<&str>),
             quote!(target_instance_id: Option<&str>),

@@ -1,7 +1,7 @@
 pub mod error;
 mod init;
 pub mod parameters;
-mod runner;
+pub mod runner;
 
 pub mod capnp;
 pub mod exposed_actions;
