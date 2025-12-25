@@ -21,6 +21,9 @@ use tokio::{
 };
 use tracing::error;
 
+// services
+pub const NODE_HEALTH_SERVICE: &str = "node_health";
+
 const INSTANCE_ID_WILDCARD: &str = "**";
 /// Marker used in key expressions for broadcast requests (targeting any instance)
 const BROADCAST_MARKER: &str = "_any_";

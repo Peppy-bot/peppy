@@ -7,7 +7,6 @@ pub const INFO: &str = "info";
 pub const LAUNCHER: &str = "launch";
 pub const PING: &str = "ping";
 pub const NODE_ADD: &str = "node_add";
-pub const NODE_HEALTH: &str = "node_health";
 pub const NODE_INIT: &str = "node_init";
 pub const NODE_LIST: &str = "node_list";
 pub const NODE_RUN: &str = "node_run";

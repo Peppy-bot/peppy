@@ -1,5 +1,5 @@
-mod health;
-mod shutdown;
+pub mod health;
+pub mod shutdown;
 
 use crate::error::Result;
 use bytes::Bytes;
