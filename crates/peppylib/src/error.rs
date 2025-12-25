@@ -103,12 +103,20 @@ pub enum Error {
     #[error("parameter deserialization error: {0}")]
     ParameterDeserialization(String),
 
-    // -- Capnp
+    // --- Capnp
     #[error("capnp encoding error: {0}")]
     Capnp(#[from] capnp::Error),
 
     #[error("capnp schema error: {0}")]
     CapnpNotInSchema(#[from] capnp::NotInSchema),
+
+    // --- Runner
+    #[error("failed to build blocking runtime for `{context}`")]
+    RuntimeInitialization {
+        context: String,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 struct InstanceSuffix<'a>(Option<&'a str>);

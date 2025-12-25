@@ -33,12 +33,6 @@ pub enum Error {
     },
     #[error("subscription to `{topic_name}` closed without yielding a message")]
     SubscriptionClosed { topic_name: String },
-    #[error("failed to build blocking runtime for `{context}`")]
-    RuntimeInitialization {
-        context: String,
-        #[source]
-        source: std::io::Error,
-    },
     #[error("failed to serialize Cap'n Proto message for `{context}`")]
     CapnpSerialize {
         context: String,
@@ -78,7 +72,4 @@ pub enum Error {
         #[source]
         source: VarError,
     },
-
-    #[error(transparent)]
-    Messaging(#[from] PeppyError),
 }

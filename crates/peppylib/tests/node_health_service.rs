@@ -1,10 +1,34 @@
-use common::{CALLER_INSTANCE_ID, setup_test_master_node};
-use peppylib::messaging::ServiceMessenger;
+mod common;
+
+use common::{
+    CALLER_INSTANCE_ID, TEST_INSTANCE_ID, TEST_MASTER_NODE_NAME, TEST_NODE_NAME, get_client_server,
+};
+use peppylib::{
+    encoding::health::{NodeHealthRequest, NodeHealthResponse},
+    messaging::{MessengerHandle, ServiceMessenger},
+    services::health::listen_for_node_health,
+};
+use std::sync::Arc;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_node_health_request_response_roundtrip() {
-    let (client, _server) = setup_test_master_node().await;
+    let (client, shared_messenger) = get_client_server().await;
+
+    // Set up the health service on the server side
+    let server_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+
+    let _health_task = listen_for_node_health(
+        &server_handle,
+        TEST_MASTER_NODE_NAME,
+        TEST_INSTANCE_ID,
+        TEST_NODE_NAME,
+    )
+    .await
+    .expect("failed to start health service");
+
+    // Allow the service to fully establish its listeners
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Build and encode the health request
     let request = NodeHealthRequest::new();
@@ -15,9 +39,9 @@ async fn test_node_health_request_response_roundtrip() {
         &client.caller_handle,
         &client.master_node_name,
         CALLER_INSTANCE_ID,
-        &client.master_node_name,
-        names::NODE_HEALTH,
-        None,
+        TEST_NODE_NAME,
+        peppylib::messaging::NODE_HEALTH_SERVICE,
+        Some(&client.master_node_name),
         Some(&client.instance_id),
         request_payload,
         Duration::from_secs(2),
