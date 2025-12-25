@@ -1,8 +1,4 @@
-mod common;
-
 use common::{CALLER_INSTANCE_ID, setup_test_master_node};
-use master_node::encoding::{NodeHealthRequest, NodeHealthResponse};
-use master_node::names;
 use peppylib::messaging::ServiceMessenger;
 use std::time::Duration;
 

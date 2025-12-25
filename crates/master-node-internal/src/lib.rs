@@ -26,11 +26,6 @@ pub mod node_capnp {
     include!(concat!(env!("OUT_DIR"), "/node_capnp.rs"));
 }
 
-#[allow(clippy::all)]
-pub mod health_capnp {
-    include!(concat!(env!("OUT_DIR"), "/health_capnp.rs"));
-}
-
 pub use error::{Error, Result};
 pub use node::MasterNode;
 pub use services::names;

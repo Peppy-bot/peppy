@@ -1,30 +1,30 @@
 use std::sync::Arc;
 
-use crate::Result;
-use crate::encoding::{NodeHealthRequest, NodeHealthResponse};
 use bytes::Bytes;
 use node_stack::NodeStack;
-use peppylib::messaging::ServiceRequestContext;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-use crate::services::names;
+use crate::messaging::ServiceRequestContext;
+use crate::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 
-/// This request is sent by each Node instance every 5sec to notify the master node that they are still alive
+pub const NODE_HEALTH: &str = "node_health";
+
+/// This request is sent by each Node instance every 5sec to notify the master node that they are
+/// still alive.
 pub async fn listen_for_node_health(
     messenger: &MessengerHandle,
     master_node_node: &str,
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
-) -> Result<JoinHandle<Result<()>>> {
+) -> PeppyResult<JoinHandle<PeppyResult<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
         master_node_node,
         instance_id,
         node_name,
-        names::NODE_HEALTH,
+        NODE_HEALTH,
     )
     .await?;
 
@@ -32,7 +32,6 @@ pub async fn listen_for_node_health(
         endpoint
             .handle_requests(|context| handle_node_health_request(context, node_stack.clone()))
             .await
-            .map_err(Into::into)
     });
 
     Ok(handle)
@@ -54,13 +53,16 @@ async fn handle_node_health_request(
 fn handle_node_health_request_inner(
     context: &ServiceRequestContext,
     node_stack: Arc<NodeStack>,
-) -> Result<Bytes> {
+) -> PeppyResult<Bytes> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
     debug!("Received `node_health` request from {sender_instance_id}");
 
-    // TODO: Based on `sender_instance_id`, find the node in the NodeStack and return an error if it can't be found
+    let _ = node_stack;
 
-    NodeHealthResponse::new().encode()
+    // TODO: Based on `sender_instance_id`, find the node in the NodeStack and return an error if
+    // it can't be found.
+
+    Ok(payload.to_bytes())
 }

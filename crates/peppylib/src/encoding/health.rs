@@ -3,7 +3,7 @@
 use bytes::Bytes;
 use capnp::message::Builder;
 
-use crate::Result;
+use crate::error::Result;
 use crate::health_capnp;
 
 use super::{decode_message, encode_message};
