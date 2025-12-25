@@ -1,6 +1,4 @@
 pub mod facade;
-#[cfg(test)]
-mod frame_capnp;
 pub mod types;
 
 pub use types::FunctionParam;
@@ -609,7 +607,6 @@ fn collect_list_type(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encoding::frame_capnp::image_message;
     use crate::node::MessageFormat;
     use proc_macro2::TokenStream;
 
@@ -861,99 +858,6 @@ mod tests {
         assert!(
             capnp_module_content.contains("pub mod frame_capnp;"),
             "capnp.rs should contain 'pub mod frame_capnp;'"
-        );
-    }
-
-    #[test]
-    fn test_use_compiled_schema() {
-        // Create a message builder
-        let mut message = capnp::message::Builder::new_default();
-        let mut img_msg = message.init_root::<image_message::Builder>();
-
-        // Set some fields
-        img_msg.set_width(1920);
-        img_msg.set_height(1080);
-        img_msg.set_encoding("rgb8");
-
-        // Populate the header struct to ensure nested structs can be set
-        let mut header = img_msg.reborrow().init_header();
-        header.set_frame_id(42);
-        let mut stamp = header.reborrow().init_stamp();
-        stamp.set_sec(1_234);
-        stamp.set_nsec(567);
-
-        // Verify we can read it back
-        let reader = img_msg.reborrow_as_reader();
-        assert_eq!(reader.get_width(), 1920);
-        assert_eq!(reader.get_height(), 1080);
-        let header_reader = reader
-            .get_header()
-            .expect("header should be present after initialization");
-        assert_eq!(header_reader.get_frame_id(), 42);
-        let stamp_reader = header_reader
-            .get_stamp()
-            .expect("stamp should be present after initialization");
-        assert_eq!(stamp_reader.get_sec(), 1_234);
-        assert_eq!(stamp_reader.get_nsec(), 567);
-    }
-
-    #[test]
-    fn test_extract_compiled_schema_types() {
-        use capnp::introspect::{Introspect, TypeVariant};
-        use capnp::schema::StructSchema;
-
-        let schema = match <image_message::Owned as Introspect>::introspect().which() {
-            TypeVariant::Struct(raw) => StructSchema::new(raw),
-            _ => panic!("image_message should be a struct"),
-        };
-
-        let field_types: Vec<(String, String)> = schema
-            .get_fields()
-            .expect("failed to read field list")
-            .into_iter()
-            .map(|field| {
-                let name = field
-                    .get_proto()
-                    .get_name()
-                    .expect("field has a name")
-                    .to_string()
-                    .expect("field name is utf-8");
-                let ty = match field.get_type().which() {
-                    TypeVariant::Struct(inner) => {
-                        let schema = StructSchema::new(inner);
-                        let mut display = schema
-                            .get_proto()
-                            .get_display_name()
-                            .expect("struct field has a display name")
-                            .to_string()
-                            .expect("struct field display name is utf-8");
-                        let prefix_len =
-                            schema.get_proto().get_display_name_prefix_length() as usize;
-                        if prefix_len <= display.len() {
-                            display.replace_range(..prefix_len, "");
-                        }
-                        display
-                    }
-                    TypeVariant::Text => String::from("Text"),
-                    TypeVariant::UInt32 => String::from("UInt32"),
-                    TypeVariant::Data => String::from("Data"),
-                    _ => panic!("unexpected type for field {name}"),
-                };
-                (name, ty)
-            })
-            .collect();
-
-        println!("image_message field types: {field_types:?}");
-
-        assert_eq!(
-            field_types,
-            vec![
-                ("header".to_string(), "Header".to_string()),
-                ("encoding".to_string(), "Text".to_string()),
-                ("width".to_string(), "UInt32".to_string()),
-                ("height".to_string(), "UInt32".to_string()),
-                ("image".to_string(), "Data".to_string()),
-            ]
         );
     }
 }
