@@ -33,7 +33,7 @@ impl NodeRunner {
 #[allow(dead_code)]
 pub fn run<F>(setup_fn: F) -> crate::Result<()>
 where
-    F: FnOnce(&peppylib::config::NodeArguments, &NodeRunner) -> crate::Result<()>,
+    F: FnOnce(crate::parameters::Parameters, &NodeRunner) -> crate::Result<()>,
 {
     let rt =
         tokio::runtime::Runtime::new().map_err(|source| crate::Error::RuntimeInitialization {
@@ -53,10 +53,10 @@ where
 
     rt.block_on(async move {
         let node_runner = NodeRunner::new(runtime_processor).await?;
-        // TODO: Maybe turn those input arguments into a simple struct in the future?
-        let args = node_runner.runtime().input_arguments();
+        let parameters: crate::parameters::Parameters =
+            peppylib::config::deserialize_parameters(node_runner.runtime().input_arguments())?;
 
-        setup_fn(args, &node_runner)?;
+        setup_fn(parameters, &node_runner)?;
 
         // Spin until shutdown signal
         shutdown_signal().await;
