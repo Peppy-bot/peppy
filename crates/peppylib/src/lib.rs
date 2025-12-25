@@ -5,6 +5,7 @@ pub mod checker;
 pub mod encoding;
 pub mod messaging;
 pub mod runtime;
+pub mod services;
 
 pub use error::{Error as PeppyError, Result as PeppyResult};
 pub use messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, TopicMessenger};
@@ -37,4 +38,9 @@ pub mod config {
             ))
         })
     }
+}
+
+#[allow(clippy::all)]
+pub mod health_capnp {
+    include!(concat!(env!("OUT_DIR"), "/health_capnp.rs"));
 }

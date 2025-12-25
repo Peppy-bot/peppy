@@ -130,7 +130,20 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f75363874b771be265f4ffe307ca705ef6f3baa19011c149da8674a87f1b75c4"
 dependencies = [
- "askama_derive",
+ "askama_derive 0.14.0",
+ "itoa",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "askama"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21c01049339e624573a8027fe9392219f64d315a0ad24712b469611b3138f042"
+dependencies = [
+ "askama_macros",
  "itoa",
  "percent-encoding",
  "serde",
@@ -143,7 +156,7 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "129397200fe83088e8a68407a8e2b1f826cf0086b21ccdb866a722c8bcd3a94f"
 dependencies = [
- "askama_parser",
+ "askama_parser 0.14.0",
  "basic-toml",
  "memchr",
  "proc-macro2",
@@ -155,6 +168,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "askama_derive"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e393a25182a000666df345c2bdaa9ab6b0c243974ec7d29e377d6feea651778d"
+dependencies = [
+ "askama_parser 0.15.0",
+ "basic-toml",
+ "memchr",
+ "proc-macro2",
+ "quote",
+ "rustc-hash",
+ "serde",
+ "serde_derive",
+ "syn 2.0.111",
+]
+
+[[package]]
+name = "askama_macros"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e8bb77385d2954705452516f99511835be34b4c4a15a70800623b91406b1db9"
+dependencies = [
+ "askama_derive 0.15.0",
+]
+
+[[package]]
 name = "askama_parser"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -163,6 +202,19 @@ dependencies = [
  "memchr",
  "serde",
  "serde_derive",
+ "winnow",
+]
+
+[[package]]
+name = "askama_parser"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb6401aa356822013db13e8f756011cd5042e7e61d37456bb8b7ef26feb8ebca"
+dependencies = [
+ "rustc-hash",
+ "serde",
+ "serde_derive",
+ "unicode-ident",
  "winnow",
 ]
 
@@ -312,12 +364,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "capnp"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e17cef220241d3b5d1c4fa17acfbf830033a3927b94c65e46e7945898318ff43"
+dependencies = [
+ "embedded-io",
+]
+
+[[package]]
 name = "capnpc"
 version = "0.23.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f1cd4f042d6725da6245bde08c9e7c74f6fcb2d8bd5e0378e57991be8d711d8"
 dependencies = [
- "capnp",
+ "capnp 0.23.0",
+]
+
+[[package]]
+name = "capnpc"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b61282080d865d4d8eb5fd5368c3fe47c024db922c926f311404b364d01ebd0"
+dependencies = [
+ "capnp 0.24.0",
 ]
 
 [[package]]
@@ -450,9 +520,9 @@ dependencies = [
 name = "config"
 version = "0.0.1"
 dependencies = [
- "askama",
- "capnp",
- "capnpc",
+ "askama 0.14.0",
+ "capnp 0.23.0",
+ "capnpc 0.23.2",
  "clap",
  "git2",
  "indexmap 2.12.1",
@@ -1035,8 +1105,8 @@ dependencies = [
 name = "generator"
 version = "0.0.1"
 dependencies = [
- "askama",
- "capnp",
+ "askama 0.14.0",
+ "capnp 0.23.0",
  "config",
  "indexmap 2.12.1",
  "peppylib",
@@ -1809,10 +1879,10 @@ checksum = "d3d25b0e0b648a86960ac23b7ad4abb9717601dec6f66c165f5b037f3f03065f"
 name = "master-node"
 version = "0.0.1"
 dependencies = [
- "askama",
+ "askama 0.15.0",
  "bytes",
- "capnp",
- "capnpc",
+ "capnp 0.24.0",
+ "capnpc 0.24.0",
  "config",
  "futures",
  "generator",
@@ -2223,7 +2293,7 @@ dependencies = [
 name = "peppy"
 version = "0.0.1"
 dependencies = [
- "askama",
+ "askama 0.14.0",
  "bytes",
  "clap",
  "config",
@@ -2249,8 +2319,10 @@ dependencies = [
 name = "peppylib"
 version = "0.0.1"
 dependencies = [
- "askama",
+ "askama 0.14.0",
  "bytes",
+ "capnp 0.24.0",
+ "capnpc 0.24.0",
  "config",
  "md5",
  "node-stack",
@@ -2436,9 +2508,9 @@ dependencies = [
 name = "pmi"
 version = "0.0.1"
 dependencies = [
- "askama",
+ "askama 0.14.0",
  "bytes",
- "capnp",
+ "capnp 0.23.0",
  "config",
  "derive_more",
  "json5 1.3.0",

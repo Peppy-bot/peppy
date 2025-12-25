@@ -1,3 +1,6 @@
+mod health;
+mod shutdown;
+
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const NANOS_PER_SEC: u32 = 1_000_000_000;
