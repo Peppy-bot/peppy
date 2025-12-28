@@ -110,6 +110,42 @@ pub enum Error {
     #[error("capnp schema error: {0}")]
     CapnpNotInSchema(#[from] capnp::NotInSchema),
 
+    #[error("failed to serialize Cap'n Proto message for `{context}`")]
+    CapnpSerialize {
+        context: String,
+        #[source]
+        source: capnp::Error,
+    },
+
+    #[error("failed to deserialize Cap'n Proto message for `{context}`")]
+    CapnpDeserialize {
+        context: String,
+        #[source]
+        source: capnp::Error,
+    },
+
+    #[error("failed to read Cap'n Proto field `{field}` for `{context}`")]
+    CapnpField {
+        field: String,
+        context: String,
+        #[source]
+        source: capnp::Error,
+    },
+
+    #[error("expected {expected} bytes for `{field}` but received {actual}")]
+    InvalidFixedBytes {
+        field: String,
+        expected: usize,
+        actual: usize,
+    },
+
+    #[error("expected {expected} elements for `{field}` but received {actual}")]
+    InvalidFixedListLength {
+        field: String,
+        expected: usize,
+        actual: usize,
+    },
+
     // --- Runner
     #[error("failed to build blocking runtime for `{context}`")]
     RuntimeInitialization {
@@ -117,6 +153,42 @@ pub enum Error {
         #[source]
         source: std::io::Error,
     },
+
+    // --- Node/Topic
+    #[error("invalid node name `{node_name}`: {reason}")]
+    InvalidNodeName { node_name: String, reason: String },
+
+    #[error("invalid master node name `{node_name}`: {reason}")]
+    InvalidMasterNodeName { node_name: String, reason: String },
+
+    #[error("failed to create messenger for topic `{topic_name}` on {host}:{port}, {source_msg}")]
+    TopicMessengerConnect {
+        topic_name: String,
+        host: String,
+        port: u16,
+        source_msg: String,
+    },
+
+    #[error("failed to create messenger for node `{node_name}` on {host}:{port}, {source_msg}")]
+    NodeMessengerConnect {
+        node_name: String,
+        host: String,
+        port: u16,
+        source_msg: String,
+    },
+
+    #[error("failed to subscribe to topic `{topic_name}` in node `{node_name}`, {source_msg}")]
+    TopicSubscribe {
+        topic_name: String,
+        node_name: String,
+        source_msg: String,
+    },
+
+    #[error("subscription to `{topic_name}` closed without yielding a message")]
+    SubscriptionClosed { topic_name: String },
+
+    #[error("message format for `{context}` is not available in the generator")]
+    MessageFormatUnavailable { context: String },
 }
 
 struct InstanceSuffix<'a>(Option<&'a str>);

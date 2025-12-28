@@ -80,12 +80,11 @@ async fn mandatory_services(node_runner: Arc<NodeRunner>) -> Result<()> {
         .await?,
     ];
 
-    let mut sigterm =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .map_err(|source| Error::RuntimeInitialization {
-                context: "failed to register SIGTERM handler".to_string(),
-                source,
-            })?;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|source| Error::RuntimeInitialization {
+            context: "failed to register SIGTERM handler".to_string(),
+            source,
+        })?;
 
     tokio::select! {
         result = wait_for_handles(handles) => {
