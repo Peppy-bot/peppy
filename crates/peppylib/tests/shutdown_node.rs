@@ -11,9 +11,8 @@ use peppylib::{
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Tests that the shutdown service correctly sends and receives messages.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_shutdown_request_response_roundtrip() {
+async fn shutdown_node() {
     let (client, shared_messenger) = get_client_server().await;
 
     // Set up the shutdown service on the server side

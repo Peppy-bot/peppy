@@ -1,12 +1,12 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, setup_test_master_node};
-use master_node::encoding::{NodeAddRequest, NodeRunRequest};
+use master_node::encoding::{NodeAddRequest, NodeStartRequest};
 use std::path::PathBuf;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_node_run_success() {
+async fn test_node_start_success() {
     let (client, server) = setup_test_master_node().await;
 
     // First, add a node with a launch_cmd
@@ -56,7 +56,7 @@ async fn test_node_run_success() {
         codegen_peppy_config_md5: "d41d8cd98f00b204e9800998ecf8427e"
     }"#;
 
-    let run_request = NodeRunRequest::new(runtime_config_json5);
+    let run_request = NodeStartRequest::new(runtime_config_json5);
     let run_response = run_request
         .poll(
             &client.caller_handle,
@@ -81,7 +81,7 @@ async fn test_node_run_success() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_node_run_not_found() {
+async fn test_node_start_not_found() {
     let (client, _server) = setup_test_master_node().await;
 
     // Try to run a node that doesn't exist in the stack
@@ -96,7 +96,7 @@ async fn test_node_run_not_found() {
         codegen_peppy_config_md5: "d41d8cd98f00b204e9800998ecf8427e"
     }"#;
 
-    let run_request = NodeRunRequest::new(runtime_config_json5);
+    let run_request = NodeStartRequest::new(runtime_config_json5);
     let run_response = run_request
         .poll(
             &client.caller_handle,
@@ -124,13 +124,13 @@ async fn test_node_run_not_found() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_node_run_invalid_config() {
+async fn test_node_start_invalid_config() {
     let (client, _server) = setup_test_master_node().await;
 
     // Try to run with invalid JSON5
     let invalid_runtime_config = "invalid json5 {{{";
 
-    let run_request = NodeRunRequest::new(invalid_runtime_config);
+    let run_request = NodeStartRequest::new(invalid_runtime_config);
     let run_response = run_request
         .poll(
             &client.caller_handle,
@@ -158,7 +158,7 @@ async fn test_node_run_invalid_config() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_node_run_no_launch_cmd() {
+async fn test_node_start_no_launch_cmd() {
     let (client, server) = setup_test_master_node().await;
 
     // Add a node WITHOUT a launch_cmd
@@ -207,7 +207,7 @@ async fn test_node_run_no_launch_cmd() {
         codegen_peppy_config_md5: "d41d8cd98f00b204e9800998ecf8427e"
     }"#;
 
-    let run_request = NodeRunRequest::new(runtime_config_json5);
+    let run_request = NodeStartRequest::new(runtime_config_json5);
     let run_response = run_request
         .poll(
             &client.caller_handle,

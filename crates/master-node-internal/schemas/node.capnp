@@ -67,13 +67,13 @@ struct NodeSyncResponse {
     errorMessage @1 :Text;
 }
 
-# Node Run service
-struct NodeRunRequest {
+# Node Start service
+struct NodeStartRequest {
     # Runtime configuration in JSON5 format (PEPPY_RUNTIME_CONFIG)
     runtimeConfigJson5 @0 :Text;
 }
 
-struct NodeRunResponse {
+struct NodeStartResponse {
     # Whether the run was successful
     success @0 :Bool;
     # Error message if failed (optional)
