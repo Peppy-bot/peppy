@@ -1,4 +1,5 @@
 use config::consts::NODE_CONFIG_FILE;
+use tokio::task::JoinHandle;
 use tracing::info;
 
 use crate::MessengerHandle;
@@ -36,7 +37,6 @@ impl NodeRunner {
     }
 }
 
-#[allow(dead_code)]
 pub fn run<F, Fut, Params>(setup_fn: F) -> Result<()>
 where
     F: FnOnce(Params, Arc<NodeRunner>) -> Fut,
@@ -80,14 +80,37 @@ async fn mandatory_services(node_runner: Arc<NodeRunner>) -> Result<()> {
         .await?,
     ];
 
-    // Wait for all service handlers
-    // futures::future::try_join_all(handles)
-    //     .await?
-    //     .into_iter()
-    //     .collect::<Result<Vec<_>>>()?;
+    let mut sigterm =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .map_err(|source| Error::RuntimeInitialization {
+                context: "failed to register SIGTERM handler".to_string(),
+                source,
+            })?;
 
-    // TODO: Tokio::select on the handles, if shutdown is detected, stop awaiting
+    tokio::select! {
+        result = wait_for_handles(handles) => {
+            result?;
+        }
+        _ = tokio::signal::ctrl_c() => {
+            info!("Received SIGINT, stopping services...");
+        }
+        _ = sigterm.recv() => {
+            info!("Received SIGTERM, stopping services...");
+        }
+    }
 
     info!("Shutting down master node...");
+    Ok(())
+}
+
+async fn wait_for_handles(handles: Vec<JoinHandle<Result<()>>>) -> Result<()> {
+    futures::future::try_join_all(handles)
+        .await
+        .map_err(|e| Error::RuntimeInitialization {
+            context: "service task panicked".to_string(),
+            source: std::io::Error::other(e),
+        })?
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
     Ok(())
 }

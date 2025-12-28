@@ -2335,6 +2335,7 @@ dependencies = [
  "capnp",
  "capnpc",
  "config",
+ "futures",
  "md5",
  "node-stack",
  "pmi",

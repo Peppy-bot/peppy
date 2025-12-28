@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_node_add_success() {
+async fn add_node_success() {
     let (client, server) = setup_test_master_node().await;
 
     // Add a provider node that exposes a topic
@@ -62,12 +62,7 @@ async fn test_node_add_success() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_node_add_with_run_immadiately_success() {
-    todo!("Finish")
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_node_add_invalid_config() {
+async fn add_node_invalid_config() {
     let (client, _server) = setup_test_master_node().await;
 
     let peppy_json5 = "invalid json5 {{{";
@@ -98,7 +93,7 @@ async fn test_node_add_invalid_config() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_node_add_dependency_not_resolved() {
+async fn add_node_dependency_not_resolved() {
     let (client, server) = setup_test_master_node().await;
 
     // Try to add a consumer node that depends on a non-existent provider
@@ -152,4 +147,24 @@ async fn test_node_add_dependency_not_resolved() {
         !server.node_stack.contains("consumer_node", "1.0.0"),
         "consumer_node:1.0.0 should NOT be present in the node stack"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn add_node_with_run_immediately_success() {
+    todo!("Finish")
+}
+
+#[test]
+fn add_same_node_different_tags_create_two_entities() {
+    todo!("Finish")
+}
+
+#[test]
+fn add_same_node_same_tags_fails() {
+    todo!("Finish")
+}
+
+#[test]
+fn add_same_node_same_tag_with_different_hashes_replaces_entity() {
+    todo!("Finish")
 }
