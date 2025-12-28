@@ -18,6 +18,7 @@ pub struct MasterNodeClient {
 pub struct MasterNodeServer {
     #[allow(dead_code)]
     pub node_stack: NodeStack,
+    pub shared_messenger: Arc<Mutex<Messenger>>,
     task: JoinHandle<master_node::Result<()>>,
 }
 
@@ -42,7 +43,7 @@ pub async fn setup_test_master_node() -> (MasterNodeClient, MasterNodeServer) {
     // Allow the MasterNode services to fully establish their listeners
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let caller_handle = MessengerHandle::from_shared(shared_messenger);
+    let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
 
     let client = MasterNodeClient {
         caller_handle,
@@ -50,7 +51,11 @@ pub async fn setup_test_master_node() -> (MasterNodeClient, MasterNodeServer) {
         instance_id,
     };
 
-    let server = MasterNodeServer { node_stack, task };
+    let server = MasterNodeServer {
+        node_stack,
+        shared_messenger,
+        task,
+    };
 
     (client, server)
 }

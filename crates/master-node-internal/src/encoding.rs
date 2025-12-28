@@ -12,7 +12,8 @@ pub use launcher::{LauncherRequest, LauncherResponse};
 pub use node::{
     add::NodeAddRequest, add::NodeAddResponse, init::NodeInitRequest, init::NodeInitResponse,
     list::NodeListRequest, list::NodeListResponse, start::NodeStartRequest,
-    start::NodeStartResponse, sync::NodeSyncRequest, sync::NodeSyncResponse,
+    start::NodeStartResponse, stop::NodeStopRequest, stop::NodeStopResponse, sync::NodeSyncRequest,
+    sync::NodeSyncResponse,
 };
 pub use ping::{PingRequest, PingResponse};
 

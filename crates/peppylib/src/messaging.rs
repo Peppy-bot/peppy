@@ -29,6 +29,7 @@ const INSTANCE_ID_WILDCARD: &str = "**";
 /// Marker used in key expressions for broadcast requests (targeting any instance)
 const BROADCAST_MARKER: &str = "_any_";
 
+#[derive(Clone)]
 pub struct MessengerHandle {
     messenger: Arc<Mutex<Messenger>>,
 }
