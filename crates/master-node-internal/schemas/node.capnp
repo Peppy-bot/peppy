@@ -69,8 +69,8 @@ struct NodeSyncResponse {
 
 # Node Run service
 struct NodeRunRequest {
-    # Instance ID of the node to run
-    instanceId @0 :Text;
+    # Runtime configuration in JSON5 format (PEPPY_RUNTIME_CONFIG)
+    runtimeConfigJson5 @0 :Text;
 }
 
 struct NodeRunResponse {
