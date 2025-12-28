@@ -3,8 +3,8 @@ pub mod add;
 pub mod init;
 pub mod list;
 pub mod remove;
-pub mod run;
-pub mod shutdown;
+pub mod start;
+pub mod stop;
 pub mod sync;
 pub mod templates;
 

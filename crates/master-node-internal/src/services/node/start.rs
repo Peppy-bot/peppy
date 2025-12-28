@@ -1,5 +1,5 @@
 use crate::Result;
-use crate::encoding::{NodeRunRequest, NodeRunResponse};
+use crate::encoding::{NodeStartRequest, NodeStartResponse};
 use bytes::Bytes;
 use config::node::Name;
 use config::runtime::RuntimeConfig;
@@ -13,7 +13,7 @@ use tracing::debug;
 
 use crate::services::names;
 
-pub async fn listen_for_node_run(
+pub async fn listen_for_node_start(
     messenger: &MessengerHandle,
     master_node_node: &str,
     instance_id: &str,
@@ -25,13 +25,13 @@ pub async fn listen_for_node_run(
         master_node_node,
         instance_id,
         node_name,
-        names::NODE_RUN,
+        names::NODE_START,
     )
     .await?;
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(|context| handle_node_run_request(context, node_stack.clone()))
+            .handle_requests(|context| handle_node_start_request(context, node_stack.clone()))
             .await
             .map_err(Into::into)
     });
@@ -39,12 +39,12 @@ pub async fn listen_for_node_run(
     Ok(handle)
 }
 
-async fn handle_node_run_request(
+async fn handle_node_start_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
 ) -> PeppyResult<Bytes> {
     let sender_instance_id = context.message().instance_id();
-    handle_node_run_request_inner(&context, node_stack)
+    handle_node_start_request_inner(&context, node_stack)
         .await
         .map_err(|e| PeppyError::InvalidServiceRequest {
             identifier: sender_instance_id.to_string(),
@@ -52,20 +52,20 @@ async fn handle_node_run_request(
         })
 }
 
-async fn handle_node_run_request_inner(
+async fn handle_node_start_request_inner(
     context: &ServiceRequestContext,
     node_stack: Arc<NodeStack>,
 ) -> Result<Bytes> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    let request = NodeRunRequest::decode(&payload.as_bytes())?;
+    let request = NodeStartRequest::decode(&payload.as_bytes())?;
 
     // Parse the PEPPY_RUNTIME_CONFIG from json5
     let runtime_config: RuntimeConfig = match serde_json5::from_str(&request.runtime_config_json5) {
         Ok(config) => config,
         Err(e) => {
-            return NodeRunResponse::failure(format!(
+            return NodeStartResponse::failure(format!(
                 "Failed to parse PEPPY_RUNTIME_CONFIG: {}",
                 e
             ))
@@ -78,12 +78,12 @@ async fn handle_node_run_request_inner(
     let instance_id = match Name::new(instance_id_str) {
         Ok(name) => name,
         Err(e) => {
-            return NodeRunResponse::failure(format!("Invalid instance_id: {}", e)).encode();
+            return NodeStartResponse::failure(format!("Invalid instance_id: {}", e)).encode();
         }
     };
 
     debug!(
-        "Received `node_run` request from {sender_instance_id}, instance_id={}",
+        "Received `node_start` request from {sender_instance_id}, instance_id={}",
         instance_id_str
     );
 
@@ -91,7 +91,7 @@ async fn handle_node_run_request_inner(
     let entity = match node_stack.find_entity_by_instance_id(&instance_id) {
         Some(entity) => entity,
         None => {
-            return NodeRunResponse::failure(format!(
+            return NodeStartResponse::failure(format!(
                 "Node instance '{}' not found in node stack",
                 instance_id_str
             ))
@@ -103,11 +103,11 @@ async fn handle_node_run_request_inner(
     match run_node(&entity, &request.runtime_config_json5) {
         Ok(_child) => {
             debug!("Successfully started node instance '{}'", instance_id_str);
-            NodeRunResponse::success().encode()
+            NodeStartResponse::success().encode()
         }
         Err(e) => {
-            debug!("Failed to run node instance '{}': {}", instance_id_str, e);
-            NodeRunResponse::failure(format!("Failed to run node: {}", e)).encode()
+            debug!("Failed to start node instance '{}': {}", instance_id_str, e);
+            NodeStartResponse::failure(format!("Failed to start node: {}", e)).encode()
         }
     }
 }

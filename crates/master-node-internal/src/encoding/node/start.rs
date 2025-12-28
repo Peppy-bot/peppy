@@ -5,16 +5,17 @@ use capnp::message::Builder;
 use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
+use crate::names;
 use crate::node_capnp;
 
 use super::{decode_message, encode_message};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeRunRequest {
+pub struct NodeStartRequest {
     pub runtime_config_json5: String,
 }
 
-impl NodeRunRequest {
+impl NodeStartRequest {
     pub fn new(runtime_config_json5: impl Into<String>) -> Self {
         Self {
             runtime_config_json5: runtime_config_json5.into(),
@@ -24,7 +25,7 @@ impl NodeRunRequest {
     fn encode(&self) -> Result<Bytes> {
         let mut builder = Builder::new_default();
         {
-            let mut request = builder.init_root::<node_capnp::node_run_request::Builder>();
+            let mut request = builder.init_root::<node_capnp::node_start_request::Builder>();
             request.set_runtime_config_json5(&self.runtime_config_json5);
         }
         encode_message(&builder)
@@ -32,7 +33,7 @@ impl NodeRunRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<node_capnp::node_run_request::Reader>()?;
+        let request = reader.get_root::<node_capnp::node_start_request::Reader>()?;
         Ok(Self {
             runtime_config_json5: request.get_runtime_config_json5()?.to_str()?.to_owned(),
         })
@@ -46,31 +47,31 @@ impl NodeRunRequest {
         target_node_name: &str,
         target_instance_id: Option<&str>,
         response_timeout: Duration,
-    ) -> Result<NodeRunResponse> {
+    ) -> Result<NodeStartResponse> {
         let request_payload = self.encode()?;
         let response = ServiceMessenger::poll(
             messenger,
             bound_master_node,
             as_instance_id,
             target_node_name,
-            "node_run",
+            names::NODE_START,
             None,
             target_instance_id,
             request_payload,
             response_timeout,
         )
         .await?;
-        NodeRunResponse::decode(&response.payload().to_bytes())
+        NodeStartResponse::decode(&response.payload().to_bytes())
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeRunResponse {
+pub struct NodeStartResponse {
     pub success: bool,
     pub error_message: Option<String>,
 }
 
-impl NodeRunResponse {
+impl NodeStartResponse {
     pub fn new(success: bool, error_message: Option<String>) -> Self {
         Self {
             success,
@@ -89,7 +90,7 @@ impl NodeRunResponse {
     pub fn encode(&self) -> Result<Bytes> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::node_run_response::Builder>();
+            let mut response = builder.init_root::<node_capnp::node_start_response::Builder>();
             response.set_success(self.success);
             if let Some(ref error_message) = self.error_message {
                 response.set_error_message(error_message);
@@ -100,7 +101,7 @@ impl NodeRunResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_run_response::Reader>()?;
+        let response = reader.get_root::<node_capnp::node_start_response::Reader>()?;
         let error_message_str = response.get_error_message()?.to_str()?;
         let error_message = if error_message_str.is_empty() {
             None
