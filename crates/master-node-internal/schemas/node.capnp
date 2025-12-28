@@ -95,8 +95,10 @@ struct NodeStopResponse {
 
 # Node Remove service
 struct NodeRemoveRequest {
-    # Instance ID of the node to remove
-    instanceId @0 :Text;
+    # Name of the node to remove
+    nodeName @0 :Text;
+    # If set, will attempt to stop all the instances associated with this node first before removing the node
+    stopInstances @1 :Bool;
 }
 
 struct NodeRemoveResponse {
