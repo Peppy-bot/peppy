@@ -7,6 +7,7 @@ use crate::config::deserialize_parameters;
 use crate::error::{Error, Result};
 use crate::runtime::Processor;
 use crate::services::health::listen_for_node_health;
+use crate::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 
 pub struct NodeRunner {
@@ -70,31 +71,31 @@ async fn mandatory_services(node_runner: Arc<NodeRunner>) -> Result<()> {
         runtime.node_name(),
         runtime.bound_instance_id(),
     );
-    let handles = vec![
-        listen_for_node_health(
-            &node_runner.messenger(),
-            runtime.bound_master_node(),
-            runtime.bound_instance_id(),
-            runtime.node_name(),
-        )
-        .await?,
-    ];
 
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .map_err(|source| Error::RuntimeInitialization {
-            context: "failed to register SIGTERM handler".to_string(),
-            source,
-        })?;
+    let health_handle = listen_for_node_health(
+        &node_runner.messenger(),
+        runtime.bound_master_node(),
+        runtime.bound_instance_id(),
+        runtime.node_name(),
+    )
+    .await?;
+
+    let (shutdown_handle, shutdown_rx) = listen_for_shutdown(
+        &node_runner.messenger(),
+        runtime.bound_master_node(),
+        runtime.bound_instance_id(),
+        runtime.node_name(),
+    )
+    .await?;
+
+    let handles = vec![health_handle, shutdown_handle];
 
     tokio::select! {
         result = wait_for_handles(handles) => {
             result?;
         }
-        _ = tokio::signal::ctrl_c() => {
-            info!("Received SIGINT, stopping services...");
-        }
-        _ = sigterm.recv() => {
-            info!("Received SIGTERM, stopping services...");
+        _ = shutdown_rx => {
+            info!("Received shutdown request, stopping services...");
         }
     }
 
