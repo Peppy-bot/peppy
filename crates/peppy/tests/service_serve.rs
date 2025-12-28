@@ -226,5 +226,7 @@ fn serve_command_replace_existing_stack() {
         "user response should be registered in logs. Logs:\n{}",
         logs
     );
-    todo!("The commands_listener should receive a message to reset the stack")
+    todo!(
+        "The commands_listener should receive a message to reset the stack. This command should connect to the master node now instead of using the NodeStack locally in the `peppy` crate"
+    )
 }

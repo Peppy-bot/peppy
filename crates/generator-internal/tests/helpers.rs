@@ -95,11 +95,7 @@ pub fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
     }
 }
 
-pub fn run_cargo_run(
-    dir: &std::path::Path,
-    timeout: Option<Duration>,
-    env_vars: &[(&str, &str)],
-) -> std::process::Output {
+pub fn spawn_cargo_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std::process::Child {
     let mut command = Command::new("cargo");
     command
         .arg("run")
@@ -112,7 +108,14 @@ pub fn run_cargo_run(
         command.env(key, value);
     }
 
-    let mut child = command.spawn().expect("failed to spawn cargo run");
+    command.spawn().expect("failed to spawn cargo run")
+}
+
+pub fn wait_for_child(
+    child: &mut std::process::Child,
+    timeout: Option<Duration>,
+    dir: &std::path::Path,
+) -> std::process::Output {
     let start = Instant::now();
     loop {
         if let Some(limit) = timeout {
@@ -150,6 +153,15 @@ pub fn run_cargo_run(
 
         thread::sleep(Duration::from_millis(50));
     }
+}
+
+pub fn run_cargo_run(
+    dir: &std::path::Path,
+    timeout: Option<Duration>,
+    env_vars: &[(&str, &str)],
+) -> std::process::Output {
+    let mut child = spawn_cargo_run(dir, env_vars);
+    wait_for_child(&mut child, timeout, dir)
 }
 
 pub fn compile_project(dir: impl AsRef<Path>) {
