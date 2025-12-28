@@ -67,6 +67,8 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
 }
 "#;
 
+// TODO: A better place for those tests is probably inside the `peppy` crate
+
 /// Creates 2 projects in separate directory and check if they can send/receive topics
 #[test]
 fn topics_communication() {

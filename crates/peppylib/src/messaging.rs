@@ -23,6 +23,7 @@ use tracing::error;
 
 // services
 pub const NODE_HEALTH_SERVICE: &str = "node_health";
+pub const SHUTDOWN_SERVICE: &str = "shutdown";
 
 const INSTANCE_ID_WILDCARD: &str = "**";
 /// Marker used in key expressions for broadcast requests (targeting any instance)

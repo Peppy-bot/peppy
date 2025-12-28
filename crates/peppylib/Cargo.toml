@@ -37,4 +37,3 @@ regex = "1"
 [features]
 default = ["zenoh"]
 zenoh = ["pmi/zenoh"]
-test-support = ["tempfile", "zenoh"]

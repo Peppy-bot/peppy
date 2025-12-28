@@ -25,5 +25,7 @@ pub use adapters::mock::MockAdapter;
 pub use adapters::zenoh::{ZenohAdapter, ZenohClientConfigTemplate};
 #[cfg(feature = "zenoh")]
 pub use zenohd::facade::{ZenohNetProtocol, ZenohRouterConfigTemplate};
+
+// TODO: We shouldn't have to export `start_zenohd_process` here for the tests
 #[cfg(feature = "zenoh")]
 pub use zenohd_support::start_zenohd_process;
