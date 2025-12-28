@@ -2,14 +2,13 @@ use crate::Result;
 use crate::encoding::{NodeAddRequest, NodeAddResponse};
 use bytes::Bytes;
 use config::node::{Name, NodeConfigParser};
-use node_stack::{NodeInstance, NodeStack};
+use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-use super::run::run_node;
 use crate::services::names;
 
 pub async fn listen_for_node_add(
@@ -96,16 +95,15 @@ async fn handle_node_add_request_inner(
                 request.run_immediately
             );
 
-            // If run_immediately is requested, attempt to run the node
+            // TODO: run_immediately is not currently supported - use node_run service to start nodes
             let (is_running, error_message) = if request.run_immediately {
-                let node_instance = NodeInstance::new(instance_id.clone());
-                match run_node(&node_instance).await {
-                    Ok(running) => (running, None),
-                    Err(e) => {
-                        debug!("Failed to run node: {}", e);
-                        (false, Some(format!("Failed to run node: {}", e)))
-                    }
-                }
+                debug!(
+                    "run_immediately requested but not yet implemented; use node_run service instead"
+                );
+                (
+                    false,
+                    Some("run_immediately not implemented; use node_run service".to_string()),
+                )
             } else {
                 (false, None)
             };

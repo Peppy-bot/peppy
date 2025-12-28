@@ -2,9 +2,11 @@ use crate::Result;
 use crate::encoding::{NodeRunRequest, NodeRunResponse};
 use bytes::Bytes;
 use config::node::Name;
-use node_stack::{NodeInstance, NodeStack};
+use config::runtime::RuntimeConfig;
+use node_stack::{NodeEntity, NodeStack};
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -59,37 +61,95 @@ async fn handle_node_run_request_inner(
 
     let request = NodeRunRequest::decode(&payload.as_bytes())?;
 
-    debug!(
-        "Received `node_run` request from {sender_instance_id}, instance_id={}",
-        request.instance_id
-    );
+    // Parse the PEPPY_RUNTIME_CONFIG from json5
+    let runtime_config: RuntimeConfig = match serde_json5::from_str(&request.runtime_config_json5) {
+        Ok(config) => config,
+        Err(e) => {
+            return NodeRunResponse::failure(format!(
+                "Failed to parse PEPPY_RUNTIME_CONFIG: {}",
+                e
+            ))
+            .encode();
+        }
+    };
 
-    // Parse the instance_id
-    let instance_id = match Name::new(&request.instance_id) {
+    // Convert instance_id from config::peppy_config::Name to config::node::Name
+    let instance_id_str = runtime_config.deployment_instance.instance_id.as_str();
+    let instance_id = match Name::new(instance_id_str) {
         Ok(name) => name,
         Err(e) => {
             return NodeRunResponse::failure(format!("Invalid instance_id: {}", e)).encode();
         }
     };
 
-    // Find the node in the node_stack based on its instance_id
-    let Some(node_instance) = node_stack.find_by_instance_id(&instance_id) else {
-        return NodeRunResponse::failure(format!(
-            "Node instance '{}' not found in node stack",
-            instance_id.as_str()
-        ))
-        .encode();
+    debug!(
+        "Received `node_run` request from {sender_instance_id}, instance_id={}",
+        instance_id_str
+    );
+
+    // Find the entity in the node stack
+    let entity = match node_stack.find_entity_by_instance_id(&instance_id) {
+        Some(entity) => entity,
+        None => {
+            return NodeRunResponse::failure(format!(
+                "Node instance '{}' not found in node stack",
+                instance_id_str
+            ))
+            .encode();
+        }
     };
 
-    // Run the node
-    match run_node(&node_instance).await {
-        Ok(_) => NodeRunResponse::success().encode(),
-        Err(e) => NodeRunResponse::failure(format!("Failed to run node: {}", e)).encode(),
+    // Run the node with the runtime config
+    match run_node(&entity, &request.runtime_config_json5) {
+        Ok(_child) => {
+            debug!("Successfully started node instance '{}'", instance_id_str);
+            NodeRunResponse::success().encode()
+        }
+        Err(e) => {
+            debug!("Failed to run node instance '{}': {}", instance_id_str, e);
+            NodeRunResponse::failure(format!("Failed to run node: {}", e)).encode()
+        }
     }
 }
 
-pub async fn run_node(node_instance: &NodeInstance) -> Result<bool> {
-    // TODO: Implement actual node run logic
-    let _ = node_instance;
-    Ok(true)
+/// Runs a node using its manifest's launch_cmd and passes the PEPPY_RUNTIME_CONFIG as an env var.
+/// Returns the spawned child process handle on success.
+pub fn run_node(entity: &NodeEntity, runtime_config_json5: &str) -> Result<Child> {
+    let manifest = &entity.config().manifest;
+    let launch_cmd = manifest.launch_cmd.as_ref().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "No launch_cmd configured for node '{}:{}'",
+                manifest.name.as_str(),
+                manifest.tag
+            ),
+        )
+    })?;
+
+    if launch_cmd.is_empty() {
+        return Err(
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "launch_cmd is empty").into(),
+        );
+    }
+
+    let program = &launch_cmd[0];
+    let args = &launch_cmd[1..];
+
+    debug!(
+        "Running node '{}:{}' with command: {} {:?}",
+        manifest.name.as_str(),
+        manifest.tag,
+        program,
+        args
+    );
+
+    let child = Command::new(program)
+        .args(args)
+        .env("PEPPY_RUNTIME_CONFIG", runtime_config_json5)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    Ok(child)
 }

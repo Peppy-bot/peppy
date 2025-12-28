@@ -1,14 +1,10 @@
 use config::peppy_config::{DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
 use peppylib::start_zenohd_process;
-use std::sync::Mutex;
 use tempfile::TempDir;
 
 #[test]
 fn shutdown_request_exits_node() {
-    // Mutex to prevent concurrent env var modifications
-    static ENV_VAR_MUTEX: Mutex<()> = Mutex::new(());
-
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -63,5 +59,7 @@ fn shutdown_request_exits_node() {
         .expect("failed to save runtime config");
 
     // Spawn the runner in a separate thread
-    todo!("Spawn a node by invoking the `run` service and send it a shutdown signal");
+    todo!(
+        "Spawn a node by invoking the `run` service on the master node and then and send it a shutdown signal"
+    );
 }
