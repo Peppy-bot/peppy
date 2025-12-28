@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_node_start_success() {
+async fn node_start_success() {
     let (client, server) = setup_test_master_node().await;
 
     // First, add a node with a launch_cmd
@@ -81,7 +81,7 @@ async fn test_node_start_success() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_node_start_not_found() {
+async fn node_start_not_found() {
     let (client, _server) = setup_test_master_node().await;
 
     // Try to run a node that doesn't exist in the stack
@@ -124,7 +124,7 @@ async fn test_node_start_not_found() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_node_start_invalid_config() {
+async fn node_start_invalid_config() {
     let (client, _server) = setup_test_master_node().await;
 
     // Try to run with invalid JSON5
@@ -158,7 +158,7 @@ async fn test_node_start_invalid_config() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_node_start_no_launch_cmd() {
+async fn node_start_no_launch_cmd() {
     let (client, server) = setup_test_master_node().await;
 
     // Add a node WITHOUT a launch_cmd
