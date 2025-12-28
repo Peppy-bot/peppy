@@ -79,3 +79,29 @@ struct NodeStartResponse {
     # Error message if failed (optional)
     errorMessage @1 :Text;
 }
+
+# Node Stop service
+struct NodeStopRequest {
+    # Instance ID of the node to stop
+    instanceId @0 :Text;
+}
+
+struct NodeStopResponse {
+    # Whether the stop was successful
+    success @0 :Bool;
+    # Error message if failed (optional)
+    errorMessage @1 :Text;
+}
+
+# Node Remove service
+struct NodeRemoveRequest {
+    # Instance ID of the node to remove
+    instanceId @0 :Text;
+}
+
+struct NodeRemoveResponse {
+    # Whether the removal was successful
+    success @0 :Bool;
+    # Error message if failed (optional)
+    errorMessage @1 :Text;
+}
