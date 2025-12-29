@@ -10,10 +10,11 @@ mod ping;
 pub use info::{InfoRequest, InfoResponse};
 pub use launcher::{LauncherRequest, LauncherResponse};
 pub use node::{
-    add::NodeAddRequest, add::NodeAddResponse, init::NodeInitRequest, init::NodeInitResponse,
+    add::NodeAddRequest, add::NodeAddResponse, generate::NodeGenerateRequest,
+    generate::NodeGenerateResponse, init::NodeInitRequest, init::NodeInitResponse,
     list::NodeListRequest, list::NodeListResponse, remove::NodeRemoveRequest,
     remove::NodeRemoveResponse, start::NodeStartRequest, start::NodeStartResponse,
-    stop::NodeStopRequest, stop::NodeStopResponse, sync::NodeSyncRequest, sync::NodeSyncResponse,
+    stop::NodeStopRequest, stop::NodeStopResponse,
 };
 pub use ping::{PingRequest, PingResponse};
 
