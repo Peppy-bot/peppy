@@ -11,6 +11,7 @@ use tokio::task::JoinHandle;
 pub struct MasterNodeClient {
     pub caller_handle: MessengerHandle,
     pub master_node_name: String,
+    #[allow(dead_code)]
     pub instance_id: String,
 }
 
@@ -18,6 +19,7 @@ pub struct MasterNodeClient {
 pub struct MasterNodeServer {
     #[allow(dead_code)]
     pub node_stack: NodeStack,
+    #[allow(dead_code)]
     pub shared_messenger: Arc<Mutex<Messenger>>,
     task: JoinHandle<master_node::Result<()>>,
 }

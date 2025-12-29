@@ -70,12 +70,8 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Byt
             .encode();
     }
 
-    // Generate peppygen library
-    if let Err(e) = generator::generate_lib_for_build_system(request.build_system, &node_dir) {
-        return NodeInitResponse::failure(format!("Failed to generate peppygen: {}", e)).encode();
-    }
-
-    // Create language-specific configuration
+    // Create language-specific configuration (must be done before peppygen generation
+    // since generate_lib_for_build_system requires peppy.json5 to exist)
     match request.build_system {
         config::peppy_config::BuildSystem::Rust | config::peppy_config::BuildSystem::Cargo => {
             if let Err(e) = apply_rust_templates(&request.node_name, &node_dir) {
@@ -95,6 +91,11 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Byt
                 .encode();
             }
         }
+    }
+
+    // Generate peppygen library (requires peppy.json5 to exist)
+    if let Err(e) = generator::generate_lib_for_build_system(request.build_system, &node_dir) {
+        return NodeInitResponse::failure(format!("Failed to generate peppygen: {}", e)).encode();
     }
 
     // Create .gitignore

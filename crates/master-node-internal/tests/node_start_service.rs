@@ -76,6 +76,10 @@ async fn node_start_success() {
         run_response.error_message.is_none(),
         "error_message should be None on success"
     );
+
+    todo!(
+        "Actually run the project and check that the node is spinning. Then kill the node process when the test ends"
+    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

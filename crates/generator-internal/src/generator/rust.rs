@@ -251,13 +251,13 @@ impl RustGenerator {
 
                 quote! {
                     let goal_payload = {
-                        let mut message = capnp::message::Builder::new_default();
+                        let mut capnp_msg = capnp::message::Builder::new_default();
                         {
-                            let mut root = message.init_root::<#builder_type>();
+                            let mut root = capnp_msg.init_root::<#builder_type>();
                             #( #assignments )*
                         }
                         let mut buffer = Vec::new();
-                        capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
+                        capnp::serialize::write_message(&mut buffer, &capnp_msg).map_err(|source| {
                             crate::Error::CapnpSerialize {
                                 context: format!("fire_goal {} {}", TARGET_NODE_NAME, TARGET_ACTION_NAME),
                                 source,
@@ -335,13 +335,13 @@ impl RustGenerator {
 
                 quote! {
                     let goal_payload = {
-                        let mut message = capnp::message::Builder::new_default();
+                        let mut capnp_msg = capnp::message::Builder::new_default();
                         {
-                            let mut root = message.init_root::<#builder_type>();
+                            let mut root = capnp_msg.init_root::<#builder_type>();
                             #( #assignments )*
                         }
                         let mut buffer = Vec::new();
-                        capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
+                        capnp::serialize::write_message(&mut buffer, &capnp_msg).map_err(|source| {
                             crate::Error::CapnpSerialize {
                                 context: format!("fire_goal {} {}", TARGET_NODE_NAME, TARGET_ACTION_NAME),
                                 source,
@@ -1518,14 +1518,14 @@ impl LanguageGenerator for RustGenerator {
 
             quote! {
                 let request_payload = {
-                    let mut message = capnp::message::Builder::new_default();
+                    let mut capnp_msg = capnp::message::Builder::new_default();
                     {
-                        let mut root = message.init_root::<#builder_type>();
+                        let mut root = capnp_msg.init_root::<#builder_type>();
                         #( #unpacking )*
                         #( #assignments )*
                     }
                     let mut buffer = Vec::new();
-                    capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
+                    capnp::serialize::write_message(&mut buffer, &capnp_msg).map_err(|source| {
                         crate::Error::CapnpSerialize {
                             context: format!("poll {} {}", NODE_NAME, SERVICE_NAME),
                             source,
@@ -2749,14 +2749,14 @@ fn build_topic_emit(
             quote! {
                 #[allow(clippy::too_many_arguments)]
                 pub async fn #method_ident(#method_signature) -> crate::Result<()> {
-                    let mut message = capnp::message::Builder::new_default();
+                    let mut capnp_msg = capnp::message::Builder::new_default();
                     {
-                        let mut #root_ident = message.init_root::<#builder_type>();
+                        let mut #root_ident = capnp_msg.init_root::<#builder_type>();
                         #(#assignments)*
                     }
 
                     let mut buffer = Vec::new();
-                    capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
+                    capnp::serialize::write_message(&mut buffer, &capnp_msg).map_err(|source| {
                         crate::Error::CapnpSerialize {
                             context: String::from(#label_literal),
                             source,
@@ -4286,14 +4286,14 @@ fn build_action_feedback_emit(
             quote! {
                 #[allow(clippy::too_many_arguments)]
                 pub async fn emit_feedback(#method_signature) -> crate::Result<()> {
-                    let mut message = capnp::message::Builder::new_default();
+                    let mut capnp_msg = capnp::message::Builder::new_default();
                     {
-                        let mut #root_ident = message.init_root::<#builder_type>();
+                        let mut #root_ident = capnp_msg.init_root::<#builder_type>();
                         #(#assignments)*
                     }
 
                     let mut buffer = Vec::new();
-                    capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
+                    capnp::serialize::write_message(&mut buffer, &capnp_msg).map_err(|source| {
                         crate::Error::CapnpSerialize {
                             context: format!("{} {}", #label_literal, ACTION_NAME),
                             source,
@@ -4441,13 +4441,13 @@ fn build_response_payload_tokens(
     }
 
     quote!({
-        let mut message = capnp::message::Builder::new_default();
+        let mut capnp_msg = capnp::message::Builder::new_default();
         {
-            let mut #builder_ident = message.init_root::<#builder_type>();
+            let mut #builder_ident = capnp_msg.init_root::<#builder_type>();
             #( #assignments )*
         }
         let mut buffer = Vec::new();
-        capnp::serialize::write_message(&mut buffer, &message).map_err(|source| {
+        capnp::serialize::write_message(&mut buffer, &capnp_msg).map_err(|source| {
             crate::Error::CapnpSerialize {
                 context: #error_context,
                 source,
