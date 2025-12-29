@@ -5,6 +5,7 @@ use capnp::message::Builder;
 use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
+use crate::names;
 use crate::node_capnp;
 
 use super::{decode_message, encode_message};
@@ -36,8 +37,7 @@ impl NodeListRequest {
         messenger: &MessengerHandle,
         bound_master_node: &str,
         as_instance_id: &str,
-        target_node_name: &str,
-        target_instance_id: Option<&str>,
+        target_master_node: &str,
         response_timeout: Duration,
     ) -> Result<NodeListResponse> {
         let request_payload = self.encode()?;
@@ -45,10 +45,10 @@ impl NodeListRequest {
             messenger,
             bound_master_node,
             as_instance_id,
-            target_node_name,
-            "node_list",
+            target_master_node,
+            names::NODE_LIST,
+            Some(target_master_node),
             None,
-            target_instance_id,
             request_payload,
             response_timeout,
         )

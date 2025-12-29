@@ -30,7 +30,6 @@ async fn node_start_success() {
             &client.master_node_name,
             CALLER_INSTANCE_ID,
             &client.master_node_name,
-            Some(&client.instance_id),
             Duration::from_secs(2),
         )
         .await
@@ -63,7 +62,6 @@ async fn node_start_success() {
             &client.master_node_name,
             CALLER_INSTANCE_ID,
             &client.master_node_name,
-            Some(&client.instance_id),
             Duration::from_secs(2),
         )
         .await
@@ -103,7 +101,6 @@ async fn node_start_not_found() {
             &client.master_node_name,
             CALLER_INSTANCE_ID,
             &client.master_node_name,
-            Some(&client.instance_id),
             Duration::from_secs(2),
         )
         .await
@@ -137,7 +134,6 @@ async fn node_start_invalid_config() {
             &client.master_node_name,
             CALLER_INSTANCE_ID,
             &client.master_node_name,
-            Some(&client.instance_id),
             Duration::from_secs(2),
         )
         .await
@@ -181,7 +177,6 @@ async fn node_start_no_launch_cmd() {
             &client.master_node_name,
             CALLER_INSTANCE_ID,
             &client.master_node_name,
-            Some(&client.instance_id),
             Duration::from_secs(2),
         )
         .await
@@ -214,7 +209,6 @@ async fn node_start_no_launch_cmd() {
             &client.master_node_name,
             CALLER_INSTANCE_ID,
             &client.master_node_name,
-            Some(&client.instance_id),
             Duration::from_secs(2),
         )
         .await

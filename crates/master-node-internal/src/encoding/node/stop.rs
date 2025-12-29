@@ -45,7 +45,7 @@ impl NodeStopRequest {
         bound_master_node: &str,
         as_instance_id: &str,
         target_node_name: &str,
-        target_instance_id: Option<&str>,
+        target_master_node: &str,
         response_timeout: Duration,
     ) -> Result<NodeStopResponse> {
         let request_payload = self.encode()?;
@@ -55,8 +55,8 @@ impl NodeStopRequest {
             as_instance_id,
             target_node_name,
             names::NODE_STOP,
+            Some(target_master_node),
             None,
-            target_instance_id,
             request_payload,
             response_timeout,
         )

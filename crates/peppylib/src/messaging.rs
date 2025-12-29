@@ -510,6 +510,63 @@ impl ServiceMessenger {
             )
             .await
     }
+
+    /// Returns `true` if there are active subscribers matching the service request topic that
+    /// would be used by [`ServiceMessenger::poll`].
+    ///
+    /// This is useful for checking if a specific service/instance is available without sending
+    /// an actual request (which could have side effects).
+    pub async fn is_reachable(
+        messenger: &MessengerHandle,
+        bound_master_node: &str,
+        as_instance_id: &str,
+        target_node_name: &str,
+        target_service_name: &str,
+        target_master_node: Option<&str>,
+        target_instance_id: Option<&str>,
+    ) -> Result<bool> {
+        let service_root = format!("service/{target_node_name}/{target_service_name}");
+        let caller_target_instance_segment = format_target_instance_segment(as_instance_id)
+            .unwrap_or_else(|| INSTANCE_ID_WILDCARD.to_string());
+
+        let target_instance_id = target_instance_id.map(str::to_string);
+        let (effective_target_master, effective_target_instance) =
+            match (target_master_node, target_instance_id.as_deref()) {
+                (Some(master), Some(instance)) => (master.to_string(), instance.to_string()),
+                (Some(master), None) => (master.to_string(), BROADCAST_MARKER.to_string()),
+                (None, Some(instance)) => (BROADCAST_MARKER.to_string(), instance.to_string()),
+                (None, None) => (BROADCAST_MARKER.to_string(), BROADCAST_MARKER.to_string()),
+            };
+
+        let target_bound_instance_segment =
+            format_bound_instance_segment(&effective_target_instance);
+        let request_id = generate_request_id();
+
+        let target_master = target_bound_instance_segment
+            .as_ref()
+            .map(|_| effective_target_master.as_str())
+            .unwrap_or(BROADCAST_MARKER);
+        let target_instance = target_bound_instance_segment
+            .as_deref()
+            .unwrap_or(BROADCAST_MARKER);
+
+        let request_topic = format!(
+            "{}/{}/{}/{}/{}/request/{request_id}",
+            target_master,
+            bound_master_node,
+            target_instance,
+            caller_target_instance_segment,
+            service_root
+        );
+
+        let has_matching_subscribers = {
+            let messenger = messenger.messenger.lock().await;
+            messenger.has_matching_subscribers(&request_topic).await
+        }
+        .map_err(Error::PeppyMessagingInterface)?;
+
+        Ok(has_matching_subscribers)
+    }
 }
 
 impl ActionMessenger {

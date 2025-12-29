@@ -28,7 +28,6 @@ async fn test_node_init_rust_success() {
             &client.master_node_name,
             CALLER_INSTANCE_ID,
             &client.master_node_name,
-            Some(&client.instance_id),
             Duration::from_secs(2),
         )
         .await
@@ -150,7 +149,6 @@ async fn test_node_init_python_success() {
             &client.master_node_name,
             CALLER_INSTANCE_ID,
             &client.master_node_name,
-            Some(&client.instance_id),
             Duration::from_secs(2),
         )
         .await
@@ -229,7 +227,6 @@ async fn test_node_init_fails_if_directory_exists() {
             &client.master_node_name,
             CALLER_INSTANCE_ID,
             &client.master_node_name,
-            Some(&client.instance_id),
             Duration::from_secs(2),
         )
         .await
