@@ -22,6 +22,8 @@ struct NodeAddRequest {
     instanceId @2 :Text;
     # Whether to run the node immediately after adding
     runImmediately @3 :Bool;
+    # Runtime configuration in JSON5 format (required if runImmediately is true)
+    runtimeConfigJson5 @4 :Text;
 }
 
 struct NodeAddResponse {

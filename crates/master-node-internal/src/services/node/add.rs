@@ -85,30 +85,16 @@ async fn handle_node_add_request_inner(
     };
 
     // Add the node to the stack (all dependencies must be satisfied)
-    match node_stack.push_config(&node_config, instance_id.as_ref(), request.run_immediately) {
+    match node_stack.push_config(&node_config, instance_id.as_ref(), false) {
         Ok(instance_id) => {
             debug!(
-                "Added node {}:{} with instance_id {}, run_immediately={}",
+                "Added node {}:{} with instance_id {}",
                 node_config.manifest.name.as_str(),
                 node_config.manifest.tag,
-                instance_id.as_str(),
-                request.run_immediately
+                instance_id.as_str()
             );
 
-            // TODO: run_immediately is not currently supported - use node_run service to start nodes
-            let (is_running, error_message) = if request.run_immediately {
-                debug!(
-                    "run_immediately requested but not yet implemented; use node_run service instead"
-                );
-                (
-                    false,
-                    Some("run_immediately not implemented; use node_run service".to_string()),
-                )
-            } else {
-                (false, None)
-            };
-
-            NodeAddResponse::new(true, is_running, instance_id.as_str(), error_message).encode()
+            NodeAddResponse::new(true, instance_id.as_str(), None).encode()
         }
         Err(e) => NodeAddResponse::failure(format!("Failed to add node: {}", e)).encode(),
     }
