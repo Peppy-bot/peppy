@@ -130,7 +130,7 @@ fn expose_topic() {
     assert_contains_all(
         &rendered,
         &[
-            "let mut message = capnp::message::Builder::new_default();",
+            "let mut capnp_msg = capnp::message::Builder::new_default();",
             "crate::capnp::push_frame_message_capnp::push_frame_message::Builder",
         ],
     );
