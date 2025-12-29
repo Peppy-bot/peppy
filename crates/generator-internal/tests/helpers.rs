@@ -155,15 +155,6 @@ pub fn wait_for_child(
     }
 }
 
-pub fn run_cargo_run(
-    dir: &std::path::Path,
-    timeout: Option<Duration>,
-    env_vars: &[(&str, &str)],
-) -> std::process::Output {
-    let mut child = spawn_cargo_run(dir, env_vars);
-    wait_for_child(&mut child, timeout, dir)
-}
-
 pub fn compile_project(dir: impl AsRef<Path>) {
     let cargo_output = Command::new("cargo")
         .arg("build")
