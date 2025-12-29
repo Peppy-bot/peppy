@@ -12,4 +12,4 @@ pub const NODE_INIT: &str = "node_init";
 pub const NODE_LIST: &str = "node_list";
 pub const NODE_START: &str = "node_start";
 pub const NODE_STOP: &str = "node_stop";
-pub const NODE_SYNC: &str = "node_sync";
+pub const NODE_GENERATE: &str = "node_generate";

@@ -54,16 +54,16 @@ struct NodeInitResponse {
     errorMessage @1 :Text;
 }
 
-# Node Sync service
-struct NodeSyncRequest {
+# Node Generate service
+struct NodeGenerateRequest {
     # Root directory of the node/workspace
     nodeRootDir @0 :Text;
     # Generator language ("rust" or "python")
     language @1 :Text;
 }
 
-struct NodeSyncResponse {
-    # Whether the sync was successful
+struct NodeGenerateResponse {
+    # Whether the generate was successful
     success @0 :Bool;
     # Error message if failed
     errorMessage @1 :Text;
