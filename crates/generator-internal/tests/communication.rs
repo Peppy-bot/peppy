@@ -10,8 +10,8 @@ use config::{
 };
 use generator::{LanguageGenerator, SubscribedActionMessage};
 use helpers::{
-    compile_project, copy_config_to_output, init_cargo_user_node, init_test_env, run_cargo_run,
-    spawn_cargo_run, start_router_for_tests, wait_for_child,
+    compile_project, copy_config_to_output, init_cargo_user_node, init_test_env, spawn_cargo_run,
+    start_router_for_tests, wait_for_child,
 };
 use peppylib::{MessengerHandle, ServiceMessenger, messaging::SHUTDOWN_SERVICE};
 use pmi::MessengerBackend;
@@ -437,35 +437,31 @@ fn services_communication_no_target_instance_id() {
     subscriber_runtime_config
         .save_json5_launch_config(&subscriber_runtime_config_path)
         .unwrap();
-    let peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     init_cargo_user_node(&user_node_subscriber);
-    let subscriber_main = format!(
-        "
+    let subscriber_main = r#"
 use peppygen::subscribed_services::uvc_camera_enable_camera;
-use peppygen::{{Messenger, Result}};
+use peppygen::runner;
+use peppygen::Result;
 use std::time::Duration;
 
-#[tokio::main]
-async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
+fn main() -> Result<()> {
+    runner::run(|_parameters, node_runner| async move {
+        let request = uvc_camera_enable_camera::Request::new(true);
+        let response =
+            uvc_camera_enable_camera::poll(&node_runner, Duration::from_secs(5), None, None, request).await?;
+        let error_msg = response.data.error_msg.as_deref().unwrap_or("<none>");
+        println!(
+            "enable_camera result: service_id={} enabled={} error={}",
+            &response.instance_id,
+            response.data.enabled,
+            error_msg
+        );
 
-    let request = uvc_camera_enable_camera::Request::new(true);
-    let response =
-        uvc_camera_enable_camera::poll(&messenger, Duration::from_secs(5), None, None, request).await?;
-    let error_msg = response.data.error_msg.as_deref().unwrap_or(\"<none>\");
-    println!(
-        \"enable_camera result: service_id={{}} enabled={{}} error={{}}\",
-        &response.instance_id,
-        response.data.enabled,
-        error_msg
-    );
-
-    Ok(())
-}}
-",
-        &peppy_config_path_str, router_host, router_port
-    );
+        Ok(())
+    })
+}
+"#;
     let main_file = user_node_subscriber.join("src").join("main.rs");
     fs::write(main_file, subscriber_main).expect("failed to write subscriber main");
 
@@ -479,7 +475,6 @@ async fn main() -> Result<()> {{
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator.build(&output_dir_exposer).unwrap();
     fs::remove_file(output_config).unwrap();
-    let exposer_peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
@@ -501,66 +496,107 @@ async fn main() -> Result<()> {{
         .unwrap();
 
     init_cargo_user_node(&user_node_exposer);
-    let exposer_main = format!(
-        "
+    let exposer_main = r#"
 use peppygen::exposed_services::enable_camera;
-use peppygen::{{Messenger, Result}};
+use peppygen::runner;
+use peppygen::Result;
 
-#[tokio::main]
-async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
+fn main() -> Result<()> {
+    runner::run(|_parameters, node_runner| async move {
+        enable_camera::handle_next_request(&node_runner, |request| -> Result<enable_camera::Response> {
+            println!("received enable_camera request from {}: enable = {}", request.instance_id, request.data.enable);
+            Ok(enable_camera::Response::new(
+                request.data.enable,
+                Some("handled".to_owned()),
+            ))
+        })
+        .await?;
 
-    enable_camera::handle_next_request(&messenger, |request| -> Result<enable_camera::Response> {{
-        println!(\"received enable_camera request from {{}}: enable = {{}}\", request.instance_id, request.data.enable);
-        Ok(enable_camera::Response::new(
-            request.data.enable,
-            Some(\"handled\".to_owned()),
-        ))
-    }})
-    .await?;
+        println!("enable_camera handler finished");
 
-    println!(\"enable_camera handler finished\");
-
-    Ok(())
-}}
-",
-        &exposer_peppy_config_path_str,
-        router_host,
-        router_port
-    );
+        Ok(())
+    })
+}
+"#;
     let main_file = user_node_exposer.join("src").join("main.rs");
     fs::write(main_file, exposer_main).expect("failed to write exposer main");
 
     compile_project(&user_node_subscriber);
     compile_project(&user_node_exposer);
 
-    let exposer_dir = user_node_exposer.clone();
-    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let exposer_thread = thread::spawn(move || {
-        run_cargo_run(
-            &exposer_dir,
-            Some(Duration::from_secs(15)),
-            &[("PEPPY_RUNTIME_CONFIG", &exposer_runtime_config_str)],
-        )
-    });
+    let user_node_exposer_runtime_config_str =
+        exposer_runtime_config_path.to_str().unwrap().to_owned();
+    let user_node_subscriber_config_str =
+        subscriber_runtime_config_path.to_str().unwrap().to_owned();
+
+    // Spawn exposer first so it's ready to handle requests
+    let mut exposer_child = spawn_cargo_run(
+        &user_node_exposer,
+        &[(
+            "PEPPY_RUNTIME_CONFIG",
+            &user_node_exposer_runtime_config_str,
+        )],
+    );
 
     // Give the exposer a moment to start listening before the subscriber sends a request.
-    thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_millis(500));
 
-    let subscriber_dir = user_node_subscriber.clone();
-    let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
-    let subscriber_thread = thread::spawn(move || {
-        run_cargo_run(
-            &subscriber_dir,
-            Some(Duration::from_secs(15)),
-            &[("PEPPY_RUNTIME_CONFIG", &subscriber_runtime_config_str)],
+    let mut subscriber_child = spawn_cargo_run(
+        &user_node_subscriber,
+        &[("PEPPY_RUNTIME_CONFIG", &user_node_subscriber_config_str)],
+    );
+
+    // Wait for communication to happen
+    thread::sleep(Duration::from_secs(2));
+
+    // Send shutdown signals to both nodes
+    rt.block_on(async {
+        let messenger = MessengerHandle::from_host_port(&router_host, router_port)
+            .await
+            .expect("failed to create messenger for shutdown");
+
+        let shutdown_payload = bytes::Bytes::from_static(b"shutdown");
+
+        // Send shutdown to subscriber
+        let _ = ServiceMessenger::poll(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            SUBSCRIBER_NODE_NAME,
+            SHUTDOWN_SERVICE,
+            Some(TEST_MASTER_NODE),
+            Some(subscriber_instance_id),
+            shutdown_payload.clone(),
+            Duration::from_secs(5),
         )
+        .await;
+
+        // Send shutdown to exposer
+        let _ = ServiceMessenger::poll(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            UVC_CAMERA_NODE_NAME,
+            SHUTDOWN_SERVICE,
+            Some(TEST_MASTER_NODE),
+            Some(exposer_instance_id),
+            shutdown_payload,
+            Duration::from_secs(5),
+        )
+        .await;
     });
 
-    let exposer_output = exposer_thread.join().expect("exposer thread panicked");
-    let subscriber_output = subscriber_thread
-        .join()
-        .expect("subscriber thread panicked");
+    // Wait for both processes to exit
+    let subscriber_output = wait_for_child(
+        &mut subscriber_child,
+        Some(Duration::from_secs(10)),
+        &user_node_subscriber,
+    );
+    let exposer_output = wait_for_child(
+        &mut exposer_child,
+        Some(Duration::from_secs(10)),
+        &user_node_exposer,
+    );
 
     let subscriber_stdout = String::from_utf8_lossy(&subscriber_output.stdout).into_owned();
     let subscriber_stderr = String::from_utf8_lossy(&subscriber_output.stderr).into_owned();
@@ -664,34 +700,30 @@ fn services_communication_multiple_exposed_instances_same_service() {
     subscriber_runtime_config
         .save_json5_launch_config(&subscriber_runtime_config_path)
         .unwrap();
-    let peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     init_cargo_user_node(&user_node_subscriber);
-    let subscriber_main = format!(
-        "
+    let subscriber_main = r#"
 use peppygen::subscribed_services::uvc_camera_enable_camera;
-use peppygen::{{Messenger, Result}};
+use peppygen::runner;
+use peppygen::Result;
 use std::time::Duration;
 
-#[tokio::main]
-async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
+fn main() -> Result<()> {
+    runner::run(|_parameters, node_runner| async move {
+        let request = uvc_camera_enable_camera::Request::new(true);
+        let response =
+            uvc_camera_enable_camera::poll(&node_runner, Duration::from_secs(5), None, None, request).await?;
+        let error_msg = response.data.error_msg.as_deref().unwrap_or("<none>");
+        println!(
+            "enable_camera result: enabled={} error={}",
+            response.data.enabled,
+            error_msg
+        );
 
-    let request = uvc_camera_enable_camera::Request::new(true);
-    let response =
-        uvc_camera_enable_camera::poll(&messenger, Duration::from_secs(5), None, None, request).await?;
-    let error_msg = response.data.error_msg.as_deref().unwrap_or(\"<none>\");
-    println!(
-        \"enable_camera result: enabled={{}} error={{}}\",
-        response.data.enabled,
-        error_msg
-    );
-
-    Ok(())
-}}
-",
-        &peppy_config_path_str, router_host, router_port
-    );
+        Ok(())
+    })
+}
+"#;
     let main_file = user_node_subscriber.join("src").join("main.rs");
     fs::write(main_file, subscriber_main).expect("failed to write subscriber main");
 
@@ -705,7 +737,6 @@ async fn main() -> Result<()> {{
     let output_config = copy_config_to_output(&user_node_exposer1, &output_dir_exposer1);
     generator.build(&output_dir_exposer1).unwrap();
     fs::remove_file(output_config).unwrap();
-    let exposer1_peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
@@ -727,35 +758,30 @@ async fn main() -> Result<()> {{
         .unwrap();
 
     init_cargo_user_node(&user_node_exposer1);
-    let exposer1_main = format!(
-        "
+    let exposer1_main = r#"
 use peppygen::exposed_services::enable_camera;
-use peppygen::{{Messenger, Result}};
+use peppygen::runner;
+use peppygen::Result;
 
-#[tokio::main]
-async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
+fn main() -> Result<()> {
+    runner::run(|_parameters, node_runner| async move {
+        enable_camera::handle_next_request(&node_runner, |request| -> Result<enable_camera::Response> {
+            println!("received enable_camera request for {}: {}", request.instance_id, request.data.enable);
+            Ok(enable_camera::Response::new(
+                request.data.enable,
+                Some("handled".to_owned()),
+            ))
+        })
+        .await?;
 
-    enable_camera::handle_next_request(&messenger, |request| -> Result<enable_camera::Response> {{
-        println!(\"received enable_camera request for {{}}: {{}}\", request.instance_id, request.data.enable);
-        Ok(enable_camera::Response::new(
-            request.data.enable,
-            Some(\"handled\".to_owned()),
-        ))
-    }})
-    .await?;
+        println!("enable_camera handler finished");
 
-    println!(\"enable_camera handler finished\");
-
-    Ok(())
-}}
-",
-        &exposer1_peppy_config_path_str,
-        router_host,
-        router_port
-    );
+        Ok(())
+    })
+}
+"#;
     let main_file = user_node_exposer1.join("src").join("main.rs");
-    fs::write(main_file, &exposer1_main).expect("failed to write exposer main 1");
+    fs::write(main_file, exposer1_main).expect("failed to write exposer main 1");
 
     // --- Exposer 2
     let exposer2_instance_id = "exposer2_instance";
@@ -767,7 +793,6 @@ async fn main() -> Result<()> {{
     let output_config = copy_config_to_output(&user_node_exposer2, &output_dir_exposer2);
     generator.build(&output_dir_exposer2).unwrap();
     fs::remove_file(output_config).unwrap();
-    let exposer2_peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
@@ -789,82 +814,131 @@ async fn main() -> Result<()> {{
         .unwrap();
 
     init_cargo_user_node(&user_node_exposer2);
-    let exposer2_main = format!(
-        "
+    let exposer2_main = r#"
 use peppygen::exposed_services::enable_camera;
-use peppygen::{{Messenger, Result}};
+use peppygen::runner;
+use peppygen::Result;
 use std::time::Duration;
 
-#[tokio::main]
-async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
+fn main() -> Result<()> {
+    runner::run(|_parameters, node_runner| async move {
+        enable_camera::handle_next_request(&node_runner, |request| -> Result<enable_camera::Response> {
+            println!("received enable_camera request for {}: {}", request.instance_id, request.data.enable);
+            // Sleep to ensure exposer1 responds first
+            std::thread::sleep(Duration::from_secs(1));
+            Ok(enable_camera::Response::new(
+                request.data.enable,
+                Some("handled_by_exposer2".to_owned()),
+            ))
+        })
+        .await?;
 
-    enable_camera::handle_next_request(&messenger, |request| -> Result<enable_camera::Response> {{
-        println!(\"received enable_camera request for {{}}: {{}}\", request.instance_id, request.data.enable);
-        // Sleep to ensure exposer1 responds first
-        std::thread::sleep(Duration::from_secs(1));
-        Ok(enable_camera::Response::new(
-            request.data.enable,
-            Some(\"handled_by_exposer2\".to_owned()),
-        ))
-    }})
-    .await?;
+        println!("enable_camera handler finished");
 
-    println!(\"enable_camera handler finished\");
-
-    Ok(())
-}}
-",
-        &exposer2_peppy_config_path_str,
-        router_host,
-        router_port
-    );
+        Ok(())
+    })
+}
+"#;
     let main_file = user_node_exposer2.join("src").join("main.rs");
-    fs::write(main_file, &exposer2_main).expect("failed to write exposer main 2");
+    fs::write(main_file, exposer2_main).expect("failed to write exposer main 2");
 
     // Compilation + execution
     compile_project(&user_node_subscriber);
     compile_project(&user_node_exposer1);
     compile_project(&user_node_exposer2);
 
-    let exposer_dir1 = user_node_exposer1.clone();
     let exposer1_runtime_config_str = exposer1_runtime_config_path.to_str().unwrap().to_owned();
-    let exposer_thread1 = thread::spawn(move || {
-        run_cargo_run(
-            &exposer_dir1,
-            Some(Duration::from_secs(10)),
-            &[("PEPPY_RUNTIME_CONFIG", &exposer1_runtime_config_str)],
-        )
-    });
-
-    let exposer_dir2 = user_node_exposer2.clone();
     let exposer2_runtime_config_str = exposer2_runtime_config_path.to_str().unwrap().to_owned();
-    let exposer_thread2 = thread::spawn(move || {
-        run_cargo_run(
-            &exposer_dir2,
-            Some(Duration::from_secs(10)),
-            &[("PEPPY_RUNTIME_CONFIG", &exposer2_runtime_config_str)],
-        )
-    });
+    let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
+
+    // Spawn both exposers first so they're ready to handle requests
+    let mut exposer1_child = spawn_cargo_run(
+        &user_node_exposer1,
+        &[("PEPPY_RUNTIME_CONFIG", &exposer1_runtime_config_str)],
+    );
+    let mut exposer2_child = spawn_cargo_run(
+        &user_node_exposer2,
+        &[("PEPPY_RUNTIME_CONFIG", &exposer2_runtime_config_str)],
+    );
 
     // Give the exposers a moment to start listening before the subscriber sends a request.
-    thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_millis(500));
 
-    let subscriber_dir = user_node_subscriber.clone();
-    let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
-    let subscriber_thread = thread::spawn(move || {
-        run_cargo_run(
-            &subscriber_dir,
-            Some(Duration::from_secs(10)),
-            &[("PEPPY_RUNTIME_CONFIG", &subscriber_runtime_config_str)],
+    let mut subscriber_child = spawn_cargo_run(
+        &user_node_subscriber,
+        &[("PEPPY_RUNTIME_CONFIG", &subscriber_runtime_config_str)],
+    );
+
+    // Wait for communication to happen
+    thread::sleep(Duration::from_secs(3));
+
+    // Send shutdown signals to all nodes
+    rt.block_on(async {
+        let messenger = MessengerHandle::from_host_port(&router_host, router_port)
+            .await
+            .expect("failed to create messenger for shutdown");
+
+        let shutdown_payload = bytes::Bytes::from_static(b"shutdown");
+
+        // Send shutdown to subscriber
+        let _ = ServiceMessenger::poll(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            SUBSCRIBER_NODE_NAME,
+            SHUTDOWN_SERVICE,
+            Some(TEST_MASTER_NODE),
+            Some(subscriber_instance_id),
+            shutdown_payload.clone(),
+            Duration::from_secs(5),
         )
+        .await;
+
+        // Send shutdown to exposer1
+        let _ = ServiceMessenger::poll(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            UVC_CAMERA_NODE_NAME,
+            SHUTDOWN_SERVICE,
+            Some(TEST_MASTER_NODE),
+            Some(exposer1_instance_id),
+            shutdown_payload.clone(),
+            Duration::from_secs(5),
+        )
+        .await;
+
+        // Send shutdown to exposer2
+        let _ = ServiceMessenger::poll(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            UVC_CAMERA_NODE_NAME,
+            SHUTDOWN_SERVICE,
+            Some(TEST_MASTER_NODE),
+            Some(exposer2_instance_id),
+            shutdown_payload,
+            Duration::from_secs(5),
+        )
+        .await;
     });
 
-    let exposer_output1 = exposer_thread1.join().expect("exposer thread panicked");
-    let exposer_output2 = exposer_thread2.join().expect("exposer thread panicked");
-    let subscriber_output = subscriber_thread
-        .join()
-        .expect("subscriber thread panicked");
+    // Wait for all processes to exit
+    let subscriber_output = wait_for_child(
+        &mut subscriber_child,
+        Some(Duration::from_secs(10)),
+        &user_node_subscriber,
+    );
+    let exposer_output1 = wait_for_child(
+        &mut exposer1_child,
+        Some(Duration::from_secs(10)),
+        &user_node_exposer1,
+    );
+    let exposer_output2 = wait_for_child(
+        &mut exposer2_child,
+        Some(Duration::from_secs(10)),
+        &user_node_exposer2,
+    );
 
     let subscriber_stdout = String::from_utf8_lossy(&subscriber_output.stdout).into_owned();
     let subscriber_stderr = String::from_utf8_lossy(&subscriber_output.stderr).into_owned();
@@ -1071,52 +1145,46 @@ fn actions_communication() {
     subscriber_runtime_config
         .save_json5_launch_config(&subscriber_runtime_config_path)
         .unwrap();
-    let peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     init_cargo_user_node(&user_node_subscriber);
-    let subscriber_main = format!(
-        "
+    let subscriber_main = r#"
 use peppygen::subscribed_actions::brain_move_arm;
-use peppygen::{{Messenger, Result}};
+use peppygen::runner;
+use peppygen::Result;
 use std::time::Duration;
 
-#[tokio::main]
-async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
+fn main() -> Result<()> {
+    runner::run(|_parameters, node_runner| async move {
+        let request = brain_move_arm::GoalRequest {
+            arm_id: 7,
+            desired_position: [10, 20, 30],
+        };
+        let mut goal = brain_move_arm::fire_goal(
+            &node_runner,
+            Duration::from_secs(5),
+            None,
+            None,
+            request,
+            peppygen::QoSProfile::SensorData,
+        ).await?;
+        println!("goal accepted={}", goal.data.accepted);
 
-    let request = brain_move_arm::GoalRequest {{
-        arm_id: 7,
-        desired_position: [10, 20, 30],
-    }};
-    let mut goal = brain_move_arm::fire_goal(
-        &messenger,
-        Duration::from_secs(5),
-        None,
-        None,
-        request,
-        peppygen::QoSProfile::SensorData,
-    ).await?;
-    println!(\"goal accepted={{}}\", goal.data.accepted);
+        let feedback = brain_move_arm::on_next_feedback_message(&mut goal.action_handle).await?;
+        assert_eq!(feedback.new_position, [7, 31, 43], "unexpected feedback message");
+        println!("feedback message received new_position={:?}", feedback.new_position);
 
-    let feedback = brain_move_arm::on_next_feedback_message(&mut goal.action_handle).await?;
-    assert_eq!(feedback.new_position, [7, 31, 43], \"unexpected feedback message\");
-    println!(\"feedback message received new_position={{:?}}\", feedback.new_position);
+        let result = brain_move_arm::get_result(&node_runner, &goal.action_handle, Duration::from_secs(5)).await?;
+        println!(
+            "result success={} error={:?} final_position={:?}",
+            result.data.success,
+            result.data.error_msg.as_deref(),
+            result.data.final_position
+        );
 
-    let result = brain_move_arm::get_result(&messenger, &goal.action_handle, Duration::from_secs(5)).await?;
-    println!(
-        \"result success={{}} error={{:?}} final_position={{:?}}\",
-        result.data.success,
-        result.data.error_msg.as_deref(),
-        result.data.final_position
-    );
-
-    Ok(())
-}}
-",
-        &peppy_config_path_str,
-        router_host,
-        router_port
-    );
+        Ok(())
+    })
+}
+"#;
     let main_file = user_node_subscriber.join("src").join("main.rs");
     fs::write(main_file, subscriber_main).expect("failed to write subscriber main");
 
@@ -1149,90 +1217,127 @@ async fn main() -> Result<()> {{
     exposer_runtime_config
         .save_json5_launch_config(&exposer_runtime_config_path)
         .unwrap();
-    let exposer_peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     init_cargo_user_node(&user_node_exposer);
-    let exposer_main = format!(
-        "
+    let exposer_main = r#"
 use peppygen::exposed_actions::move_arm;
-use peppygen::{{Messenger, Result}};
+use peppygen::runner;
+use peppygen::Result;
 use std::time::Duration;
 
-#[tokio::main]
-async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
+fn main() -> Result<()> {
+    runner::run(|_parameters, node_runner| async move {
+        let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
 
-    let mut action = move_arm::ActionHandle::expose(&messenger).await?;
+        action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+            println!(
+                "server received goal arm_id={} desired={:?}",
+                request.data.arm_id,
+                request.data.desired_position
+            );
+            Ok(move_arm::GoalResponse::new(true))
+        })
+        .await?;
 
-    action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {{
-        println!(
-            \"server received goal arm_id={{}} desired={{:?}}\",
-            request.data.arm_id,
-            request.data.desired_position
-        );
-        Ok(move_arm::GoalResponse::new(true))
-    }})
-    .await?;
+        // Small delay before sending a feedback message
+        tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Small delay before sending a feedback message
-    tokio::time::sleep(Duration::from_millis(200)).await;
+        let feedback_message = [7, 31, 43];
+        action.emit_feedback(feedback_message).await?;
+        println!("server emitted feedback message {:?}", feedback_message);
 
-    let feedback_message = [7, 31, 43];
-    action.emit_feedback(feedback_message).await?;
-    println!(\"server emitted feedback message {{:?}}\", feedback_message);
+        let final_position = [98, 4, 26];
+        action.handle_result_next_request(|_request| -> Result<move_arm::ResultResponse> {
+            println!("server preparing action result");
+            let final_pos = final_position.clone();
+            Ok(move_arm::ResultResponse::new(
+                true,
+                None,
+                final_pos,
+            ))
+        })
+        .await?;
 
-    let final_position = [98, 4, 26];
-    action.handle_result_next_request(|_request| -> Result<move_arm::ResultResponse> {{
-        println!(\"server preparing action result\");
-        let final_pos = final_position.clone();
-        Ok(move_arm::ResultResponse::new(
-            true,
-            None,
-            final_pos,
-        ))
-    }})
-    .await?;
+        println!("server handled result request. Final position sent: {:?}", &final_position);
 
-    println!(\"server handled result request. Final position sent: {{:?}}\", &final_position);
-
-    Ok(())
-}}
-",
-        &exposer_peppy_config_path_str, router_host, router_port
-    );
+        Ok(())
+    })
+}
+"#;
     let main_file = user_node_exposer.join("src").join("main.rs");
     fs::write(main_file, exposer_main).expect("failed to write exposer main");
 
     compile_project(&user_node_subscriber);
     compile_project(&user_node_exposer);
 
-    let exposer_dir = user_node_exposer.clone();
     let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let exposer_thread = thread::spawn(move || {
-        run_cargo_run(
-            &exposer_dir,
-            Some(Duration::from_secs(15)),
-            &[("PEPPY_RUNTIME_CONFIG", &exposer_runtime_config_str)],
-        )
-    });
+    let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
+
+    // Spawn exposer first so it's ready to handle requests
+    let mut exposer_child = spawn_cargo_run(
+        &user_node_exposer,
+        &[("PEPPY_RUNTIME_CONFIG", &exposer_runtime_config_str)],
+    );
 
     // Give the exposer a moment to start listening for goals before firing one.
     thread::sleep(Duration::from_millis(500));
 
-    let subscriber_dir = user_node_subscriber.clone();
-    let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
-    let subscriber_thread = thread::spawn(move || {
-        run_cargo_run(
-            &subscriber_dir,
-            Some(Duration::from_secs(15)),
-            &[("PEPPY_RUNTIME_CONFIG", &subscriber_runtime_config_str)],
+    let mut subscriber_child = spawn_cargo_run(
+        &user_node_subscriber,
+        &[("PEPPY_RUNTIME_CONFIG", &subscriber_runtime_config_str)],
+    );
+
+    // Wait for communication to happen
+    thread::sleep(Duration::from_secs(2));
+
+    // Send shutdown signals to both nodes
+    rt.block_on(async {
+        let messenger = MessengerHandle::from_host_port(&router_host, router_port)
+            .await
+            .expect("failed to create messenger for shutdown");
+
+        let shutdown_payload = bytes::Bytes::from_static(b"shutdown");
+
+        // Send shutdown to subscriber
+        let _ = ServiceMessenger::poll(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            SUBSCRIBER_NODE_NAME,
+            SHUTDOWN_SERVICE,
+            Some(TEST_MASTER_NODE),
+            Some(subscriber_instance_id),
+            shutdown_payload.clone(),
+            Duration::from_secs(5),
         )
+        .await;
+
+        // Send shutdown to exposer
+        let _ = ServiceMessenger::poll(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            BRAIN_NODE_NAME,
+            SHUTDOWN_SERVICE,
+            Some(TEST_MASTER_NODE),
+            Some(exposer_instance_id),
+            shutdown_payload,
+            Duration::from_secs(5),
+        )
+        .await;
     });
 
-    let exposer_output = exposer_thread.join().expect("exposer thread panicked");
-    let subscriber_output = subscriber_thread
-        .join()
-        .expect("subscriber thread panicked");
+    // Wait for both processes to exit
+    let subscriber_output = wait_for_child(
+        &mut subscriber_child,
+        Some(Duration::from_secs(10)),
+        &user_node_subscriber,
+    );
+    let exposer_output = wait_for_child(
+        &mut exposer_child,
+        Some(Duration::from_secs(10)),
+        &user_node_exposer,
+    );
 
     let subscriber_stdout = String::from_utf8_lossy(&subscriber_output.stdout).into_owned();
     let subscriber_stderr = String::from_utf8_lossy(&subscriber_output.stderr).into_owned();
@@ -1337,50 +1442,44 @@ fn actions_communication_cancel_goal() {
     subscriber_runtime_config
         .save_json5_launch_config(&subscriber_runtime_config_path)
         .unwrap();
-    let peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     init_cargo_user_node(&user_node_subscriber);
-    let subscriber_main = format!(
-        "
+    let subscriber_main = r#"
 use peppygen::subscribed_actions::brain_move_arm;
-use peppygen::{{Messenger, Result}};
+use peppygen::runner;
+use peppygen::Result;
 use std::time::Duration;
 
-#[tokio::main]
-async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
+fn main() -> Result<()> {
+    runner::run(|_parameters, node_runner| async move {
+        let request = brain_move_arm::GoalRequest {
+            arm_id: 7,
+            desired_position: [10, 20, 30],
+        };
+        let goal = brain_move_arm::fire_goal(
+            &node_runner,
+            Duration::from_secs(5),
+            None,
+            None,
+            request,
+            peppygen::QoSProfile::SensorData,
+        ).await?;
+        println!("goal accepted={}", goal.data.accepted);
 
-    let request = brain_move_arm::GoalRequest {{
-        arm_id: 7,
-        desired_position: [10, 20, 30],
-    }};
-    let goal = brain_move_arm::fire_goal(
-        &messenger,
-        Duration::from_secs(5),
-        None,
-        None,
-        request,
-        peppygen::QoSProfile::SensorData,
-    ).await?;
-    println!(\"goal accepted={{}}\", goal.data.accepted);
+        tokio::time::sleep(Duration::from_millis(200)).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+        let cancel_response = brain_move_arm::cancel_goal(&node_runner, &goal.action_handle, Duration::from_secs(5)).await?;
+        let error_msg = cancel_response.data.error_message.as_deref().unwrap_or("<none>");
+        println!(
+            "cancel accepted={} error={}",
+            cancel_response.data.accepted,
+            error_msg
+        );
 
-    let cancel_response = brain_move_arm::cancel_goal(&messenger, &goal.action_handle, Duration::from_secs(5)).await?;
-    let error_msg = cancel_response.data.error_message.as_deref().unwrap_or(\"<none>\");
-    println!(
-        \"cancel accepted={{}} error={{}}\",
-        cancel_response.data.accepted,
-        error_msg
-    );
-
-    Ok(())
-}}
-",
-        &peppy_config_path_str,
-        router_host,
-        router_port
-    );
+        Ok(())
+    })
+}
+"#;
     let main_file = user_node_subscriber.join("src").join("main.rs");
     fs::write(main_file, subscriber_main).expect("failed to write subscriber main");
 
@@ -1413,81 +1512,118 @@ async fn main() -> Result<()> {{
     exposer_runtime_config
         .save_json5_launch_config(&exposer_runtime_config_path)
         .unwrap();
-    let exposer_peppy_config_path_str = peppy_node_config_path.to_str().unwrap();
 
     init_cargo_user_node(&user_node_exposer);
-    let exposer_main = format!(
-        "
+    let exposer_main = r#"
 use peppygen::exposed_actions::move_arm;
-use peppygen::{{Messenger, Result}};
+use peppygen::runner;
+use peppygen::Result;
 
-#[tokio::main]
-async fn main() -> Result<()> {{
-    let messenger = Messenger::connect(\"{}\", \"{}\", {}).await?;
+fn main() -> Result<()> {
+    runner::run(|_parameters, node_runner| async move {
+        let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
 
-    let mut action = move_arm::ActionHandle::expose(&messenger).await?;
+        action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+            println!(
+                "server received goal arm_id={} desired={:?}",
+                request.data.arm_id,
+                request.data.desired_position
+            );
+            Ok(move_arm::GoalResponse::new(true))
+        })
+        .await?;
+        println!("server handled goal request");
 
-    action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {{
-        println!(
-            \"server received goal arm_id={{}} desired={{:?}}\",
-            request.data.arm_id,
-            request.data.desired_position
-        );
-        Ok(move_arm::GoalResponse::new(true))
-    }})
-    .await?;
-    println!(\"server handled goal request\");
+        let cancel_error = "goal cancelled by server";
 
-    let cancel_error = \"goal cancelled by server\";
+        action.handle_cancel_next_request(|_request| -> Result<move_arm::CancelResponse> {
+            println!("server received cancel request");
+            Ok(move_arm::CancelResponse::new(
+                false,
+                Some(cancel_error.to_owned()),
+            ))
+        })
+        .await?;
 
-    action.handle_cancel_next_request(|_request| -> Result<move_arm::CancelResponse> {{
-        println!(\"server received cancel request\");
-        Ok(move_arm::CancelResponse::new(
-            false,
-            Some(cancel_error.to_owned()),
-        ))
-    }})
-    .await?;
+        println!("server responded to cancel request error={}", cancel_error);
 
-    println!(\"server responded to cancel request error={{}}\", cancel_error);
-
-    Ok(())
-}}
-",
-        &exposer_peppy_config_path_str, router_host, router_port
-    );
+        Ok(())
+    })
+}
+"#;
     let main_file = user_node_exposer.join("src").join("main.rs");
     fs::write(main_file, exposer_main).expect("failed to write exposer main");
 
     compile_project(&user_node_subscriber);
     compile_project(&user_node_exposer);
 
-    let exposer_dir = user_node_exposer.clone();
     let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let exposer_thread = thread::spawn(move || {
-        run_cargo_run(
-            &exposer_dir,
-            Some(Duration::from_secs(15)),
-            &[("PEPPY_RUNTIME_CONFIG", &exposer_runtime_config_str)],
-        )
-    });
+    let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
+
+    // Spawn exposer first so it's ready to handle requests
+    let mut exposer_child = spawn_cargo_run(
+        &user_node_exposer,
+        &[("PEPPY_RUNTIME_CONFIG", &exposer_runtime_config_str)],
+    );
 
     thread::sleep(Duration::from_millis(500));
 
-    let subscriber_dir = user_node_subscriber.clone();
-    let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
-    let subscriber_thread = thread::spawn(move || {
-        run_cargo_run(
-            &subscriber_dir,
-            Some(Duration::from_secs(15)),
-            &[("PEPPY_RUNTIME_CONFIG", &subscriber_runtime_config_str)],
+    let mut subscriber_child = spawn_cargo_run(
+        &user_node_subscriber,
+        &[("PEPPY_RUNTIME_CONFIG", &subscriber_runtime_config_str)],
+    );
+
+    // Wait for communication to happen
+    thread::sleep(Duration::from_secs(2));
+
+    // Send shutdown signals to both nodes
+    rt.block_on(async {
+        let messenger = MessengerHandle::from_host_port(&router_host, router_port)
+            .await
+            .expect("failed to create messenger for shutdown");
+
+        let shutdown_payload = bytes::Bytes::from_static(b"shutdown");
+
+        // Send shutdown to subscriber
+        let _ = ServiceMessenger::poll(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            SUBSCRIBER_NODE_NAME,
+            SHUTDOWN_SERVICE,
+            Some(TEST_MASTER_NODE),
+            Some(subscriber_instance_id),
+            shutdown_payload.clone(),
+            Duration::from_secs(5),
         )
+        .await;
+
+        // Send shutdown to exposer
+        let _ = ServiceMessenger::poll(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            BRAIN_NODE_NAME,
+            SHUTDOWN_SERVICE,
+            Some(TEST_MASTER_NODE),
+            Some(exposer_instance_id),
+            shutdown_payload,
+            Duration::from_secs(5),
+        )
+        .await;
     });
 
-    let exposer_output = exposer_thread.join().expect("exposer thread panicked");
-    let subscriber_output = subscriber_thread
-        .join()
-        .expect("subscriber thread panicked");
+    // Wait for both processes to exit
+    let subscriber_output = wait_for_child(
+        &mut subscriber_child,
+        Some(Duration::from_secs(10)),
+        &user_node_subscriber,
+    );
+    let exposer_output = wait_for_child(
+        &mut exposer_child,
+        Some(Duration::from_secs(10)),
+        &user_node_exposer,
+    );
 
     let subscriber_stdout = String::from_utf8_lossy(&subscriber_output.stdout).into_owned();
     let subscriber_stderr = String::from_utf8_lossy(&subscriber_output.stderr).into_owned();
