@@ -19,6 +19,7 @@ capnp = "0.24"
 indexmap = "2.2"
 
 [dev-dependencies]
+bytes = "1"
 serde_json5 = "0.2.1"
 tempfile = "3.10"
 peppylib = { path = "../peppylib" }
