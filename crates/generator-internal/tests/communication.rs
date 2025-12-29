@@ -67,8 +67,6 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
 }
 "#;
 
-// TODO: A better place for those tests is probably inside the `peppy` crate
-
 /// Creates 2 projects in separate directory and check if they can send/receive topics
 #[test]
 fn topics_communication() {
@@ -89,13 +87,13 @@ fn topics_communication() {
         serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
     let subscribed_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
-    let (mut generator, output_dir2, user_node_subscriber, peppy_node_config_path) =
+    let (mut generator, subscriber_dir, user_node_subscriber, peppy_node_config_path) =
         init_test_env(&temp_dir_proj2);
     generator
         .add_subscribed_topic(&subscribed_topic, subscribed_format)
         .unwrap();
-    let output_config = copy_config_to_output(&user_node_subscriber, &output_dir2);
-    generator.build(&output_dir2).unwrap();
+    let output_config = copy_config_to_output(&user_node_subscriber, &subscriber_dir);
+    generator.build(&subscriber_dir).unwrap();
     fs::remove_file(output_config).unwrap();
 
     let codegen_peppy_config_md5 =
@@ -142,15 +140,25 @@ fn main() -> Result<()> {
     let exposer_instance_id = "exposer_instance";
     let temp_dir_proj1 = TempDir::new().unwrap();
     let exposed_topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
-    let (mut generator, output_dir1, user_node_exposer, peppy_node_config_path) =
+    let (mut generator, exposer_dir, user_node_exposer, peppy_node_config_path) =
         init_test_env(&temp_dir_proj1);
     let exposer_parameters: config::NodeArguments =
         serde_json5::from_str(r#"{ frequency: "f64" }"#).unwrap();
-    generator.set_parameters(exposer_parameters);
+    generator.set_parameters(exposer_parameters.clone());
     generator.add_exposed_topic(&exposed_topic).unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer, &output_dir1);
-    generator.build(&output_dir1).unwrap();
+    let output_config = copy_config_to_output(&user_node_exposer, &exposer_dir);
+    generator.build(&exposer_dir).unwrap();
     fs::remove_file(output_config).unwrap();
+
+    // Update the peppy node config to include the parameters schema
+    let mut node_config: config::node::NodeConfig =
+        serde_json5::from_str(&fs::read_to_string(&peppy_node_config_path).unwrap()).unwrap();
+    node_config.parameters = exposer_parameters;
+    fs::write(
+        &peppy_node_config_path,
+        serde_json5::to_string(&node_config).unwrap(),
+    )
+    .unwrap();
 
     let codegen_peppy_config_md5 =
         RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
@@ -159,7 +167,7 @@ fn main() -> Result<()> {
         router_port,
         DeploymentInstance {
             instance_id: Name::new(exposer_instance_id).unwrap(),
-            arguments: Default::default(),
+            arguments: serde_json5::from_str(r#"{ frequency: 10.0 }"#).unwrap(),
         },
         "uvc_camera", // Must match the node name expected by the subscriber
         "test_master",

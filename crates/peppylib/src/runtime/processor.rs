@@ -55,10 +55,10 @@ impl Processor {
     }
 
     fn check_node_config_parameters_types(
-        runtime_parameters: &NodeArguments,
+        runtime_arguments: &NodeArguments,
         compiled_node_parameters: &NodeArguments,
     ) -> Result<()> {
-        for (key, runtime_value) in runtime_parameters {
+        for (key, runtime_value) in runtime_arguments {
             let compiled_type = compiled_node_parameters
                 .get(key)
                 .ok_or_else(|| Error::MissingCompiledParameter { path: key.clone() })?;
