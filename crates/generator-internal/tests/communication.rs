@@ -11,11 +11,21 @@ use config::{
 use generator::{LanguageGenerator, SubscribedActionMessage};
 use helpers::{
     compile_project, copy_config_to_output, init_cargo_user_node, init_test_env, run_cargo_run,
-    start_router_for_tests,
+    spawn_cargo_run, start_router_for_tests, wait_for_child,
 };
+use peppylib::{MessengerHandle, ServiceMessenger, messaging::SHUTDOWN_SERVICE};
 use pmi::MessengerBackend;
 use std::{fs, thread, time::Duration};
 use tempfile::TempDir;
+
+// --- Common test constants
+const TEST_MASTER_NODE: &str = "test_master";
+const SUBSCRIBER_NODE_NAME: &str = "subscriber_node";
+const SUBSCRIBER_INSTANCE_ID: &str = "subscriber_instance";
+const EXPOSER_INSTANCE_ID: &str = "exposer_instance";
+const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
+const UVC_CAMERA_NODE_NAME: &str = "uvc_camera";
+const BRAIN_NODE_NAME: &str = "brain";
 
 // --- Topics exposes and its corresponding subscriber
 const EXPOSED_TOPIC_EXAMPLE: &str = r#"
@@ -81,7 +91,7 @@ fn topics_communication() {
         .expect("failed to start zenoh router for test");
 
     // --- Subscriber project
-    let subscriber_instance_id = "subscriber_instance";
+    let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
     let temp_dir_proj2 = TempDir::new().unwrap();
     let subscribed_topic: SubscribedTopic =
         serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
@@ -105,8 +115,8 @@ fn topics_communication() {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
         },
-        "subscriber_node",
-        "test_master",
+        SUBSCRIBER_NODE_NAME,
+        TEST_MASTER_NODE,
         &codegen_peppy_config_md5,
     )
     .unwrap();
@@ -137,7 +147,7 @@ fn main() -> Result<()> {
     fs::write(main_file, &subscriber_main).expect("failed to write main file");
 
     // --- Exposer project
-    let exposer_instance_id = "exposer_instance";
+    let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_proj1 = TempDir::new().unwrap();
     let exposed_topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
     let (mut generator, exposer_dir, user_node_exposer, peppy_node_config_path) =
@@ -169,8 +179,8 @@ fn main() -> Result<()> {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: serde_json5::from_str(r#"{ frequency: 10.0 }"#).unwrap(),
         },
-        "uvc_camera", // Must match the node name expected by the subscriber
-        "test_master",
+        UVC_CAMERA_NODE_NAME, // Must match the node name expected by the subscriber
+        TEST_MASTER_NODE,
         &codegen_peppy_config_md5,
     )
     .unwrap();
@@ -230,34 +240,74 @@ fn main() -> Result<()> {
     compile_project(&user_node_subscriber);
     compile_project(&user_node_exposer);
 
-    let subscriber_dir = user_node_subscriber.clone();
-    let subscriber_thread = thread::spawn(move || {
-        run_cargo_run(
-            &subscriber_dir,
-            Some(Duration::from_secs(5)),
-            &[("PEPPY_RUNTIME_CONFIG", &user_node_subscriber_config_str)],
-        )
-    });
+    // Spawn both processes
+    let mut subscriber_child = spawn_cargo_run(
+        &user_node_subscriber,
+        &[("PEPPY_RUNTIME_CONFIG", &user_node_subscriber_config_str)],
+    );
 
     // Give the subscriber a moment to connect before emitting frames.
     thread::sleep(Duration::from_millis(500));
 
-    let exposer_dir = user_node_exposer.clone();
-    let exposer_thread = thread::spawn(move || {
-        run_cargo_run(
-            &exposer_dir,
-            Some(Duration::from_secs(5)),
-            &[(
-                "PEPPY_RUNTIME_CONFIG",
-                &user_node_exposer_runtime_config_str,
-            )],
+    let mut exposer_child = spawn_cargo_run(
+        &user_node_exposer,
+        &[(
+            "PEPPY_RUNTIME_CONFIG",
+            &user_node_exposer_runtime_config_str,
+        )],
+    );
+
+    // Wait for communication to happen
+    thread::sleep(Duration::from_secs(2));
+
+    // Send shutdown signals to both nodes
+    rt.block_on(async {
+        let messenger = MessengerHandle::from_host_port(&router_host, router_port)
+            .await
+            .expect("failed to create messenger for shutdown");
+
+        let shutdown_payload = bytes::Bytes::from_static(b"shutdown");
+
+        // Send shutdown to subscriber
+        let _ = ServiceMessenger::poll(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            SUBSCRIBER_NODE_NAME,
+            SHUTDOWN_SERVICE,
+            Some(TEST_MASTER_NODE),
+            Some(subscriber_instance_id),
+            shutdown_payload.clone(),
+            Duration::from_secs(5),
         )
+        .await;
+
+        // Send shutdown to exposer
+        let _ = ServiceMessenger::poll(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            UVC_CAMERA_NODE_NAME,
+            SHUTDOWN_SERVICE,
+            Some(TEST_MASTER_NODE),
+            Some(exposer_instance_id),
+            shutdown_payload,
+            Duration::from_secs(5),
+        )
+        .await;
     });
 
-    let subscriber_output = subscriber_thread
-        .join()
-        .expect("subscriber thread panicked");
-    let exposer_output = exposer_thread.join().expect("exposer thread panicked");
+    // Wait for both processes to exit
+    let subscriber_output = wait_for_child(
+        &mut subscriber_child,
+        Some(Duration::from_secs(10)),
+        &user_node_subscriber,
+    );
+    let exposer_output = wait_for_child(
+        &mut exposer_child,
+        Some(Duration::from_secs(10)),
+        &user_node_exposer,
+    );
 
     let subscriber_stdout = String::from_utf8_lossy(&subscriber_output.stdout).into_owned();
     let subscriber_stderr = String::from_utf8_lossy(&subscriber_output.stderr).into_owned();
@@ -378,8 +428,8 @@ fn services_communication_no_target_instance_id() {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
         },
-        "subscriber_node",
-        "test_master",
+        SUBSCRIBER_NODE_NAME,
+        TEST_MASTER_NODE,
         &codegen_peppy_config_md5,
     )
     .unwrap();
@@ -440,8 +490,8 @@ async fn main() -> Result<()> {{
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
         },
-        "uvc_camera",
-        "test_master",
+        UVC_CAMERA_NODE_NAME,
+        TEST_MASTER_NODE,
         &codegen_peppy_config_md5,
     )
     .unwrap();
@@ -575,7 +625,7 @@ fn services_communication_multiple_exposed_instances_same_service() {
         .expect("failed to start zenoh router for test");
 
     // --- Subscriber (client) project
-    let subscriber_instance_id = "subscriber_instance";
+    let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
     let temp_dir_subscriber = TempDir::new().unwrap();
     let subscribed_service: SubscribedService =
         serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE).unwrap();
@@ -605,8 +655,8 @@ fn services_communication_multiple_exposed_instances_same_service() {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
         },
-        "subscriber_node",
-        "test_master",
+        SUBSCRIBER_NODE_NAME,
+        TEST_MASTER_NODE,
         &codegen_peppy_config_md5,
     )
     .unwrap();
@@ -666,8 +716,8 @@ async fn main() -> Result<()> {{
             instance_id: Name::new(exposer1_instance_id).unwrap(),
             arguments: Default::default(),
         },
-        "uvc_camera",
-        "test_master",
+        UVC_CAMERA_NODE_NAME,
+        TEST_MASTER_NODE,
         &codegen_peppy_config_md5,
     )
     .unwrap();
@@ -728,8 +778,8 @@ async fn main() -> Result<()> {{
             instance_id: Name::new(exposer2_instance_id).unwrap(),
             arguments: Default::default(),
         },
-        "uvc_camera",
-        "test_master",
+        UVC_CAMERA_NODE_NAME,
+        TEST_MASTER_NODE,
         &codegen_peppy_config_md5,
     )
     .unwrap();
@@ -975,7 +1025,7 @@ fn actions_communication() {
         .expect("failed to start zenoh router for test");
 
     // --- Subscriber (client) project
-    let subscriber_instance_id = "subscriber_instance";
+    let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
     let temp_dir_subscriber = TempDir::new().unwrap();
     let subscribed_action: SubscribedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
@@ -1012,8 +1062,8 @@ fn actions_communication() {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
         },
-        "subscriber_node",
-        "test_master",
+        SUBSCRIBER_NODE_NAME,
+        TEST_MASTER_NODE,
         &codegen_peppy_config_md5,
     )
     .unwrap();
@@ -1071,7 +1121,7 @@ async fn main() -> Result<()> {{
     fs::write(main_file, subscriber_main).expect("failed to write subscriber main");
 
     // --- Exposer (server) project
-    let exposer_instance_id = "exposer_instance";
+    let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new().unwrap();
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
@@ -1090,8 +1140,8 @@ async fn main() -> Result<()> {{
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
         },
-        "brain", // Must match the node name expected by the subscriber
-        "test_master",
+        BRAIN_NODE_NAME, // Must match the node name expected by the subscriber
+        TEST_MASTER_NODE,
         &codegen_peppy_config_md5,
     )
     .unwrap();
@@ -1241,7 +1291,7 @@ fn actions_communication_cancel_goal() {
     let (mut router, _dir, router_host, router_port) = start_router_for_tests(&rt);
 
     // --- Subscriber (client) project
-    let subscriber_instance_id = "subscriber_instance";
+    let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
     let temp_dir_subscriber = TempDir::new().unwrap();
     let subscribed_action: SubscribedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
@@ -1278,8 +1328,8 @@ fn actions_communication_cancel_goal() {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
         },
-        "subscriber_node",
-        "test_master",
+        SUBSCRIBER_NODE_NAME,
+        TEST_MASTER_NODE,
         &codegen_peppy_config_md5,
     )
     .unwrap();
@@ -1335,7 +1385,7 @@ async fn main() -> Result<()> {{
     fs::write(main_file, subscriber_main).expect("failed to write subscriber main");
 
     // --- Exposer (server) project
-    let exposer_instance_id = "exposer_instance";
+    let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new().unwrap();
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
@@ -1354,8 +1404,8 @@ async fn main() -> Result<()> {{
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
         },
-        "brain", // Must match the node name expected by the subscriber
-        "test_master",
+        BRAIN_NODE_NAME, // Must match the node name expected by the subscriber
+        TEST_MASTER_NODE,
         &codegen_peppy_config_md5,
     )
     .unwrap();
