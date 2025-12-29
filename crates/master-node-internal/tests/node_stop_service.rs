@@ -3,6 +3,7 @@ mod common;
 use common::{CALLER_INSTANCE_ID, setup_test_master_node};
 use master_node::encoding::{NodeAddRequest, NodeStartRequest, NodeStopRequest};
 use peppylib::messaging::MessengerHandle;
+use peppylib::services::health::listen_for_node_health;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,6 +46,21 @@ async fn node_stop_success() {
         server.node_stack.contains("stoppable_node", "1.0.0"),
         "node should be in the stack"
     );
+
+    let node_name = "stoppable_node";
+    let bound_master_node = "test_master_node";
+
+    // Set up a mock health service listener to simulate the spawned node being ready.
+    // In real usage, the spawned process would expose this service, but in tests with
+    // launch_cmd: ["true"], the process exits immediately.
+    let health_handle = MessengerHandle::from_shared(Arc::clone(&server.shared_messenger));
+    let _health_task =
+        listen_for_node_health(&health_handle, bound_master_node, instance_id, node_name)
+            .await
+            .expect("failed to start mock health service");
+
+    // Allow the health service to fully establish its listeners
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Now start the instance
     let runtime_config_json5 = r#"{

@@ -14,6 +14,7 @@ use std::{
 pub struct NodeConfig {
     pub schema_version: SchemaVersion,
     pub manifest: Manifest,
+    // TODO: Rename `parameters` to `arguments` when it's given in a NodeConfig, the `parameters` name is only used in DeploymentInstance
     #[serde(default)]
     pub parameters: NodeArguments,
     #[serde(default)]

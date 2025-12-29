@@ -73,6 +73,7 @@ pub struct Deployment {
 #[serde(deny_unknown_fields)]
 pub struct DeploymentInstance {
     pub instance_id: Name,
+    // TODO: Rename `parameters` to `arguments` when it's given in a NodeConfig, the `parameters` name is only used in DeploymentInstance
     #[serde(default, alias = "parameters")]
     pub arguments: NodeArguments,
 }

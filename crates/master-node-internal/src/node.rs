@@ -5,6 +5,7 @@ use crate::services::{
     listen_for_node_start, listen_for_node_stop, listen_for_ping,
 };
 use config::{
+    AnyType, NodeArguments,
     node::{Manifest, Name, NodeConfig},
     peppy_config::CURRENT_SCHEMA_VERSION,
 };
@@ -13,12 +14,28 @@ use node_stack::NodeStack;
 use peppylib::MessengerHandle;
 use pmi::Messenger;
 use rand::rng;
+use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tracing::info;
 
 const MASTER_NODE_TAG: &str = "internal";
+
+pub struct MasterNodeArguments {
+    pub node_start_health_timeout: Duration,
+}
+
+impl From<MasterNodeArguments> for NodeArguments {
+    fn from(args: MasterNodeArguments) -> Self {
+        let mut map = BTreeMap::new();
+        map.insert(
+            "node_start_health_timeout_ms".to_string(),
+            AnyType::UInt(args.node_start_health_timeout.as_millis() as u64),
+        );
+        map
+    }
+}
 
 pub struct MasterNode {
     node_stack: Arc<NodeStack>,
@@ -26,14 +43,21 @@ pub struct MasterNode {
     instance_id: Name,
     messenger: MessengerHandle,
     start_time: Instant,
+    node_start_health_timeout: Duration,
 }
 
 impl MasterNode {
-    pub fn new(messenger: Arc<Mutex<Messenger>>, node_name: Option<&str>) -> Self {
+    pub fn new(
+        messenger: Arc<Mutex<Messenger>>,
+        node_name: Option<&str>,
+        node_arguments: MasterNodeArguments,
+    ) -> Self {
         let manifest_name = match node_name {
             Some(name) => Name::new(name).unwrap(),
             None => Name::new(get_random(rng())).unwrap(),
         };
+
+        let node_start_health_timeout = node_arguments.node_start_health_timeout;
 
         let node_config = NodeConfig {
             schema_version: CURRENT_SCHEMA_VERSION,
@@ -43,7 +67,7 @@ impl MasterNode {
                 labels: None,
                 launch_cmd: None,
             },
-            parameters: Default::default(),
+            parameters: node_arguments.into(),
             interfaces: Default::default(),
             resources: None,
             logging: None,
@@ -60,6 +84,7 @@ impl MasterNode {
             instance_id,
             messenger,
             start_time: Instant::now(),
+            node_start_health_timeout,
         }
     }
 
@@ -145,6 +170,7 @@ impl MasterNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
+                self.node_start_health_timeout,
             )
             .await?,
             listen_for_node_stop(

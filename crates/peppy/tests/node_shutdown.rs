@@ -12,7 +12,7 @@ fn shutdown_request_exits_node() {
         .expect("failed to create tokio runtime");
 
     // Start zenohd router
-    let (mut router, _router_dir, router_host, router_port) = rt
+    let (_router, _router_dir, router_host, router_port) = rt
         .block_on(start_zenohd_process("127.0.0.1", None))
         .expect("failed to start zenoh router for test");
 

@@ -4,10 +4,12 @@ use bytes::Bytes;
 use config::node::Name;
 use config::runtime::RuntimeConfig;
 use node_stack::{NodeEntity, NodeStack};
-use peppylib::messaging::ServiceRequestContext;
+use peppylib::encoding::health::NodeHealthRequest;
+use peppylib::messaging::{NODE_HEALTH_SERVICE, ServiceRequestContext};
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -19,6 +21,7 @@ pub async fn listen_for_node_start(
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
+    node_start_health_timeout: Duration,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
@@ -29,9 +32,22 @@ pub async fn listen_for_node_start(
     )
     .await?;
 
+    let messenger = messenger.clone();
+    let master_node_name = master_node_node.to_string();
+    let caller_instance_id = instance_id.to_string();
+
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(|context| handle_node_start_request(context, node_stack.clone()))
+            .handle_requests(|context| {
+                handle_node_start_request(
+                    context,
+                    node_stack.clone(),
+                    messenger.clone(),
+                    master_node_name.clone(),
+                    caller_instance_id.clone(),
+                    node_start_health_timeout,
+                )
+            })
             .await
             .map_err(Into::into)
     });
@@ -42,19 +58,34 @@ pub async fn listen_for_node_start(
 async fn handle_node_start_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
+    messenger: MessengerHandle,
+    master_node_name: String,
+    caller_instance_id: String,
+    node_start_health_timeout: Duration,
 ) -> PeppyResult<Bytes> {
     let sender_instance_id = context.message().instance_id();
-    handle_node_start_request_inner(&context, node_stack)
-        .await
-        .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: sender_instance_id.to_string(),
-            reason: e.to_string(),
-        })
+    handle_node_start_request_inner(
+        &context,
+        node_stack,
+        &messenger,
+        &master_node_name,
+        &caller_instance_id,
+        node_start_health_timeout,
+    )
+    .await
+    .map_err(|e| PeppyError::InvalidServiceRequest {
+        identifier: sender_instance_id.to_string(),
+        reason: e.to_string(),
+    })
 }
 
 async fn handle_node_start_request_inner(
     context: &ServiceRequestContext,
     node_stack: Arc<NodeStack>,
+    messenger: &MessengerHandle,
+    master_node_name: &str,
+    caller_instance_id: &str,
+    node_start_health_timeout: Duration,
 ) -> Result<Bytes> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -100,14 +131,52 @@ async fn handle_node_start_request_inner(
     };
 
     // Run the node with the runtime config
-    match run_node(&entity, &request.runtime_config_json5) {
-        Ok(_child) => {
-            debug!("Successfully started node instance '{}'", instance_id_str);
+    let mut child = match run_node(&entity, &request.runtime_config_json5) {
+        Ok(child) => child,
+        Err(e) => {
+            debug!("Failed to start node instance '{}': {}", instance_id_str, e);
+            return NodeStartResponse::failure(format!("Failed to start node: {}", e)).encode();
+        }
+    };
+
+    debug!(
+        "Successfully spawned node instance '{}', performing health check...",
+        instance_id_str
+    );
+
+    // Perform health check with timeout
+    let health_result = perform_health_check(
+        messenger,
+        master_node_name,
+        caller_instance_id,
+        runtime_config.node_name.as_str(),
+        runtime_config.bound_master_node.as_str(),
+        instance_id_str,
+        node_start_health_timeout,
+    )
+    .await;
+
+    match health_result {
+        Ok(()) => {
+            debug!(
+                "Health check passed for node instance '{}'",
+                instance_id_str
+            );
             NodeStartResponse::success().encode()
         }
         Err(e) => {
-            debug!("Failed to start node instance '{}': {}", instance_id_str, e);
-            NodeStartResponse::failure(format!("Failed to start node: {}", e)).encode()
+            debug!(
+                "Health check failed for node instance '{}': {}, killing process",
+                instance_id_str, e
+            );
+            // Kill the process since health check failed
+            if let Err(kill_err) = child.kill() {
+                debug!(
+                    "Failed to kill process for node instance '{}': {}",
+                    instance_id_str, kill_err
+                );
+            }
+            NodeStartResponse::failure(format!("Health check failed: {}", e)).encode()
         }
     }
 }
@@ -152,4 +221,34 @@ pub fn run_node(entity: &NodeEntity, runtime_config_json5: &str) -> Result<Child
         .spawn()?;
 
     Ok(child)
+}
+
+/// Performs a health check on a newly started node instance.
+/// Polls the node's health service with a timeout and returns Ok if the node responds.
+async fn perform_health_check(
+    messenger: &MessengerHandle,
+    master_node_name: &str,
+    caller_instance_id: &str,
+    target_node_name: &str,
+    target_master_node: &str,
+    target_instance_id: &str,
+    timeout: Duration,
+) -> Result<()> {
+    let request = NodeHealthRequest::new();
+    let request_payload = request.encode()?;
+
+    ServiceMessenger::poll(
+        messenger,
+        master_node_name,
+        caller_instance_id,
+        target_node_name,
+        NODE_HEALTH_SERVICE,
+        Some(target_master_node),
+        Some(target_instance_id),
+        request_payload,
+        timeout,
+    )
+    .await?;
+
+    Ok(())
 }
