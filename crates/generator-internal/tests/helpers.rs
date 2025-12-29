@@ -155,6 +155,7 @@ pub fn wait_for_child(
     }
 }
 
+#[warn(dead_code)]
 pub fn compile_project(dir: impl AsRef<Path>) {
     let cargo_output = Command::new("cargo")
         .arg("build")

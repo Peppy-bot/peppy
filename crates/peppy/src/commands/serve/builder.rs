@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::CompositeCommand;
 use super::Serve;
@@ -14,6 +15,8 @@ use pmi::ZenohAdapter;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+
+const DEFAULT_NODE_START_HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct ServeCommandBuilder {
     composite_command: CompositeCommand,
@@ -75,8 +78,11 @@ impl ServeCommandBuilder {
     pub fn build(mut self) -> Result<Serve> {
         if self.master_node_requested {
             if let Some(messenger) = &self.messenger {
-                let master_node =
-                    MasterNodeRunner::new(Arc::clone(messenger), self.master_node_name.clone());
+                let master_node = MasterNodeRunner::new(
+                    Arc::clone(messenger),
+                    self.master_node_name.clone(),
+                    DEFAULT_NODE_START_HEALTH_TIMEOUT,
+                );
 
                 // Write the daemon state file with the master node name
                 let master_node_name = master_node.node_name().to_string();

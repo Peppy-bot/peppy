@@ -1,4 +1,4 @@
-use master_node::MasterNode;
+use master_node::{MasterNode, MasterNodeArguments};
 use node_stack::NodeStack;
 use peppylib::messaging::MessengerHandle;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
@@ -6,6 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+
+const DEFAULT_HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Client for sending requests to a MasterNode.
 pub struct MasterNodeClient {
@@ -33,9 +35,22 @@ impl Drop for MasterNodeServer {
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
 
 pub async fn setup_test_master_node() -> (MasterNodeClient, MasterNodeServer) {
+    setup_test_master_node_with_timeout(DEFAULT_HEALTH_CHECK_TIMEOUT).await
+}
+
+pub async fn setup_test_master_node_with_timeout(
+    node_start_health_timeout: Duration,
+) -> (MasterNodeClient, MasterNodeServer) {
     let shared_messenger = create_mock_messenger().await;
 
-    let master_node = MasterNode::new(Arc::clone(&shared_messenger), Some("test_master_node"));
+    let node_arguments = MasterNodeArguments {
+        node_start_health_timeout,
+    };
+    let master_node = MasterNode::new(
+        Arc::clone(&shared_messenger),
+        Some("test_master_node"),
+        node_arguments,
+    );
     let master_node_name = master_node.node_name().to_string();
     let instance_id = master_node.instance_id().to_string();
     let node_stack = master_node.node_stack().clone();

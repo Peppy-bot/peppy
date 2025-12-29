@@ -1,7 +1,8 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::error::Error;
-use master_node::MasterNode;
+use master_node::{MasterNode, MasterNodeArguments};
 use pmi::Messenger;
 use tokio::sync::Mutex;
 use tracing::info;
@@ -11,8 +12,15 @@ pub struct MasterNodeRunner {
 }
 
 impl MasterNodeRunner {
-    pub fn new(messenger: Arc<Mutex<Messenger>>, master_name: Option<String>) -> Self {
-        let master_node = MasterNode::new(messenger, master_name.as_deref());
+    pub fn new(
+        messenger: Arc<Mutex<Messenger>>,
+        master_name: Option<String>,
+        node_start_health_timeout: Duration,
+    ) -> Self {
+        let node_arguments = MasterNodeArguments {
+            node_start_health_timeout,
+        };
+        let master_node = MasterNode::new(messenger, master_name.as_deref(), node_arguments);
         Self { master_node }
     }
 

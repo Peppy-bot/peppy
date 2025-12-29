@@ -27,5 +27,5 @@ pub mod node_capnp {
 }
 
 pub use error::{Error, Result};
-pub use node::MasterNode;
+pub use node::{MasterNode, MasterNodeArguments};
 pub use services::names;
