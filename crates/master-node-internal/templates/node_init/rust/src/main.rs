@@ -1,12 +1,9 @@
-use anyhow;
-use peppygen;
+use peppygen::{Result, run};
 
-// TODO: Maybe make this async? What is the best, simplest design?
-fn main() -> anyhow::Result<()> {
-    // spins until shutdown
-    // TODO Add `Drop` to `run` to signal the master node that the node has disconnected
-    peppygen::run(|args, messenger| {
-        //node.create_timer(std::time::Duration::from_secs(1), || println!("tick"))?;
+fn main() -> Result<()> {
+    run(|args, node_runner| async {
+        let _ = args;
+        let _ = node_runner;
         Ok(())
     })
 }
