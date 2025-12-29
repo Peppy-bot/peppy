@@ -80,7 +80,6 @@ impl NodeBuilder {
                 master_node_name,
                 CALLER_INSTANCE_ID,
                 master_node_name,
-                None,
                 REQUEST_TIMEOUT,
             )
             .await

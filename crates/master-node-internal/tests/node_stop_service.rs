@@ -33,7 +33,6 @@ async fn node_stop_success() {
             &client.master_node_name,
             CALLER_INSTANCE_ID,
             &client.master_node_name,
-            Some(&client.instance_id),
             Duration::from_secs(2),
         )
         .await
@@ -66,7 +65,6 @@ async fn node_stop_success() {
             &client.master_node_name,
             CALLER_INSTANCE_ID,
             &client.master_node_name,
-            Some(&client.instance_id),
             Duration::from_secs(2),
         )
         .await
@@ -100,7 +98,7 @@ async fn node_stop_success() {
             &client.master_node_name,
             CALLER_INSTANCE_ID,
             &client.master_node_name,
-            Some(&client.instance_id),
+            &client.master_node_name,
             Duration::from_secs(5),
         )
         .await
@@ -141,7 +139,6 @@ async fn node_stop_instance_fails_when_not_started() {
             &client.master_node_name,
             CALLER_INSTANCE_ID,
             &client.master_node_name,
-            Some(&client.instance_id),
             Duration::from_secs(2),
         )
         .await
@@ -166,7 +163,7 @@ async fn node_stop_instance_fails_when_not_started() {
             &client.master_node_name,
             CALLER_INSTANCE_ID,
             &client.master_node_name,
-            Some(&client.instance_id),
+            &client.master_node_name,
             Duration::from_secs(10),
         )
         .await
@@ -195,7 +192,7 @@ async fn node_stop_instance_id_not_found() {
             &client.master_node_name,
             CALLER_INSTANCE_ID,
             &client.master_node_name,
-            Some(&client.instance_id),
+            &client.master_node_name,
             Duration::from_secs(2),
         )
         .await
@@ -227,7 +224,7 @@ async fn node_stop_invalid_instance_id() {
             &client.master_node_name,
             CALLER_INSTANCE_ID,
             &client.master_node_name,
-            Some(&client.instance_id),
+            &client.master_node_name,
             Duration::from_secs(2),
         )
         .await

@@ -6,6 +6,5 @@ pub mod remove;
 pub mod start;
 pub mod stop;
 pub mod sync;
-pub mod templates;
 
 pub use super::{decode_message, encode_message};

@@ -76,7 +76,6 @@ async fn test_node_list_returns_dot_graph() {
             &client.master_node_name,
             CALLER_INSTANCE_ID,
             &client.master_node_name,
-            Some(&client.instance_id),
             Duration::from_secs(2),
         )
         .await
