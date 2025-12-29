@@ -16,7 +16,6 @@ pub struct NodeAddRequest {
     pub peppy_json5: String,
     pub from_dir: PathBuf,
     pub instance_id: Option<String>,
-    pub run_immediately: bool,
 }
 
 impl NodeAddRequest {
@@ -25,17 +24,11 @@ impl NodeAddRequest {
             peppy_json5: peppy_json5.into(),
             from_dir: from_dir.into(),
             instance_id: None,
-            run_immediately: false,
         }
     }
 
     pub fn with_instance_id(mut self, instance_id: impl Into<String>) -> Self {
         self.instance_id = Some(instance_id.into());
-        self
-    }
-
-    pub fn with_run_immediately(mut self, run_immediately: bool) -> Self {
-        self.run_immediately = run_immediately;
         self
     }
 
@@ -48,7 +41,6 @@ impl NodeAddRequest {
             if let Some(ref instance_id) = self.instance_id {
                 request.set_instance_id(instance_id);
             }
-            request.set_run_immediately(self.run_immediately);
         }
         encode_message(&builder)
     }
@@ -66,7 +58,6 @@ impl NodeAddRequest {
             peppy_json5: request.get_peppy_json5()?.to_str()?.to_owned(),
             from_dir: PathBuf::from(request.get_from_dir()?.to_str()?),
             instance_id,
-            run_immediately: request.get_run_immediately(),
         })
     }
 
@@ -98,7 +89,6 @@ impl NodeAddRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeAddResponse {
     pub success: bool,
-    pub is_running: bool,
     pub node_instance_id: String,
     pub error_message: Option<String>,
 }
@@ -106,24 +96,22 @@ pub struct NodeAddResponse {
 impl NodeAddResponse {
     pub fn new(
         success: bool,
-        is_running: bool,
         node_instance_id: impl Into<String>,
         error_message: Option<String>,
     ) -> Self {
         Self {
             success,
-            is_running,
             node_instance_id: node_instance_id.into(),
             error_message,
         }
     }
 
-    pub fn success(node_instance_id: impl Into<String>, is_running: bool) -> Self {
-        Self::new(true, is_running, node_instance_id, None)
+    pub fn success(node_instance_id: impl Into<String>) -> Self {
+        Self::new(true, node_instance_id, None)
     }
 
     pub fn failure(error_message: impl Into<String>) -> Self {
-        Self::new(false, false, "", Some(error_message.into()))
+        Self::new(false, "", Some(error_message.into()))
     }
 
     pub fn encode(&self) -> Result<Bytes> {
@@ -131,7 +119,6 @@ impl NodeAddResponse {
         {
             let mut response = builder.init_root::<node_capnp::node_add_response::Builder>();
             response.set_success(self.success);
-            response.set_is_running(self.is_running);
             response.set_node_instance_id(&self.node_instance_id);
             if let Some(ref error_message) = self.error_message {
                 response.set_error_message(error_message);
@@ -151,7 +138,6 @@ impl NodeAddResponse {
         };
         Ok(Self {
             success: response.get_success(),
-            is_running: response.get_is_running(),
             node_instance_id: response.get_node_instance_id()?.to_str()?.to_owned(),
             error_message,
         })
