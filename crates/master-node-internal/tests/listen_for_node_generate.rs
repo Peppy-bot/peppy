@@ -1,6 +1,6 @@
 mod common;
 
-use common::{start_master_node, CALLER_INSTANCE_ID};
+use common::{CALLER_INSTANCE_ID, start_master_node};
 use config::consts::{NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH};
 use master_node::encoding::NodeGenerateRequest;
 use std::fs;

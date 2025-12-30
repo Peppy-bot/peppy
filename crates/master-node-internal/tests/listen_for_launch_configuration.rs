@@ -1,6 +1,6 @@
 mod common;
 
-use common::{start_master_node, CALLER_INSTANCE_ID};
+use common::{CALLER_INSTANCE_ID, start_master_node};
 use config::consts::NODE_CONFIG_FILE;
 use master_node::encoding::{LauncherRequest, NodeAddRequest};
 use peppylib::messaging::MessengerHandle;

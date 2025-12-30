@@ -1,6 +1,6 @@
 mod common;
 
-use common::{start_master_node, start_master_node_with_timeout, CALLER_INSTANCE_ID};
+use common::{CALLER_INSTANCE_ID, start_master_node, start_master_node_with_timeout};
 use config::peppy_config::{DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
 use master_node::encoding::{NodeAddRequest, NodeStartRequest};
