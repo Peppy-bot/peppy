@@ -77,7 +77,7 @@ pub async fn setup_test_master_node_with_timeout(
     (client, server)
 }
 
-async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
+pub async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
     let adapter = MockAdapter::default();
     let mut messenger = Messenger::new(MessengerAdapter::Mock(adapter));
     messenger

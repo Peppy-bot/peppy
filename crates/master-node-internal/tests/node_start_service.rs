@@ -1,8 +1,12 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, setup_test_master_node, setup_test_master_node_with_timeout};
+use common::create_mock_messenger;
+use common::{CALLER_INSTANCE_ID, setup_test_master_node};
+use config::node::{Name, NodeConfigParser};
 use master_node::encoding::{NodeAddRequest, NodeStartRequest};
-use peppylib::messaging::MessengerHandle;
+use master_node::{MasterNode, MasterNodeArguments};
+use peppylib::ServiceMessenger;
+use peppylib::messaging::{MessengerHandle, NODE_HEALTH_SERVICE};
 use peppylib::services::health::listen_for_node_health;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -247,82 +251,113 @@ async fn node_start_no_launch_cmd() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_start_health_check_timeout() {
-    // Use a short health check timeout for testing (1 second instead of 15)
-    let (client, server) = setup_test_master_node_with_timeout(Duration::from_secs(1)).await;
+// TODO: Check that all other tests check the `listen_for_X` calls, not `x_request.poll`
 
-    // Add a node with a launch_cmd
-    let peppy_json5 = r#"{
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_start_timeout() {
+    const TARGET_NODE_NAME: &str = "runnable_node";
+    const TARGET_INSTANCE_ID: &str = "runnable_instance";
+
+    let shared_messenger = create_mock_messenger().await;
+    let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+
+    let node_start_health_timeout = Duration::from_millis(100);
+    let node_arguments = MasterNodeArguments {
+        node_start_health_timeout,
+    };
+    let mut master_node = MasterNode::new(
+        Arc::clone(&shared_messenger),
+        Some("test_master_node"),
+        node_arguments,
+    );
+    let master_node_name = master_node.node_name().to_string();
+
+    // Add a runnable node to the stack.
+    let node_config_json5 = r#"{
         schema_version: 1,
         manifest: {
-            name: "unhealthy_node",
+            name: "runnable_node",
             tag: "1.0.0",
-            launch_cmd: ["sleep", "10"]
+            launch_cmd: ["true"],
         },
-        interfaces: {}
     }"#;
-
-    let from_dir = PathBuf::from("/tmp/test");
-    let instance_id = "unhealthy_instance";
-
-    let add_request = NodeAddRequest::new(peppy_json5, from_dir).with_instance_id(instance_id);
-    let add_response = add_request
-        .poll(
-            &client.caller_handle,
-            &client.master_node_name,
-            CALLER_INSTANCE_ID,
-            &client.master_node_name,
-            Duration::from_secs(2),
+    let node_config =
+        NodeConfigParser::from_content(node_config_json5).expect("node config should parse");
+    let node_stack = master_node.node_stack().clone();
+    node_stack
+        .push_config(
+            &node_config,
+            Some(&Name::new(TARGET_INSTANCE_ID).expect("target instance id should be valid")),
+            false,
         )
-        .await
-        .expect("add poll should succeed");
+        .expect("node stack push_config should succeed");
+    master_node.set_node_stack(node_stack);
 
-    assert!(add_response.success, "node add should succeed");
+    // Start the master node services.
+    let master_node_task = tokio::spawn(async move { master_node.start().await });
 
-    // Verify the node is in the stack
-    assert!(
-        server.node_stack.contains("unhealthy_node", "1.0.0"),
-        "node should be in the stack"
-    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // NOTE: We intentionally do NOT set up a mock health service listener.
-    // This simulates a node that starts but never becomes healthy (doesn't expose health service).
+    // Expose a health service endpoint so the health check sees a reachable service,
+    // but do not handle requests (forcing a timeout).
+    let health_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let _health_endpoint = ServiceMessenger::listen(
+        &health_handle,
+        &master_node_name,
+        TARGET_INSTANCE_ID,
+        TARGET_NODE_NAME,
+        NODE_HEALTH_SERVICE,
+    )
+    .await
+    .expect("failed to expose mock node health service");
 
-    // Try to start the node - should fail because health check times out
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
     let runtime_config_json5 = r#"{
         messaging_host: "127.0.0.1",
         messaging_port: 7447,
-        node_name: "unhealthy_node",
+        node_name: "runnable_node",
         bound_master_node: "test_master_node",
         deployment_instance: {
-            instance_id: "unhealthy_instance"
+            instance_id: "runnable_instance",
         },
-        codegen_peppy_config_md5: "d41d8cd98f00b204e9800998ecf8427e"
+        codegen_peppy_config_md5: "d41d8cd98f00b204e9800998ecf8427e",
     }"#;
 
     let run_request = NodeStartRequest::new(runtime_config_json5);
-    let run_response = run_request
-        .poll(
-            &client.caller_handle,
-            &client.master_node_name,
+    let run_response = tokio::time::timeout(
+        Duration::from_secs(1),
+        run_request.poll(
+            &caller_handle,
+            &master_node_name,
             CALLER_INSTANCE_ID,
-            &client.master_node_name,
-            Duration::from_secs(5), // Give enough time for health check to timeout
-        )
-        .await
-        .expect("run poll should succeed");
+            &master_node_name,
+            Duration::from_secs(2),
+        ),
+    )
+    .await
+    .expect("node start request should return before the outer timeout")
+    .expect("node start request should get a response");
 
     assert!(
         !run_response.success,
-        "node run should fail when health check times out"
+        "expected node start to fail due to health check timeout"
     );
     let error_message = run_response
         .error_message
         .expect("error_message should be present on failure");
     assert!(
-        error_message.contains("Health check failed") || error_message.contains("health"),
-        "error should mention health check failure, got: {}",
-        error_message
+        error_message.contains("Health check failed"),
+        "expected failure reason to mention health check, got: {error_message}"
     );
+    assert!(
+        error_message.contains("has timed out"),
+        "expected failure reason to mention timeout, got: {error_message}"
+    );
+    assert!(
+        error_message.contains(TARGET_INSTANCE_ID),
+        "expected failure reason to mention instance id, got: {error_message}"
+    );
+
+    master_node_task.abort();
 }
