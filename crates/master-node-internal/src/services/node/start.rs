@@ -114,21 +114,27 @@ async fn handle_node_start_request_inner(
     };
 
     debug!(
-        "Received `node_start` request from {sender_instance_id}, instance_id={}",
-        instance_id_str
+        "Received `node_start` request from {sender_instance_id}, node={}:{}, instance_id={}",
+        request.node_name, request.tag, instance_id_str
     );
 
-    // Find the entity in the node stack
-    let entity = match node_stack.find_entity_by_instance_id(&instance_id) {
+    // Find the entity in the node stack by name and tag
+    let entity = match node_stack.find(&request.node_name, &request.tag) {
         Some(entity) => entity,
         None => {
             return NodeStartResponse::failure(format!(
-                "Node instance '{}' not found in node stack",
-                instance_id_str
+                "Node '{}:{}' not found in node stack",
+                request.node_name, request.tag
             ))
             .encode();
         }
     };
+
+    // Spawn an instance for the node
+    if let Err(e) = node_stack.spawn_instance(&request.node_name, &request.tag, Some(&instance_id))
+    {
+        return NodeStartResponse::failure(format!("Failed to spawn instance: {}", e)).encode();
+    }
 
     // Run the node with the runtime config
     let mut child = match run_node(&entity, &request.runtime_config_json5) {

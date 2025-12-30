@@ -1,7 +1,7 @@
 use crate::Result;
 use crate::encoding::{NodeAddRequest, NodeAddResponse};
 use bytes::Bytes;
-use config::node::{Name, NodeConfigParser};
+use config::node::NodeConfigParser;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -73,38 +73,18 @@ async fn handle_node_add_request_inner(
         }
     };
 
-    // Parse the optional instance_id
-    let instance_id = match request.instance_id {
-        Some(ref id) => match Name::new(id) {
-            Ok(name) => Some(name),
-            Err(e) => {
-                return NodeAddResponse::failure(format!("Invalid instance_id: {}", e)).encode();
-            }
-        },
-        None => None,
-    };
-
     // Add the node config to the stack (all dependencies must be satisfied)
+    // Note: `add` only registers the node configuration, it does not spawn any instance.
+    // Use `node_start` to spawn instances after adding a node.
     if let Err(e) = node_stack.push_config(&node_config, false) {
         return NodeAddResponse::failure(format!("Failed to add node config: {}", e)).encode();
     }
 
-    // Spawn an instance for the node
-    match node_stack.spawn_instance(
+    debug!(
+        "Added node {}:{}",
         node_config.manifest.name.as_str(),
-        &node_config.manifest.tag,
-        instance_id.as_ref(),
-    ) {
-        Ok(instance_id) => {
-            debug!(
-                "Added node {}:{} with instance_id {}",
-                node_config.manifest.name.as_str(),
-                node_config.manifest.tag,
-                instance_id.as_str()
-            );
+        node_config.manifest.tag,
+    );
 
-            NodeAddResponse::new(true, instance_id.as_str(), None).encode()
-        }
-        Err(e) => NodeAddResponse::failure(format!("Failed to spawn instance: {}", e)).encode(),
-    }
+    NodeAddResponse::success().encode()
 }

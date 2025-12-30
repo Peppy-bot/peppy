@@ -89,29 +89,23 @@ impl NodeAddRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeAddResponse {
     pub success: bool,
-    pub node_instance_id: String,
     pub error_message: Option<String>,
 }
 
 impl NodeAddResponse {
-    pub fn new(
-        success: bool,
-        node_instance_id: impl Into<String>,
-        error_message: Option<String>,
-    ) -> Self {
+    pub fn new(success: bool, error_message: Option<String>) -> Self {
         Self {
             success,
-            node_instance_id: node_instance_id.into(),
             error_message,
         }
     }
 
-    pub fn success(node_instance_id: impl Into<String>) -> Self {
-        Self::new(true, node_instance_id, None)
+    pub fn success() -> Self {
+        Self::new(true, None)
     }
 
     pub fn failure(error_message: impl Into<String>) -> Self {
-        Self::new(false, "", Some(error_message.into()))
+        Self::new(false, Some(error_message.into()))
     }
 
     pub fn encode(&self) -> Result<Bytes> {
@@ -119,7 +113,6 @@ impl NodeAddResponse {
         {
             let mut response = builder.init_root::<node_capnp::node_add_response::Builder>();
             response.set_success(self.success);
-            response.set_node_instance_id(&self.node_instance_id);
             if let Some(ref error_message) = self.error_message {
                 response.set_error_message(error_message);
             }
@@ -138,7 +131,6 @@ impl NodeAddResponse {
         };
         Ok(Self {
             success: response.get_success(),
-            node_instance_id: response.get_node_instance_id()?.to_str()?.to_owned(),
             error_message,
         })
     }

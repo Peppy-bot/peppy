@@ -13,12 +13,20 @@ use super::{decode_message, encode_message};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeStartRequest {
     pub runtime_config_json5: String,
+    pub node_name: String,
+    pub tag: String,
 }
 
 impl NodeStartRequest {
-    pub fn new(runtime_config_json5: impl Into<String>) -> Self {
+    pub fn new(
+        runtime_config_json5: impl Into<String>,
+        node_name: impl Into<String>,
+        tag: impl Into<String>,
+    ) -> Self {
         Self {
             runtime_config_json5: runtime_config_json5.into(),
+            node_name: node_name.into(),
+            tag: tag.into(),
         }
     }
 
@@ -27,6 +35,8 @@ impl NodeStartRequest {
         {
             let mut request = builder.init_root::<node_capnp::node_start_request::Builder>();
             request.set_runtime_config_json5(&self.runtime_config_json5);
+            request.set_node_name(&self.node_name);
+            request.set_tag(&self.tag);
         }
         encode_message(&builder)
     }
@@ -36,6 +46,8 @@ impl NodeStartRequest {
         let request = reader.get_root::<node_capnp::node_start_request::Reader>()?;
         Ok(Self {
             runtime_config_json5: request.get_runtime_config_json5()?.to_str()?.to_owned(),
+            node_name: request.get_node_name()?.to_str()?.to_owned(),
+            tag: request.get_tag()?.to_str()?.to_owned(),
         })
     }
 
