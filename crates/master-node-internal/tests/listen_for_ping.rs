@@ -1,6 +1,6 @@
 mod common;
 
-use common::{start_master_node, CALLER_INSTANCE_ID};
+use common::{CALLER_INSTANCE_ID, start_master_node};
 use master_node::encoding::{PingRequest, PingResponse};
 use master_node::names;
 use peppylib::ServiceMessenger;
