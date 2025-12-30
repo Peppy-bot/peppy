@@ -185,25 +185,9 @@ async fn handle_node_start_request_inner(
 /// Returns the spawned child process handle on success.
 fn run_node(entity: &NodeEntity, runtime_config_json5: &str) -> Result<Child> {
     let manifest = &entity.config().manifest;
-    let launch_cmd = manifest.launch_cmd.as_ref().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!(
-                "No launch_cmd configured for node '{}:{}'",
-                manifest.name.as_str(),
-                manifest.tag
-            ),
-        )
-    })?;
 
-    if launch_cmd.is_empty() {
-        return Err(
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "launch_cmd is empty").into(),
-        );
-    }
-
-    let program = &launch_cmd[0];
-    let args = &launch_cmd[1..];
+    let program = &manifest.launch_cmd[0];
+    let args = &manifest.launch_cmd[1..];
 
     debug!(
         "Running node '{}:{}' with command: {} {:?}",

@@ -17,7 +17,7 @@ fn http_bundle_is_downloaded_and_resolved() {
 
     let manifest_content = r#"{
             schema_version: 1,
-            manifest: { name: "uvc_camera", tag: "1.2.3" }
+            manifest: { name: "uvc_camera", tag: "1.2.3", launch_cmd: ["uvc_camera"] }
         }"#;
     let bundle_bytes = create_http_bundle(temp_dir.path(), "uvc_camera.tar.zst", manifest_content);
     server.expect(
@@ -127,8 +127,7 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
         .expect("resolved node config")
         .manifest
         .launch_cmd
-        .clone()
-        .expect("launch command present");
+        .clone();
     assert_eq!(launch_cmd_v1, vec!["run_v1".to_string()]);
 
     let http_spec_v2 = HttpRemoteSpec::new(url.to_string(), Some(checksum_v2))
@@ -161,8 +160,7 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
         .expect("resolved node config after update")
         .manifest
         .launch_cmd
-        .clone()
-        .expect("launch command present after update");
+        .clone();
 
     assert_eq!(launch_cmd_v2, vec!["run_v2".to_string()]);
     assert_ne!(launch_cmd_v1, launch_cmd_v2);

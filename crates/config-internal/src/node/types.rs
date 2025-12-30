@@ -544,8 +544,7 @@ pub struct Manifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
     // Command to launch the node, e.g., ["cargo", "run", "--release"]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub launch_cmd: Option<Vec<String>>,
+    pub launch_cmd: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

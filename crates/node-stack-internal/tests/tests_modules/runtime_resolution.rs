@@ -10,7 +10,8 @@ fn add_instance_creates_new_entity() {
             schema_version: 1,
             manifest: {
               name: "sensor",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["sensor"]
             }
         }"#,
     )
@@ -77,7 +78,8 @@ fn add_instance_to_existing_entity() {
             schema_version: 1,
             manifest: {
               name: "sensor",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["sensor"]
             }
         }"#,
     )
@@ -134,7 +136,8 @@ fn add_instance_with_specific_id() {
             schema_version: 1,
             manifest: {
               name: "sensor",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["sensor"]
             }
         }"#,
     )
@@ -167,7 +170,8 @@ fn remove_instance_from_entity_with_multiple_instances() {
             schema_version: 1,
             manifest: {
               name: "sensor",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["sensor"]
             }
         }"#,
     )
@@ -220,7 +224,8 @@ fn remove_last_instance_removes_entity() {
             schema_version: 1,
             manifest: {
               name: "sensor",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["sensor"]
             }
         }"#,
     )
@@ -261,7 +266,8 @@ fn remove_nonexistent_instance_returns_false() {
             schema_version: 1,
             manifest: {
               name: "sensor",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["sensor"]
             }
         }"#,
     )
@@ -299,7 +305,8 @@ fn reset_clears_all_except_master_node() {
             schema_version: 1,
             manifest: {
               name: "sensor1",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["sensor1"]
             }
         }"#,
     )
@@ -310,7 +317,8 @@ fn reset_clears_all_except_master_node() {
             schema_version: 1,
             manifest: {
               name: "sensor2",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["sensor2"]
             }
         }"#,
     )
@@ -349,7 +357,8 @@ fn adding_same_entity_adds_new_instance() {
             schema_version: 1,
             manifest: {
               name: "sensor",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["sensor"]
             }
         }"#,
     )
@@ -398,7 +407,8 @@ fn adding_same_entity_with_different_interfaces_fails() {
             schema_version: 1,
             manifest: {
               name: "sensor",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["sensor"]
             },
             interfaces: {
                 exposes: {
@@ -420,7 +430,8 @@ fn adding_same_entity_with_different_interfaces_fails() {
             schema_version: 1,
             manifest: {
               name: "sensor",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["sensor"]
             },
             interfaces: {
                 exposes: {
@@ -477,7 +488,8 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
             schema_version: 1,
             manifest: {
               name: "sensor",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["sensor"]
             },
             interfaces: {
                 exposes: {
@@ -499,7 +511,8 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
             schema_version: 1,
             manifest: {
               name: "sensor",
-              tag: "2.0.0"
+              tag: "2.0.0",
+              launch_cmd: ["sensor"]
             },
             interfaces: {
                 exposes: {
@@ -621,7 +634,8 @@ fn from_configs_uses_first_entity_as_root() {
             schema_version: 1,
             manifest: {
               name: "first",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["first"]
             }
         }"#,
     )
@@ -632,7 +646,8 @@ fn from_configs_uses_first_entity_as_root() {
             schema_version: 1,
             manifest: {
               name: "second",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["second"]
             }
         }"#,
     )
@@ -656,7 +671,8 @@ fn node_stack_wires_dependencies_for_dependants() {
             schema_version: 1,
             manifest: {
               name: "lidar",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["lidar"]
             },
             interfaces: {
                 exposes: {
@@ -674,7 +690,8 @@ fn node_stack_wires_dependencies_for_dependants() {
             schema_version: 1,
             manifest: {
               name: "brain",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["brain"]
             },
             interfaces: {
                 subscribes_to: {
@@ -716,7 +733,8 @@ fn dependency_fails_when_node_name_mismatches() {
             schema_version: 1,
             manifest: {
               name: "brain",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["brain"]
             },
             interfaces: {
                 subscribes_to: {
@@ -739,7 +757,8 @@ fn dependency_fails_when_node_name_mismatches() {
             schema_version: 1,
             manifest: {
               name: "lidar",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["lidar"]
             },
             interfaces: {
                 exposes: {
@@ -799,7 +818,8 @@ fn dependency_fails_when_node_tag_mismatches() {
             schema_version: 1,
             manifest: {
               name: "brain",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["brain"]
             },
             interfaces: {
                 subscribes_to: {
@@ -822,7 +842,8 @@ fn dependency_fails_when_node_tag_mismatches() {
             schema_version: 1,
             manifest: {
               name: "lidar",
-              tag: "2.0.0"
+              tag: "2.0.0",
+              launch_cmd: ["lidar"]
             },
             interfaces: {
                 exposes: {

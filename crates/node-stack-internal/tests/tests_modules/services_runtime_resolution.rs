@@ -9,7 +9,8 @@ fn service_dependency_resolved_when_dependency_added_first() {
             schema_version: 1,
             manifest: {
               name: "brain",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["brain"]
             },
             interfaces: {
                 subscribes_to: {
@@ -32,7 +33,8 @@ fn service_dependency_resolved_when_dependency_added_first() {
             schema_version: 1,
             manifest: {
               name: "lidar",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["lidar"]
             },
             interfaces: {
                 exposes: {
@@ -106,7 +108,8 @@ fn service_dependency_fails_when_dependency_is_missing() {
             schema_version: 1,
             manifest: {
               name: "brain",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["brain"]
             },
             interfaces: {
                 subscribes_to: {
@@ -150,7 +153,8 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
             schema_version: 1,
             manifest: {
               name: "brain",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["brain"]
             },
             interfaces: {
                 subscribes_to: {
@@ -174,7 +178,8 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
             schema_version: 1,
             manifest: {
               name: "lidar",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["lidar"]
             },
             interfaces: {
                 exposes: {

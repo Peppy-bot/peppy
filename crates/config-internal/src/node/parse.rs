@@ -45,7 +45,10 @@ mod tests {
         let config = NodeConfigParser::from_content(json5).unwrap();
         assert_eq!(config.manifest.name.as_str(), "test_node");
         assert_eq!(config.manifest.tag, "0.1.0");
-        assert!(config.manifest.launch_cmd.is_some());
+        assert_eq!(
+            config.manifest.launch_cmd,
+            vec!["cargo", "run", "--release"]
+        );
         assert!(config.parameters.is_empty());
     }
 
@@ -69,7 +72,10 @@ mod tests {
         let config = NodeConfigParser::from_content(json5).unwrap();
         assert_eq!(config.manifest.name.as_str(), "camera_driver");
         assert_eq!(config.manifest.tag, "2.1.0");
-        assert!(config.manifest.launch_cmd.is_some());
+        assert_eq!(
+            config.manifest.launch_cmd,
+            vec!["cargo", "run", "--release"]
+        );
         assert!(config.interfaces.exposes.is_some());
     }
 

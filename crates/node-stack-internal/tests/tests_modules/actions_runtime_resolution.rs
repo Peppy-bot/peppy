@@ -9,7 +9,8 @@ fn action_dependency_resolved_when_dependency_added_first() {
             schema_version: 1,
             manifest: {
               name: "brain",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["brain"]
             },
             interfaces: {
                 subscribes_to: {
@@ -32,7 +33,8 @@ fn action_dependency_resolved_when_dependency_added_first() {
             schema_version: 1,
             manifest: {
               name: "controller",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["controller"]
             },
             interfaces: {
                 exposes: {
@@ -128,7 +130,8 @@ fn action_dependency_fails_when_dependency_is_missing() {
             schema_version: 1,
             manifest: {
               name: "brain",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["brain"]
             },
             interfaces: {
                 subscribes_to: {
@@ -172,7 +175,8 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
             schema_version: 1,
             manifest: {
               name: "brain",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["brain"]
             },
             interfaces: {
                 subscribes_to: {
@@ -196,7 +200,8 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
             schema_version: 1,
             manifest: {
               name: "controller",
-              tag: "1.0.0"
+              tag: "1.0.0",
+              launch_cmd: ["controller"]
             },
             interfaces: {
                 exposes: {
