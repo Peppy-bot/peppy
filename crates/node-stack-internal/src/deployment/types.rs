@@ -24,6 +24,15 @@ pub struct NodeEntity {
 }
 
 impl NodeEntity {
+    /// Creates a new NodeEntity with a config only (no instances)
+    pub fn from_config(config: NodeConfig) -> Self {
+        Self {
+            config,
+            root_path: None,
+            instances: Vec::new(),
+        }
+    }
+
     /// Creates a new NodeEntity with a single instance
     pub fn new(config: NodeConfig, instance: NodeInstance) -> Self {
         Self {
@@ -46,12 +55,8 @@ impl NodeEntity {
         }
     }
 
-    /// Creates a NodeEntity from a list of instances (must have at least one)
+    /// Creates a NodeEntity from a list of instances
     pub fn from_instances(config: NodeConfig, instances: Vec<NodeInstance>) -> Self {
-        assert!(
-            !instances.is_empty(),
-            "NodeEntity must have at least one instance"
-        );
         Self {
             config,
             root_path: None,
@@ -656,18 +661,58 @@ impl NodeStackInner {
             .unwrap_or_default()
     }
 
-    /// Adds an instance to an existing entity or creates a new entity if not present.
-    /// If instance_id is None, generates a random one.
-    /// Returns the instance_id that was used.
-    /// Returns Err(CannotRemoveRootNode) if trying to add an instance to the root node
-    /// (the root node always has exactly one instance).
-    fn add_instance_impl(
+    /// Adds a config to the stack or updates an existing one if interfaces match.
+    /// Does not create any instances.
+    /// Returns Err(CannotModifyRootNode) if trying to modify the root node config.
+    fn push_config_impl(
         &mut self,
         config: &NodeConfig,
-        instance_id: Option<&Name>,
         allow_missing_dependencies: bool,
-    ) -> Result<Name> {
+    ) -> Result<()> {
         let key = NodeKey::new(config.manifest.name.as_str(), &config.manifest.tag);
+
+        // The root node cannot be modified
+        if self.is_root(&key) {
+            return Err(Error::CannotModifyRootNode);
+        }
+
+        if let Some(&index) = self.key_to_index.get(&key) {
+            // Entity exists, check interfaces match
+            if let Some(entity) = self.graph.node_weight(index) {
+                if !interfaces_match(&entity.config().interfaces, &config.interfaces) {
+                    return Err(Error::ConfigMismatch {
+                        name: config.manifest.name.as_str().to_string(),
+                        tag: config.manifest.tag.clone(),
+                    });
+                }
+            }
+            // Config already exists and matches, nothing to do
+        } else {
+            // Entity doesn't exist, create new one without instances
+            let entity = NodeEntity::from_config(config.clone());
+            if allow_missing_dependencies {
+                self.insert_entity_lenient(entity)?;
+            } else {
+                self.insert_entity(entity)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Spawns a new instance for an existing config.
+    /// If instance_id is None, generates a random one.
+    /// Returns the instance_id that was used.
+    /// Returns Err(NoMatchingNode) if the config is not found in the stack.
+    /// Returns Err(CannotModifyRootNode) if trying to add an instance to the root node.
+    /// Returns Err(DuplicateInstanceId) if the instance_id already exists for this entity.
+    fn spawn_instance_impl(
+        &mut self,
+        name: &str,
+        tag: &str,
+        instance_id: Option<&Name>,
+    ) -> Result<Name> {
+        let key = NodeKey::new(name, tag);
 
         // The root node always has exactly one instance and cannot be modified
         if self.is_root(&key) {
@@ -679,28 +724,25 @@ impl NodeStackInner {
             None => Name::new(get_random(rng())).map_err(|e| Error::Config(e.into()))?,
         };
 
-        if let Some(&index) = self.key_to_index.get(&key) {
-            // Entity exists, add instance to it
-            if let Some(entity) = self.graph.node_weight_mut(index) {
-                // Check that the interfaces match (same name+tag must have identical interfaces)
-                if !interfaces_match(&entity.config().interfaces, &config.interfaces) {
-                    return Err(Error::ConfigMismatch {
-                        name: config.manifest.name.as_str().to_string(),
-                        tag: config.manifest.tag.clone(),
-                    });
-                }
-                let instance = NodeInstance::new(instance_id.clone());
-                entity.add_instance(instance);
+        let Some(&index) = self.key_to_index.get(&key) else {
+            return Err(Error::NoMatchingNode(name.to_owned(), tag.to_owned()));
+        };
+
+        if let Some(entity) = self.graph.node_weight_mut(index) {
+            // Check if instance_id already exists
+            if entity
+                .instances()
+                .iter()
+                .any(|inst| inst.instance_id() == &instance_id)
+            {
+                return Err(Error::DuplicateInstanceId {
+                    instance_id: instance_id.as_str().to_owned(),
+                    node_name: name.to_owned(),
+                    node_tag: tag.to_owned(),
+                });
             }
-        } else {
-            // Entity doesn't exist, create new one
             let instance = NodeInstance::new(instance_id.clone());
-            let entity = NodeEntity::new(config.clone(), instance);
-            if allow_missing_dependencies {
-                self.insert_entity_lenient(entity)?;
-            } else {
-                self.insert_entity(entity)?;
-            }
+            entity.add_instance(instance);
         }
 
         Ok(instance_id)
@@ -835,6 +877,7 @@ impl NodeStack {
     /// Creates a NodeStack from a list of configurations.
     /// The first configuration becomes the root node.
     /// Remaining configurations are topologically sorted so dependencies are added before dependents.
+    /// Each config gets one instance spawned with an auto-generated ID.
     /// Returns an error if the list is empty or if any node has unmet dependencies.
     pub fn from_configs(nodes: Vec<NodeConfig>) -> Result<Self> {
         if nodes.is_empty() {
@@ -849,7 +892,8 @@ impl NodeStack {
         let sorted = topological_sort_configs(nodes);
 
         for config in sorted {
-            stack.push_config(&config, None, false)?;
+            stack.push_config(&config, false)?;
+            stack.spawn_instance(config.manifest.name.as_str(), &config.manifest.tag, None)?;
         }
         Ok(stack)
     }
@@ -889,19 +933,29 @@ impl NodeStack {
         guard.find_entity_by_instance_id(instance_id)
     }
 
-    /// Adds an instance to an existing entity or creates a new entity if not present.
-    /// If instance_id is None, generates a random one.
+    /// Adds a config to the stack or validates an existing one matches.
+    /// Does not create any instances.
     /// If allow_missing_dependencies is true, missing dependencies are tracked as pending
     /// requirements and will be wired once the dependency nodes are added to the stack.
+    pub fn push_config(&self, config: &NodeConfig, allow_missing_dependencies: bool) -> Result<()> {
+        let mut guard = self.shared.write().expect("node stack poisoned");
+        guard.push_config_impl(config, allow_missing_dependencies)
+    }
+
+    /// Spawns a new instance for an existing config.
+    /// If instance_id is None, generates a random one.
     /// Returns the instance_id that was used.
-    pub fn push_config(
+    /// Returns Err(NoMatchingNode) if the config is not found in the stack.
+    /// Returns Err(CannotModifyRootNode) if trying to add an instance to the root node.
+    /// Returns Err(DuplicateInstanceId) if the instance_id already exists for this entity.
+    pub fn spawn_instance(
         &self,
-        config: &NodeConfig,
+        node_name: &str,
+        tag: &str,
         instance_id: Option<&Name>,
-        allow_missing_dependencies: bool,
     ) -> Result<Name> {
         let mut guard = self.shared.write().expect("node stack poisoned");
-        guard.add_instance_impl(config, instance_id, allow_missing_dependencies)
+        guard.spawn_instance_impl(node_name, tag, instance_id)
     }
 
     pub fn snapshot(&self) -> Vec<NodeEntity> {

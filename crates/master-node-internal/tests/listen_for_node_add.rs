@@ -51,6 +51,7 @@ async fn listen_for_node_add_success() {
     let entity = node_stack
         .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .expect("node should exist in stack");
+    // TODO there should be 0 instances here, `add` only adds the node to the NodeStack but doesn't spawn any instance
     assert_eq!(entity.instances().len(), 1);
     assert_eq!(
         entity.instances()[0].instance_id().as_str(),
