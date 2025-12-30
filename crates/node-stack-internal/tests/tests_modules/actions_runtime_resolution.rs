@@ -85,13 +85,13 @@ fn action_dependency_resolved_when_dependency_added_first() {
 
     // Add the dependency first
     stack
-        .push_config(&dependency, None, false)
+        .push_config(&dependency, false)
         .expect("dependency node has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have master + dependency node");
 
     // Now add the dependent node
     stack
-        .push_config(&dependent, None, false)
+        .push_config(&dependent, false)
         .expect("dependent node should be added when dependency exists");
     assert_eq!(stack.len(), 3, "stack should include the dependent node");
 
@@ -152,7 +152,7 @@ fn action_dependency_fails_when_dependency_is_missing() {
     let stack = NodeStack::new(master_node_config(), None);
 
     // Adding a node that depends on a non-existent action provider should fail
-    let result = stack.push_config(&dependent, None, false);
+    let result = stack.push_config(&dependent, false);
     let Err(NodeStackError::MissingDependency {
         dependency,
         dependency_tag,
@@ -252,12 +252,12 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
 
     // Add the node with the correct name but wrong action
     stack
-        .push_config(&dependency_wrong_action, None, false)
+        .push_config(&dependency_wrong_action, false)
         .expect("controller has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have master + controller");
 
     // Adding brain should fail because controller doesn't expose "move_right_arm"
-    let result = stack.push_config(&dependent, None, false);
+    let result = stack.push_config(&dependent, false);
     let Err(NodeStackError::MissingInterface {
         dependency,
         dependency_tag,

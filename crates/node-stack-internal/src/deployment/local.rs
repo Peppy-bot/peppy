@@ -29,8 +29,15 @@ mod tests {
         let deployment = sample_deployment();
         let stack = NodeStack::new(master_node_config(), None);
         stack
-            .push_config(&config, Some(&Name::new("test-instance").unwrap()), false)
+            .push_config(&config, false)
             .expect("config has no dependencies");
+        stack
+            .spawn_instance(
+                config.manifest.name.as_str(),
+                &config.manifest.tag,
+                Some(&Name::new("test-instance").unwrap()),
+            )
+            .expect("should spawn instance");
 
         let node =
             resolve_local_deployment(&deployment, &stack).expect("local deployment resolves");
@@ -51,9 +58,10 @@ mod tests {
         };
         assert_eq!(name, "uvc_camera");
 
+        let config = sample_config_lidar();
         let stack = NodeStack::new(master_node_config(), None);
         stack
-            .push_config(&sample_config_lidar(), None, false)
+            .push_config(&config, false)
             .expect("config has no dependencies");
 
         let err = resolve_local_deployment(&sample_deployment(), &stack)

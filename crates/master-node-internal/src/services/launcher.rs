@@ -148,15 +148,29 @@ fn apply_launch_plan(
             continue;
         }
 
+        // First, push the config
+        target_stack.push_config(config, true).map_err(|e| {
+            format!(
+                "failed to add config {}:{} to node stack: {e}",
+                config.manifest.name.as_str(),
+                config.manifest.tag,
+            )
+        })?;
+
+        // Then spawn each instance
         for instance in entity.instances() {
             target_stack
-                .push_config(config, Some(instance.instance_id()), true)
+                .spawn_instance(
+                    config.manifest.name.as_str(),
+                    &config.manifest.tag,
+                    Some(instance.instance_id()),
+                )
                 .map_err(|e| {
                     format!(
-                        "failed to add {}:{} (instance {}) to node stack: {e}",
+                        "failed to spawn instance {} for {}:{} in node stack: {e}",
+                        instance.instance_id().as_str(),
                         config.manifest.name.as_str(),
                         config.manifest.tag,
-                        instance.instance_id().as_str()
                     )
                 })?;
         }

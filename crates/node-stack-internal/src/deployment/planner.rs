@@ -196,7 +196,7 @@ fn load_nodes_from_fs(root_dir: &Path, master_node: NodeConfig) -> Result<NodeSt
         let mut still_pending = Vec::new();
 
         for node_config in pending {
-            match stack.push_config(&node_config, None, false) {
+            match stack.push_config(&node_config, false) {
                 Ok(_) => {
                     made_progress = true;
                 }
@@ -213,7 +213,7 @@ fn load_nodes_from_fs(root_dir: &Path, master_node: NodeConfig) -> Result<NodeSt
 
         if !made_progress {
             for node_config in still_pending {
-                stack.push_config(&node_config, None, true)?;
+                stack.push_config(&node_config, true)?;
             }
             break;
         }
@@ -357,6 +357,13 @@ fn build_launch_plan(
             continue;
         }
 
+        // First, push the config (without creating instances)
+        if let Err(err) = stack.push_config(&node, true) {
+            planned.push(PlannedDeployment::unresolved(deployment, err));
+            continue;
+        }
+
+        // Then spawn instances for each instance in the deployment
         let mut add_failed = None;
         for instance in &deployment.instances {
             let Ok(instance_id) = config::node::Name::new(instance.instance_id.as_str()) else {
@@ -367,7 +374,11 @@ fn build_launch_plan(
                 break;
             };
 
-            if let Err(err) = stack.push_config(&node, Some(&instance_id), true) {
+            if let Err(err) = stack.spawn_instance(
+                node.manifest.name.as_str(),
+                &node.manifest.tag,
+                Some(&instance_id),
+            ) {
                 add_failed = Some(err);
                 break;
             }

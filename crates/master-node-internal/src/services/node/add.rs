@@ -84,8 +84,17 @@ async fn handle_node_add_request_inner(
         None => None,
     };
 
-    // Add the node to the stack (all dependencies must be satisfied)
-    match node_stack.push_config(&node_config, instance_id.as_ref(), false) {
+    // Add the node config to the stack (all dependencies must be satisfied)
+    if let Err(e) = node_stack.push_config(&node_config, false) {
+        return NodeAddResponse::failure(format!("Failed to add node config: {}", e)).encode();
+    }
+
+    // Spawn an instance for the node
+    match node_stack.spawn_instance(
+        node_config.manifest.name.as_str(),
+        &node_config.manifest.tag,
+        instance_id.as_ref(),
+    ) {
         Ok(instance_id) => {
             debug!(
                 "Added node {}:{} with instance_id {}",
@@ -96,6 +105,6 @@ async fn handle_node_add_request_inner(
 
             NodeAddResponse::new(true, instance_id.as_str(), None).encode()
         }
-        Err(e) => NodeAddResponse::failure(format!("Failed to add node: {}", e)).encode(),
+        Err(e) => NodeAddResponse::failure(format!("Failed to spawn instance: {}", e)).encode(),
     }
 }

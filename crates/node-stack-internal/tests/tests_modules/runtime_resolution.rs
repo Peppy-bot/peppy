@@ -20,16 +20,21 @@ fn add_instance_creates_new_entity() {
     let stack = NodeStack::new(master_node_config(), None);
     assert_eq!(stack.len(), 1, "stack should start with root node only");
 
-    // Add instance without specifying instance_id (should generate one)
-    let instance_id = stack
-        .push_config(&config, None, false)
-        .expect("should add instance");
+    // Push config first
+    stack
+        .push_config(&config, false)
+        .expect("should push config");
 
     assert_eq!(stack.len(), 2, "stack should have master node + one entity");
     assert!(
         stack.contains("sensor", "1.0.0"),
         "entity should be findable"
     );
+
+    // Spawn an instance
+    let instance_id = stack
+        .spawn_instance("sensor", "1.0.0", None)
+        .expect("should spawn instance");
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
@@ -87,10 +92,15 @@ fn add_instance_to_existing_entity() {
 
     let stack = NodeStack::new(master_node_config(), None);
 
-    // Add first instance
+    // Push config first
+    stack
+        .push_config(&config, false)
+        .expect("should push config");
+
+    // Spawn first instance
     let first_id = stack
-        .push_config(&config, None, false)
-        .expect("should add first instance");
+        .spawn_instance("sensor", "1.0.0", None)
+        .expect("should spawn first instance");
 
     assert_eq!(stack.len(), 2, "stack should have master node + one entity");
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
@@ -100,10 +110,10 @@ fn add_instance_to_existing_entity() {
         "entity should have one instance"
     );
 
-    // Add second instance to same entity
+    // Spawn second instance to same entity
     let second_id = stack
-        .push_config(&config, None, false)
-        .expect("should add second instance");
+        .spawn_instance("sensor", "1.0.0", None)
+        .expect("should spawn second instance");
 
     assert_eq!(stack.len(), 2, "stack should still have root + one entity");
 
@@ -146,9 +156,15 @@ fn add_instance_with_specific_id() {
     let stack = NodeStack::new(master_node_config(), None);
     let custom_id = Name::new("my-custom-instance").expect("valid name");
 
+    // First push the config
+    stack
+        .push_config(&config, false)
+        .expect("should push config");
+
+    // Then spawn an instance with the specific ID
     let returned_id = stack
-        .push_config(&config, Some(&custom_id), false)
-        .expect("should add instance");
+        .spawn_instance("sensor", "1.0.0", Some(&custom_id))
+        .expect("should spawn instance");
 
     assert_eq!(
         returned_id, custom_id,
@@ -181,12 +197,18 @@ fn remove_instance_from_entity_with_multiple_instances() {
     let first_id = Name::new("instance-1").expect("valid name");
     let second_id = Name::new("instance-2").expect("valid name");
 
+    // Push config first
     stack
-        .push_config(&config, Some(&first_id), false)
-        .expect("should add first instance");
+        .push_config(&config, false)
+        .expect("should push config");
+
+    // Spawn instances
     stack
-        .push_config(&config, Some(&second_id), false)
-        .expect("should add second instance");
+        .spawn_instance("sensor", "1.0.0", Some(&first_id))
+        .expect("should spawn first instance");
+    stack
+        .spawn_instance("sensor", "1.0.0", Some(&second_id))
+        .expect("should spawn second instance");
 
     assert_eq!(stack.len(), 2, "stack should have master node + one entity");
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
@@ -234,9 +256,13 @@ fn remove_last_instance_removes_entity() {
     let stack = NodeStack::new(master_node_config(), None);
     let instance_id = Name::new("only-instance").expect("valid name");
 
+    // Push config and spawn instance
     stack
-        .push_config(&config, Some(&instance_id), false)
-        .expect("should add instance");
+        .push_config(&config, false)
+        .expect("should push config");
+    stack
+        .spawn_instance("sensor", "1.0.0", Some(&instance_id))
+        .expect("should spawn instance");
     assert_eq!(stack.len(), 2, "stack should have root + one entity");
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
@@ -277,9 +303,13 @@ fn remove_nonexistent_instance_returns_false() {
     let instance_id = Name::new("real-instance").expect("valid name");
     let fake_id = Name::new("fake-instance").expect("valid name");
 
+    // Push config and spawn instance
     stack
-        .push_config(&config, Some(&instance_id), false)
-        .expect("should add instance");
+        .push_config(&config, false)
+        .expect("should push config");
+    stack
+        .spawn_instance("sensor", "1.0.0", Some(&instance_id))
+        .expect("should spawn instance");
 
     // Try to remove non-existent instance
     let removed = stack
@@ -326,10 +356,10 @@ fn reset_clears_all_except_master_node() {
 
     let stack = NodeStack::new(master_node_config(), None);
     stack
-        .push_config(&config1, None, false)
+        .push_config(&config1, false)
         .expect("config1 has no dependencies");
     stack
-        .push_config(&config2, None, false)
+        .push_config(&config2, false)
         .expect("config2 has no dependencies");
     assert_eq!(stack.len(), 3, "stack should have root + two entities");
 
@@ -351,7 +381,7 @@ fn reset_clears_all_except_master_node() {
 }
 
 #[test]
-fn adding_same_entity_adds_new_instance() {
+fn spawning_multiple_instances_on_same_entity() {
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -366,7 +396,7 @@ fn adding_same_entity_adds_new_instance() {
 
     let stack = NodeStack::new(master_node_config(), None);
     stack
-        .push_config(&config, None, false)
+        .push_config(&config, false)
         .expect("config has no dependencies");
     assert_eq!(
         stack.len(),
@@ -377,14 +407,26 @@ fn adding_same_entity_adds_new_instance() {
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
         entity.instances().len(),
-        1,
-        "entity should have one instance after first push"
+        0,
+        "entity should have no instances after push_config"
     );
 
-    // Adding the same config again should add a new instance to the existing entity
+    // Spawn first instance
     stack
-        .push_config(&config, None, false)
-        .expect("config has no dependencies");
+        .spawn_instance("sensor", "1.0.0", None)
+        .expect("should spawn instance");
+
+    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    assert_eq!(
+        entity.instances().len(),
+        1,
+        "entity should have one instance after first spawn"
+    );
+
+    // Spawn second instance on the same entity
+    stack
+        .spawn_instance("sensor", "1.0.0", None)
+        .expect("should spawn instance");
     assert_eq!(
         stack.len(),
         2,
@@ -395,7 +437,7 @@ fn adding_same_entity_adds_new_instance() {
     assert_eq!(
         entity.instances().len(),
         2,
-        "entity should have two instances after second push"
+        "entity should have two instances after second spawn"
     );
 }
 
@@ -456,12 +498,12 @@ fn adding_same_entity_with_different_interfaces_fails() {
 
     // Add the first config
     stack
-        .push_config(&config_with_topic, None, false)
+        .push_config(&config_with_topic, false)
         .expect("first config has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have master + sensor");
 
     // Adding the same entity with different interfaces should fail
-    let result = stack.push_config(&config_with_topic_and_service, None, false);
+    let result = stack.push_config(&config_with_topic_and_service, false);
     assert!(
         result.is_err(),
         "should fail to add same entity with different interfaces"
@@ -471,12 +513,12 @@ fn adding_same_entity_with_different_interfaces_fails() {
         "error should be ConfigMismatch"
     );
 
-    // Entity should still exist with original config and one instance
+    // Entity should still exist with original config (no instances since push_config doesn't create them)
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
         entity.instances().len(),
-        1,
-        "entity should still have only one instance"
+        0,
+        "entity should have no instances (push_config doesn't create instances)"
     );
 }
 
@@ -537,13 +579,13 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
 
     // Add version 1.0.0
     stack
-        .push_config(&config_v1, None, false)
+        .push_config(&config_v1, false)
         .expect("first config has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have master + sensor v1");
 
     // Adding version 2.0.0 with different interfaces should succeed (different tag = different entity)
     stack
-        .push_config(&config_v2, None, false)
+        .push_config(&config_v2, false)
         .expect("different tag should create new entity even with different interfaces");
     assert_eq!(
         stack.len(),
@@ -551,7 +593,7 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
         "stack should have master + sensor v1 + sensor v2"
     );
 
-    // Both entities should exist
+    // Both entities should exist (with no instances since push_config doesn't create them)
     let entity_v1 = stack
         .find("sensor", "1.0.0")
         .expect("v1 entity should exist");
@@ -561,13 +603,13 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
 
     assert_eq!(
         entity_v1.instances().len(),
-        1,
-        "v1 entity should have one instance"
+        0,
+        "v1 entity should have no instances (push_config doesn't create instances)"
     );
     assert_eq!(
         entity_v2.instances().len(),
-        1,
-        "v2 entity should have one instance"
+        0,
+        "v2 entity should have no instances (push_config doesn't create instances)"
     );
 }
 
@@ -606,7 +648,7 @@ fn cannot_modify_root_node() {
     );
 
     // Try to add another instance to root
-    let result = stack.push_config(&master_node_config(), None, false);
+    let result = stack.push_config(&master_node_config(), false);
     assert!(
         result.is_err(),
         "should not be able to add instance to root node"
@@ -711,10 +753,10 @@ fn node_stack_wires_dependencies_for_dependants() {
 
     let stack = NodeStack::new(master_node_config(), None);
     stack
-        .push_config(&dependency, None, false)
+        .push_config(&dependency, false)
         .expect("dependency has no dependencies");
     stack
-        .push_config(&dependent, None, false)
+        .push_config(&dependent, false)
         .expect("dependent dependency is present");
 
     let deps = stack.dependencies_of("brain", "1.0.0");
@@ -787,12 +829,12 @@ fn dependency_fails_when_node_name_mismatches() {
 
     // Add lidar (which is NOT the expected dependency "uvc_camera")
     stack
-        .push_config(&wrong_dependency, None, false)
+        .push_config(&wrong_dependency, false)
         .expect("lidar has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have master + lidar");
 
     // Adding brain should fail because it expects "uvc_camera", not "lidar"
-    let result = stack.push_config(&dependent, None, false);
+    let result = stack.push_config(&dependent, false);
     let Err(NodeStackError::MissingDependency {
         dependency,
         dependency_tag,
@@ -872,12 +914,12 @@ fn dependency_fails_when_node_tag_mismatches() {
 
     // Add lidar with tag "2.0.0" (NOT the expected tag "1.0.0")
     stack
-        .push_config(&wrong_tag_dependency, None, false)
+        .push_config(&wrong_tag_dependency, false)
         .expect("lidar has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have master + lidar");
 
     // Adding brain should fail because it expects lidar with tag "1.0.0", not "2.0.0"
-    let result = stack.push_config(&dependent, None, false);
+    let result = stack.push_config(&dependent, false);
     let Err(NodeStackError::MissingDependency {
         dependency,
         dependency_tag,

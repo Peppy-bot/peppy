@@ -65,6 +65,12 @@ pub enum Error {
     EmptyNodeStack,
     #[error("Config mismatch for `{name}`:{tag}: existing entity has different interfaces")]
     ConfigMismatch { name: String, tag: String },
+    #[error("Instance ID `{instance_id}` already exists for node `{node_name}`:{node_tag}")]
+    DuplicateInstanceId {
+        instance_id: String,
+        node_name: String,
+        node_tag: String,
+    },
 
     // -- deployment errors
     // {0}: node_name + tag, {1}: Reason
