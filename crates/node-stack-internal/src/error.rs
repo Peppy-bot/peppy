@@ -71,6 +71,8 @@ pub enum Error {
         node_name: String,
         node_tag: String,
     },
+    #[error("Cannot remove node `{node_name}`:{node_tag} because it still has instances")]
+    CannotRemoveNodeWithInstances { node_name: String, node_tag: String },
 
     // -- deployment errors
     // {0}: node_name + tag, {1}: Reason

@@ -118,10 +118,24 @@ async fn handle_node_remove_request_inner(
         instance_id: Name,
     }
 
+    #[derive(Debug, Clone)]
+    struct ConfigRemovalTarget {
+        node_name: String,
+        node_tag: String,
+    }
+
     let mut targets: Vec<RemovalTarget> = Vec::new();
+    let mut config_targets: Vec<ConfigRemovalTarget> = Vec::new();
     for entity in matching_entities {
         let node_tag = entity.config().manifest.tag.clone();
         let node_name = entity.config().manifest.name.as_str().to_owned();
+        if entity.instances().is_empty() {
+            config_targets.push(ConfigRemovalTarget {
+                node_name,
+                node_tag,
+            });
+            continue;
+        }
         for instance in entity.instances() {
             targets.push(RemovalTarget {
                 node_name: node_name.clone(),
@@ -215,6 +229,26 @@ async fn handle_node_remove_request_inner(
                     "Failed to remove node instance '{}': {}",
                     target.instance_id.as_str(),
                     e
+                ))
+                .encode();
+            }
+        }
+    }
+
+    for target in &config_targets {
+        match node_stack.remove_config(&target.node_name, &target.node_tag) {
+            Ok(true) => {}
+            Ok(false) => {
+                return NodeRemoveResponse::failure(format!(
+                    "Node '{}:{}' not found in node stack",
+                    target.node_name, target.node_tag
+                ))
+                .encode();
+            }
+            Err(e) => {
+                return NodeRemoveResponse::failure(format!(
+                    "Failed to remove node config '{}:{}': {}",
+                    target.node_name, target.node_tag, e
                 ))
                 .encode();
             }
