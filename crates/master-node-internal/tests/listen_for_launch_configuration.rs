@@ -1,13 +1,11 @@
 mod common;
 
-use common::create_mock_messenger;
+use common::start_master_node;
 use config::consts::NODE_CONFIG_FILE;
 use master_node::encoding::{LauncherRequest, NodeAddRequest};
-use master_node::{MasterNode, MasterNodeArguments};
 use peppylib::messaging::MessengerHandle;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 use tempfile::tempdir;
 
@@ -66,22 +64,8 @@ async fn listen_for_launch_configuration_succeed() {
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "example_instance";
 
-    let shared_messenger = create_mock_messenger().await;
-    let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-
-    let node_arguments = MasterNodeArguments {
-        node_start_health_timeout: Duration::from_secs(5),
-    };
-    let master_node = MasterNode::new(
-        Arc::clone(&shared_messenger),
-        Some("test_master_node"),
-        node_arguments,
-    );
-    let master_node_name = master_node.node_name().to_string();
-    let node_stack = master_node.node_stack().clone();
-
-    let master_node_task = tokio::spawn(async move { master_node.start().await });
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let started_master = start_master_node().await;
+    let node_stack = started_master.node_stack.clone();
 
     let nodes_dir = tempdir().expect("failed to create temp nodes directory");
     write_node_config(
@@ -113,10 +97,10 @@ async fn listen_for_launch_configuration_succeed() {
 
     let response = LauncherRequest::new(launcher_json5, nodes_dir.path())
         .poll(
-            &caller_handle,
-            &master_node_name,
+            &started_master.caller_handle,
+            &started_master.master_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &started_master.master_node_name,
             None,
             Duration::from_secs(5),
         )
@@ -141,7 +125,7 @@ async fn listen_for_launch_configuration_succeed() {
         TARGET_INSTANCE_ID
     );
 
-    master_node_task.abort();
+    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -151,26 +135,12 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
     const EXISTING_NODE_TAG: &str = "0.1.0";
     const EXISTING_INSTANCE_ID: &str = "existing_instance";
 
-    let shared_messenger = create_mock_messenger().await;
-    let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-
-    let node_arguments = MasterNodeArguments {
-        node_start_health_timeout: Duration::from_secs(5),
-    };
-    let master_node = MasterNode::new(
-        Arc::clone(&shared_messenger),
-        Some("test_master_node"),
-        node_arguments,
-    );
-    let master_node_name = master_node.node_name().to_string();
-    let node_stack = master_node.node_stack().clone();
-
-    let master_node_task = tokio::spawn(async move { master_node.start().await });
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let started_master = start_master_node().await;
+    let node_stack = started_master.node_stack.clone();
 
     seed_stack_with_node(
-        &caller_handle,
-        &master_node_name,
+        &started_master.caller_handle,
+        &started_master.master_node_name,
         &node_stack,
         EXISTING_NODE_NAME,
         EXISTING_NODE_TAG,
@@ -184,10 +154,10 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
 
     let response = LauncherRequest::new(invalid_launcher_json5, nodes_dir.path())
         .poll(
-            &caller_handle,
-            &master_node_name,
+            &started_master.caller_handle,
+            &started_master.master_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &started_master.master_node_name,
             None,
             Duration::from_secs(5),
         )
@@ -206,7 +176,7 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
     assert_eq!(node_stack.len(), before_len, "stack should be unchanged");
     assert!(node_stack.contains(EXISTING_NODE_NAME, EXISTING_NODE_TAG));
 
-    master_node_task.abort();
+    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -215,26 +185,12 @@ async fn listen_for_launch_configuration_launch_config_nodes_directory_must_be_a
     const EXISTING_NODE_TAG: &str = "0.1.0";
     const EXISTING_INSTANCE_ID: &str = "existing_instance";
 
-    let shared_messenger = create_mock_messenger().await;
-    let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-
-    let node_arguments = MasterNodeArguments {
-        node_start_health_timeout: Duration::from_secs(5),
-    };
-    let master_node = MasterNode::new(
-        Arc::clone(&shared_messenger),
-        Some("test_master_node"),
-        node_arguments,
-    );
-    let master_node_name = master_node.node_name().to_string();
-    let node_stack = master_node.node_stack().clone();
-
-    let master_node_task = tokio::spawn(async move { master_node.start().await });
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let started_master = start_master_node().await;
+    let node_stack = started_master.node_stack.clone();
 
     seed_stack_with_node(
-        &caller_handle,
-        &master_node_name,
+        &started_master.caller_handle,
+        &started_master.master_node_name,
         &node_stack,
         EXISTING_NODE_NAME,
         EXISTING_NODE_TAG,
@@ -250,10 +206,10 @@ async fn listen_for_launch_configuration_launch_config_nodes_directory_must_be_a
     let launcher_json5 = r#"{}"#;
     let response = LauncherRequest::new(launcher_json5, &not_a_dir)
         .poll(
-            &caller_handle,
-            &master_node_name,
+            &started_master.caller_handle,
+            &started_master.master_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &started_master.master_node_name,
             None,
             Duration::from_secs(5),
         )
@@ -272,7 +228,7 @@ async fn listen_for_launch_configuration_launch_config_nodes_directory_must_be_a
     assert_eq!(node_stack.len(), before_len, "stack should be unchanged");
     assert!(node_stack.contains(EXISTING_NODE_NAME, EXISTING_NODE_TAG));
 
-    master_node_task.abort();
+    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -287,26 +243,12 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
     const MISSING_NODE_NAME: &str = "missing_node";
     const MISSING_NODE_TAG: &str = "0.1.0";
 
-    let shared_messenger = create_mock_messenger().await;
-    let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-
-    let node_arguments = MasterNodeArguments {
-        node_start_health_timeout: Duration::from_secs(5),
-    };
-    let master_node = MasterNode::new(
-        Arc::clone(&shared_messenger),
-        Some("test_master_node"),
-        node_arguments,
-    );
-    let master_node_name = master_node.node_name().to_string();
-    let node_stack = master_node.node_stack().clone();
-
-    let master_node_task = tokio::spawn(async move { master_node.start().await });
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let started_master = start_master_node().await;
+    let node_stack = started_master.node_stack.clone();
 
     seed_stack_with_node(
-        &caller_handle,
-        &master_node_name,
+        &started_master.caller_handle,
+        &started_master.master_node_name,
         &node_stack,
         EXISTING_NODE_NAME,
         EXISTING_NODE_TAG,
@@ -350,10 +292,10 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
 
     let response = LauncherRequest::new(launcher_json5, nodes_dir.path())
         .poll(
-            &caller_handle,
-            &master_node_name,
+            &started_master.caller_handle,
+            &started_master.master_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &started_master.master_node_name,
             None,
             Duration::from_secs(5),
         )
@@ -376,7 +318,7 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
         "resolved deployment should not be applied when plan fails"
     );
 
-    master_node_task.abort();
+    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -388,26 +330,12 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
     const CONSUMER_NODE_NAME: &str = "consumer_node";
     const CONSUMER_NODE_TAG: &str = "0.1.0";
 
-    let shared_messenger = create_mock_messenger().await;
-    let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-
-    let node_arguments = MasterNodeArguments {
-        node_start_health_timeout: Duration::from_secs(5),
-    };
-    let master_node = MasterNode::new(
-        Arc::clone(&shared_messenger),
-        Some("test_master_node"),
-        node_arguments,
-    );
-    let master_node_name = master_node.node_name().to_string();
-    let node_stack = master_node.node_stack().clone();
-
-    let master_node_task = tokio::spawn(async move { master_node.start().await });
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let started_master = start_master_node().await;
+    let node_stack = started_master.node_stack.clone();
 
     seed_stack_with_node(
-        &caller_handle,
-        &master_node_name,
+        &started_master.caller_handle,
+        &started_master.master_node_name,
         &node_stack,
         EXISTING_NODE_NAME,
         EXISTING_NODE_TAG,
@@ -458,10 +386,10 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
 
     let response = LauncherRequest::new(launcher_json5, nodes_dir.path())
         .poll(
-            &caller_handle,
-            &master_node_name,
+            &started_master.caller_handle,
+            &started_master.master_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &started_master.master_node_name,
             None,
             Duration::from_secs(5),
         )
@@ -484,7 +412,7 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
         "deployment should not be applied when dependencies are invalid"
     );
 
-    master_node_task.abort();
+    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -493,22 +421,8 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     const NODE_B: &str = "node_b";
     const TAG: &str = "0.1.0";
 
-    let shared_messenger = create_mock_messenger().await;
-    let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-
-    let node_arguments = MasterNodeArguments {
-        node_start_health_timeout: Duration::from_secs(5),
-    };
-    let master_node = MasterNode::new(
-        Arc::clone(&shared_messenger),
-        Some("test_master_node"),
-        node_arguments,
-    );
-    let master_node_name = master_node.node_name().to_string();
-    let node_stack = master_node.node_stack().clone();
-
-    let master_node_task = tokio::spawn(async move { master_node.start().await });
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let started_master = start_master_node().await;
+    let node_stack = started_master.node_stack.clone();
 
     let nodes_dir = tempdir().expect("failed to create temp nodes directory");
     write_node_config(
@@ -554,10 +468,10 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
 
     let first = LauncherRequest::new(launcher_a_json5, nodes_dir.path())
         .poll(
-            &caller_handle,
-            &master_node_name,
+            &started_master.caller_handle,
+            &started_master.master_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &started_master.master_node_name,
             None,
             Duration::from_secs(5),
         )
@@ -586,10 +500,10 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
 
     let second = LauncherRequest::new(launcher_b_json5, nodes_dir.path())
         .poll(
-            &caller_handle,
-            &master_node_name,
+            &started_master.caller_handle,
+            &started_master.master_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &started_master.master_node_name,
             None,
             Duration::from_secs(5),
         )
@@ -612,5 +526,5 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     assert_eq!(entity.instances().len(), 1);
     assert_eq!(entity.instances()[0].instance_id().as_str(), "b1");
 
-    master_node_task.abort();
+    started_master.task.abort();
 }
