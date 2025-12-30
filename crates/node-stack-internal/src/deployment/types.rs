@@ -874,30 +874,6 @@ impl NodeStack {
         }
     }
 
-    /// Creates a NodeStack from a list of configurations.
-    /// The first configuration becomes the root node.
-    /// Remaining configurations are topologically sorted so dependencies are added before dependents.
-    /// Each config gets one instance spawned with an auto-generated ID.
-    /// Returns an error if the list is empty or if any node has unmet dependencies.
-    pub fn from_configs(nodes: Vec<NodeConfig>) -> Result<Self> {
-        if nodes.is_empty() {
-            return Err(Error::EmptyNodeStack);
-        }
-
-        let mut nodes = nodes;
-        let root = nodes.remove(0);
-        let stack = Self::new(root, None);
-
-        // Topologically sort the remaining nodes
-        let sorted = topological_sort_configs(nodes);
-
-        for config in sorted {
-            stack.push_config(&config, false)?;
-            stack.spawn_instance(config.manifest.name.as_str(), &config.manifest.tag, None)?;
-        }
-        Ok(stack)
-    }
-
     pub fn len(&self) -> usize {
         self.shared.read().expect("node stack poisoned").len()
     }
