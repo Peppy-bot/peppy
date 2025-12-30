@@ -29,12 +29,8 @@ struct NodeAddRequest {
 struct NodeAddResponse {
     # Whether the node was added successfully
     success @0 :Bool;
-    # Assigned node instance ID
-    nodeInstanceId @1 :Text;
     # Error message if failed
-    errorMessage @2 :Text;
-    # Whether the node is currently running
-    isRunning @3 :Bool;
+    errorMessage @1 :Text;
 }
 
 # Node Init service
@@ -73,6 +69,10 @@ struct NodeGenerateResponse {
 struct NodeStartRequest {
     # Runtime configuration in JSON5 format (PEPPY_RUNTIME_CONFIG)
     runtimeConfigJson5 @0 :Text;
+    # Name of the node to start
+    nodeName @1 :Text;
+    # Tag of the node to start
+    tag @2 :Text;
 }
 
 struct NodeStartResponse {

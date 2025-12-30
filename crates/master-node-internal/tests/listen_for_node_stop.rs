@@ -1,6 +1,7 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, start_master_node};
+use config::node::Name;
 use master_node::encoding::{NodeAddRequest, NodeStopRequest};
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
@@ -47,6 +48,11 @@ async fn listen_for_node_stop_success() {
         add_response.error_message
     );
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+
+    let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
+    node_stack
+        .spawn_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id))
+        .expect("spawn_instance should succeed");
 
     // Simulate the target node exposing the shutdown service.
     let shutdown_handle =

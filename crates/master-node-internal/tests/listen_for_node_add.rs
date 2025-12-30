@@ -43,7 +43,6 @@ async fn listen_for_node_add_success() {
         "node_add should succeed, got error: {:?}",
         add_response.error_message
     );
-    assert_eq!(add_response.node_instance_id, TARGET_INSTANCE_ID);
 
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
@@ -51,12 +50,8 @@ async fn listen_for_node_add_success() {
     let entity = node_stack
         .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .expect("node should exist in stack");
-    // TODO there should be 0 instances here, `add` only adds the node to the NodeStack but doesn't spawn any instance
-    assert_eq!(entity.instances().len(), 1);
-    assert_eq!(
-        entity.instances()[0].instance_id().as_str(),
-        TARGET_INSTANCE_ID
-    );
+    // `add` only adds the node to the NodeStack but doesn't spawn any instance
+    assert_eq!(entity.instances().len(), 0);
 
     started_master.task.abort();
 }
@@ -84,7 +79,6 @@ async fn listen_for_node_add_invalid_config_fails() {
         !add_response.success,
         "node_add should fail for invalid json5"
     );
-    assert_eq!(add_response.node_instance_id, "");
     assert!(
         add_response
             .error_message
@@ -130,7 +124,6 @@ async fn listen_for_node_add_no_launch_cmd_fails() {
         !add_response.success,
         "node_add should fail when launch_cmd is missing"
     );
-    assert_eq!(add_response.node_instance_id, "");
     assert!(
         add_response
             .error_message
@@ -189,7 +182,6 @@ async fn listen_for_node_add_dependency_not_resolved() {
         !add_response.success,
         "node_add should fail when dependencies are missing"
     );
-    assert_eq!(add_response.node_instance_id, "");
     assert!(
         add_response
             .error_message
@@ -257,7 +249,7 @@ async fn listen_for_node_add_same_node_same_tags_fails() {
     let entity = node_stack
         .find(NODE_NAME, NODE_TAG)
         .expect("node should exist after v1");
-    assert_eq!(entity.instances().len(), 1);
+    assert_eq!(entity.instances().len(), 0);
 
     // Second add: same name+tag but different interfaces -> should be rejected.
     let peppy_json5_v2 = format!(
@@ -306,7 +298,7 @@ async fn listen_for_node_add_same_node_same_tags_fails() {
     let entity = node_stack
         .find(NODE_NAME, NODE_TAG)
         .expect("node should still exist after v2 failure");
-    assert_eq!(entity.instances().len(), 1, "should not add a new instance");
+    assert_eq!(entity.instances().len(), 0, "should not have any instances");
 
     started_master.task.abort();
 }

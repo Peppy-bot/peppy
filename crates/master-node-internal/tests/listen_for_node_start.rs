@@ -50,7 +50,6 @@ async fn listen_for_node_start_success() {
         "node_add should succeed, got error: {:?}",
         add_response.error_message
     );
-    assert_eq!(add_response.node_instance_id, TARGET_INSTANCE_ID);
 
     // Set up a health listener that will respond to health check requests
     // This simulates the node responding to health checks
@@ -85,7 +84,8 @@ async fn listen_for_node_start_success() {
         serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
 
     // Call node_start - this should succeed because the health listener will respond
-    let node_start_request = NodeStartRequest::new(&runtime_config_json5);
+    let node_start_request =
+        NodeStartRequest::new(&runtime_config_json5, TARGET_NODE_NAME, "0.1.0");
     let start_response = node_start_request
         .poll(
             &started_master.caller_handle,
@@ -150,7 +150,6 @@ async fn listen_for_node_start_timeout() {
         "node_add should succeed, got error: {:?}",
         add_response.error_message
     );
-    assert_eq!(add_response.node_instance_id, TARGET_INSTANCE_ID);
 
     // Create a runtime config for the node_start request
     let runtime_config = RuntimeConfig::new(
@@ -170,7 +169,8 @@ async fn listen_for_node_start_timeout() {
         serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
 
     // Call node_start - this should timeout because the node won't respond to health checks
-    let node_start_request = NodeStartRequest::new(&runtime_config_json5);
+    let node_start_request =
+        NodeStartRequest::new(&runtime_config_json5, TARGET_NODE_NAME, "0.1.0");
     let start_response = node_start_request
         .poll(
             &started.caller_handle,
@@ -228,8 +228,9 @@ async fn listen_for_node_start_not_found() {
     let runtime_config_json5 =
         serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
 
-    // Call node_start - this should fail because the instance_id doesn't exist in the node stack
-    let node_start_request = NodeStartRequest::new(&runtime_config_json5);
+    // Call node_start - this should fail because the node doesn't exist in the node stack
+    let node_start_request =
+        NodeStartRequest::new(&runtime_config_json5, TARGET_NODE_NAME, "0.1.0");
     let start_response = node_start_request
         .poll(
             &started.caller_handle,
@@ -241,10 +242,10 @@ async fn listen_for_node_start_not_found() {
         .await
         .expect("node_start request should complete");
 
-    // The start should fail because the node instance was not found
+    // The start should fail because the node was not found
     assert!(
         !start_response.success,
-        "node_start should fail because instance_id not found"
+        "node_start should fail because node not found"
     );
     assert!(
         start_response
