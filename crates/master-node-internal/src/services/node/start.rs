@@ -183,7 +183,7 @@ async fn handle_node_start_request_inner(
 
 /// Runs a node using its manifest's launch_cmd and passes the PEPPY_RUNTIME_CONFIG as an env var.
 /// Returns the spawned child process handle on success.
-pub fn run_node(entity: &NodeEntity, runtime_config_json5: &str) -> Result<Child> {
+fn run_node(entity: &NodeEntity, runtime_config_json5: &str) -> Result<Child> {
     let manifest = &entity.config().manifest;
     let launch_cmd = manifest.launch_cmd.as_ref().ok_or_else(|| {
         std::io::Error::new(
