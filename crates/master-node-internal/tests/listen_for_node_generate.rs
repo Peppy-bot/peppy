@@ -1,14 +1,12 @@
 mod common;
 
-use common::start_master_node;
+use common::{start_master_node, CALLER_INSTANCE_ID};
 use config::consts::{NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH};
 use master_node::encoding::NodeGenerateRequest;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
 use tempfile::tempdir;
-
-const CALLER_INSTANCE_ID: &str = "caller_instance";
 
 fn write_node_config(node_dir: &Path, peppy_json5: &str) {
     let config_path = node_dir.join(NODE_CONFIG_FILE);

@@ -1,6 +1,6 @@
 mod common;
 
-use common::start_master_node;
+use common::{start_master_node, CALLER_INSTANCE_ID};
 use config::consts::NODE_CONFIG_FILE;
 use master_node::encoding::{LauncherRequest, NodeAddRequest};
 use peppylib::messaging::MessengerHandle;
@@ -8,8 +8,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tempfile::tempdir;
-
-const CALLER_INSTANCE_ID: &str = "caller_instance";
 
 fn write_node_config(nodes_directory: &Path, node_subdir: &str, peppy_json5: &str) -> PathBuf {
     let node_dir = nodes_directory.join(node_subdir);

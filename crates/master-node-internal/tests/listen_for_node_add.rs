@@ -1,10 +1,8 @@
 mod common;
 
-use common::start_master_node;
+use common::{start_master_node, CALLER_INSTANCE_ID};
 use master_node::encoding::NodeAddRequest;
 use std::time::Duration;
-
-const CALLER_INSTANCE_ID: &str = "caller_instance";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_success() {

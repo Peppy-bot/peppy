@@ -1,3 +1,5 @@
+pub const CALLER_INSTANCE_ID: &str = "caller_instance";
+
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::sync::Arc;
 use std::time::Duration;
