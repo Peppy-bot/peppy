@@ -1,10 +1,9 @@
 mod common;
 
-use common::create_mock_messenger;
+use common::{start_master_node, start_master_node_with_timeout};
 use config::peppy_config::{DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
 use master_node::encoding::{NodeAddRequest, NodeStartRequest};
-use master_node::{MasterNode, MasterNodeArguments};
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use std::sync::Arc;
@@ -17,25 +16,7 @@ async fn listen_for_node_start_success() {
     const TARGET_NODE_NAME: &str = "runnable_node";
     const TARGET_INSTANCE_ID: &str = "runnable_instance";
 
-    let shared_messenger = create_mock_messenger().await;
-    let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-
-    let node_start_health_timeout = Duration::from_secs(5);
-    let node_arguments = MasterNodeArguments {
-        node_start_health_timeout,
-    };
-    let master_node = MasterNode::new(
-        Arc::clone(&shared_messenger),
-        Some("test_master_node"),
-        node_arguments,
-    );
-    let master_node_name = master_node.node_name().to_string();
-
-    // Start the master node in a separate task
-    let master_node_task = tokio::spawn(async move { master_node.start().await });
-
-    // Allow the MasterNode services to fully establish their listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let started_master = start_master_node().await;
 
     // Create a node config with a launch_cmd that runs but doesn't respond to health checks on its own
     // We'll set up a separate health listener to respond on behalf of the "node"
@@ -57,10 +38,10 @@ async fn listen_for_node_start_success() {
         NodeAddRequest::new(&peppy_json5, "/tmp").with_instance_id(TARGET_INSTANCE_ID);
     let add_response = node_add_request
         .poll(
-            &caller_handle,
-            &master_node_name,
+            &started_master.caller_handle,
+            &started_master.master_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &started_master.master_node_name,
             Duration::from_secs(5),
         )
         .await
@@ -75,10 +56,10 @@ async fn listen_for_node_start_success() {
 
     // Set up a health listener that will respond to health check requests
     // This simulates the node responding to health checks
-    let health_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let health_handle = MessengerHandle::from_shared(Arc::clone(&started_master.shared_messenger));
     let health_task = listen_for_node_health(
         &health_handle,
-        &master_node_name,
+        &started_master.master_node_name,
         TARGET_INSTANCE_ID,
         TARGET_NODE_NAME,
     )
@@ -97,7 +78,7 @@ async fn listen_for_node_start_success() {
             arguments: Default::default(),
         },
         TARGET_NODE_NAME,
-        &master_node_name,
+        &started_master.master_node_name,
         "d41d8cd98f00b204e9800998ecf8427e", // dummy md5
     )
     .expect("runtime config should be valid");
@@ -109,10 +90,10 @@ async fn listen_for_node_start_success() {
     let node_start_request = NodeStartRequest::new(&runtime_config_json5);
     let start_response = node_start_request
         .poll(
-            &caller_handle,
-            &master_node_name,
+            &started_master.caller_handle,
+            &started_master.master_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &started_master.master_node_name,
             Duration::from_secs(10),
         )
         .await
@@ -127,7 +108,7 @@ async fn listen_for_node_start_success() {
 
     // Clean up
     health_task.abort();
-    master_node_task.abort();
+    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -135,25 +116,7 @@ async fn listen_for_node_start_timeout() {
     const TARGET_NODE_NAME: &str = "runnable_node";
     const TARGET_INSTANCE_ID: &str = "runnable_instance";
 
-    let shared_messenger = create_mock_messenger().await;
-    let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-
-    let node_start_health_timeout = Duration::from_millis(100);
-    let node_arguments = MasterNodeArguments {
-        node_start_health_timeout,
-    };
-    let master_node = MasterNode::new(
-        Arc::clone(&shared_messenger),
-        Some("test_master_node"),
-        node_arguments,
-    );
-    let master_node_name = master_node.node_name().to_string();
-
-    // Start the master node in a separate task
-    let master_node_task = tokio::spawn(async move { master_node.start().await });
-
-    // Allow the MasterNode services to fully establish their listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let started = start_master_node_with_timeout(Duration::from_millis(100)).await;
 
     // Create a node config with a launch_cmd that won't respond to health checks
     // Using "sleep 10" as a simple command that runs but doesn't respond
@@ -175,10 +138,10 @@ async fn listen_for_node_start_timeout() {
         NodeAddRequest::new(&peppy_json5, "/tmp").with_instance_id(TARGET_INSTANCE_ID);
     let add_response = node_add_request
         .poll(
-            &caller_handle,
-            &master_node_name,
+            &started.caller_handle,
+            &started.master_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &started.master_node_name,
             Duration::from_secs(5),
         )
         .await
@@ -200,7 +163,7 @@ async fn listen_for_node_start_timeout() {
             arguments: Default::default(),
         },
         TARGET_NODE_NAME,
-        &master_node_name,
+        &started.master_node_name,
         "d41d8cd98f00b204e9800998ecf8427e", // dummy md5
     )
     .expect("runtime config should be valid");
@@ -212,10 +175,10 @@ async fn listen_for_node_start_timeout() {
     let node_start_request = NodeStartRequest::new(&runtime_config_json5);
     let start_response = node_start_request
         .poll(
-            &caller_handle,
-            &master_node_name,
+            &started.caller_handle,
+            &started.master_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &started.master_node_name,
             Duration::from_secs(5),
         )
         .await
@@ -237,7 +200,7 @@ async fn listen_for_node_start_timeout() {
     );
 
     // Abort the master node task
-    master_node_task.abort();
+    started.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -245,25 +208,7 @@ async fn listen_for_node_start_not_found() {
     const TARGET_NODE_NAME: &str = "nonexistent_node";
     const TARGET_INSTANCE_ID: &str = "nonexistent_instance";
 
-    let shared_messenger = create_mock_messenger().await;
-    let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-
-    let node_start_health_timeout = Duration::from_secs(5);
-    let node_arguments = MasterNodeArguments {
-        node_start_health_timeout,
-    };
-    let master_node = MasterNode::new(
-        Arc::clone(&shared_messenger),
-        Some("test_master_node"),
-        node_arguments,
-    );
-    let master_node_name = master_node.node_name().to_string();
-
-    // Start the master node in a separate task
-    let master_node_task = tokio::spawn(async move { master_node.start().await });
-
-    // Allow the MasterNode services to fully establish their listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let started = start_master_node().await;
 
     // Note: We intentionally do NOT add any node to the node stack
     // This simulates trying to start a node that doesn't exist
@@ -277,7 +222,7 @@ async fn listen_for_node_start_not_found() {
             arguments: Default::default(),
         },
         TARGET_NODE_NAME,
-        &master_node_name,
+        &started.master_node_name,
         "d41d8cd98f00b204e9800998ecf8427e", // dummy md5
     )
     .expect("runtime config should be valid");
@@ -289,10 +234,10 @@ async fn listen_for_node_start_not_found() {
     let node_start_request = NodeStartRequest::new(&runtime_config_json5);
     let start_response = node_start_request
         .poll(
-            &caller_handle,
-            &master_node_name,
+            &started.caller_handle,
+            &started.master_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &started.master_node_name,
             Duration::from_secs(5),
         )
         .await
@@ -314,5 +259,5 @@ async fn listen_for_node_start_not_found() {
     );
 
     // Abort the master node task
-    master_node_task.abort();
+    started.task.abort();
 }
