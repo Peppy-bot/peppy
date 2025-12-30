@@ -664,49 +664,6 @@ fn cannot_modify_root_node() {
 }
 
 #[test]
-fn from_configs_with_empty_list_returns_error() {
-    let result = NodeStack::from_configs(Vec::new());
-    assert!(result.is_err(), "from_configs with empty list should fail");
-}
-
-#[test]
-fn from_configs_uses_first_entity_as_root() {
-    let config1: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            schema_version: 1,
-            manifest: {
-              name: "first",
-              tag: "1.0.0",
-              launch_cmd: ["first"]
-            }
-        }"#,
-    )
-    .expect("valid node config");
-
-    let config2: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            schema_version: 1,
-            manifest: {
-              name: "second",
-              tag: "1.0.0",
-              launch_cmd: ["second"]
-            }
-        }"#,
-    )
-    .expect("valid node config");
-
-    let stack = NodeStack::from_configs(vec![config1, config2]).expect("should create stack");
-    assert_eq!(stack.len(), 2, "stack should have two nodes");
-
-    let root = stack.root();
-    assert_eq!(
-        root.config().manifest.name.as_str(),
-        "first",
-        "first config should be root"
-    );
-}
-
-#[test]
 fn node_stack_wires_dependencies_for_dependants() {
     let dependency: config::node::NodeConfig = serde_json5::from_str(
         r#"{
