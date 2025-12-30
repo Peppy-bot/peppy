@@ -71,7 +71,8 @@ mod tests {
                 schema_version: 1,
                 manifest: {
                     name: "master",
-                    tag: "1.0.0"
+                    tag: "1.0.0",
+                    launch_cmd: ["cargo", "run"]
                 }
             }"#,
         )

@@ -14,7 +14,7 @@ fn git_repo_is_cloned_and_resolved() {
     let temp_dir = tempdir().expect("temp dir");
     let manifest_content = r#"{
             schema_version: 1,
-            manifest: { name: "uvc_camera", tag: "1.2.3" }
+            manifest: { name: "uvc_camera", tag: "1.2.3", launch_cmd: ["uvc_camera"] }
         }"#;
     let remote = create_simple_git_repo(manifest_content, "1.2.3");
 
@@ -182,8 +182,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
         .expect("resolved node config")
         .manifest
         .launch_cmd
-        .clone()
-        .expect("launch command present");
+        .clone();
     assert_eq!(launch_cmd_v1, vec!["run_v1".to_string()]);
 
     // Update the remote repository keeping the same tag but new contents.
@@ -223,8 +222,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
         .expect("resolved node config after update")
         .manifest
         .launch_cmd
-        .clone()
-        .expect("launch command present after update");
+        .clone();
 
     assert_eq!(launch_cmd_v2, vec!["run_v2".to_string()]);
     assert_ne!(launch_cmd_v1, launch_cmd_v2);
