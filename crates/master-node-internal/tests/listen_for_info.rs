@@ -1,12 +1,10 @@
 mod common;
 
-use common::start_master_node;
+use common::{CALLER_INSTANCE_ID, start_master_node};
 use master_node::encoding::{InfoRequest, InfoResponse};
 use master_node::names;
 use peppylib::ServiceMessenger;
 use std::time::Duration;
-
-const CALLER_INSTANCE_ID: &str = "caller_instance";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_info_success() {

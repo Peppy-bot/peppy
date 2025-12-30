@@ -1,6 +1,6 @@
 mod common;
 
-use common::{start_master_node, start_master_node_with_timeout};
+use common::{start_master_node, start_master_node_with_timeout, CALLER_INSTANCE_ID};
 use config::peppy_config::{DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
 use master_node::encoding::{NodeAddRequest, NodeStartRequest};
@@ -8,8 +8,6 @@ use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use std::sync::Arc;
 use std::time::Duration;
-
-const CALLER_INSTANCE_ID: &str = "caller_instance";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_start_success() {
