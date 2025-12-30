@@ -307,86 +307,6 @@ pub fn exposes_interface(node: &NodeConfig, requirement: &InterfaceRequirement) 
     }
 }
 
-/// Topologically sorts node configurations so that dependencies come before dependents.
-/// Uses Kahn's algorithm. Nodes with unresolvable dependencies are placed at the end.
-fn topological_sort_configs(configs: Vec<NodeConfig>) -> Vec<NodeConfig> {
-    if configs.is_empty() {
-        return configs;
-    }
-
-    // Build a map of node key -> index for quick lookup
-    let key_to_idx: HashMap<(String, String), usize> = configs
-        .iter()
-        .enumerate()
-        .map(|(idx, config)| {
-            (
-                (
-                    config.manifest.name.as_str().to_owned(),
-                    config.manifest.tag.clone(),
-                ),
-                idx,
-            )
-        })
-        .collect();
-
-    // Build adjacency list and in-degree count
-    // An edge from A to B means A depends on B (B must come before A)
-    let mut in_degree = vec![0usize; configs.len()];
-    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); configs.len()];
-
-    for (idx, config) in configs.iter().enumerate() {
-        let specs = collect_dependency_specs(config);
-        for spec in specs {
-            let dep_key = (spec.node_name, spec.node_tag);
-            if let Some(&dep_idx) = key_to_idx.get(&dep_key) {
-                // idx depends on dep_idx, so dep_idx must come first
-                in_degree[idx] += 1;
-                dependents[dep_idx].push(idx);
-            }
-            // If dependency is not in the list, ignore (might be external or root)
-        }
-    }
-
-    // Kahn's algorithm
-    let mut queue: Vec<usize> = in_degree
-        .iter()
-        .enumerate()
-        .filter(|&(_, deg)| *deg == 0)
-        .map(|(idx, _)| idx)
-        .collect();
-
-    let mut sorted_indices = Vec::with_capacity(configs.len());
-
-    while let Some(idx) = queue.pop() {
-        sorted_indices.push(idx);
-        for &dependent_idx in &dependents[idx] {
-            in_degree[dependent_idx] -= 1;
-            if in_degree[dependent_idx] == 0 {
-                queue.push(dependent_idx);
-            }
-        }
-    }
-
-    // Any remaining nodes have circular dependencies or depend on external nodes
-    // Add them at the end (they will fail validation later)
-    for (idx, deg) in in_degree.iter().enumerate() {
-        if *deg > 0 {
-            sorted_indices.push(idx);
-        }
-    }
-
-    // Rebuild by sorted order - need to be careful with ownership
-    let mut indexed_configs: Vec<Option<NodeConfig>> = configs.into_iter().map(Some).collect();
-    let mut result = Vec::with_capacity(indexed_configs.len());
-    for idx in sorted_indices {
-        if let Some(config) = indexed_configs[idx].take() {
-            result.push(config);
-        }
-    }
-
-    result
-}
-
 struct NodeStackInner {
     graph: StableDiGraph<NodeEntity, ()>,
     key_to_index: HashMap<NodeKey, NodeIndex>,
@@ -956,6 +876,40 @@ impl NodeStack {
     pub fn remove_instance(&self, name: &str, tag: &str, instance_id: &Name) -> Result<bool> {
         let mut guard = self.shared.write().expect("node stack poisoned");
         guard.remove_instance(name, tag, instance_id)
+    }
+
+    /// Removes a node configuration if it has no instances.
+    ///
+    /// Returns Ok(true) if the config was found and removed, Ok(false) if not found.
+    /// Returns Err(CannotModifyRootNode) if trying to remove the root node.
+    /// Returns Err(CannotRemoveNodeWithInstances) if the node still has instances.
+    pub fn remove_config(&self, name: &str, tag: &str) -> Result<bool> {
+        let mut guard = self.shared.write().expect("node stack poisoned");
+        let key = NodeKey::new(name, tag);
+
+        if guard.is_root(&key) {
+            return Err(Error::CannotModifyRootNode);
+        }
+
+        let Some(&index) = guard.key_to_index.get(&key) else {
+            return Ok(false);
+        };
+
+        let has_instances = guard
+            .graph
+            .node_weight(index)
+            .map(|entity| !entity.instances().is_empty())
+            .unwrap_or(false);
+
+        if has_instances {
+            return Err(Error::CannotRemoveNodeWithInstances {
+                node_name: name.to_string(),
+                node_tag: tag.to_string(),
+            });
+        }
+
+        guard.remove_entity(&key);
+        Ok(true)
     }
 
     /// Clears all nodes except the root node from the stack.
