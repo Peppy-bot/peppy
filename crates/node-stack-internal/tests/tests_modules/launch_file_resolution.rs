@@ -542,7 +542,7 @@ fn deployment_with_invalid_parameters_is_unresolved() {
 
     let input_stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
     input_stack
-        .push_config(&lidar_node, true, PathBuf::from("/tmp"))
+        .push_config(lidar_node, true, PathBuf::from("/tmp"))
         .expect("lidar node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
@@ -643,7 +643,7 @@ fn deployment_parameters_with_invalid_type_is_unresolved() {
 
     let input_stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
     input_stack
-        .push_config(&sensor_node, true, PathBuf::from("/tmp"))
+        .push_config(sensor_node, true, PathBuf::from("/tmp"))
         .expect("sensor node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
@@ -701,7 +701,7 @@ fn build_node_stack_uses_deployment_instance_ids() {
     let alpha_node = node_config("alpha", "1.0.0", &[]);
     let input_stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
     input_stack
-        .push_config(&alpha_node, true, PathBuf::from("/tmp"))
+        .push_config(alpha_node, true, PathBuf::from("/tmp"))
         .expect("alpha node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
@@ -906,7 +906,7 @@ fn optional_dependency_from_launcher_missing_is_unresolved() {
 
     let input_stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
     input_stack
-        .push_config(&alpha_node, true, PathBuf::from("/tmp"))
+        .push_config(alpha_node, true, PathBuf::from("/tmp"))
         .expect("alpha node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
@@ -980,10 +980,10 @@ fn optional_dependency_from_launcher_with_wrong_tag_is_unresolved() {
 
     let input_stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
     input_stack
-        .push_config(&alpha_node, true, PathBuf::from("/tmp"))
+        .push_config(alpha_node, true, PathBuf::from("/tmp"))
         .expect("alpha node inserted");
     input_stack
-        .push_config(&beta_node, true, PathBuf::from("/tmp"))
+        .push_config(beta_node, true, PathBuf::from("/tmp"))
         .expect("beta v1 inserted (but deployment expects v2)");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
@@ -1056,10 +1056,10 @@ fn dependant_resolves_when_optional_dependency_resolves() {
 
     let input_stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
     input_stack
-        .push_config(&alpha_node, true, PathBuf::from("/tmp"))
+        .push_config(alpha_node, true, PathBuf::from("/tmp"))
         .expect("alpha node inserted");
     input_stack
-        .push_config(&beta_node, true, PathBuf::from("/tmp"))
+        .push_config(beta_node, true, PathBuf::from("/tmp"))
         .expect("beta node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
@@ -1140,10 +1140,10 @@ fn dependant_errors_when_optional_dependency_unresolved() {
 
     let input_stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
     input_stack
-        .push_config(&alpha_node, true, PathBuf::from("/tmp"))
+        .push_config(alpha_node, true, PathBuf::from("/tmp"))
         .expect("alpha node inserted");
     input_stack
-        .push_config(&gamma_node, true, PathBuf::from("/tmp"))
+        .push_config(gamma_node, true, PathBuf::from("/tmp"))
         .expect("gamma node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
@@ -1248,7 +1248,7 @@ fn required_optional_dependency_surfaces_error() {
 
     let input_stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
     input_stack
-        .push_config(&beta_node, true, PathBuf::from("/tmp"))
+        .push_config(beta_node, true, PathBuf::from("/tmp"))
         .expect("beta node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
@@ -1339,7 +1339,7 @@ fn unlisted_dependency_reports_missing_error() {
 
     let input_stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
     input_stack
-        .push_config(&alpha_node, true, PathBuf::from("/tmp"))
+        .push_config(alpha_node, true, PathBuf::from("/tmp"))
         .expect("alpha node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
@@ -1408,10 +1408,10 @@ fn missing_interface_on_dependency_is_reported() {
 
     let input_stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
     input_stack
-        .push_config(&brain_node, true, PathBuf::from("/tmp"))
+        .push_config(brain_node, true, PathBuf::from("/tmp"))
         .expect("brain node inserted");
     input_stack
-        .push_config(&lidar_node, true, PathBuf::from("/tmp"))
+        .push_config(lidar_node, true, PathBuf::from("/tmp"))
         .expect("lidar node inserted");
 
     let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
