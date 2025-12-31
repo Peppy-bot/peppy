@@ -15,6 +15,7 @@ use peppylib::MessengerHandle;
 use pmi::Messenger;
 use rand::rng;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -47,10 +48,11 @@ pub struct MasterNode {
 }
 
 impl MasterNode {
-    pub fn new(
+    pub fn new<P: Into<PathBuf>>(
         messenger: Arc<Mutex<Messenger>>,
         node_name: Option<&str>,
         node_arguments: MasterNodeArguments,
+        root_dir: P,
     ) -> Self {
         let manifest_name = match node_name {
             Some(name) => Name::new(name).unwrap(),
@@ -76,7 +78,7 @@ impl MasterNode {
         let messenger = MessengerHandle::from_shared(messenger);
         let instance_id = Name::new(get_random(rng())).unwrap();
         // The master node is the root of the node stack
-        let node_stack = NodeStack::new(node_config.clone(), None);
+        let node_stack = NodeStack::new(node_config.clone(), None, root_dir);
 
         Self {
             node_stack: Arc::new(node_stack),

@@ -146,7 +146,8 @@ impl TestServeHandle {
         let shutdown_token_for_serve = shutdown_token.clone();
 
         // Build the serve command with the specified messaging router
-        let builder = ServeCommandBuilder::new()
+        let root_dir = std::env::current_dir().expect("failed to get current directory");
+        let builder = ServeCommandBuilder::new(root_dir)
             .expect("builder should create")
             .with_shutdown_token(shutdown_token_for_serve)
             .with_messaging_router(router.to_string())

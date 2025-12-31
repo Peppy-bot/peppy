@@ -42,10 +42,12 @@ pub async fn start_master_node_with_timeout(
     let node_arguments = MasterNodeArguments {
         node_start_health_timeout,
     };
+    let root_dir = std::env::current_dir().expect("failed to get current directory");
     let master_node = MasterNode::new(
         Arc::clone(&shared_messenger),
         Some("test_master_node"),
         node_arguments,
+        root_dir,
     );
     let master_node_name = master_node.node_name().to_string();
     let node_stack = master_node.node_stack().clone();
