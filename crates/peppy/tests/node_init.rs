@@ -9,6 +9,7 @@ use peppy::{AppContext, Command};
 
 #[test]
 fn node_rust_init_command_success() {
+    let _serial_guard = helpers::serve_test_lock().lock().unwrap();
     let serve = TestServeHandle::new();
 
     // Verify the daemon state file was written

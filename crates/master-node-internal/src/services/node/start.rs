@@ -175,6 +175,23 @@ async fn handle_node_start_request_inner(
                 "Health check failed for node instance '{}': {}, killing process",
                 instance_id_str, e
             );
+            // Capture stderr before killing the process
+            let stderr_output = child
+                .stderr
+                .take()
+                .and_then(|mut stderr| {
+                    use std::io::Read;
+                    let mut output = String::new();
+                    stderr.read_to_string(&mut output).ok()?;
+                    Some(output)
+                })
+                .unwrap_or_default();
+            if !stderr_output.is_empty() {
+                debug!(
+                    "Node instance '{}' stderr: {}",
+                    instance_id_str, stderr_output
+                );
+            }
             // Kill the process since health check failed
             if let Err(kill_err) = child.kill() {
                 debug!(
@@ -182,7 +199,12 @@ async fn handle_node_start_request_inner(
                     instance_id_str, kill_err
                 );
             }
-            NodeStartResponse::failure(format!("Health check failed: {}", e)).encode()
+            let error_msg = if stderr_output.is_empty() {
+                format!("Health check failed: {}", e)
+            } else {
+                format!("Health check failed: {}. Node stderr: {}", e, stderr_output)
+            };
+            NodeStartResponse::failure(error_msg).encode()
         }
     }
 }
@@ -196,19 +218,40 @@ fn run_node(entity: &NodeEntity, runtime_config_json5: &str) -> Result<Child> {
     let args = &manifest.launch_cmd[1..];
 
     debug!(
-        "Running node '{}:{}' with command: {} {:?}",
+        "Running node '{}:{}' with command: {} {:?} in dir {:?}",
         manifest.name.as_str(),
         manifest.tag,
         program,
-        args
+        args,
+        entity.root_path()
     );
 
-    let child = Command::new(program)
+    // Write the runtime config to a file in the node's .peppy directory
+    // PEPPY_RUNTIME_CONFIG expects a file path, not JSON content
+    let runtime_config_path = entity
+        .root_path()
+        .map(|p| p.join(".peppy").join("runtime_config.json"))
+        .unwrap_or_else(|| std::env::temp_dir().join("peppy_runtime_config.json"));
+
+    // Ensure the parent directory exists
+    if let Some(parent) = runtime_config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&runtime_config_path, runtime_config_json5)?;
+
+    let mut command = Command::new(program);
+    command
         .args(args)
-        .env("PEPPY_RUNTIME_CONFIG", runtime_config_json5)
+        .env("PEPPY_RUNTIME_CONFIG", &runtime_config_path)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+
+    // Set the working directory to the node's root path if available
+    if let Some(root_path) = entity.root_path() {
+        command.current_dir(root_path);
+    }
+
+    let child = command.spawn()?;
 
     Ok(child)
 }
