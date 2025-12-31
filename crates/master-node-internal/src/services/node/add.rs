@@ -73,10 +73,10 @@ async fn handle_node_add_request_inner(
         }
     };
 
-    // Add the node config to the stack (all dependencies must be satisfied)
+    // Add the node config to the stack with its root path (all dependencies must be satisfied)
     // Note: `add` only registers the node configuration, it does not spawn any instance.
     // Use `node_start` to spawn instances after adding a node.
-    if let Err(e) = node_stack.push_config(&node_config, false) {
+    if let Err(e) = node_stack.push_config_with_path(&node_config, false, request.from_dir) {
         return NodeAddResponse::failure(format!("Failed to add node config: {}", e)).encode();
     }
 

@@ -1,6 +1,6 @@
 use std::ffi::OsStr;
 use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -67,6 +67,11 @@ pub fn wait_for_log(log_capture: &LogCapture, needle: &str, timeout: Duration) {
     );
 }
 
+pub fn serve_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 pub struct EnvVarGuard {
     key: &'static str,
 }
@@ -120,7 +125,18 @@ pub struct TestServeHandle {
 impl TestServeHandle {
     /// Creates a new test serve handle, starting the serve command in a background thread.
     /// Blocks until the serve command is initialized and ready to accept commands.
+    /// Uses mock messaging - suitable for in-process tests only.
     pub fn new() -> Self {
+        Self::with_messaging_router("mock")
+    }
+
+    /// Creates a new test serve handle with real zenoh messaging.
+    /// This allows spawned node processes to communicate with the master node.
+    pub fn with_zenoh() -> Self {
+        Self::with_messaging_router("zenoh")
+    }
+
+    fn with_messaging_router(router: &str) -> Self {
         let env_guard = TempServeEnvGuard::new();
 
         let log_capture = LogCapture::new();
@@ -129,11 +145,11 @@ impl TestServeHandle {
         let shutdown_token = CancellationToken::new();
         let shutdown_token_for_serve = shutdown_token.clone();
 
-        // Build the serve command with mock messaging router
+        // Build the serve command with the specified messaging router
         let builder = ServeCommandBuilder::new()
             .expect("builder should create")
             .with_shutdown_token(shutdown_token_for_serve)
-            .with_messaging_router("mock".to_string())
+            .with_messaging_router(router.to_string())
             .with_master_node(None)
             .expect("master node should configure");
 

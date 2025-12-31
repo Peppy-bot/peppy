@@ -39,6 +39,9 @@ pub enum NodeCommands {
         /// If set, will attempt to spawn an instance directly after adding the node to the node stack
         #[arg(long)]
         run: bool,
+        /// Optional: specify a deterministic instance ID
+        #[arg(long, hide = true)]
+        instance_id: Option<String>,
     },
     /// List nodes in the current node network
     List {},
@@ -64,10 +67,13 @@ impl Command for NodeCommand {
 
                 node_builder.build()
             }
-            NodeCommands::Add { peppy_json5, run } => {
+            NodeCommands::Add {
+                peppy_json5,
+                run,
+                instance_id,
+            } => {
                 info!("Adding node {}...", peppy_json5.display());
-                add::add_node(peppy_json5, run);
-                Ok(())
+                add::add_node(ctx, peppy_json5, run, instance_id)
             }
             NodeCommands::List {} => {
                 info!("Listing nodes...");

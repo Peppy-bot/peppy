@@ -19,6 +19,7 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct NodeEntity {
     config: NodeConfig,
+    // TODO create a struct `Source` with `Source::fs(PathBuf)` and `Source::git(repo, path)` instead of root_path. Replace `root_path` with `source` and no longer make it optional
     root_path: Option<PathBuf>,
     instances: Vec<NodeInstance>,
 }
@@ -29,6 +30,15 @@ impl NodeEntity {
         Self {
             config,
             root_path: None,
+            instances: Vec::new(),
+        }
+    }
+
+    /// Creates a new NodeEntity with a config and root path (no instances)
+    pub fn from_config_with_path<P: Into<PathBuf>>(config: NodeConfig, root_path: P) -> Self {
+        Self {
+            config,
+            root_path: Some(root_path.into()),
             instances: Vec::new(),
         }
     }
@@ -588,6 +598,7 @@ impl NodeStackInner {
         &mut self,
         config: &NodeConfig,
         allow_missing_dependencies: bool,
+        root_path: Option<PathBuf>,
     ) -> Result<()> {
         let key = NodeKey::new(config.manifest.name.as_str(), &config.manifest.tag);
 
@@ -609,7 +620,10 @@ impl NodeStackInner {
             // Config already exists and matches, nothing to do
         } else {
             // Entity doesn't exist, create new one without instances
-            let entity = NodeEntity::from_config(config.clone());
+            let entity = match root_path {
+                Some(path) => NodeEntity::from_config_with_path(config.clone(), path),
+                None => NodeEntity::from_config(config.clone()),
+            };
             if allow_missing_dependencies {
                 self.insert_entity_lenient(entity)?;
             } else {
@@ -835,7 +849,21 @@ impl NodeStack {
     /// requirements and will be wired once the dependency nodes are added to the stack.
     pub fn push_config(&self, config: &NodeConfig, allow_missing_dependencies: bool) -> Result<()> {
         let mut guard = self.shared.write().expect("node stack poisoned");
-        guard.push_config_impl(config, allow_missing_dependencies)
+        guard.push_config_impl(config, allow_missing_dependencies, None)
+    }
+
+    /// Adds a config to the stack with a root path, or validates an existing one matches.
+    /// Does not create any instances.
+    /// If allow_missing_dependencies is true, missing dependencies are tracked as pending
+    /// requirements and will be wired once the dependency nodes are added to the stack.
+    pub fn push_config_with_path(
+        &self,
+        config: &NodeConfig,
+        allow_missing_dependencies: bool,
+        root_path: PathBuf,
+    ) -> Result<()> {
+        let mut guard = self.shared.write().expect("node stack poisoned");
+        guard.push_config_impl(config, allow_missing_dependencies, Some(root_path))
     }
 
     /// Spawns a new instance for an existing config.
