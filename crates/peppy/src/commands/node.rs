@@ -1,6 +1,7 @@
 mod add;
 mod init;
 mod list;
+mod run;
 mod types;
 
 use std::path::PathBuf;
@@ -16,6 +17,19 @@ use crate::{context::AppContext, error::Error as CommandError};
 use init::NodeBuilder;
 
 pub use types::NodeName;
+
+/// Parses a key=value argument string into a tuple
+fn parse_key_value_arg(s: &str) -> Result<(String, String), String> {
+    let pos = s
+        .find('=')
+        .ok_or_else(|| format!("invalid argument format '{}': expected key=value", s))?;
+    let key = s[..pos].trim().to_string();
+    let value = s[pos + 1..].trim().to_string();
+    if key.is_empty() {
+        return Err(format!("invalid argument '{}': key cannot be empty", s));
+    }
+    Ok((key, value))
+}
 
 #[derive(Subcommand)]
 pub enum NodeCommands {
@@ -39,11 +53,31 @@ pub enum NodeCommands {
         /// If set, will attempt to spawn an instance directly after adding the node to the node stack
         #[arg(long)]
         run: bool,
+        /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30)
+        /// These are passed to the node via PEPPY_RUNTIME_CONFIG when run is true
+        #[arg(value_parser = parse_key_value_arg)]
+        args: Vec<(String, String)>,
         /// Optional: specify a deterministic instance ID
         #[arg(long, hide = true)]
         instance_id: Option<String>,
     },
-    /// List nodes in the current node network
+    /// Runs an instance from a node added to the node stack
+    Run {
+        /// Name of the node to spawn
+        #[arg(long)]
+        node_name: String, // Finds the `NodeConfig` in the node stack that matches this name
+        /// Tag of the node
+        #[arg(long)]
+        tag: String,
+        /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30)
+        /// These are passed to the node via PEPPY_RUNTIME_CONFIG
+        #[arg(value_parser = parse_key_value_arg)]
+        args: Vec<(String, String)>,
+        /// Optional: specify a deterministic instance ID
+        #[arg(long, hide = true)]
+        instance_id: Option<String>,
+    },
+    /// List nodes in the current node stack
     List {},
 }
 
@@ -70,10 +104,20 @@ impl Command for NodeCommand {
             NodeCommands::Add {
                 peppy_json5,
                 run,
+                args,
                 instance_id,
             } => {
                 info!("Adding node {}...", peppy_json5.display());
-                add::add_node(ctx, peppy_json5, run, instance_id)
+                add::add_node(ctx, peppy_json5, run, args, instance_id)
+            }
+            NodeCommands::Run {
+                node_name,
+                tag,
+                args,
+                instance_id,
+            } => {
+                info!("Running node {}:{}...", node_name, tag);
+                run::run_node(ctx, node_name, tag, args, instance_id)
             }
             NodeCommands::List {} => {
                 info!("Listing nodes...");
