@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,11 +17,13 @@ impl MasterNodeRunner {
         messenger: Arc<Mutex<Messenger>>,
         master_name: Option<String>,
         node_start_health_timeout: Duration,
+        root_dir: PathBuf,
     ) -> Self {
         let node_arguments = MasterNodeArguments {
             node_start_health_timeout,
         };
-        let master_node = MasterNode::new(messenger, master_name.as_deref(), node_arguments);
+        let master_node =
+            MasterNode::new(messenger, master_name.as_deref(), node_arguments, root_dir);
         Self { master_node }
     }
 

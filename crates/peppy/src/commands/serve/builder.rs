@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,16 +24,18 @@ pub struct ServeCommandBuilder {
     master_node_requested: bool,
     master_node_name: Option<String>,
     shutdown_token: Option<CancellationToken>,
+    root_dir: PathBuf,
 }
 
 impl ServeCommandBuilder {
-    pub fn new() -> Result<Self> {
+    pub fn new(root_dir: impl Into<PathBuf>) -> Result<Self> {
         Ok(Self {
             composite_command: CompositeCommand::default(),
             messenger: None,
             master_node_requested: false,
             master_node_name: None,
             shutdown_token: None,
+            root_dir: root_dir.into(),
         })
     }
 
@@ -82,6 +84,7 @@ impl ServeCommandBuilder {
                     Arc::clone(messenger),
                     self.master_node_name.clone(),
                     DEFAULT_NODE_START_HEALTH_TIMEOUT,
+                    self.root_dir.clone(),
                 );
 
                 // Write the daemon state file with the master node name
