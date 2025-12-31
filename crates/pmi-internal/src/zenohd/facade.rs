@@ -83,7 +83,7 @@ impl ZenohdFacade {
     fn get_zenohd_config_path(zenohd_config_path: Option<impl AsRef<Path>>) -> PathBuf {
         match zenohd_config_path {
             Some(cfg) => cfg.as_ref().to_path_buf(),
-            None => match env::var("ZENOHD_CONFIG") {
+            None => match env::var("ZENOH_CONFIG") {
                 Ok(zenohd_config_path) => PathBuf::from(zenohd_config_path),
                 Err(_) => {
                     let config_content = Self::render_default_config();
