@@ -228,10 +228,12 @@ fn run_node(entity: &NodeEntity, runtime_config_json5: &str) -> Result<Child> {
 
     // Write the runtime config to a file in the node's .peppy directory
     // PEPPY_RUNTIME_CONFIG expects a file path, not JSON content
+    // TODO the directory needs to be created if it doesn't already exist
     let runtime_config_path = entity
         .root_path()
-        .map(|p| p.join(".peppy").join("runtime_config.json"))
-        .unwrap_or_else(|| std::env::temp_dir().join("peppy_runtime_config.json"));
+        .join(".peppy")
+        .join("runtime")
+        .join("runtime_config.json");
 
     // Ensure the parent directory exists
     if let Some(parent) = runtime_config_path.parent() {
@@ -240,18 +242,16 @@ fn run_node(entity: &NodeEntity, runtime_config_json5: &str) -> Result<Child> {
     std::fs::write(&runtime_config_path, runtime_config_json5)?;
 
     let mut command = Command::new(program);
+    command.current_dir(entity.root_path());
     command
         .args(args)
         .env("PEPPY_RUNTIME_CONFIG", &runtime_config_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    // Set the working directory to the node's root path if available
-    if let Some(root_path) = entity.root_path() {
-        command.current_dir(root_path);
-    }
-
     let child = command.spawn()?;
+
+    // TODO The start command should also add the started instance to its `entity` if it ran successfuly, the tests should also add an assertion for this
 
     Ok(child)
 }

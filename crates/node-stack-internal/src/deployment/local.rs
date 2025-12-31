@@ -17,6 +17,8 @@ pub fn resolve_local_deployment(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use config::node::Name;
 
     use super::*;
@@ -26,15 +28,17 @@ mod tests {
     #[test]
     fn resolve_local_deployment_success() {
         let config = sample_config_camera();
+        let config_manifest = config.manifest.clone();
         let deployment = sample_deployment();
-        let stack = NodeStack::new(master_node_config(), None);
+        let root_path = PathBuf::from("/tmp");
+        let stack = NodeStack::new(master_node_config(), None, root_path.clone());
         stack
-            .push_config(&config, false)
+            .push_config(config, false, root_path)
             .expect("config has no dependencies");
         stack
             .spawn_instance(
-                config.manifest.name.as_str(),
-                &config.manifest.tag,
+                config_manifest.name.as_str(),
+                &config_manifest.tag,
                 Some(&Name::new("test-instance").unwrap()),
             )
             .expect("should spawn instance");
@@ -44,12 +48,13 @@ mod tests {
 
         assert_eq!(node.manifest.name.as_str(), deployment.name.as_str());
         assert_eq!(node.manifest.tag, deployment.tag);
-        assert_eq!(node.manifest.name.as_str(), config.manifest.name.as_str());
+        assert_eq!(node.manifest.name.as_str(), config_manifest.name.as_str());
     }
 
     #[test]
     fn resolve_local_deployment_missing_node() {
-        let stack = NodeStack::new(master_node_config(), None);
+        let root_path = PathBuf::from("/tmp");
+        let stack = NodeStack::new(master_node_config(), None, root_path.clone());
         let err = resolve_local_deployment(&sample_deployment(), &stack)
             .expect_err("should report missing local node");
 
@@ -59,9 +64,9 @@ mod tests {
         assert_eq!(name, "uvc_camera");
 
         let config = sample_config_lidar();
-        let stack = NodeStack::new(master_node_config(), None);
+        let stack = NodeStack::new(master_node_config(), None, root_path.clone());
         stack
-            .push_config(&config, false)
+            .push_config(config, false, root_path)
             .expect("config has no dependencies");
 
         let err = resolve_local_deployment(&sample_deployment(), &stack)

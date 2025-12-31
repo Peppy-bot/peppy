@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use node_stack::{NodeStack, NodeStackError};
 
 use crate::helpers::config_common::master_node_config;
@@ -59,17 +61,17 @@ fn service_dependency_resolved_when_dependency_added_first() {
     )
     .expect("valid dependency node config");
 
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
 
     // Add the dependency first
     stack
-        .push_config(&dependency, false)
+        .push_config(&dependency, false, PathBuf::from("/tmp"))
         .expect("dependency node has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have master + dependency node");
 
     // Now add the dependent node
     stack
-        .push_config(&dependent, false)
+        .push_config(&dependent, false, PathBuf::from("/tmp"))
         .expect("dependent node should be added when dependency exists");
     assert_eq!(stack.len(), 3, "stack should include the dependent node");
 
@@ -127,10 +129,10 @@ fn service_dependency_fails_when_dependency_is_missing() {
     )
     .expect("valid dependent node config");
 
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
 
     // Adding a node that depends on a non-existent service provider should fail
-    let result = stack.push_config(&dependent, false);
+    let result = stack.push_config(&dependent, false, PathBuf::from("/tmp"));
     let Err(NodeStackError::MissingDependency {
         dependency,
         dependency_tag,
@@ -200,16 +202,16 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
     )
     .expect("valid dependency node config with wrong service");
 
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
 
     // Add the node with the correct name but wrong service
     stack
-        .push_config(&dependency_wrong_service, false)
+        .push_config(&dependency_wrong_service, false, PathBuf::from("/tmp"))
         .expect("lidar has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have master + lidar");
 
     // Adding brain should fail because lidar doesn't expose "reset_sensor"
-    let result = stack.push_config(&dependent, false);
+    let result = stack.push_config(&dependent, false, PathBuf::from("/tmp"));
     let Err(NodeStackError::MissingInterface {
         dependency,
         dependency_tag,
