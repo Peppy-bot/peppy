@@ -1,6 +1,7 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, start_master_node, start_master_node_with_timeout};
+use config::node::Name as NodeName;
 use config::peppy_config::{DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
 use master_node::encoding::{NodeAddRequest, NodeStartRequest};
@@ -104,6 +105,14 @@ async fn listen_for_node_start_success() {
         start_response.error_message
     );
 
+    // Verify that the instance was added to the node stack
+    let instance_id = NodeName::new(TARGET_INSTANCE_ID).expect("valid instance id");
+    let found_instance = started_master.node_stack.find_by_instance_id(&instance_id);
+    assert!(
+        found_instance.is_some(),
+        "instance should be registered in the node stack after successful start"
+    );
+
     // Clean up
     health_task.abort();
     started_master.task.abort();
@@ -195,6 +204,14 @@ async fn listen_for_node_start_timeout() {
             .unwrap_or(false),
         "error message should indicate health check failure, got: {:?}",
         start_response.error_message
+    );
+
+    // Verify that the instance was NOT added to the node stack since start failed
+    let instance_id = NodeName::new(TARGET_INSTANCE_ID).expect("valid instance id");
+    let found_instance = started.node_stack.find_by_instance_id(&instance_id);
+    assert!(
+        found_instance.is_none(),
+        "instance should NOT be registered in the node stack after failed start"
     );
 
     // Abort the master node task

@@ -51,8 +51,8 @@ async fn listen_for_node_stop_success() {
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
     node_stack
-        .spawn_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id))
-        .expect("spawn_instance should succeed");
+        .add_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id))
+        .expect("add_instance should succeed");
 
     // Simulate the target node exposing the shutdown service.
     let shutdown_handle =

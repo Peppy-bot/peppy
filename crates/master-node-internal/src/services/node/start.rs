@@ -130,12 +130,6 @@ async fn handle_node_start_request_inner(
         }
     };
 
-    // Spawn an instance for the node
-    if let Err(e) = node_stack.spawn_instance(&request.node_name, &request.tag, Some(&instance_id))
-    {
-        return NodeStartResponse::failure(format!("Failed to spawn instance: {}", e)).encode();
-    }
-
     // Run the node with the runtime config
     let mut child = match run_node(&entity, &request.runtime_config_json5) {
         Ok(child) => child,
@@ -168,6 +162,20 @@ async fn handle_node_start_request_inner(
                 "Health check passed for node instance '{}'",
                 instance_id_str
             );
+            // Add the instance to the node stack now that it has successfully started
+            if let Err(e) =
+                node_stack.add_instance(&request.node_name, &request.tag, Some(&instance_id))
+            {
+                // Kill the process since we couldn't register the instance
+                if let Err(kill_err) = child.kill() {
+                    debug!(
+                        "Failed to kill process for node instance '{}': {}",
+                        instance_id_str, kill_err
+                    );
+                }
+                return NodeStartResponse::failure(format!("Failed to register instance: {}", e))
+                    .encode();
+            }
             NodeStartResponse::success().encode()
         }
         Err(e) => {
@@ -250,8 +258,6 @@ fn run_node(entity: &NodeEntity, runtime_config_json5: &str) -> Result<Child> {
         .stderr(Stdio::piped());
 
     let child = command.spawn()?;
-
-    // TODO The start command should also add the started instance to its `entity` if it ran successfuly, the tests should also add an assertion for this
 
     Ok(child)
 }

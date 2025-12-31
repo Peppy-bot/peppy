@@ -162,7 +162,7 @@ fn apply_launch_plan(
         // Then spawn each instance
         for instance in entity.instances() {
             target_stack
-                .spawn_instance(
+                .add_instance(
                     config.manifest.name.as_str(),
                     &config.manifest.tag,
                     Some(instance.instance_id()),
