@@ -1,6 +1,6 @@
+mod add;
 mod init;
 mod list;
-mod run;
 mod types;
 
 use std::path::PathBuf;
@@ -20,8 +20,8 @@ pub use types::NodeName;
 #[derive(Subcommand)]
 pub enum NodeCommands {
     /// Create a new peppy node
-    #[command(visible_alias = "init")]
-    Create {
+    #[command(visible_alias = "create")]
+    Init {
         /// Name of the node directory to create
         node_name: NodeName,
         /// Optional: target directory (defaults to current directory)
@@ -31,13 +31,14 @@ pub enum NodeCommands {
         #[arg(long, visible_alias = "lang", value_enum, default_value_t = BuildSystem::Rust)]
         build_system: BuildSystem,
     },
-    /// Runs a specific node
-    Run {
-        /// Name of the node to start. If it isn't found in the current network, it will be pulled from the nodes.peppy.bot repo
-        node_name: NodeName,
-        /// Optional: path to the configuration file. If provided, will attempt to run that node directly from that path and add it to the node list
+    /// Add a node to the node stack based on its peppy.json5 file
+    Add {
+        /// Path to the node configuration file
         #[arg(long)]
-        configuration_file: Option<PathBuf>,
+        peppy_json5: PathBuf,
+        /// If set, will attempt to spawn an instance directly after adding the node to the node stack
+        #[arg(long)]
+        run: bool,
     },
     /// List nodes in the current node network
     List {},
@@ -50,7 +51,7 @@ pub struct NodeCommand {
 impl Command for NodeCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<(), CommandError> {
         match self.command {
-            NodeCommands::Create {
+            NodeCommands::Init {
                 to_dir,
                 build_system,
                 node_name,
@@ -63,12 +64,9 @@ impl Command for NodeCommand {
 
                 node_builder.build()
             }
-            NodeCommands::Run {
-                node_name,
-                configuration_file,
-            } => {
-                info!("Running node {node_name}...");
-                run::run_node(node_name, configuration_file);
+            NodeCommands::Add { peppy_json5, run } => {
+                info!("Adding node {}...", peppy_json5.display());
+                add::add_node(peppy_json5, run);
                 Ok(())
             }
             NodeCommands::List {} => {
