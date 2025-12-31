@@ -188,7 +188,7 @@ fn load_nodes_from_fs(root_dir: &Path, master_node: NodeConfig) -> Result<NodeSt
 
     let local_nodes: Vec<NodeConfig> = state_snapshot.into_values().flatten().collect();
 
-    let stack = NodeStack::new(master_node, None);
+    let stack = NodeStack::new(master_node, None, root_dir);
     let mut pending = topological_sort_local_nodes(local_nodes);
 
     loop {
@@ -196,7 +196,7 @@ fn load_nodes_from_fs(root_dir: &Path, master_node: NodeConfig) -> Result<NodeSt
         let mut still_pending = Vec::new();
 
         for node_config in pending {
-            match stack.push_config(&node_config, false) {
+            match stack.push_config(node_config.clone(), false, root_dir) {
                 Ok(_) => {
                     made_progress = true;
                 }
@@ -213,7 +213,7 @@ fn load_nodes_from_fs(root_dir: &Path, master_node: NodeConfig) -> Result<NodeSt
 
         if !made_progress {
             for node_config in still_pending {
-                stack.push_config(&node_config, true)?;
+                stack.push_config(node_config, true, root_dir)?;
             }
             break;
         }
@@ -321,7 +321,7 @@ fn build_launch_plan(
     let deployments = peppy_launcher.deployments.take().unwrap_or_default();
 
     let master_config = source_stack.root().config().clone();
-    let stack = NodeStack::new(master_config, None);
+    let stack = NodeStack::new(master_config, None, &nodes_cache_dir);
 
     let mut planned = Vec::with_capacity(deployments.len());
     let mut deployment_optional: HashMap<(String, String), bool> = HashMap::new();
@@ -358,7 +358,7 @@ fn build_launch_plan(
         }
 
         // First, push the config (without creating instances)
-        if let Err(err) = stack.push_config(&node, true) {
+        if let Err(err) = stack.push_config(node.clone(), true, &nodes_cache_dir) {
             planned.push(PlannedDeployment::unresolved(deployment, err));
             continue;
         }

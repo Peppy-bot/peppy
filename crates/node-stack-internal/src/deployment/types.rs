@@ -10,7 +10,7 @@ use petgraph::{
 use rand::rng;
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
 
@@ -19,58 +19,18 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct NodeEntity {
     config: NodeConfig,
-    // TODO create a struct `Source` with `Source::fs(PathBuf)` and `Source::git(repo, path)` instead of root_path. Replace `root_path` with `source` and no longer make it optional
-    root_path: Option<PathBuf>,
     instances: Vec<NodeInstance>,
+    // Every node has a root path, it's the directory where the configuration resides
+    fs_root_path: PathBuf,
 }
 
 impl NodeEntity {
     /// Creates a new NodeEntity with a config only (no instances)
-    pub fn from_config(config: NodeConfig) -> Self {
+    pub fn new<P: Into<PathBuf>>(config: NodeConfig, root_path: P) -> Self {
         Self {
             config,
-            root_path: None,
             instances: Vec::new(),
-        }
-    }
-
-    /// Creates a new NodeEntity with a config and root path (no instances)
-    pub fn from_config_with_path<P: Into<PathBuf>>(config: NodeConfig, root_path: P) -> Self {
-        Self {
-            config,
-            root_path: Some(root_path.into()),
-            instances: Vec::new(),
-        }
-    }
-
-    /// Creates a new NodeEntity with a single instance
-    pub fn new(config: NodeConfig, instance: NodeInstance) -> Self {
-        Self {
-            config,
-            root_path: None,
-            instances: vec![instance],
-        }
-    }
-
-    /// Creates a new NodeEntity with a single instance and a root path
-    pub fn with_path<P: Into<PathBuf>>(
-        config: NodeConfig,
-        instance: NodeInstance,
-        root_path: P,
-    ) -> Self {
-        Self {
-            config,
-            root_path: Some(root_path.into()),
-            instances: vec![instance],
-        }
-    }
-
-    /// Creates a NodeEntity from a list of instances
-    pub fn from_instances(config: NodeConfig, instances: Vec<NodeInstance>) -> Self {
-        Self {
-            config,
-            root_path: None,
-            instances,
+            fs_root_path: root_path.into(),
         }
     }
 
@@ -78,12 +38,12 @@ impl NodeEntity {
         &self.config
     }
 
-    pub fn into_config(self) -> NodeConfig {
-        self.config
+    pub fn root_path(&self) -> &Path {
+        &self.fs_root_path
     }
 
-    pub fn root_path(&self) -> Option<&PathBuf> {
-        self.root_path.as_ref()
+    pub fn into_config(self) -> NodeConfig {
+        self.config
     }
 
     pub fn instances(&self) -> &[NodeInstance] {
@@ -594,11 +554,11 @@ impl NodeStackInner {
     /// Adds a config to the stack or updates an existing one if interfaces match.
     /// Does not create any instances.
     /// Returns Err(CannotModifyRootNode) if trying to modify the root node config.
-    fn push_config_impl(
+    fn push_config_impl<P: Into<PathBuf>>(
         &mut self,
-        config: &NodeConfig,
+        config: NodeConfig,
         allow_missing_dependencies: bool,
-        root_path: Option<PathBuf>,
+        root_path: P,
     ) -> Result<()> {
         let key = NodeKey::new(config.manifest.name.as_str(), &config.manifest.tag);
 
@@ -620,10 +580,7 @@ impl NodeStackInner {
             // Config already exists and matches, nothing to do
         } else {
             // Entity doesn't exist, create new one without instances
-            let entity = match root_path {
-                Some(path) => NodeEntity::from_config_with_path(config.clone(), path),
-                None => NodeEntity::from_config(config.clone()),
-            };
+            let entity = NodeEntity::new(config, root_path);
             if allow_missing_dependencies {
                 self.insert_entity_lenient(entity)?;
             } else {
@@ -796,13 +753,24 @@ impl NodeStack {
     /// The root node (master node) is the parent of all other nodes in the graph
     /// and cannot be removed from the stack.
     ///
-    /// If `instance_id` is `None`, a random instance ID will be generated.
-    pub fn new(root_config: NodeConfig, instance_id: Option<Name>) -> Self {
+    /// If `instance_id` is `None`, a random instance ID will be generated for the root node.
+    ///
+    /// # Arguments
+    ///
+    /// * `root_config` - The configuration for the root node (master node).
+    /// * `instance_id` - Optional instance ID for the root node. If `None`, a random ID is generated.
+    /// * `root_path` - The filesystem path where the root node will be stored.
+    pub fn new<P: Into<PathBuf>>(
+        root_config: NodeConfig,
+        instance_id: Option<Name>,
+        root_path: P,
+    ) -> Self {
         let instance_id = instance_id.unwrap_or_else(|| {
             Name::new(get_random(rng())).expect("random name generation failed")
         });
         let instance = NodeInstance::new(instance_id);
-        let root_entity = NodeEntity::new(root_config, instance);
+        let mut root_entity = NodeEntity::new(root_config, root_path);
+        root_entity.add_instance(instance);
         Self {
             shared: Arc::new(RwLock::new(NodeStackInner::new(root_entity))),
         }
@@ -847,23 +815,14 @@ impl NodeStack {
     /// Does not create any instances.
     /// If allow_missing_dependencies is true, missing dependencies are tracked as pending
     /// requirements and will be wired once the dependency nodes are added to the stack.
-    pub fn push_config(&self, config: &NodeConfig, allow_missing_dependencies: bool) -> Result<()> {
-        let mut guard = self.shared.write().expect("node stack poisoned");
-        guard.push_config_impl(config, allow_missing_dependencies, None)
-    }
-
-    /// Adds a config to the stack with a root path, or validates an existing one matches.
-    /// Does not create any instances.
-    /// If allow_missing_dependencies is true, missing dependencies are tracked as pending
-    /// requirements and will be wired once the dependency nodes are added to the stack.
-    pub fn push_config_with_path(
+    pub fn push_config<P: Into<PathBuf>>(
         &self,
-        config: &NodeConfig,
+        config: NodeConfig,
         allow_missing_dependencies: bool,
-        root_path: PathBuf,
+        root_path: P,
     ) -> Result<()> {
         let mut guard = self.shared.write().expect("node stack poisoned");
-        guard.push_config_impl(config, allow_missing_dependencies, Some(root_path))
+        guard.push_config_impl(config, allow_missing_dependencies, root_path)
     }
 
     /// Spawns a new instance for an existing config.

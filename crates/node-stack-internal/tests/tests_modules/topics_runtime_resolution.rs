@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use node_stack::{NodeStack, NodeStackError};
 
 use crate::helpers::config_common::master_node_config;
@@ -63,17 +65,17 @@ fn topic_dependency_resolved_when_dependency_added_first() {
     )
     .expect("valid dependency node config");
 
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
 
     // Add the lidar dependency first
     stack
-        .push_config(&lidar_dependency, false)
+        .push_config(&lidar_dependency, false, PathBuf::from("/tmp"))
         .expect("dependency node has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have master + dependency node");
 
     // Now add the dependent node - should succeed because dependency exists
     stack
-        .push_config(&brain_dependent, false)
+        .push_config(&brain_dependent, false, PathBuf::from("/tmp"))
         .expect("dependent node should be added when dependency exists");
     assert_eq!(stack.len(), 3, "stack should include the dependent node");
 
@@ -126,10 +128,10 @@ fn topic_dependency_fails_when_dependency_is_missing() {
     )
     .expect("valid dependent node config");
 
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
 
     // Adding a node that depends on a non-existent node should fail
-    let result = stack.push_config(&brain_dependent, false);
+    let result = stack.push_config(&brain_dependent, false, PathBuf::from("/tmp"));
     let Err(NodeStackError::MissingDependency {
         dependency,
         dependency_tag,
@@ -198,16 +200,16 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
     )
     .expect("valid dependency node config with wrong topic");
 
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
 
     // Add the node with the correct name but wrong topic
     stack
-        .push_config(&dependency_wrong_topic, false)
+        .push_config(&dependency_wrong_topic, false, PathBuf::from("/tmp"))
         .expect("lidar has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have master + lidar");
 
     // Adding brain should fail because lidar doesn't expose "push_lidar_object"
-    let result = stack.push_config(&dependent, false);
+    let result = stack.push_config(&dependent, false, PathBuf::from("/tmp"));
     let Err(NodeStackError::MissingInterface {
         dependency,
         dependency_tag,

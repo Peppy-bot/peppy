@@ -149,13 +149,15 @@ fn apply_launch_plan(
         }
 
         // First, push the config
-        target_stack.push_config(config, true).map_err(|e| {
-            format!(
-                "failed to add config {}:{} to node stack: {e}",
-                config.manifest.name.as_str(),
-                config.manifest.tag,
-            )
-        })?;
+        target_stack
+            .push_config(config.clone(), true, entity.root_path())
+            .map_err(|e| {
+                format!(
+                    "failed to add config {}:{} to node stack: {e}",
+                    config.manifest.name.as_str(),
+                    config.manifest.tag,
+                )
+            })?;
 
         // Then spawn each instance
         for instance in entity.instances() {

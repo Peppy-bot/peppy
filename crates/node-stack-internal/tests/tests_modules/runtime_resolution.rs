@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use config::node::Name;
 use node_stack::{NodeStack, NodeStackError};
 
@@ -17,12 +19,12 @@ fn add_instance_creates_new_entity() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
     assert_eq!(stack.len(), 1, "stack should start with root node only");
 
     // Push config first
     stack
-        .push_config(&config, false)
+        .push_config(&config, false, PathBuf::from("/tmp"))
         .expect("should push config");
 
     assert_eq!(stack.len(), 2, "stack should have master node + one entity");
@@ -90,11 +92,11 @@ fn add_instance_to_existing_entity() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
 
     // Push config first
     stack
-        .push_config(&config, false)
+        .push_config(&config, false, PathBuf::from("/tmp"))
         .expect("should push config");
 
     // Spawn first instance
@@ -153,12 +155,12 @@ fn add_instance_with_specific_id() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
     let custom_id = Name::new("my-custom-instance").expect("valid name");
 
     // First push the config
     stack
-        .push_config(&config, false)
+        .push_config(&config, false, PathBuf::from("/tmp"))
         .expect("should push config");
 
     // Then spawn an instance with the specific ID
@@ -193,13 +195,13 @@ fn remove_instance_from_entity_with_multiple_instances() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
     let first_id = Name::new("instance-1").expect("valid name");
     let second_id = Name::new("instance-2").expect("valid name");
 
     // Push config first
     stack
-        .push_config(&config, false)
+        .push_config(&config, false, PathBuf::from("/tmp"))
         .expect("should push config");
 
     // Spawn instances
@@ -253,12 +255,12 @@ fn remove_last_instance_removes_entity() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
     let instance_id = Name::new("only-instance").expect("valid name");
 
     // Push config and spawn instance
     stack
-        .push_config(&config, false)
+        .push_config(&config, false, PathBuf::from("/tmp"))
         .expect("should push config");
     stack
         .spawn_instance("sensor", "1.0.0", Some(&instance_id))
@@ -299,13 +301,13 @@ fn remove_nonexistent_instance_returns_false() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
     let instance_id = Name::new("real-instance").expect("valid name");
     let fake_id = Name::new("fake-instance").expect("valid name");
 
     // Push config and spawn instance
     stack
-        .push_config(&config, false)
+        .push_config(&config, false, PathBuf::from("/tmp"))
         .expect("should push config");
     stack
         .spawn_instance("sensor", "1.0.0", Some(&instance_id))
@@ -354,12 +356,12 @@ fn reset_clears_all_except_master_node() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
     stack
-        .push_config(&config1, false)
+        .push_config(&config1, false, PathBuf::from("/tmp"))
         .expect("config1 has no dependencies");
     stack
-        .push_config(&config2, false)
+        .push_config(&config2, false, PathBuf::from("/tmp"))
         .expect("config2 has no dependencies");
     assert_eq!(stack.len(), 3, "stack should have root + two entities");
 
@@ -394,9 +396,9 @@ fn spawning_multiple_instances_on_same_entity() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
     stack
-        .push_config(&config, false)
+        .push_config(&config, false, PathBuf::from("/tmp"))
         .expect("config has no dependencies");
     assert_eq!(
         stack.len(),
@@ -494,16 +496,16 @@ fn adding_same_entity_with_different_interfaces_fails() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
 
     // Add the first config
     stack
-        .push_config(&config_with_topic, false)
+        .push_config(&config_with_topic, false, PathBuf::from("/tmp"))
         .expect("first config has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have master + sensor");
 
     // Adding the same entity with different interfaces should fail
-    let result = stack.push_config(&config_with_topic_and_service, false);
+    let result = stack.push_config(&config_with_topic_and_service, false, PathBuf::from("/tmp"));
     assert!(
         result.is_err(),
         "should fail to add same entity with different interfaces"
@@ -575,17 +577,17 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
 
     // Add version 1.0.0
     stack
-        .push_config(&config_v1, false)
+        .push_config(&config_v1, false, PathBuf::from("/tmp"))
         .expect("first config has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have master + sensor v1");
 
     // Adding version 2.0.0 with different interfaces should succeed (different tag = different entity)
     stack
-        .push_config(&config_v2, false)
+        .push_config(&config_v2, false, PathBuf::from("/tmp"))
         .expect("different tag should create new entity even with different interfaces");
     assert_eq!(
         stack.len(),
@@ -615,7 +617,7 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
 
 #[test]
 fn root_returns_the_master_node() {
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
 
     let root = stack.root();
     assert_eq!(
@@ -637,7 +639,7 @@ fn root_returns_the_master_node() {
 
 #[test]
 fn cannot_modify_root_node() {
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
     let root_instance_id = stack.root().instances()[0].instance_id().clone();
 
     // Try to remove the root's instance
@@ -648,7 +650,7 @@ fn cannot_modify_root_node() {
     );
 
     // Try to add another instance to root
-    let result = stack.push_config(&master_node_config(), false);
+    let result = stack.push_config(&master_node_config(), false, PathBuf::from("/tmp"));
     assert!(
         result.is_err(),
         "should not be able to add instance to root node"
@@ -708,12 +710,12 @@ fn node_stack_wires_dependencies_for_dependants() {
     )
     .expect("valid dependent node config");
 
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
     stack
-        .push_config(&dependency, false)
+        .push_config(&dependency, false, PathBuf::from("/tmp"))
         .expect("dependency has no dependencies");
     stack
-        .push_config(&dependent, false)
+        .push_config(&dependent, false, PathBuf::from("/tmp"))
         .expect("dependent dependency is present");
 
     let deps = stack.dependencies_of("brain", "1.0.0");
@@ -782,16 +784,16 @@ fn dependency_fails_when_node_name_mismatches() {
     )
     .expect("valid dependency node config");
 
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
 
     // Add lidar (which is NOT the expected dependency "uvc_camera")
     stack
-        .push_config(&wrong_dependency, false)
+        .push_config(&wrong_dependency, false, PathBuf::from("/tmp"))
         .expect("lidar has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have master + lidar");
 
     // Adding brain should fail because it expects "uvc_camera", not "lidar"
-    let result = stack.push_config(&dependent, false);
+    let result = stack.push_config(&dependent, false, PathBuf::from("/tmp"));
     let Err(NodeStackError::MissingDependency {
         dependency,
         dependency_tag,
@@ -867,16 +869,16 @@ fn dependency_fails_when_node_tag_mismatches() {
     )
     .expect("valid dependency node config");
 
-    let stack = NodeStack::new(master_node_config(), None);
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
 
     // Add lidar with tag "2.0.0" (NOT the expected tag "1.0.0")
     stack
-        .push_config(&wrong_tag_dependency, false)
+        .push_config(&wrong_tag_dependency, false, PathBuf::from("/tmp"))
         .expect("lidar has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have master + lidar");
 
     // Adding brain should fail because it expects lidar with tag "1.0.0", not "2.0.0"
-    let result = stack.push_config(&dependent, false);
+    let result = stack.push_config(&dependent, false, PathBuf::from("/tmp"));
     let Err(NodeStackError::MissingDependency {
         dependency,
         dependency_tag,
