@@ -374,7 +374,7 @@ fn build_launch_plan(
                 break;
             };
 
-            if let Err(err) = stack.spawn_instance(
+            if let Err(err) = stack.add_instance(
                 node.manifest.name.as_str(),
                 &node.manifest.tag,
                 Some(&instance_id),

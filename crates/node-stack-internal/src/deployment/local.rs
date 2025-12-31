@@ -36,7 +36,7 @@ mod tests {
             .push_config(config, false, root_path)
             .expect("config has no dependencies");
         stack
-            .spawn_instance(
+            .add_instance(
                 config_manifest.name.as_str(),
                 &config_manifest.tag,
                 Some(&Name::new("test-instance").unwrap()),

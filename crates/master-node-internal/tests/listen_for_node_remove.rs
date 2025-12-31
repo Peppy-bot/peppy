@@ -163,8 +163,8 @@ async fn listen_for_node_remove_stop_running_instances_first() {
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
     node_stack
-        .spawn_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id))
-        .expect("spawn_instance should succeed");
+        .add_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id))
+        .expect("add_instance should succeed");
 
     // Simulate the node exposing the shutdown service, so node_remove detects it as running.
     let shutdown_handle =
@@ -254,8 +254,8 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
     node_stack
-        .spawn_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id))
-        .expect("spawn_instance should succeed");
+        .add_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id))
+        .expect("add_instance should succeed");
 
     // Simulate the node exposing the shutdown service, so node_remove detects it as running.
     let shutdown_handle =

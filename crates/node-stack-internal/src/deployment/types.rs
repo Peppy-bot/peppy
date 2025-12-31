@@ -591,13 +591,13 @@ impl NodeStackInner {
         Ok(())
     }
 
-    /// Spawns a new instance for an existing config.
+    /// Add a new instance for an existing config.
     /// If instance_id is None, generates a random one.
     /// Returns the instance_id that was used.
     /// Returns Err(NoMatchingNode) if the config is not found in the stack.
     /// Returns Err(CannotModifyRootNode) if trying to add an instance to the root node.
     /// Returns Err(DuplicateInstanceId) if the instance_id already exists for this entity.
-    fn spawn_instance_impl(
+    fn add_instance_impl(
         &mut self,
         name: &str,
         tag: &str,
@@ -825,20 +825,20 @@ impl NodeStack {
         guard.push_config_impl(config, allow_missing_dependencies, root_path)
     }
 
-    /// Spawns a new instance for an existing config.
+    /// Add a new instance for an existing config.
     /// If instance_id is None, generates a random one.
     /// Returns the instance_id that was used.
     /// Returns Err(NoMatchingNode) if the config is not found in the stack.
     /// Returns Err(CannotModifyRootNode) if trying to add an instance to the root node.
     /// Returns Err(DuplicateInstanceId) if the instance_id already exists for this entity.
-    pub fn spawn_instance(
+    pub fn add_instance(
         &self,
         node_name: &str,
         tag: &str,
         instance_id: Option<&Name>,
     ) -> Result<Name> {
         let mut guard = self.shared.write().expect("node stack poisoned");
-        guard.spawn_instance_impl(node_name, tag, instance_id)
+        guard.add_instance_impl(node_name, tag, instance_id)
     }
 
     pub fn snapshot(&self) -> Vec<NodeEntity> {
