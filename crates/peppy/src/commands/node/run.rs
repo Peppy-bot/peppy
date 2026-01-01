@@ -81,10 +81,20 @@ pub async fn start_instance_async(
         arguments.len()
     );
 
+    let (messaging_host, messaging_port) = messenger_handle
+        .messaging_endpoint()
+        .await
+        .unwrap_or_else(|| {
+            (
+                config::consts::DEFAULT_ZENOH_HOST.to_string(),
+                config::consts::DEFAULT_ZENOH_PORT,
+            )
+        });
+
     // Create the runtime config with the parsed arguments
     let runtime_config = RuntimeConfig::new(
-        config::consts::DEFAULT_ZENOH_HOST,
-        config::consts::DEFAULT_ZENOH_PORT,
+        messaging_host.as_str(),
+        messaging_port,
         DeploymentInstance {
             instance_id: Name::new(instance_id.clone())
                 .map_err(|e| Error::PeppyConfig(e.into()))?,
