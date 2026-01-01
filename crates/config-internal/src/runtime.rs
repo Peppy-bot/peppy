@@ -18,7 +18,6 @@ pub struct RuntimeConfig {
     pub node_name: Name,
     pub bound_master_node: Name,
     pub deployment_instance: DeploymentInstance,
-    pub codegen_peppy_config_md5: String,
 }
 
 impl RuntimeConfig {
@@ -28,7 +27,6 @@ impl RuntimeConfig {
         deployment_instance: DeploymentInstance,
         node_name: impl Into<String>,
         bound_master_node: impl Into<String>,
-        codegen_peppy_config_md5: &str,
     ) -> Result<Self> {
         Ok(Self {
             messaging_host: messaging_host.to_owned(),
@@ -36,7 +34,6 @@ impl RuntimeConfig {
             deployment_instance,
             node_name: Name::new(node_name.into())?,
             bound_master_node: Name::new(bound_master_node.into())?,
-            codegen_peppy_config_md5: codegen_peppy_config_md5.to_string(),
         })
     }
 
@@ -54,10 +51,12 @@ impl RuntimeConfig {
         Ok(path.to_path_buf())
     }
 
-    pub fn generate_peppy_config_md5(peppy_config: impl AsRef<Path>) -> Result<String> {
+    pub fn generate_peppy_config_fingerprint(peppy_config: impl AsRef<Path>) -> Result<String> {
+        use sha2::{Digest, Sha256};
         let config_path = peppy_config.as_ref();
         let content = std::fs::read(config_path)?;
-        Ok(format!("{:x}", md5::compute(content)))
+        let hash = Sha256::digest(&content);
+        Ok(format!("{:x}", hash))
     }
 }
 
@@ -75,8 +74,7 @@ mod tests {
                 instance_id: "$INSTANCE_ID"
             },
             node_name: "camera",
-            bound_master_node: "master_node",
-            codegen_peppy_config_md5: "d41d8cd98f00b204e9800998ecf8427e"
+            bound_master_node: "master_node"
         }"#;
 
         let populated = json

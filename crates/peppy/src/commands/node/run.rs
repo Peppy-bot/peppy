@@ -65,7 +65,6 @@ pub async fn start_instance_async(
     tag: &str,
     args: &[(String, String)],
     instance_id: Option<String>,
-    codegen_md5: &str,
 ) -> Result<String> {
     // Generate or use provided instance_id
     let instance_id = instance_id.unwrap_or_else(|| get_random(rng()));
@@ -102,7 +101,6 @@ pub async fn start_instance_async(
         },
         node_name,
         master_node_name,
-        codegen_md5,
     )
     .map_err(Error::PeppyConfig)?;
 
@@ -170,8 +168,6 @@ async fn run_node_async(
         .messenger_handle()
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
-    // Note: We use an empty MD5 here as we don't have access to the peppy.json5 path
-    // The master node will validate the config
     start_instance_async(
         messenger_handle,
         &master_node_name,
@@ -179,7 +175,6 @@ async fn run_node_async(
         &tag,
         &args,
         instance_id,
-        "", // MD5 will be computed by the master node
     )
     .await?;
 

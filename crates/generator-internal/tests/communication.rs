@@ -106,8 +106,6 @@ fn topics_communication() {
     generator.build(&subscriber_dir).unwrap();
     fs::remove_file(output_config).unwrap();
 
-    let codegen_peppy_config_md5 =
-        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let subscriber_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
@@ -117,7 +115,6 @@ fn topics_communication() {
         },
         SUBSCRIBER_NODE_NAME,
         TEST_MASTER_NODE,
-        &codegen_peppy_config_md5,
     )
     .unwrap();
     let subscriber_runtime_config_path = temp_dir_proj2.path().join("peppy_runtime.json5");
@@ -170,8 +167,6 @@ fn main() -> Result<()> {
     )
     .unwrap();
 
-    let codegen_peppy_config_md5 =
-        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
@@ -181,7 +176,6 @@ fn main() -> Result<()> {
         },
         UVC_CAMERA_NODE_NAME, // Must match the node name expected by the subscriber
         TEST_MASTER_NODE,
-        &codegen_peppy_config_md5,
     )
     .unwrap();
     let exposer_runtime_config_path = temp_dir_proj1.path().join("peppy_runtime.json5");
@@ -419,8 +413,6 @@ fn services_communication_no_target_instance_id() {
     generator.build(&output_dir_subscriber).unwrap();
     fs::remove_file(output_config).unwrap();
 
-    let codegen_peppy_config_md5 =
-        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let subscriber_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
@@ -430,7 +422,6 @@ fn services_communication_no_target_instance_id() {
         },
         SUBSCRIBER_NODE_NAME,
         TEST_MASTER_NODE,
-        &codegen_peppy_config_md5,
     )
     .unwrap();
     let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
@@ -476,8 +467,6 @@ fn main() -> Result<()> {
     generator.build(&output_dir_exposer).unwrap();
     fs::remove_file(output_config).unwrap();
 
-    let codegen_peppy_config_md5 =
-        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
@@ -487,7 +476,6 @@ fn main() -> Result<()> {
         },
         UVC_CAMERA_NODE_NAME,
         TEST_MASTER_NODE,
-        &codegen_peppy_config_md5,
     )
     .unwrap();
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
@@ -682,8 +670,6 @@ fn services_communication_multiple_exposed_instances_same_service() {
     generator.build(&output_dir_subscriber).unwrap();
     fs::remove_file(output_config).unwrap();
 
-    let codegen_peppy_config_md5 =
-        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let subscriber_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
@@ -693,7 +679,6 @@ fn services_communication_multiple_exposed_instances_same_service() {
         },
         SUBSCRIBER_NODE_NAME,
         TEST_MASTER_NODE,
-        &codegen_peppy_config_md5,
     )
     .unwrap();
     let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
@@ -738,8 +723,6 @@ fn main() -> Result<()> {
     generator.build(&output_dir_exposer1).unwrap();
     fs::remove_file(output_config).unwrap();
 
-    let codegen_peppy_config_md5 =
-        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let exposer1_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
@@ -749,7 +732,6 @@ fn main() -> Result<()> {
         },
         UVC_CAMERA_NODE_NAME,
         TEST_MASTER_NODE,
-        &codegen_peppy_config_md5,
     )
     .unwrap();
     let exposer1_runtime_config_path = temp_dir_exposer1.path().join("peppy_runtime.json5");
@@ -794,8 +776,6 @@ fn main() -> Result<()> {
     generator.build(&output_dir_exposer2).unwrap();
     fs::remove_file(output_config).unwrap();
 
-    let codegen_peppy_config_md5 =
-        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let exposer2_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
@@ -805,7 +785,6 @@ fn main() -> Result<()> {
         },
         UVC_CAMERA_NODE_NAME,
         TEST_MASTER_NODE,
-        &codegen_peppy_config_md5,
     )
     .unwrap();
     let exposer2_runtime_config_path = temp_dir_exposer2.path().join("peppy_runtime.json5");
@@ -1127,8 +1106,6 @@ fn actions_communication() {
     generator.build(&output_dir_subscriber).unwrap();
     fs::remove_file(output_config).unwrap();
 
-    let codegen_peppy_config_md5 =
-        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let subscriber_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
@@ -1138,7 +1115,6 @@ fn actions_communication() {
         },
         SUBSCRIBER_NODE_NAME,
         TEST_MASTER_NODE,
-        &codegen_peppy_config_md5,
     )
     .unwrap();
     let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
@@ -1199,8 +1175,6 @@ fn main() -> Result<()> {
     generator.build(&output_dir_exposer).unwrap();
     fs::remove_file(output_config).unwrap();
 
-    let codegen_peppy_config_md5 =
-        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
@@ -1210,7 +1184,6 @@ fn main() -> Result<()> {
         },
         BRAIN_NODE_NAME, // Must match the node name expected by the subscriber
         TEST_MASTER_NODE,
-        &codegen_peppy_config_md5,
     )
     .unwrap();
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
@@ -1424,8 +1397,6 @@ fn actions_communication_cancel_goal() {
     generator.build(&output_dir_subscriber).unwrap();
     fs::remove_file(output_config).unwrap();
 
-    let codegen_peppy_config_md5 =
-        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let subscriber_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
@@ -1435,7 +1406,6 @@ fn actions_communication_cancel_goal() {
         },
         SUBSCRIBER_NODE_NAME,
         TEST_MASTER_NODE,
-        &codegen_peppy_config_md5,
     )
     .unwrap();
     let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
@@ -1494,8 +1464,6 @@ fn main() -> Result<()> {
     generator.build(&output_dir_exposer).unwrap();
     fs::remove_file(output_config).unwrap();
 
-    let codegen_peppy_config_md5 =
-        RuntimeConfig::generate_peppy_config_md5(&peppy_node_config_path).unwrap();
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
@@ -1505,7 +1473,6 @@ fn main() -> Result<()> {
         },
         BRAIN_NODE_NAME, // Must match the node name expected by the subscriber
         TEST_MASTER_NODE,
-        &codegen_peppy_config_md5,
     )
     .unwrap();
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");

@@ -87,11 +87,20 @@ pub enum Error {
         source: serde_json5::Error,
     },
 
-    #[error("peppy config md5 mismatch for `{path}` (expected `{expected}`, got `{actual}`)")]
-    PeppyConfigMd5Mismatch {
+    #[error(
+        "peppy config fingerprint mismatch for `{path}` (expected `{expected}`, got `{actual}`)"
+    )]
+    PeppyConfigFingerprintMismatch {
         path: String,
         expected: String,
         actual: String,
+    },
+
+    #[error("failed to read codegen fingerprint at `{path}`")]
+    CodegenFingerprintRead {
+        path: String,
+        #[source]
+        source: std::io::Error,
     },
 
     #[error(transparent)]
