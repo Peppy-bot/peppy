@@ -1,6 +1,7 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, start_master_node, start_master_node_with_timeout};
+use config::consts::NODE_CONFIG_FILE;
 use config::node::Name as NodeName;
 use config::peppy_config::{DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
@@ -9,6 +10,15 @@ use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use std::sync::Arc;
 use std::time::Duration;
+use tempfile::TempDir;
+
+/// Creates a temp directory with a peppy.json5 file
+fn create_node_config_dir(peppy_json5: &str) -> TempDir {
+    let temp_dir = TempDir::new().expect("failed to create temp directory");
+    let config_path = temp_dir.path().join(NODE_CONFIG_FILE);
+    std::fs::write(&config_path, peppy_json5).expect("failed to write peppy.json5");
+    temp_dir
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_start_success() {
@@ -32,9 +42,12 @@ async fn listen_for_node_start_success() {
         TARGET_NODE_NAME
     );
 
+    // Create temp directory with peppy.json5
+    let temp_dir = create_node_config_dir(&peppy_json5);
+
     // Add the node to the master node's node stack
     let node_add_request =
-        NodeAddRequest::new(&peppy_json5, "/tmp").with_instance_id(TARGET_INSTANCE_ID);
+        NodeAddRequest::new(&peppy_json5, temp_dir.path()).with_instance_id(TARGET_INSTANCE_ID);
     let add_response = node_add_request
         .poll(
             &started_master.caller_handle,
@@ -77,7 +90,6 @@ async fn listen_for_node_start_success() {
         },
         TARGET_NODE_NAME,
         &started_master.master_node_name,
-        "d41d8cd98f00b204e9800998ecf8427e", // dummy md5
     )
     .expect("runtime config should be valid");
 
@@ -140,9 +152,12 @@ async fn listen_for_node_start_timeout() {
         TARGET_NODE_NAME
     );
 
+    // Create temp directory with peppy.json5
+    let temp_dir = create_node_config_dir(&peppy_json5);
+
     // Add the node to the master node's node stack
     let node_add_request =
-        NodeAddRequest::new(&peppy_json5, "/tmp").with_instance_id(TARGET_INSTANCE_ID);
+        NodeAddRequest::new(&peppy_json5, temp_dir.path()).with_instance_id(TARGET_INSTANCE_ID);
     let add_response = node_add_request
         .poll(
             &started.caller_handle,
@@ -170,7 +185,6 @@ async fn listen_for_node_start_timeout() {
         },
         TARGET_NODE_NAME,
         &started.master_node_name,
-        "d41d8cd98f00b204e9800998ecf8427e", // dummy md5
     )
     .expect("runtime config should be valid");
 
@@ -238,7 +252,6 @@ async fn listen_for_node_start_not_found() {
         },
         TARGET_NODE_NAME,
         &started.master_node_name,
-        "d41d8cd98f00b204e9800998ecf8427e", // dummy md5
     )
     .expect("runtime config should be valid");
 

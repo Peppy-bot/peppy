@@ -2,7 +2,10 @@ use std::path::Path;
 
 use crate::error::{Error, Result};
 use config::{
-    NodeArguments, consts::RUNTIME_CONFIG_VAR_NAME, node::NodeConfig, runtime::RuntimeConfig,
+    NodeArguments,
+    consts::{NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
+    node::NodeConfig,
+    runtime::RuntimeConfig,
 };
 use node_stack::NodeStack;
 
@@ -14,7 +17,7 @@ pub struct Processor {
 impl Processor {
     /// This function takes care of 2 things:
     /// 1. Reads the `PEPPY_RUNTIME_CONFIG` env var passed during runtime from the master node/peppy daemon when the node is started
-    /// 2. Checks that the md5 of the peppy_config generated for `peppygen` matches the one we have at runtime as input parameter to this function
+    /// 2. Checks that the fingerprint of the peppy_config generated for `peppygen` matches the one we have at runtime as input parameter to this function
     pub fn new_with_peppy_config(peppy_config: impl AsRef<Path>) -> Result<Self> {
         let launch_config_path = std::env::var(RUNTIME_CONFIG_VAR_NAME).map_err(|source| {
             Error::MissingInstanceIdEnvVar {
@@ -23,11 +26,13 @@ impl Processor {
             }
         })?;
         let runtime_config = Processor::get_peppy_deployment_config(&launch_config_path)?;
+        let codegen_peppy_config_fingerprint =
+            Processor::read_codegen_fingerprint(peppy_config.as_ref())?;
         let node_config: NodeConfig =
             serde_json5::from_str(&std::fs::read_to_string(peppy_config.as_ref())?)?;
         Processor::check_generated_code_matches_runtime_config(
             peppy_config,
-            &runtime_config.codegen_peppy_config_md5,
+            &codegen_peppy_config_fingerprint,
         )?;
         Processor::check_node_config_parameters_types(
             &runtime_config.deployment_instance.arguments,
@@ -39,18 +44,18 @@ impl Processor {
 
     fn check_generated_code_matches_runtime_config(
         peppy_config: impl AsRef<Path>,
-        codegen_peppy_config_md5: &str,
+        codegen_peppy_config_fingerprint: &str,
     ) -> Result<()> {
-        let md5 = RuntimeConfig::generate_peppy_config_md5(&peppy_config)?;
+        let hash = RuntimeConfig::generate_peppy_config_fingerprint(&peppy_config)?;
 
-        if md5 == codegen_peppy_config_md5 {
+        if hash == codegen_peppy_config_fingerprint {
             return Ok(());
         }
 
-        Err(Error::PeppyConfigMd5Mismatch {
+        Err(Error::PeppyConfigFingerprintMismatch {
             path: peppy_config.as_ref().display().to_string(),
-            expected: codegen_peppy_config_md5.to_string(),
-            actual: md5,
+            expected: codegen_peppy_config_fingerprint.to_string(),
+            actual: hash,
         })
     }
 
@@ -78,6 +83,19 @@ impl Processor {
             path: launch_config_path.to_string(),
             source,
         })
+    }
+
+    fn read_codegen_fingerprint(peppy_config: &Path) -> Result<String> {
+        let peppy_config_dir = peppy_config.parent().unwrap_or_else(|| Path::new("."));
+        let fingerprint_path = peppy_config_dir
+            .join(PEPPYGEN_OUTPUT_PATH)
+            .join(NODE_CONFIG_FINGERPRINT_FILE);
+        std::fs::read_to_string(&fingerprint_path)
+            .map(|s| s.trim().to_string())
+            .map_err(|source| Error::CodegenFingerprintRead {
+                path: fingerprint_path.display().to_string(),
+                source,
+            })
     }
 
     pub fn bound_instance_id(&self) -> &str {
@@ -113,9 +131,11 @@ impl Processor {
 
 #[cfg(test)]
 mod tests {
-    use super::{Processor, RUNTIME_CONFIG_VAR_NAME};
+    use super::{
+        NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH, Processor, RUNTIME_CONFIG_VAR_NAME,
+    };
     use config::{AnyType, NodeArguments, runtime::RuntimeConfig};
-    use std::{collections::BTreeMap, env, sync::Mutex};
+    use std::{collections::BTreeMap, env, fs, path::Path, sync::Mutex};
     use tempfile::TempDir;
 
     static ENV_VAR_MUTEX: Mutex<()> = Mutex::new(());
@@ -152,6 +172,28 @@ mod tests {
         }
     }
 
+    /// Creates the fingerprint file at the expected location for runtime checks.
+    fn create_codegen_fingerprint(peppy_config_path: &Path) {
+        let peppy_config_dir = peppy_config_path.parent().unwrap_or(Path::new("."));
+        let fingerprint_dir = peppy_config_dir.join(PEPPYGEN_OUTPUT_PATH);
+        fs::create_dir_all(&fingerprint_dir).expect("fingerprint dir should be created");
+        let fingerprint_path = fingerprint_dir.join(NODE_CONFIG_FINGERPRINT_FILE);
+        let fingerprint = RuntimeConfig::generate_peppy_config_fingerprint(peppy_config_path)
+            .expect("fingerprint should be generated");
+        fs::write(&fingerprint_path, format!("{fingerprint}\n"))
+            .expect("fingerprint should be written");
+    }
+
+    /// Creates a fingerprint file with incorrect content to test mismatch errors.
+    fn create_wrong_codegen_fingerprint(peppy_config_path: &Path) {
+        let peppy_config_dir = peppy_config_path.parent().unwrap_or(Path::new("."));
+        let fingerprint_dir = peppy_config_dir.join(PEPPYGEN_OUTPUT_PATH);
+        fs::create_dir_all(&fingerprint_dir).expect("fingerprint dir should be created");
+        let fingerprint_path = fingerprint_dir.join(NODE_CONFIG_FINGERPRINT_FILE);
+        fs::write(&fingerprint_path, "wrong_fingerprint_value\n")
+            .expect("fingerprint should be written");
+    }
+
     #[test]
     fn get_node_stack() {
         todo!("Finish. Get the node stack from the `Processor` object")
@@ -171,7 +213,8 @@ mod tests {
             schema_version: 1,
             manifest: {
                 name: "uvc_camera",
-                tag: "0.1.0"
+                tag: "0.1.0",
+                launch_cmd: ["cargo", "run"]
             },
             parameters: {
                 exposure: "f32",
@@ -189,10 +232,11 @@ mod tests {
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
-        let codegen_md5 = RuntimeConfig::generate_peppy_config_md5(&peppy_config_path)
-            .expect("peppy config md5 should be generated");
+        create_codegen_fingerprint(&peppy_config_path);
 
         let json5_config = r#"{
+            messaging_host: "127.0.0.1",
+            messaging_port: 7448,
             deployment_instance: {
                 instance_id: "$INSTANCE_ID",
                 parameters: {
@@ -203,15 +247,13 @@ mod tests {
                 }
             },
             node_name: "$NODE_NAME",
-            bound_master_node: "$MASTER_NODE",
-            codegen_peppy_config_md5: "$CODEGEN_MD5"
+            bound_master_node: "$MASTER_NODE"
         }"#;
 
         let populated_config = json5_config
             .replace("$INSTANCE_ID", bound_instance_id)
             .replace("$NODE_NAME", bound_node_name)
-            .replace("$MASTER_NODE", bound_master_node)
-            .replace("$CODEGEN_MD5", &codegen_md5);
+            .replace("$MASTER_NODE", bound_master_node);
 
         let runtime_config: RuntimeConfig =
             serde_json5::from_str(&populated_config).expect("runtime config should parse");
@@ -256,26 +298,28 @@ mod tests {
     }
 
     #[test]
-    fn fails_when_codegen_md5_mismatch() {
+    fn fails_when_codegen_fingerprint_mismatch() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
 
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "test_node", tag: "0.1.0" },
+            manifest: { name: "test_node", tag: "0.1.0", launch_cmd: ["cargo", "run"] },
             parameters: { value: "i64" }
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
+        create_wrong_codegen_fingerprint(&peppy_config_path);
 
         let json5_config = r#"{
+            messaging_host: "127.0.0.1",
+            messaging_port: 7448,
             deployment_instance: {
                 instance_id: "test_instance",
                 parameters: { value: 42 }
             },
             node_name: "test_node",
-            bound_master_node: "master-1234",
-            codegen_peppy_config_md5: "invalid_md5_that_does_not_match"
+            bound_master_node: "master-1234"
         }"#;
 
         let runtime_config: RuntimeConfig =
@@ -292,12 +336,12 @@ mod tests {
         );
 
         let Err(err) = Processor::new_with_peppy_config(&peppy_config_path) else {
-            panic!("expected md5 mismatch error");
+            panic!("expected fingerprint mismatch error");
         };
         let err_string = err.to_string();
         assert!(
-            err_string.contains("md5 mismatch"),
-            "expected md5 mismatch error, got: {err_string}"
+            err_string.contains("fingerprint mismatch"),
+            "expected fingerprint mismatch error, got: {err_string}"
         );
     }
 
@@ -309,25 +353,24 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "test_node", tag: "0.1.0" },
+            manifest: { name: "test_node", tag: "0.1.0", launch_cmd: ["cargo", "run"] },
             parameters: { value: "i64" }
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
-
-        let codegen_md5 = RuntimeConfig::generate_peppy_config_md5(&peppy_config_path)
-            .expect("peppy config md5 should be generated");
+        create_codegen_fingerprint(&peppy_config_path);
 
         // Runtime config has 'value' AND 'extra_param' - but 'extra_param' is not in compiled
         let json5_config = format!(
             r#"{{
+            messaging_host: "127.0.0.1",
+            messaging_port: 7448,
             deployment_instance: {{
                 instance_id: "test_instance",
                 parameters: {{ value: 42, extra_param: "unexpected" }}
             }},
             node_name: "test_node",
-            bound_master_node: "master-1234",
-            codegen_peppy_config_md5: "{codegen_md5}"
+            bound_master_node: "master-1234"
         }}"#
         );
 
@@ -362,25 +405,24 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "test_node", tag: "0.1.0" },
+            manifest: { name: "test_node", tag: "0.1.0", launch_cmd: ["cargo", "run"] },
             parameters: { value: "i64" }
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
-
-        let codegen_md5 = RuntimeConfig::generate_peppy_config_md5(&peppy_config_path)
-            .expect("peppy config md5 should be generated");
+        create_codegen_fingerprint(&peppy_config_path);
 
         // Runtime config provides 'value' as a string instead of i64
         let json5_config = format!(
             r#"{{
+            messaging_host: "127.0.0.1",
+            messaging_port: 7448,
             deployment_instance: {{
                 instance_id: "test_instance",
                 parameters: {{ value: "not_an_integer" }}
             }},
             node_name: "test_node",
-            bound_master_node: "master-1234",
-            codegen_peppy_config_md5: "{codegen_md5}"
+            bound_master_node: "master-1234"
         }}"#
         );
 
@@ -415,7 +457,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "test_node", tag: "0.1.0" },
+            manifest: { name: "test_node", tag: "0.1.0", launch_cmd: ["cargo", "run"] },
             parameters: {
                 config: {
                     $type: "object",
@@ -426,20 +468,19 @@ mod tests {
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
-
-        let codegen_md5 = RuntimeConfig::generate_peppy_config_md5(&peppy_config_path)
-            .expect("peppy config md5 should be generated");
+        create_codegen_fingerprint(&peppy_config_path);
 
         // Runtime config provides 'enabled' as string instead of bool
         let json5_config = format!(
             r#"{{
+            messaging_host: "127.0.0.1",
+            messaging_port: 7448,
             deployment_instance: {{
                 instance_id: "test_instance",
                 parameters: {{ config: {{ enabled: "yes", threshold: 0.5 }} }}
             }},
             node_name: "test_node",
-            bound_master_node: "master-1234",
-            codegen_peppy_config_md5: "{codegen_md5}"
+            bound_master_node: "master-1234"
         }}"#
         );
 
@@ -474,7 +515,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "test_node", tag: "0.1.0" },
+            manifest: { name: "test_node", tag: "0.1.0", launch_cmd: ["cargo", "run"] },
             parameters: {
                 tags: {
                     $type: "array",
@@ -484,20 +525,19 @@ mod tests {
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
-
-        let codegen_md5 = RuntimeConfig::generate_peppy_config_md5(&peppy_config_path)
-            .expect("peppy config md5 should be generated");
+        create_codegen_fingerprint(&peppy_config_path);
 
         // Runtime config provides array with mixed types (string and int)
         let json5_config = format!(
             r#"{{
+            messaging_host: "127.0.0.1",
+            messaging_port: 7448,
             deployment_instance: {{
                 instance_id: "test_instance",
                 parameters: {{ tags: ["valid", 123, "also_valid"] }}
             }},
             node_name: "test_node",
-            bound_master_node: "master-1234",
-            codegen_peppy_config_md5: "{codegen_md5}"
+            bound_master_node: "master-1234"
         }}"#
         );
 
@@ -521,6 +561,55 @@ mod tests {
         assert!(
             err_string.contains("type mismatch") && err_string.contains("tags[1]"),
             "expected type mismatch error for 'tags[1]', got: {err_string}"
+        );
+    }
+
+    #[test]
+    fn fails_when_codegen_fingerprint_missing() {
+        use crate::error::Error;
+
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+
+        let peppy_config_path = temp_dir.path().join("peppy_config.json5");
+        let peppy_config_content = r#"{
+            schema_version: 1,
+            manifest: { name: "test_node", tag: "0.1.0", launch_cmd: ["cargo", "run"] },
+            parameters: { value: "i64" }
+        }"#;
+        std::fs::write(&peppy_config_path, peppy_config_content)
+            .expect("peppy config should be written");
+        // Note: intentionally NOT creating the fingerprint file
+
+        let json5_config = r#"{
+            messaging_host: "127.0.0.1",
+            messaging_port: 7448,
+            deployment_instance: {
+                instance_id: "test_instance",
+                parameters: { value: 42 }
+            },
+            node_name: "test_node",
+            bound_master_node: "master-1234"
+        }"#;
+
+        let runtime_config: RuntimeConfig =
+            serde_json5::from_str(json5_config).expect("runtime config should parse");
+
+        let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
+        runtime_config
+            .save_json5_launch_config(&runtime_config_path)
+            .expect("runtime config should be saved");
+
+        let _env_guard = EnvVarGuard::set(
+            RUNTIME_CONFIG_VAR_NAME,
+            runtime_config_path.to_str().unwrap(),
+        );
+
+        let Err(err) = Processor::new_with_peppy_config(&peppy_config_path) else {
+            panic!("expected codegen fingerprint read error");
+        };
+        assert!(
+            matches!(err, Error::CodegenFingerprintRead { .. }),
+            "expected CodegenFingerprintRead error, got: {err:?}"
         );
     }
 }

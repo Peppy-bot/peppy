@@ -31,10 +31,6 @@ fn shutdown_request_exits_node() {
     }"#;
     std::fs::write(&peppy_config_path, peppy_config_content).expect("failed to write peppy config");
 
-    // Generate MD5 for the config
-    let codegen_md5 = RuntimeConfig::generate_peppy_config_md5(&peppy_config_path)
-        .expect("failed to generate config md5");
-
     // Create runtime config pointing to zenohd
     let instance_id = "test_shutdown_instance";
     let node_name = "test_shutdown_node";
@@ -49,7 +45,6 @@ fn shutdown_request_exits_node() {
         },
         node_name,
         master_node,
-        &codegen_md5,
     )
     .unwrap();
 

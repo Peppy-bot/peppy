@@ -92,13 +92,13 @@ async fn handle_node_start_request_inner(
     let payload = context.message().payload();
 
     let NodeStartRequest {
-        mut runtime_config_json5,
+        runtime_config_json5,
         node_name,
         tag,
     } = NodeStartRequest::decode(&payload.as_bytes())?;
 
     // Parse the PEPPY_RUNTIME_CONFIG from json5
-    let mut runtime_config: RuntimeConfig = match serde_json5::from_str(&runtime_config_json5) {
+    let runtime_config: RuntimeConfig = match serde_json5::from_str(&runtime_config_json5) {
         Ok(config) => config,
         Err(e) => {
             return NodeStartResponse::failure(format!(
@@ -134,33 +134,6 @@ async fn handle_node_start_request_inner(
             .encode();
         }
     };
-
-    if runtime_config.codegen_peppy_config_md5.trim().is_empty() {
-        let node_config_path = entity.root_path().join(NODE_CONFIG_FILE);
-        let codegen_md5 = match RuntimeConfig::generate_peppy_config_md5(&node_config_path) {
-            Ok(md5) => md5,
-            Err(err) => {
-                return NodeStartResponse::failure(format!(
-                    "Failed to compute peppy config md5 at '{}': {}",
-                    node_config_path.display(),
-                    err
-                ))
-                .encode();
-            }
-        };
-
-        runtime_config.codegen_peppy_config_md5 = codegen_md5;
-        runtime_config_json5 = match serde_json5::to_string(&runtime_config) {
-            Ok(serialized) => serialized,
-            Err(err) => {
-                return NodeStartResponse::failure(format!(
-                    "Failed to serialize runtime config after md5 backfill: {}",
-                    err
-                ))
-                .encode();
-            }
-        };
-    }
 
     // Run the node with the runtime config
     let mut child = match run_node(&entity, &runtime_config_json5) {

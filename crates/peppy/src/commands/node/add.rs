@@ -88,10 +88,6 @@ async fn add_node_async(
         return Ok(());
     }
 
-    // For `--run`, spawn an instance using the shared start logic
-    let codegen_md5 =
-        RuntimeConfig::generate_peppy_config_md5(&peppy_json5).map_err(Error::PeppyConfig)?;
-
     start_instance_async(
         messenger_handle,
         &master_node_name,
@@ -99,7 +95,6 @@ async fn add_node_async(
         &node_tag,
         &args,
         instance_id,
-        &codegen_md5,
     )
     .await?;
 
