@@ -708,6 +708,18 @@ impl MessengerHandle {
         Self { messenger }
     }
 
+    pub async fn messaging_endpoint(&self) -> Option<(String, u16)> {
+        let messenger = self.messenger.lock().await;
+        match &messenger.adapter {
+            #[cfg(feature = "zenoh")]
+            MessengerAdapter::Zenoh(adapter) => {
+                let (host, port) = adapter.client_endpoint();
+                (!host.is_empty() && port != 0).then(|| (host.to_string(), port))
+            }
+            _ => None,
+        }
+    }
+
     pub async fn from_host_port(host: &str, port: u16) -> Result<Self> {
         let adapter = ZenohAdapter::from_host_port(ZenohNetProtocol::Tcp, host, port);
         let messenger = Self::new_session(adapter).await?;

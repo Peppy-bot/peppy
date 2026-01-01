@@ -1,13 +1,12 @@
+use peppy::serve::{CancellationToken, DAEMON_STATE_FILE_ENV, PID_FILE_ENV, ServeCommandBuilder};
+use pmi::Messenger;
+use pmi::zenohd_support::{reserve_free_tcp_port, write_zenohd_config};
 use std::ffi::OsStr;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-
-use peppy::serve::{CancellationToken, DAEMON_STATE_FILE_ENV, PID_FILE_ENV, ServeCommandBuilder};
-use pmi::Messenger;
-use pmi::zenohd_support::{pick_free_tcp_port, write_zenohd_config};
 use tempfile::TempDir;
 use tokio::sync::Mutex as TokioMutex;
 use tracing_subscriber::fmt::MakeWriter;
@@ -126,9 +125,15 @@ pub struct ZenohConfigGuard {
 impl ZenohConfigGuard {
     /// Creates a new zenoh config with a unique port for parallel test isolation.
     pub fn new() -> Self {
-        let port = pick_free_tcp_port();
+        let host = "127.0.0.1";
+        // Reserve a port to prevent parallel tests from getting the same port.
+        // The reservation is released after writing the config, right before zenoh binds.
+        let reservation = reserve_free_tcp_port();
+        let port = reservation.port();
         let (temp_dir, config_path) =
-            write_zenohd_config("127.0.0.1", port).expect("failed to write zenoh config");
+            write_zenohd_config(host, port).expect("failed to write zenoh config");
+        // Release the reservation now - zenoh will bind to this port next.
+        drop(reservation);
         let env = EnvVarGuard::set(ZENOH_CONFIG_ENV, config_path.as_os_str());
         Self {
             _dir: temp_dir,

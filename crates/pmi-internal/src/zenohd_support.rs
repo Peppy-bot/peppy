@@ -1,7 +1,7 @@
 use std::{
     fs,
+    net::TcpListener,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU32, Ordering},
 };
 
 use tempfile::TempDir;
@@ -10,31 +10,60 @@ use crate::{
     Messenger, MessengerAdapter, MessengerBackend, PeppyMessagingInterfaceError, ZenohAdapter,
 };
 
-const PORT_START: u16 = 40_000;
-const PORT_END: u16 = 65_000;
-static NEXT_PORT: AtomicU32 = AtomicU32::new(PORT_START as u32);
-
 fn map_io_error(error: std::io::Error) -> PeppyMessagingInterfaceError {
     PeppyMessagingInterfaceError::BackendError(error.to_string())
 }
 
-/// Returns a TCP port from the test range [40000, 65000).
-pub fn pick_free_tcp_port() -> u16 {
-    loop {
-        let current = NEXT_PORT.load(Ordering::Relaxed);
-        let candidate = if current >= PORT_END as u32 {
-            PORT_START as u32
-        } else {
-            current
-        };
-        let next = candidate + 1;
-        if NEXT_PORT
-            .compare_exchange(current, next, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-        {
-            return candidate as u16;
-        }
+/// A reservation for a free TCP port. The port remains reserved (bound) until this
+/// struct is dropped or [`PortReservation::release`] is called.
+///
+/// Use this to minimize TOCTOU race conditions when multiple tests run in parallel:
+/// 1. Call [`reserve_free_tcp_port`] to get a reservation
+/// 2. Use [`PortReservation::port`] to get the port number for configuration
+/// 3. Drop the reservation (or call [`PortReservation::release`]) right before the
+///    service binds to the port
+pub struct PortReservation {
+    port: u16,
+    _listener: TcpListener,
+}
+
+impl PortReservation {
+    /// Returns the reserved port number.
+    pub fn port(&self) -> u16 {
+        self.port
     }
+
+    /// Releases the port reservation and returns the port number.
+    /// Call this right before the actual service binds to the port.
+    pub fn release(self) -> u16 {
+        self.port
+    }
+}
+
+/// Reserves a free TCP port by binding to it. The port remains reserved until
+/// the returned [`PortReservation`] is dropped.
+///
+/// This is useful when you need to minimize the window between port selection
+/// and actual binding by another service (e.g., zenoh).
+pub fn reserve_free_tcp_port() -> PortReservation {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("failed to bind ephemeral TCP port");
+    let port = listener
+        .local_addr()
+        .expect("listener has local addr")
+        .port();
+    PortReservation {
+        port,
+        _listener: listener,
+    }
+}
+
+/// Returns a free TCP port by asking the OS for an ephemeral port.
+///
+/// Note: This has a small TOCTOU window since the port is released immediately.
+/// For parallel test scenarios, prefer [`reserve_free_tcp_port`] which keeps the
+/// port bound until you're ready to use it.
+pub fn pick_free_tcp_port() -> u16 {
+    reserve_free_tcp_port().release()
 }
 
 /// Writes a zenohd configuration file bound to `host:port`, keeping the temporary directory alive.

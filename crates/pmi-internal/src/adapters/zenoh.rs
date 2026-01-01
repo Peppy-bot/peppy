@@ -95,6 +95,10 @@ impl ZenohAdapter {
         }
     }
 
+    pub fn client_endpoint(&self) -> (&str, u16) {
+        (self.client_config.host.as_str(), self.client_config.port)
+    }
+
     fn derive_client_config_from_client_file(client_config: impl AsRef<Path>) -> ZenohClientConfig {
         fn map_protocol(proto: &str) -> Option<ZenohNetProtocol> {
             match proto {
