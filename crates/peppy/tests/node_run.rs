@@ -201,6 +201,55 @@ fn node_run_command_with_args_succeeds() {
         peppy_json5_path.display()
     );
 
+    // Overwrite peppy.json5 with a config that includes parameters
+    let peppy_config = r#"{
+  schema_version: 1,
+  manifest: {
+    name: "test_run_args_node",
+    tag: "0.1.0",
+    launch_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
+  parameters: {
+    resolution: "string",
+    frequency: "i64",
+    enabled: "bool"
+  },
+  interfaces: {
+    exposes: {
+      topics: [
+        {
+          name: "hello_world",
+          qos_profile: "sensor_data",
+          message_format: {
+            timestamp: "time",
+            message: "string"
+          }
+        }
+      ],
+    }
+  },
+  logging: {
+    min_level: "info",
+    format: "text"
+  }
+}
+"#;
+    std::fs::write(&peppy_json5_path, peppy_config).expect("peppy.json5 should be writable");
+
+    // Update the fingerprint to match the new config
+    let fingerprint =
+        config::runtime::RuntimeConfig::generate_peppy_config_fingerprint(&peppy_json5_path)
+            .expect("peppy.json5 fingerprint should generate");
+    let fingerprint_path = node_path
+        .join(config::consts::PEPPYGEN_OUTPUT_PATH)
+        .join(config::consts::NODE_CONFIG_FINGERPRINT_FILE);
+    std::fs::write(&fingerprint_path, fingerprint)
+        .expect("peppygen fingerprint should be writable");
+
     // Build the node before running it
     let build_output = std::process::Command::new("cargo")
         .args(["build", "--release"])
@@ -225,6 +274,30 @@ fn node_run_command_with_args_succeeds() {
     }
     .execute(&node_ctx)
     .expect("node add command should succeed");
+
+    // Verify the node was added with 0 instances before run
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime should create");
+    let messenger_handle = node_ctx
+        .messenger_handle()
+        .expect("messenger handle should be available");
+
+    let response = rt
+        .block_on(NodeListRequest::new().poll(
+            messenger_handle,
+            &master_node_name,
+            CALLER_INSTANCE_ID,
+            &master_node_name,
+            Duration::from_secs(5),
+        ))
+        .expect("node_list request should complete");
+
+    assert!(
+        response
+            .dot_graph
+            .contains(&format!("{}:0.1.0\\n(0 instances)", node_name)),
+        "dot_graph should show 0 instances before run. Got:\n{}",
+        response.dot_graph
+    );
 
     // Now run the node with arguments
     let args = vec![
@@ -255,6 +328,25 @@ fn node_run_command_with_args_succeeds() {
         logs.contains("Started node instance"),
         "logs should contain success message for starting node instance. Logs:\n{}",
         logs
+    );
+
+    // Query the node stack to verify the node now has an instance
+    let response = rt
+        .block_on(NodeListRequest::new().poll(
+            messenger_handle,
+            &master_node_name,
+            CALLER_INSTANCE_ID,
+            &master_node_name,
+            Duration::from_secs(5),
+        ))
+        .expect("node_list request should complete");
+
+    assert!(
+        response
+            .dot_graph
+            .contains(&format!("{}:0.1.0\\n(1 instance)", node_name)),
+        "dot_graph should show 1 instance after run. Got:\n{}",
+        response.dot_graph
     );
 }
 
@@ -336,6 +428,30 @@ fn node_run_command_with_custom_instance_id_succeeds() {
     .execute(&node_ctx)
     .expect("node add command should succeed");
 
+    // Verify the node was added with 0 instances before run
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime should create");
+    let messenger_handle = node_ctx
+        .messenger_handle()
+        .expect("messenger handle should be available");
+
+    let response = rt
+        .block_on(NodeListRequest::new().poll(
+            messenger_handle,
+            &master_node_name,
+            CALLER_INSTANCE_ID,
+            &master_node_name,
+            Duration::from_secs(5),
+        ))
+        .expect("node_list request should complete");
+
+    assert!(
+        response
+            .dot_graph
+            .contains(&format!("{}:0.1.0\\n(0 instances)", node_name)),
+        "dot_graph should show 0 instances before run. Got:\n{}",
+        response.dot_graph
+    );
+
     // Now run the node with a custom instance_id
     NodeCommand {
         command: NodeCommands::Run {
@@ -360,5 +476,24 @@ fn node_run_command_with_custom_instance_id_succeeds() {
         logs.contains("Started node instance"),
         "logs should contain success message for starting node instance. Logs:\n{}",
         logs
+    );
+
+    // Query the node stack to verify the node now has an instance
+    let response = rt
+        .block_on(NodeListRequest::new().poll(
+            messenger_handle,
+            &master_node_name,
+            CALLER_INSTANCE_ID,
+            &master_node_name,
+            Duration::from_secs(5),
+        ))
+        .expect("node_list request should complete");
+
+    assert!(
+        response
+            .dot_graph
+            .contains(&format!("{}:0.1.0\\n(1 instance)", node_name)),
+        "dot_graph should show 1 instance after run. Got:\n{}",
+        response.dot_graph
     );
 }

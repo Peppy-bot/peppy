@@ -227,7 +227,9 @@ fn node_add_command_with_run_arg_succeeds() {
 
     // Verify the node has 1 instance (since run=true)
     assert!(
-        response.dot_graph.contains("(1 instance)"),
+        response
+            .dot_graph
+            .contains(&format!("{}:0.1.0\\n(1 instance)", node_name)),
         "dot_graph should show 1 instance for the added node. Got:\n{}",
         response.dot_graph
     );
