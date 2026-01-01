@@ -8,11 +8,49 @@ use petgraph::{
     visit::EdgeRef,
 };
 use rand::rng;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
+
+/// Serializable representation of a node in the graph.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SerializedNode {
+    pub name: String,
+    pub tag: String,
+    pub instance_count: usize,
+}
+
+impl SerializedNode {
+    /// Returns a display label in the format "name:tag (N instance(s))".
+    pub fn label(&self) -> String {
+        let suffix = if self.instance_count == 1 {
+            "instance"
+        } else {
+            "instances"
+        };
+        format!(
+            "{}:{} ({} {})",
+            self.name, self.tag, self.instance_count, suffix
+        )
+    }
+}
+
+/// Serializable representation of a dependency edge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SerializedEdge {
+    pub from: SerializedNode,
+    pub to: SerializedNode,
+}
+
+/// Serializable representation of the entire node graph.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SerializedNodeGraph {
+    pub nodes: Vec<SerializedNode>,
+    pub edges: Vec<SerializedEdge>,
+}
 
 /// This represent a single entity with n instances inside the node_stack.
 /// A NodeEntity always has at least one instance.
@@ -719,6 +757,43 @@ impl NodeStackInner {
         );
         format!("{:?}", dot)
     }
+
+    /// Returns a serializable representation of the graph.
+    fn to_serialized_graph(&self) -> SerializedNodeGraph {
+        let nodes: Vec<SerializedNode> = self
+            .graph
+            .node_weights()
+            .map(|entity| SerializedNode {
+                name: entity.config().manifest.name.as_str().to_string(),
+                tag: entity.config().manifest.tag.clone(),
+                instance_count: entity.instances().len(),
+            })
+            .collect();
+
+        let edges: Vec<SerializedEdge> = self
+            .graph
+            .edge_indices()
+            .filter_map(|edge_idx| {
+                let (src_idx, dst_idx) = self.graph.edge_endpoints(edge_idx)?;
+                let src_entity = self.graph.node_weight(src_idx)?;
+                let dst_entity = self.graph.node_weight(dst_idx)?;
+                Some(SerializedEdge {
+                    from: SerializedNode {
+                        name: src_entity.config().manifest.name.as_str().to_string(),
+                        tag: src_entity.config().manifest.tag.clone(),
+                        instance_count: src_entity.instances().len(),
+                    },
+                    to: SerializedNode {
+                        name: dst_entity.config().manifest.name.as_str().to_string(),
+                        tag: dst_entity.config().manifest.tag.clone(),
+                        instance_count: dst_entity.instances().len(),
+                    },
+                })
+            })
+            .collect();
+
+        SerializedNodeGraph { nodes, edges }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -910,5 +985,11 @@ impl NodeStack {
     pub fn to_dot(&self) -> String {
         let guard = self.shared.read().expect("node stack poisoned");
         guard.to_dot()
+    }
+
+    /// Returns a serializable representation of the graph.
+    pub fn to_serialized_graph(&self) -> SerializedNodeGraph {
+        let guard = self.shared.read().expect("node stack poisoned");
+        guard.to_serialized_graph()
     }
 }

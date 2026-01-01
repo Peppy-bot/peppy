@@ -1,7 +1,6 @@
 use crate::Result;
 use crate::encoding::{NodeStartRequest, NodeStartResponse};
 use bytes::Bytes;
-use config::consts::NODE_CONFIG_FILE;
 use config::node::Name;
 use config::runtime::RuntimeConfig;
 use node_stack::{NodeEntity, NodeStack};

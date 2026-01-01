@@ -1,5 +1,4 @@
 use config::node::NodeConfigParser;
-use config::runtime::RuntimeConfig;
 use master_node::encoding::NodeAddRequest;
 use std::path::PathBuf;
 use std::sync::Arc;
