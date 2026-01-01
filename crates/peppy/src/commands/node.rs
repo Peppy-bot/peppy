@@ -78,7 +78,10 @@ pub enum NodeCommands {
         instance_id: Option<String>,
     },
     /// List nodes in the current node stack
-    List {},
+    List {
+        /// If specified, will save a dotgraph representation at the given path
+        dot_graph_path: Option<PathBuf>,
+    },
 }
 
 pub struct NodeCommand {
@@ -119,10 +122,9 @@ impl Command for NodeCommand {
                 info!("Running node {}:{}...", node_name, tag);
                 run::run_node(ctx, node_name, tag, args, instance_id)
             }
-            NodeCommands::List {} => {
+            NodeCommands::List { dot_graph_path } => {
                 info!("Listing nodes...");
-                list::list_nodes();
-                Ok(())
+                list::list_nodes(ctx, dot_graph_path)
             }
         }
     }

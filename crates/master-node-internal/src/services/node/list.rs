@@ -57,10 +57,16 @@ fn handle_node_list_request_inner(
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    let _request = NodeListRequest::decode(&payload.as_bytes())?;
+    let request = NodeListRequest::decode(&payload.as_bytes())?;
 
     debug!("Received `node_list` request from {sender_instance_id}");
 
-    let dot_graph = node_stack.to_dot();
-    NodeListResponse::new(dot_graph).encode()
+    let dot_graph = if request.with_dot_graph() {
+        Some(node_stack.to_dot())
+    } else {
+        None
+    };
+    let serialized_graph = node_stack.to_serialized_graph();
+    let graph_json = serde_json::to_string(&serialized_graph).unwrap_or_else(|_| "{}".to_string());
+    NodeListResponse::new(dot_graph, graph_json).encode()
 }

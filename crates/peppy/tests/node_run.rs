@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use helpers::TestServeHandle;
 use master_node::encoding::NodeListRequest;
+use node_stack::SerializedNodeGraph;
 use peppy::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::serve::DaemonState;
 use peppy::{AppContext, Command};
@@ -95,7 +96,7 @@ fn node_run_command_succeeds() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(NodeListRequest::new().poll(
+        .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
@@ -104,10 +105,15 @@ fn node_run_command_succeeds() {
         ))
         .expect("node_list request should complete");
 
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
     assert!(
-        response.dot_graph.contains("(0 instances)"),
-        "dot_graph should show 0 instances before run. Got:\n{}",
-        response.dot_graph
+        graph
+            .nodes
+            .iter()
+            .any(|n| n.label().contains("(0 instances)")),
+        "graph should show 0 instances before run. Got: {:?}",
+        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
     );
 
     // Now run the node using the run command
@@ -132,7 +138,7 @@ fn node_run_command_succeeds() {
 
     // Query the node stack to verify the node now has an instance
     let response = rt
-        .block_on(NodeListRequest::new().poll(
+        .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
@@ -142,10 +148,15 @@ fn node_run_command_succeeds() {
         .expect("node_list request should complete");
 
     // Verify the node has 1 instance now
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
     assert!(
-        response.dot_graph.contains("(1 instance)"),
-        "dot_graph should show 1 instance after run. Got:\n{}",
-        response.dot_graph
+        graph
+            .nodes
+            .iter()
+            .any(|n| n.label().contains("(1 instance)")),
+        "graph should show 1 instance after run. Got: {:?}",
+        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
     );
 }
 
@@ -282,7 +293,7 @@ fn node_run_command_with_args_succeeds() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(NodeListRequest::new().poll(
+        .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
@@ -291,12 +302,15 @@ fn node_run_command_with_args_succeeds() {
         ))
         .expect("node_list request should complete");
 
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
     assert!(
-        response
-            .dot_graph
-            .contains(&format!("{}:0.1.0\\n(0 instances)", node_name)),
-        "dot_graph should show 0 instances before run. Got:\n{}",
-        response.dot_graph
+        graph.nodes.iter().any(|n| {
+            n.label().contains(&format!("{}:0.1.0", node_name))
+                && n.label().contains("(0 instances)")
+        }),
+        "graph should show 0 instances before run. Got: {:?}",
+        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
     );
 
     // Now run the node with arguments
@@ -332,7 +346,7 @@ fn node_run_command_with_args_succeeds() {
 
     // Query the node stack to verify the node now has an instance
     let response = rt
-        .block_on(NodeListRequest::new().poll(
+        .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
@@ -341,12 +355,15 @@ fn node_run_command_with_args_succeeds() {
         ))
         .expect("node_list request should complete");
 
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
     assert!(
-        response
-            .dot_graph
-            .contains(&format!("{}:0.1.0\\n(1 instance)", node_name)),
-        "dot_graph should show 1 instance after run. Got:\n{}",
-        response.dot_graph
+        graph.nodes.iter().any(|n| {
+            n.label().contains(&format!("{}:0.1.0", node_name))
+                && n.label().contains("(1 instance)")
+        }),
+        "graph should show 1 instance after run. Got: {:?}",
+        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
     );
 }
 
@@ -435,7 +452,7 @@ fn node_run_command_with_custom_instance_id_succeeds() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(NodeListRequest::new().poll(
+        .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
@@ -444,12 +461,15 @@ fn node_run_command_with_custom_instance_id_succeeds() {
         ))
         .expect("node_list request should complete");
 
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
     assert!(
-        response
-            .dot_graph
-            .contains(&format!("{}:0.1.0\\n(0 instances)", node_name)),
-        "dot_graph should show 0 instances before run. Got:\n{}",
-        response.dot_graph
+        graph.nodes.iter().any(|n| {
+            n.label().contains(&format!("{}:0.1.0", node_name))
+                && n.label().contains("(0 instances)")
+        }),
+        "graph should show 0 instances before run. Got: {:?}",
+        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
     );
 
     // Now run the node with a custom instance_id
@@ -480,7 +500,7 @@ fn node_run_command_with_custom_instance_id_succeeds() {
 
     // Query the node stack to verify the node now has an instance
     let response = rt
-        .block_on(NodeListRequest::new().poll(
+        .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
@@ -489,11 +509,14 @@ fn node_run_command_with_custom_instance_id_succeeds() {
         ))
         .expect("node_list request should complete");
 
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
     assert!(
-        response
-            .dot_graph
-            .contains(&format!("{}:0.1.0\\n(1 instance)", node_name)),
-        "dot_graph should show 1 instance after run. Got:\n{}",
-        response.dot_graph
+        graph.nodes.iter().any(|n| {
+            n.label().contains(&format!("{}:0.1.0", node_name))
+                && n.label().contains("(1 instance)")
+        }),
+        "graph should show 1 instance after run. Got: {:?}",
+        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
     );
 }
