@@ -1,4 +1,5 @@
-use config::consts::NODE_CONFIG_FILE;
+use config::consts::{NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::runtime::RuntimeConfig;
 use generator::RustGenerator;
 use std::io::Read;
 use std::path::Path;
@@ -24,8 +25,8 @@ pub const STUB_NODE_CONFIG: &str = r#"{
 pub fn prepare_directories(
     temp_dir: &TempDir,
 ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
-    let output_dir = temp_dir.path().join(".peppy/libs/peppygen");
     let user_node = temp_dir.path().join("user_node");
+    let output_dir = user_node.join(".peppy/libs/peppygen");
     let peppy_node_config = user_node.join(NODE_CONFIG_FILE);
     fs::create_dir_all(&output_dir).unwrap();
     fs::create_dir_all(&user_node).unwrap();
@@ -71,25 +72,32 @@ pub fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
             .current_dir(crate_dir)
             .output()
             .expect("failed to invoke cargo init for user node");
-        Command::new("cargo")
-            .arg("add")
-            .arg("tokio")
-            .current_dir(crate_dir)
-            .output()
-            .expect("failed to invoke cargo init for user node");
     }
 
-    let peppygen_path = "../.peppy/libs/peppygen";
+    let peppygen_path = ".peppy/libs/peppygen";
 
     let manifest_contents =
         fs::read_to_string(&cargo_toml_path).expect("failed to read user node Cargo.toml");
 
-    if !manifest_contents
+    let mut updated_manifest = manifest_contents.clone();
+
+    if !updated_manifest
+        .lines()
+        .any(|line| line.trim_start().starts_with("tokio"))
+    {
+        let tokio_dependency_line = "tokio = { version = \"1.47.0\", features = [\"macros\", \"rt-multi-thread\", \"time\"] }\n";
+        updated_manifest = insert_dependency_line(&updated_manifest, tokio_dependency_line);
+    }
+
+    if !updated_manifest
         .lines()
         .any(|line| line.trim_start().starts_with("peppygen"))
     {
         let dependency_line = format!("peppygen = {{ path = \"{}\" }}\n", peppygen_path);
-        let updated_manifest = insert_dependency_line(&manifest_contents, &dependency_line);
+        updated_manifest = insert_dependency_line(&updated_manifest, &dependency_line);
+    }
+
+    if updated_manifest != manifest_contents {
         fs::write(&cargo_toml_path, updated_manifest)
             .expect("failed to write user node Cargo.toml");
     }
@@ -206,4 +214,15 @@ pub fn start_router_for_tests(
 ) -> (pmi::Messenger, TempDir, String, u16) {
     rt.block_on(peppylib::start_zenohd_process("127.0.0.1", None))
         .expect("failed to start zenoh router for test")
+}
+
+pub fn write_codegen_fingerprint(peppy_config_path: impl AsRef<Path>) {
+    let peppy_config_path = peppy_config_path.as_ref();
+    let fingerprint = RuntimeConfig::generate_peppy_config_fingerprint(peppy_config_path)
+        .expect("failed to generate peppy.json5 fingerprint");
+    let peppy_config_dir = peppy_config_path.parent().unwrap_or_else(|| Path::new("."));
+    let fingerprint_path = peppy_config_dir
+        .join(PEPPYGEN_OUTPUT_PATH)
+        .join(NODE_CONFIG_FINGERPRINT_FILE);
+    fs::write(&fingerprint_path, fingerprint).expect("failed to write codegen fingerprint");
 }
