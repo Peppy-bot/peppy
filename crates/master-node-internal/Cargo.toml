@@ -18,7 +18,7 @@ names-generator2 = "0.2"
 rand = "0.9"
 serde_json5 = "0.2"
 thiserror = "2.0"
-tokio = { version = "1.47", features = ["sync", "rt"] }
+tokio = { version = "1.47", features = ["sync", "rt", "time"] }
 tracing = "0.1"
 askama = "0.15"
 
