@@ -4,6 +4,7 @@ mod list;
 mod remove;
 mod run;
 mod stop;
+mod sync;
 mod types;
 
 use std::path::PathBuf;
@@ -62,6 +63,12 @@ pub enum NodeCommands {
         /// Optional: specify a deterministic instance ID
         #[arg(long, hide = true)]
         instance_id: Option<String>,
+    },
+    /// Regenerate the node's interface code (peppygen) based on peppy.json5
+    Sync {
+        /// Build system for the node: `rust`, `python`, `cargo`, or `uv`
+        #[arg(long, visible_alias = "lang", value_enum, default_value_t = BuildSystem::Rust)]
+        build_system: BuildSystem,
     },
     /// Runs an instance from a node added to the node stack
     Run {
@@ -129,6 +136,10 @@ impl Command for NodeCommand {
             } => {
                 info!("Adding node {}...", peppy_json5.display());
                 add::add_node(ctx, peppy_json5, run, args, instance_id)
+            }
+            NodeCommands::Sync { build_system } => {
+                info!("Syncing node interfaces...");
+                sync::sync_node(ctx, build_system)
             }
             NodeCommands::Run {
                 node_name,
