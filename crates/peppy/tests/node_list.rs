@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use config::node::{Name as ConfigName, NodeConfigParser, SubscribedTopic, SubscribesTo};
 use helpers::TestServeHandle;
-use peppy::node::{NodeCommand, NodeCommands, NodeName};
-use peppy::serve::DaemonState;
-use peppy::{AppContext, Command};
+use peppy::commands::Command;
+use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
+use peppy::context::{AppContext, DaemonState};
 
 fn make_consumer_depend_on_provider(
     consumer_peppy_json5: &Path,

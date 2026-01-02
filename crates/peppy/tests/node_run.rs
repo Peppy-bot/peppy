@@ -6,9 +6,9 @@ use std::time::Duration;
 use helpers::TestServeHandle;
 use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
-use peppy::node::{NodeCommand, NodeCommands, NodeName};
-use peppy::serve::DaemonState;
-use peppy::{AppContext, Command};
+use peppy::commands::Command;
+use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
+use peppy::context::{AppContext, DaemonState};
 
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 

@@ -1,9 +1,15 @@
-use std::sync::Arc;
+mod builder;
+mod master_node;
+mod messaging_router;
+mod pid_lock;
 
-use clap::Subcommand;
+pub mod install;
+pub mod serve;
 
 use super::Command;
 use crate::{context::AppContext, error::Error as CommandError};
+use clap::Subcommand;
+use std::sync::Arc;
 
 #[derive(Subcommand)]
 pub enum ServiceCommands {
@@ -31,13 +37,13 @@ impl Command for ServiceCommand {
             ServiceCommands::Serve {
                 messaging_engine,
                 master_name,
-            } => super::serve::ServeCommand {
+            } => serve::ServeCommand {
                 messaging_engine,
                 master_name,
                 shutdown_token: None,
             }
             .execute(app_ctx),
-            ServiceCommands::Install {} => super::install::InstallCommand {}.execute(app_ctx),
+            ServiceCommands::Install {} => install::InstallCommand {}.execute(app_ctx),
         }
     }
 }

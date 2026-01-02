@@ -1,9 +1,3 @@
-mod builder;
-mod daemon_state;
-mod master_node;
-mod messaging_router;
-mod pid_lock;
-
 use std::future::Future;
 use std::io::{self, Write};
 use std::pin::Pin;
@@ -17,11 +11,10 @@ use super::Command;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-use pid_lock::{PidLock, PidLockError};
+use super::pid_lock::{PidLock, PidLockError};
 
-pub use builder::ServeCommandBuilder;
-pub use daemon_state::{DAEMON_STATE_FILE_ENV, DaemonState};
-pub use pid_lock::PID_FILE_ENV;
+pub use super::builder::ServeCommandBuilder;
+pub use super::pid_lock::PID_FILE_ENV;
 pub use tokio_util::sync::CancellationToken;
 
 const EXISTING_INSTANCE_PROMPT: &str =

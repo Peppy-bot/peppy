@@ -3,9 +3,9 @@ mod helpers;
 use std::sync::Arc;
 
 use helpers::TestServeHandle;
-use peppy::node::{NodeCommand, NodeCommands, NodeName};
-use peppy::serve::DaemonState;
-use peppy::{AppContext, Command};
+use peppy::commands::Command;
+use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
+use peppy::context::{AppContext, DaemonState};
 
 #[test]
 fn node_rust_init_command_success() {
