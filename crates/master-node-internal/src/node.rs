@@ -140,6 +140,7 @@ impl MasterNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
+                self.node_start_health_timeout,
             )
             .await?,
             listen_for_node_list(

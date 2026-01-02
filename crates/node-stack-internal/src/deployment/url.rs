@@ -1,3 +1,4 @@
+use super::ResolvedNode;
 use crate::error::{Error, Result};
 use config::consts::NODE_CONFIG_FILE;
 use config::{
@@ -20,7 +21,7 @@ pub fn resolve_remote_url(
     nodes_cache_dir: &Path,
     deployment: &Deployment,
     spec: HttpRemoteSpec,
-) -> Result<NodeConfig> {
+) -> Result<ResolvedNode> {
     fs::create_dir_all(nodes_cache_dir)?;
 
     let cache_dir = build_bundle_cache_path(nodes_cache_dir, &spec.bundle_url);
@@ -33,7 +34,10 @@ pub fn resolve_remote_url(
         load_manifest(&cache_dir, deployment)?
     };
 
-    Ok(node)
+    Ok(ResolvedNode {
+        config: node,
+        root_path: cache_dir,
+    })
 }
 
 fn refresh_bundle(
