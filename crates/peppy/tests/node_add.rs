@@ -15,7 +15,7 @@ const CALLER_INSTANCE_ID: &str = "peppy-test";
 #[test]
 fn node_add_command_succeeds() {
     let _serial_guard = helpers::serve_test_lock().lock().unwrap();
-    let serve = TestServeHandle::new();
+    let serve = TestServeHandle::with_mock_messenger();
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
     let master_node_name = daemon_state.master_node_name;
