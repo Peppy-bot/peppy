@@ -1,6 +1,6 @@
 use std::fs;
 
-use peppy::install::install_peppy_daemon;
+use peppy::commands::service::install;
 
 #[test]
 fn install_peppy_command() {
@@ -11,7 +11,7 @@ fn install_peppy_command() {
 
     assert!(!override_dir.exists());
 
-    let service_path = install_peppy_daemon(Some(override_dir.clone())).unwrap();
+    let service_path = install::install_peppy_daemon(Some(override_dir.clone())).unwrap();
 
     assert!(override_dir.exists());
     assert!(service_path.exists());

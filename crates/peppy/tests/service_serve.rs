@@ -4,8 +4,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use peppy::serve::{CancellationToken, PID_FILE_ENV, PROMPT_ANSWER_ENV, ServeCommand};
-use peppy::{AppContext, Command};
+use peppy::commands::Command;
+use peppy::commands::service::serve::{
+    CancellationToken, PID_FILE_ENV, PROMPT_ANSWER_ENV, ServeCommand,
+};
+use peppy::context::AppContext;
 use tempfile::TempDir;
 use tracing_subscriber::fmt::MakeWriter;
 

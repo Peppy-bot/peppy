@@ -1,10 +1,10 @@
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-
+use super::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use crate::error::Error;
 use master_node::{MasterNode, MasterNodeArguments};
 use pmi::Messenger;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::info;
 
@@ -32,8 +32,8 @@ impl MasterNodeRunner {
     }
 }
 
-impl super::ServeAsyncCommand for MasterNodeRunner {
-    fn run(self: Box<Self>) -> super::ServeAsyncHandle {
+impl ServeAsyncCommand for MasterNodeRunner {
+    fn run(self: Box<Self>) -> ServeAsyncHandle {
         let master_node = self.master_node;
         let future = Box::pin(async move {
             let shutdown_signal = tokio::signal::ctrl_c();
@@ -71,6 +71,6 @@ impl super::ServeAsyncCommand for MasterNodeRunner {
             result
         });
 
-        super::ServeAsyncHandle::new(future, None)
+        ServeAsyncHandle::new(future, None)
     }
 }

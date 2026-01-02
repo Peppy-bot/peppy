@@ -5,7 +5,10 @@ use clap::{Parser, Subcommand};
 use tracing::error;
 
 use config::consts::AppEnv;
-use peppy::{AppContext, Command, launch, node, service};
+use peppy::{
+    commands::{Command, launch, node, service},
+    context::AppContext,
+};
 
 #[derive(Parser)]
 #[command(name = "peppy")]

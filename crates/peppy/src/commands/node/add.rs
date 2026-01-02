@@ -6,8 +6,7 @@ use std::time::Duration;
 use tracing::info;
 
 use super::run::start_instance_async;
-use crate::commands::serve::DaemonState;
-use crate::context::AppContext;
+use crate::context::{AppContext, DaemonState};
 use crate::error::{Error, Result};
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";

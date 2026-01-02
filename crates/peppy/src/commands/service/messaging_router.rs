@@ -1,4 +1,4 @@
-use super::{ServeAsyncCommand, ServeAsyncHandle};
+use super::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use crate::error::Error;
 use pmi::{Messenger, MessengerBackend};
 use std::sync::Arc;
