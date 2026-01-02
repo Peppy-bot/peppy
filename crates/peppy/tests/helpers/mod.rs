@@ -161,7 +161,7 @@ impl TestServeHandle {
     /// Creates a new test serve handle, starting the serve command in a background thread.
     /// Blocks until the serve command is initialized and ready to accept commands.
     /// Uses mock messaging - suitable for in-process tests only.
-    pub fn new() -> Self {
+    pub fn with_mock_messenger() -> Self {
         Self::with_messaging_router("mock", None)
     }
 

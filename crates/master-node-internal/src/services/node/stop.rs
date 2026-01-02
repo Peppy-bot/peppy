@@ -111,8 +111,16 @@ async fn handle_node_stop_request_inner(
         }
     };
 
-    // Get the node name from the entity
-    let node_name = entity.config().manifest.name.as_str();
+    let root_node_name = node_stack.root().config().manifest.name.as_str().to_owned();
+    let node_name = entity.config().manifest.name.as_str().to_owned();
+
+    if node_name == root_node_name {
+        return NodeStopResponse::failure("Cannot stop the master node").encode();
+    }
+
+    let node_tag = entity.config().manifest.tag.clone();
+    let node_config = entity.config().clone();
+    let node_root_path = entity.root_path().to_path_buf();
 
     // Send a shutdown request to the node
     debug!(
@@ -124,7 +132,7 @@ async fn handle_node_stop_request_inner(
         messenger,
         master_node_node,
         master_instance_id,
-        node_name,
+        node_name.as_str(),
         SHUTDOWN_SERVICE,
         Some(master_node_node),
         Some(&request.instance_id),
@@ -139,6 +147,35 @@ async fn handle_node_stop_request_inner(
                 "Node instance '{}' shutdown successfully",
                 request.instance_id
             );
+
+            match node_stack.remove_instance(&node_name, &node_tag, &instance_id) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return NodeStopResponse::failure(format!(
+                        "Node instance '{}' not found in node stack",
+                        request.instance_id
+                    ))
+                    .encode();
+                }
+                Err(e) => {
+                    return NodeStopResponse::failure(format!(
+                        "Failed to remove node instance '{}' from node stack: {}",
+                        request.instance_id, e
+                    ))
+                    .encode();
+                }
+            }
+
+            // `remove_instance` may remove the entity entirely if it was the last instance.
+            // Re-push the config so the node remains in the stack with 0 instances.
+            if let Err(e) = node_stack.push_config(node_config, false, node_root_path) {
+                return NodeStopResponse::failure(format!(
+                    "Failed to keep node config for '{}:{}' in node stack: {}",
+                    node_name, node_tag, e
+                ))
+                .encode();
+            }
+
             NodeStopResponse::success().encode()
         }
         Err(e) => {

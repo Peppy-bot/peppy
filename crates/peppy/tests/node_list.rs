@@ -40,7 +40,7 @@ fn make_consumer_depend_on_provider(
 fn node_list_command_succeeds() {
     let _serial_guard = helpers::serve_test_lock().lock().unwrap();
     // Mock messaging is sufficient for listing and dependency graph tests (no spawned node process).
-    let serve = TestServeHandle::new();
+    let serve = TestServeHandle::with_mock_messenger();
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
     let master_node_name = daemon_state.master_node_name;
@@ -165,7 +165,7 @@ fn node_list_command_succeeds() {
 #[test]
 fn node_list_command_with_dot_representation_succeeds() {
     let _serial_guard = helpers::serve_test_lock().lock().unwrap();
-    let serve = TestServeHandle::new();
+    let serve = TestServeHandle::with_mock_messenger();
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
     let master_node_name = daemon_state.master_node_name;

@@ -10,7 +10,7 @@ use peppy::context::{AppContext, DaemonState};
 #[test]
 fn node_rust_init_command_success() {
     let _serial_guard = helpers::serve_test_lock().lock().unwrap();
-    let serve = TestServeHandle::new();
+    let serve = TestServeHandle::with_mock_messenger();
 
     // Verify the daemon state file was written
     let daemon_state = DaemonState::read().expect("daemon state should be readable");

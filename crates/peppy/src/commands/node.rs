@@ -2,6 +2,7 @@ mod add;
 mod init;
 mod list;
 mod run;
+mod stop;
 mod types;
 
 use std::path::PathBuf;
@@ -82,6 +83,12 @@ pub enum NodeCommands {
         /// If specified, will save a dotgraph representation at the given path
         dot_graph_path: Option<PathBuf>,
     },
+    /// Stop a running node instance
+    Stop {
+        /// Instance ID of the node to stop
+        #[arg(long)]
+        instance_id: String,
+    },
 }
 
 pub struct NodeCommand {
@@ -125,6 +132,10 @@ impl Command for NodeCommand {
             NodeCommands::List { dot_graph_path } => {
                 info!("Listing nodes...");
                 list::list_nodes(ctx, dot_graph_path)
+            }
+            NodeCommands::Stop { instance_id } => {
+                info!("Stopping node instance {}...", instance_id);
+                stop::stop_node(ctx, instance_id)
             }
         }
     }
