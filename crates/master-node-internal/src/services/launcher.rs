@@ -1,10 +1,16 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use config::peppy_config::PeppyLauncherParser;
-use node_stack::{LaunchPlan, NodeStack};
+use config::consts::{DEFAULT_ZENOH_HOST, DEFAULT_ZENOH_PORT, RUNTIME_CONFIG_VAR_NAME};
+use config::peppy_config::{BuildSystem, PeppyLauncherParser};
+use config::runtime::RuntimeConfig;
+use node_stack::{LaunchPlan, NodeEntity, NodeStack};
+use peppylib::encoding::health::NodeHealthRequest;
+use peppylib::messaging::NODE_HEALTH_SERVICE;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use std::process::{Child, Command, Stdio};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -19,9 +25,14 @@ pub async fn listen_for_launch_configuration(
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
+    node_start_health_timeout: Duration,
 ) -> Result<JoinHandle<Result<()>>> {
+    let messenger = messenger.clone();
+    let master_node_name = master_node_node.to_string();
+    let master_instance_id = instance_id.to_string();
+
     let mut endpoint = ServiceMessenger::listen(
-        messenger,
+        &messenger,
         master_node_node,
         instance_id,
         node_name,
@@ -33,7 +44,20 @@ pub async fn listen_for_launch_configuration(
         endpoint
             .handle_requests(move |context| {
                 let node_stack = Arc::clone(&node_stack);
-                async move { handle_launcher_request(context, node_stack).await }
+                let messenger = messenger.clone();
+                let master_node_name = master_node_name.clone();
+                let master_instance_id = master_instance_id.clone();
+                async move {
+                    handle_launcher_request(
+                        context,
+                        node_stack,
+                        messenger,
+                        master_node_name,
+                        master_instance_id,
+                        node_start_health_timeout,
+                    )
+                    .await
+                }
             })
             .await
             .map_err(Into::into)
@@ -45,10 +69,23 @@ pub async fn listen_for_launch_configuration(
 async fn handle_launcher_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
+    messenger: MessengerHandle,
+    master_node_name: String,
+    master_instance_id: String,
+    node_start_health_timeout: Duration,
 ) -> PeppyResult<Bytes> {
     let sender_instance_id = context.message().instance_id().to_string();
 
-    let response = match handle_launcher_request_inner(&context, &node_stack).await {
+    let response = match handle_launcher_request_inner(
+        &context,
+        &node_stack,
+        &messenger,
+        master_node_name.as_str(),
+        master_instance_id.as_str(),
+        node_start_health_timeout,
+    )
+    .await
+    {
         Ok(()) => LauncherResponse::new(),
         Err(error) => LauncherResponse::error(error),
     };
@@ -64,6 +101,10 @@ async fn handle_launcher_request(
 async fn handle_launcher_request_inner(
     context: &ServiceRequestContext,
     node_stack: &NodeStack,
+    messenger: &MessengerHandle,
+    master_node_name: &str,
+    master_instance_id: &str,
+    node_start_health_timeout: Duration,
 ) -> std::result::Result<(), String> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -92,9 +133,257 @@ async fn handle_launcher_request_inner(
     .map_err(|e| format!("launch plan task failed: {e}"))??;
 
     validate_launch_plan(&plan)?;
+    start_launch_plan_instances(
+        &plan,
+        messenger,
+        master_node_name,
+        master_instance_id,
+        node_start_health_timeout,
+    )
+    .await?;
     apply_launch_plan(node_stack, plan.node_stack())?;
 
     Ok(())
+}
+
+async fn start_launch_plan_instances(
+    plan: &LaunchPlan,
+    messenger: &MessengerHandle,
+    master_node_name: &str,
+    master_instance_id: &str,
+    node_start_health_timeout: Duration,
+) -> std::result::Result<(), String> {
+    let (messaging_host, messaging_port) = messenger
+        .messaging_endpoint()
+        .await
+        .unwrap_or_else(|| (DEFAULT_ZENOH_HOST.to_string(), DEFAULT_ZENOH_PORT));
+
+    let mut started_children: Vec<Child> = Vec::new();
+
+    for planned in plan
+        .report()
+        .deployments()
+        .iter()
+        .filter(|d| d.is_resolved())
+    {
+        let deployment = planned.deployment();
+        let node_name = deployment.name.as_str();
+        let tag = deployment.tag.as_str();
+
+        let entity = plan
+            .node_stack()
+            .find(node_name, tag)
+            .ok_or_else(|| format!("deployment {node_name}:{tag} missing from planned stack"))?;
+
+        for deployment_instance in &deployment.instances {
+            // Run `generate` on the node to generate the peppygen library
+            let node_root_path = entity.root_path().to_path_buf();
+            tokio::task::spawn_blocking(move || {
+                generator::generate_lib_for_build_system(BuildSystem::Cargo, &node_root_path)
+            })
+            .await
+            .map_err(|e| format!("generate task failed for {node_name}:{tag}: {e}"))?
+            .map_err(|e| format!("failed to generate peppygen for {node_name}:{tag}: {e}"))?;
+
+            let runtime_config = RuntimeConfig::new(
+                messaging_host.as_str(),
+                messaging_port,
+                deployment_instance.clone(),
+                node_name,
+                master_node_name,
+            )
+            .map_err(|e| format!("failed to build runtime config for {node_name}:{tag}: {e}"))?;
+
+            let runtime_config_json5 = serde_json5::to_string(&runtime_config).map_err(|e| {
+                format!("failed to serialize runtime config for {node_name}:{tag}: {e}")
+            })?;
+
+            match start_node_instance(
+                messenger,
+                master_node_name,
+                master_instance_id,
+                &entity,
+                deployment_instance.instance_id.as_str(),
+                &runtime_config_json5,
+                node_start_health_timeout,
+            )
+            .await
+            {
+                Ok(child) => started_children.push(child),
+                Err(error) => {
+                    for mut child in started_children {
+                        let _ = child.kill();
+                        let _ = tokio::task::spawn_blocking(move || child.wait());
+                    }
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn start_node_instance(
+    messenger: &MessengerHandle,
+    master_node_name: &str,
+    master_instance_id: &str,
+    entity: &NodeEntity,
+    instance_id: &str,
+    runtime_config_json5: &str,
+    node_start_health_timeout: Duration,
+) -> std::result::Result<Child, String> {
+    let manifest = entity.config().manifest.clone();
+
+    let mut child = run_node(entity, runtime_config_json5).map_err(|e| {
+        format!(
+            "failed to start node {}:{} instance {}: {e}",
+            manifest.name.as_str(),
+            manifest.tag,
+            instance_id
+        )
+    })?;
+
+    match perform_health_check(
+        messenger,
+        master_node_name,
+        master_instance_id,
+        manifest.name.as_str(),
+        master_node_name,
+        instance_id,
+        node_start_health_timeout,
+        &mut child,
+    )
+    .await
+    {
+        Ok(()) => Ok(child),
+        Err(error) => {
+            if let Err(kill_err) = child.kill() {
+                debug!(
+                    "Failed to kill process for node {}:{} instance {}: {}",
+                    manifest.name.as_str(),
+                    manifest.tag,
+                    instance_id,
+                    kill_err
+                );
+            }
+
+            let stderr_output = tokio::task::spawn_blocking(move || child.wait_with_output())
+                .await
+                .ok()
+                .and_then(|result| result.ok())
+                .map(|output| String::from_utf8_lossy(&output.stderr).to_string())
+                .unwrap_or_default();
+
+            let error_msg = if stderr_output.is_empty() {
+                format!(
+                    "failed to start node {}:{} instance {}: {error}",
+                    manifest.name.as_str(),
+                    manifest.tag,
+                    instance_id
+                )
+            } else {
+                format!(
+                    "failed to start node {}:{} instance {}: {error}. Node stderr: {stderr_output}",
+                    manifest.name.as_str(),
+                    manifest.tag,
+                    instance_id
+                )
+            };
+            Err(error_msg)
+        }
+    }
+}
+
+fn run_node(entity: &NodeEntity, runtime_config_json5: &str) -> std::io::Result<Child> {
+    let manifest = &entity.config().manifest;
+    let Some((program, args)) = manifest.launch_cmd.split_first() else {
+        return Err(std::io::Error::other("launch_cmd is empty"));
+    };
+
+    // Write the runtime config to a file in the node's .peppy directory
+    // PEPPY_RUNTIME_CONFIG expects a file path, not JSON content
+    let runtime_config_path = entity
+        .root_path()
+        .join(".peppy")
+        .join("runtime")
+        .join("runtime_config.json");
+
+    if let Some(parent) = runtime_config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&runtime_config_path, runtime_config_json5)?;
+
+    let mut command = Command::new(program);
+    command.current_dir(entity.root_path());
+    command
+        .args(args)
+        .env(RUNTIME_CONFIG_VAR_NAME, &runtime_config_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    command.spawn()
+}
+
+async fn perform_health_check(
+    messenger: &MessengerHandle,
+    master_node_name: &str,
+    caller_instance_id: &str,
+    target_node_name: &str,
+    target_master_node: &str,
+    target_instance_id: &str,
+    timeout: Duration,
+    child: &mut Child,
+) -> std::result::Result<(), String> {
+    let request_payload = NodeHealthRequest::new()
+        .encode()
+        .map_err(|e| format!("failed to encode node health request: {e}"))?;
+    let deadline = Instant::now() + timeout;
+    let mut last_err: Option<PeppyError> = None;
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "node process exited before becoming healthy (status={status})"
+                ));
+            }
+            Ok(None) => {}
+            Err(err) => return Err(format!("failed to query node process status: {err}")),
+        }
+
+        let now = Instant::now();
+        if now >= deadline {
+            let err = last_err.unwrap_or_else(|| PeppyError::ServiceTimeout {
+                instance_id: Some(target_instance_id.to_string()),
+                service_name: NODE_HEALTH_SERVICE.to_string(),
+            });
+            return Err(format!("health check timed out: {err}"));
+        }
+
+        let remaining = deadline - now;
+        let attempt_timeout = remaining.min(Duration::from_millis(500));
+
+        match ServiceMessenger::poll(
+            messenger,
+            master_node_name,
+            caller_instance_id,
+            target_node_name,
+            NODE_HEALTH_SERVICE,
+            Some(target_master_node),
+            Some(target_instance_id),
+            request_payload.clone(),
+            attempt_timeout,
+        )
+        .await
+        {
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                last_err = Some(err);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
 }
 
 fn validate_launch_plan(plan: &LaunchPlan) -> std::result::Result<(), String> {

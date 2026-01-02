@@ -1,5 +1,4 @@
-use super::NodeStack;
-use config::node::NodeConfig;
+use super::{NodeStack, ResolvedNode};
 use config::peppy_config::Deployment;
 
 use crate::error::{Error, Result};
@@ -7,12 +6,15 @@ use crate::error::{Error, Result};
 pub fn resolve_local_deployment(
     deployment: &Deployment,
     node_stack: &NodeStack,
-) -> Result<NodeConfig> {
+) -> Result<ResolvedNode> {
     let entity = node_stack
         .find(deployment.name.as_str(), &deployment.tag)
         .ok_or_else(|| Error::NodeNotFound(deployment.name.to_string()))?;
 
-    Ok(entity.into_config())
+    Ok(ResolvedNode {
+        config: entity.config().clone(),
+        root_path: entity.root_path().to_path_buf(),
+    })
 }
 
 #[cfg(test)]
@@ -33,7 +35,7 @@ mod tests {
         let root_path = PathBuf::from("/tmp");
         let stack = NodeStack::new(master_node_config(), None, root_path.clone());
         stack
-            .push_config(config, false, root_path)
+            .push_config(config, false, root_path.clone())
             .expect("config has no dependencies");
         stack
             .add_instance(
@@ -43,12 +45,19 @@ mod tests {
             )
             .expect("should spawn instance");
 
-        let node =
+        let resolved =
             resolve_local_deployment(&deployment, &stack).expect("local deployment resolves");
 
-        assert_eq!(node.manifest.name.as_str(), deployment.name.as_str());
-        assert_eq!(node.manifest.tag, deployment.tag);
-        assert_eq!(node.manifest.name.as_str(), config_manifest.name.as_str());
+        assert_eq!(
+            resolved.config.manifest.name.as_str(),
+            deployment.name.as_str()
+        );
+        assert_eq!(resolved.config.manifest.tag, deployment.tag);
+        assert_eq!(
+            resolved.config.manifest.name.as_str(),
+            config_manifest.name.as_str()
+        );
+        assert_eq!(resolved.root_path, root_path);
     }
 
     #[test]

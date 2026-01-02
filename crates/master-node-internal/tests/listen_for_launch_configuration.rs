@@ -526,3 +526,91 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
 
     started_master.task.abort();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_launch_configuration_runs_generate_before_launch() {
+    use config::consts::PEPPYGEN_OUTPUT_PATH;
+
+    const TARGET_NODE_NAME: &str = "generate_test_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_INSTANCE_ID: &str = "gen_instance";
+
+    // Use a short health timeout since we expect the launch to fail (sleep doesn't respond to health)
+    let started_master = common::start_master_node_with_timeout(Duration::from_millis(500)).await;
+
+    let nodes_dir = tempdir().expect("failed to create temp nodes directory");
+    let node_dir = nodes_dir.path().join(TARGET_NODE_NAME);
+    write_node_config(
+        nodes_dir.path(),
+        TARGET_NODE_NAME,
+        &format!(
+            r#"{{
+                schema_version: 1,
+                manifest: {{
+                    name: "{TARGET_NODE_NAME}",
+                    tag: "{TARGET_NODE_TAG}",
+                    launch_cmd: ["sleep", "10"]
+                }}
+            }}"#
+        ),
+    );
+
+    // Verify peppygen directory doesn't exist before launch
+    let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        !peppygen_dir.exists(),
+        "peppygen directory should not exist before launch"
+    );
+
+    let launcher_json5 = format!(
+        r#"{{
+            deployments: [
+                {{
+                    name: "{TARGET_NODE_NAME}",
+                    tag: "{TARGET_NODE_TAG}",
+                    instances: [{{ instance_id: "{TARGET_INSTANCE_ID}" }}]
+                }}
+            ]
+        }}"#
+    );
+
+    // The launch will fail because `sleep` doesn't respond to health checks,
+    // but generate should still run and create the peppygen directory
+    let response = LauncherRequest::new(launcher_json5, nodes_dir.path())
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            None,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("launcher request should complete");
+
+    // The launch should fail because sleep doesn't respond to health checks
+    assert!(
+        !response.success,
+        "launcher request should fail due to health check timeout"
+    );
+
+    // But generate should have run and created the peppygen directory
+    assert!(
+        peppygen_dir.exists(),
+        "peppygen directory should exist after launch attempt (proving generate ran)"
+    );
+
+    // Also verify the Cargo.toml was created/updated by generate
+    let cargo_toml_path = node_dir.join("Cargo.toml");
+    assert!(
+        cargo_toml_path.exists(),
+        "Cargo.toml should exist after generate"
+    );
+    let cargo_toml = fs::read_to_string(&cargo_toml_path).expect("failed to read Cargo.toml");
+    assert!(
+        cargo_toml.contains("peppygen"),
+        "Cargo.toml should contain peppygen dependency after generate"
+    );
+
+    started_master.task.abort();
+}

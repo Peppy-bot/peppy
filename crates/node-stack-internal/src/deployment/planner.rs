@@ -2,7 +2,9 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use super::types::{NodeStack, collect_dependency_specs, exposes_interface};
-use super::{git::resolve_remote_git, local::resolve_local_deployment, url::resolve_remote_url};
+use super::{
+    ResolvedNode, git::resolve_remote_git, local::resolve_local_deployment, url::resolve_remote_url,
+};
 use crate::error::{Error, Result};
 use config::node::NodeConfig;
 use config::peppy_config::{Deployment, DeploymentNodeSource, PeppyLauncher, PeppyLauncherParser};
@@ -186,7 +188,10 @@ fn load_nodes_from_fs(root_dir: &Path, master_node: NodeConfig) -> Result<NodeSt
     let watcher = FSNodeConfigWatcher::new(root_dir)?;
     let state_snapshot = watcher.subscribe().borrow().clone();
 
-    let local_nodes: Vec<NodeConfig> = state_snapshot.into_values().flatten().collect();
+    let local_nodes: Vec<(PathBuf, NodeConfig)> = state_snapshot
+        .into_iter()
+        .filter_map(|(path, result)| result.ok().map(|config| (path, config)))
+        .collect();
 
     let stack = NodeStack::new(master_node, None, root_dir);
     let mut pending = topological_sort_local_nodes(local_nodes);
@@ -195,13 +200,18 @@ fn load_nodes_from_fs(root_dir: &Path, master_node: NodeConfig) -> Result<NodeSt
         let mut made_progress = false;
         let mut still_pending = Vec::new();
 
-        for node_config in pending {
-            match stack.push_config(node_config.clone(), false, root_dir) {
+        for (config_path, node_config) in pending {
+            let node_root = config_path
+                .parent()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| root_dir.to_path_buf());
+
+            match stack.push_config(node_config.clone(), false, node_root) {
                 Ok(_) => {
                     made_progress = true;
                 }
                 Err(Error::MissingDependency { .. } | Error::MissingInterface { .. }) => {
-                    still_pending.push(node_config);
+                    still_pending.push((config_path, node_config));
                 }
                 Err(e) => return Err(e),
             }
@@ -212,8 +222,12 @@ fn load_nodes_from_fs(root_dir: &Path, master_node: NodeConfig) -> Result<NodeSt
         }
 
         if !made_progress {
-            for node_config in still_pending {
-                stack.push_config(node_config, true, root_dir)?;
+            for (config_path, node_config) in still_pending {
+                let node_root = config_path
+                    .parent()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| root_dir.to_path_buf());
+                stack.push_config(node_config, true, node_root)?;
             }
             break;
         }
@@ -224,7 +238,7 @@ fn load_nodes_from_fs(root_dir: &Path, master_node: NodeConfig) -> Result<NodeSt
     Ok(stack)
 }
 
-fn topological_sort_local_nodes(configs: Vec<NodeConfig>) -> Vec<NodeConfig> {
+fn topological_sort_local_nodes(configs: Vec<(PathBuf, NodeConfig)>) -> Vec<(PathBuf, NodeConfig)> {
     if configs.is_empty() {
         return configs;
     }
@@ -235,7 +249,7 @@ fn topological_sort_local_nodes(configs: Vec<NodeConfig>) -> Vec<NodeConfig> {
         let key_to_idx: HashMap<(&str, &str), usize> = configs
             .iter()
             .enumerate()
-            .map(|(idx, config)| {
+            .map(|(idx, (_, config))| {
                 (
                     (config.manifest.name.as_str(), config.manifest.tag.as_str()),
                     idx,
@@ -246,7 +260,7 @@ fn topological_sort_local_nodes(configs: Vec<NodeConfig>) -> Vec<NodeConfig> {
         let mut in_degree = vec![0usize; configs.len()];
         let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); configs.len()];
 
-        for (idx, config) in configs.iter().enumerate() {
+        for (idx, (_, config)) in configs.iter().enumerate() {
             for spec in collect_dependency_specs(config) {
                 let dep_key = (spec.node_name.as_str(), spec.node_tag.as_str());
                 if let Some(&dep_idx) = key_to_idx.get(&dep_key) {
@@ -284,7 +298,8 @@ fn topological_sort_local_nodes(configs: Vec<NodeConfig>) -> Vec<NodeConfig> {
         sorted_indices
     };
 
-    let mut indexed_configs: Vec<Option<NodeConfig>> = configs.into_iter().map(Some).collect();
+    let mut indexed_configs: Vec<Option<(PathBuf, NodeConfig)>> =
+        configs.into_iter().map(Some).collect();
     let mut result = Vec::with_capacity(indexed_configs.len());
     for idx in sorted_indices {
         if let Some(config) = indexed_configs[idx].take() {
@@ -299,7 +314,7 @@ fn resolve_deployment(
     nodes_cache_dir: &Path,
     deployment: &Deployment,
     node_stack: &NodeStack,
-) -> Result<NodeConfig> {
+) -> Result<ResolvedNode> {
     match deployment.source.as_ref() {
         Some(DeploymentNodeSource::Local(_)) | None => {
             resolve_local_deployment(deployment, node_stack)
@@ -339,8 +354,8 @@ fn build_launch_plan(
             continue;
         }
 
-        let node = match resolve_deployment(&nodes_cache_dir, &deployment, &source_stack) {
-            Ok(node) => node,
+        let resolved = match resolve_deployment(&nodes_cache_dir, &deployment, &source_stack) {
+            Ok(resolved) => resolved,
             Err(err) => {
                 let reason = err.to_string();
                 let unresolved_error = Error::DeploymentNotResolvable(
@@ -351,6 +366,8 @@ fn build_launch_plan(
                 continue;
             }
         };
+        let node = resolved.config;
+        let root_path = resolved.root_path;
 
         if let Err(err) = validate_instance_parameters(&deployment, &node) {
             planned.push(PlannedDeployment::unresolved(deployment, err));
@@ -358,7 +375,7 @@ fn build_launch_plan(
         }
 
         // First, push the config (without creating instances)
-        if let Err(err) = stack.push_config(node.clone(), true, &nodes_cache_dir) {
+        if let Err(err) = stack.push_config(node.clone(), true, root_path.clone()) {
             planned.push(PlannedDeployment::unresolved(deployment, err));
             continue;
         }
