@@ -1,6 +1,7 @@
 mod add;
 mod init;
 mod list;
+mod remove;
 mod run;
 mod stop;
 mod types;
@@ -89,6 +90,15 @@ pub enum NodeCommands {
         #[arg(long)]
         instance_id: String,
     },
+    /// Remove a node from the node stack
+    Remove {
+        /// Name of the node to remove
+        #[arg(long)]
+        node_name: NodeName,
+        /// When set, stop all instances running on this node before removing the node itself. Without this flag, the command fails if the node has running instances
+        #[arg(long)]
+        stop_instances: bool,
+    },
 }
 
 pub struct NodeCommand {
@@ -136,6 +146,13 @@ impl Command for NodeCommand {
             NodeCommands::Stop { instance_id } => {
                 info!("Stopping node instance {}...", instance_id);
                 stop::stop_node(ctx, instance_id)
+            }
+            NodeCommands::Remove {
+                node_name,
+                stop_instances,
+            } => {
+                info!("Remove node {}...", node_name.as_str());
+                remove::remove_node(ctx, node_name, stop_instances)
             }
         }
     }
