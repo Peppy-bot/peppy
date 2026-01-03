@@ -1,42 +1,8 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, start_master_node};
-use config::consts::NODE_CONFIG_FILE;
-use master_node::encoding::{LauncherRequest, NodeInitRequest};
-use peppylib::messaging::MessengerHandle;
-use std::fs;
-use std::path::{Path, PathBuf};
+use common::{CALLER_INSTANCE_ID, create_test_node, start_master_node};
+use master_node::encoding::LauncherRequest;
 use std::time::Duration;
-use tempfile::tempdir;
-
-async fn create_test_node(
-    caller_handle: &MessengerHandle,
-    master_node_name: &str,
-    nodes_directory: &Path,
-    node_subdir: &str,
-    peppy_json5: &str,
-) -> PathBuf {
-    let node_dir = nodes_directory.join(node_subdir);
-    let init_response = NodeInitRequest::new(nodes_directory, node_subdir)
-        .poll(
-            caller_handle,
-            master_node_name,
-            CALLER_INSTANCE_ID,
-            master_node_name,
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("node_init request should complete");
-    assert!(
-        init_response.success,
-        "node_init should succeed, got error: {}",
-        init_response.error_message
-    );
-
-    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
-    fs::write(&node_config_path, peppy_json5).expect("failed to write node config");
-    node_config_path
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_configuration_succeed() {
@@ -47,25 +13,7 @@ async fn listen_for_launch_configuration_succeed() {
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
 
-    let nodes_dir = tempdir().expect("failed to create temp nodes directory");
-    let nodes_dir = nodes_dir.path();
-    create_test_node(
-        &started_master.caller_handle,
-        &started_master.master_node_name,
-        nodes_dir,
-        TARGET_NODE_NAME,
-        &format!(
-            r#"{{
-                schema_version: 1,
-                manifest: {{
-                    name: "{TARGET_NODE_NAME}",
-                    tag: "{TARGET_NODE_TAG}",
-                    launch_cmd: ["./mock_node_script.sh"]
-                }}
-            }}"#
-        ),
-    )
-    .await;
+    let nodes_dir = create_test_node().join(TARGET_NODE_TAG);
 
     let launcher_json5 = format!(
         r#"{{
@@ -79,7 +27,7 @@ async fn listen_for_launch_configuration_succeed() {
         }}"#
     );
 
-    let response = LauncherRequest::new(launcher_json5, nodes_dir)
+    let response = LauncherRequest::new(launcher_json5, &nodes_dir)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
