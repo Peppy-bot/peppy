@@ -76,6 +76,41 @@ impl PlanReport {
     pub fn dependency_errors(&self) -> &[Error] {
         &self.dependency_errors
     }
+
+    /// Validates that the plan is ready for execution.
+    ///
+    /// Checks that all non-optional deployments are resolved and that there are
+    /// no dependency errors. Returns `Ok(())` if the plan is valid, or an error
+    /// string describing all validation failures.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        let mut errors = Vec::new();
+
+        for deployment in self
+            .deployments
+            .iter()
+            .filter(|d| !d.is_resolved() && !d.deployment().optional)
+        {
+            let deployment_name = deployment.deployment().name.as_str();
+            let deployment_tag = deployment.deployment().tag.as_str();
+            let reason = deployment
+                .error()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "unknown error".to_string());
+            errors.push(format!(
+                "deployment {deployment_name}:{deployment_tag} failed: {reason}"
+            ));
+        }
+
+        for dependency_error in &self.dependency_errors {
+            errors.push(dependency_error.to_string());
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("\n"))
+        }
+    }
 }
 
 pub struct LaunchPlan {

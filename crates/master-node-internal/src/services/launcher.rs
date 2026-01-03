@@ -131,7 +131,7 @@ async fn handle_launcher_request_inner(
     .await
     .map_err(|e| format!("launch plan task failed: {e}"))??;
 
-    validate_launch_plan(&plan)?;
+    plan.report().validate()?;
     start_launch_plan_instances(
         &plan,
         messenger,
@@ -140,7 +140,7 @@ async fn handle_launcher_request_inner(
         node_start_health_timeout,
     )
     .await?;
-    apply_launch_plan(node_stack, plan.node_stack())?;
+    node_stack.apply_from(plan.node_stack())?;
 
     Ok(())
 }
@@ -292,88 +292,4 @@ async fn start_node_instance(
             Err(error_msg)
         }
     }
-}
-
-fn validate_launch_plan(plan: &LaunchPlan) -> std::result::Result<(), String> {
-    let report = plan.report();
-
-    let mut errors = Vec::new();
-
-    for deployment in report
-        .deployments()
-        .iter()
-        .filter(|deployment| !deployment.is_resolved() && !deployment.deployment().optional)
-    {
-        let deployment_name = deployment.deployment().name.as_str();
-        let deployment_tag = deployment.deployment().tag.as_str();
-        let reason = deployment
-            .error()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "unknown error".to_string());
-        errors.push(format!(
-            "deployment {deployment_name}:{deployment_tag} failed: {reason}"
-        ));
-    }
-
-    for dependency_error in report.dependency_errors() {
-        errors.push(dependency_error.to_string());
-    }
-
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors.join("\n"))
-    }
-}
-
-fn apply_launch_plan(
-    target_stack: &NodeStack,
-    planned_stack: &NodeStack,
-) -> std::result::Result<(), String> {
-    let target_root = target_stack.root();
-    let target_root_name = target_root.config().manifest.name.as_str().to_owned();
-    let target_root_tag = target_root.config().manifest.tag.clone();
-
-    target_stack.reset();
-
-    for entity in planned_stack.snapshot() {
-        let config = entity.config();
-
-        if config.manifest.name.as_str() == target_root_name.as_str()
-            && config.manifest.tag == target_root_tag
-        {
-            continue;
-        }
-
-        // First, push the config
-        target_stack
-            .push_config(config.clone(), true, entity.root_path())
-            .map_err(|e| {
-                format!(
-                    "failed to add config {}:{} to node stack: {e}",
-                    config.manifest.name.as_str(),
-                    config.manifest.tag,
-                )
-            })?;
-
-        // Then spawn each instance
-        for instance in entity.instances() {
-            target_stack
-                .add_instance(
-                    config.manifest.name.as_str(),
-                    &config.manifest.tag,
-                    Some(instance.instance_id()),
-                )
-                .map_err(|e| {
-                    format!(
-                        "failed to spawn instance {} for {}:{} in node stack: {e}",
-                        instance.instance_id().as_str(),
-                        config.manifest.name.as_str(),
-                        config.manifest.tag,
-                    )
-                })?;
-        }
-    }
-
-    Ok(())
 }

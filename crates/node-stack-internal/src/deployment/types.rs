@@ -981,6 +981,60 @@ impl NodeStack {
         guard.clear();
     }
 
+    /// Applies the state from another NodeStack to this one.
+    ///
+    /// This resets the current stack (preserving only the root node), then copies
+    /// all non-root entities and their instances from the source stack.
+    ///
+    /// Returns an error if any config or instance fails to be added.
+    pub fn apply_from(&self, source: &NodeStack) -> std::result::Result<(), String> {
+        let target_root = self.root();
+        let target_root_name = target_root.config().manifest.name.as_str().to_owned();
+        let target_root_tag = target_root.config().manifest.tag.clone();
+
+        self.reset();
+
+        for entity in source.snapshot() {
+            let config = entity.config();
+
+            // Skip the root node from the source stack
+            if config.manifest.name.as_str() == target_root_name.as_str()
+                && config.manifest.tag == target_root_tag
+            {
+                continue;
+            }
+
+            // First, push the config
+            self.push_config(config.clone(), true, entity.root_path())
+                .map_err(|e| {
+                    format!(
+                        "failed to add config {}:{} to node stack: {e}",
+                        config.manifest.name.as_str(),
+                        config.manifest.tag,
+                    )
+                })?;
+
+            // Then add each instance
+            for instance in entity.instances() {
+                self.add_instance(
+                    config.manifest.name.as_str(),
+                    &config.manifest.tag,
+                    Some(instance.instance_id()),
+                )
+                .map_err(|e| {
+                    format!(
+                        "failed to add instance {} for {}:{} to node stack: {e}",
+                        instance.instance_id().as_str(),
+                        config.manifest.name.as_str(),
+                        config.manifest.tag,
+                    )
+                })?;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Returns the graph in DOT format for visualization.
     pub fn to_dot(&self) -> String {
         let guard = self.shared.read().expect("node stack poisoned");
