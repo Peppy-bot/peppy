@@ -2,7 +2,6 @@
 
 use config::consts::{DEFAULT_ZENOH_HOST, NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::peppy_config::BuildSystem;
-use ctor::ctor;
 use master_node::{MasterNode, MasterNodeArguments};
 use node_stack::NodeStack;
 use peppylib::messaging::MessengerHandle;
@@ -10,24 +9,18 @@ use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter, start_zeno
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
-static TEST_NODE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-#[ctor]
-fn init_test_node() {
-    let _ = create_test_node();
-}
-
+/// Creates a fresh test node in a new temp directory.
+/// Each call creates a completely new node with its own peppygen generation
+/// and cargo build, ensuring isolation between tests.
 pub fn create_test_node() -> PathBuf {
-    TEST_NODE_DIR
-        .get_or_init(|| init_test_node_project())
-        .clone()
+    init_test_node_project()
 }
 
 fn init_test_node_project() -> PathBuf {
