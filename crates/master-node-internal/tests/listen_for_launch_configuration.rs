@@ -560,5 +560,98 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_configuration_runs_generate_on_node_before_start() {
-    todo!("Finish")
+    const TARGET_NODE_NAME: &str = "generate_test_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_INSTANCE_ID: &str = "generate_test_instance";
+
+    let started_master = start_master_node_with_zenoh_messenger().await;
+    let node_stack = started_master.node_stack.clone();
+
+    // Create a node directory with peppy.json5 but WITHOUT running generate
+    let nodes_dir = tempdir().expect("failed to create temp directory");
+    let node_root = nodes_dir.path().join(TARGET_NODE_NAME);
+    fs::create_dir_all(&node_root).expect("failed to create node directory");
+
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                launch_cmd: ["sleep", "1"]
+            }}
+        }}"#
+    );
+    fs::write(node_root.join(NODE_CONFIG_FILE), peppy_json5).expect("failed to write node config");
+
+    // Verify peppygen directory does NOT exist before launch
+    let peppygen_dir = node_root.join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        !peppygen_dir.exists(),
+        "peppygen directory should NOT exist before launch at {}",
+        peppygen_dir.display()
+    );
+
+    let (messaging_host, messaging_port) = started_master
+        .caller_handle
+        .messaging_endpoint()
+        .await
+        .expect("zenoh endpoint should be available for launcher test");
+    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port);
+    let launcher_runtime_config_json =
+        serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
+
+    let launcher_json5 = format!(
+        r#"{{
+            deployments: [
+                {{
+                    name: "{TARGET_NODE_NAME}",
+                    tag: "{TARGET_NODE_TAG}",
+                    instances: [{{ instance_id: "{TARGET_INSTANCE_ID}" }}]
+                }}
+            ]
+        }}"#
+    );
+
+    let response = LauncherRequest::new(
+        launcher_json5,
+        nodes_dir.path(),
+        launcher_runtime_config_json,
+    )
+    .poll(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        CALLER_INSTANCE_ID,
+        &started_master.master_node_name,
+        None,
+        Duration::from_secs(60),
+    )
+    .await
+    .expect("launcher request should complete");
+
+    assert!(
+        response.success,
+        "launcher request should succeed, got error: {}",
+        response.error_message
+    );
+
+    // Verify peppygen directory now exists after launch (proving generate was run)
+    assert!(
+        peppygen_dir.exists(),
+        "peppygen directory should exist after launch at {}",
+        peppygen_dir.display()
+    );
+
+    // Verify the node was deployed
+    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    let entity = node_stack
+        .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
+        .expect("deployed node should exist in stack");
+    assert_eq!(entity.instances().len(), 1);
+    assert_eq!(
+        entity.instances()[0].instance_id().as_str(),
+        TARGET_INSTANCE_ID
+    );
+
+    started_master.task.abort();
 }
