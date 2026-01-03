@@ -195,7 +195,9 @@ async fn start_launch_plan_instances(
             } else {
                 response.error_message
             };
-            return Err(format!("failed to generate peppygen for {node_name}:{tag}: {msg}"));
+            return Err(format!(
+                "failed to generate peppygen for {node_name}:{tag}: {msg}"
+            ));
         }
 
         for deployment_instance in &deployment.instances {
