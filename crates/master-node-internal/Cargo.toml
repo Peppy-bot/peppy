@@ -27,6 +27,5 @@ askama = "0.15"
 capnpc = "0.24"
 
 [dev-dependencies]
-ctor = "0.6"
 tempfile = "3.10"
 tokio = { version = "1.47", features = ["full"] }

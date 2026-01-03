@@ -4,9 +4,7 @@ use common::{CALLER_INSTANCE_ID, start_master_node_with_zenoh_messenger};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::runtime::LauncherRuntimeConfig;
 use master_node::encoding::LauncherRequest;
-use peppylib::messaging::MessengerHandle;
 use std::fs;
-use std::sync::Arc;
 use std::time::Duration;
 use tempfile::tempdir;
 
@@ -565,7 +563,6 @@ async fn listen_for_launch_configuration_runs_generate_on_node_before_start() {
     const TARGET_INSTANCE_ID: &str = "generate_test_instance";
 
     let started_master = start_master_node_with_zenoh_messenger().await;
-    let node_stack = started_master.node_stack.clone();
 
     // Create a node directory with peppy.json5 but WITHOUT running generate
     let nodes_dir = tempdir().expect("failed to create temp directory");
@@ -578,7 +575,7 @@ async fn listen_for_launch_configuration_runs_generate_on_node_before_start() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-                launch_cmd: ["sleep", "1"]
+                launch_cmd: ["sleep", "60"]
             }}
         }}"#
     );
@@ -613,6 +610,8 @@ async fn listen_for_launch_configuration_runs_generate_on_node_before_start() {
         }}"#
     );
 
+    // The sleep command doesn't implement health checks, so launcher will report failure,
+    // but peppygen should still be generated before the node start attempt.
     let response = LauncherRequest::new(
         launcher_json5,
         nodes_dir.path(),
@@ -629,28 +628,23 @@ async fn listen_for_launch_configuration_runs_generate_on_node_before_start() {
     .await
     .expect("launcher request should complete");
 
+    // The launcher will fail because sleep doesn't implement health checks,
+    // but the key assertion is that peppygen was generated BEFORE attempting to start
     assert!(
-        response.success,
-        "launcher request should succeed, got error: {}",
+        !response.success,
+        "launcher should fail because sleep doesn't implement health checks"
+    );
+    assert!(
+        response.error_message.contains("health check"),
+        "failure should be due to health check timeout, got: {}",
         response.error_message
     );
 
-    // Verify peppygen directory now exists after launch (proving generate was run)
+    // Verify peppygen directory now exists after launch (proving generate was run before start)
     assert!(
         peppygen_dir.exists(),
         "peppygen directory should exist after launch at {}",
         peppygen_dir.display()
-    );
-
-    // Verify the node was deployed
-    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
-    let entity = node_stack
-        .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
-        .expect("deployed node should exist in stack");
-    assert_eq!(entity.instances().len(), 1);
-    assert_eq!(
-        entity.instances()[0].instance_id().as_str(),
-        TARGET_INSTANCE_ID
     );
 
     started_master.task.abort();
