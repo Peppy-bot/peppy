@@ -1,14 +1,168 @@
-pub const CALLER_INSTANCE_ID: &str = "caller_instance";
-
+use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::peppy_config::BuildSystem;
+use ctor::ctor;
+use master_node::{MasterNode, MasterNodeArguments};
+use node_stack::NodeStack;
+use peppylib::messaging::MessengerHandle;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use master_node::{MasterNode, MasterNodeArguments};
-use node_stack::NodeStack;
-use peppylib::messaging::MessengerHandle;
+pub const CALLER_INSTANCE_ID: &str = "caller_instance";
+static TEST_NODE_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+#[ctor]
+fn init_test_node() {
+    let _ = create_test_node();
+}
+
+pub fn create_test_node() -> PathBuf {
+    TEST_NODE_DIR
+        .get_or_init(|| init_test_node_project())
+        .clone()
+}
+
+fn init_test_node_project() -> PathBuf {
+    const TEST_NODE_NAME: &str = "example_node";
+    const TEST_NODE_TAG: &str = "0.1.0";
+
+    let node_dir = tempfile::Builder::new()
+        .prefix("peppy_test_node_")
+        .tempdir()
+        .expect("failed to create temp directory for test node")
+        .keep();
+
+    init_cargo_project(&node_dir, TEST_NODE_NAME);
+    write_test_node_files(&node_dir, TEST_NODE_NAME);
+
+    // The launcher expects nodes in a name/tag directory layout (name/tag/peppy.json5).
+    // Keep a copy of the config at that location so tests can point the launcher at `node_dir/<tag>`.
+    let tag_dir = node_dir.join(TEST_NODE_TAG);
+    std::fs::create_dir_all(&tag_dir).expect("failed to create test node tag directory");
+    std::fs::copy(node_dir.join(NODE_CONFIG_FILE), tag_dir.join(NODE_CONFIG_FILE))
+        .expect("failed to copy test node config into tag directory");
+
+    generator::generate_lib_for_build_system(BuildSystem::Rust, &node_dir)
+        .expect("failed to generate peppygen for test node");
+
+    build_cargo_project(&node_dir);
+
+    node_dir
+}
+
+fn init_cargo_project(node_dir: &Path, crate_name: &str) {
+    let output = Command::new("cargo")
+        .arg("init")
+        .arg("--bin")
+        .arg("--vcs")
+        .arg("none")
+        .arg("--name")
+        .arg(crate_name)
+        .env("CARGO_NET_OFFLINE", "true")
+        .current_dir(node_dir)
+        .output()
+        .expect("failed to invoke `cargo init` for test node");
+
+    assert!(
+        output.status.success(),
+        "`cargo init` failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn write_test_node_files(node_dir: &Path, crate_name: &str) {
+    std::fs::write(
+        node_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "{crate_name}"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+peppygen = {{ path = "{PEPPYGEN_OUTPUT_PATH}" }}
+"#
+        ),
+    )
+    .expect("failed to write test node Cargo.toml");
+
+    std::fs::write(
+        node_dir.join("src/main.rs"),
+        r#"use peppygen::{run, Result};
+
+fn main() -> Result<()> {
+    run(|args, node_runner| async {
+        let _ = args;
+        let _ = node_runner;
+        Ok(())
+    })
+}
+"#,
+    )
+    .expect("failed to write test node src/main.rs");
+
+    std::fs::write(
+        node_dir.join(NODE_CONFIG_FILE),
+        format!(
+            r#"{{
+  schema_version: 1,
+  manifest: {{
+    name: "{crate_name}",
+    tag: "0.1.0",
+    launch_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  }},
+  interfaces: {{
+    exposes: {{
+      topics: [
+        {{
+          name: "hello_world",
+          qos_profile: "sensor_data",
+          message_format: {{
+            timestamp: "time",
+            message: "string"
+          }}
+        }}
+      ],
+    }}
+  }},
+  logging: {{
+    min_level: "info",
+    format: "text"
+  }}
+}}"#
+        ),
+    )
+    .expect("failed to write test node peppy.json5");
+}
+
+fn build_cargo_project(dir: &Path) {
+    let output = Command::new("cargo")
+        .arg("build")
+        .arg("--release")
+        .env("CARGO_NET_OFFLINE", "true")
+        .current_dir(dir)
+        .output()
+        .expect("failed to invoke `cargo build` for test node");
+
+    assert!(
+        output.status.success(),
+        "`cargo build` failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
 
 pub async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
     let adapter = MockAdapter::default();
