@@ -29,7 +29,6 @@ pub fn create_test_node() -> PathBuf {
 
 fn init_test_node_project() -> PathBuf {
     const TEST_NODE_NAME: &str = "example_node";
-    const TEST_NODE_TAG: &str = "0.1.0";
 
     let node_dir = tempfile::Builder::new()
         .prefix("peppy_test_node_")
@@ -39,13 +38,6 @@ fn init_test_node_project() -> PathBuf {
 
     init_cargo_project(&node_dir, TEST_NODE_NAME);
     write_test_node_files(&node_dir, TEST_NODE_NAME);
-
-    // The launcher expects nodes in a name/tag directory layout (name/tag/peppy.json5).
-    // Keep a copy of the config at that location so tests can point the launcher at `node_dir/<tag>`.
-    let tag_dir = node_dir.join(TEST_NODE_TAG);
-    std::fs::create_dir_all(&tag_dir).expect("failed to create test node tag directory");
-    std::fs::copy(node_dir.join(NODE_CONFIG_FILE), tag_dir.join(NODE_CONFIG_FILE))
-        .expect("failed to copy test node config into tag directory");
 
     generator::generate_lib_for_build_system(BuildSystem::Rust, &node_dir)
         .expect("failed to generate peppygen for test node");

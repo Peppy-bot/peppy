@@ -2,6 +2,7 @@ use super::Command;
 use crate::context::{AppContext, DaemonState};
 use crate::error::{Error, Result};
 use config::peppy_config::PeppyLauncherParser;
+use config::runtime::LauncherRuntimeConfig;
 use master_node::encoding::LauncherRequest;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -51,7 +52,27 @@ async fn execute_async(command: LaunchCommand, ctx: &Arc<AppContext>) -> Result<
         .messenger_handle()
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
-    let request = LauncherRequest::new(peppy_launcher_json5, nodes_directory);
+    let (messaging_host, messaging_port) = messenger_handle
+        .messaging_endpoint()
+        .await
+        .unwrap_or_else(|| {
+            (
+                config::consts::DEFAULT_ZENOH_HOST.to_string(),
+                config::consts::DEFAULT_ZENOH_PORT,
+            )
+        });
+
+    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port);
+    let launcher_runtime_config_json =
+        serde_json::to_string(&launcher_runtime_config).map_err(|e| {
+            Error::ExecutionFailed(format!("Failed to serialize runtime config: {}", e))
+        })?;
+
+    let request = LauncherRequest::new(
+        peppy_launcher_json5,
+        nodes_directory,
+        launcher_runtime_config_json,
+    );
     let response = request
         .poll(
             messenger_handle,

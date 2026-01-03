@@ -15,16 +15,19 @@ use super::{decode_message, encode_message};
 pub struct LauncherRequest {
     pub peppy_launcher_json5: String,
     pub nodes_directory: PathBuf,
+    pub launcher_runtime_config_json5: String,
 }
 
 impl LauncherRequest {
     pub fn new(
         peppy_launcher_json5: impl Into<String>,
         nodes_directory: impl Into<PathBuf>,
+        launcher_runtime_config_json5: impl Into<String>,
     ) -> Self {
         Self {
             peppy_launcher_json5: peppy_launcher_json5.into(),
             nodes_directory: nodes_directory.into(),
+            launcher_runtime_config_json5: launcher_runtime_config_json5.into(),
         }
     }
 
@@ -34,6 +37,7 @@ impl LauncherRequest {
             let mut request = builder.init_root::<launcher_capnp::launcher_request::Builder>();
             request.set_peppy_launcher_json5(&self.peppy_launcher_json5);
             request.set_nodes_directory(&self.nodes_directory.to_string_lossy());
+            request.set_launcher_runtime_config_json5(&self.launcher_runtime_config_json5);
         }
         encode_message(&builder)
     }
@@ -44,6 +48,10 @@ impl LauncherRequest {
         Ok(Self {
             peppy_launcher_json5: request.get_peppy_launcher_json5()?.to_str()?.to_owned(),
             nodes_directory: PathBuf::from(request.get_nodes_directory()?.to_str()?),
+            launcher_runtime_config_json5: request
+                .get_launcher_runtime_config_json5()?
+                .to_str()?
+                .to_owned(),
         })
     }
 
