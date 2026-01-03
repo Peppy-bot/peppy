@@ -1,16 +1,14 @@
+use std::process::Child;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::Bytes;
-use config::consts::{DEFAULT_ZENOH_HOST, DEFAULT_ZENOH_PORT, RUNTIME_CONFIG_VAR_NAME};
+use config::consts::{DEFAULT_ZENOH_HOST, DEFAULT_ZENOH_PORT};
 use config::peppy_config::{BuildSystem, PeppyLauncherParser};
 use config::runtime::RuntimeConfig;
 use node_stack::{LaunchPlan, NodeEntity, NodeStack};
-use peppylib::encoding::health::NodeHealthRequest;
-use peppylib::messaging::NODE_HEALTH_SERVICE;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
-use std::process::{Child, Command, Stdio};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -18,6 +16,7 @@ use crate::Result;
 use crate::encoding::{LauncherRequest, LauncherResponse};
 
 use super::names;
+use super::node::{perform_health_check, run_node};
 
 pub async fn listen_for_launch_configuration(
     messenger: &MessengerHandle,
@@ -291,97 +290,6 @@ async fn start_node_instance(
                 )
             };
             Err(error_msg)
-        }
-    }
-}
-
-fn run_node(entity: &NodeEntity, runtime_config_json5: &str) -> std::io::Result<Child> {
-    let manifest = &entity.config().manifest;
-    let Some((program, args)) = manifest.launch_cmd.split_first() else {
-        return Err(std::io::Error::other("launch_cmd is empty"));
-    };
-
-    // Write the runtime config to a file in the node's .peppy directory
-    // PEPPY_RUNTIME_CONFIG expects a file path, not JSON content
-    let runtime_config_path = entity
-        .root_path()
-        .join(".peppy")
-        .join("runtime")
-        .join("runtime_config.json");
-
-    if let Some(parent) = runtime_config_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&runtime_config_path, runtime_config_json5)?;
-
-    let mut command = Command::new(program);
-    command.current_dir(entity.root_path());
-    command
-        .args(args)
-        .env(RUNTIME_CONFIG_VAR_NAME, &runtime_config_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    command.spawn()
-}
-
-async fn perform_health_check(
-    messenger: &MessengerHandle,
-    master_node_name: &str,
-    caller_instance_id: &str,
-    target_node_name: &str,
-    target_master_node: &str,
-    target_instance_id: &str,
-    timeout: Duration,
-    child: &mut Child,
-) -> std::result::Result<(), String> {
-    let request_payload = NodeHealthRequest::new()
-        .encode()
-        .map_err(|e| format!("failed to encode node health request: {e}"))?;
-    let deadline = Instant::now() + timeout;
-    let mut last_err: Option<PeppyError> = None;
-
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                return Err(format!(
-                    "node process exited before becoming healthy (status={status})"
-                ));
-            }
-            Ok(None) => {}
-            Err(err) => return Err(format!("failed to query node process status: {err}")),
-        }
-
-        let now = Instant::now();
-        if now >= deadline {
-            let err = last_err.unwrap_or_else(|| PeppyError::ServiceTimeout {
-                instance_id: Some(target_instance_id.to_string()),
-                service_name: NODE_HEALTH_SERVICE.to_string(),
-            });
-            return Err(format!("health check timed out: {err}"));
-        }
-
-        let remaining = deadline - now;
-        let attempt_timeout = remaining.min(Duration::from_millis(500));
-
-        match ServiceMessenger::poll(
-            messenger,
-            master_node_name,
-            caller_instance_id,
-            target_node_name,
-            NODE_HEALTH_SERVICE,
-            Some(target_master_node),
-            Some(target_instance_id),
-            request_payload.clone(),
-            attempt_timeout,
-        )
-        .await
-        {
-            Ok(_) => return Ok(()),
-            Err(err) => {
-                last_err = Some(err);
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
         }
     }
 }
