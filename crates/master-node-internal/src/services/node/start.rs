@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::encoding::{NodeStartRequest, NodeStartResponse};
 use bytes::Bytes;
+use config::consts::RUNTIME_CONFIG_VAR_NAME;
 use config::node::Name;
 use config::runtime::RuntimeConfig;
 use node_stack::{NodeEntity, NodeStack};
@@ -157,6 +158,7 @@ async fn handle_node_start_request_inner(
         runtime_config.bound_master_node.as_str(),
         instance_id_str,
         node_start_health_timeout,
+        &mut child,
     )
     .await;
 
@@ -219,11 +221,12 @@ async fn handle_node_start_request_inner(
 
 /// Runs a node using its manifest's launch_cmd and passes the PEPPY_RUNTIME_CONFIG as an env var.
 /// Returns the spawned child process handle on success.
-fn run_node(entity: &NodeEntity, runtime_config_json5: &str) -> Result<Child> {
+pub fn run_node(entity: &NodeEntity, runtime_config_json5: &str) -> std::io::Result<Child> {
     let manifest = &entity.config().manifest;
 
-    let program = &manifest.launch_cmd[0];
-    let args = &manifest.launch_cmd[1..];
+    let Some((program, args)) = manifest.launch_cmd.split_first() else {
+        return Err(std::io::Error::other("launch_cmd is empty"));
+    };
 
     debug!(
         "Running node '{}:{}' with command: {} {:?} in dir {:?}",
@@ -236,14 +239,12 @@ fn run_node(entity: &NodeEntity, runtime_config_json5: &str) -> Result<Child> {
 
     // Write the runtime config to a file in the node's .peppy directory
     // PEPPY_RUNTIME_CONFIG expects a file path, not JSON content
-    // TODO the directory needs to be created if it doesn't already exist
     let runtime_config_path = entity
         .root_path()
         .join(".peppy")
         .join("runtime")
         .join("runtime_config.json");
 
-    // Ensure the parent directory exists
     if let Some(parent) = runtime_config_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -253,18 +254,17 @@ fn run_node(entity: &NodeEntity, runtime_config_json5: &str) -> Result<Child> {
     command.current_dir(entity.root_path());
     command
         .args(args)
-        .env("PEPPY_RUNTIME_CONFIG", &runtime_config_path)
+        .env(RUNTIME_CONFIG_VAR_NAME, &runtime_config_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let child = command.spawn()?;
-
-    Ok(child)
+    command.spawn()
 }
 
 /// Performs a health check on a newly started node instance.
 /// Polls the node's health service with a timeout and returns Ok if the node responds.
-async fn perform_health_check(
+/// Also monitors the child process to detect early exits.
+pub async fn perform_health_check(
     messenger: &MessengerHandle,
     master_node_name: &str,
     caller_instance_id: &str,
@@ -272,21 +272,35 @@ async fn perform_health_check(
     target_master_node: &str,
     target_instance_id: &str,
     timeout: Duration,
-) -> Result<()> {
-    let request_payload = NodeHealthRequest::new().encode()?;
+    child: &mut Child,
+) -> std::result::Result<(), String> {
+    let request_payload = NodeHealthRequest::new()
+        .encode()
+        .map_err(|e| format!("failed to encode node health request: {e}"))?;
     let deadline = Instant::now() + timeout;
     let mut last_err: Option<PeppyError> = None;
 
     // Poll in short intervals to avoid a startup race where the node subscribes to
     // `node_health` after the first request has already been published.
     loop {
+        // Check if the child process has exited
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "node process exited before becoming healthy (status={status})"
+                ));
+            }
+            Ok(None) => {}
+            Err(err) => return Err(format!("failed to query node process status: {err}")),
+        }
+
         let now = Instant::now();
         if now >= deadline {
             let err = last_err.unwrap_or_else(|| PeppyError::ServiceTimeout {
                 instance_id: Some(target_instance_id.to_string()),
                 service_name: NODE_HEALTH_SERVICE.to_string(),
             });
-            return Err(err.into());
+            return Err(format!("health check timed out: {err}"));
         }
 
         let remaining = deadline - now;
