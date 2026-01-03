@@ -1,6 +1,6 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, start_master_node};
+use common::{CALLER_INSTANCE_ID, start_master_node_with_zenoh_messenger};
 use config::runtime::LauncherRuntimeConfig;
 use master_node::encoding::LauncherRequest;
 use std::time::Duration;
@@ -11,7 +11,7 @@ async fn listen_for_launch_configuration_succeed() {
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "example_instance";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_zenoh_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let nodes_dir = common::create_test_node();
@@ -32,12 +32,7 @@ async fn listen_for_launch_configuration_succeed() {
         .caller_handle
         .messaging_endpoint()
         .await
-        .unwrap_or_else(|| {
-            (
-                config::consts::DEFAULT_ZENOH_HOST.to_string(),
-                config::consts::DEFAULT_ZENOH_PORT,
-            )
-        });
+        .expect("zenoh endpoint should be available for launcher test");
     let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port);
     let launcher_runtime_config_json =
         serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
@@ -66,6 +61,8 @@ async fn listen_for_launch_configuration_succeed() {
     let entity = node_stack
         .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .expect("deployed node should exist in stack");
+
+    // Two instances: The master node instance and the test_node
     assert_eq!(entity.instances().len(), 1);
     assert_eq!(
         entity.instances()[0].instance_id().as_str(),

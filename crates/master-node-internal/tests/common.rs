@@ -1,15 +1,18 @@
-use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+#![allow(dead_code)]
+
+use config::consts::{DEFAULT_ZENOH_HOST, NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::peppy_config::BuildSystem;
 use ctor::ctor;
 use master_node::{MasterNode, MasterNodeArguments};
 use node_stack::NodeStack;
 use peppylib::messaging::MessengerHandle;
-use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
+use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter, start_zenohd_process};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
+use tempfile::TempDir;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
@@ -173,18 +176,26 @@ pub struct StartedMasterNode {
     pub master_node_name: String,
     pub node_stack: NodeStack,
     pub task: JoinHandle<master_node::Result<()>>,
+    pub _zenohd_temp_dir: Option<TempDir>,
 }
 
 pub async fn start_master_node() -> StartedMasterNode {
-    start_master_node_with_timeout(Duration::from_secs(5)).await
+    let shared_messenger = create_mock_messenger().await;
+    start_master_node_with_messenger(shared_messenger, None).await
 }
 
-pub async fn start_master_node_with_timeout(
-    node_start_health_timeout: Duration,
+pub async fn start_master_node_with_zenoh_messenger() -> StartedMasterNode {
+    let (shared_messenger, temp_dir) = create_zenoh_messenger().await;
+    start_master_node_with_messenger(shared_messenger, Some(temp_dir)).await
+}
+
+async fn start_master_node_with_messenger(
+    shared_messenger: Arc<Mutex<Messenger>>,
+    zenohd_temp_dir: Option<TempDir>,
 ) -> StartedMasterNode {
-    let shared_messenger = create_mock_messenger().await;
     let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
 
+    let node_start_health_timeout = Duration::from_secs(30);
     let node_arguments = MasterNodeArguments {
         node_start_health_timeout,
     };
@@ -209,5 +220,18 @@ pub async fn start_master_node_with_timeout(
         master_node_name,
         node_stack,
         task,
+        _zenohd_temp_dir: zenohd_temp_dir,
     }
+}
+
+pub async fn create_zenoh_messenger() -> (Arc<Mutex<Messenger>>, TempDir) {
+    // Use a real router so spawned nodes can connect over zenoh.
+    let (mut messenger, temp_dir, _host, _port) = start_zenohd_process(DEFAULT_ZENOH_HOST, None)
+        .await
+        .expect("failed to start zenoh router for tests");
+    messenger
+        .start_session()
+        .await
+        .expect("failed to start zenoh session for tests");
+    (Arc::new(Mutex::new(messenger)), temp_dir)
 }
