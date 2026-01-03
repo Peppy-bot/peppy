@@ -66,8 +66,9 @@ async fn listen_for_launch_configuration_succeed() {
     let node_stack = started_master.node_stack.clone();
 
     let nodes_dir = tempdir().expect("failed to create temp nodes directory");
+    let nodes_dir = nodes_dir.path();
     write_node_config(
-        nodes_dir.path(),
+        nodes_dir,
         TARGET_NODE_NAME,
         &format!(
             r#"{{
@@ -75,7 +76,7 @@ async fn listen_for_launch_configuration_succeed() {
                 manifest: {{
                     name: "{TARGET_NODE_NAME}",
                     tag: "{TARGET_NODE_TAG}",
-                    launch_cmd: ["sleep", "10"]
+                    launch_cmd: ["cargo", "run", "--release"]
                 }}
             }}"#
         ),
@@ -93,7 +94,7 @@ async fn listen_for_launch_configuration_succeed() {
         }}"#
     );
 
-    let response = LauncherRequest::new(launcher_json5, nodes_dir.path())
+    let response = LauncherRequest::new(launcher_json5, nodes_dir)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,

@@ -35,13 +35,15 @@ pub async fn listen_for_node_generate(
 
 async fn handle_node_generate_request(context: ServiceRequestContext) -> PeppyResult<Bytes> {
     let sender_instance_id = context.message().instance_id();
-    handle_node_generate_request_inner(&context).map_err(|e| PeppyError::InvalidServiceRequest {
-        identifier: sender_instance_id.to_string(),
-        reason: e.to_string(),
-    })
+    handle_node_generate_request_inner(&context)
+        .await
+        .map_err(|e| PeppyError::InvalidServiceRequest {
+            identifier: sender_instance_id.to_string(),
+            reason: e.to_string(),
+        })
 }
 
-fn handle_node_generate_request_inner(context: &ServiceRequestContext) -> Result<Bytes> {
+async fn handle_node_generate_request_inner(context: &ServiceRequestContext) -> Result<Bytes> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
@@ -70,12 +72,26 @@ fn handle_node_generate_request_inner(context: &ServiceRequestContext) -> Result
         .encode();
     }
 
-    if let Err(e) =
-        generator::generate_lib_for_build_system(request.build_system, &request.node_root_dir)
+    let build_system = request.build_system;
+    let node_root_dir = request.node_root_dir;
+    match tokio::task::spawn_blocking(move || {
+        generator::generate_lib_for_build_system(build_system, &node_root_dir)
+    })
+    .await
     {
-        return NodeGenerateResponse::failure(format!("Failed to generate peppygen: {}", e))
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            return NodeGenerateResponse::failure(format!("Failed to generate peppygen: {}", e))
+                .encode();
+        }
+        Err(e) => {
+            return NodeGenerateResponse::failure(format!(
+                "Failed to generate peppygen (generate task failed): {}",
+                e
+            ))
             .encode();
-    }
+        }
+    };
 
     NodeGenerateResponse::success().encode()
 }
