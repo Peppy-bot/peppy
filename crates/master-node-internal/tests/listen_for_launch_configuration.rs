@@ -1,6 +1,7 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, create_test_node, start_master_node};
+use common::{CALLER_INSTANCE_ID, start_master_node};
+use config::runtime::LauncherRuntimeConfig;
 use master_node::encoding::LauncherRequest;
 use std::time::Duration;
 
@@ -13,7 +14,7 @@ async fn listen_for_launch_configuration_succeed() {
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
 
-    let nodes_dir = create_test_node().join(TARGET_NODE_TAG);
+    let nodes_dir = common::create_test_node();
 
     let launcher_json5 = format!(
         r#"{{
@@ -27,7 +28,21 @@ async fn listen_for_launch_configuration_succeed() {
         }}"#
     );
 
-    let response = LauncherRequest::new(launcher_json5, &nodes_dir)
+    let (messaging_host, messaging_port) = started_master
+        .caller_handle
+        .messaging_endpoint()
+        .await
+        .unwrap_or_else(|| {
+            (
+                config::consts::DEFAULT_ZENOH_HOST.to_string(),
+                config::consts::DEFAULT_ZENOH_PORT,
+            )
+        });
+    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port);
+    let launcher_runtime_config_json =
+        serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
+
+    let response = LauncherRequest::new(launcher_json5, nodes_dir, launcher_runtime_config_json)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,

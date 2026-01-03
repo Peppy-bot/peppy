@@ -7,6 +7,8 @@ struct LauncherRequest {
     peppyLauncherJson5 @0 :Text;
     # Directory to search for node configurations
     nodesDirectory @1 :Text;
+    # JSON5-encoded LauncherRuntimeConfig with messaging endpoint
+    launcherRuntimeConfigJson5 @2 :Text;
 }
 
 struct LauncherResponse {

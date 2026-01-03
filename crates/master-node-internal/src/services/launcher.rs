@@ -3,9 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use config::consts::{DEFAULT_ZENOH_HOST, DEFAULT_ZENOH_PORT};
 use config::peppy_config::{BuildSystem, PeppyLauncherParser};
-use config::runtime::RuntimeConfig;
+use config::runtime::{LauncherRuntimeConfig, RuntimeConfig};
 use node_stack::{LaunchPlan, NodeEntity, NodeStack};
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -119,6 +118,10 @@ async fn handle_launcher_request_inner(
     let peppy_launcher = PeppyLauncherParser::from_content(launcher_content)
         .map_err(|e| format!("invalid peppy_launcher_json5: {e}"))?;
 
+    let launcher_runtime_config: LauncherRuntimeConfig =
+        serde_json5::from_str(&request.launcher_runtime_config_json5)
+            .map_err(|e| format!("invalid launcher_runtime_config_json5: {e}"))?;
+
     if !request.nodes_directory.is_dir() {
         return Err(format!(
             "nodes_directory is not a directory: {}",
@@ -136,6 +139,7 @@ async fn handle_launcher_request_inner(
     plan.report().validate()?;
     start_launch_plan_instances(
         &plan,
+        &launcher_runtime_config,
         messenger,
         master_node_name,
         master_instance_id,
@@ -149,15 +153,14 @@ async fn handle_launcher_request_inner(
 
 async fn start_launch_plan_instances(
     plan: &LaunchPlan,
+    launcher_runtime_config: &LauncherRuntimeConfig,
     messenger: &MessengerHandle,
     master_node_name: &str,
     master_instance_id: &str,
     node_start_health_timeout: Duration,
 ) -> std::result::Result<(), String> {
-    let (messaging_host, messaging_port) = messenger
-        .messaging_endpoint()
-        .await
-        .unwrap_or_else(|| (DEFAULT_ZENOH_HOST.to_string(), DEFAULT_ZENOH_PORT));
+    let messaging_host = &launcher_runtime_config.messaging_host;
+    let messaging_port = launcher_runtime_config.messaging_port;
 
     let mut started_children: Vec<Child> = Vec::new();
 
