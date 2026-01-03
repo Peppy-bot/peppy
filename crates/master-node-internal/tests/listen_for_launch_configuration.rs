@@ -2,16 +2,37 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, start_master_node};
 use config::consts::NODE_CONFIG_FILE;
-use master_node::encoding::{LauncherRequest, NodeAddRequest};
+use master_node::encoding::{LauncherRequest, NodeAddRequest, NodeInitRequest};
 use peppylib::messaging::MessengerHandle;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tempfile::tempdir;
 
-fn write_node_config(nodes_directory: &Path, node_subdir: &str, peppy_json5: &str) -> PathBuf {
+async fn create_test_node(
+    caller_handle: &MessengerHandle,
+    master_node_name: &str,
+    nodes_directory: &Path,
+    node_subdir: &str,
+    peppy_json5: &str,
+) -> PathBuf {
     let node_dir = nodes_directory.join(node_subdir);
-    fs::create_dir_all(&node_dir).expect("failed to create node directory");
+    let init_response = NodeInitRequest::new(nodes_directory, node_subdir)
+        .poll(
+            caller_handle,
+            master_node_name,
+            CALLER_INSTANCE_ID,
+            master_node_name,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("node_init request should complete");
+    assert!(
+        init_response.success,
+        "node_init should succeed, got error: {}",
+        init_response.error_message
+    );
+
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
     fs::write(&node_config_path, peppy_json5).expect("failed to write node config");
     node_config_path
@@ -67,7 +88,9 @@ async fn listen_for_launch_configuration_succeed() {
 
     let nodes_dir = tempdir().expect("failed to create temp nodes directory");
     let nodes_dir = nodes_dir.path();
-    write_node_config(
+    create_test_node(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
         nodes_dir,
         TARGET_NODE_NAME,
         &format!(
@@ -76,11 +99,12 @@ async fn listen_for_launch_configuration_succeed() {
                 manifest: {{
                     name: "{TARGET_NODE_NAME}",
                     tag: "{TARGET_NODE_TAG}",
-                    launch_cmd: ["cargo", "run", "--release"]
+                    launch_cmd: ["cargo", "build"]
                 }}
             }}"#
         ),
-    );
+    )
+    .await;
 
     let launcher_json5 = format!(
         r#"{{
@@ -257,7 +281,9 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
     let before_len = node_stack.len();
 
     let nodes_dir = tempdir().expect("failed to create temp nodes directory");
-    write_node_config(
+    create_test_node(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
         nodes_dir.path(),
         RESOLVED_NODE_NAME,
         &format!(
@@ -270,7 +296,8 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
                 }}
             }}"#
         ),
-    );
+    )
+    .await;
 
     let launcher_json5 = format!(
         r#"{{
@@ -344,7 +371,9 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
     let before_len = node_stack.len();
 
     let nodes_dir = tempdir().expect("failed to create temp nodes directory");
-    write_node_config(
+    create_test_node(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
         nodes_dir.path(),
         CONSUMER_NODE_NAME,
         &format!(
@@ -369,7 +398,8 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
                 }}
             }}"#
         ),
-    );
+    )
+    .await;
 
     let launcher_json5 = format!(
         r#"{{
@@ -424,7 +454,9 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     let node_stack = started_master.node_stack.clone();
 
     let nodes_dir = tempdir().expect("failed to create temp nodes directory");
-    write_node_config(
+    create_test_node(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
         nodes_dir.path(),
         NODE_A,
         &format!(
@@ -433,12 +465,15 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
                 manifest: {{
                     name: "{NODE_A}",
                     tag: "{TAG}",
-                    launch_cmd: ["sleep", "10"]
+                    launch_cmd: ["cargo", "build"]
                 }}
             }}"#
         ),
-    );
-    write_node_config(
+    )
+    .await;
+    create_test_node(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
         nodes_dir.path(),
         NODE_B,
         &format!(
@@ -451,7 +486,8 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
                 }}
             }}"#
         ),
-    );
+    )
+    .await;
 
     let launcher_a_json5 = format!(
         r#"{{
@@ -541,7 +577,9 @@ async fn listen_for_launch_configuration_runs_generate_before_launch() {
 
     let nodes_dir = tempdir().expect("failed to create temp nodes directory");
     let node_dir = nodes_dir.path().join(TARGET_NODE_NAME);
-    write_node_config(
+    create_test_node(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
         nodes_dir.path(),
         TARGET_NODE_NAME,
         &format!(
@@ -554,10 +592,15 @@ async fn listen_for_launch_configuration_runs_generate_before_launch() {
                 }}
             }}"#
         ),
-    );
+    )
+    .await;
 
     // Verify peppygen directory doesn't exist before launch
     let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
+    if peppygen_dir.exists() {
+        fs::remove_dir_all(&peppygen_dir)
+            .expect("failed to remove pre-existing peppygen directory");
+    }
     assert!(
         !peppygen_dir.exists(),
         "peppygen directory should not exist before launch"
