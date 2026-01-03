@@ -44,6 +44,7 @@ mod topics;
 
 use super::*;
 use config::consts::NODE_CONFIG_FILE;
+use config::consts::PEPPYGEN_OUTPUT_PATH;
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
@@ -65,7 +66,7 @@ const STUB_NODE_CONFIG: &str = r#"{
 fn prepare_directories(
     temp_dir: &TempDir,
 ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
-    let output_dir = temp_dir.path().join(".peppy/libs/peppygen");
+    let output_dir = temp_dir.path().join(PEPPYGEN_OUTPUT_PATH);
     let user_node = temp_dir.path().join("user_node");
     let peppy_node_config = user_node.join(NODE_CONFIG_FILE);
     fs::create_dir_all(&output_dir).unwrap();
