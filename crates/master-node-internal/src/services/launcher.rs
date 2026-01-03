@@ -13,10 +13,12 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 
 use crate::Result;
-use crate::encoding::{LauncherRequest, LauncherResponse};
+use crate::encoding::{LauncherRequest, LauncherResponse, NodeGenerateRequest};
 
 use super::names;
 use super::node::{perform_health_check, run_node};
+
+const NODE_GENERATE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub async fn listen_for_launch_configuration(
     messenger: &MessengerHandle,
@@ -107,11 +109,14 @@ async fn handle_launcher_request_inner(
 ) -> std::result::Result<(), String> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
-    debug!("Received launcher request from {sender_instance_id}");
+    let master_node_config = node_stack.root().config().clone();
 
+    debug!("Received launcher request from {sender_instance_id}");
     let request = LauncherRequest::decode(&payload.as_bytes()).map_err(|e| e.to_string())?;
 
-    let peppy_launcher = PeppyLauncherParser::from_content(&request.peppy_launcher_json5)
+    let launcher_content = &request.peppy_launcher_json5;
+    let nodes_directory = request.nodes_directory.clone();
+    let peppy_launcher = PeppyLauncherParser::from_content(launcher_content)
         .map_err(|e| format!("invalid peppy_launcher_json5: {e}"))?;
 
     if !request.nodes_directory.is_dir() {
@@ -120,9 +125,6 @@ async fn handle_launcher_request_inner(
             request.nodes_directory.display()
         ));
     }
-
-    let master_node_config = node_stack.root().config().clone();
-    let nodes_directory = request.nodes_directory.clone();
 
     let plan = tokio::task::spawn_blocking(move || -> std::result::Result<LaunchPlan, String> {
         LaunchPlan::from_config(master_node_config, peppy_launcher, &nodes_directory, None)
@@ -174,14 +176,27 @@ async fn start_launch_plan_instances(
             .find(node_name, tag)
             .ok_or_else(|| format!("deployment {node_name}:{tag} missing from planned stack"))?;
 
-        // Run `generate` on the node to generate the peppygen library (once per node, before starting instances)
-        let node_root_path = entity.root_path().to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            generator::generate_lib_for_build_system(BuildSystem::Cargo, &node_root_path)
-        })
-        .await
-        .map_err(|e| format!("generate task failed for {node_name}:{tag}: {e}"))?
-        .map_err(|e| format!("failed to generate peppygen for {node_name}:{tag}: {e}"))?;
+        // Call `node_generate` to generate the peppygen library (once per node, before starting instances)
+        let response = NodeGenerateRequest::new(entity.root_path().to_path_buf())
+            .with_build_system(BuildSystem::Cargo)
+            .poll(
+                messenger,
+                master_node_name,
+                master_instance_id,
+                master_node_name,
+                NODE_GENERATE_TIMEOUT,
+            )
+            .await
+            .map_err(|e| format!("node_generate request failed for {node_name}:{tag}: {e}"))?;
+
+        if !response.success {
+            let msg = if response.error_message.trim().is_empty() {
+                "node_generate failed with no error message".to_string()
+            } else {
+                response.error_message
+            };
+            return Err(format!("failed to generate peppygen for {node_name}:{tag}: {msg}"));
+        }
 
         for deployment_instance in &deployment.instances {
             let runtime_config = RuntimeConfig::new(
