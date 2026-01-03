@@ -1,3 +1,4 @@
+use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::peppy_config::BuildSystem;
 use generator::generate_lib_for_build_system;
 use std::fs;
@@ -53,7 +54,7 @@ fn run_generate_peppygen_lib_test(build_system: BuildSystem) -> (TempDir, std::p
     generate_lib_for_build_system(build_system, node_dir).expect("failed to generate library");
 
     // Verify the generated library structure exists
-    let peppygen_dir = node_dir.join(".peppy/libs/peppygen");
+    let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
         peppygen_dir.exists(),
         "peppygen directory should exist at {}",
@@ -99,7 +100,7 @@ fn generate_peppygen_lib_minimal_config() {
         .expect("failed to generate library for minimal config");
 
     // Verify the generated library exists
-    let peppygen_dir = node_dir.join(".peppy/libs/peppygen");
+    let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(peppygen_dir.exists(), "peppygen directory should exist");
 }
 
@@ -174,8 +175,8 @@ fn generate_peppygen_lib_cargo() {
         .and_then(|p| p.as_str())
         .expect("peppygen dependency should have a path");
     assert_eq!(
-        peppygen_path, ".peppy/libs/peppygen",
-        "peppygen dependency path should point to .peppy/libs/peppygen"
+        peppygen_path, PEPPYGEN_OUTPUT_PATH,
+        "peppygen dependency path should point to {PEPPYGEN_OUTPUT_PATH}"
     );
 }
 

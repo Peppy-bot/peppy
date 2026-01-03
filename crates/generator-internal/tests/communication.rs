@@ -1,5 +1,6 @@
 mod helpers;
 
+use config::consts::RUNTIME_CONFIG_VAR_NAME;
 use config::{
     node::{
         ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
@@ -239,7 +240,7 @@ fn main() -> Result<()> {
     // Spawn both processes
     let mut subscriber_child = spawn_cargo_run(
         &user_node_subscriber,
-        &[("PEPPY_RUNTIME_CONFIG", &user_node_subscriber_config_str)],
+        &[(RUNTIME_CONFIG_VAR_NAME, &user_node_subscriber_config_str)],
     );
 
     // Give the subscriber a moment to connect before emitting frames.
@@ -248,7 +249,7 @@ fn main() -> Result<()> {
     let mut exposer_child = spawn_cargo_run(
         &user_node_exposer,
         &[(
-            "PEPPY_RUNTIME_CONFIG",
+            RUNTIME_CONFIG_VAR_NAME,
             &user_node_exposer_runtime_config_str,
         )],
     );
@@ -525,7 +526,7 @@ fn main() -> Result<()> {
     let mut exposer_child = spawn_cargo_run(
         &user_node_exposer,
         &[(
-            "PEPPY_RUNTIME_CONFIG",
+            RUNTIME_CONFIG_VAR_NAME,
             &user_node_exposer_runtime_config_str,
         )],
     );
@@ -535,7 +536,7 @@ fn main() -> Result<()> {
 
     let mut subscriber_child = spawn_cargo_run(
         &user_node_subscriber,
-        &[("PEPPY_RUNTIME_CONFIG", &user_node_subscriber_config_str)],
+        &[(RUNTIME_CONFIG_VAR_NAME, &user_node_subscriber_config_str)],
     );
 
     // Wait for communication to happen
@@ -840,11 +841,11 @@ fn main() -> Result<()> {
     // Spawn both exposers first so they're ready to handle requests
     let mut exposer1_child = spawn_cargo_run(
         &user_node_exposer1,
-        &[("PEPPY_RUNTIME_CONFIG", &exposer1_runtime_config_str)],
+        &[(RUNTIME_CONFIG_VAR_NAME, &exposer1_runtime_config_str)],
     );
     let mut exposer2_child = spawn_cargo_run(
         &user_node_exposer2,
-        &[("PEPPY_RUNTIME_CONFIG", &exposer2_runtime_config_str)],
+        &[(RUNTIME_CONFIG_VAR_NAME, &exposer2_runtime_config_str)],
     );
 
     // Give the exposers a moment to start listening before the subscriber sends a request.
@@ -852,7 +853,7 @@ fn main() -> Result<()> {
 
     let mut subscriber_child = spawn_cargo_run(
         &user_node_subscriber,
-        &[("PEPPY_RUNTIME_CONFIG", &subscriber_runtime_config_str)],
+        &[(RUNTIME_CONFIG_VAR_NAME, &subscriber_runtime_config_str)],
     );
 
     // Wait for communication to happen
@@ -1258,7 +1259,7 @@ fn main() -> Result<()> {
     // Spawn exposer first so it's ready to handle requests
     let mut exposer_child = spawn_cargo_run(
         &user_node_exposer,
-        &[("PEPPY_RUNTIME_CONFIG", &exposer_runtime_config_str)],
+        &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
     // Give the exposer a moment to start listening for goals before firing one.
@@ -1266,7 +1267,7 @@ fn main() -> Result<()> {
 
     let mut subscriber_child = spawn_cargo_run(
         &user_node_subscriber,
-        &[("PEPPY_RUNTIME_CONFIG", &subscriber_runtime_config_str)],
+        &[(RUNTIME_CONFIG_VAR_NAME, &subscriber_runtime_config_str)],
     );
 
     // Wait for communication to happen
@@ -1541,14 +1542,14 @@ fn main() -> Result<()> {
     // Spawn exposer first so it's ready to handle requests
     let mut exposer_child = spawn_cargo_run(
         &user_node_exposer,
-        &[("PEPPY_RUNTIME_CONFIG", &exposer_runtime_config_str)],
+        &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
     thread::sleep(Duration::from_millis(500));
 
     let mut subscriber_child = spawn_cargo_run(
         &user_node_subscriber,
-        &[("PEPPY_RUNTIME_CONFIG", &subscriber_runtime_config_str)],
+        &[(RUNTIME_CONFIG_VAR_NAME, &subscriber_runtime_config_str)],
     );
 
     // Wait for communication to happen

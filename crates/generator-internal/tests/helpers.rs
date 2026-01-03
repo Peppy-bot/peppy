@@ -26,7 +26,7 @@ pub fn prepare_directories(
     temp_dir: &TempDir,
 ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
     let user_node = temp_dir.path().join("user_node");
-    let output_dir = user_node.join(".peppy/libs/peppygen");
+    let output_dir = user_node.join(PEPPYGEN_OUTPUT_PATH);
     let peppy_node_config = user_node.join(NODE_CONFIG_FILE);
     fs::create_dir_all(&output_dir).unwrap();
     fs::create_dir_all(&user_node).unwrap();
@@ -74,8 +74,6 @@ pub fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
             .expect("failed to invoke cargo init for user node");
     }
 
-    let peppygen_path = ".peppy/libs/peppygen";
-
     let manifest_contents =
         fs::read_to_string(&cargo_toml_path).expect("failed to read user node Cargo.toml");
 
@@ -93,7 +91,7 @@ pub fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
         .lines()
         .any(|line| line.trim_start().starts_with("peppygen"))
     {
-        let dependency_line = format!("peppygen = {{ path = \"{}\" }}\n", peppygen_path);
+        let dependency_line = format!("peppygen = {{ path = \"{}\" }}\n", PEPPYGEN_OUTPUT_PATH);
         updated_manifest = insert_dependency_line(&updated_manifest, &dependency_line);
     }
 
