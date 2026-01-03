@@ -62,12 +62,20 @@ async fn listen_for_launch_configuration_succeed() {
         .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .expect("deployed node should exist in stack");
 
-    // Two instances: The master node instance and the test_node
+    // One instance as specified in the launcher config
     assert_eq!(entity.instances().len(), 1);
     assert_eq!(
         entity.instances()[0].instance_id().as_str(),
         TARGET_INSTANCE_ID
     );
+
+    // Total instances across the stack: master node instance + deployed node instance
+    let total_instances: usize = node_stack
+        .snapshot()
+        .iter()
+        .map(|e| e.instances().len())
+        .sum();
+    assert_eq!(total_instances, 2);
 
     started_master.task.abort();
 }
