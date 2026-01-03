@@ -174,16 +174,16 @@ async fn start_launch_plan_instances(
             .find(node_name, tag)
             .ok_or_else(|| format!("deployment {node_name}:{tag} missing from planned stack"))?;
 
-        for deployment_instance in &deployment.instances {
-            // Run `generate` on the node to generate the peppygen library
-            let node_root_path = entity.root_path().to_path_buf();
-            tokio::task::spawn_blocking(move || {
-                generator::generate_lib_for_build_system(BuildSystem::Cargo, &node_root_path)
-            })
-            .await
-            .map_err(|e| format!("generate task failed for {node_name}:{tag}: {e}"))?
-            .map_err(|e| format!("failed to generate peppygen for {node_name}:{tag}: {e}"))?;
+        // Run `generate` on the node to generate the peppygen library (once per node, before starting instances)
+        let node_root_path = entity.root_path().to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            generator::generate_lib_for_build_system(BuildSystem::Cargo, &node_root_path)
+        })
+        .await
+        .map_err(|e| format!("generate task failed for {node_name}:{tag}: {e}"))?
+        .map_err(|e| format!("failed to generate peppygen for {node_name}:{tag}: {e}"))?;
 
+        for deployment_instance in &deployment.instances {
             let runtime_config = RuntimeConfig::new(
                 messaging_host.as_str(),
                 messaging_port,
