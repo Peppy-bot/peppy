@@ -11,12 +11,13 @@ use config::{
 };
 use generator::{LanguageGenerator, SubscribedActionMessage};
 use helpers::{
-    compile_project, copy_config_to_output, init_cargo_user_node, init_test_env, spawn_cargo_run,
-    start_router_for_tests, wait_for_child, write_codegen_fingerprint,
+    compile_project, copy_config_to_output, init_cargo_user_node, init_test_env, send_shutdown,
+    spawn_cargo_run, start_router_for_tests, wait_for_action_service_reachable_or_exit,
+    wait_for_child, wait_for_service_reachable_or_exit,
+    wait_for_shutdown_service_reachable_or_exit, write_codegen_fingerprint,
 };
-use peppylib::{MessengerHandle, ServiceMessenger, messaging::SHUTDOWN_SERVICE};
 use pmi::MessengerBackend;
-use std::{fs, thread, time::Duration};
+use std::{fs, time::Duration};
 use tempfile::TempDir;
 
 // --- Common test constants
@@ -242,10 +243,6 @@ fn main() -> Result<()> {
         &user_node_subscriber,
         &[(RUNTIME_CONFIG_VAR_NAME, &user_node_subscriber_config_str)],
     );
-
-    // Give the subscriber a moment to connect before emitting frames.
-    thread::sleep(Duration::from_millis(500));
-
     let mut exposer_child = spawn_cargo_run(
         &user_node_exposer,
         &[(
@@ -254,41 +251,56 @@ fn main() -> Result<()> {
         )],
     );
 
-    // Wait for communication to happen
-    thread::sleep(Duration::from_secs(2));
-
-    // Send shutdown signals to both nodes
-    rt.block_on(async {
-        let messenger = MessengerHandle::from_host_port(&router_host, router_port)
+    // Wait until both nodes have completed their setup_fn and are listening for shutdown.
+    // (The subscriber reaches this point only after it receives a frame.)
+    let messenger = rt.block_on(async {
+        peppylib::MessengerHandle::from_host_port(&router_host, router_port)
             .await
-            .expect("failed to create messenger for shutdown");
-
-        let shutdown_payload = bytes::Bytes::from_static(b"shutdown");
-
-        // Send shutdown to subscriber
-        let _ = ServiceMessenger::poll(
+            .expect("failed to create messenger for shutdown")
+    });
+    rt.block_on(async {
+        wait_for_shutdown_service_reachable_or_exit(
             &messenger,
             TEST_MASTER_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             SUBSCRIBER_NODE_NAME,
-            SHUTDOWN_SERVICE,
             Some(TEST_MASTER_NODE),
-            Some(subscriber_instance_id),
-            shutdown_payload.clone(),
-            Duration::from_secs(5),
+            subscriber_instance_id,
+            &mut subscriber_child,
+            &user_node_subscriber,
+            Duration::from_secs(10),
         )
         .await;
-
-        // Send shutdown to exposer
-        let _ = ServiceMessenger::poll(
+        wait_for_shutdown_service_reachable_or_exit(
             &messenger,
             TEST_MASTER_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             UVC_CAMERA_NODE_NAME,
-            SHUTDOWN_SERVICE,
             Some(TEST_MASTER_NODE),
-            Some(exposer_instance_id),
-            shutdown_payload,
+            exposer_instance_id,
+            &mut exposer_child,
+            &user_node_exposer,
+            Duration::from_secs(10),
+        )
+        .await;
+
+        send_shutdown(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            SUBSCRIBER_NODE_NAME,
+            Some(TEST_MASTER_NODE),
+            subscriber_instance_id,
+            Duration::from_secs(5),
+        )
+        .await;
+        send_shutdown(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            UVC_CAMERA_NODE_NAME,
+            Some(TEST_MASTER_NODE),
+            exposer_instance_id,
             Duration::from_secs(5),
         )
         .await;
@@ -522,6 +534,12 @@ fn main() -> Result<()> {
     let user_node_subscriber_config_str =
         subscriber_runtime_config_path.to_str().unwrap().to_owned();
 
+    let messenger = rt.block_on(async {
+        peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+            .await
+            .expect("failed to create messenger for test control")
+    });
+
     // Spawn exposer first so it's ready to handle requests
     let mut exposer_child = spawn_cargo_run(
         &user_node_exposer,
@@ -531,49 +549,70 @@ fn main() -> Result<()> {
         )],
     );
 
-    // Give the exposer a moment to start listening before the subscriber sends a request.
-    thread::sleep(Duration::from_millis(500));
+    rt.block_on(async {
+        wait_for_service_reachable_or_exit(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            UVC_CAMERA_NODE_NAME,
+            "enable_camera",
+            Some(TEST_MASTER_NODE),
+            Some(exposer_instance_id),
+            &mut exposer_child,
+            &user_node_exposer,
+            Duration::from_secs(10),
+        )
+        .await;
+    });
 
     let mut subscriber_child = spawn_cargo_run(
         &user_node_subscriber,
         &[(RUNTIME_CONFIG_VAR_NAME, &user_node_subscriber_config_str)],
     );
 
-    // Wait for communication to happen
-    thread::sleep(Duration::from_secs(2));
-
-    // Send shutdown signals to both nodes
     rt.block_on(async {
-        let messenger = MessengerHandle::from_host_port(&router_host, router_port)
-            .await
-            .expect("failed to create messenger for shutdown");
-
-        let shutdown_payload = bytes::Bytes::from_static(b"shutdown");
-
-        // Send shutdown to subscriber
-        let _ = ServiceMessenger::poll(
+        wait_for_shutdown_service_reachable_or_exit(
             &messenger,
             TEST_MASTER_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             SUBSCRIBER_NODE_NAME,
-            SHUTDOWN_SERVICE,
             Some(TEST_MASTER_NODE),
-            Some(subscriber_instance_id),
-            shutdown_payload.clone(),
-            Duration::from_secs(5),
+            subscriber_instance_id,
+            &mut subscriber_child,
+            &user_node_subscriber,
+            Duration::from_secs(10),
         )
         .await;
-
-        // Send shutdown to exposer
-        let _ = ServiceMessenger::poll(
+        wait_for_shutdown_service_reachable_or_exit(
             &messenger,
             TEST_MASTER_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             UVC_CAMERA_NODE_NAME,
-            SHUTDOWN_SERVICE,
             Some(TEST_MASTER_NODE),
-            Some(exposer_instance_id),
-            shutdown_payload,
+            exposer_instance_id,
+            &mut exposer_child,
+            &user_node_exposer,
+            Duration::from_secs(10),
+        )
+        .await;
+
+        send_shutdown(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            SUBSCRIBER_NODE_NAME,
+            Some(TEST_MASTER_NODE),
+            subscriber_instance_id,
+            Duration::from_secs(5),
+        )
+        .await;
+        send_shutdown(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            UVC_CAMERA_NODE_NAME,
+            Some(TEST_MASTER_NODE),
+            exposer_instance_id,
             Duration::from_secs(5),
         )
         .await;
@@ -641,8 +680,9 @@ fn main() -> Result<()> {
     });
 }
 
+/// If there are multiple services of the same name and the subscriber does not specify an instance_id, it's the first service that respond that connects with the subscriber
 #[test]
-fn services_communication_multiple_exposed_instances_same_service() {
+fn services_communication_multiple_exposed_instances_same_service_not_target_instance_id() {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
@@ -812,7 +852,7 @@ fn main() -> Result<()> {
         enable_camera::handle_next_request(&node_runner, |request| -> Result<enable_camera::Response> {
             println!("received enable_camera request for {}: {}", request.instance_id, request.data.enable);
             // Sleep to ensure exposer1 responds first
-            std::thread::sleep(Duration::from_secs(1));
+            std::thread::sleep(Duration::from_secs(2));
             Ok(enable_camera::Response::new(
                 request.data.enable,
                 Some("handled_by_exposer2".to_owned()),
@@ -838,6 +878,12 @@ fn main() -> Result<()> {
     let exposer2_runtime_config_str = exposer2_runtime_config_path.to_str().unwrap().to_owned();
     let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
 
+    let messenger = rt.block_on(async {
+        peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+            .await
+            .expect("failed to create messenger for test control")
+    });
+
     // Spawn both exposers first so they're ready to handle requests
     let mut exposer1_child = spawn_cargo_run(
         &user_node_exposer1,
@@ -848,63 +894,105 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer2_runtime_config_str)],
     );
 
-    // Give the exposers a moment to start listening before the subscriber sends a request.
-    thread::sleep(Duration::from_millis(500));
+    rt.block_on(async {
+        wait_for_service_reachable_or_exit(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            UVC_CAMERA_NODE_NAME,
+            "enable_camera",
+            Some(TEST_MASTER_NODE),
+            Some(exposer1_instance_id),
+            &mut exposer1_child,
+            &user_node_exposer1,
+            Duration::from_secs(10),
+        )
+        .await;
+        wait_for_service_reachable_or_exit(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            UVC_CAMERA_NODE_NAME,
+            "enable_camera",
+            Some(TEST_MASTER_NODE),
+            Some(exposer2_instance_id),
+            &mut exposer2_child,
+            &user_node_exposer2,
+            Duration::from_secs(10),
+        )
+        .await;
+    });
 
     let mut subscriber_child = spawn_cargo_run(
         &user_node_subscriber,
         &[(RUNTIME_CONFIG_VAR_NAME, &subscriber_runtime_config_str)],
     );
 
-    // Wait for communication to happen
-    thread::sleep(Duration::from_secs(3));
-
-    // Send shutdown signals to all nodes
     rt.block_on(async {
-        let messenger = MessengerHandle::from_host_port(&router_host, router_port)
-            .await
-            .expect("failed to create messenger for shutdown");
-
-        let shutdown_payload = bytes::Bytes::from_static(b"shutdown");
-
-        // Send shutdown to subscriber
-        let _ = ServiceMessenger::poll(
+        wait_for_shutdown_service_reachable_or_exit(
             &messenger,
             TEST_MASTER_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             SUBSCRIBER_NODE_NAME,
-            SHUTDOWN_SERVICE,
             Some(TEST_MASTER_NODE),
-            Some(subscriber_instance_id),
-            shutdown_payload.clone(),
-            Duration::from_secs(5),
+            subscriber_instance_id,
+            &mut subscriber_child,
+            &user_node_subscriber,
+            Duration::from_secs(10),
         )
         .await;
-
-        // Send shutdown to exposer1
-        let _ = ServiceMessenger::poll(
+        wait_for_shutdown_service_reachable_or_exit(
             &messenger,
             TEST_MASTER_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             UVC_CAMERA_NODE_NAME,
-            SHUTDOWN_SERVICE,
             Some(TEST_MASTER_NODE),
-            Some(exposer1_instance_id),
-            shutdown_payload.clone(),
-            Duration::from_secs(5),
+            exposer1_instance_id,
+            &mut exposer1_child,
+            &user_node_exposer1,
+            Duration::from_secs(10),
         )
         .await;
-
-        // Send shutdown to exposer2
-        let _ = ServiceMessenger::poll(
+        wait_for_shutdown_service_reachable_or_exit(
             &messenger,
             TEST_MASTER_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             UVC_CAMERA_NODE_NAME,
-            SHUTDOWN_SERVICE,
             Some(TEST_MASTER_NODE),
-            Some(exposer2_instance_id),
-            shutdown_payload,
+            exposer2_instance_id,
+            &mut exposer2_child,
+            &user_node_exposer2,
+            Duration::from_secs(10),
+        )
+        .await;
+
+        send_shutdown(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            SUBSCRIBER_NODE_NAME,
+            Some(TEST_MASTER_NODE),
+            subscriber_instance_id,
+            Duration::from_secs(5),
+        )
+        .await;
+        send_shutdown(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            UVC_CAMERA_NODE_NAME,
+            Some(TEST_MASTER_NODE),
+            exposer1_instance_id,
+            Duration::from_secs(5),
+        )
+        .await;
+        send_shutdown(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            UVC_CAMERA_NODE_NAME,
+            Some(TEST_MASTER_NODE),
+            exposer2_instance_id,
             Duration::from_secs(5),
         )
         .await;
@@ -962,10 +1050,10 @@ fn main() -> Result<()> {
         exposer2_stderr
     );
 
-    // Subscriber should have received a response from exposer1 (the faster one)
+    // Subscriber should have received a response from exposer1 (the faster responder)
     assert!(
         subscriber_stdout.contains("enable_camera result: enabled=true error=handled"),
-        "subscriber did not receive expected service response from exposer1.\nstdout:\n{}\nstderr:\n{}",
+        "subscriber should have received response from exposer1 (the faster responder), not exposer2.\nstdout:\n{}\nstderr:\n{}",
         subscriber_stdout,
         subscriber_stderr
     );
@@ -1206,7 +1294,6 @@ fn main() -> Result<()> {
 use peppygen::exposed_actions::move_arm;
 use peppygen::runner;
 use peppygen::Result;
-use std::time::Duration;
 
 fn main() -> Result<()> {
     runner::run(|_parameters, node_runner| async move {
@@ -1221,9 +1308,6 @@ fn main() -> Result<()> {
             Ok(move_arm::GoalResponse::new(true))
         })
         .await?;
-
-        // Small delay before sending a feedback message
-        tokio::time::sleep(Duration::from_millis(200)).await;
 
         let feedback_message = [7, 31, 43];
         action.emit_feedback(feedback_message).await?;
@@ -1256,55 +1340,82 @@ fn main() -> Result<()> {
     let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
     let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
 
+    let messenger = rt.block_on(async {
+        peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+            .await
+            .expect("failed to create messenger for test control")
+    });
+
     // Spawn exposer first so it's ready to handle requests
     let mut exposer_child = spawn_cargo_run(
         &user_node_exposer,
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
-    // Give the exposer a moment to start listening for goals before firing one.
-    thread::sleep(Duration::from_millis(500));
+    rt.block_on(async {
+        wait_for_action_service_reachable_or_exit(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            BRAIN_NODE_NAME,
+            "move_arm/goal",
+            None,
+            None,
+            &mut exposer_child,
+            &user_node_exposer,
+            Duration::from_secs(15),
+        )
+        .await;
+    });
 
     let mut subscriber_child = spawn_cargo_run(
         &user_node_subscriber,
         &[(RUNTIME_CONFIG_VAR_NAME, &subscriber_runtime_config_str)],
     );
 
-    // Wait for communication to happen
-    thread::sleep(Duration::from_secs(2));
-
-    // Send shutdown signals to both nodes
     rt.block_on(async {
-        let messenger = MessengerHandle::from_host_port(&router_host, router_port)
-            .await
-            .expect("failed to create messenger for shutdown");
-
-        let shutdown_payload = bytes::Bytes::from_static(b"shutdown");
-
-        // Send shutdown to subscriber
-        let _ = ServiceMessenger::poll(
+        wait_for_shutdown_service_reachable_or_exit(
             &messenger,
             TEST_MASTER_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             SUBSCRIBER_NODE_NAME,
-            SHUTDOWN_SERVICE,
             Some(TEST_MASTER_NODE),
-            Some(subscriber_instance_id),
-            shutdown_payload.clone(),
-            Duration::from_secs(5),
+            subscriber_instance_id,
+            &mut subscriber_child,
+            &user_node_subscriber,
+            Duration::from_secs(15),
         )
         .await;
-
-        // Send shutdown to exposer
-        let _ = ServiceMessenger::poll(
+        wait_for_shutdown_service_reachable_or_exit(
             &messenger,
             TEST_MASTER_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             BRAIN_NODE_NAME,
-            SHUTDOWN_SERVICE,
             Some(TEST_MASTER_NODE),
-            Some(exposer_instance_id),
-            shutdown_payload,
+            exposer_instance_id,
+            &mut exposer_child,
+            &user_node_exposer,
+            Duration::from_secs(15),
+        )
+        .await;
+
+        send_shutdown(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            SUBSCRIBER_NODE_NAME,
+            Some(TEST_MASTER_NODE),
+            subscriber_instance_id,
+            Duration::from_secs(5),
+        )
+        .await;
+        send_shutdown(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            BRAIN_NODE_NAME,
+            Some(TEST_MASTER_NODE),
+            exposer_instance_id,
             Duration::from_secs(5),
         )
         .await;
@@ -1447,8 +1558,6 @@ fn main() -> Result<()> {
         ).await?;
         println!("goal accepted={}", goal.data.accepted);
 
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
         let cancel_response = brain_move_arm::cancel_goal(&node_runner, &goal.action_handle, Duration::from_secs(5)).await?;
         let error_msg = cancel_response.data.error_message.as_deref().unwrap_or("<none>");
         println!(
@@ -1539,54 +1648,82 @@ fn main() -> Result<()> {
     let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
     let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
 
+    let messenger = rt.block_on(async {
+        peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+            .await
+            .expect("failed to create messenger for test control")
+    });
+
     // Spawn exposer first so it's ready to handle requests
     let mut exposer_child = spawn_cargo_run(
         &user_node_exposer,
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
-    thread::sleep(Duration::from_millis(500));
+    rt.block_on(async {
+        wait_for_action_service_reachable_or_exit(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            BRAIN_NODE_NAME,
+            "move_arm/goal",
+            None,
+            None,
+            &mut exposer_child,
+            &user_node_exposer,
+            Duration::from_secs(15),
+        )
+        .await;
+    });
 
     let mut subscriber_child = spawn_cargo_run(
         &user_node_subscriber,
         &[(RUNTIME_CONFIG_VAR_NAME, &subscriber_runtime_config_str)],
     );
 
-    // Wait for communication to happen
-    thread::sleep(Duration::from_secs(2));
-
-    // Send shutdown signals to both nodes
     rt.block_on(async {
-        let messenger = MessengerHandle::from_host_port(&router_host, router_port)
-            .await
-            .expect("failed to create messenger for shutdown");
-
-        let shutdown_payload = bytes::Bytes::from_static(b"shutdown");
-
-        // Send shutdown to subscriber
-        let _ = ServiceMessenger::poll(
+        wait_for_shutdown_service_reachable_or_exit(
             &messenger,
             TEST_MASTER_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             SUBSCRIBER_NODE_NAME,
-            SHUTDOWN_SERVICE,
             Some(TEST_MASTER_NODE),
-            Some(subscriber_instance_id),
-            shutdown_payload.clone(),
-            Duration::from_secs(5),
+            subscriber_instance_id,
+            &mut subscriber_child,
+            &user_node_subscriber,
+            Duration::from_secs(15),
         )
         .await;
-
-        // Send shutdown to exposer
-        let _ = ServiceMessenger::poll(
+        wait_for_shutdown_service_reachable_or_exit(
             &messenger,
             TEST_MASTER_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             BRAIN_NODE_NAME,
-            SHUTDOWN_SERVICE,
             Some(TEST_MASTER_NODE),
-            Some(exposer_instance_id),
-            shutdown_payload,
+            exposer_instance_id,
+            &mut exposer_child,
+            &user_node_exposer,
+            Duration::from_secs(15),
+        )
+        .await;
+
+        send_shutdown(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            SUBSCRIBER_NODE_NAME,
+            Some(TEST_MASTER_NODE),
+            subscriber_instance_id,
+            Duration::from_secs(5),
+        )
+        .await;
+        send_shutdown(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            BRAIN_NODE_NAME,
+            Some(TEST_MASTER_NODE),
+            exposer_instance_id,
             Duration::from_secs(5),
         )
         .await;

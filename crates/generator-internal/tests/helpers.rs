@@ -1,12 +1,16 @@
 use config::consts::{NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::runtime::RuntimeConfig;
 use generator::RustGenerator;
+use peppylib::messaging::SHUTDOWN_SERVICE;
+use peppylib::{MessengerHandle, ServiceMessenger};
+use pmi::{Messenger, MessengerAdapter, MessengerBackend, ZenohAdapter, ZenohNetProtocol};
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Instant;
 use std::{fs, thread, time::Duration};
 use tempfile::TempDir;
+use tokio::time::sleep;
 
 pub const STUB_NODE_CONFIG: &str = r#"{
   schema_version: 1,
@@ -102,10 +106,18 @@ pub fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
 }
 
 pub fn spawn_cargo_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std::process::Child {
-    let mut command = Command::new("cargo");
+    // Run the compiled binary directly to avoid cargo's global package-cache lock contention.
+    // `compile_project` must be called beforehand to ensure the binary exists.
+    let binary_path = dir.join("target").join("debug").join("user_node");
+    let use_binary = binary_path.exists();
+    let mut command = if use_binary {
+        Command::new(&binary_path)
+    } else {
+        Command::new("cargo")
+    };
     command
-        .arg("run")
         .env("CARGO_NET_OFFLINE", "true")
+        .args((!use_binary).then_some("run"))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .current_dir(dir);
@@ -129,7 +141,7 @@ pub fn wait_for_child(
                 let _ = child.kill();
                 let _ = child.wait();
                 panic!(
-                    "cargo run timed out after {:?} for project at {}",
+                    "process timed out after {:?} for project at {}",
                     limit,
                     dir.display()
                 );
@@ -138,7 +150,7 @@ pub fn wait_for_child(
 
         if let Some(status) = child
             .try_wait()
-            .expect("failed to poll cargo run status for generated project")
+            .expect("failed to poll process status for generated project")
         {
             let mut stdout = Vec::new();
             if let Some(mut out) = child.stdout.take() {
@@ -223,4 +235,243 @@ pub fn write_codegen_fingerprint(peppy_config_path: impl AsRef<Path>) {
         .join(PEPPYGEN_OUTPUT_PATH)
         .join(NODE_CONFIG_FINGERPRINT_FILE);
     fs::write(&fingerprint_path, fingerprint).expect("failed to write codegen fingerprint");
+}
+
+pub async fn wait_for_service_reachable_or_exit(
+    messenger: &MessengerHandle,
+    bound_master_node: &str,
+    caller_instance_id: &str,
+    target_node_name: &str,
+    target_service_name: &str,
+    target_master_node: Option<&str>,
+    target_instance_id: Option<&str>,
+    child: &mut std::process::Child,
+    dir: &std::path::Path,
+    timeout: Duration,
+) {
+    let start = Instant::now();
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .expect("failed to poll process status for generated project")
+        {
+            let output = wait_for_child(child, None, dir);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            panic!(
+                "process exited before `{}` became reachable (status: {:?}) for project at {}\nstdout:\n{}\nstderr:\n{}",
+                target_service_name,
+                status.code(),
+                dir.display(),
+                stdout,
+                stderr
+            );
+        }
+
+        let reachable = ServiceMessenger::is_reachable(
+            messenger,
+            bound_master_node,
+            caller_instance_id,
+            target_node_name,
+            target_service_name,
+            target_master_node,
+            target_instance_id,
+        )
+        .await
+        .unwrap_or_else(|err| {
+            panic!(
+                "failed to check reachability for service `{}` (node={}, instance={:?}) for project at {}: {}",
+                target_service_name,
+                target_node_name,
+                target_instance_id,
+                dir.display(),
+                err
+            )
+        });
+
+        if reachable {
+            return;
+        }
+
+        if start.elapsed() > timeout {
+            panic!(
+                "timed out after {:?} waiting for `{}` to become reachable (node={}, instance={:?}) for project at {}",
+                timeout,
+                target_service_name,
+                target_node_name,
+                target_instance_id,
+                dir.display()
+            );
+        }
+
+        sleep(Duration::from_millis(50)).await;
+    }
+}
+
+pub async fn wait_for_shutdown_service_reachable_or_exit(
+    messenger: &MessengerHandle,
+    bound_master_node: &str,
+    caller_instance_id: &str,
+    target_node_name: &str,
+    target_master_node: Option<&str>,
+    target_instance_id: &str,
+    child: &mut std::process::Child,
+    dir: &std::path::Path,
+    timeout: Duration,
+) {
+    wait_for_service_reachable_or_exit(
+        messenger,
+        bound_master_node,
+        caller_instance_id,
+        target_node_name,
+        SHUTDOWN_SERVICE,
+        target_master_node,
+        Some(target_instance_id),
+        child,
+        dir,
+        timeout,
+    )
+    .await;
+}
+
+pub async fn wait_for_action_service_reachable_or_exit(
+    messenger: &MessengerHandle,
+    bound_master_node: &str,
+    caller_instance_id: &str,
+    target_node_name: &str,
+    target_service_name: &str,
+    target_master_node: Option<&str>,
+    target_instance_id: Option<&str>,
+    child: &mut std::process::Child,
+    dir: &std::path::Path,
+    timeout: Duration,
+) {
+    const INSTANCE_ID_WILDCARD: &str = "**";
+    const BROADCAST_MARKER: &str = "_any_";
+
+    let (router_host, router_port) = messenger
+        .messaging_endpoint()
+        .await
+        .expect("zenoh messaging endpoint should be available for reachability checks");
+
+    let adapter = ZenohAdapter::from_host_port(ZenohNetProtocol::Tcp, &router_host, router_port);
+    let mut probe_messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
+    probe_messenger
+        .start_session()
+        .await
+        .expect("failed to start probe messenger session");
+
+    let start = Instant::now();
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .expect("failed to poll process status for generated project")
+        {
+            let output = wait_for_child(child, None, dir);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            panic!(
+                "process exited before action `{}` became reachable (status: {:?}) for project at {}\nstdout:\n{}\nstderr:\n{}",
+                target_service_name,
+                status.code(),
+                dir.display(),
+                stdout,
+                stderr
+            );
+        }
+
+        let caller_target_instance_segment = (caller_instance_id != INSTANCE_ID_WILDCARD)
+            .then_some(caller_instance_id)
+            .unwrap_or(INSTANCE_ID_WILDCARD);
+
+        let (effective_target_master, effective_target_instance) =
+            match (target_master_node, target_instance_id) {
+                (Some(master), Some(instance)) => (master, instance),
+                (Some(master), None) => (master, BROADCAST_MARKER),
+                (None, Some(instance)) => (BROADCAST_MARKER, instance),
+                (None, None) => (BROADCAST_MARKER, BROADCAST_MARKER),
+            };
+
+        let target_bound_instance_segment = (effective_target_instance != INSTANCE_ID_WILDCARD)
+            .then_some(effective_target_instance);
+
+        let target_master = target_bound_instance_segment
+            .as_ref()
+            .map(|_| effective_target_master)
+            .unwrap_or(BROADCAST_MARKER);
+        let target_instance = target_bound_instance_segment.unwrap_or(BROADCAST_MARKER);
+
+        let service_root = format!("action/{target_node_name}/{target_service_name}");
+        let request_topic = format!(
+            "{}/{}/{}/{}/{}/request/reachability_probe",
+            target_master,
+            bound_master_node,
+            target_instance,
+            caller_target_instance_segment,
+            service_root
+        );
+
+        let reachable = probe_messenger
+            .has_matching_subscribers(&request_topic)
+            .await
+            .unwrap_or_else(|err| {
+                panic!(
+                    "failed to check reachability for action `{}` (node={}, instance={:?}) for project at {}: {}",
+                    target_service_name,
+                    target_node_name,
+                    target_instance_id,
+                    dir.display(),
+                    err
+                )
+            });
+
+        if reachable {
+            break;
+        }
+
+        if start.elapsed() > timeout {
+            panic!(
+                "timed out after {:?} waiting for action `{}` to become reachable (node={}, instance={:?}) for project at {}",
+                timeout,
+                target_service_name,
+                target_node_name,
+                target_instance_id,
+                dir.display()
+            );
+        }
+
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    let _ = probe_messenger.stop_session().await;
+}
+
+pub async fn send_shutdown(
+    messenger: &MessengerHandle,
+    bound_master_node: &str,
+    sender_instance_id: &str,
+    target_node_name: &str,
+    target_master_node: Option<&str>,
+    target_instance_id: &str,
+    timeout: Duration,
+) {
+    let payload = bytes::Bytes::from_static(b"shutdown");
+    ServiceMessenger::poll(
+        messenger,
+        bound_master_node,
+        sender_instance_id,
+        target_node_name,
+        SHUTDOWN_SERVICE,
+        target_master_node,
+        Some(target_instance_id),
+        payload,
+        timeout,
+    )
+    .await
+    .unwrap_or_else(|err| {
+        panic!(
+            "failed to send shutdown to node={} instance={} (project master={}): {}",
+            target_node_name, target_instance_id, bound_master_node, err
+        )
+    });
 }
