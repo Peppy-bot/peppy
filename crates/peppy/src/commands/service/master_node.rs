@@ -5,7 +5,7 @@ use pmi::Messenger;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, oneshot};
 use tracing::info;
 
 pub struct MasterNodeRunner {
@@ -34,12 +34,13 @@ impl MasterNodeRunner {
 
 impl ServeAsyncCommand for MasterNodeRunner {
     fn run(self: Box<Self>) -> ServeAsyncHandle {
+        let (ready_tx, ready_rx) = oneshot::channel();
         let master_node = self.master_node;
         let future = Box::pin(async move {
             let shutdown_signal = tokio::signal::ctrl_c();
             tokio::pin!(shutdown_signal);
 
-            let master_node_future = master_node.start();
+            let master_node_future = master_node.start_with_ready(Some(ready_tx));
             tokio::pin!(master_node_future);
 
             let mut shutdown_triggered = false;
@@ -71,6 +72,6 @@ impl ServeAsyncCommand for MasterNodeRunner {
             result
         });
 
-        ServeAsyncHandle::new(future, None)
+        ServeAsyncHandle::new(future, Some(ready_rx))
     }
 }
