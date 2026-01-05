@@ -649,3 +649,103 @@ async fn listen_for_launch_configuration_runs_generate_on_node_before_start() {
 
     started_master.task.abort();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healthy() {
+    const HEALTHY_NODE_NAME: &str = "example_node";
+    const HEALTHY_NODE_TAG: &str = "0.1.0";
+    const HEALTHY_INSTANCE_ID: &str = "healthy_instance";
+    const UNHEALTHY_NODE_NAME: &str = "unhealthy_node";
+    const UNHEALTHY_NODE_TAG: &str = "0.1.0";
+    const UNHEALTHY_INSTANCE_ID: &str = "unhealthy_instance";
+
+    let started_master = start_master_node_with_zenoh_messenger().await;
+    let node_stack = started_master.node_stack.clone();
+
+    // Create a nodes directory with both a healthy node and an unhealthy node
+    let nodes_dir = common::create_test_node();
+
+    // Create an unhealthy node that uses `sleep` which doesn't implement health checks
+    let unhealthy_node_root = nodes_dir.join(UNHEALTHY_NODE_NAME);
+    fs::create_dir_all(&unhealthy_node_root).expect("failed to create unhealthy node directory");
+    let unhealthy_peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{UNHEALTHY_NODE_NAME}",
+                tag: "{UNHEALTHY_NODE_TAG}",
+                launch_cmd: ["sleep", "60"]
+            }}
+        }}"#
+    );
+    fs::write(
+        unhealthy_node_root.join(NODE_CONFIG_FILE),
+        unhealthy_peppy_json5,
+    )
+    .expect("failed to write unhealthy node config");
+
+    let launcher_json5 = format!(
+        r#"{{
+            deployments: [
+                {{
+                    name: "{HEALTHY_NODE_NAME}",
+                    tag: "{HEALTHY_NODE_TAG}",
+                    instances: [{{ instance_id: "{HEALTHY_INSTANCE_ID}" }}]
+                }},
+                {{
+                    name: "{UNHEALTHY_NODE_NAME}",
+                    tag: "{UNHEALTHY_NODE_TAG}",
+                    instances: [{{ instance_id: "{UNHEALTHY_INSTANCE_ID}" }}]
+                }}
+            ]
+        }}"#
+    );
+
+    let (messaging_host, messaging_port) = started_master
+        .caller_handle
+        .messaging_endpoint()
+        .await
+        .expect("zenoh endpoint should be available for launcher test");
+    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port);
+    let launcher_runtime_config_json =
+        serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
+
+    let response = LauncherRequest::new(launcher_json5, nodes_dir, launcher_runtime_config_json)
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            None,
+            Duration::from_secs(60),
+        )
+        .await
+        .expect("launcher request should complete");
+
+    assert!(
+        !response.success,
+        "launcher request should fail when one node never becomes healthy"
+    );
+    assert!(
+        response.error_message.contains("health check"),
+        "failure should be due to health check timeout, got: {}",
+        response.error_message
+    );
+
+    // Verify the stack was not partially applied - only root should exist
+    assert_eq!(
+        node_stack.len(),
+        1,
+        "only root should exist when launch fails"
+    );
+    assert!(
+        !node_stack.contains(HEALTHY_NODE_NAME, HEALTHY_NODE_TAG),
+        "healthy node should not be in stack when launch fails"
+    );
+    assert!(
+        !node_stack.contains(UNHEALTHY_NODE_NAME, UNHEALTHY_NODE_TAG),
+        "unhealthy node should not be in stack when launch fails"
+    );
+
+    started_master.task.abort();
+}
