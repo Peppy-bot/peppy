@@ -2,13 +2,15 @@ use std::future::Future;
 use std::io::{self, Write};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
+use master_node::encoding::NodeResetRequest;
 use tokio::sync::oneshot;
 use tokio::task::{JoinError, JoinSet};
 use tracing::{error, info};
 
 use super::Command;
-use crate::context::AppContext;
+use crate::context::{AppContext, DaemonState};
 use crate::error::{Error, Result};
 
 use super::pid_lock::{PidLock, PidLockError};
@@ -20,6 +22,8 @@ pub use tokio_util::sync::CancellationToken;
 const EXISTING_INSTANCE_PROMPT: &str =
     "An instance of peppy already exists on this machine. Reset the node stack? [y/n] ";
 pub const PROMPT_ANSWER_ENV: &str = "PEPPY_SERVE_PROMPT_ANSWER";
+const RESET_STACK_TIMEOUT: Duration = Duration::from_secs(5);
+const RESET_STACK_CALLER_INSTANCE_ID: &str = "peppy-serve";
 
 pub trait ServeSyncCommand: Send + Sync {
     fn execute(&self) -> Result<()>;
@@ -218,6 +222,10 @@ impl Command for ServeCommand {
                     existing_pid = pid,
                     reset_requested, "Existing peppy instance detected"
                 );
+                if reset_requested {
+                    reset_node_stack(ctx)?;
+                    return Ok(());
+                }
                 return Err(Error::ExecutionFailed(format!(
                     "Serve command already running (PID {pid})"
                 )));
@@ -263,4 +271,51 @@ fn prompt_existing_instance() -> Result<bool> {
         input.trim().to_lowercase().as_str(),
         "y" | "yes" | "true" | "1"
     ))
+}
+
+fn reset_node_stack(ctx: &Arc<AppContext>) -> Result<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async { reset_node_stack_async(ctx).await })
+}
+
+async fn reset_node_stack_async(ctx: &Arc<AppContext>) -> Result<()> {
+    let daemon_state = DaemonState::read().map_err(|e| {
+        Error::ExecutionFailed(format!(
+            "Failed to read daemon state. Is the peppy daemon running? Error: {}",
+            e
+        ))
+    })?;
+    let master_node_name = daemon_state.master_node_name;
+
+    ctx.connect().await?;
+    let messenger_handle = ctx
+        .messenger_handle()
+        .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
+
+    info!(
+        "Requesting node stack reset from master '{}'...",
+        master_node_name
+    );
+
+    let response = NodeResetRequest::new()
+        .poll(
+            messenger_handle,
+            &master_node_name,
+            RESET_STACK_CALLER_INSTANCE_ID,
+            &master_node_name,
+            RESET_STACK_TIMEOUT,
+        )
+        .await
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_reset service: {}", e)))?;
+
+    if !response.success {
+        return Err(Error::ExecutionFailed(
+            response
+                .error_message
+                .unwrap_or_else(|| "node_reset failed with no error message".to_string()),
+        ));
+    }
+
+    info!("Node stack reset successfully");
+    Ok(())
 }

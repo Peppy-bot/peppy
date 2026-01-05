@@ -112,3 +112,14 @@ struct NodeRemoveResponse {
     # Error message if failed (optional)
     errorMessage @1 :Text;
 }
+
+# Node Reset service
+struct NodeResetRequest {
+}
+
+struct NodeResetResponse {
+    # Whether the reset was successful
+    success @0 :Bool;
+    # Error message if failed (optional)
+    errorMessage @1 :Text;
+}
