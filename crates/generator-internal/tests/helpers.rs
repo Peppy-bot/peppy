@@ -219,13 +219,6 @@ pub fn insert_dependency_line(contents: &str, dependency_line: &str) -> String {
     }
 }
 
-pub fn start_router_for_tests(
-    rt: &tokio::runtime::Runtime,
-) -> (pmi::Messenger, TempDir, String, u16) {
-    rt.block_on(peppylib::start_zenohd_process("127.0.0.1", None))
-        .expect("failed to start zenoh router for test")
-}
-
 /// Context for waiting on service reachability in tests.
 pub struct WaitContext<'a> {
     pub messenger: &'a MessengerHandle,

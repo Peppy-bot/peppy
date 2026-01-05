@@ -12,9 +12,9 @@ use config::{
 use generator::{LanguageGenerator, SubscribedActionMessage};
 use helpers::{
     WaitContext, compile_project, copy_config_to_output, init_cargo_user_node, init_test_env,
-    send_shutdown, spawn_cargo_run, start_router_for_tests,
-    wait_for_action_service_reachable_or_exit, wait_for_child, wait_for_service_reachable_or_exit,
-    wait_for_shutdown_service_reachable_or_exit, write_codegen_fingerprint,
+    send_shutdown, spawn_cargo_run, wait_for_action_service_reachable_or_exit, wait_for_child,
+    wait_for_service_reachable_or_exit, wait_for_shutdown_service_reachable_or_exit,
+    write_codegen_fingerprint,
 };
 use pmi::MessengerBackend;
 use std::{fs, time::Duration};
@@ -80,17 +80,12 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
 "#;
 
 /// Creates 2 projects in separate directory and check if they can send/receive topics
-#[test]
-fn topics_communication() {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .enable_all()
-        .build()
-        .expect("failed to create tokio runtime");
-
-    let (mut router, _dir, router_host, router_port) = rt
-        .block_on(peppylib::start_zenohd_process("127.0.0.1", None))
-        .expect("failed to start zenoh router for test");
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn topics_communication() {
+    let (mut router, _dir, router_host, router_port) =
+        peppylib::start_zenohd_process("127.0.0.1", None)
+            .await
+            .expect("failed to start zenoh router for test");
 
     // --- Subscriber project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
@@ -253,58 +248,54 @@ fn main() -> Result<()> {
 
     // Wait until both nodes have completed their setup_fn and are listening for shutdown.
     // (The subscriber reaches this point only after it receives a frame.)
-    let messenger = rt.block_on(async {
-        peppylib::MessengerHandle::from_host_port(&router_host, router_port)
-            .await
-            .expect("failed to create messenger for shutdown")
-    });
+    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+        .await
+        .expect("failed to create messenger for shutdown");
     let ctx = WaitContext {
         messenger: &messenger,
         bound_master_node: TEST_MASTER_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
         target_master_node: Some(TEST_MASTER_NODE),
     };
-    rt.block_on(async {
-        wait_for_shutdown_service_reachable_or_exit(
-            &ctx,
-            SUBSCRIBER_NODE_NAME,
-            subscriber_instance_id,
-            &mut subscriber_child,
-            &user_node_subscriber,
-            Duration::from_secs(10),
-        )
-        .await;
-        wait_for_shutdown_service_reachable_or_exit(
-            &ctx,
-            UVC_CAMERA_NODE_NAME,
-            exposer_instance_id,
-            &mut exposer_child,
-            &user_node_exposer,
-            Duration::from_secs(10),
-        )
-        .await;
+    wait_for_shutdown_service_reachable_or_exit(
+        &ctx,
+        SUBSCRIBER_NODE_NAME,
+        subscriber_instance_id,
+        &mut subscriber_child,
+        &user_node_subscriber,
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_for_shutdown_service_reachable_or_exit(
+        &ctx,
+        UVC_CAMERA_NODE_NAME,
+        exposer_instance_id,
+        &mut exposer_child,
+        &user_node_exposer,
+        Duration::from_secs(10),
+    )
+    .await;
 
-        send_shutdown(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            SUBSCRIBER_NODE_NAME,
-            Some(TEST_MASTER_NODE),
-            subscriber_instance_id,
-            Duration::from_secs(5),
-        )
-        .await;
-        send_shutdown(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            UVC_CAMERA_NODE_NAME,
-            Some(TEST_MASTER_NODE),
-            exposer_instance_id,
-            Duration::from_secs(5),
-        )
-        .await;
-    });
+    send_shutdown(
+        &messenger,
+        TEST_MASTER_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        SUBSCRIBER_NODE_NAME,
+        Some(TEST_MASTER_NODE),
+        subscriber_instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
+    send_shutdown(
+        &messenger,
+        TEST_MASTER_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        UVC_CAMERA_NODE_NAME,
+        Some(TEST_MASTER_NODE),
+        exposer_instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
 
     // Wait for both processes to exit
     let subscriber_output = wait_for_child(
@@ -344,12 +335,10 @@ fn main() -> Result<()> {
         exposer_stderr
     );
 
-    rt.block_on(async {
-        router
-            .stop_router()
-            .await
-            .expect("failed to stop zenoh router");
-    });
+    router
+        .stop_router()
+        .await
+        .expect("failed to stop zenoh router");
 }
 
 // --- Services exposes and its corresponding subscriber
@@ -394,17 +383,12 @@ const SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 }
 "#;
 
-#[test]
-fn services_communication_no_target_instance_id() {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .enable_all()
-        .build()
-        .expect("failed to create tokio runtime");
-
-    let (mut router, _dir, router_host, router_port) = rt
-        .block_on(peppylib::start_zenohd_process("127.0.0.1", None))
-        .expect("failed to start zenoh router for test");
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn services_communication_no_target_instance_id() {
+    let (mut router, _dir, router_host, router_port) =
+        peppylib::start_zenohd_process("127.0.0.1", None)
+            .await
+            .expect("failed to start zenoh router for test");
 
     // --- Subscriber (client) project
     let subscriber_instance_id = "the_subscriber";
@@ -534,11 +518,9 @@ fn main() -> Result<()> {
     let user_node_subscriber_config_str =
         subscriber_runtime_config_path.to_str().unwrap().to_owned();
 
-    let messenger = rt.block_on(async {
-        peppylib::MessengerHandle::from_host_port(&router_host, router_port)
-            .await
-            .expect("failed to create messenger for test control")
-    });
+    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+        .await
+        .expect("failed to create messenger for test control");
     let ctx = WaitContext {
         messenger: &messenger,
         bound_master_node: TEST_MASTER_NODE,
@@ -555,65 +537,61 @@ fn main() -> Result<()> {
         )],
     );
 
-    rt.block_on(async {
-        wait_for_service_reachable_or_exit(
-            &ctx,
-            UVC_CAMERA_NODE_NAME,
-            "enable_camera",
-            Some(exposer_instance_id),
-            &mut exposer_child,
-            &user_node_exposer,
-            Duration::from_secs(10),
-        )
-        .await;
-    });
+    wait_for_service_reachable_or_exit(
+        &ctx,
+        UVC_CAMERA_NODE_NAME,
+        "enable_camera",
+        Some(exposer_instance_id),
+        &mut exposer_child,
+        &user_node_exposer,
+        Duration::from_secs(10),
+    )
+    .await;
 
     let mut subscriber_child = spawn_cargo_run(
         &user_node_subscriber,
         &[(RUNTIME_CONFIG_VAR_NAME, &user_node_subscriber_config_str)],
     );
 
-    rt.block_on(async {
-        wait_for_shutdown_service_reachable_or_exit(
-            &ctx,
-            SUBSCRIBER_NODE_NAME,
-            subscriber_instance_id,
-            &mut subscriber_child,
-            &user_node_subscriber,
-            Duration::from_secs(10),
-        )
-        .await;
-        wait_for_shutdown_service_reachable_or_exit(
-            &ctx,
-            UVC_CAMERA_NODE_NAME,
-            exposer_instance_id,
-            &mut exposer_child,
-            &user_node_exposer,
-            Duration::from_secs(10),
-        )
-        .await;
+    wait_for_shutdown_service_reachable_or_exit(
+        &ctx,
+        SUBSCRIBER_NODE_NAME,
+        subscriber_instance_id,
+        &mut subscriber_child,
+        &user_node_subscriber,
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_for_shutdown_service_reachable_or_exit(
+        &ctx,
+        UVC_CAMERA_NODE_NAME,
+        exposer_instance_id,
+        &mut exposer_child,
+        &user_node_exposer,
+        Duration::from_secs(10),
+    )
+    .await;
 
-        send_shutdown(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            SUBSCRIBER_NODE_NAME,
-            Some(TEST_MASTER_NODE),
-            subscriber_instance_id,
-            Duration::from_secs(5),
-        )
-        .await;
-        send_shutdown(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            UVC_CAMERA_NODE_NAME,
-            Some(TEST_MASTER_NODE),
-            exposer_instance_id,
-            Duration::from_secs(5),
-        )
-        .await;
-    });
+    send_shutdown(
+        &messenger,
+        TEST_MASTER_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        SUBSCRIBER_NODE_NAME,
+        Some(TEST_MASTER_NODE),
+        subscriber_instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
+    send_shutdown(
+        &messenger,
+        TEST_MASTER_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        UVC_CAMERA_NODE_NAME,
+        Some(TEST_MASTER_NODE),
+        exposer_instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
 
     // Wait for both processes to exit
     let subscriber_output = wait_for_child(
@@ -669,26 +647,19 @@ fn main() -> Result<()> {
         exposer_stderr
     );
 
-    rt.block_on(async {
-        router
-            .stop_router()
-            .await
-            .expect("failed to stop zenoh router");
-    });
+    router
+        .stop_router()
+        .await
+        .expect("failed to stop zenoh router");
 }
 
 /// If there are multiple services of the same name and the subscriber does not specify an instance_id, it's the first service that respond that connects with the subscriber
-#[test]
-fn services_communication_multiple_exposed_instances_same_service_not_target_instance_id() {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .enable_all()
-        .build()
-        .expect("failed to create tokio runtime");
-
-    let (mut router, _dir, router_host, router_port) = rt
-        .block_on(peppylib::start_zenohd_process("127.0.0.1", None))
-        .expect("failed to start zenoh router for test");
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn services_communication_multiple_exposed_instances_same_service_not_target_instance_id() {
+    let (mut router, _dir, router_host, router_port) =
+        peppylib::start_zenohd_process("127.0.0.1", None)
+            .await
+            .expect("failed to start zenoh router for test");
 
     // --- Subscriber (client) project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
@@ -875,11 +846,9 @@ fn main() -> Result<()> {
     let exposer2_runtime_config_str = exposer2_runtime_config_path.to_str().unwrap().to_owned();
     let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
 
-    let messenger = rt.block_on(async {
-        peppylib::MessengerHandle::from_host_port(&router_host, router_port)
-            .await
-            .expect("failed to create messenger for test control")
-    });
+    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+        .await
+        .expect("failed to create messenger for test control");
     let ctx = WaitContext {
         messenger: &messenger,
         bound_master_node: TEST_MASTER_NODE,
@@ -897,94 +866,90 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer2_runtime_config_str)],
     );
 
-    rt.block_on(async {
-        wait_for_service_reachable_or_exit(
-            &ctx,
-            UVC_CAMERA_NODE_NAME,
-            "enable_camera",
-            Some(exposer1_instance_id),
-            &mut exposer1_child,
-            &user_node_exposer1,
-            Duration::from_secs(10),
-        )
-        .await;
-        wait_for_service_reachable_or_exit(
-            &ctx,
-            UVC_CAMERA_NODE_NAME,
-            "enable_camera",
-            Some(exposer2_instance_id),
-            &mut exposer2_child,
-            &user_node_exposer2,
-            Duration::from_secs(10),
-        )
-        .await;
-    });
+    wait_for_service_reachable_or_exit(
+        &ctx,
+        UVC_CAMERA_NODE_NAME,
+        "enable_camera",
+        Some(exposer1_instance_id),
+        &mut exposer1_child,
+        &user_node_exposer1,
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_for_service_reachable_or_exit(
+        &ctx,
+        UVC_CAMERA_NODE_NAME,
+        "enable_camera",
+        Some(exposer2_instance_id),
+        &mut exposer2_child,
+        &user_node_exposer2,
+        Duration::from_secs(10),
+    )
+    .await;
 
     let mut subscriber_child = spawn_cargo_run(
         &user_node_subscriber,
         &[(RUNTIME_CONFIG_VAR_NAME, &subscriber_runtime_config_str)],
     );
 
-    rt.block_on(async {
-        wait_for_shutdown_service_reachable_or_exit(
-            &ctx,
-            SUBSCRIBER_NODE_NAME,
-            subscriber_instance_id,
-            &mut subscriber_child,
-            &user_node_subscriber,
-            Duration::from_secs(10),
-        )
-        .await;
-        wait_for_shutdown_service_reachable_or_exit(
-            &ctx,
-            UVC_CAMERA_NODE_NAME,
-            exposer1_instance_id,
-            &mut exposer1_child,
-            &user_node_exposer1,
-            Duration::from_secs(10),
-        )
-        .await;
-        wait_for_shutdown_service_reachable_or_exit(
-            &ctx,
-            UVC_CAMERA_NODE_NAME,
-            exposer2_instance_id,
-            &mut exposer2_child,
-            &user_node_exposer2,
-            Duration::from_secs(10),
-        )
-        .await;
+    wait_for_shutdown_service_reachable_or_exit(
+        &ctx,
+        SUBSCRIBER_NODE_NAME,
+        subscriber_instance_id,
+        &mut subscriber_child,
+        &user_node_subscriber,
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_for_shutdown_service_reachable_or_exit(
+        &ctx,
+        UVC_CAMERA_NODE_NAME,
+        exposer1_instance_id,
+        &mut exposer1_child,
+        &user_node_exposer1,
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_for_shutdown_service_reachable_or_exit(
+        &ctx,
+        UVC_CAMERA_NODE_NAME,
+        exposer2_instance_id,
+        &mut exposer2_child,
+        &user_node_exposer2,
+        Duration::from_secs(10),
+    )
+    .await;
 
-        send_shutdown(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            SUBSCRIBER_NODE_NAME,
-            Some(TEST_MASTER_NODE),
-            subscriber_instance_id,
-            Duration::from_secs(5),
-        )
-        .await;
-        send_shutdown(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            UVC_CAMERA_NODE_NAME,
-            Some(TEST_MASTER_NODE),
-            exposer1_instance_id,
-            Duration::from_secs(5),
-        )
-        .await;
-        send_shutdown(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            UVC_CAMERA_NODE_NAME,
-            Some(TEST_MASTER_NODE),
-            exposer2_instance_id,
-            Duration::from_secs(5),
-        )
-        .await;
-    });
+    send_shutdown(
+        &messenger,
+        TEST_MASTER_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        SUBSCRIBER_NODE_NAME,
+        Some(TEST_MASTER_NODE),
+        subscriber_instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
+    send_shutdown(
+        &messenger,
+        TEST_MASTER_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        UVC_CAMERA_NODE_NAME,
+        Some(TEST_MASTER_NODE),
+        exposer1_instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
+    send_shutdown(
+        &messenger,
+        TEST_MASTER_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        UVC_CAMERA_NODE_NAME,
+        Some(TEST_MASTER_NODE),
+        exposer2_instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
 
     // Wait for all processes to exit
     let subscriber_output = wait_for_child(
@@ -1046,12 +1011,10 @@ fn main() -> Result<()> {
         subscriber_stderr
     );
 
-    rt.block_on(async {
-        router
-            .stop_router()
-            .await
-            .expect("failed to stop zenoh router");
-    });
+    router
+        .stop_router()
+        .await
+        .expect("failed to stop zenoh router");
 }
 
 // --- Actions
@@ -1149,17 +1112,12 @@ const SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT: &str = r#"
 }
 "#;
 
-#[test]
-fn actions_communication() {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .enable_all()
-        .build()
-        .expect("failed to create tokio runtime");
-
-    let (mut router, _dir, router_host, router_port) = rt
-        .block_on(peppylib::start_zenohd_process("127.0.0.1", None))
-        .expect("failed to start zenoh router for test");
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn actions_communication() {
+    let (mut router, _dir, router_host, router_port) =
+        peppylib::start_zenohd_process("127.0.0.1", None)
+            .await
+            .expect("failed to start zenoh router for test");
 
     // --- Subscriber (client) project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
@@ -1328,11 +1286,9 @@ fn main() -> Result<()> {
     let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
     let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
 
-    let messenger = rt.block_on(async {
-        peppylib::MessengerHandle::from_host_port(&router_host, router_port)
-            .await
-            .expect("failed to create messenger for test control")
-    });
+    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+        .await
+        .expect("failed to create messenger for test control");
 
     // Spawn exposer first so it's ready to handle requests
     let mut exposer_child = spawn_cargo_run(
@@ -1346,18 +1302,16 @@ fn main() -> Result<()> {
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
         target_master_node: None,
     };
-    rt.block_on(async {
-        wait_for_action_service_reachable_or_exit(
-            &action_ctx,
-            BRAIN_NODE_NAME,
-            "move_arm/goal",
-            None,
-            &mut exposer_child,
-            &user_node_exposer,
-            Duration::from_secs(15),
-        )
-        .await;
-    });
+    wait_for_action_service_reachable_or_exit(
+        &action_ctx,
+        BRAIN_NODE_NAME,
+        "move_arm/goal",
+        None,
+        &mut exposer_child,
+        &user_node_exposer,
+        Duration::from_secs(15),
+    )
+    .await;
 
     let mut subscriber_child = spawn_cargo_run(
         &user_node_subscriber,
@@ -1370,47 +1324,45 @@ fn main() -> Result<()> {
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
         target_master_node: Some(TEST_MASTER_NODE),
     };
-    rt.block_on(async {
-        wait_for_shutdown_service_reachable_or_exit(
-            &ctx,
-            SUBSCRIBER_NODE_NAME,
-            subscriber_instance_id,
-            &mut subscriber_child,
-            &user_node_subscriber,
-            Duration::from_secs(15),
-        )
-        .await;
-        wait_for_shutdown_service_reachable_or_exit(
-            &ctx,
-            BRAIN_NODE_NAME,
-            exposer_instance_id,
-            &mut exposer_child,
-            &user_node_exposer,
-            Duration::from_secs(15),
-        )
-        .await;
+    wait_for_shutdown_service_reachable_or_exit(
+        &ctx,
+        SUBSCRIBER_NODE_NAME,
+        subscriber_instance_id,
+        &mut subscriber_child,
+        &user_node_subscriber,
+        Duration::from_secs(15),
+    )
+    .await;
+    wait_for_shutdown_service_reachable_or_exit(
+        &ctx,
+        BRAIN_NODE_NAME,
+        exposer_instance_id,
+        &mut exposer_child,
+        &user_node_exposer,
+        Duration::from_secs(15),
+    )
+    .await;
 
-        send_shutdown(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            SUBSCRIBER_NODE_NAME,
-            Some(TEST_MASTER_NODE),
-            subscriber_instance_id,
-            Duration::from_secs(5),
-        )
-        .await;
-        send_shutdown(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            BRAIN_NODE_NAME,
-            Some(TEST_MASTER_NODE),
-            exposer_instance_id,
-            Duration::from_secs(5),
-        )
-        .await;
-    });
+    send_shutdown(
+        &messenger,
+        TEST_MASTER_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        SUBSCRIBER_NODE_NAME,
+        Some(TEST_MASTER_NODE),
+        subscriber_instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
+    send_shutdown(
+        &messenger,
+        TEST_MASTER_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        BRAIN_NODE_NAME,
+        Some(TEST_MASTER_NODE),
+        exposer_instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
 
     // Wait for both processes to exit
     let subscriber_output = wait_for_child(
@@ -1462,23 +1414,18 @@ fn main() -> Result<()> {
         exposer_stderr
     );
 
-    rt.block_on(async {
-        router
-            .stop_router()
-            .await
-            .expect("failed to stop zenoh router");
-    });
+    router
+        .stop_router()
+        .await
+        .expect("failed to stop zenoh router");
 }
 
-#[test]
-fn actions_communication_cancel_goal() {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .enable_all()
-        .build()
-        .expect("failed to create tokio runtime");
-
-    let (mut router, _dir, router_host, router_port) = start_router_for_tests(&rt);
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn actions_communication_cancel_goal() {
+    let (mut router, _dir, router_host, router_port) =
+        peppylib::start_zenohd_process("127.0.0.1", None)
+            .await
+            .expect("failed to start zenoh router for test");
 
     // --- Subscriber (client) project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
@@ -1639,11 +1586,9 @@ fn main() -> Result<()> {
     let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
     let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
 
-    let messenger = rt.block_on(async {
-        peppylib::MessengerHandle::from_host_port(&router_host, router_port)
-            .await
-            .expect("failed to create messenger for test control")
-    });
+    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+        .await
+        .expect("failed to create messenger for test control");
 
     // Spawn exposer first so it's ready to handle requests
     let mut exposer_child = spawn_cargo_run(
@@ -1657,18 +1602,16 @@ fn main() -> Result<()> {
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
         target_master_node: None,
     };
-    rt.block_on(async {
-        wait_for_action_service_reachable_or_exit(
-            &action_ctx,
-            BRAIN_NODE_NAME,
-            "move_arm/goal",
-            None,
-            &mut exposer_child,
-            &user_node_exposer,
-            Duration::from_secs(15),
-        )
-        .await;
-    });
+    wait_for_action_service_reachable_or_exit(
+        &action_ctx,
+        BRAIN_NODE_NAME,
+        "move_arm/goal",
+        None,
+        &mut exposer_child,
+        &user_node_exposer,
+        Duration::from_secs(15),
+    )
+    .await;
 
     let mut subscriber_child = spawn_cargo_run(
         &user_node_subscriber,
@@ -1681,47 +1624,45 @@ fn main() -> Result<()> {
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
         target_master_node: Some(TEST_MASTER_NODE),
     };
-    rt.block_on(async {
-        wait_for_shutdown_service_reachable_or_exit(
-            &ctx,
-            SUBSCRIBER_NODE_NAME,
-            subscriber_instance_id,
-            &mut subscriber_child,
-            &user_node_subscriber,
-            Duration::from_secs(15),
-        )
-        .await;
-        wait_for_shutdown_service_reachable_or_exit(
-            &ctx,
-            BRAIN_NODE_NAME,
-            exposer_instance_id,
-            &mut exposer_child,
-            &user_node_exposer,
-            Duration::from_secs(15),
-        )
-        .await;
+    wait_for_shutdown_service_reachable_or_exit(
+        &ctx,
+        SUBSCRIBER_NODE_NAME,
+        subscriber_instance_id,
+        &mut subscriber_child,
+        &user_node_subscriber,
+        Duration::from_secs(15),
+    )
+    .await;
+    wait_for_shutdown_service_reachable_or_exit(
+        &ctx,
+        BRAIN_NODE_NAME,
+        exposer_instance_id,
+        &mut exposer_child,
+        &user_node_exposer,
+        Duration::from_secs(15),
+    )
+    .await;
 
-        send_shutdown(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            SUBSCRIBER_NODE_NAME,
-            Some(TEST_MASTER_NODE),
-            subscriber_instance_id,
-            Duration::from_secs(5),
-        )
-        .await;
-        send_shutdown(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            BRAIN_NODE_NAME,
-            Some(TEST_MASTER_NODE),
-            exposer_instance_id,
-            Duration::from_secs(5),
-        )
-        .await;
-    });
+    send_shutdown(
+        &messenger,
+        TEST_MASTER_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        SUBSCRIBER_NODE_NAME,
+        Some(TEST_MASTER_NODE),
+        subscriber_instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
+    send_shutdown(
+        &messenger,
+        TEST_MASTER_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        BRAIN_NODE_NAME,
+        Some(TEST_MASTER_NODE),
+        exposer_instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
 
     // Wait for both processes to exit
     let subscriber_output = wait_for_child(
@@ -1771,10 +1712,8 @@ fn main() -> Result<()> {
         exposer_stderr
     );
 
-    rt.block_on(async {
-        router
-            .stop_router()
-            .await
-            .expect("failed to stop zenoh router");
-    });
+    router
+        .stop_router()
+        .await
+        .expect("failed to stop zenoh router");
 }
