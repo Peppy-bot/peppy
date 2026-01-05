@@ -6,10 +6,9 @@ fn get_capnp_binary() -> Option<PathBuf> {
     if let Ok(output) = std::process::Command::new("capnp")
         .arg("--version")
         .output()
+        && output.status.success()
     {
-        if output.status.success() {
-            return Some(PathBuf::from("capnp"));
-        }
+        return Some(PathBuf::from("capnp"));
     }
 
     // Fall back to bundled binaries in config-internal crate

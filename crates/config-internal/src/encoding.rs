@@ -96,9 +96,7 @@ impl MessageFormatMapper {
         collect_struct_fields(&ctx, root_struct_id, "", &mut mapping, &mut visited)?;
 
         fn array_schema_to_rust_string(array: &ArraySchema) -> Option<String> {
-            let Some(token) = array.items.as_ref().as_type_token() else {
-                return None;
-            };
+            let token = array.items.as_ref().as_type_token()?;
             let (_, rust_type) = type_token_strings(token);
             let rendered = match array.length {
                 Some(length) => format!("[{rust_type}; {length}]"),
@@ -114,10 +112,10 @@ impl MessageFormatMapper {
         ) {
             match schema {
                 SchemaType::Array(array) => {
-                    if let Some(rendered) = array_schema_to_rust_string(array) {
-                        if let Some(entry) = mapping.get_mut(current_key) {
-                            *entry = rendered;
-                        }
+                    if let Some(entry) = mapping.get_mut(current_key)
+                        && let Some(rendered) = array_schema_to_rust_string(array)
+                    {
+                        *entry = rendered;
                     }
                 }
                 SchemaType::Object(object) => {
@@ -351,7 +349,7 @@ impl CapnpSchemaGenerator {
             name = format!("{parent_struct}Field");
         }
 
-        if name.chars().next().map_or(false, |ch| ch.is_ascii_digit()) {
+        if name.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
             name.insert(0, '_');
         }
 
@@ -399,7 +397,7 @@ fn sanitize_field_name(input: &str) -> String {
         camel.extend(chars);
     }
 
-    if camel.chars().next().map_or(false, |ch| ch.is_ascii_digit()) {
+    if camel.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
         camel.insert(0, '_');
     }
 
@@ -453,7 +451,7 @@ fn type_token_strings(token: &TypeToken) -> (&'static str, &'static str) {
 
 fn find_root_struct_id(ctx: &GeneratorContext<'_>) -> Result<u64> {
     let requested_files = ctx.request.get_requested_files()?;
-    if requested_files.len() == 0 {
+    if requested_files.is_empty() {
         return Err(Error::Encoding(
             "capnp request did not include any files".to_string(),
         ));
@@ -472,7 +470,7 @@ fn find_root_struct_id(ctx: &GeneratorContext<'_>) -> Result<u64> {
                 .to_str()
                 .map_err(|err| Error::Encoding(err.to_string()))?;
             let simple_name = display_name
-                .rsplit(|ch| ch == ':' || ch == '.')
+                .rsplit(|ch| [':', '.'].contains(&ch))
                 .next()
                 .unwrap_or(display_name);
             if simple_name == "Message" {

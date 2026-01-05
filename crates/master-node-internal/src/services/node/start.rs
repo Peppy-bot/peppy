@@ -264,6 +264,7 @@ pub fn run_node(entity: &NodeEntity, runtime_config_json5: &str) -> std::io::Res
 /// Performs a health check on a newly started node instance.
 /// Polls the node's health service with a timeout and returns Ok if the node responds.
 /// Also monitors the child process to detect early exits.
+#[allow(clippy::too_many_arguments)]
 pub async fn perform_health_check(
     messenger: &MessengerHandle,
     master_node_name: &str,

@@ -136,10 +136,10 @@ fn main() -> Result<()> {
         );
         Ok(())
     })
-}
-"#;
+    }
+ "#;
     let main_file = user_node_subscriber.join("src").join("main.rs");
-    fs::write(main_file, &subscriber_main).expect("failed to write main file");
+    fs::write(main_file, subscriber_main).expect("failed to write main file");
 
     // --- Exposer project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
@@ -219,11 +219,11 @@ fn main() -> Result<()> {
 
         Ok(())
     })
-}
-"#;
+    }
+ "#;
 
     let main_file = user_node_exposer.join("src").join("main.rs");
-    fs::write(main_file, &exposer_main).expect("failed to write main file");
+    fs::write(main_file, exposer_main).expect("failed to write main file");
 
     let user_node_subscriber_config_str =
         subscriber_runtime_config_path.to_str().unwrap().to_owned();

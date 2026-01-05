@@ -73,7 +73,7 @@ async fn mandatory_services(node_runner: Arc<NodeRunner>) -> Result<()> {
     );
 
     let health_handle = listen_for_node_health(
-        &node_runner.messenger(),
+        node_runner.messenger(),
         runtime.bound_master_node(),
         runtime.bound_instance_id(),
         runtime.node_name(),
@@ -81,7 +81,7 @@ async fn mandatory_services(node_runner: Arc<NodeRunner>) -> Result<()> {
     .await?;
 
     let (shutdown_handle, shutdown_rx) = listen_for_shutdown(
-        &node_runner.messenger(),
+        node_runner.messenger(),
         runtime.bound_master_node(),
         runtime.bound_instance_id(),
         runtime.node_name(),

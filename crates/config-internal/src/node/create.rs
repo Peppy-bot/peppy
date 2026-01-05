@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn test_full_node_content_validation() {
         let node_name = "a_node";
-        let template = NodeConfigCreator::full_node(&node_name).unwrap();
+        let template = NodeConfigCreator::full_node(node_name).unwrap();
 
         // Write to a temporary file and read back the content
         let temp_file = NamedTempFile::new().unwrap();

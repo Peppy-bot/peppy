@@ -52,7 +52,7 @@ async fn list_nodes_async(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>
 
     // Sort nodes by label for consistent output
     let mut nodes = graph.nodes.clone();
-    nodes.sort_by(|a, b| a.label().cmp(&b.label()));
+    nodes.sort_by_key(|node| node.label());
 
     info!("Node stack:");
     for node in &nodes {

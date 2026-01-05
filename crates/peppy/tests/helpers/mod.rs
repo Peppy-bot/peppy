@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use peppy::commands::service::serve::{CancellationToken, ServeCommandBuilder};
 use peppy::context::DAEMON_STATE_FILE_ENV;
 use pmi::Messenger;

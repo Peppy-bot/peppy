@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn parse_float_values() {
-        assert_eq!(parse_value("3.14"), AnyType::Float(3.14));
+        assert_eq!(parse_value("1.25"), AnyType::Float(1.25));
         assert_eq!(parse_value("-2.5"), AnyType::Float(-2.5));
         assert_eq!(parse_value("0.0"), AnyType::Float(0.0));
     }

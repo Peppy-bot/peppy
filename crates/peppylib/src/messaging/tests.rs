@@ -130,8 +130,8 @@ async fn topic_publish_subscribe_no_target_instance_id() {
         &subscriber_handle,
         subscriber_master_node,
         subscriber_instance_id,
-        &node_name,
-        &topic,
+        node_name,
+        topic,
         None, // Accepts any master node that emits
         None, // Accepts any instance id that emits
         qos.clone(),
@@ -149,8 +149,8 @@ async fn topic_publish_subscribe_no_target_instance_id() {
         &emitter_handle,
         emitter_master_node,
         emitter_instance_id,
-        &node_name,
-        &topic,
+        node_name,
+        topic,
         qos,
         payload.clone(),
     )
@@ -202,8 +202,8 @@ async fn topic_publish_subscribe_with_target_instance_id() {
         &subscriber_handle,
         subscriber_master_node,
         subscriber_instance_id1,
-        &node_name,
-        &topic,
+        node_name,
+        topic,
         Some(emitter_master_node),
         Some(emitter_instance_id1),
         qos.clone(),
@@ -217,8 +217,8 @@ async fn topic_publish_subscribe_with_target_instance_id() {
         &subscriber_handle,
         subscriber_master_node,
         subscriber_instance_id2,
-        &node_name,
-        &topic,
+        node_name,
+        topic,
         Some(emitter_master_node),
         Some(emitter_instance_id2),
         qos.clone(),
@@ -234,8 +234,8 @@ async fn topic_publish_subscribe_with_target_instance_id() {
         &emitter_handle1,
         emitter_master_node,
         emitter_instance_id2,
-        &node_name,
-        &topic,
+        node_name,
+        topic,
         qos,
         payload.clone(),
     )
@@ -289,8 +289,8 @@ async fn topic_publish_subscribe_with_target_master_node() {
         &subscriber_handle,
         subscriber_master_node1,
         subscriber_instance_id,
-        &node_name,
-        &topic,
+        node_name,
+        topic,
         Some(emitter_master_node1),
         Some(emitter_instance_id),
         qos.clone(),
@@ -304,8 +304,8 @@ async fn topic_publish_subscribe_with_target_master_node() {
         &subscriber_handle,
         subscriber_master_node2,
         subscriber_instance_id,
-        &node_name,
-        &topic,
+        node_name,
+        topic,
         Some(emitter_master_node2),
         Some(emitter_instance_id),
         qos.clone(),
@@ -321,8 +321,8 @@ async fn topic_publish_subscribe_with_target_master_node() {
         &emitter_handle1,
         emitter_master_node2,
         emitter_instance_id,
-        &node_name,
-        &topic,
+        node_name,
+        topic,
         qos,
         payload.clone(),
     )
@@ -367,8 +367,8 @@ async fn topic_publish_reliable_5000hz_messages() {
         &receiver_handle,
         subscriber_master_node,
         subscriber_instance_id,
-        &node_name,
-        &topic,
+        node_name,
+        topic,
         None,
         None,
         qos.clone(),
@@ -392,8 +392,8 @@ async fn topic_publish_reliable_5000hz_messages() {
             &sender_handle,
             emitter_master_node,
             emitter_instance_id,
-            &node_name,
-            &topic,
+            node_name,
+            topic,
             qos.clone(),
             payload,
         )
@@ -1133,7 +1133,6 @@ async fn service_communication_fails_service_timeouts() {
 
         let response_payload = response_payload.clone();
         let call_count = Arc::clone(&call_count);
-        let response_delay = response_delay;
         let expected_requests = 2;
 
         tokio::spawn(async move {
@@ -1142,7 +1141,6 @@ async fn service_communication_fails_service_timeouts() {
             for _ in 0..expected_requests {
                 let response_payload = response_payload.clone();
                 let call_count = Arc::clone(&call_count);
-                let response_delay = response_delay;
 
                 let handled = tokio::time::timeout(
                     service_wait_timeout,
@@ -2132,17 +2130,15 @@ async fn action_communication_goal_cancelled() {
     assert_eq!(cancel_response.instance_id(), LISTENER_INSTANCE_ID);
 
     // Check that no feedback is received after cancellation
-    if let Ok(feedback_result) =
+    if let Ok(Ok(message)) =
         tokio::time::timeout(Duration::from_millis(200), goal_handle.on_next_feedback()).await
     {
-        if let Ok(message) = feedback_result {
-            panic!(
-                "expected no feedback after cancellation, received from master_node '{}' instance_id '{}' with payload {:?}",
-                message.master_node(),
-                message.instance_id(),
-                message.payload()
-            );
-        }
+        panic!(
+            "expected no feedback after cancellation, received from master_node '{}' instance_id '{}' with payload {:?}",
+            message.master_node(),
+            message.instance_id(),
+            message.payload()
+        );
     }
 
     server_task

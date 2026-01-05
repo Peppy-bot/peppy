@@ -349,18 +349,17 @@ mod tests {
         create_codegen_fingerprint(&peppy_config_path);
 
         // Runtime config has 'value' AND 'extra_param' - but 'extra_param' is not in compiled
-        let json5_config = format!(
-            r#"{{
+        let json5_config = r#"{
             messaging_host: "127.0.0.1",
             messaging_port: 7448,
-            deployment_instance: {{
+            deployment_instance: {
                 instance_id: "test_instance",
-                parameters: {{ value: 42, extra_param: "unexpected" }}
-            }},
+                parameters: { value: 42, extra_param: "unexpected" }
+            },
             node_name: "test_node",
             bound_master_node: "master-1234"
-        }}"#
-        );
+        }"#
+        .to_string();
 
         let runtime_config: RuntimeConfig =
             serde_json5::from_str(&json5_config).expect("runtime config should parse");
@@ -401,18 +400,17 @@ mod tests {
         create_codegen_fingerprint(&peppy_config_path);
 
         // Runtime config provides 'value' as a string instead of i64
-        let json5_config = format!(
-            r#"{{
+        let json5_config = r#"{
             messaging_host: "127.0.0.1",
             messaging_port: 7448,
-            deployment_instance: {{
+            deployment_instance: {
                 instance_id: "test_instance",
-                parameters: {{ value: "not_an_integer" }}
-            }},
+                parameters: { value: "not_an_integer" }
+            },
             node_name: "test_node",
             bound_master_node: "master-1234"
-        }}"#
-        );
+        }"#
+        .to_string();
 
         let runtime_config: RuntimeConfig =
             serde_json5::from_str(&json5_config).expect("runtime config should parse");
@@ -459,18 +457,17 @@ mod tests {
         create_codegen_fingerprint(&peppy_config_path);
 
         // Runtime config provides 'enabled' as string instead of bool
-        let json5_config = format!(
-            r#"{{
+        let json5_config = r#"{
             messaging_host: "127.0.0.1",
             messaging_port: 7448,
-            deployment_instance: {{
+            deployment_instance: {
                 instance_id: "test_instance",
-                parameters: {{ config: {{ enabled: "yes", threshold: 0.5 }} }}
-            }},
+                parameters: { config: { enabled: "yes", threshold: 0.5 } }
+            },
             node_name: "test_node",
             bound_master_node: "master-1234"
-        }}"#
-        );
+        }"#
+        .to_string();
 
         let runtime_config: RuntimeConfig =
             serde_json5::from_str(&json5_config).expect("runtime config should parse");
@@ -516,18 +513,17 @@ mod tests {
         create_codegen_fingerprint(&peppy_config_path);
 
         // Runtime config provides array with mixed types (string and int)
-        let json5_config = format!(
-            r#"{{
+        let json5_config = r#"{
             messaging_host: "127.0.0.1",
             messaging_port: 7448,
-            deployment_instance: {{
+            deployment_instance: {
                 instance_id: "test_instance",
-                parameters: {{ tags: ["valid", 123, "also_valid"] }}
-            }},
+                parameters: { tags: ["valid", 123, "also_valid"] }
+            },
             node_name: "test_node",
             bound_master_node: "master-1234"
-        }}"#
-        );
+        }"#
+        .to_string();
 
         let runtime_config: RuntimeConfig =
             serde_json5::from_str(&json5_config).expect("runtime config should parse");

@@ -183,7 +183,7 @@ fn group_artifacts_by_category(
         let category = ModuleCategory::from_kind(artifact.kind);
         grouped
             .entry(category)
-            .or_insert_with(BTreeMap::new)
+            .or_default()
             .entry(artifact.node_name.clone())
             .or_default()
             .push(artifact);
@@ -569,7 +569,7 @@ fn repository_root() -> Result<PathBuf> {
         .parent()
         .and_then(|path| path.parent())
         .map(|path| path.to_path_buf())
-        .ok_or_else(|| io::Error::new(ErrorKind::Other, "unable to resolve repository root"))
+        .ok_or_else(|| io::Error::other("unable to resolve repository root"))
         .map_err(Into::into)
 }
 

@@ -232,7 +232,7 @@ async fn start_launch_plan_instances(
                 Err(error) => {
                     for mut child in started_children {
                         let _ = child.kill();
-                        let _ = tokio::task::spawn_blocking(move || child.wait());
+                        drop(tokio::task::spawn_blocking(move || child.wait()));
                     }
                     return Err(error);
                 }

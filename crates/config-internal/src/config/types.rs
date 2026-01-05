@@ -87,12 +87,10 @@ where
     for instance in &instances {
         let id = instance.instance_id.as_str();
         if !seen.insert(id.to_owned()) {
-            if !seen.insert(id.to_owned()) {
-                let err = crate::error::StructuredError::DuplicateName(id.to_owned());
-                let msg = serde_json5::to_string(&err)
-                    .unwrap_or_else(|_| "serialization error".to_string());
-                return Err(de::Error::custom(msg));
-            }
+            let err = crate::error::StructuredError::DuplicateName(id.to_owned());
+            let msg =
+                serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
+            return Err(de::Error::custom(msg));
         }
     }
     Ok(instances)
@@ -136,14 +134,12 @@ impl DeploymentNodeSource {
     fn from_string(value: String) -> Result<Self, ParsingError> {
         let trimmed = value.trim();
         if trimmed.is_empty() {
-            if trimmed.is_empty() {
-                let err = crate::error::StructuredError::InvalidDeploymentSource(
-                    "source cannot be empty".to_string(),
-                );
-                let msg = serde_json5::to_string(&err)
-                    .unwrap_or_else(|_| "serialization error".to_string());
-                return Err(ParsingError::Structured(msg));
-            }
+            let err = crate::error::StructuredError::InvalidDeploymentSource(
+                "source cannot be empty".to_string(),
+            );
+            let msg =
+                serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
+            return Err(ParsingError::Structured(msg));
         }
 
         if let Some(rest) = trimmed.strip_prefix(Self::FILE_SCHEME) {

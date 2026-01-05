@@ -37,8 +37,8 @@ impl NodeInitRequest {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<node_capnp::node_init_request::Builder>();
-            request.set_node_root_dir(&self.node_root_dir.to_string_lossy());
-            request.set_build_system(&self.build_system.to_string());
+            request.set_node_root_dir(self.node_root_dir.to_string_lossy());
+            request.set_build_system(self.build_system.to_string());
             request.set_node_name(&self.node_name);
         }
         encode_message(&builder)
