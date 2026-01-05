@@ -226,6 +226,14 @@ pub fn start_router_for_tests(
         .expect("failed to start zenoh router for test")
 }
 
+/// Context for waiting on service reachability in tests.
+pub struct WaitContext<'a> {
+    pub messenger: &'a MessengerHandle,
+    pub bound_master_node: &'a str,
+    pub caller_instance_id: &'a str,
+    pub target_master_node: Option<&'a str>,
+}
+
 pub fn write_codegen_fingerprint(peppy_config_path: impl AsRef<Path>) {
     let peppy_config_path = peppy_config_path.as_ref();
     let fingerprint = RuntimeConfig::generate_peppy_config_fingerprint(peppy_config_path)
@@ -238,12 +246,9 @@ pub fn write_codegen_fingerprint(peppy_config_path: impl AsRef<Path>) {
 }
 
 pub async fn wait_for_service_reachable_or_exit(
-    messenger: &MessengerHandle,
-    bound_master_node: &str,
-    caller_instance_id: &str,
+    ctx: &WaitContext<'_>,
     target_node_name: &str,
     target_service_name: &str,
-    target_master_node: Option<&str>,
     target_instance_id: Option<&str>,
     child: &mut std::process::Child,
     dir: &std::path::Path,
@@ -269,12 +274,12 @@ pub async fn wait_for_service_reachable_or_exit(
         }
 
         let reachable = ServiceMessenger::is_reachable(
-            messenger,
-            bound_master_node,
-            caller_instance_id,
+            ctx.messenger,
+            ctx.bound_master_node,
+            ctx.caller_instance_id,
             target_node_name,
             target_service_name,
-            target_master_node,
+            ctx.target_master_node,
             target_instance_id,
         )
         .await
@@ -309,23 +314,17 @@ pub async fn wait_for_service_reachable_or_exit(
 }
 
 pub async fn wait_for_shutdown_service_reachable_or_exit(
-    messenger: &MessengerHandle,
-    bound_master_node: &str,
-    caller_instance_id: &str,
+    ctx: &WaitContext<'_>,
     target_node_name: &str,
-    target_master_node: Option<&str>,
     target_instance_id: &str,
     child: &mut std::process::Child,
     dir: &std::path::Path,
     timeout: Duration,
 ) {
     wait_for_service_reachable_or_exit(
-        messenger,
-        bound_master_node,
-        caller_instance_id,
+        ctx,
         target_node_name,
         SHUTDOWN_SERVICE,
-        target_master_node,
         Some(target_instance_id),
         child,
         dir,
@@ -335,12 +334,9 @@ pub async fn wait_for_shutdown_service_reachable_or_exit(
 }
 
 pub async fn wait_for_action_service_reachable_or_exit(
-    messenger: &MessengerHandle,
-    bound_master_node: &str,
-    caller_instance_id: &str,
+    ctx: &WaitContext<'_>,
     target_node_name: &str,
     target_service_name: &str,
-    target_master_node: Option<&str>,
     target_instance_id: Option<&str>,
     child: &mut std::process::Child,
     dir: &std::path::Path,
@@ -349,7 +345,8 @@ pub async fn wait_for_action_service_reachable_or_exit(
     const INSTANCE_ID_WILDCARD: &str = "**";
     const BROADCAST_MARKER: &str = "_any_";
 
-    let (router_host, router_port) = messenger
+    let (router_host, router_port) = ctx
+        .messenger
         .messaging_endpoint()
         .await
         .expect("zenoh messaging endpoint should be available for reachability checks");
@@ -380,12 +377,12 @@ pub async fn wait_for_action_service_reachable_or_exit(
             );
         }
 
-        let caller_target_instance_segment = (caller_instance_id != INSTANCE_ID_WILDCARD)
-            .then_some(caller_instance_id)
+        let caller_target_instance_segment = (ctx.caller_instance_id != INSTANCE_ID_WILDCARD)
+            .then_some(ctx.caller_instance_id)
             .unwrap_or(INSTANCE_ID_WILDCARD);
 
         let (effective_target_master, effective_target_instance) =
-            match (target_master_node, target_instance_id) {
+            match (ctx.target_master_node, target_instance_id) {
                 (Some(master), Some(instance)) => (master, instance),
                 (Some(master), None) => (master, BROADCAST_MARKER),
                 (None, Some(instance)) => (BROADCAST_MARKER, instance),
@@ -405,7 +402,7 @@ pub async fn wait_for_action_service_reachable_or_exit(
         let request_topic = format!(
             "{}/{}/{}/{}/{}/request/reachability_probe",
             target_master,
-            bound_master_node,
+            ctx.bound_master_node,
             target_instance,
             caller_target_instance_segment,
             service_root
