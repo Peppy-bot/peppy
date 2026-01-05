@@ -3,6 +3,7 @@ mod init;
 mod list;
 mod remove;
 mod run;
+mod runtime_config;
 mod stop;
 mod sync;
 mod types;
@@ -10,7 +11,7 @@ mod types;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use clap::Subcommand;
+use clap::{ArgGroup, Subcommand};
 use config::peppy_config::BuildSystem;
 use tracing::info;
 
@@ -86,6 +87,17 @@ pub enum NodeCommands {
         #[arg(long, hide = true)]
         instance_id: Option<String>,
     },
+    /// Prints out the runtime config of a node instance
+    #[command(group(ArgGroup::new("node_source").required(true).args(["node_name", "peppy_json5"])))]
+    RuntimeConfig {
+        /// Name of the node
+        #[arg(long)]
+        node_name: Option<String>,
+        /// Path to the node configuration file
+        #[arg(long)]
+        peppy_json5: Option<PathBuf>,
+    },
+
     /// List nodes in the current node stack
     List {
         /// If specified, will save a dotgraph representation at the given path
@@ -149,6 +161,13 @@ impl Command for NodeCommand {
             } => {
                 info!("Running node {}:{}...", node_name, tag);
                 run::run_node(ctx, node_name, tag, args, instance_id)
+            }
+            NodeCommands::RuntimeConfig {
+                node_name,
+                peppy_json5,
+            } => {
+                info!("Printing runtime config...");
+                runtime_config::print_runtime_config(ctx, node_name, peppy_json5)
             }
             NodeCommands::List { dot_graph_path } => {
                 info!("Listing nodes...");
