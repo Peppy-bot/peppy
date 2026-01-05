@@ -10,9 +10,9 @@ use config::consts::NODE_CONFIG_FILE;
 use helpers::TestServeHandle;
 use master_node::encoding::{NodeAddRequest, NodeListRequest};
 use node_stack::SerializedNodeGraph;
-use peppy::commands::service::serve::{CancellationToken, PID_FILE_ENV, PROMPT_ANSWER_ENV};
-use peppy::commands::service::serve::ServeCommand;
 use peppy::commands::Command;
+use peppy::commands::service::serve::ServeCommand;
+use peppy::commands::service::serve::{CancellationToken, PID_FILE_ENV, PROMPT_ANSWER_ENV};
 use peppy::context::{AppContext, DaemonState};
 
 const CALLER_INSTANCE_ID: &str = "peppy-test";
@@ -131,13 +131,15 @@ fn serve_command_replace_existing_stack() {
         fs::read_to_string(&node_config_path).expect("node config should be readable");
 
     let add_response = rt
-        .block_on(NodeAddRequest::new(node_config_content, nodes_dir.path()).poll(
-            messenger_handle,
-            &master_node_name,
-            CALLER_INSTANCE_ID,
-            &master_node_name,
-            Duration::from_secs(5),
-        ))
+        .block_on(
+            NodeAddRequest::new(node_config_content, nodes_dir.path()).poll(
+                messenger_handle,
+                &master_node_name,
+                CALLER_INSTANCE_ID,
+                &master_node_name,
+                Duration::from_secs(5),
+            ),
+        )
         .expect("node_add request should complete");
 
     assert!(

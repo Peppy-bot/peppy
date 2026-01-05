@@ -62,4 +62,3 @@ async fn handle_node_reset_request_inner(
     node_stack.reset();
     NodeResetResponse::success().encode()
 }
-
