@@ -174,21 +174,30 @@ pub struct StartedMasterNode {
 
 pub async fn start_master_node() -> StartedMasterNode {
     let shared_messenger = create_mock_messenger().await;
-    start_master_node_with_messenger(shared_messenger, None).await
+    let node_start_health_timeout = Duration::from_secs(30);
+    start_master_node_with_messenger(shared_messenger, None, node_start_health_timeout).await
+}
+
+pub async fn start_master_node_with_health_timeout(
+    node_start_health_timeout: Duration,
+) -> StartedMasterNode {
+    let shared_messenger = create_mock_messenger().await;
+    start_master_node_with_messenger(shared_messenger, None, node_start_health_timeout).await
 }
 
 pub async fn start_master_node_with_zenoh_messenger() -> StartedMasterNode {
     let (shared_messenger, temp_dir) = create_zenoh_messenger().await;
-    start_master_node_with_messenger(shared_messenger, Some(temp_dir)).await
+    let node_start_health_timeout = Duration::from_secs(30);
+    start_master_node_with_messenger(shared_messenger, Some(temp_dir), node_start_health_timeout)
+        .await
 }
 
 async fn start_master_node_with_messenger(
     shared_messenger: Arc<Mutex<Messenger>>,
     zenohd_temp_dir: Option<TempDir>,
+    node_start_health_timeout: Duration,
 ) -> StartedMasterNode {
     let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-
-    let node_start_health_timeout = Duration::from_secs(30);
     let node_arguments = MasterNodeArguments {
         node_start_health_timeout,
     };
