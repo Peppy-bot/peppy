@@ -2,10 +2,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use config::NodeArguments;
 use config::node::NodeConfigParser;
 use config::peppy_config::{DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
-use config::NodeArguments;
 use master_node::encoding::NodeListRequest;
 use names_generator2::get_random;
 use node_stack::SerializedNodeGraph;
