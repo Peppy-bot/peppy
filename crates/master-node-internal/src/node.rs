@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, oneshot};
 use tracing::info;
 
 const MASTER_NODE_TAG: &str = "internal";
@@ -111,6 +111,10 @@ impl MasterNode {
     }
 
     pub async fn start(&self) -> Result<()> {
+        self.start_with_ready(None).await
+    }
+
+    pub async fn start_with_ready(&self, ready: Option<oneshot::Sender<()>>) -> Result<()> {
         let master_node_name = self.node_name(); // The master node binds to itself as the master scope
         info!(
             "Starting the master node with name {} and instance_id {}...",
@@ -207,6 +211,10 @@ impl MasterNode {
             )
             .await?,
         ];
+
+        if let Some(ready) = ready {
+            let _ = ready.send(());
+        }
 
         // Wait for all service handlers
         futures::future::try_join_all(handles)
