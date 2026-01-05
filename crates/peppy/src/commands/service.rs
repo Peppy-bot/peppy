@@ -3,6 +3,7 @@ mod master_node;
 mod messaging_router;
 
 pub mod install;
+pub mod reset;
 pub mod serve;
 
 use super::Command;
@@ -24,6 +25,8 @@ pub enum ServiceCommands {
     },
     // Install the peppy daemon system-wide
     Install {},
+    /// Reset the current master node stack (clears all nodes except the master).
+    Reset {},
 }
 
 pub struct ServiceCommand {
@@ -43,6 +46,7 @@ impl Command for ServiceCommand {
             }
             .execute(app_ctx),
             ServiceCommands::Install {} => install::InstallCommand {}.execute(app_ctx),
+            ServiceCommands::Reset {} => reset::ResetCommand {}.execute(app_ctx),
         }
     }
 }
