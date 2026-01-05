@@ -2,7 +2,7 @@ use crate::Result;
 use crate::services::{
     listen_for_info, listen_for_launch_configuration, listen_for_node_add,
     listen_for_node_generate, listen_for_node_init, listen_for_node_list, listen_for_node_remove,
-    listen_for_node_start, listen_for_node_stop, listen_for_ping,
+    listen_for_node_reset, listen_for_node_start, listen_for_node_stop, listen_for_ping,
 };
 use config::{
     AnyType, NodeArguments,
@@ -160,6 +160,14 @@ impl MasterNode {
             )
             .await?,
             listen_for_node_remove(
+                &self.messenger,
+                master_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&self.node_stack),
+            )
+            .await?,
+            listen_for_node_reset(
                 &self.messenger,
                 master_node_name,
                 self.instance_id(),
