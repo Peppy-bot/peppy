@@ -1,42 +1,15 @@
 mod helpers;
 
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use config::consts::NODE_CONFIG_FILE;
 use helpers::TestServeHandle;
-use master_node::encoding::{NodeAddRequest, NodeListRequest};
-use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
+use peppy::commands::service::serve::CancellationToken;
 use peppy::commands::service::serve::ServeCommand;
-use peppy::commands::service::serve::{CancellationToken, PID_FILE_ENV, PROMPT_ANSWER_ENV};
 use peppy::context::{AppContext, DaemonState};
-
-const CALLER_INSTANCE_ID: &str = "peppy-test";
-
-fn write_node_config(nodes_directory: &Path, node_name: &str, node_tag: &str) -> PathBuf {
-    let node_dir = nodes_directory.join(node_name);
-    fs::create_dir_all(&node_dir).expect("failed to create node directory");
-    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
-    fs::write(
-        &node_config_path,
-        format!(
-            r#"{{
-                schema_version: 1,
-                manifest: {{
-                    name: "{node_name}",
-                    tag: "{node_tag}",
-                    launch_cmd: ["sh", "-c", "exit 0"]
-                }}
-            }}"#
-        ),
-    )
-    .expect("failed to write node config");
-    node_config_path
-}
+use peppy::error::Error;
 
 #[test]
 fn serve_command() {
@@ -92,124 +65,40 @@ fn serve_command() {
 }
 
 #[test]
-fn serve_command_replace_existing_stack() {
+fn serve_command_fails_when_zenoh_port_already_in_use() {
     let _serial_guard = helpers::serve_test_lock().lock().unwrap();
-    let serve = TestServeHandle::with_mock_messenger();
+    let _serve = TestServeHandle::with_zenoh();
 
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
-    let master_node_name = daemon_state.master_node_name;
-    assert!(
-        !master_node_name.is_empty(),
-        "master_node_name should not be empty"
-    );
+    let ctx = Arc::new(AppContext::default());
 
-    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
-    let node_name = "reset_test_node";
-    let node_tag = "0.1.0";
-    let node_config_path = write_node_config(nodes_dir.path(), node_name, node_tag);
+    // Best-effort hang protection in case the second serve unexpectedly starts.
+    let shutdown_token = CancellationToken::new();
+    let shutdown_token_for_cancel = shutdown_token.clone();
+    let cancel_thread = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(500));
+        shutdown_token_for_cancel.cancel();
+    });
 
-    let ctx = Arc::new(AppContext::with_messenger(
-        nodes_dir.path(),
-        serve.messenger(),
-    ));
-
-    // Capture logs from the reset attempt (runs in this test thread).
-    let log_capture = serve.log_capture().clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
-
-    let messenger_handle = ctx
-        .messenger_handle()
-        .expect("messenger handle should be available");
-
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime should create");
-    let node_config_content =
-        fs::read_to_string(&node_config_path).expect("node config should be readable");
-
-    let add_response = rt
-        .block_on(
-            NodeAddRequest::new(node_config_content, nodes_dir.path()).poll(
-                messenger_handle,
-                &master_node_name,
-                CALLER_INSTANCE_ID,
-                &master_node_name,
-                Duration::from_secs(5),
-            ),
-        )
-        .expect("node_add request should complete");
-
-    assert!(
-        add_response.success,
-        "node_add should succeed: {:?}",
-        add_response.error_message
-    );
-
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
-            messenger_handle,
-            &master_node_name,
-            CALLER_INSTANCE_ID,
-            &master_node_name,
-            Duration::from_secs(5),
-        ))
-        .expect("node_list request should complete");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    assert_eq!(
-        graph.nodes.len(),
-        2,
-        "graph should contain the master node + one added node before reset. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-    );
-
-    // Simulate an already-running peppy daemon by writing a pid file containing this process PID.
-    let pid_file = std::env::var_os(PID_FILE_ENV).expect("pid file env should be set");
-    let pid_path = PathBuf::from(pid_file);
-    fs::write(&pid_path, std::process::id().to_string()).expect("pid file should be writable");
-
-    // Trigger reset via a second serve command invocation.
-    let _prompt_guard = helpers::EnvVarGuard::set(PROMPT_ANSWER_ENV, "y");
-    ServeCommand {
-        messaging_engine: "mock".to_string(),
-        master_name: Some("master-node".to_string()),
-        shutdown_token: None,
+    let err = ServeCommand {
+        messaging_engine: "zenoh".to_string(),
+        master_name: Some("master-node-2".to_string()),
+        shutdown_token: Some(shutdown_token),
     }
     .execute(&ctx)
-    .expect("reset should succeed when user answers yes");
+    .expect_err("second serve should fail when zenoh port is already in use");
 
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
-            messenger_handle,
-            &master_node_name,
-            CALLER_INSTANCE_ID,
-            &master_node_name,
-            Duration::from_secs(5),
-        ))
-        .expect("node_list request should complete after reset");
+    cancel_thread
+        .join()
+        .expect("cancel thread should complete without panic");
 
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse after reset");
-    assert_eq!(
-        graph.nodes.len(),
-        1,
-        "graph should only contain the master node after reset. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-    );
-
-    let logs = log_capture.logs();
-    assert!(
-        logs.contains("Existing peppy instance detected"),
-        "existing instance detection should be logged. Logs:\n{}",
-        logs
-    );
-    assert!(
-        logs.contains("reset_requested=true"),
-        "user response should be registered in logs. Logs:\n{}",
-        logs
-    );
+    match err {
+        Error::PeppyMessagingInterface(err) => {
+            let msg = format!("{err:?}").to_lowercase();
+            assert!(
+                msg.contains("already in use") || msg.contains("eaddrinuse"),
+                "expected port-in-use error, got: {err:?}"
+            );
+        }
+        other => panic!("expected PeppyMessagingInterface error, got: {other:?}"),
+    }
 }

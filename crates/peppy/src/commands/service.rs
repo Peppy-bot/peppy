@@ -1,7 +1,6 @@
 mod builder;
 mod master_node;
 mod messaging_router;
-mod pid_lock;
 
 pub mod install;
 pub mod serve;

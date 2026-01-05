@@ -1,4 +1,4 @@
-use peppy::commands::service::serve::{CancellationToken, PID_FILE_ENV, ServeCommandBuilder};
+use peppy::commands::service::serve::{CancellationToken, ServeCommandBuilder};
 use peppy::context::DAEMON_STATE_FILE_ENV;
 use pmi::Messenger;
 use pmi::zenohd_support::{reserve_free_tcp_port, write_zenohd_config};
@@ -93,20 +93,16 @@ impl Drop for EnvVarGuard {
 
 pub struct TempServeEnvGuard {
     _dir: TempDir,
-    _pid_env: EnvVarGuard,
     _state_env: EnvVarGuard,
 }
 
 impl TempServeEnvGuard {
     pub fn new() -> Self {
         let dir = tempfile::tempdir().expect("failed to create temp dir for serve env");
-        let pid_file = dir.path().join("peppy.pid");
         let state_file = dir.path().join("daemon_state.json");
-        let pid_env = EnvVarGuard::set(PID_FILE_ENV, pid_file.as_os_str());
         let state_env = EnvVarGuard::set(DAEMON_STATE_FILE_ENV, state_file.as_os_str());
         Self {
             _dir: dir,
-            _pid_env: pid_env,
             _state_env: state_env,
         }
     }
