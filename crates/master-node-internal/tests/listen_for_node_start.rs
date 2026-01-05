@@ -1,6 +1,6 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, start_master_node};
+use common::{CALLER_INSTANCE_ID, start_master_node, start_master_node_with_health_timeout};
 use config::consts::NODE_CONFIG_FILE;
 use config::node::Name as NodeName;
 use config::peppy_config::{DeploymentInstance, Name};
@@ -135,7 +135,8 @@ async fn listen_for_node_start_timeout() {
     const TARGET_NODE_NAME: &str = "runnable_node";
     const TARGET_INSTANCE_ID: &str = "runnable_instance";
 
-    let started = start_master_node().await;
+    // Use a short health timeout so the test doesn't take too long
+    let started = start_master_node_with_health_timeout(Duration::from_secs(2)).await;
 
     // Create a node config with a launch_cmd that won't respond to health checks
     // Using "sleep 10" as a simple command that runs but doesn't respond
