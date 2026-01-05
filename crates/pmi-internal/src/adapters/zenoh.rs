@@ -48,7 +48,7 @@ impl ZenohAdapter {
 
         Ok(Self {
             zenohd: Some(facade),
-            client_config: client_config,
+            client_config,
             session: None,
             publishers: HashMap::new(),
         })

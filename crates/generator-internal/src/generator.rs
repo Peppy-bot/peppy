@@ -50,7 +50,7 @@ pub fn generate_lib_for_build_system(
         BuildSystem::Rust | BuildSystem::Cargo => {
             generate_with_backend(RustGenerator::new(), &interfaces, &output_dir)?;
             // Create or update the node's Cargo.toml with peppygen dependency
-            ensure_node_cargo_toml(node_dir, &node_config.manifest.name.as_str())?;
+            ensure_node_cargo_toml(node_dir, node_config.manifest.name.as_str())?;
             Ok(())
         }
         BuildSystem::Python | BuildSystem::Uv => {
@@ -151,15 +151,15 @@ fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
             .entry("dependencies".to_string())
             .or_insert_with(|| Value::Table(Map::new()));
 
-        if let Value::Table(deps) = dependencies {
-            if !deps.contains_key("peppygen") {
-                let mut peppygen_dep = Map::new();
-                peppygen_dep.insert(
-                    "path".to_string(),
-                    Value::String(config::consts::PEPPYGEN_OUTPUT_PATH.to_string()),
-                );
-                deps.insert("peppygen".to_string(), Value::Table(peppygen_dep));
-            }
+        if let Value::Table(deps) = dependencies
+            && !deps.contains_key("peppygen")
+        {
+            let mut peppygen_dep = Map::new();
+            peppygen_dep.insert(
+                "path".to_string(),
+                Value::String(config::consts::PEPPYGEN_OUTPUT_PATH.to_string()),
+            );
+            deps.insert("peppygen".to_string(), Value::Table(peppygen_dep));
         }
     }
 

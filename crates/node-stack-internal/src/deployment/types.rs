@@ -297,17 +297,17 @@ pub fn exposes_interface(node: &NodeConfig, requirement: &InterfaceRequirement) 
     };
 
     match requirement.kind() {
-        InterfaceKind::Topic => exposes.topics.as_ref().map_or(false, |topics| {
+        InterfaceKind::Topic => exposes.topics.as_ref().is_some_and(|topics| {
             topics
                 .iter()
                 .any(|topic| topic.name.trim() == requirement.name())
         }),
-        InterfaceKind::Service => exposes.services.as_ref().map_or(false, |services| {
+        InterfaceKind::Service => exposes.services.as_ref().is_some_and(|services| {
             services
                 .iter()
                 .any(|service| service.name.trim() == requirement.name())
         }),
-        InterfaceKind::Action => exposes.actions.as_ref().map_or(false, |actions| {
+        InterfaceKind::Action => exposes.actions.as_ref().is_some_and(|actions| {
             actions
                 .iter()
                 .any(|action| action.name.trim() == requirement.name())
@@ -607,13 +607,13 @@ impl NodeStackInner {
 
         if let Some(&index) = self.key_to_index.get(&key) {
             // Entity exists, check interfaces match
-            if let Some(entity) = self.graph.node_weight(index) {
-                if !interfaces_match(&entity.config().interfaces, &config.interfaces) {
-                    return Err(Error::ConfigMismatch {
-                        name: config.manifest.name.as_str().to_string(),
-                        tag: config.manifest.tag.clone(),
-                    });
-                }
+            if let Some(entity) = self.graph.node_weight(index)
+                && !interfaces_match(&entity.config().interfaces, &config.interfaces)
+            {
+                return Err(Error::ConfigMismatch {
+                    name: config.manifest.name.as_str().to_string(),
+                    tag: config.manifest.tag.clone(),
+                });
             }
             // Config already exists and matches, nothing to do
         } else {
@@ -853,6 +853,10 @@ impl NodeStack {
 
     pub fn len(&self) -> usize {
         self.shared.read().expect("node stack poisoned").len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Returns the root node (master node) of this stack.

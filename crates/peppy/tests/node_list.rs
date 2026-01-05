@@ -1,4 +1,3 @@
-#[allow(dead_code)]
 mod helpers;
 
 use std::path::Path;
@@ -333,7 +332,6 @@ fn node_list_command_with_dot_representation_succeeds() {
             return false;
         };
         let src = lhs
-            .trim()
             .split_whitespace()
             .next()
             .unwrap_or("")
@@ -341,7 +339,6 @@ fn node_list_command_with_dot_representation_succeeds() {
             .take_while(|c| c.is_ascii_digit())
             .collect::<String>();
         let dst = rhs
-            .trim()
             .split_whitespace()
             .next()
             .unwrap_or("")

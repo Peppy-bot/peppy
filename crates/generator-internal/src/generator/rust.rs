@@ -20,6 +20,7 @@ use std::path::Path;
 use syn::{File, parse2};
 
 /// Rust-specific implementation of the interface generator.
+#[derive(Default)]
 pub struct RustGenerator {
     sections: Vec<InterfaceArtifact>,
     schemas: HashMap<String, CapnpSchema>,
@@ -29,12 +30,7 @@ pub struct RustGenerator {
 
 impl RustGenerator {
     pub fn new() -> Self {
-        Self {
-            sections: Vec::new(),
-            schemas: HashMap::new(),
-            pending_exposed_services: None,
-            parameters: config::NodeArguments::default(),
-        }
+        Self::default()
     }
 
     /// Sets the node parameters for code generation.
@@ -1457,9 +1453,10 @@ impl LanguageGenerator for RustGenerator {
             Some(&response_data_ident),
         )?;
 
+        let instance_id_ident = Ident::new("instance_id", Span::call_site());
         let instance_id_param_index = params
             .iter()
-            .position(|param| param.ident.to_string() == "instance_id");
+            .position(|param| param.ident == instance_id_ident);
 
         let mut request_struct_params = params.clone();
         if let Some(index) = instance_id_param_index {
@@ -1908,7 +1905,7 @@ fn subscribed_action_module_name(action: &SubscribedAction) -> String {
     }
 }
 
-fn non_empty_message_format<'a>(format: Option<&'a MessageFormat>) -> Option<&'a MessageFormat> {
+fn non_empty_message_format(format: Option<&MessageFormat>) -> Option<&MessageFormat> {
     format.filter(|format| !format.0.is_empty())
 }
 
@@ -2341,7 +2338,7 @@ fn sanitize_capnp_field_name(input: &str) -> String {
         camel.extend(chars);
     }
 
-    if camel.chars().next().map_or(false, |ch| ch.is_ascii_digit()) {
+    if camel.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
         camel.insert(0, '_');
     }
 
@@ -2722,8 +2719,9 @@ fn build_topic_emit(
     label: &str,
 ) -> TokenStream {
     let mut method_param_tokens = Vec::new();
+    let instance_id_ident = Ident::new("instance_id", Span::call_site());
     for param in params {
-        if param.ident.to_string() == "instance_id" {
+        if param.ident == instance_id_ident {
             continue;
         }
         let ident = &param.ident;
@@ -2807,6 +2805,7 @@ fn build_topic_emit(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_subscribed_topic_callback(
     fn_name: &Ident,
     helper_fn_ident: &Ident,
@@ -3344,6 +3343,7 @@ fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
     quote!(peppylib::config::QoSProfile::#variant_ident)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_exposed_service_method(
     fn_name: &Ident,
     handler_fn_name_override: Option<&Ident>,
@@ -3873,6 +3873,7 @@ fn build_request_struct_with_name_and_impl(
     Some((ident, tokens))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_request_deserializer(
     deserializer_fn_name: &Ident,
     request_spec: &MessageEncodingSpec,
@@ -4260,8 +4261,9 @@ fn build_action_feedback_emit(
     label: &str,
 ) -> TokenStream {
     let mut method_param_tokens = Vec::new();
+    let instance_id_ident = Ident::new("instance_id", Span::call_site());
     for param in params {
-        if param.ident.to_string() == "instance_id" {
+        if param.ident == instance_id_ident {
             continue;
         }
         let ident = &param.ident;

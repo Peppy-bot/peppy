@@ -25,7 +25,7 @@ pub async fn listen_for_node_generate(
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(|context| handle_node_generate_request(context))
+            .handle_requests(handle_node_generate_request)
             .await
             .map_err(Into::into)
     });

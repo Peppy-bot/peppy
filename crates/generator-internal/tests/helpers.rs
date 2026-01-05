@@ -136,16 +136,16 @@ pub fn wait_for_child(
 ) -> std::process::Output {
     let start = Instant::now();
     loop {
-        if let Some(limit) = timeout {
-            if start.elapsed() > limit {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!(
-                    "process timed out after {:?} for project at {}",
-                    limit,
-                    dir.display()
-                );
-            }
+        if let Some(limit) = timeout
+            && start.elapsed() > limit
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "process timed out after {:?} for project at {}",
+                limit,
+                dir.display()
+            );
         }
 
         if let Some(status) = child
@@ -370,9 +370,11 @@ pub async fn wait_for_action_service_reachable_or_exit(
             );
         }
 
-        let caller_target_instance_segment = (ctx.caller_instance_id != INSTANCE_ID_WILDCARD)
-            .then_some(ctx.caller_instance_id)
-            .unwrap_or(INSTANCE_ID_WILDCARD);
+        let caller_target_instance_segment = if ctx.caller_instance_id != INSTANCE_ID_WILDCARD {
+            ctx.caller_instance_id
+        } else {
+            INSTANCE_ID_WILDCARD
+        };
 
         let (effective_target_master, effective_target_instance) =
             match (ctx.target_master_node, target_instance_id) {

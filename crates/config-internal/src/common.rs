@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn matches_simple_float() {
-        let value = AnyType::Float(3.14);
+        let value = AnyType::Float(1.0);
         let spec = AnyType::String("f32".to_string());
         assert!(value.matches_type_spec(&spec, "test").is_ok());
     }

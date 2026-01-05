@@ -26,7 +26,7 @@ pub async fn listen_for_node_init(
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(|context| handle_node_init_request(context))
+            .handle_requests(handle_node_init_request)
             .await
             .map_err(Into::into)
     });

@@ -8,12 +8,12 @@ use crate::info_capnp;
 
 use super::{decode_message, encode_message};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InfoRequest {}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct InfoRequest;
 
 impl InfoRequest {
     pub fn new() -> Self {
-        Self {}
+        Self
     }
 
     pub fn encode(&self) -> Result<Bytes> {
@@ -27,7 +27,7 @@ impl InfoRequest {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         reader.get_root::<info_capnp::info_request::Reader>()?;
-        Ok(Self {})
+        Ok(Self)
     }
 }
 

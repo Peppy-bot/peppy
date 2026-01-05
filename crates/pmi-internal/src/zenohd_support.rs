@@ -154,7 +154,7 @@ pub async fn start_zenohd_process(
         }
     }
 
-    Err(PeppyMessagingInterfaceError::BackendError(
-        format!("Failed to start zenoh router after {max_start_attempts} attempts").into(),
-    ))
+    Err(PeppyMessagingInterfaceError::BackendError(format!(
+        "Failed to start zenoh router after {max_start_attempts} attempts"
+    )))
 }

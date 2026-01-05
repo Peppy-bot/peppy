@@ -269,7 +269,7 @@ mod tests {
 
         // Test publish - should work when connected
         let key = make_key_expr("test_topic");
-        let test_message = Message::new(&key, &[1, 2, 3]);
+        let test_message = Message::new(&key, [1, 2, 3]);
         assert!(
             mock.publish(test_message, PublisherQoS::Standard)
                 .await

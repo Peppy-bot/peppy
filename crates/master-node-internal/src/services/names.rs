@@ -2,7 +2,6 @@
 ///
 /// These constants define the service identifiers used when registering
 /// and communicating with master node services.
-
 pub const INFO: &str = "info";
 pub const LAUNCHER: &str = "launch";
 pub const PING: &str = "ping";

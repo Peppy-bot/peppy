@@ -36,7 +36,7 @@ impl LauncherRequest {
         {
             let mut request = builder.init_root::<launcher_capnp::launcher_request::Builder>();
             request.set_peppy_launcher_json5(&self.peppy_launcher_json5);
-            request.set_nodes_directory(&self.nodes_directory.to_string_lossy());
+            request.set_nodes_directory(self.nodes_directory.to_string_lossy());
             request.set_launcher_runtime_config_json5(&self.launcher_runtime_config_json5);
         }
         encode_message(&builder)

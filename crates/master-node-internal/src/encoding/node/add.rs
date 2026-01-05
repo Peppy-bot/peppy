@@ -37,7 +37,7 @@ impl NodeAddRequest {
         {
             let mut request = builder.init_root::<node_capnp::node_add_request::Builder>();
             request.set_peppy_json5(&self.peppy_json5);
-            request.set_from_dir(&self.from_dir.to_string_lossy());
+            request.set_from_dir(self.from_dir.to_string_lossy());
             if let Some(ref instance_id) = self.instance_id {
                 request.set_instance_id(instance_id);
             }

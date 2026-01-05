@@ -53,12 +53,12 @@ fn generate_request_id() -> String {
 
 /// Formats an instance ID as a bound instance segment (appears right after MASTER_NODE in key expressions)
 fn format_bound_instance_segment(instance_id: &str) -> Option<String> {
-    (instance_id != INSTANCE_ID_WILDCARD).then(|| format!("{instance_id}"))
+    (instance_id != INSTANCE_ID_WILDCARD).then(|| instance_id.to_string())
 }
 
 /// Formats an instance ID as a target instance segment (identifies a specific target/source instance)
 fn format_target_instance_segment(instance_id: &str) -> Option<String> {
-    (instance_id != INSTANCE_ID_WILDCARD).then(|| format!("{instance_id}"))
+    (instance_id != INSTANCE_ID_WILDCARD).then(|| instance_id.to_string())
 }
 
 pub struct TopicMessenger;
@@ -419,6 +419,7 @@ pub struct ActionCreation {
 }
 
 impl TopicMessenger {
+    #[allow(clippy::too_many_arguments)]
     pub async fn subscribe(
         messenger: &MessengerHandle,
         as_master_node: &str,
@@ -485,6 +486,7 @@ impl ServiceMessenger {
     }
 
     /// If `target_instance_id` is `None`, this call returns with the first service instance that it hits
+    #[allow(clippy::too_many_arguments)]
     pub async fn poll(
         messenger: &MessengerHandle,
         bound_master_node: &str,
@@ -587,6 +589,7 @@ impl ActionMessenger {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_goal(
         messenger: &MessengerHandle,
         as_master_node: &str,
@@ -738,6 +741,7 @@ impl MessengerHandle {
         Ok(messenger)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn subscribe_to_topic(
         &self,
         as_master_node: &str,
@@ -748,14 +752,8 @@ impl MessengerHandle {
         to_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        let to_master_node = match to_master_node {
-            Some(master_node) => master_node,
-            None => "*",
-        };
-        let to_instance_id = match to_instance_id {
-            Some(instance_id) => instance_id,
-            None => "*",
-        };
+        let to_master_node = to_master_node.unwrap_or("*");
+        let to_instance_id = to_instance_id.unwrap_or("*");
         let key_expr = format!(
             "{as_master_node}/{to_master_node}/{as_instance_id}/{to_instance_id}/topic/{to_node_name}/{to_topic}"
         );
@@ -852,6 +850,7 @@ impl MessengerHandle {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn poll_service(
         &self,
         message_type: &str,
