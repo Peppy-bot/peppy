@@ -11,9 +11,9 @@ use config::{
 };
 use generator::{LanguageGenerator, SubscribedActionMessage};
 use helpers::{
-    compile_project, copy_config_to_output, init_cargo_user_node, init_test_env, send_shutdown,
-    spawn_cargo_run, start_router_for_tests, wait_for_action_service_reachable_or_exit,
-    wait_for_child, wait_for_service_reachable_or_exit,
+    WaitContext, compile_project, copy_config_to_output, init_cargo_user_node, init_test_env,
+    send_shutdown, spawn_cargo_run, start_router_for_tests,
+    wait_for_action_service_reachable_or_exit, wait_for_child, wait_for_service_reachable_or_exit,
     wait_for_shutdown_service_reachable_or_exit, write_codegen_fingerprint,
 };
 use pmi::MessengerBackend;
@@ -258,13 +258,16 @@ fn main() -> Result<()> {
             .await
             .expect("failed to create messenger for shutdown")
     });
+    let ctx = WaitContext {
+        messenger: &messenger,
+        bound_master_node: TEST_MASTER_NODE,
+        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
+        target_master_node: Some(TEST_MASTER_NODE),
+    };
     rt.block_on(async {
         wait_for_shutdown_service_reachable_or_exit(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
+            &ctx,
             SUBSCRIBER_NODE_NAME,
-            Some(TEST_MASTER_NODE),
             subscriber_instance_id,
             &mut subscriber_child,
             &user_node_subscriber,
@@ -272,11 +275,8 @@ fn main() -> Result<()> {
         )
         .await;
         wait_for_shutdown_service_reachable_or_exit(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
+            &ctx,
             UVC_CAMERA_NODE_NAME,
-            Some(TEST_MASTER_NODE),
             exposer_instance_id,
             &mut exposer_child,
             &user_node_exposer,
@@ -539,6 +539,12 @@ fn main() -> Result<()> {
             .await
             .expect("failed to create messenger for test control")
     });
+    let ctx = WaitContext {
+        messenger: &messenger,
+        bound_master_node: TEST_MASTER_NODE,
+        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
+        target_master_node: Some(TEST_MASTER_NODE),
+    };
 
     // Spawn exposer first so it's ready to handle requests
     let mut exposer_child = spawn_cargo_run(
@@ -551,12 +557,9 @@ fn main() -> Result<()> {
 
     rt.block_on(async {
         wait_for_service_reachable_or_exit(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
+            &ctx,
             UVC_CAMERA_NODE_NAME,
             "enable_camera",
-            Some(TEST_MASTER_NODE),
             Some(exposer_instance_id),
             &mut exposer_child,
             &user_node_exposer,
@@ -572,11 +575,8 @@ fn main() -> Result<()> {
 
     rt.block_on(async {
         wait_for_shutdown_service_reachable_or_exit(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
+            &ctx,
             SUBSCRIBER_NODE_NAME,
-            Some(TEST_MASTER_NODE),
             subscriber_instance_id,
             &mut subscriber_child,
             &user_node_subscriber,
@@ -584,11 +584,8 @@ fn main() -> Result<()> {
         )
         .await;
         wait_for_shutdown_service_reachable_or_exit(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
+            &ctx,
             UVC_CAMERA_NODE_NAME,
-            Some(TEST_MASTER_NODE),
             exposer_instance_id,
             &mut exposer_child,
             &user_node_exposer,
@@ -883,6 +880,12 @@ fn main() -> Result<()> {
             .await
             .expect("failed to create messenger for test control")
     });
+    let ctx = WaitContext {
+        messenger: &messenger,
+        bound_master_node: TEST_MASTER_NODE,
+        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
+        target_master_node: Some(TEST_MASTER_NODE),
+    };
 
     // Spawn both exposers first so they're ready to handle requests
     let mut exposer1_child = spawn_cargo_run(
@@ -896,12 +899,9 @@ fn main() -> Result<()> {
 
     rt.block_on(async {
         wait_for_service_reachable_or_exit(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
+            &ctx,
             UVC_CAMERA_NODE_NAME,
             "enable_camera",
-            Some(TEST_MASTER_NODE),
             Some(exposer1_instance_id),
             &mut exposer1_child,
             &user_node_exposer1,
@@ -909,12 +909,9 @@ fn main() -> Result<()> {
         )
         .await;
         wait_for_service_reachable_or_exit(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
+            &ctx,
             UVC_CAMERA_NODE_NAME,
             "enable_camera",
-            Some(TEST_MASTER_NODE),
             Some(exposer2_instance_id),
             &mut exposer2_child,
             &user_node_exposer2,
@@ -930,11 +927,8 @@ fn main() -> Result<()> {
 
     rt.block_on(async {
         wait_for_shutdown_service_reachable_or_exit(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
+            &ctx,
             SUBSCRIBER_NODE_NAME,
-            Some(TEST_MASTER_NODE),
             subscriber_instance_id,
             &mut subscriber_child,
             &user_node_subscriber,
@@ -942,11 +936,8 @@ fn main() -> Result<()> {
         )
         .await;
         wait_for_shutdown_service_reachable_or_exit(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
+            &ctx,
             UVC_CAMERA_NODE_NAME,
-            Some(TEST_MASTER_NODE),
             exposer1_instance_id,
             &mut exposer1_child,
             &user_node_exposer1,
@@ -954,11 +945,8 @@ fn main() -> Result<()> {
         )
         .await;
         wait_for_shutdown_service_reachable_or_exit(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
+            &ctx,
             UVC_CAMERA_NODE_NAME,
-            Some(TEST_MASTER_NODE),
             exposer2_instance_id,
             &mut exposer2_child,
             &user_node_exposer2,
@@ -1352,14 +1340,17 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
+    let action_ctx = WaitContext {
+        messenger: &messenger,
+        bound_master_node: TEST_MASTER_NODE,
+        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
+        target_master_node: None,
+    };
     rt.block_on(async {
         wait_for_action_service_reachable_or_exit(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
+            &action_ctx,
             BRAIN_NODE_NAME,
             "move_arm/goal",
-            None,
             None,
             &mut exposer_child,
             &user_node_exposer,
@@ -1373,13 +1364,16 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &subscriber_runtime_config_str)],
     );
 
+    let ctx = WaitContext {
+        messenger: &messenger,
+        bound_master_node: TEST_MASTER_NODE,
+        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
+        target_master_node: Some(TEST_MASTER_NODE),
+    };
     rt.block_on(async {
         wait_for_shutdown_service_reachable_or_exit(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
+            &ctx,
             SUBSCRIBER_NODE_NAME,
-            Some(TEST_MASTER_NODE),
             subscriber_instance_id,
             &mut subscriber_child,
             &user_node_subscriber,
@@ -1387,11 +1381,8 @@ fn main() -> Result<()> {
         )
         .await;
         wait_for_shutdown_service_reachable_or_exit(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
+            &ctx,
             BRAIN_NODE_NAME,
-            Some(TEST_MASTER_NODE),
             exposer_instance_id,
             &mut exposer_child,
             &user_node_exposer,
@@ -1660,14 +1651,17 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
+    let action_ctx = WaitContext {
+        messenger: &messenger,
+        bound_master_node: TEST_MASTER_NODE,
+        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
+        target_master_node: None,
+    };
     rt.block_on(async {
         wait_for_action_service_reachable_or_exit(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
+            &action_ctx,
             BRAIN_NODE_NAME,
             "move_arm/goal",
-            None,
             None,
             &mut exposer_child,
             &user_node_exposer,
@@ -1681,13 +1675,16 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &subscriber_runtime_config_str)],
     );
 
+    let ctx = WaitContext {
+        messenger: &messenger,
+        bound_master_node: TEST_MASTER_NODE,
+        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
+        target_master_node: Some(TEST_MASTER_NODE),
+    };
     rt.block_on(async {
         wait_for_shutdown_service_reachable_or_exit(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
+            &ctx,
             SUBSCRIBER_NODE_NAME,
-            Some(TEST_MASTER_NODE),
             subscriber_instance_id,
             &mut subscriber_child,
             &user_node_subscriber,
@@ -1695,11 +1692,8 @@ fn main() -> Result<()> {
         )
         .await;
         wait_for_shutdown_service_reachable_or_exit(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
+            &ctx,
             BRAIN_NODE_NAME,
-            Some(TEST_MASTER_NODE),
             exposer_instance_id,
             &mut exposer_child,
             &user_node_exposer,
