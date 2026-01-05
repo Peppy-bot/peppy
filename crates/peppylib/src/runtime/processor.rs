@@ -7,7 +7,6 @@ use config::{
     node::NodeConfig,
     runtime::RuntimeConfig,
 };
-use node_stack::NodeStack;
 
 /// This struct is launched at runtime everytime a new peppy node is launched
 pub struct Processor {
@@ -121,12 +120,6 @@ impl Processor {
     pub fn messaging_port(&self) -> u16 {
         self.runtime_config.messaging_port
     }
-
-    pub fn get_node_stack() -> NodeStack {
-        todo!(
-            "Call the master node endpoint that returns the node stack. Don't do that during code generation since the list won't be up to date"
-        )
-    }
 }
 
 #[cfg(test)]
@@ -192,11 +185,6 @@ mod tests {
         let fingerprint_path = fingerprint_dir.join(NODE_CONFIG_FINGERPRINT_FILE);
         fs::write(&fingerprint_path, "wrong_fingerprint_value\n")
             .expect("fingerprint should be written");
-    }
-
-    #[test]
-    fn get_node_stack() {
-        todo!("Finish. Get the node stack from the `Processor` object")
     }
 
     #[test]
