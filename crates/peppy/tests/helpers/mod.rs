@@ -12,9 +12,6 @@ use tempfile::TempDir;
 use tokio::sync::Mutex as TokioMutex;
 use tracing_subscriber::fmt::MakeWriter;
 
-/// Environment variable name for zenoh client configuration
-const ZENOH_CONFIG_ENV: &str = "ZENOH_CONFIG";
-
 #[derive(Clone, Default)]
 pub struct LogCapture {
     buffer: Arc<Mutex<Vec<u8>>>,
@@ -135,7 +132,7 @@ impl ZenohConfigGuard {
             write_zenohd_config(host, port).expect("failed to write zenoh config");
         // Release the reservation now - zenoh will bind to this port next.
         drop(reservation);
-        let env = EnvVarGuard::set(ZENOH_CONFIG_ENV, config_path.as_os_str());
+        let env = EnvVarGuard::set("ZENOH_CONFIG", config_path.as_os_str());
         Self {
             _dir: temp_dir,
             _env: env,
