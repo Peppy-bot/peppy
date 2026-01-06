@@ -351,6 +351,19 @@ PY
     TAG="$(prompt "Release tag to update (example: v0.0.1)")"
     [ -n "${TAG-}" ] || die "release tag cannot be empty"
 
+    SLUG="$(github_repo_slug)"
+    OWNER="${SLUG%%/*}"
+    REPO="${SLUG#*/}"
+    if [ -z "${OWNER-}" ] || [ -z "${REPO-}" ] || [ "$OWNER" = "$REPO" ]; then
+        die "invalid GITHUB_REPOSITORY/repo slug: $SLUG"
+    fi
+
+    RELEASE_JSON_FILE="$(mktemp_file)"
+    github_api GET "https://api.github.com/repos/${OWNER}/${REPO}/releases/tags/${TAG}" >"$RELEASE_JSON_FILE"
+    RELEASE_INFO="$(parse_release_response "$RELEASE_JSON_FILE")" || exit 1
+    RELEASE_ID="$(printf "%s\n" "$RELEASE_INFO" | sed -n '1p')"
+    RELEASE_URL="$(printf "%s\n" "$RELEASE_INFO" | sed -n '2p')"
+
     HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
     [ -n "${HOST_TRIPLE-}" ] || die "could not determine Rust host target triple"
     case "$HOST_TRIPLE" in
@@ -380,19 +393,6 @@ PY
     chmod +x "$PKG_DIR/peppy"
     tar -czf "$ASSET_PATH" -C "$PKG_DIR" peppy
     echo "Built artifact: $ASSET_PATH"
-
-    SLUG="$(github_repo_slug)"
-    OWNER="${SLUG%%/*}"
-    REPO="${SLUG#*/}"
-    if [ -z "${OWNER-}" ] || [ -z "${REPO-}" ] || [ "$OWNER" = "$REPO" ]; then
-        die "invalid GITHUB_REPOSITORY/repo slug: $SLUG"
-    fi
-
-    RELEASE_JSON_FILE="$(mktemp_file)"
-    github_api GET "https://api.github.com/repos/${OWNER}/${REPO}/releases/tags/${TAG}" >"$RELEASE_JSON_FILE"
-    RELEASE_INFO="$(parse_release_response "$RELEASE_JSON_FILE")" || exit 1
-    RELEASE_ID="$(printf "%s\n" "$RELEASE_INFO" | sed -n '1p')"
-    RELEASE_URL="$(printf "%s\n" "$RELEASE_INFO" | sed -n '2p')"
 
     delete_asset_if_exists "$RELEASE_ID" "$ASSET_NAME" "$OWNER" "$REPO"
     echo "Uploading ${ASSET_NAME}..."
