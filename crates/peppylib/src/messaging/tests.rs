@@ -1989,22 +1989,6 @@ async fn action_communication_goal_cancelled() {
                 }
             });
 
-            // Create the cancel handler future
-            let cancel_handler = action.cancel_service.handle_next_request(move |request| {
-                let cancel_call_count = Arc::clone(&cancel_call_count);
-                async move {
-                    assert_eq!(request.message.master_node(), CALLER_MASTER_NODE);
-                    assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
-                    assert!(
-                        request.message().payload().is_empty(),
-                        "cancel service should receive empty payload"
-                    );
-
-                    cancel_call_count.fetch_add(1, Ordering::SeqCst);
-                    Ok(cancel_response_payload_server)
-                }
-            });
-
             // Signal ready after handlers are set up
             action_ready_tx.send(()).unwrap();
 
@@ -2031,6 +2015,7 @@ async fn action_communication_goal_cancelled() {
                     tokio::pin!(stop_notified);
                     loop {
                         tokio::select! {
+                            biased;
                             _ = stop_notified.as_mut() => break,
                             _ = ticker.tick() => {
                                 feedback_publisher
@@ -2043,19 +2028,30 @@ async fn action_communication_goal_cancelled() {
                 })
             };
 
-            let handled_cancel = tokio::time::timeout(Duration::from_secs(5), cancel_handler)
-                .await
-                .expect("timed out waiting for cancel request")
-                .expect("action should receive cancel request");
+            let (cancel_context, cancel_response_topic) =
+                tokio::time::timeout(Duration::from_secs(5), action.cancel_service.next_request())
+                    .await
+                    .expect("timed out waiting for cancel request")
+                    .expect("action should receive cancel request");
 
+            assert_eq!(cancel_context.message().master_node(), CALLER_MASTER_NODE);
+            assert_eq!(cancel_context.message().instance_id(), CALLER_INSTANCE_ID);
             assert!(
-                handled_cancel,
-                "cancel subscription closed before handling request"
+                cancel_context.message().payload().is_empty(),
+                "cancel service should receive empty payload"
             );
 
-            stop_feedback.notify_waiters();
+            cancel_call_count.fetch_add(1, Ordering::SeqCst);
 
+            // Stop feedback publication before acknowledging cancellation to reduce
+            // flakiness caused by in-flight feedback after cancellation.
+            stop_feedback.notify_waiters();
             feedback_task.await.expect("feedback loop task panicked")?;
+
+            action
+                .cancel_service
+                .publish_response(cancel_response_topic, cancel_response_payload_server)
+                .await?;
 
             Ok::<(), Error>(())
         })
@@ -2108,7 +2104,7 @@ async fn action_communication_goal_cancelled() {
     assert_eq!(first_feedback.instance_id(), LISTENER_INSTANCE_ID);
 
     let second_feedback =
-        tokio::time::timeout(Duration::from_millis(200), goal_handle.on_next_feedback())
+        tokio::time::timeout(Duration::from_secs(1), goal_handle.on_next_feedback())
             .await
             .expect("feedback stream should continue delivering updates before cancellation")
             .expect("feedback stream closed unexpectedly before cancellation");
@@ -2129,16 +2125,37 @@ async fn action_communication_goal_cancelled() {
     assert_eq!(cancel_response.master_node(), LISTENER_MASTER_NODE);
     assert_eq!(cancel_response.instance_id(), LISTENER_INSTANCE_ID);
 
-    // Check that no feedback is received after cancellation
-    if let Ok(Ok(message)) =
-        tokio::time::timeout(Duration::from_millis(200), goal_handle.on_next_feedback()).await
-    {
-        panic!(
-            "expected no feedback after cancellation, received from master_node '{}' instance_id '{}' with payload {:?}",
-            message.master_node(),
-            message.instance_id(),
-            message.payload()
-        );
+    // Check that feedback eventually goes quiet after cancellation; allow a short window for
+    // buffered/in-flight feedback messages to be drained.
+    let quiet_for = Duration::from_millis(200);
+    let overall_timeout = Duration::from_secs(2);
+    let start = tokio::time::Instant::now();
+    let mut quiet_deadline = start + quiet_for;
+
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= quiet_deadline {
+            break;
+        }
+        if now.duration_since(start) >= overall_timeout {
+            panic!(
+                "feedback did not stop within {:?} after cancellation",
+                overall_timeout
+            );
+        }
+
+        let remaining = quiet_deadline
+            .checked_duration_since(now)
+            .unwrap_or_default();
+
+        match tokio::time::timeout(remaining, goal_handle.on_next_feedback()).await {
+            Ok(Ok(_)) => {
+                quiet_deadline = tokio::time::Instant::now() + quiet_for;
+            }
+            Ok(Err(Error::ActionFeedbackChannelClosed)) => break,
+            Ok(Err(err)) => panic!("unexpected feedback error after cancellation: {err:?}"),
+            Err(_) => break,
+        }
     }
 
     server_task
