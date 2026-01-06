@@ -174,22 +174,39 @@ __wrap__() {
     TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/.peppy_install_dir.XXXXXXXX")"
     tar -xzf "$TEMP_FILE" -C "$TEMP_DIR"
 
-    BIN_PATH=""
+    PEPPY_PATH=""
     if [ -f "$TEMP_DIR/peppy" ]; then
-        BIN_PATH="$TEMP_DIR/peppy"
+        PEPPY_PATH="$TEMP_DIR/peppy"
     else
-        BIN_PATH="$(find "$TEMP_DIR" -type f -name peppy -print | head -n 1 || true)"
+        PEPPY_PATH="$(find "$TEMP_DIR" -type f -name peppy -print | head -n 1 || true)"
     fi
 
-    if [ -z "${BIN_PATH-}" ] || [ ! -f "$BIN_PATH" ]; then
+    if [ -z "${PEPPY_PATH-}" ] || [ ! -f "$PEPPY_PATH" ]; then
         echo "error: could not find the 'peppy' binary in the downloaded archive." >&2
         exit 1
     fi
 
-    mv "$BIN_PATH" "$PEPPY_BIN_DIR/peppy"
+    ZENOHD_PATH=""
+    if [ -f "$TEMP_DIR/zenohd" ]; then
+        ZENOHD_PATH="$TEMP_DIR/zenohd"
+    else
+        ZENOHD_PATH="$(find "$TEMP_DIR" -type f -name zenohd -print | head -n 1 || true)"
+    fi
+
+    mv "$PEPPY_PATH" "$PEPPY_BIN_DIR/peppy"
     chmod +x "$PEPPY_BIN_DIR/peppy"
 
+    if [ -n "${ZENOHD_PATH-}" ] && [ -f "$ZENOHD_PATH" ]; then
+        mv "$ZENOHD_PATH" "$PEPPY_BIN_DIR/zenohd"
+        chmod +x "$PEPPY_BIN_DIR/zenohd"
+    fi
+
     echo "The 'peppy' binary is installed into '${PEPPY_BIN_DIR}'"
+    if [ -f "$PEPPY_BIN_DIR/zenohd" ]; then
+        echo "The 'zenohd' binary is installed into '${PEPPY_BIN_DIR}'"
+    else
+        echo "warning: 'zenohd' was not found in the archive. 'peppy service serve' requires zenohd on PATH or next to the peppy binary." >&2
+    fi
 
     if [ -n "${PEPPY_NO_PATH_UPDATE:-}" ]; then
         echo "No path update because PEPPY_NO_PATH_UPDATE is set"

@@ -422,7 +422,14 @@ PY
     PKG_DIR="$(mktemp_dir)"
     cp "$BIN_PATH" "$PKG_DIR/peppy"
     chmod +x "$PKG_DIR/peppy"
-    tar -czf "$ASSET_PATH" -C "$PKG_DIR" peppy
+
+    # `peppy service serve` spawns `zenohd`; include the built zenohd binary next to peppy.
+    ZENOHD_PATH="$(find "${TARGET_DIR%/}/${HOST_TRIPLE}/release/build" -type f -path "*/pmi-*/out/zenohd" -print | head -n 1 || true)"
+    [ -f "${ZENOHD_PATH-}" ] || die "zenohd binary not found in target dir (expected it under '${TARGET_DIR%/}/${HOST_TRIPLE}/release/build/pmi-*/out/zenohd')"
+    cp "$ZENOHD_PATH" "$PKG_DIR/zenohd"
+    chmod +x "$PKG_DIR/zenohd"
+
+    tar -czf "$ASSET_PATH" -C "$PKG_DIR" peppy zenohd
     echo "Built artifact: $ASSET_PATH"
 
     SLUG="$(github_repo_slug)"

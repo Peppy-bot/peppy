@@ -77,7 +77,47 @@ impl ZenohdFacade {
     }
 
     fn get_zenohd_binary() -> Option<String> {
-        option_env!("ZENOHD_BINARY_PATH").map(|path| path.to_string())
+        // 1) Runtime override for packaged installs / system configuration.
+        for key in ["PEPPY_ZENOHD_PATH", "ZENOHD_BINARY_PATH"] {
+            if let Ok(path) = env::var(key).map(|path| path.trim().to_string()) {
+                if !path.is_empty() {
+                    return Some(path);
+                }
+            }
+        }
+
+        // 2) Prefer a `zenohd` binary placed next to the current executable.
+        // This is important for `sudo peppy ...` where PATH may be restricted by `secure_path`.
+        if let Ok(exe_path) = env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                let candidate = exe_dir.join("zenohd");
+                if candidate.is_file() {
+                    return Some(candidate.to_string_lossy().into_owned());
+                }
+            }
+        }
+
+        // 3) Compile-time path injected by build script (may be stale for packaged/cargo-installed binaries).
+        if let Some(path) = option_env!("ZENOHD_BINARY_PATH") {
+            // If this looks like a path, verify it exists to avoid "os error 2" at spawn-time.
+            if (path.contains('/') || path.contains('\\')) && !Path::new(path).is_file() {
+                // Continue to other discovery mechanisms.
+            } else {
+                return Some(path.to_string());
+            }
+        }
+
+        // 4) Fallback to searching PATH.
+        if let Some(path_var) = env::var_os("PATH") {
+            for dir in env::split_paths(&path_var) {
+                let candidate = dir.join("zenohd");
+                if candidate.is_file() {
+                    return Some(candidate.to_string_lossy().into_owned());
+                }
+            }
+        }
+
+        None
     }
 
     fn get_zenohd_config_path(zenohd_config_path: Option<impl AsRef<Path>>) -> PathBuf {
@@ -167,7 +207,7 @@ impl ZenohdFacade {
     pub fn start_router(&mut self) -> Result<()> {
         let zenohd_path = self.zenohd_path.as_ref().ok_or_else(|| {
             Error::ZenohdError(
-                "Zenohd binary not found. Build with: cargo build --features build_zenoh"
+                "Zenohd binary not found. Install `zenohd` (or place it next to the `peppy` binary), or set PEPPY_ZENOHD_PATH/ZENOHD_BINARY_PATH."
                     .to_string(),
             )
         })?;
