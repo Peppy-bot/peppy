@@ -174,32 +174,55 @@ pub struct StartedMasterNode {
 
 pub async fn start_master_node() -> StartedMasterNode {
     let shared_messenger = create_mock_messenger().await;
+    let node_startup_timeout = Duration::from_secs(10);
     let node_start_health_timeout = Duration::from_secs(30);
-    start_master_node_with_messenger(shared_messenger, None, node_start_health_timeout).await
+    start_master_node_with_messenger(
+        shared_messenger,
+        None,
+        node_startup_timeout,
+        node_start_health_timeout,
+    )
+    .await
 }
 
 pub async fn start_master_node_with_health_timeout(
     node_start_health_timeout: Duration,
 ) -> StartedMasterNode {
     let shared_messenger = create_mock_messenger().await;
-    start_master_node_with_messenger(shared_messenger, None, node_start_health_timeout).await
+    let node_startup_timeout = Duration::from_secs(10);
+    start_master_node_with_messenger(
+        shared_messenger,
+        None,
+        node_startup_timeout,
+        node_start_health_timeout,
+    )
+    .await
 }
 
 pub async fn start_master_node_with_zenoh_messenger() -> StartedMasterNode {
     let (shared_messenger, temp_dir) = create_zenoh_messenger().await;
+    // When launching real nodes we often spawn `cargo run`, which may take a while due to
+    // compilation or cargo's global package-cache lock.
+    let node_startup_timeout = Duration::from_secs(30);
     let node_start_health_timeout = Duration::from_secs(30);
-    start_master_node_with_messenger(shared_messenger, Some(temp_dir), node_start_health_timeout)
-        .await
+    start_master_node_with_messenger(
+        shared_messenger,
+        Some(temp_dir),
+        node_startup_timeout,
+        node_start_health_timeout,
+    )
+    .await
 }
 
 async fn start_master_node_with_messenger(
     shared_messenger: Arc<Mutex<Messenger>>,
     zenohd_temp_dir: Option<TempDir>,
+    node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
 ) -> StartedMasterNode {
     let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let node_arguments = MasterNodeArguments {
-        node_startup_timeout: Duration::from_secs(10), // Short timeout for tests
+        node_startup_timeout,
         node_start_health_timeout,
     };
     let root_dir = std::env::current_dir().expect("failed to get current directory");

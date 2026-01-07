@@ -37,7 +37,10 @@ async fn ready_node() {
     // - broadcast master + specific instance
     // - full broadcast (master + instance)
     let target_combinations = [
-        (Some(client.master_node_name.as_str()), Some(client.instance_id.as_str())),
+        (
+            Some(client.master_node_name.as_str()),
+            Some(client.instance_id.as_str()),
+        ),
         (Some(client.master_node_name.as_str()), None),
         (None, Some(client.instance_id.as_str())),
         (None, None),
