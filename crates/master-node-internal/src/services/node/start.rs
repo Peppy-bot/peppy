@@ -151,11 +151,12 @@ async fn handle_node_start_request_inner(
     };
 
     debug!(
-        "Successfully spawned node instance '{}', waiting for ready signal...",
-        instance_id_str
+        "Successfully spawned node instance '{}', waiting for ready signal for {}s...",
+        instance_id_str,
+        node_startup_timeout.as_secs()
     );
 
-    // Phase 1: Wait for the node to signal it's ready (covers compilation time)
+    // Phase 1: Wait for the node to signal it's ready
     let ready_result = wait_for_ready_signal(
         messenger,
         master_node_name,

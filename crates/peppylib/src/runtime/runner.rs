@@ -56,16 +56,30 @@ where
         let node_runner = Arc::new(NodeRunner::new(runtime_processor).await?);
         let parameters: Params = deserialize_parameters(node_runner.runtime().input_arguments())?;
 
+        // Start ready listener BEFORE setup_fn - this allows the master to detect
+        // if user code hangs during initialization (node responds to ready but not health)
+        let runtime = node_runner.runtime();
+        let ready_handle = listen_for_node_ready(
+            node_runner.messenger(),
+            runtime.bound_master_node(),
+            runtime.bound_instance_id(),
+            runtime.node_name(),
+        )
+        .await?;
+
         setup_fn(parameters, Arc::clone(&node_runner)).await?;
 
-        mandatory_services(Arc::clone(&node_runner)).await?;
+        mandatory_services(Arc::clone(&node_runner), ready_handle).await?;
 
         Ok(())
     })
     // Runtime drops here → all spawned tasks are cancelled
 }
 
-async fn mandatory_services(node_runner: Arc<NodeRunner>) -> Result<()> {
+async fn mandatory_services(
+    node_runner: Arc<NodeRunner>,
+    ready_handle: JoinHandle<Result<()>>,
+) -> Result<()> {
     let runtime = node_runner.runtime();
     info!(
         "Starting node with name {} and instance_id {}...",
@@ -73,16 +87,8 @@ async fn mandatory_services(node_runner: Arc<NodeRunner>) -> Result<()> {
         runtime.bound_instance_id(),
     );
 
-    // Set up ready service FIRST - this allows the master to detect when the node is ready
-    // (i.e., runner::run() has started and the node can respond to requests)
-    let ready_handle = listen_for_node_ready(
-        node_runner.messenger(),
-        runtime.bound_master_node(),
-        runtime.bound_instance_id(),
-        runtime.node_name(),
-    )
-    .await?;
-
+    // Health listener starts AFTER setup_fn completes - this indicates the node
+    // is fully initialized and operational (not just responsive)
     let health_handle = listen_for_node_health(
         node_runner.messenger(),
         runtime.bound_master_node(),

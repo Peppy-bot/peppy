@@ -272,7 +272,7 @@ async fn start_node_instance(
         )
     })?;
 
-    // Phase 1: Wait for the node to signal it's ready (covers compilation time)
+    // Phase 1: Wait for the node to signal it's ready
     if let Err(error) = wait_for_ready_signal(
         messenger,
         master_node_name,

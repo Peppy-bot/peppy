@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_node_health_request_response_roundtrip() {
+async fn node_health_request_response_roundtrip() {
     let (client, shared_messenger) = get_client_server().await;
 
     // Set up the health service on the server side

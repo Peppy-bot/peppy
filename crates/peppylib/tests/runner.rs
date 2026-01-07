@@ -3,7 +3,7 @@ use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::peppy_config::{DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
-use peppylib::messaging::{NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
+use peppylib::messaging::{NODE_HEALTH_SERVICE, NODE_READY_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::runtime::runner;
 use pmi::MessengerBackend;
 use std::path::{Path, PathBuf};
@@ -98,7 +98,7 @@ impl Drop for RouterGuard {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_runner() {
+async fn runner_succeed() {
     let (router, router_temp_dir, router_host, router_port) =
         peppylib::start_zenohd_process("127.0.0.1", None)
             .await
@@ -222,6 +222,275 @@ async fn test_runner() {
     .expect("health service should respond");
     NodeHealthResponse::decode(&health_response.payload().to_bytes())
         .expect("health response should decode");
+
+    let shutdown_payload = Bytes::from_static(b"shutdown");
+    let shutdown_response = peppylib::ServiceMessenger::poll(
+        &messenger,
+        TEST_MASTER_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        TEST_NODE_NAME,
+        SHUTDOWN_SERVICE,
+        Some(TEST_MASTER_NODE),
+        Some(TEST_INSTANCE_ID),
+        shutdown_payload.clone(),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("shutdown service should respond");
+
+    assert_eq!(shutdown_response.payload().to_bytes(), shutdown_payload);
+    assert_eq!(shutdown_response.instance_id(), TEST_INSTANCE_ID);
+
+    tokio::time::timeout(Duration::from_secs(10), &mut runner_task)
+        .await
+        .expect("runner should exit")
+        .expect("runner task should not panic")
+        .expect("runner should return Ok");
+
+    router_guard.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_ready_but_not_healthy() {
+    let (router, router_temp_dir, router_host, router_port) =
+        peppylib::start_zenohd_process("127.0.0.1", None)
+            .await
+            .expect("failed to start zenoh router for test");
+    let mut router_guard = RouterGuard {
+        router: Some(router),
+        _temp_dir: Some(router_temp_dir),
+    };
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
+    let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
+    let peppy_config = r#"{
+      schema_version: 1,
+      manifest: {
+        name: "test_node",
+        tag: "0.1.0",
+        launch_cmd: ["cargo", "run"]
+      },
+      parameters: {
+        frequency_hz: "f64"
+      }
+    }"#;
+    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
+
+    let fingerprint = RuntimeConfig::generate_peppy_config_fingerprint(&peppy_config_path)
+        .expect("failed to generate peppy config fingerprint");
+    let fingerprint_path = temp_dir
+        .path()
+        .join(PEPPYGEN_OUTPUT_PATH)
+        .join(peppylib::config::NODE_CONFIG_FINGERPRINT_FILE);
+    std::fs::create_dir_all(
+        fingerprint_path
+            .parent()
+            .expect("fingerprint path should have a parent dir"),
+    )
+    .expect("failed to create peppygen output dir");
+    std::fs::write(&fingerprint_path, format!("{fingerprint}\n"))
+        .expect("failed to write fingerprint file");
+
+    let runtime_config = RuntimeConfig::new(
+        &router_host,
+        router_port,
+        DeploymentInstance {
+            instance_id: Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
+            arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
+                .expect("runtime args should parse"),
+        },
+        TEST_NODE_NAME,
+        TEST_MASTER_NODE,
+    )
+    .expect("runtime config should build");
+    let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
+    runtime_config
+        .save_json5_launch_config(&runtime_config_path)
+        .expect("failed to write runtime config");
+
+    let _env_guard = EnvAndDirGuard::new(temp_dir.path(), &runtime_config_path);
+
+    let (setup_started_tx, setup_started_rx) = tokio::sync::oneshot::channel::<()>();
+    let (setup_continue_tx, setup_continue_rx) = tokio::sync::oneshot::channel::<()>();
+    let mut runner_task = tokio::task::spawn_blocking(move || {
+        runner::run(|_parameters: Parameters, _node_runner| async move {
+            let _ = setup_started_tx.send(());
+            let _ = setup_continue_rx.await;
+            Ok(())
+        })
+    });
+
+    tokio::time::timeout(Duration::from_secs(5), setup_started_rx)
+        .await
+        .expect("runner setup should start")
+        .expect("setup start signal should be sent");
+
+    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+        .await
+        .expect("failed to create messenger");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if runner_task.is_finished() {
+            let result = runner_task.await.expect("runner task should not panic");
+            panic!("runner exited early: {result:?}");
+        }
+
+        if peppylib::ServiceMessenger::is_reachable(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            TEST_NODE_NAME,
+            NODE_READY_SERVICE,
+            Some(TEST_MASTER_NODE),
+            Some(TEST_INSTANCE_ID),
+        )
+        .await
+        .expect("reachability check should succeed")
+        {
+            break;
+        }
+
+        if Instant::now() >= deadline {
+            panic!("ready service did not become reachable");
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let ready_payload = Bytes::from_static(b"ready");
+    let ready_response = peppylib::ServiceMessenger::poll(
+        &messenger,
+        TEST_MASTER_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        TEST_NODE_NAME,
+        NODE_READY_SERVICE,
+        Some(TEST_MASTER_NODE),
+        Some(TEST_INSTANCE_ID),
+        ready_payload.clone(),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("ready service should respond while setup is blocked");
+    assert_eq!(ready_response.payload().to_bytes(), ready_payload);
+    assert_eq!(ready_response.instance_id(), TEST_INSTANCE_ID);
+
+    assert!(
+        !peppylib::ServiceMessenger::is_reachable(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            TEST_NODE_NAME,
+            NODE_HEALTH_SERVICE,
+            Some(TEST_MASTER_NODE),
+            Some(TEST_INSTANCE_ID),
+        )
+        .await
+        .expect("reachability check should succeed"),
+        "health service should not be reachable while setup is blocked"
+    );
+
+    let health_request = NodeHealthRequest::new()
+        .encode()
+        .expect("failed to encode health request");
+    let health_err = peppylib::ServiceMessenger::poll(
+        &messenger,
+        TEST_MASTER_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        TEST_NODE_NAME,
+        NODE_HEALTH_SERVICE,
+        Some(TEST_MASTER_NODE),
+        Some(TEST_INSTANCE_ID),
+        health_request.clone(),
+        Duration::from_millis(200),
+    )
+    .await
+    .err()
+    .expect("health service should not respond while setup is blocked");
+
+    match health_err {
+        peppylib::PeppyError::ServiceUnreachable { service_name, .. }
+        | peppylib::PeppyError::ServiceTimeout { service_name, .. } => {
+            assert_eq!(service_name, NODE_HEALTH_SERVICE);
+        }
+        other => panic!("unexpected health error: {other:?}"),
+    }
+
+    let _ = setup_continue_tx.send(());
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if runner_task.is_finished() {
+            let result = runner_task.await.expect("runner task should not panic");
+            panic!("runner exited early: {result:?}");
+        }
+
+        if peppylib::ServiceMessenger::is_reachable(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            TEST_NODE_NAME,
+            NODE_HEALTH_SERVICE,
+            Some(TEST_MASTER_NODE),
+            Some(TEST_INSTANCE_ID),
+        )
+        .await
+        .expect("reachability check should succeed")
+        {
+            break;
+        }
+
+        if Instant::now() >= deadline {
+            panic!("health service did not become reachable");
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let health_response = peppylib::ServiceMessenger::poll(
+        &messenger,
+        TEST_MASTER_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        TEST_NODE_NAME,
+        NODE_HEALTH_SERVICE,
+        Some(TEST_MASTER_NODE),
+        Some(TEST_INSTANCE_ID),
+        health_request,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("health service should respond after setup completes");
+    NodeHealthResponse::decode(&health_response.payload().to_bytes())
+        .expect("health response should decode");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if runner_task.is_finished() {
+            let result = runner_task.await.expect("runner task should not panic");
+            panic!("runner exited early: {result:?}");
+        }
+
+        if peppylib::ServiceMessenger::is_reachable(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            TEST_NODE_NAME,
+            SHUTDOWN_SERVICE,
+            Some(TEST_MASTER_NODE),
+            Some(TEST_INSTANCE_ID),
+        )
+        .await
+        .expect("reachability check should succeed")
+        {
+            break;
+        }
+
+        if Instant::now() >= deadline {
+            panic!("shutdown service did not become reachable");
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
     let shutdown_payload = Bytes::from_static(b"shutdown");
     let shutdown_response = peppylib::ServiceMessenger::poll(
