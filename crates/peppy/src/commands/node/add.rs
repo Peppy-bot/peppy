@@ -38,6 +38,16 @@ async fn add_node_async(
     })?;
     let master_node_name = daemon_state.master_node_name;
 
+    // Canonicalize the path to ensure we have an absolute path.
+    // This is important for relative paths like "peppy.json5" where parent() would be empty.
+    let peppy_json5 = peppy_json5.canonicalize().map_err(|e| {
+        Error::ExecutionFailed(format!(
+            "Failed to resolve path '{}': {}",
+            peppy_json5.display(),
+            e
+        ))
+    })?;
+
     // Parse node config to discover node name/tag and validate it.
     let node_config = NodeConfigParser::from_path(&peppy_json5).map_err(Error::PeppyConfig)?;
     let node_name = node_config.manifest.name.as_str().to_string();
