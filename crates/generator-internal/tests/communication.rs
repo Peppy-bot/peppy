@@ -13,7 +13,7 @@ use generator::{LanguageGenerator, SubscribedActionMessage};
 use helpers::{
     WaitContext, compile_project, copy_config_to_output, init_cargo_user_node, init_test_env,
     send_shutdown, spawn_cargo_run, wait_for_action_service_reachable_or_exit, wait_for_child,
-    wait_for_service_reachable_or_exit, wait_for_shutdown_service_reachable_or_exit,
+    wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
     write_codegen_fingerprint,
 };
 use pmi::MessengerBackend;
@@ -246,7 +246,7 @@ fn main() -> Result<()> {
         )],
     );
 
-    // Wait until both nodes have completed their setup_fn and are listening for shutdown.
+    // Wait until both nodes have completed their setup_fn (node_health is reachable).
     // (The subscriber reaches this point only after it receives a frame.)
     let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
         .await
@@ -257,7 +257,7 @@ fn main() -> Result<()> {
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
         target_master_node: Some(TEST_MASTER_NODE),
     };
-    wait_for_shutdown_service_reachable_or_exit(
+    wait_for_health_service_reachable_or_exit(
         &ctx,
         SUBSCRIBER_NODE_NAME,
         subscriber_instance_id,
@@ -266,7 +266,7 @@ fn main() -> Result<()> {
         Duration::from_secs(10),
     )
     .await;
-    wait_for_shutdown_service_reachable_or_exit(
+    wait_for_health_service_reachable_or_exit(
         &ctx,
         UVC_CAMERA_NODE_NAME,
         exposer_instance_id,
@@ -553,7 +553,7 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &user_node_subscriber_config_str)],
     );
 
-    wait_for_shutdown_service_reachable_or_exit(
+    wait_for_health_service_reachable_or_exit(
         &ctx,
         SUBSCRIBER_NODE_NAME,
         subscriber_instance_id,
@@ -562,7 +562,7 @@ fn main() -> Result<()> {
         Duration::from_secs(10),
     )
     .await;
-    wait_for_shutdown_service_reachable_or_exit(
+    wait_for_health_service_reachable_or_exit(
         &ctx,
         UVC_CAMERA_NODE_NAME,
         exposer_instance_id,
@@ -892,7 +892,7 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &subscriber_runtime_config_str)],
     );
 
-    wait_for_shutdown_service_reachable_or_exit(
+    wait_for_health_service_reachable_or_exit(
         &ctx,
         SUBSCRIBER_NODE_NAME,
         subscriber_instance_id,
@@ -901,7 +901,7 @@ fn main() -> Result<()> {
         Duration::from_secs(10),
     )
     .await;
-    wait_for_shutdown_service_reachable_or_exit(
+    wait_for_health_service_reachable_or_exit(
         &ctx,
         UVC_CAMERA_NODE_NAME,
         exposer1_instance_id,
@@ -910,7 +910,7 @@ fn main() -> Result<()> {
         Duration::from_secs(10),
     )
     .await;
-    wait_for_shutdown_service_reachable_or_exit(
+    wait_for_health_service_reachable_or_exit(
         &ctx,
         UVC_CAMERA_NODE_NAME,
         exposer2_instance_id,
@@ -1324,7 +1324,7 @@ fn main() -> Result<()> {
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
         target_master_node: Some(TEST_MASTER_NODE),
     };
-    wait_for_shutdown_service_reachable_or_exit(
+    wait_for_health_service_reachable_or_exit(
         &ctx,
         SUBSCRIBER_NODE_NAME,
         subscriber_instance_id,
@@ -1333,7 +1333,7 @@ fn main() -> Result<()> {
         Duration::from_secs(15),
     )
     .await;
-    wait_for_shutdown_service_reachable_or_exit(
+    wait_for_health_service_reachable_or_exit(
         &ctx,
         BRAIN_NODE_NAME,
         exposer_instance_id,
@@ -1624,7 +1624,7 @@ fn main() -> Result<()> {
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
         target_master_node: Some(TEST_MASTER_NODE),
     };
-    wait_for_shutdown_service_reachable_or_exit(
+    wait_for_health_service_reachable_or_exit(
         &ctx,
         SUBSCRIBER_NODE_NAME,
         subscriber_instance_id,
@@ -1633,7 +1633,7 @@ fn main() -> Result<()> {
         Duration::from_secs(15),
     )
     .await;
-    wait_for_shutdown_service_reachable_or_exit(
+    wait_for_health_service_reachable_or_exit(
         &ctx,
         BRAIN_NODE_NAME,
         exposer_instance_id,
