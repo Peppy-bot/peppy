@@ -1,30 +1,24 @@
-use super::Command;
-use crate::context::{AppContext, DaemonState};
-use crate::error::{Error, Result};
-use config::peppy_config::PeppyLauncherParser;
-use config::runtime::LauncherRuntimeConfig;
-use master_node::encoding::LauncherRequest;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+
+use config::peppy_config::PeppyLauncherParser;
+use config::runtime::LauncherRuntimeConfig;
+use master_node::encoding::LauncherRequest;
 use tracing::info;
+
+use crate::context::{AppContext, DaemonState};
+use crate::error::{Error, Result};
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub struct LaunchCommand {
-    /// Path to the launch file
-    pub launcher_config_path: PathBuf,
+pub fn launch(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> Result<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(launch_async(ctx, launcher_config_path))
 }
 
-impl Command for LaunchCommand {
-    fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
-        let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(execute_async(self, ctx))
-    }
-}
-
-async fn execute_async(command: LaunchCommand, ctx: &Arc<AppContext>) -> Result<()> {
+async fn launch_async(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> Result<()> {
     let daemon_state = DaemonState::read().map_err(|e| {
         Error::ExecutionFailed(format!(
             "Failed to read daemon state. Is the peppy daemon running? Error: {}",
@@ -33,10 +27,9 @@ async fn execute_async(command: LaunchCommand, ctx: &Arc<AppContext>) -> Result<
     })?;
     let master_node_name = daemon_state.master_node_name;
 
-    PeppyLauncherParser::from_path(&command.launcher_config_path).map_err(Error::PeppyConfig)?;
-    let peppy_launcher_json5 = std::fs::read_to_string(&command.launcher_config_path)?;
-    let nodes_directory = command
-        .launcher_config_path
+    PeppyLauncherParser::from_path(&launcher_config_path).map_err(Error::PeppyConfig)?;
+    let peppy_launcher_json5 = std::fs::read_to_string(&launcher_config_path)?;
+    let nodes_directory = launcher_config_path
         .parent()
         .map(PathBuf::from)
         .unwrap_or_else(|| ctx.root_dir.clone());

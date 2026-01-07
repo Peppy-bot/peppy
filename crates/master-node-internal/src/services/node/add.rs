@@ -1,5 +1,6 @@
 use crate::Result;
 use crate::encoding::{NodeAddRequest, NodeAddResponse};
+use crate::names;
 use bytes::Bytes;
 use config::consts::{AppEnv, app_env};
 use config::node::NodeConfigParser;
@@ -11,8 +12,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
-
-use crate::services::names;
 
 /// Returns the base directory for storing copied node folders.
 /// In production: ~/.peppy/nodes

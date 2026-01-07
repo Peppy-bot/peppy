@@ -1,12 +1,11 @@
 use crate::Result;
 use crate::encoding::{NodeGenerateRequest, NodeGenerateResponse};
+use crate::names;
 use bytes::Bytes;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
-
-use crate::services::names;
 
 pub async fn listen_for_node_generate(
     messenger: &MessengerHandle,

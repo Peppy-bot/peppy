@@ -55,7 +55,7 @@ impl NodeListRequest {
             bound_master_node,
             as_instance_id,
             target_master_node,
-            names::NODE_LIST,
+            names::STACK_LIST,
             Some(target_master_node),
             None,
             request_payload,

@@ -10,8 +10,8 @@ use helpers::TestServeHandle;
 use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
-use peppy::commands::launch::LaunchCommand;
 use peppy::commands::node::{NodeCommand, NodeCommands};
+use peppy::commands::stack::{StackCommand, StackCommands};
 use peppy::context::{AppContext, DaemonState};
 
 const CALLER_INSTANCE_ID: &str = "peppy-test";
@@ -161,8 +161,10 @@ fn node_launch_command_succeed() {
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
 
-    LaunchCommand {
-        launcher_config_path: launcher_path,
+    StackCommand {
+        command: StackCommands::Launch {
+            launcher_config_path: launcher_path,
+        },
     }
     .execute(&ctx)
     .expect("launch command should succeed");
@@ -324,8 +326,10 @@ fn node_launch_command_fails_when_node_never_becomes_healthy() {
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
 
-    let launch_result = LaunchCommand {
-        launcher_config_path: launcher_path,
+    let launch_result = StackCommand {
+        command: StackCommands::Launch {
+            launcher_config_path: launcher_path,
+        },
     }
     .execute(&ctx);
 

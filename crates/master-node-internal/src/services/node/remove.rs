@@ -1,5 +1,6 @@
 use crate::Result;
 use crate::encoding::{NodeRemoveRequest, NodeRemoveResponse};
+use crate::names;
 use bytes::Bytes;
 use config::node::Name;
 use node_stack::NodeStack;
@@ -9,8 +10,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tracing::debug;
-
-use crate::services::names;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 

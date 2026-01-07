@@ -6,7 +6,7 @@ use tracing::error;
 
 use config::consts::AppEnv;
 use peppy::{
-    commands::{Command, launch, node, service},
+    commands::{Command, node, service, stack},
     context::AppContext,
 };
 
@@ -30,10 +30,10 @@ enum Commands {
         #[command(subcommand)]
         command: node::NodeCommands,
     },
-    /// Launches a deployment, replacing the current node Stack
-    Launch {
-        /// Path to the peppy launcher configuration file
-        launch_file: PathBuf,
+    /// Node stack related commands
+    Stack {
+        #[command(subcommand)]
+        command: stack::StackCommands,
     },
 }
 
@@ -60,10 +60,7 @@ fn main() {
     let result = match cli.command {
         Commands::Service { command } => service::ServiceCommand { command }.execute(&app_ctx),
         Commands::Node { command } => node::NodeCommand { command }.execute(&app_ctx),
-        Commands::Launch { launch_file } => launch::LaunchCommand {
-            launcher_config_path: launch_file,
-        }
-        .execute(&app_ctx),
+        Commands::Stack { command } => stack::StackCommand { command }.execute(&app_ctx),
     };
 
     if let Err(e) = result {
