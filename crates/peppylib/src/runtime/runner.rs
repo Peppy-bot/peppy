@@ -1,4 +1,5 @@
 use config::consts::NODE_CONFIG_FILE;
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tracing::info;
 
@@ -10,6 +11,12 @@ use crate::services::health::listen_for_node_health;
 use crate::services::ready::listen_for_node_ready;
 use crate::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
+
+struct PreSetupHandles {
+    ready_handle: JoinHandle<Result<()>>,
+    shutdown_handle: JoinHandle<Result<()>>,
+    shutdown_rx: oneshot::Receiver<()>,
+}
 
 pub struct NodeRunner {
     messenger: MessengerHandle,
@@ -56,30 +63,36 @@ where
         let node_runner = Arc::new(NodeRunner::new(runtime_processor).await?);
         let parameters: Params = deserialize_parameters(node_runner.runtime().input_arguments())?;
 
-        // Start ready listener BEFORE setup_fn - this allows the master to detect
-        // if user code hangs during initialization (node responds to ready but not health)
-        let runtime = node_runner.runtime();
-        let ready_handle = listen_for_node_ready(
-            node_runner.messenger(),
-            runtime.bound_master_node(),
-            runtime.bound_instance_id(),
-            runtime.node_name(),
+        // Start ready and shutdown listeners BEFORE setup_fn - this allows the master to:
+        // 1. Detect if user code hangs during initialization (node responds to ready but not health)
+        // 2. Request shutdown even if setup_fn is blocking
+        let pre_setup = mandatory_pre_setup_services(Arc::clone(&node_runner)).await?;
+
+        tokio::select! {
+            result = setup_fn(parameters, Arc::clone(&node_runner)) => {
+                result?;
+            }
+            _ = pre_setup.shutdown_rx => {
+                info!("Shutdown requested during setup, aborting...");
+                return Ok(());
+            }
+        }
+
+        mandatory_post_setup_services(
+            node_runner,
+            pre_setup.ready_handle,
+            pre_setup.shutdown_handle,
         )
         .await?;
-
-        setup_fn(parameters, Arc::clone(&node_runner)).await?;
-
-        mandatory_services(Arc::clone(&node_runner), ready_handle).await?;
 
         Ok(())
     })
     // Runtime drops here → all spawned tasks are cancelled
 }
 
-async fn mandatory_services(
-    node_runner: Arc<NodeRunner>,
-    ready_handle: JoinHandle<Result<()>>,
-) -> Result<()> {
+/// Services that must start BEFORE setup_fn runs.
+/// This allows the master to query the node and request shutdown even if user code hangs.
+async fn mandatory_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSetupHandles> {
     let runtime = node_runner.runtime();
     info!(
         "Starting node with name {} and instance_id {}...",
@@ -87,9 +100,7 @@ async fn mandatory_services(
         runtime.bound_instance_id(),
     );
 
-    // Health listener starts AFTER setup_fn completes - this indicates the node
-    // is fully initialized and operational (not just responsive)
-    let health_handle = listen_for_node_health(
+    let ready_handle = listen_for_node_ready(
         node_runner.messenger(),
         runtime.bound_master_node(),
         runtime.bound_instance_id(),
@@ -105,16 +116,33 @@ async fn mandatory_services(
     )
     .await?;
 
+    Ok(PreSetupHandles {
+        ready_handle,
+        shutdown_handle,
+        shutdown_rx,
+    })
+}
+
+/// Services that start AFTER setup_fn completes.
+/// Health indicates the node is fully initialized and operational.
+async fn mandatory_post_setup_services(
+    node_runner: Arc<NodeRunner>,
+    ready_handle: JoinHandle<Result<()>>,
+    shutdown_handle: JoinHandle<Result<()>>,
+) -> Result<()> {
+    let runtime = node_runner.runtime();
+
+    let health_handle = listen_for_node_health(
+        node_runner.messenger(),
+        runtime.bound_master_node(),
+        runtime.bound_instance_id(),
+        runtime.node_name(),
+    )
+    .await?;
+
     let handles = vec![ready_handle, health_handle, shutdown_handle];
 
-    tokio::select! {
-        result = wait_for_handles(handles) => {
-            result?;
-        }
-        _ = shutdown_rx => {
-            info!("Received shutdown request, stopping services...");
-        }
-    }
+    wait_for_handles(handles).await?;
 
     info!("Shutting down node...");
     Ok(())
