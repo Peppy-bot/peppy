@@ -1,17 +1,80 @@
 use crate::Result;
 use crate::encoding::{NodeAddRequest, NodeAddResponse};
 use bytes::Bytes;
+use config::consts::{AppEnv, app_env};
 use config::node::NodeConfigParser;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use rand::Rng;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
 use crate::services::names;
 
-// TODO this service should actually first make a copy of the node entire folder into `~/.peppy/nodes/<node_name>_<tag>` and then add this copy to the node stack
+/// Returns the base directory for storing copied node folders.
+/// In production: ~/.peppy/nodes
+/// In development: /tmp/peppy/nodes
+fn nodes_storage_dir() -> PathBuf {
+    match app_env() {
+        AppEnv::Prod => {
+            let home = std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(PathBuf::from);
+            home.unwrap_or_else(std::env::temp_dir)
+                .join(".peppy")
+                .join("nodes")
+        }
+        AppEnv::Dev => std::env::temp_dir().join("peppy").join("nodes"),
+    }
+}
+
+fn generate_random_id() -> String {
+    let mut rng = rand::rng();
+    let bytes: [u8; 3] = rng.random();
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
+    std::fs::create_dir_all(dest)?;
+
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dest_path = dest.join(entry.file_name());
+
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dest_path)?;
+        } else {
+            std::fs::copy(&src_path, &dest_path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Copies a node folder to the peppy nodes storage directory.
+///
+/// The destination path follows the format: `<storage_dir>/<node_name>_<tag>_<uuid>`
+///
+/// Returns the path to the copied folder.
+fn copy_node_to_storage(from_dir: &Path, node_name: &str, node_tag: &str) -> Result<PathBuf> {
+    let storage_dir = nodes_storage_dir();
+    let random_id = generate_random_id();
+    let folder_name = format!("{}_{}_{}", node_name, node_tag, random_id);
+    let dest_path = storage_dir.join(&folder_name);
+
+    debug!(
+        "Copying node folder from {} to {}",
+        from_dir.display(),
+        dest_path.display()
+    );
+
+    copy_dir_recursive(from_dir, &dest_path)?;
+
+    Ok(dest_path)
+}
 
 pub async fn listen_for_node_add(
     messenger: &MessengerHandle,
@@ -75,17 +138,33 @@ async fn handle_node_add_request_inner(
         }
     };
 
-    // Add the node config to the stack with its root path (all dependencies must be satisfied)
-    // Note: `add` only registers the node configuration, it does not spawn any instance.
-    // Use `node_start` to spawn instances after adding a node.
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
 
-    if let Err(e) = node_stack.push_config(node_config, false, request.from_dir) {
+    // Copy the node folder to the peppy storage directory before adding to the stack.
+    // This ensures each added node has its own isolated copy.
+    let copied_path = match copy_node_to_storage(&request.from_dir, &node_name, &node_tag) {
+        Ok(path) => path,
+        Err(e) => {
+            return NodeAddResponse::failure(format!("Failed to copy node folder: {}", e)).encode();
+        }
+    };
+
+    // Add the node config to the stack with its copied path (all dependencies must be satisfied)
+    // Note: `add` only registers the node configuration, it does not spawn any instance.
+    // Use `node_start` to spawn instances after adding a node.
+    if let Err(e) = node_stack.push_config(node_config, false, &copied_path) {
+        // Clean up the copied folder on failure
+        let _ = std::fs::remove_dir_all(&copied_path);
         return NodeAddResponse::failure(format!("Failed to add node config: {}", e)).encode();
     }
 
-    debug!("Added node {}:{}", node_name, node_tag);
+    debug!(
+        "Added node {}:{} at {}",
+        node_name,
+        node_tag,
+        copied_path.display()
+    );
 
     NodeAddResponse::success().encode()
 }

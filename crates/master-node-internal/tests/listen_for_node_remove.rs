@@ -16,6 +16,8 @@ async fn listen_for_node_remove_success() {
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
 
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+
     let peppy_json5 = format!(
         r#"{{
             schema_version: 1,
@@ -28,7 +30,7 @@ async fn listen_for_node_remove_success() {
         }}"#
     );
 
-    let add_response = NodeAddRequest::new(&peppy_json5, "/tmp")
+    let add_response = NodeAddRequest::new(&peppy_json5, source_dir.path())
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -132,6 +134,8 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
 
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+
     let peppy_json5 = format!(
         r#"{{
             schema_version: 1,
@@ -144,7 +148,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
         }}"#
     );
 
-    let add_response = NodeAddRequest::new(&peppy_json5, "/tmp")
+    let add_response = NodeAddRequest::new(&peppy_json5, source_dir.path())
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -223,6 +227,8 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
 
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+
     let peppy_json5 = format!(
         r#"{{
             schema_version: 1,
@@ -235,7 +241,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
         }}"#
     );
 
-    let add_response = NodeAddRequest::new(&peppy_json5, "/tmp")
+    let add_response = NodeAddRequest::new(&peppy_json5, source_dir.path())
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
