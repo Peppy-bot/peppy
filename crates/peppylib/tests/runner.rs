@@ -372,8 +372,14 @@ async fn node_ready_but_not_healthy() {
     .expect("ready service should respond while setup is blocked");
     assert_eq!(ready_response.payload().to_bytes(), ready_payload);
     assert_eq!(ready_response.instance_id(), TEST_INSTANCE_ID);
-    assert!(
-        peppylib::ServiceMessenger::is_reachable(
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if runner_task.is_finished() {
+            let result = runner_task.await.expect("runner task should not panic");
+            panic!("runner exited early: {result:?}");
+        }
+
+        if peppylib::ServiceMessenger::is_reachable(
             &messenger,
             TEST_MASTER_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
@@ -383,9 +389,17 @@ async fn node_ready_but_not_healthy() {
             Some(TEST_INSTANCE_ID),
         )
         .await
-        .expect("reachability check should succeed"),
-        "shutdown service should be reachable while setup is blocked"
-    );
+        .expect("reachability check should succeed")
+        {
+            break;
+        }
+
+        if Instant::now() >= deadline {
+            panic!("shutdown service should be reachable while setup is blocked");
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
     assert!(
         !peppylib::ServiceMessenger::is_reachable(

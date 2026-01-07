@@ -67,12 +67,13 @@ where
         // 1. Detect if user code hangs during initialization (node responds to ready but not health)
         // 2. Request shutdown even if setup_fn is blocking
         let pre_setup = mandatory_pre_setup_services(Arc::clone(&node_runner)).await?;
+        let mut shutdown_rx = pre_setup.shutdown_rx;
 
         tokio::select! {
             result = setup_fn(parameters, Arc::clone(&node_runner)) => {
                 result?;
             }
-            _ = pre_setup.shutdown_rx => {
+            _ = &mut shutdown_rx => {
                 info!("Shutdown requested during setup, aborting...");
                 return Ok(());
             }
@@ -82,6 +83,7 @@ where
             node_runner,
             pre_setup.ready_handle,
             pre_setup.shutdown_handle,
+            shutdown_rx,
         )
         .await?;
 
@@ -129,6 +131,7 @@ async fn mandatory_post_setup_services(
     node_runner: Arc<NodeRunner>,
     ready_handle: JoinHandle<Result<()>>,
     shutdown_handle: JoinHandle<Result<()>>,
+    mut shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
     let runtime = node_runner.runtime();
 
@@ -142,7 +145,14 @@ async fn mandatory_post_setup_services(
 
     let handles = vec![ready_handle, health_handle, shutdown_handle];
 
-    wait_for_handles(handles).await?;
+    tokio::select! {
+        result = wait_for_handles(handles) => {
+            result?;
+        }
+        _ = &mut shutdown_rx => {
+            info!("Received shutdown request, stopping services...");
+        }
+    }
 
     info!("Shutting down node...");
     Ok(())

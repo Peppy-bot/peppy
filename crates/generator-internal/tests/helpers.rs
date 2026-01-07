@@ -1,7 +1,7 @@
 use config::consts::{NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::runtime::RuntimeConfig;
 use generator::RustGenerator;
-use peppylib::messaging::SHUTDOWN_SERVICE;
+use peppylib::messaging::{NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::{MessengerHandle, ServiceMessenger};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, ZenohAdapter, ZenohNetProtocol};
 use std::io::Read;
@@ -306,6 +306,7 @@ pub async fn wait_for_service_reachable_or_exit(
     }
 }
 
+#[allow(dead_code)]
 pub async fn wait_for_shutdown_service_reachable_or_exit(
     ctx: &WaitContext<'_>,
     target_node_name: &str,
@@ -318,6 +319,26 @@ pub async fn wait_for_shutdown_service_reachable_or_exit(
         ctx,
         target_node_name,
         SHUTDOWN_SERVICE,
+        Some(target_instance_id),
+        child,
+        dir,
+        timeout,
+    )
+    .await;
+}
+
+pub async fn wait_for_health_service_reachable_or_exit(
+    ctx: &WaitContext<'_>,
+    target_node_name: &str,
+    target_instance_id: &str,
+    child: &mut std::process::Child,
+    dir: &std::path::Path,
+    timeout: Duration,
+) {
+    wait_for_service_reachable_or_exit(
+        ctx,
+        target_node_name,
+        NODE_HEALTH_SERVICE,
         Some(target_instance_id),
         child,
         dir,
