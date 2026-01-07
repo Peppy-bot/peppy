@@ -11,6 +11,8 @@ use tracing::debug;
 
 use crate::services::names;
 
+// TODO this service should actually first make a copy of the node entire folder into `~/.peppy/nodes/<node_name>_<tag>` and then add this copy to the node stack
+
 pub async fn listen_for_node_add(
     messenger: &MessengerHandle,
     master_node_node: &str,

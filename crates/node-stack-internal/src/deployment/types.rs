@@ -21,6 +21,7 @@ pub struct SerializedNode {
     pub name: String,
     pub tag: String,
     pub instance_count: usize,
+    pub fs_root_path: String,
 }
 
 impl SerializedNode {
@@ -767,6 +768,7 @@ impl NodeStackInner {
                 name: entity.config().manifest.name.as_str().to_string(),
                 tag: entity.config().manifest.tag.clone(),
                 instance_count: entity.instances().len(),
+                fs_root_path: entity.root_path().display().to_string(),
             })
             .collect();
 
@@ -782,11 +784,13 @@ impl NodeStackInner {
                         name: src_entity.config().manifest.name.as_str().to_string(),
                         tag: src_entity.config().manifest.tag.clone(),
                         instance_count: src_entity.instances().len(),
+                        fs_root_path: src_entity.root_path().display().to_string(),
                     },
                     to: SerializedNode {
                         name: dst_entity.config().manifest.name.as_str().to_string(),
                         tag: dst_entity.config().manifest.tag.clone(),
                         instance_count: dst_entity.instances().len(),
+                        fs_root_path: dst_entity.root_path().display().to_string(),
                     },
                 })
             })
