@@ -245,6 +245,26 @@ __wrap__() {
         echo "warning: 'zenohd' was not found in the archive. 'peppy service serve' requires zenohd on PATH or next to the peppy binary." >&2
     fi
 
+    if [ -z "${PEPPY_NO_SERVICE_INSTALL:-}" ]; then
+        SERVICE_INSTALL_OUTPUT=""
+        if ! SERVICE_INSTALL_OUTPUT=$("$PEPPY_BIN_DIR/peppy" service install 2>&1); then
+            case "$SERVICE_INSTALL_OUTPUT" in
+            *"Permission denied"* | *"permission denied"* | *"os error 13"*)
+                echo "warning: failed to install the peppy background service (permission denied; try: 'sudo $PEPPY_BIN_DIR/peppy service install')" >&2
+                ;;
+            *)
+                echo "warning: failed to install the peppy background service (try: '$PEPPY_BIN_DIR/peppy service install')" >&2
+                ;;
+            esac
+
+            if [ -n "${PEPPY_DEBUG:-}" ] && [ -n "${SERVICE_INSTALL_OUTPUT-}" ]; then
+                echo "$SERVICE_INSTALL_OUTPUT" >&2
+            fi
+        fi
+    else
+        echo "No service install because PEPPY_NO_SERVICE_INSTALL is set"
+    fi
+
     if [ -n "${PEPPY_NO_PATH_UPDATE:-}" ]; then
         echo "No path update because PEPPY_NO_PATH_UPDATE is set"
     else
