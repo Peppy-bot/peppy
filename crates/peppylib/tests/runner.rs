@@ -10,8 +10,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-// TODO: There needs a be a way for a user to run a node from its IDE without going through the `peppy` program... or maybe not? Maybe there is a way to create a debug config that runs `peppy`?
-
 const TEST_MASTER_NODE: &str = "test_master";
 const TEST_NODE_NAME: &str = "test_node";
 const TEST_INSTANCE_ID: &str = "test_instance";
@@ -374,6 +372,20 @@ async fn node_ready_but_not_healthy() {
     .expect("ready service should respond while setup is blocked");
     assert_eq!(ready_response.payload().to_bytes(), ready_payload);
     assert_eq!(ready_response.instance_id(), TEST_INSTANCE_ID);
+    assert!(
+        peppylib::ServiceMessenger::is_reachable(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            TEST_NODE_NAME,
+            SHUTDOWN_SERVICE,
+            Some(TEST_MASTER_NODE),
+            Some(TEST_INSTANCE_ID),
+        )
+        .await
+        .expect("reachability check should succeed"),
+        "shutdown service should be reachable while setup is blocked"
+    );
 
     assert!(
         !peppylib::ServiceMessenger::is_reachable(
@@ -462,35 +474,6 @@ async fn node_ready_but_not_healthy() {
     .expect("health service should respond after setup completes");
     NodeHealthResponse::decode(&health_response.payload().to_bytes())
         .expect("health response should decode");
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if runner_task.is_finished() {
-            let result = runner_task.await.expect("runner task should not panic");
-            panic!("runner exited early: {result:?}");
-        }
-
-        if peppylib::ServiceMessenger::is_reachable(
-            &messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            TEST_NODE_NAME,
-            SHUTDOWN_SERVICE,
-            Some(TEST_MASTER_NODE),
-            Some(TEST_INSTANCE_ID),
-        )
-        .await
-        .expect("reachability check should succeed")
-        {
-            break;
-        }
-
-        if Instant::now() >= deadline {
-            panic!("shutdown service did not become reachable");
-        }
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
 
     let shutdown_payload = Bytes::from_static(b"shutdown");
     let shutdown_response = peppylib::ServiceMessenger::poll(
