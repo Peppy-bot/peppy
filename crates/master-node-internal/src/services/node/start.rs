@@ -6,7 +6,8 @@ use config::node::Name;
 use config::runtime::RuntimeConfig;
 use node_stack::{NodeEntity, NodeStack};
 use peppylib::encoding::health::NodeHealthRequest;
-use peppylib::messaging::{NODE_HEALTH_SERVICE, ServiceRequestContext};
+use peppylib::encoding::ready::NodeReadyRequest;
+use peppylib::messaging::{NODE_HEALTH_SERVICE, NODE_READY_SERVICE, ServiceRequestContext};
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -22,6 +23,7 @@ pub async fn listen_for_node_start(
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
+    node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
@@ -46,6 +48,7 @@ pub async fn listen_for_node_start(
                     messenger.clone(),
                     master_node_name.clone(),
                     caller_instance_id.clone(),
+                    node_startup_timeout,
                     node_start_health_timeout,
                 )
             })
@@ -62,6 +65,7 @@ async fn handle_node_start_request(
     messenger: MessengerHandle,
     master_node_name: String,
     caller_instance_id: String,
+    node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
 ) -> PeppyResult<Bytes> {
     let sender_instance_id = context.message().instance_id();
@@ -71,6 +75,7 @@ async fn handle_node_start_request(
         &messenger,
         &master_node_name,
         &caller_instance_id,
+        node_startup_timeout,
         node_start_health_timeout,
     )
     .await
@@ -86,6 +91,7 @@ async fn handle_node_start_request_inner(
     messenger: &MessengerHandle,
     master_node_name: &str,
     caller_instance_id: &str,
+    node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
 ) -> Result<Bytes> {
     let sender_instance_id = context.message().instance_id();
@@ -145,11 +151,37 @@ async fn handle_node_start_request_inner(
     };
 
     debug!(
-        "Successfully spawned node instance '{}', performing health check...",
+        "Successfully spawned node instance '{}', waiting for ready signal...",
         instance_id_str
     );
 
-    // Perform health check with timeout
+    // Phase 1: Wait for the node to signal it's ready (covers compilation time)
+    let ready_result = wait_for_ready_signal(
+        messenger,
+        master_node_name,
+        caller_instance_id,
+        runtime_config.node_name.as_str(),
+        runtime_config.bound_master_node.as_str(),
+        instance_id_str,
+        node_startup_timeout,
+        &mut child,
+    )
+    .await;
+
+    if let Err(e) = ready_result {
+        debug!(
+            "Ready signal failed for node instance '{}': {}, killing process",
+            instance_id_str, e
+        );
+        return kill_and_report_error(child, instance_id_str, &e).await;
+    }
+
+    debug!(
+        "Node instance '{}' is ready, performing health check...",
+        instance_id_str
+    );
+
+    // Phase 2: Perform health check (node should respond quickly now that it's ready)
     let health_result = perform_health_check(
         messenger,
         master_node_name,
@@ -187,36 +219,44 @@ async fn handle_node_start_request_inner(
                 "Health check failed for node instance '{}': {}, killing process",
                 instance_id_str, e
             );
-            // Kill the process since health check failed
-            if let Err(kill_err) = child.kill() {
-                debug!(
-                    "Failed to kill process for node instance '{}': {}",
-                    instance_id_str, kill_err
-                );
-            }
-            // Capture stderr after killing the process (best-effort) so we don't block forever
-            // trying to read until EOF from a still-running process.
-            let stderr_output = tokio::task::spawn_blocking(move || child.wait_with_output())
-                .await
-                .ok()
-                .and_then(|result| result.ok())
-                .map(|output| String::from_utf8_lossy(&output.stderr).to_string())
-                .unwrap_or_default();
-
-            if !stderr_output.is_empty() {
-                debug!(
-                    "Node instance '{}' stderr: {}",
-                    instance_id_str, stderr_output
-                );
-            }
-            let error_msg = if stderr_output.is_empty() {
-                format!("Health check failed: {}", e)
-            } else {
-                format!("Health check failed: {}. Node stderr: {}", e, stderr_output)
-            };
-            NodeStartResponse::failure(error_msg).encode()
+            kill_and_report_error(child, instance_id_str, &e).await
         }
     }
+}
+
+/// Helper function to kill a child process and report an error with stderr capture.
+async fn kill_and_report_error(
+    mut child: Child,
+    instance_id_str: &str,
+    error: &str,
+) -> Result<Bytes> {
+    if let Err(kill_err) = child.kill() {
+        debug!(
+            "Failed to kill process for node instance '{}': {}",
+            instance_id_str, kill_err
+        );
+    }
+    // Capture stderr after killing the process (best-effort) so we don't block forever
+    // trying to read until EOF from a still-running process.
+    let stderr_output = tokio::task::spawn_blocking(move || child.wait_with_output())
+        .await
+        .ok()
+        .and_then(|result| result.ok())
+        .map(|output| String::from_utf8_lossy(&output.stderr).to_string())
+        .unwrap_or_default();
+
+    if !stderr_output.is_empty() {
+        debug!(
+            "Node instance '{}' stderr: {}",
+            instance_id_str, stderr_output
+        );
+    }
+    let error_msg = if stderr_output.is_empty() {
+        error.to_string()
+    } else {
+        format!("{}. Node stderr: {}", error, stderr_output)
+    };
+    NodeStartResponse::failure(error_msg).encode()
 }
 
 /// Runs a node using its manifest's launch_cmd and passes the PEPPY_RUNTIME_CONFIG as an env var.
@@ -313,6 +353,78 @@ pub async fn perform_health_check(
             caller_instance_id,
             target_node_name,
             NODE_HEALTH_SERVICE,
+            Some(target_master_node),
+            Some(target_instance_id),
+            request_payload.clone(),
+            attempt_timeout,
+        )
+        .await
+        {
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                last_err = Some(err);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
+}
+
+/// Waits for a node to signal it's ready (runner::run() has started).
+/// Polls the node's ready service with a timeout and returns Ok when the node responds.
+/// Also monitors the child process to detect early exits (e.g., compilation failures).
+///
+/// This is used during startup to wait for compilation to complete before
+/// starting the health check timer.
+#[allow(clippy::too_many_arguments)]
+pub async fn wait_for_ready_signal(
+    messenger: &MessengerHandle,
+    master_node_name: &str,
+    caller_instance_id: &str,
+    target_node_name: &str,
+    target_master_node: &str,
+    target_instance_id: &str,
+    timeout: Duration,
+    child: &mut Child,
+) -> std::result::Result<(), String> {
+    let request_payload = NodeReadyRequest::new()
+        .encode()
+        .map_err(|e| format!("failed to encode node ready request: {e}"))?;
+    let deadline = Instant::now() + timeout;
+    let mut last_err: Option<PeppyError> = None;
+
+    // Poll in short intervals to detect when the node becomes ready
+    loop {
+        // Check if the child process has exited (e.g., compilation failed)
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "node process exited during startup (status={status})"
+                ));
+            }
+            Ok(None) => {}
+            Err(err) => return Err(format!("failed to query node process status: {err}")),
+        }
+
+        let now = Instant::now();
+        if now >= deadline {
+            let err = last_err.unwrap_or_else(|| PeppyError::ServiceTimeout {
+                instance_id: Some(target_instance_id.to_string()),
+                service_name: NODE_READY_SERVICE.to_string(),
+            });
+            return Err(format!(
+                "startup timed out waiting for node to be ready (node may still be compiling): {err}"
+            ));
+        }
+
+        let remaining = deadline - now;
+        let attempt_timeout = remaining.min(Duration::from_millis(500));
+
+        match ServiceMessenger::poll(
+            messenger,
+            master_node_name,
+            caller_instance_id,
+            target_node_name,
+            NODE_READY_SERVICE,
             Some(target_master_node),
             Some(target_instance_id),
             request_payload.clone(),

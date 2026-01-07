@@ -15,7 +15,7 @@ use crate::Result;
 use crate::encoding::{LauncherRequest, LauncherResponse, NodeGenerateRequest};
 
 use super::names;
-use super::node::{perform_health_check, run_node};
+use super::node::{perform_health_check, run_node, wait_for_ready_signal};
 
 const NODE_GENERATE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -25,6 +25,7 @@ pub async fn listen_for_launch_configuration(
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
+    node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
 ) -> Result<JoinHandle<Result<()>>> {
     let messenger = messenger.clone();
@@ -54,6 +55,7 @@ pub async fn listen_for_launch_configuration(
                         messenger,
                         master_node_name,
                         master_instance_id,
+                        node_startup_timeout,
                         node_start_health_timeout,
                     )
                     .await
@@ -72,6 +74,7 @@ async fn handle_launcher_request(
     messenger: MessengerHandle,
     master_node_name: String,
     master_instance_id: String,
+    node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
 ) -> PeppyResult<Bytes> {
     let sender_instance_id = context.message().instance_id().to_string();
@@ -82,6 +85,7 @@ async fn handle_launcher_request(
         &messenger,
         master_node_name.as_str(),
         master_instance_id.as_str(),
+        node_startup_timeout,
         node_start_health_timeout,
     )
     .await
@@ -104,6 +108,7 @@ async fn handle_launcher_request_inner(
     messenger: &MessengerHandle,
     master_node_name: &str,
     master_instance_id: &str,
+    node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
 ) -> std::result::Result<(), String> {
     let sender_instance_id = context.message().instance_id();
@@ -143,6 +148,7 @@ async fn handle_launcher_request_inner(
         messenger,
         master_node_name,
         master_instance_id,
+        node_startup_timeout,
         node_start_health_timeout,
     )
     .await?;
@@ -157,6 +163,7 @@ async fn start_launch_plan_instances(
     messenger: &MessengerHandle,
     master_node_name: &str,
     master_instance_id: &str,
+    node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
 ) -> std::result::Result<(), String> {
     let messaging_host = &launcher_runtime_config.messaging_host;
@@ -224,6 +231,7 @@ async fn start_launch_plan_instances(
                 &entity,
                 deployment_instance.instance_id.as_str(),
                 &runtime_config_json5,
+                node_startup_timeout,
                 node_start_health_timeout,
             )
             .await
@@ -250,6 +258,7 @@ async fn start_node_instance(
     entity: &NodeEntity,
     instance_id: &str,
     runtime_config_json5: &str,
+    node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
 ) -> std::result::Result<Child, String> {
     let manifest = entity.config().manifest.clone();
@@ -263,6 +272,30 @@ async fn start_node_instance(
         )
     })?;
 
+    // Phase 1: Wait for the node to signal it's ready (covers compilation time)
+    if let Err(error) = wait_for_ready_signal(
+        messenger,
+        master_node_name,
+        master_instance_id,
+        manifest.name.as_str(),
+        master_node_name,
+        instance_id,
+        node_startup_timeout,
+        &mut child,
+    )
+    .await
+    {
+        return kill_and_report_launch_error(
+            child,
+            &manifest.name.as_str(),
+            &manifest.tag,
+            instance_id,
+            &error,
+        )
+        .await;
+    }
+
+    // Phase 2: Perform health check (node should respond quickly now)
     match perform_health_check(
         messenger,
         master_node_name,
@@ -277,39 +310,50 @@ async fn start_node_instance(
     {
         Ok(()) => Ok(child),
         Err(error) => {
-            if let Err(kill_err) = child.kill() {
-                debug!(
-                    "Failed to kill process for node {}:{} instance {}: {}",
-                    manifest.name.as_str(),
-                    manifest.tag,
-                    instance_id,
-                    kill_err
-                );
-            }
-
-            let stderr_output = tokio::task::spawn_blocking(move || child.wait_with_output())
-                .await
-                .ok()
-                .and_then(|result| result.ok())
-                .map(|output| String::from_utf8_lossy(&output.stderr).to_string())
-                .unwrap_or_default();
-
-            let error_msg = if stderr_output.is_empty() {
-                format!(
-                    "failed to start node {}:{} instance {}: {error}",
-                    manifest.name.as_str(),
-                    manifest.tag,
-                    instance_id
-                )
-            } else {
-                format!(
-                    "failed to start node {}:{} instance {}: {error}. Node stderr: {stderr_output}",
-                    manifest.name.as_str(),
-                    manifest.tag,
-                    instance_id
-                )
-            };
-            Err(error_msg)
+            kill_and_report_launch_error(
+                child,
+                &manifest.name.as_str(),
+                &manifest.tag,
+                instance_id,
+                &error,
+            )
+            .await
         }
     }
+}
+
+/// Helper function to kill a child process during launch and report an error.
+async fn kill_and_report_launch_error(
+    mut child: Child,
+    node_name: &str,
+    tag: &str,
+    instance_id: &str,
+    error: &str,
+) -> std::result::Result<Child, String> {
+    if let Err(kill_err) = child.kill() {
+        debug!(
+            "Failed to kill process for node {}:{} instance {}: {}",
+            node_name, tag, instance_id, kill_err
+        );
+    }
+
+    let stderr_output = tokio::task::spawn_blocking(move || child.wait_with_output())
+        .await
+        .ok()
+        .and_then(|result| result.ok())
+        .map(|output| String::from_utf8_lossy(&output.stderr).to_string())
+        .unwrap_or_default();
+
+    let error_msg = if stderr_output.is_empty() {
+        format!(
+            "failed to start node {}:{} instance {}: {error}",
+            node_name, tag, instance_id
+        )
+    } else {
+        format!(
+            "failed to start node {}:{} instance {}: {error}. Node stderr: {stderr_output}",
+            node_name, tag, instance_id
+        )
+    };
+    Err(error_msg)
 }

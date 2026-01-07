@@ -24,12 +24,17 @@ use tracing::info;
 const MASTER_NODE_TAG: &str = "internal";
 
 pub struct MasterNodeArguments {
+    pub node_startup_timeout: Duration,
     pub node_start_health_timeout: Duration,
 }
 
 impl From<MasterNodeArguments> for NodeArguments {
     fn from(args: MasterNodeArguments) -> Self {
         let mut map = BTreeMap::new();
+        map.insert(
+            "node_startup_timeout_ms".to_string(),
+            AnyType::UInt(args.node_startup_timeout.as_millis() as u64),
+        );
         map.insert(
             "node_start_health_timeout_ms".to_string(),
             AnyType::UInt(args.node_start_health_timeout.as_millis() as u64),
@@ -44,6 +49,7 @@ pub struct MasterNode {
     instance_id: Name,
     messenger: MessengerHandle,
     start_time: Instant,
+    node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
 }
 
@@ -59,6 +65,7 @@ impl MasterNode {
             None => Name::new(get_random(rng())).unwrap(),
         };
 
+        let node_startup_timeout = node_arguments.node_startup_timeout;
         let node_start_health_timeout = node_arguments.node_start_health_timeout;
 
         let node_config = NodeConfig {
@@ -86,6 +93,7 @@ impl MasterNode {
             instance_id,
             messenger,
             start_time: Instant::now(),
+            node_startup_timeout,
             node_start_health_timeout,
         }
     }
@@ -144,6 +152,7 @@ impl MasterNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
+                self.node_startup_timeout,
                 self.node_start_health_timeout,
             )
             .await?,
@@ -185,6 +194,7 @@ impl MasterNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
+                self.node_startup_timeout,
                 self.node_start_health_timeout,
             )
             .await?,

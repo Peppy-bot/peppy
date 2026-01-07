@@ -23,6 +23,7 @@ use tracing::error;
 
 // services
 pub const NODE_HEALTH_SERVICE: &str = "node_health";
+pub const NODE_READY_SERVICE: &str = "node_ready";
 pub const SHUTDOWN_SERVICE: &str = "shutdown";
 
 const INSTANCE_ID_WILDCARD: &str = "**";

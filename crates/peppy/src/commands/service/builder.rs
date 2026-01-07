@@ -14,6 +14,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+const DEFAULT_NODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(600); // 10 minutes
 const DEFAULT_NODE_START_HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct ServeCommandBuilder {
@@ -81,6 +82,7 @@ impl ServeCommandBuilder {
                 let master_node = MasterNodeRunner::new(
                     Arc::clone(messenger),
                     self.master_node_name.clone(),
+                    DEFAULT_NODE_STARTUP_TIMEOUT,
                     DEFAULT_NODE_START_HEALTH_TIMEOUT,
                     self.root_dir.clone(),
                 );
