@@ -1,6 +1,5 @@
 mod add;
 mod init;
-mod list;
 mod remove;
 mod run;
 mod runtime_config;
@@ -97,12 +96,6 @@ pub enum NodeCommands {
         #[arg(long)]
         peppy_json5: Option<PathBuf>,
     },
-
-    /// List nodes in the current node stack
-    List {
-        /// If specified, will save a dotgraph representation at the given path
-        dot_graph_path: Option<PathBuf>,
-    },
     /// Stop a running node instance
     Stop {
         /// Instance ID of the node to stop
@@ -168,10 +161,6 @@ impl Command for NodeCommand {
             } => {
                 info!("Printing runtime config...");
                 runtime_config::print_runtime_config(ctx, node_name, peppy_json5)
-            }
-            NodeCommands::List { dot_graph_path } => {
-                info!("Listing nodes...");
-                list::list_nodes(ctx, dot_graph_path)
             }
             NodeCommands::Stop { instance_id } => {
                 info!("Stopping node instance {}...", instance_id);

@@ -1,25 +1,22 @@
-use std::process::Child;
-use std::sync::Arc;
-use std::time::Duration;
-
+use crate::Result;
+use crate::encoding::{LauncherRequest, LauncherResponse, NodeGenerateRequest};
+use crate::names;
+use crate::services::node::{perform_health_check, run_node, wait_for_ready_signal};
 use bytes::Bytes;
 use config::peppy_config::{BuildSystem, PeppyLauncherParser};
 use config::runtime::{LauncherRuntimeConfig, RuntimeConfig};
 use node_stack::{LaunchPlan, NodeEntity, NodeStack};
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use std::process::Child;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-use crate::Result;
-use crate::encoding::{LauncherRequest, LauncherResponse, NodeGenerateRequest};
-
-use super::names;
-use super::node::{perform_health_check, run_node, wait_for_ready_signal};
-
 const NODE_GENERATE_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub async fn listen_for_launch_configuration(
+pub async fn listen_for_stack_launch(
     messenger: &MessengerHandle,
     master_node_node: &str,
     instance_id: &str,
@@ -37,7 +34,7 @@ pub async fn listen_for_launch_configuration(
         master_node_node,
         instance_id,
         node_name,
-        names::LAUNCHER,
+        names::STACK_LAUNCHER,
     )
     .await?;
 
@@ -49,7 +46,7 @@ pub async fn listen_for_launch_configuration(
                 let master_node_name = master_node_name.clone();
                 let master_instance_id = master_instance_id.clone();
                 async move {
-                    handle_launcher_request(
+                    handle_stack_launch_request(
                         context,
                         node_stack,
                         messenger,
@@ -68,7 +65,7 @@ pub async fn listen_for_launch_configuration(
     Ok(handle)
 }
 
-async fn handle_launcher_request(
+async fn handle_stack_launch_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
     messenger: MessengerHandle,
@@ -79,7 +76,7 @@ async fn handle_launcher_request(
 ) -> PeppyResult<Bytes> {
     let sender_instance_id = context.message().instance_id().to_string();
 
-    let response = match handle_launcher_request_inner(
+    let response = match handle_stack_launch_request_inner(
         &context,
         &node_stack,
         &messenger,
@@ -102,7 +99,7 @@ async fn handle_launcher_request(
         })
 }
 
-async fn handle_launcher_request_inner(
+async fn handle_stack_launch_request_inner(
     context: &ServiceRequestContext,
     node_stack: &NodeStack,
     messenger: &MessengerHandle,

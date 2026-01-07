@@ -1,6 +1,6 @@
-pub mod launch;
 pub mod node;
 pub mod service;
+pub mod stack;
 
 use std::sync::Arc;
 

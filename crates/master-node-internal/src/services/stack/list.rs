@@ -1,5 +1,6 @@
 use crate::Result;
-use crate::encoding::{NodeResetRequest, NodeResetResponse};
+use crate::encoding::{NodeListRequest, NodeListResponse};
+use crate::names;
 use bytes::Bytes;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
@@ -8,9 +9,7 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-use crate::services::names;
-
-pub async fn listen_for_node_reset(
+pub async fn listen_for_stack_list(
     messenger: &MessengerHandle,
     master_node_node: &str,
     instance_id: &str,
@@ -22,13 +21,13 @@ pub async fn listen_for_node_reset(
         master_node_node,
         instance_id,
         node_name,
-        names::NODE_RESET,
+        names::STACK_LIST,
     )
     .await?;
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(|context| handle_node_reset_request(context, node_stack.clone()))
+            .handle_requests(|context| handle_stack_list_request(context, node_stack.clone()))
             .await
             .map_err(Into::into)
     });
@@ -36,29 +35,36 @@ pub async fn listen_for_node_reset(
     Ok(handle)
 }
 
-async fn handle_node_reset_request(
+async fn handle_stack_list_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
 ) -> PeppyResult<Bytes> {
     let sender_instance_id = context.message().instance_id();
-    handle_node_reset_request_inner(&context, node_stack)
-        .await
-        .map_err(|e| PeppyError::InvalidServiceRequest {
+    handle_node_list_request_inner(&context, node_stack).map_err(|e| {
+        PeppyError::InvalidServiceRequest {
             identifier: sender_instance_id.to_string(),
             reason: e.to_string(),
-        })
+        }
+    })
 }
 
-async fn handle_node_reset_request_inner(
+fn handle_node_list_request_inner(
     context: &ServiceRequestContext,
     node_stack: Arc<NodeStack>,
 ) -> Result<Bytes> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    let _request = NodeResetRequest::decode(&payload.as_bytes())?;
+    let request = NodeListRequest::decode(&payload.as_bytes())?;
 
-    debug!("Received `node_reset` request from {sender_instance_id}");
-    node_stack.reset();
-    NodeResetResponse::success().encode()
+    debug!("Received `node_list` request from {sender_instance_id}");
+
+    let dot_graph = if request.with_dot_graph() {
+        Some(node_stack.to_dot())
+    } else {
+        None
+    };
+    let serialized_graph = node_stack.to_serialized_graph();
+    let graph_json = serde_json::to_string(&serialized_graph).unwrap_or_else(|_| "{}".to_string());
+    NodeListResponse::new(dot_graph, graph_json).encode()
 }

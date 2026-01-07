@@ -44,7 +44,7 @@ impl NodeResetRequest {
             bound_master_node,
             as_instance_id,
             target_master_node,
-            names::NODE_RESET,
+            names::STACK_RESET,
             Some(target_master_node),
             None,
             request_payload,

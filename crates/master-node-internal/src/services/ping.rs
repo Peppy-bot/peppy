@@ -1,13 +1,11 @@
+use crate::Result;
+use crate::encoding::{PingRequest, PingResponse};
+use crate::names;
 use bytes::Bytes;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
-
-use crate::Result;
-use crate::encoding::{PingRequest, PingResponse};
-
-use super::names;
 
 pub async fn listen_for_ping(
     messenger: &MessengerHandle,

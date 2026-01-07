@@ -7,6 +7,7 @@ use config::node::{Name as ConfigName, NodeConfigParser, SubscribedTopic, Subscr
 use helpers::TestServeHandle;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
+use peppy::commands::stack::{StackCommand, StackCommands};
 use peppy::context::{AppContext, DaemonState};
 
 fn make_consumer_depend_on_provider(
@@ -133,8 +134,8 @@ fn node_list_command_succeeds() {
     .expect("consumer node add command should succeed");
 
     // Now run the node list command and assert it prints nodes and dependencies
-    NodeCommand {
-        command: NodeCommands::List {
+    StackCommand {
+        command: StackCommands::List {
             dot_graph_path: None,
         },
     }
@@ -256,8 +257,8 @@ fn node_list_command_with_dot_representation_succeeds() {
 
     let dot_graph_path = node_dir.path().join("node_stack.dot");
 
-    NodeCommand {
-        command: NodeCommands::List {
+    StackCommand {
+        command: StackCommands::List {
             dot_graph_path: Some(dot_graph_path.clone()),
         },
     }

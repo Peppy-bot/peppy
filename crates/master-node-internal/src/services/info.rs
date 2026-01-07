@@ -1,17 +1,14 @@
-use std::sync::Arc;
-use std::time::Instant;
-
+use crate::Result;
+use crate::encoding::{InfoRequest, InfoResponse};
+use crate::names;
 use bytes::Bytes;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use std::sync::Arc;
+use std::time::Instant;
 use tokio::task::JoinHandle;
 use tracing::debug;
-
-use crate::Result;
-use crate::encoding::{InfoRequest, InfoResponse};
-
-use super::names;
 
 pub async fn listen_for_info(
     messenger: &MessengerHandle,

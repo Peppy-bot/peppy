@@ -1,13 +1,12 @@
+use super::templates::{apply_python_templates, apply_rust_templates};
 use crate::Result;
 use crate::encoding::{NodeInitRequest, NodeInitResponse};
+use crate::names;
 use bytes::Bytes;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
-
-use super::templates::{apply_python_templates, apply_rust_templates};
-use crate::services::names;
 
 pub async fn listen_for_node_init(
     messenger: &MessengerHandle,

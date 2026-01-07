@@ -1,8 +1,8 @@
 /// The master node is a special kind of node that has access to the whole context of the peppy daemon and runs as part of the same process
 pub mod encoding;
+pub mod names;
 
 mod error;
-mod node;
 mod services;
 
 // Generated Cap'n Proto types - must be at crate root for correct path resolution
@@ -27,5 +27,4 @@ pub mod node_capnp {
 }
 
 pub use error::{Error, Result};
-pub use node::{MasterNode, MasterNodeArguments};
-pub use services::names;
+pub use services::{MasterNode, MasterNodeArguments};

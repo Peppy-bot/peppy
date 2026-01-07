@@ -1,5 +1,6 @@
 use crate::Result;
 use crate::encoding::{NodeStartRequest, NodeStartResponse};
+use crate::names;
 use bytes::Bytes;
 use config::consts::RUNTIME_CONFIG_VAR_NAME;
 use config::node::Name;
@@ -14,8 +15,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use tracing::debug;
-
-use crate::services::names;
 
 pub async fn listen_for_node_start(
     messenger: &MessengerHandle,
