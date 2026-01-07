@@ -199,6 +199,7 @@ async fn start_master_node_with_messenger(
 ) -> StartedMasterNode {
     let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let node_arguments = MasterNodeArguments {
+        node_startup_timeout: Duration::from_secs(10), // Short timeout for tests
         node_start_health_timeout,
     };
     let root_dir = std::env::current_dir().expect("failed to get current directory");

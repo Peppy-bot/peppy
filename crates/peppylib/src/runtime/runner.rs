@@ -7,6 +7,7 @@ use crate::config::deserialize_parameters;
 use crate::error::{Error, Result};
 use crate::runtime::Processor;
 use crate::services::health::listen_for_node_health;
+use crate::services::ready::listen_for_node_ready;
 use crate::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 
@@ -67,10 +68,20 @@ where
 async fn mandatory_services(node_runner: Arc<NodeRunner>) -> Result<()> {
     let runtime = node_runner.runtime();
     info!(
-        "Starting the master node with name {} and instance_id {}...",
+        "Starting node with name {} and instance_id {}...",
         runtime.node_name(),
         runtime.bound_instance_id(),
     );
+
+    // Set up ready service FIRST - this allows the master to detect when the node is ready
+    // (i.e., runner::run() has started and the node can respond to requests)
+    let ready_handle = listen_for_node_ready(
+        node_runner.messenger(),
+        runtime.bound_master_node(),
+        runtime.bound_instance_id(),
+        runtime.node_name(),
+    )
+    .await?;
 
     let health_handle = listen_for_node_health(
         node_runner.messenger(),
@@ -88,7 +99,7 @@ async fn mandatory_services(node_runner: Arc<NodeRunner>) -> Result<()> {
     )
     .await?;
 
-    let handles = vec![health_handle, shutdown_handle];
+    let handles = vec![ready_handle, health_handle, shutdown_handle];
 
     tokio::select! {
         result = wait_for_handles(handles) => {
@@ -99,7 +110,7 @@ async fn mandatory_services(node_runner: Arc<NodeRunner>) -> Result<()> {
         }
     }
 
-    info!("Shutting down master node...");
+    info!("Shutting down node...");
     Ok(())
 }
 

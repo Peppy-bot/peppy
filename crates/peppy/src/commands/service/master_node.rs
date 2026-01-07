@@ -16,10 +16,12 @@ impl MasterNodeRunner {
     pub fn new(
         messenger: Arc<Mutex<Messenger>>,
         master_name: Option<String>,
+        node_startup_timeout: Duration,
         node_start_health_timeout: Duration,
         root_dir: PathBuf,
     ) -> Self {
         let node_arguments = MasterNodeArguments {
+            node_startup_timeout,
             node_start_health_timeout,
         };
         let master_node =

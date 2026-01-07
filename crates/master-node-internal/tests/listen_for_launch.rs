@@ -628,15 +628,15 @@ async fn listen_for_launch_configuration_runs_generate_on_node_before_start() {
     .await
     .expect("launcher request should complete");
 
-    // The launcher will fail because sleep doesn't implement health checks,
+    // The launcher will fail because sleep doesn't implement the ready service,
     // but the key assertion is that peppygen was generated BEFORE attempting to start
     assert!(
         !response.success,
-        "launcher should fail because sleep doesn't implement health checks"
+        "launcher should fail because sleep doesn't implement the ready service"
     );
     assert!(
-        response.error_message.contains("health check"),
-        "failure should be due to health check timeout, got: {}",
+        response.error_message.contains("startup timed out"),
+        "failure should be due to startup timeout waiting for ready signal, got: {}",
         response.error_message
     );
 
@@ -727,8 +727,8 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
         "launcher request should fail when one node never becomes healthy"
     );
     assert!(
-        response.error_message.contains("health check"),
-        "failure should be due to health check timeout, got: {}",
+        response.error_message.contains("startup timed out"),
+        "failure should be due to startup timeout waiting for ready signal, got: {}",
         response.error_message
     );
 

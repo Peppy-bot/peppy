@@ -9,3 +9,11 @@ struct NodeHealthRequest {
 struct NodeHealthResponse {
     # Empty for now - presence of response indicates healthy
 }
+
+struct NodeReadyRequest {
+    # Empty for now - master polls this to check if node's runner::run() has started
+}
+
+struct NodeReadyResponse {
+    # Empty for now - presence of response indicates node is ready
+}
