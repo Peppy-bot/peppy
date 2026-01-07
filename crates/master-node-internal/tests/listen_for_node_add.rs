@@ -13,6 +13,9 @@ async fn listen_for_node_add_success() {
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
 
+    // Create a temporary source directory to copy from
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+
     let peppy_json5 = format!(
         r#"{{
             schema_version: 1,
@@ -26,7 +29,7 @@ async fn listen_for_node_add_success() {
     );
 
     let node_add_request =
-        NodeAddRequest::new(&peppy_json5, "/tmp").with_instance_id(TARGET_INSTANCE_ID);
+        NodeAddRequest::new(&peppy_json5, source_dir.path()).with_instance_id(TARGET_INSTANCE_ID);
     let add_response = node_add_request
         .poll(
             &started_master.caller_handle,
@@ -53,6 +56,33 @@ async fn listen_for_node_add_success() {
     // `add` only adds the node to the NodeStack but doesn't spawn any instance
     assert_eq!(entity.instances().len(), 0);
 
+    // Verify the node was copied to the peppy storage directory
+    let root_path = entity.root_path();
+    assert!(
+        root_path != source_dir.path(),
+        "node should be copied to a different location, got: {}",
+        root_path.display()
+    );
+    assert!(
+        root_path.exists(),
+        "copied node directory should exist: {}",
+        root_path.display()
+    );
+
+    // Verify the path follows the expected naming convention: <node_name>_<tag>_<uuid>
+    let folder_name = root_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("should have folder name");
+    assert!(
+        folder_name.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
+        "folder name should start with '<node_name>_<tag>_', got: {}",
+        folder_name
+    );
+
+    // Clean up the copied directory
+    let _ = std::fs::remove_dir_all(root_path);
+
     started_master.task.abort();
 }
 
@@ -61,9 +91,11 @@ async fn listen_for_node_add_invalid_config_fails() {
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
 
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{ manifest: [unclosed"#;
 
-    let node_add_request = NodeAddRequest::new(peppy_json5, "/tmp").with_instance_id("bad_node");
+    let node_add_request =
+        NodeAddRequest::new(peppy_json5, source_dir.path()).with_instance_id("bad_node");
     let add_response = node_add_request
         .poll(
             &started_master.caller_handle,
@@ -99,6 +131,7 @@ async fn listen_for_node_add_no_launch_cmd_fails() {
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
 
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
         schema_version: 1,
         manifest: {
@@ -108,7 +141,7 @@ async fn listen_for_node_add_no_launch_cmd_fails() {
         parameters: {}
     }"#;
 
-    let node_add_request = NodeAddRequest::new(peppy_json5, "/tmp");
+    let node_add_request = NodeAddRequest::new(peppy_json5, source_dir.path());
     let add_response = node_add_request
         .poll(
             &started_master.caller_handle,
@@ -144,6 +177,8 @@ async fn listen_for_node_add_dependency_not_resolved() {
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
 
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+
     // Try to add a consumer node that depends on a non-existent provider
     let peppy_json5 = r#"{
         schema_version: 1,
@@ -166,7 +201,8 @@ async fn listen_for_node_add_dependency_not_resolved() {
         }
     }"#;
 
-    let node_add_request = NodeAddRequest::new(peppy_json5, "/tmp").with_instance_id("consumer_1");
+    let node_add_request =
+        NodeAddRequest::new(peppy_json5, source_dir.path()).with_instance_id("consumer_1");
     let add_response = node_add_request
         .poll(
             &started_master.caller_handle,
@@ -214,6 +250,9 @@ async fn listen_for_node_add_same_node_same_tags_fails() {
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
 
+    let source_dir_v1 = tempfile::tempdir().expect("failed to create temp source dir");
+    let source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
+
     // First add: no interfaces
     let peppy_json5_v1 = format!(
         r#"{{
@@ -227,7 +266,7 @@ async fn listen_for_node_add_same_node_same_tags_fails() {
         }}"#
     );
 
-    let add_v1 = NodeAddRequest::new(&peppy_json5_v1, "/tmp")
+    let add_v1 = NodeAddRequest::new(&peppy_json5_v1, source_dir_v1.path())
         .with_instance_id("mismatch_instance_1")
         .poll(
             &started_master.caller_handle,
@@ -250,6 +289,7 @@ async fn listen_for_node_add_same_node_same_tags_fails() {
         .find(NODE_NAME, NODE_TAG)
         .expect("node should exist after v1");
     assert_eq!(entity.instances().len(), 0);
+    let copied_path = entity.root_path().to_path_buf();
 
     // Second add: same name+tag but different interfaces -> should be rejected.
     let peppy_json5_v2 = format!(
@@ -268,7 +308,7 @@ async fn listen_for_node_add_same_node_same_tags_fails() {
         }}"#
     );
 
-    let add_v2 = NodeAddRequest::new(&peppy_json5_v2, "/tmp")
+    let add_v2 = NodeAddRequest::new(&peppy_json5_v2, source_dir_v2.path())
         .with_instance_id("mismatch_instance_2")
         .poll(
             &started_master.caller_handle,
@@ -300,6 +340,9 @@ async fn listen_for_node_add_same_node_same_tags_fails() {
         .expect("node should still exist after v2 failure");
     assert_eq!(entity.instances().len(), 0, "should not have any instances");
 
+    // Clean up
+    let _ = std::fs::remove_dir_all(&copied_path);
+
     started_master.task.abort();
 }
 
@@ -309,6 +352,9 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
 
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
+
+    let source_dir_v1 = tempfile::tempdir().expect("failed to create temp source dir");
+    let source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
 
     let peppy_json5_v1 = format!(
         r#"{{
@@ -321,7 +367,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
         }}"#
     );
 
-    let add_v1 = NodeAddRequest::new(&peppy_json5_v1, "/tmp")
+    let add_v1 = NodeAddRequest::new(&peppy_json5_v1, source_dir_v1.path())
         .with_instance_id("versioned_instance_1")
         .poll(
             &started_master.caller_handle,
@@ -350,7 +396,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
         }}"#
     );
 
-    let add_v2 = NodeAddRequest::new(&peppy_json5_v2, "/tmp")
+    let add_v2 = NodeAddRequest::new(&peppy_json5_v2, source_dir_v2.path())
         .with_instance_id("versioned_instance_2")
         .poll(
             &started_master.caller_handle,
@@ -371,6 +417,90 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
     assert_eq!(node_stack.len(), 3, "root + two versions");
     assert!(node_stack.contains(NODE_NAME, "1.0.0"));
     assert!(node_stack.contains(NODE_NAME, "2.0.0"));
+
+    // Clean up copied directories
+    if let Some(entity) = node_stack.find(NODE_NAME, "1.0.0") {
+        let _ = std::fs::remove_dir_all(entity.root_path());
+    }
+    if let Some(entity) = node_stack.find(NODE_NAME, "2.0.0") {
+        let _ = std::fs::remove_dir_all(entity.root_path());
+    }
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_copies_files_to_storage() {
+    const TARGET_NODE_NAME: &str = "copy_test_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_master = start_master_node().await;
+    let node_stack = started_master.node_stack.clone();
+
+    // Create a temporary source directory with some files
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let test_file_content = "test file content";
+    std::fs::write(source_dir.path().join("test_file.txt"), test_file_content)
+        .expect("failed to write test file");
+
+    // Create a subdirectory with a file
+    let sub_dir = source_dir.path().join("subdir");
+    std::fs::create_dir(&sub_dir).expect("failed to create subdir");
+    std::fs::write(sub_dir.join("nested_file.txt"), "nested content")
+        .expect("failed to write nested file");
+
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                launch_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+
+    let node_add_request = NodeAddRequest::new(&peppy_json5, source_dir.path());
+    let add_response = node_add_request
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_add request should succeed");
+
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    let entity = node_stack
+        .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
+        .expect("node should exist in stack");
+
+    let copied_path = entity.root_path();
+
+    // Verify the file was copied
+    let copied_file = copied_path.join("test_file.txt");
+    assert!(copied_file.exists(), "test_file.txt should be copied");
+    let content = std::fs::read_to_string(&copied_file).expect("should read copied file");
+    assert_eq!(content, test_file_content, "file content should match");
+
+    // Verify the subdirectory and nested file were copied
+    let copied_nested = copied_path.join("subdir").join("nested_file.txt");
+    assert!(copied_nested.exists(), "nested file should be copied");
+    let nested_content = std::fs::read_to_string(&copied_nested).expect("should read nested file");
+    assert_eq!(
+        nested_content, "nested content",
+        "nested content should match"
+    );
+
+    // Clean up
+    let _ = std::fs::remove_dir_all(copied_path);
 
     started_master.task.abort();
 }

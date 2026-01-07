@@ -13,6 +13,8 @@ async fn listen_for_node_list_returns_succeeds() {
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
 
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+
     let peppy_json5 = format!(
         r#"{{
             schema_version: 1,
@@ -25,7 +27,7 @@ async fn listen_for_node_list_returns_succeeds() {
         }}"#
     );
 
-    let add_response = NodeAddRequest::new(&peppy_json5, "/tmp")
+    let add_response = NodeAddRequest::new(&peppy_json5, source_dir.path())
         .with_instance_id(TARGET_INSTANCE_ID)
         .poll(
             &started_master.caller_handle,
@@ -89,6 +91,11 @@ async fn listen_for_node_list_returns_succeeds() {
         response.graph_json
     );
 
+    // Clean up copied directory
+    if let Some(entity) = node_stack.find(TARGET_NODE_NAME, TARGET_NODE_TAG) {
+        let _ = std::fs::remove_dir_all(entity.root_path());
+    }
+
     started_master.task.abort();
 }
 
@@ -100,6 +107,8 @@ async fn listen_for_node_list_returns_dot_graph() {
 
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
     let peppy_json5 = format!(
         r#"{{
@@ -113,7 +122,7 @@ async fn listen_for_node_list_returns_dot_graph() {
         }}"#
     );
 
-    let add_response = NodeAddRequest::new(&peppy_json5, "/tmp")
+    let add_response = NodeAddRequest::new(&peppy_json5, source_dir.path())
         .with_instance_id(TARGET_INSTANCE_ID)
         .poll(
             &started_master.caller_handle,
@@ -176,6 +185,11 @@ async fn listen_for_node_list_returns_dot_graph() {
         node_stack.to_dot(),
         "dot_graph should match node_stack.to_dot()"
     );
+
+    // Clean up copied directory
+    if let Some(entity) = node_stack.find(TARGET_NODE_NAME, TARGET_NODE_TAG) {
+        let _ = std::fs::remove_dir_all(entity.root_path());
+    }
 
     started_master.task.abort();
 }

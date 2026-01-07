@@ -17,6 +17,8 @@ async fn listen_for_node_stop_success() {
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
 
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+
     // Add the node to the stack so it can be discovered by instance_id
     let peppy_json5 = format!(
         r#"{{
@@ -30,7 +32,7 @@ async fn listen_for_node_stop_success() {
         }}"#
     );
 
-    let add_response = NodeAddRequest::new(&peppy_json5, "/tmp")
+    let add_response = NodeAddRequest::new(&peppy_json5, source_dir.path())
         .with_instance_id(TARGET_INSTANCE_ID)
         .poll(
             &started_master.caller_handle,

@@ -25,6 +25,9 @@ async fn listen_for_node_reset_clears_node_stack() {
         .as_str()
         .to_owned();
 
+    let source_dir_a = tempfile::tempdir().expect("failed to create temp source dir");
+    let source_dir_b = tempfile::tempdir().expect("failed to create temp source dir");
+
     let peppy_json5_a = format!(
         r#"{{
             schema_version: 1,
@@ -37,7 +40,7 @@ async fn listen_for_node_reset_clears_node_stack() {
         }}"#
     );
 
-    let add_response_a = NodeAddRequest::new(&peppy_json5_a, "/tmp")
+    let add_response_a = NodeAddRequest::new(&peppy_json5_a, source_dir_a.path())
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -66,7 +69,7 @@ async fn listen_for_node_reset_clears_node_stack() {
         }}"#
     );
 
-    let add_response_b = NodeAddRequest::new(&peppy_json5_b, "/tmp")
+    let add_response_b = NodeAddRequest::new(&peppy_json5_b, source_dir_b.path())
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
