@@ -56,7 +56,7 @@ async fn list_nodes_async(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>
 
     info!("Node stack:");
     for node in &nodes {
-        info!("  - {}", node.label());
+        info!("  - {} ({})", node.label(), node.fs_root_path);
     }
 
     // Sort edges by (from_label, to_label) for consistent output
