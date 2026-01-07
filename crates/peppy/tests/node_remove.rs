@@ -14,13 +14,16 @@ use peppy::context::{AppContext, DaemonState};
 use peppy::error::Error as PeppyError;
 use peppylib::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
+use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 fn override_launch_cmd(peppy_json5: &Path) {
     let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
-    cfg.manifest.launch_cmd = vec!["sh".to_string(), "-c".to_string(), "exit 0".to_string()];
+    // Avoid spawning a real node binary in tests, but keep the process alive long enough for
+    // `node_start` to complete its `node_ready` + health check phases.
+    cfg.manifest.launch_cmd = vec!["sleep".to_string(), "5".to_string()];
 
     // Write JSON (valid JSON5) back to disk.
     let updated_content = serde_json::to_string_pretty(&cfg).expect("peppy.json5 should serialize");
@@ -224,6 +227,14 @@ fn node_remove_command_fails_without_stop_instances_when_running_instance_exists
 
     // Start in-process node services for health/shutdown so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
+    let _node_ready_handle = rt
+        .block_on(listen_for_node_ready(
+            &node_messenger,
+            &master_node_name,
+            instance_id,
+            node_name,
+        ))
+        .expect("node ready service should start");
     let _node_health_handle = rt
         .block_on(listen_for_node_health(
             &node_messenger,
@@ -366,6 +377,15 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         .build()
         .expect("tokio runtime should create");
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
+
+    let _node_ready_handle = rt
+        .block_on(listen_for_node_ready(
+            &node_messenger,
+            &master_node_name,
+            instance_id,
+            node_name,
+        ))
+        .expect("node ready service should start");
 
     let _node_health_handle = rt
         .block_on(listen_for_node_health(

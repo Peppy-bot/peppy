@@ -8,6 +8,7 @@ use config::runtime::RuntimeConfig;
 use master_node::encoding::{NodeAddRequest, NodeStartRequest};
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
+use peppylib::services::ready::listen_for_node_ready;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -68,6 +69,14 @@ async fn listen_for_node_start_success() {
     // Set up a health listener that will respond to health check requests
     // This simulates the node responding to health checks
     let health_handle = MessengerHandle::from_shared(Arc::clone(&started_master.shared_messenger));
+    let ready_task = listen_for_node_ready(
+        &health_handle,
+        &started_master.master_node_name,
+        TARGET_INSTANCE_ID,
+        TARGET_NODE_NAME,
+    )
+    .await
+    .expect("failed to start ready service");
     let health_task = listen_for_node_health(
         &health_handle,
         &started_master.master_node_name,
@@ -127,6 +136,7 @@ async fn listen_for_node_start_success() {
 
     // Clean up
     health_task.abort();
+    ready_task.abort();
     started_master.task.abort();
 }
 
@@ -176,6 +186,21 @@ async fn listen_for_node_start_timeout() {
         add_response.error_message
     );
 
+    // Set up a ready listener so node_start can proceed to the health-check phase.
+    // We intentionally do NOT set up a health listener to force the health check to time out.
+    let ready_handle = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let ready_task = listen_for_node_ready(
+        &ready_handle,
+        &started.master_node_name,
+        TARGET_INSTANCE_ID,
+        TARGET_NODE_NAME,
+    )
+    .await
+    .expect("failed to start ready service");
+
+    // Allow the ready service to fully establish its listener
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
     // Create a runtime config for the node_start request
     let runtime_config = RuntimeConfig::new(
         "127.0.0.1",
@@ -215,7 +240,7 @@ async fn listen_for_node_start_timeout() {
         start_response
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("Health check failed"))
+            .map(|msg| msg.contains("health check timed out"))
             .unwrap_or(false),
         "error message should indicate health check failure, got: {:?}",
         start_response.error_message
@@ -228,6 +253,9 @@ async fn listen_for_node_start_timeout() {
         found_instance.is_none(),
         "instance should NOT be registered in the node stack after failed start"
     );
+
+    // Clean up
+    ready_task.abort();
 
     // Abort the master node task
     started.task.abort();
