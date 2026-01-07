@@ -71,7 +71,7 @@ async fn listen_for_node_list_returns_succeeds() {
 
     let has_root = nodes.iter().any(|node| {
         node.get("name").and_then(|v| v.as_str()) == Some(&started_master.master_node_name)
-            && node.get("tag").and_then(|v| v.as_str()) == Some("internal")
+            && node.get("tag").and_then(|v| v.as_str()) == Some("master-node")
     });
     assert!(
         has_root,
@@ -154,7 +154,7 @@ async fn listen_for_node_list_returns_dot_graph() {
         dot_graph
     );
     assert!(
-        dot_graph.contains(&format!("{}:internal", started_master.master_node_name)),
+        dot_graph.contains(&format!("{}:master-node", started_master.master_node_name)),
         "dot_graph should include root node label, got:\n{}",
         dot_graph
     );

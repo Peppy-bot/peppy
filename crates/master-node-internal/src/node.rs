@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, oneshot};
 use tracing::info;
 
-const MASTER_NODE_TAG: &str = "internal";
+const MASTER_NODE_TAG: &str = "master-node";
 
 pub struct MasterNodeArguments {
     pub node_startup_timeout: Duration,
