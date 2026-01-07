@@ -4,6 +4,8 @@ set -eu
 # Install peppy from GitHub Releases.
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Peppy-bot/peppy/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Peppy-bot/peppy/main/scripts/install.sh | sh -s -- ./peppy-x86_64-unknown-linux-gnu.tar.gz
+#   ./scripts/install.sh ./peppy-x86_64-unknown-linux-gnu.tar.gz
 #
 # Environment variables:
 #   PEPPY_VERSION           Version to install (default: latest)
@@ -20,6 +22,31 @@ __wrap__() {
         URL="$1"
         echo "$URL" | sed -E 's|://[^:@/]+:[^@/]+@|://***:***@|g'
     }
+
+    ARCHIVE_PATH="${1:-}"
+    if [ -n "${ARCHIVE_PATH-}" ]; then
+        if [ -n "${2:-}" ]; then
+            echo "error: unexpected extra argument '${2}'" >&2
+            exit 1
+        fi
+        case "$ARCHIVE_PATH" in
+        -h | --help)
+            echo "Usage:"
+            echo "  ./scripts/install.sh [path/to/peppy-<arch>-<platform>.tar.gz]"
+            echo "  curl -fsSL https://raw.githubusercontent.com/Peppy-bot/peppy/main/scripts/install.sh | sh -s -- [path/to/archive.tar.gz]"
+            exit 0
+            ;;
+        '~' | '~'/*) ARCHIVE_PATH="${HOME-}${ARCHIVE_PATH#\~}" ;; # expand tilde
+        esac
+        if [ ! -f "$ARCHIVE_PATH" ]; then
+            echo "error: archive not found: $ARCHIVE_PATH" >&2
+            exit 1
+        fi
+        if [ ! -r "$ARCHIVE_PATH" ]; then
+            echo "error: archive not readable: $ARCHIVE_PATH" >&2
+            exit 1
+        fi
+    fi
 
     VERSION="${PEPPY_VERSION:-latest}"
     PEPPY_HOME="${PEPPY_HOME:-$HOME/.peppy}"
@@ -77,30 +104,10 @@ __wrap__() {
         DOWNLOAD_URL="${PEPPY_DOWNLOAD_URL:-${REPOURL%/}/releases/download/v${VERSION#v}/${BINARY}${EXTENSION-}}"
     fi
 
-    printf "This script will automatically download and install peppy (%s) for you.\nGetting it from this url: %s\n" "$VERSION" "$(mask_credentials "$DOWNLOAD_URL")"
-
-    HAVE_CURL=false
-    HAVE_CURL_8_8_0=false
-    if command -v curl >/dev/null 2>&1; then
-        if [ "$(curl --version | (
-            IFS=' ' read -r _ v _
-            printf %s "${v-}"
-        ))" = "8.8.0" ]; then
-            HAVE_CURL_8_8_0=true
-        else
-            HAVE_CURL=true
-        fi
-    fi
-
-    HAVE_WGET=true
-    command -v wget >/dev/null 2>&1 || HAVE_WGET=false
-
-    if ! $HAVE_CURL && ! $HAVE_WGET; then
-        echo "error: you need either 'curl' or 'wget' installed for this script." >&2
-        if $HAVE_CURL_8_8_0; then
-            echo "error: curl 8.8.0 is known to be broken, please use a different version" >&2
-        fi
-        exit 1
+    if [ -n "${ARCHIVE_PATH-}" ]; then
+        printf "This script will install peppy for you.\nUsing local archive: %s\n" "$ARCHIVE_PATH"
+    else
+        printf "This script will automatically download and install peppy (%s) for you.\nGetting it from this url: %s\n" "$VERSION" "$(mask_credentials "$DOWNLOAD_URL")"
     fi
 
     TEMP_FILE="$(mktemp "${TMPDIR:-/tmp}/.peppy_install.XXXXXXXX")"
@@ -115,53 +122,81 @@ __wrap__() {
 
     trap cleanup EXIT
 
-    if [ ! -t 1 ]; then
-        CURL_OPTIONS="-sS"
-        WGET_OPTIONS="--no-verbose"
+    if [ -n "${ARCHIVE_PATH-}" ]; then
+        cp "$ARCHIVE_PATH" "$TEMP_FILE"
     else
-        CURL_OPTIONS=""
-        WGET_OPTIONS="--show-progress"
-    fi
-
-    if [ -n "${NETRC:-}" ]; then
-        CURL_OPTIONS="$CURL_OPTIONS --netrc-file $NETRC"
-        WGET_OPTIONS="$WGET_OPTIONS --netrc-file=$NETRC"
-    elif [ -f "$HOME/.netrc" ]; then
-        CURL_OPTIONS="$CURL_OPTIONS --netrc"
-        WGET_OPTIONS="$WGET_OPTIONS --netrc"
-    fi
-
-    if $HAVE_CURL; then
-        CURL_ERR=0
-        HTTP_CODE="$(curl -L $CURL_OPTIONS "$DOWNLOAD_URL" --output "$TEMP_FILE" --write-out "%{http_code}")" || CURL_ERR=$?
-        case "$CURL_ERR" in
-        35 | 53 | 54 | 59 | 66 | 77)
-            if ! $HAVE_WGET; then
-                echo "error: when downloading '$(mask_credentials "$DOWNLOAD_URL")', curl has some local ssl problems with error $CURL_ERR" >&2
-                exit 1
+        HAVE_CURL=false
+        HAVE_CURL_8_8_0=false
+        if command -v curl >/dev/null 2>&1; then
+            if [ "$(curl --version | (
+                IFS=' ' read -r _ v _
+                printf %s "${v-}"
+            ))" = "8.8.0" ]; then
+                HAVE_CURL_8_8_0=true
+            else
+                HAVE_CURL=true
             fi
-            ;;
-        0)
-            if [ "${HTTP_CODE}" -eq 401 ]; then
-                echo "error: authentication failed when downloading '$(mask_credentials "$DOWNLOAD_URL")'" >&2
-                echo "       Check your .netrc file, NETRC environment variable, or hardcoded credentials in PEPPY_DOWNLOAD_URL." >&2
-                exit 1
-            elif [ "${HTTP_CODE}" -lt 200 ] || [ "${HTTP_CODE}" -gt 299 ]; then
-                echo "error: '$(mask_credentials "$DOWNLOAD_URL")' is not available (HTTP ${HTTP_CODE})" >&2
-                exit 1
+        fi
+
+        HAVE_WGET=true
+        command -v wget >/dev/null 2>&1 || HAVE_WGET=false
+
+        if ! $HAVE_CURL && ! $HAVE_WGET; then
+            echo "error: you need either 'curl' or 'wget' installed for this script." >&2
+            if $HAVE_CURL_8_8_0; then
+                echo "error: curl 8.8.0 is known to be broken, please use a different version" >&2
             fi
-            HAVE_WGET=false
-            ;;
-        *)
-            echo "error: when downloading '$(mask_credentials "$DOWNLOAD_URL")', curl fails with error $CURL_ERR" >&2
             exit 1
-            ;;
-        esac
-    fi
+        fi
 
-    if $HAVE_WGET && ! wget $WGET_OPTIONS --output-document="$TEMP_FILE" "$DOWNLOAD_URL"; then
-        echo "error: '$(mask_credentials "$DOWNLOAD_URL")' is not available" >&2
-        exit 1
+        if [ ! -t 1 ]; then
+            CURL_OPTIONS="-sS"
+            WGET_OPTIONS="--no-verbose"
+        else
+            CURL_OPTIONS=""
+            WGET_OPTIONS="--show-progress"
+        fi
+
+        if [ -n "${NETRC:-}" ]; then
+            CURL_OPTIONS="$CURL_OPTIONS --netrc-file $NETRC"
+            WGET_OPTIONS="$WGET_OPTIONS --netrc-file=$NETRC"
+        elif [ -f "$HOME/.netrc" ]; then
+            CURL_OPTIONS="$CURL_OPTIONS --netrc"
+            WGET_OPTIONS="$WGET_OPTIONS --netrc"
+        fi
+
+        if $HAVE_CURL; then
+            CURL_ERR=0
+            HTTP_CODE="$(curl -L $CURL_OPTIONS "$DOWNLOAD_URL" --output "$TEMP_FILE" --write-out "%{http_code}")" || CURL_ERR=$?
+            case "$CURL_ERR" in
+            35 | 53 | 54 | 59 | 66 | 77)
+                if ! $HAVE_WGET; then
+                    echo "error: when downloading '$(mask_credentials "$DOWNLOAD_URL")', curl has some local ssl problems with error $CURL_ERR" >&2
+                    exit 1
+                fi
+                ;;
+            0)
+                if [ "${HTTP_CODE}" -eq 401 ]; then
+                    echo "error: authentication failed when downloading '$(mask_credentials "$DOWNLOAD_URL")'" >&2
+                    echo "       Check your .netrc file, NETRC environment variable, or hardcoded credentials in PEPPY_DOWNLOAD_URL." >&2
+                    exit 1
+                elif [ "${HTTP_CODE}" -lt 200 ] || [ "${HTTP_CODE}" -gt 299 ]; then
+                    echo "error: '$(mask_credentials "$DOWNLOAD_URL")' is not available (HTTP ${HTTP_CODE})" >&2
+                    exit 1
+                fi
+                HAVE_WGET=false
+                ;;
+            *)
+                echo "error: when downloading '$(mask_credentials "$DOWNLOAD_URL")', curl fails with error $CURL_ERR" >&2
+                exit 1
+                ;;
+            esac
+        fi
+
+        if $HAVE_WGET && ! wget $WGET_OPTIONS --output-document="$TEMP_FILE" "$DOWNLOAD_URL"; then
+            echo "error: '$(mask_credentials "$DOWNLOAD_URL")' is not available" >&2
+            exit 1
+        fi
     fi
 
     if [ ! -s "$TEMP_FILE" ]; then
@@ -201,10 +236,12 @@ __wrap__() {
         chmod +x "$PEPPY_BIN_DIR/zenohd"
     fi
 
-    echo "The 'peppy' binary is installed into '${PEPPY_BIN_DIR}'"
-    if [ -f "$PEPPY_BIN_DIR/zenohd" ]; then
-        echo "The 'zenohd' binary is installed into '${PEPPY_BIN_DIR}'"
+    if [ "$PEPPY_BIN_DIR" = "$PEPPY_HOME/bin" ]; then
+        echo "The 'peppy' binary is installed into '${PEPPY_HOME}'"
     else
+        echo "The 'peppy' binary is installed into '${PEPPY_BIN_DIR}'"
+    fi
+    if [ ! -f "$PEPPY_BIN_DIR/zenohd" ]; then
         echo "warning: 'zenohd' was not found in the archive. 'peppy service serve' requires zenohd on PATH or next to the peppy binary." >&2
     fi
 
@@ -259,4 +296,4 @@ __wrap__() {
             ;;
         esac
     fi
-} && __wrap__
+} && __wrap__ "$@"
