@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use service_manager::{
-    RestartPolicy, ServiceInstallCtx, ServiceLabel, ServiceManager, ServiceManagerKind,
-    TypedServiceManager,
+    RestartPolicy, ServiceInstallCtx, ServiceLabel, ServiceLevel, ServiceManager,
+    ServiceManagerKind, ServiceStartCtx, TypedServiceManager,
 };
 
 use super::Command;
@@ -41,12 +41,24 @@ pub fn install_peppy_daemon(service_dir_override: Option<PathBuf>) -> Result<Pat
         return write_service_definition(kind, &dir, &ctx);
     }
 
-    let manager = TypedServiceManager::target(kind);
+    let mut manager = TypedServiceManager::target(kind);
+    let manager_level = preferred_service_level(kind);
+    if manager.level() != manager_level {
+        manager
+            .set_level(manager_level)
+            .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+    }
     manager
         .install(ctx)
         .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
 
-    default_service_path(kind, &label)
+    manager
+        .start(ServiceStartCtx {
+            label: label.clone(),
+        })
+        .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+
+    default_service_path(kind, manager_level, &label)
 }
 
 fn make_install_context(
@@ -104,20 +116,86 @@ fn write_launchd_service(target_dir: &Path, ctx: &ServiceInstallCtx) -> Result<P
     Ok(plist_path)
 }
 
-fn default_service_path(kind: ServiceManagerKind, label: &ServiceLabel) -> Result<PathBuf> {
+fn default_service_path(
+    kind: ServiceManagerKind,
+    level: ServiceLevel,
+    label: &ServiceLabel,
+) -> Result<PathBuf> {
+    default_service_path_with_level(kind, level, label)
+}
+
+fn default_service_path_with_level(
+    kind: ServiceManagerKind,
+    level: ServiceLevel,
+    label: &ServiceLabel,
+) -> Result<PathBuf> {
     match kind {
         ServiceManagerKind::Systemd => {
             let service_name = format!("{}.service", label.to_script_name());
-            Ok(systemd_unit_dir().join(service_name))
+            match level {
+                ServiceLevel::System => Ok(systemd_unit_dir().join(service_name)),
+                ServiceLevel::User => Ok(systemd_user_unit_dir()?.join(service_name)),
+            }
         }
         ServiceManagerKind::Launchd => {
             let plist_name = format!("{}.plist", label.to_qualified_name());
-            Ok(PathBuf::from("/Library/LaunchDaemons").join(plist_name))
+            match level {
+                ServiceLevel::System => {
+                    Ok(PathBuf::from("/Library/LaunchDaemons").join(plist_name))
+                }
+                ServiceLevel::User => Ok(launchd_user_agent_dir()?.join(plist_name)),
+            }
         }
         other => Err(Error::ExecutionFailed(format!(
             "Unsupported service manager: {other:?}"
         ))),
     }
+}
+
+fn preferred_service_level(kind: ServiceManagerKind) -> ServiceLevel {
+    match kind {
+        ServiceManagerKind::Systemd | ServiceManagerKind::Launchd => {
+            if is_root() {
+                ServiceLevel::System
+            } else {
+                ServiceLevel::User
+            }
+        }
+        _ => ServiceLevel::System,
+    }
+}
+
+fn is_root() -> bool {
+    #[cfg(unix)]
+    unsafe {
+        libc::geteuid() == 0
+    }
+
+    #[cfg(not(unix))]
+    false
+}
+
+fn home_dir() -> Result<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .ok_or_else(|| Error::ExecutionFailed("Unable to locate home directory".to_string()))
+}
+
+fn xdg_config_dir() -> Result<PathBuf> {
+    if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
+        return Ok(PathBuf::from(config_home));
+    }
+
+    Ok(home_dir()?.join(".config"))
+}
+
+fn systemd_user_unit_dir() -> Result<PathBuf> {
+    Ok(xdg_config_dir()?.join("systemd").join("user"))
+}
+
+fn launchd_user_agent_dir() -> Result<PathBuf> {
+    Ok(home_dir()?.join("Library").join("LaunchAgents"))
 }
 
 fn render_systemd_service(ctx: &ServiceInstallCtx) -> String {

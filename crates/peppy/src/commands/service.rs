@@ -23,7 +23,7 @@ pub enum ServiceCommands {
         #[arg(long)]
         master_name: Option<String>,
     },
-    // Install the peppy daemon system-wide
+    /// Install the peppy daemon as a background service (user-level by default; run with sudo for system-wide).
     Install {},
     /// Reset the current master node stack (clears all nodes except the master).
     Reset {},

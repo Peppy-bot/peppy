@@ -9,6 +9,8 @@ To install `peppy` you can run the following command in your terminal:
 curl -fsSL https://peppy.bot/install.sh | bash
 ```
 
+This installer also sets up the `peppy` background service. To skip that step, set `PEPPY_NO_SERVICE_INSTALL=1`.
+
 If you already have a release archive (for example from CI), you can install from a local file by passing its path to the installer:
 
 ```sh
