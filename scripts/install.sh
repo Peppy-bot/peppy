@@ -246,6 +246,10 @@ __wrap__() {
     fi
 
     if [ -z "${PEPPY_NO_SERVICE_INSTALL:-}" ]; then
+        # Stop and remove existing service before installing the new one
+        "$PEPPY_BIN_DIR/peppy" service stop >/dev/null 2>&1 || true
+        "$PEPPY_BIN_DIR/peppy" service uninstall >/dev/null 2>&1 || true
+
         SERVICE_INSTALL_OUTPUT=""
         if ! SERVICE_INSTALL_OUTPUT=$("$PEPPY_BIN_DIR/peppy" service install 2>&1); then
             case "$SERVICE_INSTALL_OUTPUT" in
