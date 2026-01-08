@@ -6,6 +6,8 @@ use master_node::encoding::NodeAddRequest;
 use std::path::Path;
 use std::time::Duration;
 
+const ADD_CMD_MARKER_FILE: &str = "add_cmd_executed.marker";
+
 fn write_peppy_json5(dir: &Path, content: &str) {
     std::fs::write(dir.join(NODE_CONFIG_FILE), content).expect("failed to write peppy.json5");
 }
@@ -23,13 +25,15 @@ async fn listen_for_node_add_success() {
     let node_dir = create_test_node_with_name(TARGET_NODE_NAME, TARGET_NODE_TAG);
 
     let node_add_request = NodeAddRequest::new(&node_dir).with_instance_id(TARGET_INSTANCE_ID);
+    // Longer timeout to account for add_cmd (cargo build) execution on copied folder,
+    // which may need to recompile due to path changes or wait for cargo global lock
     let add_response = node_add_request
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
             CALLER_INSTANCE_ID,
             &started_master.master_node_name,
-            Duration::from_secs(5),
+            Duration::from_secs(120),
         )
         .await
         .expect("node_add request should succeed");
@@ -554,6 +558,187 @@ async fn listen_for_node_add_copies_files_to_storage() {
 
     // Clean up
     let _ = std::fs::remove_dir_all(copied_path);
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_runs_add_cmd() {
+    const TARGET_NODE_NAME: &str = "add_cmd_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_master = start_master_node().await;
+    let node_stack = started_master.node_stack.clone();
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+
+    // add_cmd creates a marker file to prove it was executed
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                add_cmd: ["touch", "{ADD_CMD_MARKER_FILE}"],
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let node_add_request = NodeAddRequest::new(source_dir.path());
+    let add_response = node_add_request
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_add request should succeed");
+
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    let entity = node_stack
+        .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
+        .expect("node should exist in stack");
+
+    let copied_path = entity.root_path();
+
+    // Verify that add_cmd was executed by checking for the marker file
+    let marker_file = copied_path.join(ADD_CMD_MARKER_FILE);
+    assert!(
+        marker_file.exists(),
+        "add_cmd should have created marker file at {}",
+        marker_file.display()
+    );
+
+    // Clean up
+    let _ = std::fs::remove_dir_all(copied_path);
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_add_cmd_failure_fails_add() {
+    const TARGET_NODE_NAME: &str = "add_cmd_fail_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_master = start_master_node().await;
+    let node_stack = started_master.node_stack.clone();
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+
+    // add_cmd that will fail (non-existent command)
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                add_cmd: ["this_command_does_not_exist_12345"],
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let node_add_request = NodeAddRequest::new(source_dir.path());
+    let add_response = node_add_request
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_add request should complete");
+
+    assert!(
+        !add_response.success,
+        "node_add should fail when add_cmd fails"
+    );
+    assert!(
+        add_response
+            .error_message
+            .as_ref()
+            .map(|msg| msg.contains("add_cmd failed"))
+            .unwrap_or(false),
+        "error message should mention add_cmd failure, got: {:?}",
+        add_response.error_message
+    );
+
+    // Node should not be in the stack
+    assert!(
+        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        "node should not be added when add_cmd fails"
+    );
+    assert_eq!(node_stack.len(), 1, "only root should exist");
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_add_cmd_nonzero_exit_fails_add() {
+    const TARGET_NODE_NAME: &str = "add_cmd_exit_fail_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_master = start_master_node().await;
+    let node_stack = started_master.node_stack.clone();
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+
+    // add_cmd that exits with non-zero status
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                add_cmd: ["sh", "-c", "exit 1"],
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let node_add_request = NodeAddRequest::new(source_dir.path());
+    let add_response = node_add_request
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_add request should complete");
+
+    assert!(
+        !add_response.success,
+        "node_add should fail when add_cmd exits with non-zero status"
+    );
+    assert!(
+        add_response
+            .error_message
+            .as_ref()
+            .map(|msg| msg.contains("add_cmd failed"))
+            .unwrap_or(false),
+        "error message should mention add_cmd failure, got: {:?}",
+        add_response.error_message
+    );
+
+    // Node should not be in the stack
+    assert!(
+        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        "node should not be added when add_cmd fails"
+    );
 
     started_master.task.abort();
 }
