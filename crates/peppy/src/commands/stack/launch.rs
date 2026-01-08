@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use config::peppy_config::PeppyLauncherParser;
 use config::runtime::LauncherRuntimeConfig;
-use master_node::encoding::LauncherRequest;
+use master_node::encoding::LaunchRequest;
 use tracing::info;
 
 use crate::context::{AppContext, DaemonState};
@@ -61,7 +61,7 @@ async fn launch_async(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> R
             Error::ExecutionFailed(format!("Failed to serialize runtime config: {}", e))
         })?;
 
-    let request = LauncherRequest::new(
+    let request = LaunchRequest::new(
         peppy_launcher_json5,
         nodes_directory,
         launcher_runtime_config_json,

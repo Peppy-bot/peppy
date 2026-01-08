@@ -17,8 +17,8 @@ pub mod info_capnp {
 }
 
 #[allow(clippy::all)]
-pub mod launcher_capnp {
-    include!(concat!(env!("OUT_DIR"), "/launcher_capnp.rs"));
+pub mod launch_capnp {
+    include!(concat!(env!("OUT_DIR"), "/launch_capnp.rs"));
 }
 
 #[allow(clippy::all)]

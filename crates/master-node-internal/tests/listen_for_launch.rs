@@ -3,7 +3,7 @@ mod common;
 use common::{CALLER_INSTANCE_ID, start_master_node_with_zenoh_messenger};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::runtime::LauncherRuntimeConfig;
-use master_node::encoding::LauncherRequest;
+use master_node::encoding::LaunchRequest;
 use std::fs;
 use std::time::Duration;
 use tempfile::tempdir;
@@ -40,7 +40,7 @@ async fn listen_for_launch_configuration_succeed() {
     let launcher_runtime_config_json =
         serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
 
-    let response = LauncherRequest::new(launcher_json5, nodes_dir, launcher_runtime_config_json)
+    let response = LaunchRequest::new(launcher_json5, nodes_dir, launcher_runtime_config_json)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -119,7 +119,7 @@ async fn listen_for_launch_configuration_two_instances_succeed() {
     let launcher_runtime_config_json =
         serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
 
-    let response = LauncherRequest::new(launcher_json5, nodes_dir, launcher_runtime_config_json)
+    let response = LaunchRequest::new(launcher_json5, nodes_dir, launcher_runtime_config_json)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -183,7 +183,7 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
     let launcher_runtime_config_json =
         serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
 
-    let response = LauncherRequest::new(launcher_json5, nodes_dir, launcher_runtime_config_json)
+    let response = LaunchRequest::new(launcher_json5, nodes_dir, launcher_runtime_config_json)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -240,7 +240,7 @@ async fn listen_for_launch_configuration_launch_config_nodes_directory_must_be_a
     let launcher_runtime_config_json =
         serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
 
-    let response = LauncherRequest::new(launcher_json5, file_path, launcher_runtime_config_json)
+    let response = LaunchRequest::new(launcher_json5, file_path, launcher_runtime_config_json)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -309,7 +309,7 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
     let launcher_runtime_config_json =
         serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
 
-    let response = LauncherRequest::new(launcher_json5, nodes_dir, launcher_runtime_config_json)
+    let response = LaunchRequest::new(launcher_json5, nodes_dir, launcher_runtime_config_json)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -402,7 +402,7 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
     let launcher_runtime_config_json =
         serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
 
-    let response = LauncherRequest::new(
+    let response = LaunchRequest::new(
         launcher_json5,
         nodes_dir.path(),
         launcher_runtime_config_json,
@@ -472,7 +472,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
         }}"#
     );
 
-    let response = LauncherRequest::new(
+    let response = LaunchRequest::new(
         launcher_json5,
         nodes_dir.clone(),
         launcher_runtime_config_json.clone(),
@@ -514,7 +514,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
         }}"#
     );
 
-    let response = LauncherRequest::new(launcher_json5, nodes_dir, launcher_runtime_config_json)
+    let response = LaunchRequest::new(launcher_json5, nodes_dir, launcher_runtime_config_json)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -612,7 +612,7 @@ async fn listen_for_launch_configuration_runs_generate_on_node_before_start() {
 
     // The sleep command doesn't implement health checks, so launcher will report failure,
     // but peppygen should still be generated before the node start attempt.
-    let response = LauncherRequest::new(
+    let response = LaunchRequest::new(
         launcher_json5,
         nodes_dir.path(),
         launcher_runtime_config_json,
@@ -710,7 +710,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     let launcher_runtime_config_json =
         serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
 
-    let response = LauncherRequest::new(launcher_json5, nodes_dir, launcher_runtime_config_json)
+    let response = LaunchRequest::new(launcher_json5, nodes_dir, launcher_runtime_config_json)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
