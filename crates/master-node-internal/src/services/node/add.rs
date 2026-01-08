@@ -203,8 +203,15 @@ async fn handle_node_add_request_inner(
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
 
-    // Copy the node folder to the peppy storage directory before adding to the stack.
-    // This ensures each added node has its own isolated copy.
+    // Run add_cmd on the ORIGINAL folder if specified (e.g., cargo build).
+    // This runs where the project may already be compiled, avoiding fingerprint invalidation
+    // that would occur if we ran it after copying to a new location.
+    if let Err(e) = run_add_cmd(node_config.manifest.add_cmd.as_ref(), &request.from_dir) {
+        return NodeAddResponse::failure(format!("add_cmd failed: {}", e)).encode();
+    }
+
+    // Copy the node folder to the peppy storage directory after add_cmd succeeds.
+    // This ensures each added node has its own isolated copy with compiled artifacts.
     let copied_path = match copy_node_to_storage(
         &request.from_dir,
         &node_name,
@@ -216,13 +223,6 @@ async fn handle_node_add_request_inner(
             return NodeAddResponse::failure(format!("Failed to copy node folder: {}", e)).encode();
         }
     };
-
-    // Run add_cmd if specified (e.g., cargo build) before adding to the stack.
-    if let Err(e) = run_add_cmd(node_config.manifest.add_cmd.as_ref(), &copied_path) {
-        // Clean up the copied folder on failure
-        let _ = std::fs::remove_dir_all(&copied_path);
-        return NodeAddResponse::failure(format!("add_cmd failed: {}", e)).encode();
-    }
 
     // Add the node config to the stack with its copied path (all dependencies must be satisfied)
     // Note: `add` only registers the node configuration, it does not spawn any instance.
