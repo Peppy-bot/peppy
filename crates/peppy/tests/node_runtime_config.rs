@@ -55,7 +55,7 @@ fn node_runtime_config_command_outputs_valid_config() {
     NodeCommand {
         command: NodeCommands::Add {
             peppy_json5: peppy_json5_path,
-            run: false,
+            start: false,
             args: Vec::new(),
             instance_id: None,
         },
@@ -159,7 +159,7 @@ fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
     NodeCommand {
         command: NodeCommands::Add {
             peppy_json5: peppy_json5_path.clone(),
-            run: false,
+            start: false,
             args: Vec::new(),
             instance_id: None,
         },

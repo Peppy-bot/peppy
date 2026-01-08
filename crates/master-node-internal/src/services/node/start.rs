@@ -141,7 +141,7 @@ async fn handle_node_start_request_inner(
     };
 
     // Run the node with the runtime config
-    let mut child = match run_node(&entity, &runtime_config_json5) {
+    let mut child = match start_node(&entity, &runtime_config_json5) {
         Ok(child) => child,
         Err(e) => {
             debug!("Failed to start node instance '{}': {}", instance_id_str, e);
@@ -261,7 +261,7 @@ async fn kill_and_report_error(
 
 /// Runs a node using its manifest's launch_cmd and passes the PEPPY_RUNTIME_CONFIG as an env var.
 /// Returns the spawned child process handle on success.
-pub fn run_node(entity: &NodeEntity, runtime_config_json5: &str) -> std::io::Result<Child> {
+pub fn start_node(entity: &NodeEntity, runtime_config_json5: &str) -> std::io::Result<Child> {
     let manifest = &entity.config().manifest;
 
     let Some((program, args)) = manifest.launch_cmd.split_first() else {

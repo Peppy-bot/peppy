@@ -113,7 +113,7 @@ fn node_list_command_succeeds() {
     NodeCommand {
         command: NodeCommands::Add {
             peppy_json5: provider_peppy_json5,
-            run: false,
+            start: false,
             args: Vec::new(),
             instance_id: None,
         },
@@ -125,7 +125,7 @@ fn node_list_command_succeeds() {
     NodeCommand {
         command: NodeCommands::Add {
             peppy_json5: consumer_peppy_json5,
-            run: false,
+            start: false,
             args: Vec::new(),
             instance_id: None,
         },
@@ -236,7 +236,7 @@ fn node_list_command_with_dot_representation_succeeds() {
     NodeCommand {
         command: NodeCommands::Add {
             peppy_json5: provider_peppy_json5,
-            run: false,
+            start: false,
             args: Vec::new(),
             instance_id: None,
         },
@@ -247,7 +247,7 @@ fn node_list_command_with_dot_representation_succeeds() {
     NodeCommand {
         command: NodeCommands::Add {
             peppy_json5: consumer_peppy_json5,
-            run: false,
+            start: false,
             args: Vec::new(),
             instance_id: None,
         },

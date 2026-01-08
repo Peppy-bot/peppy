@@ -86,7 +86,7 @@ fn node_launch_command_succeed() {
     NodeCommand {
         command: NodeCommands::Add {
             peppy_json5: node_a_config_path,
-            run: false,
+            start: false,
             args: Vec::new(),
             instance_id: None,
         },
@@ -276,7 +276,7 @@ fn node_launch_command_fails_when_node_never_becomes_healthy() {
     NodeCommand {
         command: NodeCommands::Add {
             peppy_json5: node_a_config_path,
-            run: false,
+            start: false,
             args: Vec::new(),
             instance_id: None,
         },
