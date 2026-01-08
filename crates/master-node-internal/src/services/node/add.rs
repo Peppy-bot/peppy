@@ -14,9 +14,9 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 
 /// Returns the base directory for storing copied node folders.
-/// In production: ~/.peppy/nodes
-/// In development: /tmp/peppy/nodes
-fn nodes_storage_dir() -> PathBuf {
+/// In production: ~/.peppy/<master_node_instance_id>/nodes
+/// In development: /tmp/peppy/<master_node_instance_id>/nodes
+fn nodes_storage_dir(master_node_instance_id: &str) -> PathBuf {
     match app_env() {
         AppEnv::Prod => {
             let home = std::env::var_os("HOME")
@@ -24,9 +24,13 @@ fn nodes_storage_dir() -> PathBuf {
                 .map(PathBuf::from);
             home.unwrap_or_else(std::env::temp_dir)
                 .join(".peppy")
+                .join(master_node_instance_id)
                 .join("nodes")
         }
-        AppEnv::Dev => std::env::temp_dir().join("peppy").join("nodes"),
+        AppEnv::Dev => std::env::temp_dir()
+            .join("peppy")
+            .join(master_node_instance_id)
+            .join("nodes"),
     }
 }
 
@@ -58,8 +62,13 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
 /// The destination path follows the format: `<storage_dir>/<node_name>_<tag>_<uuid>`
 ///
 /// Returns the path to the copied folder.
-fn copy_node_to_storage(from_dir: &Path, node_name: &str, node_tag: &str) -> Result<PathBuf> {
-    let storage_dir = nodes_storage_dir();
+fn copy_node_to_storage(
+    from_dir: &Path,
+    node_name: &str,
+    node_tag: &str,
+    master_node_instance_id: &str,
+) -> Result<PathBuf> {
+    let storage_dir = nodes_storage_dir(master_node_instance_id);
     let random_id = generate_random_id();
     let folder_name = format!("{}_{}_{}", node_name, node_tag, random_id);
     let dest_path = storage_dir.join(&folder_name);
@@ -91,9 +100,12 @@ pub async fn listen_for_node_add(
     )
     .await?;
 
+    let instance_id = instance_id.to_owned();
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(|context| handle_node_add_request(context, node_stack.clone()))
+            .handle_requests(|context| {
+                handle_node_add_request(context, node_stack.clone(), instance_id.clone())
+            })
             .await
             .map_err(Into::into)
     });
@@ -104,9 +116,10 @@ pub async fn listen_for_node_add(
 async fn handle_node_add_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
+    master_node_instance_id: String,
 ) -> PeppyResult<Bytes> {
     let sender_instance_id = context.message().instance_id();
-    handle_node_add_request_inner(&context, node_stack)
+    handle_node_add_request_inner(&context, node_stack, &master_node_instance_id)
         .await
         .map_err(|e| PeppyError::InvalidServiceRequest {
             identifier: sender_instance_id.to_string(),
@@ -117,6 +130,7 @@ async fn handle_node_add_request(
 async fn handle_node_add_request_inner(
     context: &ServiceRequestContext,
     node_stack: Arc<NodeStack>,
+    master_node_instance_id: &str,
 ) -> Result<Bytes> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -147,7 +161,12 @@ async fn handle_node_add_request_inner(
 
     // Copy the node folder to the peppy storage directory before adding to the stack.
     // This ensures each added node has its own isolated copy.
-    let copied_path = match copy_node_to_storage(&request.from_dir, &node_name, &node_tag) {
+    let copied_path = match copy_node_to_storage(
+        &request.from_dir,
+        &node_name,
+        &node_tag,
+        master_node_instance_id,
+    ) {
         Ok(path) => path,
         Err(e) => {
             return NodeAddResponse::failure(format!("Failed to copy node folder: {}", e)).encode();
