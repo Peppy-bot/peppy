@@ -20,20 +20,25 @@ pub const CALLER_INSTANCE_ID: &str = "caller_instance";
 /// Each call creates a completely new node with its own peppygen generation
 /// and cargo build, ensuring isolation between tests.
 pub fn create_test_node() -> PathBuf {
-    init_test_node_project()
+    init_test_node_project("example_node", "0.1.0")
 }
 
-fn init_test_node_project() -> PathBuf {
-    const TEST_NODE_NAME: &str = "example_node";
+/// Creates a fresh test node in a new temp directory.
+/// Each call creates a completely new node with its own peppygen generation
+/// and cargo build, ensuring isolation between tests.
+pub fn create_test_node_with_name(node_name: &str, node_tag: &str) -> PathBuf {
+    init_test_node_project(node_name, node_tag)
+}
 
+fn init_test_node_project(node_name: &str, node_tag: &str) -> PathBuf {
     let node_dir = tempfile::Builder::new()
         .prefix("peppy_test_node_")
         .tempdir()
         .expect("failed to create temp directory for test node")
         .keep();
 
-    init_cargo_project(&node_dir, TEST_NODE_NAME);
-    write_test_node_files(&node_dir, TEST_NODE_NAME);
+    init_cargo_project(&node_dir, node_name);
+    write_test_node_files(&node_dir, node_name, node_tag);
 
     generator::generate_lib_for_build_system(BuildSystem::Rust, &node_dir)
         .expect("failed to generate peppygen for test node");
@@ -65,7 +70,7 @@ fn init_cargo_project(node_dir: &Path, crate_name: &str) {
     );
 }
 
-fn write_test_node_files(node_dir: &Path, crate_name: &str) {
+fn write_test_node_files(node_dir: &Path, crate_name: &str, node_tag: &str) {
     std::fs::write(
         node_dir.join("Cargo.toml"),
         format!(
@@ -103,7 +108,7 @@ fn main() -> Result<()> {
   schema_version: 1,
   manifest: {{
     name: "{crate_name}",
-    tag: "0.1.0",
+    tag: "{node_tag}",
     launch_cmd: [
       "cargo",
       "run",
