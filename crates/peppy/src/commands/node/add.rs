@@ -91,6 +91,10 @@ async fn add_node_async(
     }
 
     info!("Added node {}:{} to the node stack", node_name, node_tag);
+    info!(
+        "Snapshot path: {}",
+        add_response.snapshot_path.to_string_lossy()
+    );
 
     if !run {
         return Ok(());

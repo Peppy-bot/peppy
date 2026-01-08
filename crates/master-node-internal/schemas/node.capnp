@@ -34,6 +34,8 @@ struct NodeAddResponse {
     success @0 :Bool;
     # Error message if failed
     errorMessage @1 :Text;
+    # Path where the node was copied (empty on failure)
+    snapshotPath @2 :Text;
 }
 
 # Node Init service

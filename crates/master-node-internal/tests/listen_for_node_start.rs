@@ -3,15 +3,14 @@ mod common;
 use common::{CALLER_INSTANCE_ID, start_master_node, start_master_node_with_health_timeout};
 use config::consts::NODE_CONFIG_FILE;
 use config::node::Name as NodeName;
-use config::peppy_config::{DeploymentInstance, Name};
+use config::peppy_config::{BuildSystem, DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
-use master_node::encoding::{NodeAddRequest, NodeStartRequest};
+use master_node::encoding::{NodeAddRequest, NodeInitRequest, NodeStartRequest};
 use peppylib::messaging::MessengerHandle;
-use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 use std::sync::Arc;
 use std::time::Duration;
-use tempfile::TempDir;
+use tempfile::{TempDir, tempdir};
 
 /// Creates a temp directory with a peppy.json5 file
 fn create_node_config_dir(peppy_json5: &str) -> TempDir {
@@ -28,27 +27,32 @@ async fn listen_for_node_start_success() {
 
     let started_master = start_master_node().await;
 
-    // Create a node config with a launch_cmd that runs but doesn't respond to health checks on its own
-    // We'll set up a separate health listener to respond on behalf of the "node"
-    let peppy_json5 = format!(
-        r#"{{
-            schema_version: 1,
-            manifest: {{
-                name: "{}",
-                tag: "0.1.0",
-                launch_cmd: ["sleep", "10"]
-            }},
-            parameters: {{}}
-        }}"#,
-        TARGET_NODE_NAME
+    let node_root = tempdir().expect("failed to create temp nodes root directory");
+    let node_root = node_root.path();
+    let response = NodeInitRequest::new(node_root, TARGET_NODE_NAME)
+        .with_build_system(BuildSystem::Rust)
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("node_init request should complete");
+
+    assert!(
+        response.success,
+        "node_init should succeed, got error: {}",
+        response.error_message
     );
 
-    // Create temp directory with peppy.json5
-    let temp_dir = create_node_config_dir(&peppy_json5);
-
+    let peppy_json5 =
+        std::fs::read_to_string(node_root.join(TARGET_NODE_NAME).join(NODE_CONFIG_FILE))
+            .expect("failed to read peppy.json5");
     // Add the node to the master node's node stack
     let node_add_request =
-        NodeAddRequest::new(&peppy_json5, temp_dir.path()).with_instance_id(TARGET_INSTANCE_ID);
+        NodeAddRequest::new(&peppy_json5, node_root).with_instance_id(TARGET_INSTANCE_ID);
     let add_response = node_add_request
         .poll(
             &started_master.caller_handle,
@@ -66,28 +70,8 @@ async fn listen_for_node_start_success() {
         add_response.error_message
     );
 
-    // Set up a health listener that will respond to health check requests
-    // This simulates the node responding to health checks
-    let health_handle = MessengerHandle::from_shared(Arc::clone(&started_master.shared_messenger));
-    let ready_task = listen_for_node_ready(
-        &health_handle,
-        &started_master.master_node_name,
-        TARGET_INSTANCE_ID,
-        TARGET_NODE_NAME,
-    )
-    .await
-    .expect("failed to start ready service");
-    let health_task = listen_for_node_health(
-        &health_handle,
-        &started_master.master_node_name,
-        TARGET_INSTANCE_ID,
-        TARGET_NODE_NAME,
-    )
-    .await
-    .expect("failed to start health service");
-
-    // Allow the health service to fully establish its listener
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // For debug
+    let _snapshot_path = add_response.snapshot_path;
 
     // Create a runtime config for the node_start request
     let runtime_config = RuntimeConfig::new(
@@ -105,7 +89,6 @@ async fn listen_for_node_start_success() {
     let runtime_config_json5 =
         serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
 
-    // Call node_start - this should succeed because the health listener will respond
     let node_start_request =
         NodeStartRequest::new(&runtime_config_json5, TARGET_NODE_NAME, "0.1.0");
     let start_response = node_start_request
@@ -134,9 +117,6 @@ async fn listen_for_node_start_success() {
         "instance should be registered in the node stack after successful start"
     );
 
-    // Clean up
-    health_task.abort();
-    ready_task.abort();
     started_master.task.abort();
 }
 

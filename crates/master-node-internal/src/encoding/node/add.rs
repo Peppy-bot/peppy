@@ -88,24 +88,30 @@ impl NodeAddRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeAddResponse {
+    pub snapshot_path: PathBuf,
     pub success: bool,
     pub error_message: Option<String>,
 }
 
 impl NodeAddResponse {
-    pub fn new(success: bool, error_message: Option<String>) -> Self {
+    pub fn new(
+        snapshot_path: impl Into<PathBuf>,
+        success: bool,
+        error_message: Option<String>,
+    ) -> Self {
         Self {
+            snapshot_path: snapshot_path.into(),
             success,
             error_message,
         }
     }
 
-    pub fn success() -> Self {
-        Self::new(true, None)
+    pub fn success(snapshot_path: impl Into<PathBuf>) -> Self {
+        Self::new(snapshot_path, true, None)
     }
 
     pub fn failure(error_message: impl Into<String>) -> Self {
-        Self::new(false, Some(error_message.into()))
+        Self::new(PathBuf::new(), false, Some(error_message.into()))
     }
 
     pub fn encode(&self) -> Result<Bytes> {
@@ -116,6 +122,7 @@ impl NodeAddResponse {
             if let Some(ref error_message) = self.error_message {
                 response.set_error_message(error_message);
             }
+            response.set_snapshot_path(self.snapshot_path.to_string_lossy().as_ref());
         }
         encode_message(&builder)
     }
@@ -129,7 +136,9 @@ impl NodeAddResponse {
         } else {
             Some(error_message_str.to_owned())
         };
+        let snapshot_path = PathBuf::from(response.get_snapshot_path()?.to_str()?);
         Ok(Self {
+            snapshot_path,
             success: response.get_success(),
             error_message,
         })
