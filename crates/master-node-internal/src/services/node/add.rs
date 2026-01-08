@@ -2,7 +2,7 @@ use crate::Result;
 use crate::encoding::{NodeAddRequest, NodeAddResponse};
 use crate::names;
 use bytes::Bytes;
-use config::consts::{AppEnv, app_env};
+use config::consts::{AppEnv, NODE_CONFIG_FILE, app_env};
 use config::node::NodeConfigParser;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
@@ -128,12 +128,17 @@ async fn handle_node_add_request_inner(
         request.from_dir.display()
     );
 
-    // Parse the node configuration from JSON5
-    let node_config = match NodeConfigParser::from_content(&request.peppy_json5) {
+    // Parse the node configuration from the request directory.
+    let config_path = request.from_dir.join(NODE_CONFIG_FILE);
+    let node_config = match NodeConfigParser::from_path(&config_path) {
         Ok(config) => config,
         Err(e) => {
-            return NodeAddResponse::failure(format!("Failed to parse node config: {}", e))
-                .encode();
+            return NodeAddResponse::failure(format!(
+                "Failed to parse node config at {}: {}",
+                config_path.display(),
+                e
+            ))
+            .encode();
         }
     };
 

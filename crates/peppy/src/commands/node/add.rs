@@ -53,8 +53,6 @@ async fn add_node_async(
     let node_name = node_config.manifest.name.as_str().to_string();
     let node_tag = node_config.manifest.tag.clone();
 
-    // Read the raw config as content to send to the master node.
-    let peppy_json5_content = std::fs::read_to_string(&peppy_json5)?;
     let from_dir = peppy_json5
         .parent()
         .map(PathBuf::from)
@@ -70,7 +68,7 @@ async fn add_node_async(
         .messenger_handle()
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
-    let add_request = NodeAddRequest::new(peppy_json5_content, from_dir);
+    let add_request = NodeAddRequest::new(from_dir);
     let add_response = add_request
         .poll(
             messenger_handle,
