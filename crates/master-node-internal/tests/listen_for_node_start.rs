@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, create_test_node, start_master_node, start_master_node_with_health_timeout,
-    start_master_node_with_zenoh_messenger,
+    CALLER_INSTANCE_ID, create_test_node_with_name, start_master_node,
+    start_master_node_with_health_timeout, start_master_node_with_zenoh_messenger,
 };
 use config::consts::NODE_CONFIG_FILE;
 use config::node::Name as NodeName;
@@ -26,14 +26,14 @@ fn create_node_config_dir(peppy_json5: &str) -> TempDir {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_start_success() {
     // These must match the values used in create_test_node()
-    const TARGET_NODE_NAME: &str = "example_node";
+    const TARGET_NODE_NAME: &str = "runnable_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "runnable_instance";
 
     let started_master = start_master_node_with_zenoh_messenger().await;
 
     // Use a pre-built test node to avoid compilation delays during the test
-    let node_dir = create_test_node();
+    let node_dir = create_test_node_with_name(TARGET_NODE_NAME, TARGET_NODE_TAG);
 
     // Add the node to the master node's node stack
     let node_add_request = NodeAddRequest::new(&node_dir).with_instance_id(TARGET_INSTANCE_ID);
@@ -53,6 +53,8 @@ async fn listen_for_node_start_success() {
         "node_add should succeed, got error: {:?}",
         add_response.error_message
     );
+    // Leave aside for debugging
+    let _snapshot_node_path = add_response.snapshot_path;
 
     // Get the actual messaging endpoint from the Zenoh session
     let (messaging_host, messaging_port) = started_master

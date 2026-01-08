@@ -1,11 +1,10 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, start_master_node};
-use config::{consts::NODE_CONFIG_FILE, peppy_config::BuildSystem};
-use master_node::encoding::{NodeAddRequest, NodeInitRequest};
+use common::{CALLER_INSTANCE_ID, create_test_node_with_name, start_master_node};
+use config::consts::NODE_CONFIG_FILE;
+use master_node::encoding::NodeAddRequest;
 use std::path::Path;
 use std::time::Duration;
-use tempfile::tempdir;
 
 fn write_peppy_json5(dir: &Path, content: &str) {
     std::fs::write(dir.join(NODE_CONFIG_FILE), content).expect("failed to write peppy.json5");
@@ -20,29 +19,10 @@ async fn listen_for_node_add_success() {
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
 
-    let node_root = tempdir().expect("failed to create temp nodes root directory");
-    let node_root = node_root.path();
-    let response = NodeInitRequest::new(node_root, TARGET_NODE_NAME)
-        .with_build_system(BuildSystem::Rust)
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("node_init request should complete");
+    // Use a pre-built test node to avoid compilation delays during the test
+    let node_dir = create_test_node_with_name(TARGET_NODE_NAME, TARGET_NODE_TAG);
 
-    assert!(
-        response.success,
-        "node_init should succeed, got error: {}",
-        response.error_message
-    );
-
-    let source_dir = node_root.join(TARGET_NODE_NAME);
-    let node_add_request =
-        NodeAddRequest::new(source_dir.as_path()).with_instance_id(TARGET_INSTANCE_ID);
+    let node_add_request = NodeAddRequest::new(&node_dir).with_instance_id(TARGET_INSTANCE_ID);
     let add_response = node_add_request
         .poll(
             &started_master.caller_handle,
@@ -77,7 +57,7 @@ async fn listen_for_node_add_success() {
         "snapshot_path should match copied node path"
     );
     assert!(
-        root_path != source_dir.as_path(),
+        root_path != node_dir.as_path(),
         "node should be copied to a different location, got: {}",
         root_path.display()
     );
@@ -118,32 +98,14 @@ async fn listen_for_node_add_no_config_found() {
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
 
-    let node_root = tempdir().expect("failed to create temp nodes root directory");
-    let node_root = node_root.path();
-    let response = NodeInitRequest::new(node_root, TARGET_NODE_NAME)
-        .with_build_system(BuildSystem::Rust)
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("node_init request should complete");
+    // Use a pre-built test node to avoid compilation delays during the test
+    let node_dir = create_test_node_with_name(TARGET_NODE_NAME, TARGET_NODE_TAG);
 
-    assert!(
-        response.success,
-        "node_init should succeed, got error: {}",
-        response.error_message
-    );
-
-    let source_dir = node_root.join(TARGET_NODE_NAME);
-    std::fs::remove_file(source_dir.join(NODE_CONFIG_FILE))
+    std::fs::remove_file(node_dir.join(NODE_CONFIG_FILE))
         .expect("failed to remove peppy.json5 config file");
 
     let node_add_request =
-        NodeAddRequest::new(source_dir.as_path()).with_instance_id(TARGET_INSTANCE_ID);
+        NodeAddRequest::new(node_dir.as_path()).with_instance_id(TARGET_INSTANCE_ID);
     let add_response = node_add_request
         .poll(
             &started_master.caller_handle,
