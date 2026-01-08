@@ -9,6 +9,7 @@ use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use rand::Rng;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -54,6 +55,49 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
             std::fs::copy(&src_path, &dest_path)?;
         }
     }
+    Ok(())
+}
+
+/// Runs the add_cmd for a node if specified.
+/// This is executed right before the node is added to the node stack.
+/// Returns Ok(()) if add_cmd is None or executes successfully.
+fn run_add_cmd(
+    add_cmd: Option<&Vec<String>>,
+    working_dir: &Path,
+) -> std::result::Result<(), String> {
+    let Some(cmd) = add_cmd else {
+        return Ok(());
+    };
+
+    let Some((program, args)) = cmd.split_first() else {
+        return Err("add_cmd is empty".to_string());
+    };
+
+    debug!(
+        "Running add_cmd: {} {:?} in dir {:?}",
+        program, args, working_dir
+    );
+
+    let output = Command::new(program)
+        .args(args)
+        .current_dir(working_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("failed to execute add_cmd: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(format!(
+            "add_cmd failed with status {}: stderr: {}, stdout: {}",
+            output.status,
+            stderr.trim(),
+            stdout.trim()
+        ));
+    }
+
+    debug!("add_cmd completed successfully");
     Ok(())
 }
 
@@ -172,6 +216,13 @@ async fn handle_node_add_request_inner(
             return NodeAddResponse::failure(format!("Failed to copy node folder: {}", e)).encode();
         }
     };
+
+    // Run add_cmd if specified (e.g., cargo build) before adding to the stack.
+    if let Err(e) = run_add_cmd(node_config.manifest.add_cmd.as_ref(), &copied_path) {
+        // Clean up the copied folder on failure
+        let _ = std::fs::remove_dir_all(&copied_path);
+        return NodeAddResponse::failure(format!("add_cmd failed: {}", e)).encode();
+    }
 
     // Add the node config to the stack with its copied path (all dependencies must be satisfied)
     // Note: `add` only registers the node configuration, it does not spawn any instance.

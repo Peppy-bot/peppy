@@ -74,6 +74,7 @@ impl MasterNode {
                 name: manifest_name,
                 tag: MASTER_NODE_TAG.to_string(),
                 labels: None,
+                add_cmd: None,
                 start_cmd: vec![],
             },
             parameters: node_arguments.into(),

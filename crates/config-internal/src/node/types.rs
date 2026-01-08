@@ -543,6 +543,8 @@ pub struct Manifest {
     pub tag: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
+    // Command to run when right before the node is added to the node stack
+    pub add_cmd: Option<Vec<String>>,
     // Command to launch the node, e.g., ["cargo", "run", "--release"]
     pub start_cmd: Vec<String>,
 }

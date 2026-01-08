@@ -10,6 +10,11 @@
       "camera",
       "usb",
     ],
+    add_cmd: [
+      "cargo",
+      "build",
+      "--release"
+    ],
     start_cmd: [
       "cargo",
       "run",

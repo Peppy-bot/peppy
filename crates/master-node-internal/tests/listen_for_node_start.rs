@@ -43,7 +43,9 @@ async fn listen_for_node_start_success() {
             &started_master.master_node_name,
             CALLER_INSTANCE_ID,
             &started_master.master_node_name,
-            Duration::from_secs(5),
+            // Longer timeout to account for add_cmd (cargo build) execution on copied folder,
+            // which may need to recompile due to path changes or wait for cargo global lock
+            Duration::from_secs(120),
         )
         .await
         .expect("node_add request should succeed");
