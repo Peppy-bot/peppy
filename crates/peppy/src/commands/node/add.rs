@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
 
-use super::run::start_instance_async;
+use super::start::start_instance_async;
 use crate::context::{AppContext, DaemonState};
 use crate::error::{Error, Result};
 

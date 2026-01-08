@@ -77,7 +77,7 @@ fn service_reset_command_resets_node_stack() {
     NodeCommand {
         command: NodeCommands::Add {
             peppy_json5: node_config_path,
-            run: false,
+            start: false,
             args: Vec::new(),
             instance_id: None,
         },

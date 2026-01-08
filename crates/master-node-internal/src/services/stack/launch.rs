@@ -1,7 +1,7 @@
 use crate::Result;
 use crate::encoding::{LauncherRequest, LauncherResponse, NodeGenerateRequest};
 use crate::names;
-use crate::services::node::{perform_health_check, run_node, wait_for_ready_signal};
+use crate::services::node::{perform_health_check, start_node, wait_for_ready_signal};
 use bytes::Bytes;
 use config::peppy_config::{BuildSystem, PeppyLauncherParser};
 use config::runtime::{LauncherRuntimeConfig, RuntimeConfig};
@@ -260,7 +260,7 @@ async fn start_node_instance(
 ) -> std::result::Result<Child, String> {
     let manifest = entity.config().manifest.clone();
 
-    let mut child = run_node(entity, runtime_config_json5).map_err(|e| {
+    let mut child = start_node(entity, runtime_config_json5).map_err(|e| {
         format!(
             "failed to start node {}:{} instance {}: {e}",
             manifest.name.as_str(),

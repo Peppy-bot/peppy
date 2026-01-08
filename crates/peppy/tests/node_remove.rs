@@ -78,7 +78,7 @@ fn node_remove_command_succeeds() {
     NodeCommand {
         command: NodeCommands::Add {
             peppy_json5: peppy_json5_path,
-            run: false,
+            start: false,
             args: Vec::new(),
             instance_id: None,
         },
@@ -208,7 +208,7 @@ fn node_remove_command_fails_without_stop_instances_when_running_instance_exists
     NodeCommand {
         command: NodeCommands::Add {
             peppy_json5: peppy_json5_path,
-            run: false,
+            start: false,
             args: Vec::new(),
             instance_id: None,
         },
@@ -253,9 +253,10 @@ fn node_remove_command_fails_without_stop_instances_when_running_instance_exists
         .expect("node shutdown service should start");
 
     NodeCommand {
-        command: NodeCommands::Run {
-            node_name: node_name.to_string(),
-            tag: "0.1.0".to_string(),
+        command: NodeCommands::Start {
+            node_ref: None,
+            node_name: Some(node_name.to_string()),
+            tag: Some("0.1.0".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
         },
@@ -363,7 +364,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
     NodeCommand {
         command: NodeCommands::Add {
             peppy_json5: peppy_json5_path,
-            run: false,
+            start: false,
             args: Vec::new(),
             instance_id: None,
         },
@@ -406,9 +407,10 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         .expect("node shutdown service should start");
 
     NodeCommand {
-        command: NodeCommands::Run {
-            node_name: node_name.to_string(),
-            tag: "0.1.0".to_string(),
+        command: NodeCommands::Start {
+            node_ref: None,
+            node_name: Some(node_name.to_string()),
+            tag: Some("0.1.0".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
         },

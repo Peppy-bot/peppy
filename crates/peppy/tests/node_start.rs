@@ -81,7 +81,7 @@ fn node_run_command_succeeds() {
     NodeCommand {
         command: NodeCommands::Add {
             peppy_json5: peppy_json5_path,
-            run: false,
+            start: false,
             args: Vec::new(),
             instance_id: None,
         },
@@ -118,9 +118,10 @@ fn node_run_command_succeeds() {
 
     // Now run the node using the run command
     NodeCommand {
-        command: NodeCommands::Run {
-            node_name: node_name.to_string(),
-            tag: "0.1.0".to_string(),
+        command: NodeCommands::Start {
+            node_ref: None,
+            node_name: Some(node_name.to_string()),
+            tag: Some("0.1.0".to_string()),
             args: Vec::new(),
             instance_id: None,
         },
@@ -278,7 +279,7 @@ fn node_run_command_with_args_succeeds() {
     NodeCommand {
         command: NodeCommands::Add {
             peppy_json5: peppy_json5_path,
-            run: false,
+            start: false,
             args: Vec::new(),
             instance_id: None,
         },
@@ -321,9 +322,10 @@ fn node_run_command_with_args_succeeds() {
     ];
 
     NodeCommand {
-        command: NodeCommands::Run {
-            node_name: node_name.to_string(),
-            tag: "0.1.0".to_string(),
+        command: NodeCommands::Start {
+            node_ref: None,
+            node_name: Some(node_name.to_string()),
+            tag: Some("0.1.0".to_string()),
             args,
             instance_id: None,
         },
@@ -437,7 +439,7 @@ fn node_run_command_with_custom_instance_id_succeeds() {
     NodeCommand {
         command: NodeCommands::Add {
             peppy_json5: peppy_json5_path,
-            run: false,
+            start: false,
             args: Vec::new(),
             instance_id: None,
         },
@@ -474,9 +476,10 @@ fn node_run_command_with_custom_instance_id_succeeds() {
 
     // Now run the node with a custom instance_id
     NodeCommand {
-        command: NodeCommands::Run {
-            node_name: node_name.to_string(),
-            tag: "0.1.0".to_string(),
+        command: NodeCommands::Start {
+            node_ref: None,
+            node_name: Some(node_name.to_string()),
+            tag: Some("0.1.0".to_string()),
             args: Vec::new(),
             instance_id: Some(custom_instance_id.to_string()),
         },

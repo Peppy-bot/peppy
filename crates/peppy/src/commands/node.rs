@@ -1,8 +1,8 @@
 mod add;
 mod init;
 mod remove;
-mod run;
 mod runtime_config;
+mod start;
 mod stop;
 mod sync;
 mod types;
@@ -20,6 +20,31 @@ use crate::{context::AppContext, error::Error as CommandError};
 use init::NodeBuilder;
 
 pub use types::NodeName;
+
+/// Parses a node_name:tag argument string into a tuple
+fn parse_node_ref(s: &str) -> Result<(String, String), String> {
+    let pos = s.find(':').ok_or_else(|| {
+        format!(
+            "invalid node reference '{}': expected node_name:tag format",
+            s
+        )
+    })?;
+    let node_name = s[..pos].trim().to_string();
+    let tag = s[pos + 1..].trim().to_string();
+    if node_name.is_empty() {
+        return Err(format!(
+            "invalid node reference '{}': node_name cannot be empty",
+            s
+        ));
+    }
+    if tag.is_empty() {
+        return Err(format!(
+            "invalid node reference '{}': tag cannot be empty",
+            s
+        ));
+    }
+    Ok((node_name, tag))
+}
 
 /// Parses a key=value argument string into a tuple
 fn parse_key_value_arg(s: &str) -> Result<(String, String), String> {
@@ -55,7 +80,7 @@ pub enum NodeCommands {
         peppy_json5: PathBuf,
         /// If set, will attempt to spawn an instance directly after adding the node to the node stack
         #[arg(long)]
-        run: bool,
+        start: bool,
         /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30)
         /// These are passed to the node via PEPPY_RUNTIME_CONFIG when run is true
         #[arg(value_parser = parse_key_value_arg)]
@@ -71,13 +96,19 @@ pub enum NodeCommands {
         build_system: BuildSystem,
     },
     /// Runs an instance from a node added to the node stack
-    Run {
+    ///
+    /// Usage: `peppy node start <node_name>:<tag>` or `peppy node start --node-name <name> --tag <tag>`
+    #[command(group(ArgGroup::new("node_source").required(true).args(["node_ref", "node_name"])))]
+    Start {
+        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        #[arg(value_parser = parse_node_ref)]
+        node_ref: Option<(String, String)>,
         /// Name of the node to spawn
-        #[arg(long)]
-        node_name: String, // Finds the `NodeConfig` in the node stack that matches this name
+        #[arg(long, requires = "tag")]
+        node_name: Option<String>, // Finds the `NodeConfig` in the node stack that matches this name
         /// Tag of the node
-        #[arg(long)]
-        tag: String,
+        #[arg(long, requires = "node_name")]
+        tag: Option<String>,
         /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30)
         /// These are passed to the node via PEPPY_RUNTIME_CONFIG
         #[arg(value_parser = parse_key_value_arg)]
@@ -135,7 +166,7 @@ impl Command for NodeCommand {
             }
             NodeCommands::Add {
                 peppy_json5,
-                run,
+                start: run,
                 args,
                 instance_id,
             } => {
@@ -146,14 +177,18 @@ impl Command for NodeCommand {
                 info!("Syncing node interfaces...");
                 sync::sync_node(ctx, build_system)
             }
-            NodeCommands::Run {
+            NodeCommands::Start {
+                node_ref,
                 node_name,
                 tag,
                 args,
                 instance_id,
             } => {
+                let (node_name, tag) = node_ref
+                    .or_else(|| node_name.zip(tag))
+                    .expect("either node_ref or node_name+tag must be provided");
                 info!("Running node {}:{}...", node_name, tag);
-                run::run_node(ctx, node_name, tag, args, instance_id)
+                start::run_node(ctx, node_name, tag, args, instance_id)
             }
             NodeCommands::RuntimeConfig {
                 node_name,

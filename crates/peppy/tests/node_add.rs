@@ -66,7 +66,7 @@ fn node_add_command_succeeds() {
     NodeCommand {
         command: NodeCommands::Add {
             peppy_json5: peppy_json5_path,
-            run: false,
+            start: false,
             args: Vec::new(),
             instance_id: None,
         },
@@ -191,7 +191,7 @@ fn node_add_command_with_run_arg_succeeds() {
     NodeCommand {
         command: NodeCommands::Add {
             peppy_json5: peppy_json5_path,
-            run: true,
+            start: true,
             args: Vec::new(),
             instance_id: None,
         },
