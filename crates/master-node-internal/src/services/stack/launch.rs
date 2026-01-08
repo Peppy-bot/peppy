@@ -1,5 +1,5 @@
 use crate::Result;
-use crate::encoding::{LauncherRequest, LauncherResponse, NodeGenerateRequest};
+use crate::encoding::{LaunchRequest, LaunchResponse, NodeGenerateRequest};
 use crate::names;
 use crate::services::node::{perform_health_check, start_node, wait_for_ready_signal};
 use bytes::Bytes;
@@ -34,7 +34,7 @@ pub async fn listen_for_stack_launch(
         master_node_node,
         instance_id,
         node_name,
-        names::STACK_LAUNCHER,
+        names::STACK_LAUNCH,
     )
     .await?;
 
@@ -87,8 +87,8 @@ async fn handle_stack_launch_request(
     )
     .await
     {
-        Ok(()) => LauncherResponse::new(),
-        Err(error) => LauncherResponse::error(error),
+        Ok(()) => LaunchResponse::new(),
+        Err(error) => LaunchResponse::error(error),
     };
 
     response
@@ -113,15 +113,15 @@ async fn handle_stack_launch_request_inner(
     let master_node_config = node_stack.root().config().clone();
 
     debug!("Received launcher request from {sender_instance_id}");
-    let request = LauncherRequest::decode(&payload.as_bytes()).map_err(|e| e.to_string())?;
+    let request = LaunchRequest::decode(&payload.as_bytes()).map_err(|e| e.to_string())?;
 
-    let launcher_content = &request.peppy_launcher_json5;
+    let launcher_content = &request.peppy_launch_json5;
     let nodes_directory = request.nodes_directory.clone();
     let peppy_launcher = PeppyLauncherParser::from_content(launcher_content)
         .map_err(|e| format!("invalid peppy_launcher_json5: {e}"))?;
 
     let launcher_runtime_config: LauncherRuntimeConfig =
-        serde_json5::from_str(&request.launcher_runtime_config_json5)
+        serde_json5::from_str(&request.launch_runtime_config_json5)
             .map_err(|e| format!("invalid launcher_runtime_config_json5: {e}"))?;
 
     if !request.nodes_directory.is_dir() {

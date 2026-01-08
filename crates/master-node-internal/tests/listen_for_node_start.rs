@@ -1,16 +1,19 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, start_master_node, start_master_node_with_health_timeout};
+use common::{
+    CALLER_INSTANCE_ID, create_test_node, start_master_node, start_master_node_with_health_timeout,
+    start_master_node_with_zenoh_messenger,
+};
 use config::consts::NODE_CONFIG_FILE;
 use config::node::Name as NodeName;
-use config::peppy_config::{BuildSystem, DeploymentInstance, Name};
+use config::peppy_config::{DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
-use master_node::encoding::{NodeAddRequest, NodeInitRequest, NodeStartRequest};
+use master_node::encoding::{NodeAddRequest, NodeStartRequest};
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::ready::listen_for_node_ready;
 use std::sync::Arc;
 use std::time::Duration;
-use tempfile::{TempDir, tempdir};
+use tempfile::TempDir;
 
 /// Creates a temp directory with a peppy.json5 file
 fn create_node_config_dir(peppy_json5: &str) -> TempDir {
@@ -22,35 +25,18 @@ fn create_node_config_dir(peppy_json5: &str) -> TempDir {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_start_success() {
-    const TARGET_NODE_NAME: &str = "runnable_node";
+    // These must match the values used in create_test_node()
+    const TARGET_NODE_NAME: &str = "example_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "runnable_instance";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_zenoh_messenger().await;
 
-    let node_root = tempdir().expect("failed to create temp nodes root directory");
-    let node_root = node_root.path();
-    let response = NodeInitRequest::new(node_root, TARGET_NODE_NAME)
-        .with_build_system(BuildSystem::Rust)
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("node_init request should complete");
+    // Use a pre-built test node to avoid compilation delays during the test
+    let node_dir = create_test_node();
 
-    assert!(
-        response.success,
-        "node_init should succeed, got error: {}",
-        response.error_message
-    );
-
-    let source_dir = node_root.join(TARGET_NODE_NAME);
     // Add the node to the master node's node stack
-    let node_add_request =
-        NodeAddRequest::new(source_dir.as_path()).with_instance_id(TARGET_INSTANCE_ID);
+    let node_add_request = NodeAddRequest::new(&node_dir).with_instance_id(TARGET_INSTANCE_ID);
     let add_response = node_add_request
         .poll(
             &started_master.caller_handle,
@@ -68,13 +54,17 @@ async fn listen_for_node_start_success() {
         add_response.error_message
     );
 
-    // For debug
-    let _snapshot_path = add_response.snapshot_path;
+    // Get the actual messaging endpoint from the Zenoh session
+    let (messaging_host, messaging_port) = started_master
+        .caller_handle
+        .messaging_endpoint()
+        .await
+        .expect("zenoh endpoint should be available");
 
     // Create a runtime config for the node_start request
     let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        7448,
+        messaging_host.as_str(),
+        messaging_port,
         DeploymentInstance {
             instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
             arguments: Default::default(),
@@ -88,14 +78,14 @@ async fn listen_for_node_start_success() {
         serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
 
     let node_start_request =
-        NodeStartRequest::new(&runtime_config_json5, TARGET_NODE_NAME, "0.1.0");
+        NodeStartRequest::new(&runtime_config_json5, TARGET_NODE_NAME, TARGET_NODE_TAG);
     let start_response = node_start_request
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
             CALLER_INSTANCE_ID,
             &started_master.master_node_name,
-            Duration::from_secs(10),
+            Duration::from_secs(60),
         )
         .await
         .expect("node_start request should complete");

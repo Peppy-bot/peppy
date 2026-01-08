@@ -5,7 +5,7 @@
 pub const INFO: &str = "info";
 pub const PING: &str = "ping";
 
-pub const STACK_LAUNCHER: &str = "stack_launch";
+pub const STACK_LAUNCH: &str = "stack_launch";
 pub const STACK_RESET: &str = "stack_reset";
 pub const STACK_LIST: &str = "stack_list";
 

@@ -9,7 +9,7 @@ mod ping;
 mod reset;
 
 pub use info::{InfoRequest, InfoResponse};
-pub use launch::{LauncherRequest, LauncherResponse};
+pub use launch::{LaunchRequest, LaunchResponse};
 pub use node::{
     add::NodeAddRequest, add::NodeAddResponse, generate::NodeGenerateRequest,
     generate::NodeGenerateResponse, init::NodeInitRequest, init::NodeInitResponse,
@@ -25,7 +25,7 @@ use capnp::message::{Builder, HeapAllocator, ReaderOptions};
 use capnp::serialize;
 
 use crate::Result;
-use crate::launcher_capnp;
+use crate::launch_capnp;
 
 /// Encode a Cap'n Proto message builder into bytes.
 ///
@@ -70,7 +70,7 @@ pub fn decode_message(
 pub fn build_launcher_response(success: bool, error_message: &str) -> Result<Bytes> {
     let mut builder = Builder::new_default();
     {
-        let mut response = builder.init_root::<launcher_capnp::launcher_response::Builder>();
+        let mut response = builder.init_root::<launch_capnp::launch_response::Builder>();
         response.set_success(success);
         response.set_error_message(error_message);
     }
