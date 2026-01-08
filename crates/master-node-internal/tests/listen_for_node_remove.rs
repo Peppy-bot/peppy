@@ -25,7 +25,7 @@ async fn listen_for_node_remove_success() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-                launch_cmd: ["sleep", "10"]
+                start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}
         }}"#
@@ -145,7 +145,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-                launch_cmd: ["sleep", "10"]
+                start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}
         }}"#
@@ -240,7 +240,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-                launch_cmd: ["sleep", "10"]
+                start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}
         }}"#

@@ -219,7 +219,7 @@ fn node_run_command_with_args_succeeds() {
   manifest: {
     name: "test_run_args_node",
     tag: "0.1.0",
-    launch_cmd: [
+    start_cmd: [
       "cargo",
       "run",
       "--release"

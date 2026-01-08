@@ -12,7 +12,7 @@ fn action_dependency_resolved_when_dependency_added_first() {
             manifest: {
               name: "brain",
               tag: "1.0.0",
-              launch_cmd: ["brain"]
+              start_cmd: ["brain"]
             },
             interfaces: {
                 subscribes_to: {
@@ -36,7 +36,7 @@ fn action_dependency_resolved_when_dependency_added_first() {
             manifest: {
               name: "controller",
               tag: "1.0.0",
-              launch_cmd: ["controller"]
+              start_cmd: ["controller"]
             },
             interfaces: {
                 exposes: {
@@ -133,7 +133,7 @@ fn action_dependency_fails_when_dependency_is_missing() {
             manifest: {
               name: "brain",
               tag: "1.0.0",
-              launch_cmd: ["brain"]
+              start_cmd: ["brain"]
             },
             interfaces: {
                 subscribes_to: {
@@ -178,7 +178,7 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
             manifest: {
               name: "brain",
               tag: "1.0.0",
-              launch_cmd: ["brain"]
+              start_cmd: ["brain"]
             },
             interfaces: {
                 subscribes_to: {
@@ -203,7 +203,7 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
             manifest: {
               name: "controller",
               tag: "1.0.0",
-              launch_cmd: ["controller"]
+              start_cmd: ["controller"]
             },
             interfaces: {
                 exposes: {

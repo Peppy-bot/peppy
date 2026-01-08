@@ -396,7 +396,7 @@ fn remote_deployment_manifest_mismatch_is_unresolved() {
         let manifest_content = format!(
             r#"{{
                 schema_version: 1,
-                manifest: {{ name: "{manifest_name}", tag: "{manifest_tag}", launch_cmd: ["{manifest_name}"] }}
+                manifest: {{ name: "{manifest_name}", tag: "{manifest_tag}", start_cmd: ["{manifest_name}"] }}
             }}"#
         );
 
@@ -518,7 +518,7 @@ fn deployment_with_invalid_parameters_is_unresolved() {
         manifest: {
           name: "lidar_sensor",
           tag: "0.1.0",
-          launch_cmd: ["lidar_sensor"]
+          start_cmd: ["lidar_sensor"]
         },
         parameters: {
           device: {
@@ -631,7 +631,7 @@ fn deployment_parameters_with_invalid_type_is_unresolved() {
             manifest: {
                 name: "sensor",
                 tag: "1.0.0",
-                launch_cmd: ["sensor"]
+                start_cmd: ["sensor"]
             },
             parameters: {
                 enabled: "bool",
@@ -1401,7 +1401,7 @@ fn missing_interface_on_dependency_is_reported() {
     let lidar_node: NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
-            manifest: { name: "lidar", tag: "1.0.0", launch_cmd: ["lidar"] }
+            manifest: { name: "lidar", tag: "1.0.0", start_cmd: ["lidar"] }
         }"#,
     )
     .expect("valid lidar node without exposes");

@@ -9,7 +9,7 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
   manifest: {
     name: "test_node",
     tag: "0.1.0",
-    launch_cmd: ["cargo", "run", "--release"]
+    start_cmd: ["cargo", "run", "--release"]
   },
   interfaces: {
     exposes: {
@@ -88,7 +88,7 @@ fn generate_peppygen_lib_minimal_config() {
       manifest: {
         name: "minimal_node",
         tag: "0.1.0",
-        launch_cmd: ["cargo", "run"]
+        start_cmd: ["cargo", "run"]
       }
     }"#;
 

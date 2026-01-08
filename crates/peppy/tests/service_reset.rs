@@ -20,14 +20,14 @@ fn write_node_config(
     nodes_directory: &Path,
     node_name: &str,
     node_tag: &str,
-    launch_cmd: &[&str],
+    start_cmd: &[&str],
 ) -> PathBuf {
     let node_dir = nodes_directory.join(node_name);
     fs::create_dir_all(&node_dir).expect("failed to create node directory");
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
-    let launch_cmd_json5 = launch_cmd
+    let start_cmd_json5 = start_cmd
         .iter()
-        .map(|arg| serde_json::to_string(arg).expect("launch_cmd arg should serialize"))
+        .map(|arg| serde_json::to_string(arg).expect("start_cmd arg should serialize"))
         .collect::<Vec<_>>()
         .join(", ");
     fs::write(
@@ -38,7 +38,7 @@ fn write_node_config(
                 manifest: {{
                     name: "{node_name}",
                     tag: "{node_tag}",
-                    launch_cmd: [{launch_cmd_json5}]
+                    start_cmd: [{start_cmd_json5}]
                 }}
             }}"#
         ),

@@ -14,7 +14,7 @@ const NODE_EXAMPLE: &str = r#"
       "camera",
       "usb",
     ],
-    launch_cmd: [
+    start_cmd: [
       "cargo",
       "run",
       "--release"

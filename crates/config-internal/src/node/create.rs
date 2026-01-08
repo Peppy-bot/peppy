@@ -16,14 +16,14 @@ struct PeppyConfigTemplate<'a> {
 #[template(path = "simple_node.json5.j2")]
 struct SimpleNodeTemplate<'a> {
     name: &'a str,
-    launch_cmd: &'a str,
+    start_cmd: &'a str,
 }
 
 #[derive(Template)]
 #[template(path = "full_node.json5.j2")]
 struct FullNodeTemplate<'a> {
     name: &'a str,
-    launch_cmd: &'a str,
+    start_cmd: &'a str,
     log_file_name: &'a str,
 }
 
@@ -38,7 +38,7 @@ impl NodeConfigCreator {
     pub fn simple_node(node_name: &str) -> Result<Self> {
         let tpl = SimpleNodeTemplate {
             name: node_name,
-            launch_cmd: "[\"cargo\", \"run\", \"--release\"]",
+            start_cmd: "[\"cargo\", \"run\", \"--release\"]",
         };
         let redered_template = tpl.render().map_err(|e| Error::Serialize(e.to_string()))?;
 
@@ -50,7 +50,7 @@ impl NodeConfigCreator {
         // Default command can be parameterized later
         let tpl = FullNodeTemplate {
             name: node_name,
-            launch_cmd: "[\"cargo\", \"run\", \"--release\"]",
+            start_cmd: "[\"cargo\", \"run\", \"--release\"]",
             log_file_name: &log_file_name,
         };
         let redered_template = tpl.render().map_err(|e| Error::Serialize(e.to_string()))?;
@@ -110,7 +110,7 @@ mod tests {
             manifest: {
                 name: "a_node",
                 tag: "0.1.0",
-                launch_cmd: ["cargo", "run", "--release"],
+                start_cmd: ["cargo", "run", "--release"],
             },
             logging: {
                 min_level: "info",
@@ -143,7 +143,7 @@ mod tests {
             manifest: {
                 name: "a_node",
                 tag: "0.1.0",
-                launch_cmd: ["cargo", "run", "--release"]
+                start_cmd: ["cargo", "run", "--release"]
             },
             resources: {
                 max_memory_mb: 1024

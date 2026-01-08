@@ -113,7 +113,7 @@ async fn runner_succeed() {
       manifest: {
         name: "test_node",
         tag: "0.1.0",
-        launch_cmd: ["cargo", "run"]
+        start_cmd: ["cargo", "run"]
       },
       parameters: {
         frequency_hz: "f64"
@@ -266,7 +266,7 @@ async fn node_ready_but_not_healthy() {
       manifest: {
         name: "test_node",
         tag: "0.1.0",
-        launch_cmd: ["cargo", "run"]
+        start_cmd: ["cargo", "run"]
       },
       parameters: {
         frequency_hz: "f64"

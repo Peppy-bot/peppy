@@ -54,7 +54,7 @@ const STUB_NODE_CONFIG: &str = r#"{
   manifest: {
     name: "generated_node",
     tag: "0.1.0",
-    launch_cmd: ["cargo", "run", "--release"]
+    start_cmd: ["cargo", "run", "--release"]
   },
   logging: {
     min_level: "info",

@@ -25,7 +25,7 @@ async fn listen_for_node_generate_success() {
             manifest: {
                 name: "example_node",
                 tag: "0.1.0",
-                launch_cmd: ["sleep", "10"]
+                start_cmd: ["sleep", "10"]
             }
         }"#,
     );

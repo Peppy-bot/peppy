@@ -17,7 +17,7 @@ fn http_bundle_is_downloaded_and_resolved() {
 
     let manifest_content = r#"{
             schema_version: 1,
-            manifest: { name: "uvc_camera", tag: "1.2.3", launch_cmd: ["uvc_camera"] }
+            manifest: { name: "uvc_camera", tag: "1.2.3", start_cmd: ["uvc_camera"] }
         }"#;
     let bundle_bytes = create_http_bundle(temp_dir.path(), "uvc_camera.tar.zst", manifest_content);
     server.expect(
@@ -72,14 +72,14 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
 
     let manifest_v1 = r#"{
             schema_version: 1,
-            manifest: { name: "uvc_camera", tag: "1.0.0", launch_cmd: ["run_v1"] }
+            manifest: { name: "uvc_camera", tag: "1.0.0", start_cmd: ["run_v1"] }
         }"#;
     let bundle_bytes_v1 = create_http_bundle(temp_dir.path(), "uvc_camera.tar.zst", manifest_v1);
     let checksum_v1 = sha256_checksum(&bundle_bytes_v1);
 
     let manifest_v2 = r#"{
             schema_version: 1,
-            manifest: { name: "uvc_camera", tag: "1.0.0", launch_cmd: ["run_v2"] }
+            manifest: { name: "uvc_camera", tag: "1.0.0", start_cmd: ["run_v2"] }
         }"#;
     let bundle_bytes_v2 = create_http_bundle(temp_dir.path(), "uvc_camera.tar.zst", manifest_v2);
     let checksum_v2 = sha256_checksum(&bundle_bytes_v2);
@@ -122,13 +122,13 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
         .find_deployment_by_name("uvc_camera")
         .expect("uvc_camera planned");
     assert!(planned.is_resolved(), "http deployment should resolve");
-    let launch_cmd_v1 = planned
+    let start_cmd_v1 = planned
         .node()
         .expect("resolved node config")
         .manifest
-        .launch_cmd
+        .start_cmd
         .clone();
-    assert_eq!(launch_cmd_v1, vec!["run_v1".to_string()]);
+    assert_eq!(start_cmd_v1, vec!["run_v1".to_string()]);
 
     let http_spec_v2 = HttpRemoteSpec::new(url.to_string(), Some(checksum_v2))
         .expect("valid http deployment spec");
@@ -155,13 +155,13 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
         planned.is_resolved(),
         "http deployment should still resolve"
     );
-    let launch_cmd_v2 = planned
+    let start_cmd_v2 = planned
         .node()
         .expect("resolved node config after update")
         .manifest
-        .launch_cmd
+        .start_cmd
         .clone();
 
-    assert_eq!(launch_cmd_v2, vec!["run_v2".to_string()]);
-    assert_ne!(launch_cmd_v1, launch_cmd_v2);
+    assert_eq!(start_cmd_v2, vec!["run_v2".to_string()]);
+    assert_ne!(start_cmd_v1, start_cmd_v2);
 }
