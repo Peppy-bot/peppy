@@ -14,7 +14,7 @@ fn git_repo_is_cloned_and_resolved() {
     let temp_dir = tempdir().expect("temp dir");
     let manifest_content = r#"{
             schema_version: 1,
-            manifest: { name: "uvc_camera", tag: "1.2.3", launch_cmd: ["uvc_camera"] }
+            manifest: { name: "uvc_camera", tag: "1.2.3", start_cmd: ["uvc_camera"] }
         }"#;
     let remote = create_simple_git_repo(manifest_content, "1.2.3");
 
@@ -144,7 +144,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
     let temp_dir = tempdir().expect("temp dir");
     let manifest_v1 = r#"{
             schema_version: 1,
-            manifest: { name: "uvc_camera", tag: "1.0.0", launch_cmd: ["run_v1"] }
+            manifest: { name: "uvc_camera", tag: "1.0.0", start_cmd: ["run_v1"] }
         }"#;
     let remote = create_simple_git_repo(manifest_v1, "1.0.0");
 
@@ -177,18 +177,18 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
         .find_deployment_by_name("uvc_camera")
         .expect("uvc_camera planned");
     assert!(deployment.is_resolved(), "git deployment should resolve");
-    let launch_cmd_v1 = deployment
+    let start_cmd_v1 = deployment
         .node()
         .expect("resolved node config")
         .manifest
-        .launch_cmd
+        .start_cmd
         .clone();
-    assert_eq!(launch_cmd_v1, vec!["run_v1".to_string()]);
+    assert_eq!(start_cmd_v1, vec!["run_v1".to_string()]);
 
     // Update the remote repository keeping the same tag but new contents.
     let manifest_v2 = r#"{
             schema_version: 1,
-            manifest: { name: "uvc_camera", tag: "1.0.0", launch_cmd: ["run_v2"] }
+            manifest: { name: "uvc_camera", tag: "1.0.0", start_cmd: ["run_v2"] }
         }"#;
 
     let commit_id = push_git_commit(
@@ -217,13 +217,13 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
         deployment.is_resolved(),
         "git deployment should still resolve"
     );
-    let launch_cmd_v2 = deployment
+    let start_cmd_v2 = deployment
         .node()
         .expect("resolved node config after update")
         .manifest
-        .launch_cmd
+        .start_cmd
         .clone();
 
-    assert_eq!(launch_cmd_v2, vec!["run_v2".to_string()]);
-    assert_ne!(launch_cmd_v1, launch_cmd_v2);
+    assert_eq!(start_cmd_v2, vec!["run_v2".to_string()]);
+    assert_ne!(start_cmd_v1, start_cmd_v2);
 }

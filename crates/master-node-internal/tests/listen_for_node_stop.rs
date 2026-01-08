@@ -27,7 +27,7 @@ async fn listen_for_node_stop_success() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-                launch_cmd: ["sleep", "10"]
+                start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}
         }}"#

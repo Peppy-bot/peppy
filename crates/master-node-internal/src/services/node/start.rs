@@ -259,13 +259,13 @@ async fn kill_and_report_error(
     NodeStartResponse::failure(error_msg).encode()
 }
 
-/// Runs a node using its manifest's launch_cmd and passes the PEPPY_RUNTIME_CONFIG as an env var.
+/// Runs a node using its manifest's start_cmd and passes the PEPPY_RUNTIME_CONFIG as an env var.
 /// Returns the spawned child process handle on success.
 pub fn start_node(entity: &NodeEntity, runtime_config_json5: &str) -> std::io::Result<Child> {
     let manifest = &entity.config().manifest;
 
-    let Some((program, args)) = manifest.launch_cmd.split_first() else {
-        return Err(std::io::Error::other("launch_cmd is empty"));
+    let Some((program, args)) = manifest.start_cmd.split_first() else {
+        return Err(std::io::Error::other("start_cmd is empty"));
     };
 
     debug!(

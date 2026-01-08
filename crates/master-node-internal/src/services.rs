@@ -74,7 +74,7 @@ impl MasterNode {
                 name: manifest_name,
                 tag: MASTER_NODE_TAG.to_string(),
                 labels: None,
-                launch_cmd: vec![],
+                start_cmd: vec![],
             },
             parameters: node_arguments.into(),
             interfaces: Default::default(),

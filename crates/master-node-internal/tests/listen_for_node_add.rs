@@ -169,7 +169,7 @@ async fn listen_for_node_add_invalid_config_fails() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_no_launch_cmd_fails() {
+async fn listen_for_node_add_no_start_cmd_fails() {
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
 
@@ -177,7 +177,7 @@ async fn listen_for_node_add_no_launch_cmd_fails() {
     let peppy_json5 = r#"{
         schema_version: 1,
         manifest: {
-            name: "no_launch_cmd_node",
+            name: "no_start_cmd_node",
             tag: "0.1.0",
         },
         parameters: {}
@@ -198,15 +198,15 @@ async fn listen_for_node_add_no_launch_cmd_fails() {
 
     assert!(
         !add_response.success,
-        "node_add should fail when launch_cmd is missing"
+        "node_add should fail when start_cmd is missing"
     );
     assert!(
         add_response
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("launch_cmd"))
+            .map(|msg| msg.contains("start_cmd"))
             .unwrap_or(false),
-        "error message should mention launch_cmd, got: {:?}",
+        "error message should mention start_cmd, got: {:?}",
         add_response.error_message
     );
 
@@ -228,7 +228,7 @@ async fn listen_for_node_add_dependency_not_resolved() {
         manifest: {
             name: "consumer_node",
             tag: "1.0.0",
-            launch_cmd: ["sleep", "10"],
+            start_cmd: ["sleep", "10"],
         },
         interfaces: {
             subscribes_to: {
@@ -303,7 +303,7 @@ async fn listen_for_node_add_same_node_same_tags_fails() {
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
-                launch_cmd: ["sleep", "10"]
+                start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}
         }}"#
@@ -342,7 +342,7 @@ async fn listen_for_node_add_same_node_same_tags_fails() {
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
-                launch_cmd: ["sleep", "10"]
+                start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
                 exposes: {{
@@ -407,7 +407,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "1.0.0",
-                launch_cmd: ["sleep", "10"]
+                start_cmd: ["sleep", "10"]
             }}
         }}"#
     );
@@ -437,7 +437,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "2.0.0",
-                launch_cmd: ["sleep", "10"]
+                start_cmd: ["sleep", "10"]
             }}
         }}"#
     );
@@ -502,7 +502,7 @@ async fn listen_for_node_add_copies_files_to_storage() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-                launch_cmd: ["sleep", "10"]
+                start_cmd: ["sleep", "10"]
             }}
         }}"#
     );

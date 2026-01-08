@@ -109,7 +109,7 @@ fn main() -> Result<()> {
   manifest: {{
     name: "{crate_name}",
     tag: "{node_tag}",
-    launch_cmd: [
+    start_cmd: [
       "cargo",
       "run"
     ]

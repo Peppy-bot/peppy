@@ -13,7 +13,7 @@ pub fn master_node_config() -> NodeConfig {
             manifest: {
                 name: "master",
                 tag: "1.0.0",
-                launch_cmd: ["master"]
+                start_cmd: ["master"]
             }
         }"#,
     )
@@ -48,7 +48,7 @@ pub fn node_config(name: &str, tag: &str, deps: &[(&str, &str)]) -> NodeConfig {
     let content = format!(
         r#"{{
                 schema_version: 1,
-                manifest: {{ name: "{name}", tag: "{tag}", launch_cmd: ["{name}"] }},
+                manifest: {{ name: "{name}", tag: "{tag}", start_cmd: ["{name}"] }},
                 interfaces: {{
                     exposes: {{
                         topics: [

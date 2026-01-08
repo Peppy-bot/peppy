@@ -118,7 +118,7 @@ async fn listen_for_node_start_timeout() {
     // Use a short health timeout so the test doesn't take too long
     let started = start_master_node_with_health_timeout(Duration::from_secs(2)).await;
 
-    // Create a node config with a launch_cmd that won't respond to health checks
+    // Create a node config with a start_cmd that won't respond to health checks
     // Using "sleep 10" as a simple command that runs but doesn't respond
     let peppy_json5 = format!(
         r#"{{
@@ -126,7 +126,7 @@ async fn listen_for_node_start_timeout() {
             manifest: {{
                 name: "{}",
                 tag: "0.1.0",
-                launch_cmd: ["sleep", "10"]
+                start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}
         }}"#,

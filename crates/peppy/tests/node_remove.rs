@@ -19,11 +19,11 @@ use peppylib::services::shutdown::listen_for_shutdown;
 
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
-fn override_launch_cmd(peppy_json5: &Path) {
+fn override_start_cmd(peppy_json5: &Path) {
     let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
     // Avoid spawning a real node binary in tests, but keep the process alive long enough for
     // `node_start` to complete its `node_ready` + health check phases.
-    cfg.manifest.launch_cmd = vec!["sleep".to_string(), "5".to_string()];
+    cfg.manifest.start_cmd = vec!["sleep".to_string(), "5".to_string()];
 
     // Write JSON (valid JSON5) back to disk.
     let updated_content = serde_json::to_string_pretty(&cfg).expect("peppy.json5 should serialize");
@@ -203,7 +203,7 @@ fn node_remove_command_fails_without_stop_instances_when_running_instance_exists
 
     // Override the launch command to avoid spawning a real node process.
     // Health/shutdown services are provided in-process via the mock messenger.
-    override_launch_cmd(&peppy_json5_path);
+    override_start_cmd(&peppy_json5_path);
 
     NodeCommand {
         command: NodeCommands::Add {
@@ -359,7 +359,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         peppy_json5_path.display()
     );
 
-    override_launch_cmd(&peppy_json5_path);
+    override_start_cmd(&peppy_json5_path);
 
     NodeCommand {
         command: NodeCommands::Add {

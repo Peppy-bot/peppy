@@ -202,7 +202,7 @@ mod tests {
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
-                launch_cmd: ["cargo", "run"]
+                start_cmd: ["cargo", "run"]
             },
             parameters: {
                 exposure: "f32",
@@ -292,7 +292,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "test_node", tag: "0.1.0", launch_cmd: ["cargo", "run"] },
+            manifest: { name: "test_node", tag: "0.1.0", start_cmd: ["cargo", "run"] },
             parameters: { value: "i64" }
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -341,7 +341,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "test_node", tag: "0.1.0", launch_cmd: ["cargo", "run"] },
+            manifest: { name: "test_node", tag: "0.1.0", start_cmd: ["cargo", "run"] },
             parameters: { value: "i64" }
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -392,7 +392,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "test_node", tag: "0.1.0", launch_cmd: ["cargo", "run"] },
+            manifest: { name: "test_node", tag: "0.1.0", start_cmd: ["cargo", "run"] },
             parameters: { value: "i64" }
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -443,7 +443,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "test_node", tag: "0.1.0", launch_cmd: ["cargo", "run"] },
+            manifest: { name: "test_node", tag: "0.1.0", start_cmd: ["cargo", "run"] },
             parameters: {
                 config: {
                     $type: "object",
@@ -500,7 +500,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "test_node", tag: "0.1.0", launch_cmd: ["cargo", "run"] },
+            manifest: { name: "test_node", tag: "0.1.0", start_cmd: ["cargo", "run"] },
             parameters: {
                 tags: {
                     $type: "array",
@@ -557,7 +557,7 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "test_node", tag: "0.1.0", launch_cmd: ["cargo", "run"] },
+            manifest: { name: "test_node", tag: "0.1.0", start_cmd: ["cargo", "run"] },
             parameters: { value: "i64" }
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
