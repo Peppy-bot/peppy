@@ -58,6 +58,11 @@ async fn listen_for_node_add_success() {
 
     // Verify the node was copied to the peppy storage directory
     let root_path = entity.root_path();
+    assert_eq!(
+        add_response.snapshot_path.as_path(),
+        root_path,
+        "snapshot_path should match copied node path"
+    );
     assert!(
         root_path != source_dir.path(),
         "node should be copied to a different location, got: {}",
@@ -483,6 +488,11 @@ async fn listen_for_node_add_copies_files_to_storage() {
         .expect("node should exist in stack");
 
     let copied_path = entity.root_path();
+    assert_eq!(
+        add_response.snapshot_path.as_path(),
+        copied_path,
+        "snapshot_path should match copied node path"
+    );
 
     // Verify the file was copied
     let copied_file = copied_path.join("test_file.txt");

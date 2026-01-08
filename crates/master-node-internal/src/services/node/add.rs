@@ -165,5 +165,5 @@ async fn handle_node_add_request_inner(
         copied_path.display()
     );
 
-    NodeAddResponse::success().encode()
+    NodeAddResponse::success(copied_path).encode()
 }
