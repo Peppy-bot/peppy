@@ -1,6 +1,7 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, start_master_node};
+use config::consts::NODE_CONFIG_FILE;
 use config::node::Name;
 use master_node::encoding::{NodeAddRequest, NodeResetRequest};
 use std::time::Duration;
@@ -39,8 +40,10 @@ async fn listen_for_node_reset_clears_node_stack() {
             parameters: {{}}
         }}"#
     );
+    std::fs::write(source_dir_a.path().join(NODE_CONFIG_FILE), &peppy_json5_a)
+        .expect("failed to write peppy.json5");
 
-    let add_response_a = NodeAddRequest::new(&peppy_json5_a, source_dir_a.path())
+    let add_response_a = NodeAddRequest::new(source_dir_a.path())
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -68,8 +71,10 @@ async fn listen_for_node_reset_clears_node_stack() {
             parameters: {{}}
         }}"#
     );
+    std::fs::write(source_dir_b.path().join(NODE_CONFIG_FILE), &peppy_json5_b)
+        .expect("failed to write peppy.json5");
 
-    let add_response_b = NodeAddRequest::new(&peppy_json5_b, source_dir_b.path())
+    let add_response_b = NodeAddRequest::new(source_dir_b.path())
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,

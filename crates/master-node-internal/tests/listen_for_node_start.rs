@@ -47,12 +47,10 @@ async fn listen_for_node_start_success() {
         response.error_message
     );
 
-    let peppy_json5 =
-        std::fs::read_to_string(node_root.join(TARGET_NODE_NAME).join(NODE_CONFIG_FILE))
-            .expect("failed to read peppy.json5");
+    let source_dir = node_root.join(TARGET_NODE_NAME);
     // Add the node to the master node's node stack
     let node_add_request =
-        NodeAddRequest::new(&peppy_json5, node_root).with_instance_id(TARGET_INSTANCE_ID);
+        NodeAddRequest::new(source_dir.as_path()).with_instance_id(TARGET_INSTANCE_ID);
     let add_response = node_add_request
         .poll(
             &started_master.caller_handle,
@@ -148,7 +146,7 @@ async fn listen_for_node_start_timeout() {
 
     // Add the node to the master node's node stack
     let node_add_request =
-        NodeAddRequest::new(&peppy_json5, temp_dir.path()).with_instance_id(TARGET_INSTANCE_ID);
+        NodeAddRequest::new(temp_dir.path()).with_instance_id(TARGET_INSTANCE_ID);
     let add_response = node_add_request
         .poll(
             &started.caller_handle,

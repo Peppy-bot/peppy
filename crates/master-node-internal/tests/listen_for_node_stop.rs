@@ -1,6 +1,7 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, start_master_node};
+use config::consts::NODE_CONFIG_FILE;
 use config::node::Name;
 use master_node::encoding::{NodeAddRequest, NodeStopRequest};
 use peppylib::messaging::MessengerHandle;
@@ -31,8 +32,10 @@ async fn listen_for_node_stop_success() {
             parameters: {{}}
         }}"#
     );
+    std::fs::write(source_dir.path().join(NODE_CONFIG_FILE), &peppy_json5)
+        .expect("failed to write peppy.json5");
 
-    let add_response = NodeAddRequest::new(&peppy_json5, source_dir.path())
+    let add_response = NodeAddRequest::new(source_dir.path())
         .with_instance_id(TARGET_INSTANCE_ID)
         .poll(
             &started_master.caller_handle,

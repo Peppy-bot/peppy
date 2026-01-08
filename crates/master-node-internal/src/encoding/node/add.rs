@@ -13,15 +13,13 @@ use super::{decode_message, encode_message};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeAddRequest {
-    pub peppy_json5: String,
     pub from_dir: PathBuf,
     pub instance_id: Option<String>,
 }
 
 impl NodeAddRequest {
-    pub fn new(peppy_json5: impl Into<String>, from_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(from_dir: impl Into<PathBuf>) -> Self {
         Self {
-            peppy_json5: peppy_json5.into(),
             from_dir: from_dir.into(),
             instance_id: None,
         }
@@ -36,7 +34,6 @@ impl NodeAddRequest {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<node_capnp::node_add_request::Builder>();
-            request.set_peppy_json5(&self.peppy_json5);
             request.set_from_dir(self.from_dir.to_string_lossy());
             if let Some(ref instance_id) = self.instance_id {
                 request.set_instance_id(instance_id);
@@ -55,7 +52,6 @@ impl NodeAddRequest {
             Some(instance_id_str.to_owned())
         };
         Ok(Self {
-            peppy_json5: request.get_peppy_json5()?.to_str()?.to_owned(),
             from_dir: PathBuf::from(request.get_from_dir()?.to_str()?),
             instance_id,
         })

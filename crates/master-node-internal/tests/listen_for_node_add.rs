@@ -1,8 +1,15 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, start_master_node};
-use master_node::encoding::NodeAddRequest;
+use config::{consts::NODE_CONFIG_FILE, peppy_config::BuildSystem};
+use master_node::encoding::{NodeAddRequest, NodeInitRequest};
+use std::path::Path;
 use std::time::Duration;
+use tempfile::tempdir;
+
+fn write_peppy_json5(dir: &Path, content: &str) {
+    std::fs::write(dir.join(NODE_CONFIG_FILE), content).expect("failed to write peppy.json5");
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_success() {
@@ -13,23 +20,29 @@ async fn listen_for_node_add_success() {
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
 
-    // Create a temporary source directory to copy from
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let node_root = tempdir().expect("failed to create temp nodes root directory");
+    let node_root = node_root.path();
+    let response = NodeInitRequest::new(node_root, TARGET_NODE_NAME)
+        .with_build_system(BuildSystem::Rust)
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("node_init request should complete");
 
-    let peppy_json5 = format!(
-        r#"{{
-            schema_version: 1,
-            manifest: {{
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-                launch_cmd: ["sleep", "10"]
-            }},
-            parameters: {{}}
-        }}"#
+    assert!(
+        response.success,
+        "node_init should succeed, got error: {}",
+        response.error_message
     );
 
+    let source_dir = node_root.join(TARGET_NODE_NAME);
     let node_add_request =
-        NodeAddRequest::new(&peppy_json5, source_dir.path()).with_instance_id(TARGET_INSTANCE_ID);
+        NodeAddRequest::new(source_dir.as_path()).with_instance_id(TARGET_INSTANCE_ID);
     let add_response = node_add_request
         .poll(
             &started_master.caller_handle,
@@ -57,14 +70,14 @@ async fn listen_for_node_add_success() {
     assert_eq!(entity.instances().len(), 0);
 
     // Verify the node was copied to the peppy storage directory
+    let snapshot_path = add_response.snapshot_path.as_path();
     let root_path = entity.root_path();
     assert_eq!(
-        add_response.snapshot_path.as_path(),
-        root_path,
+        snapshot_path, root_path,
         "snapshot_path should match copied node path"
     );
     assert!(
-        root_path != source_dir.path(),
+        root_path != source_dir.as_path(),
         "node should be copied to a different location, got: {}",
         root_path.display()
     );
@@ -72,6 +85,11 @@ async fn listen_for_node_add_success() {
         root_path.exists(),
         "copied node directory should exist: {}",
         root_path.display()
+    );
+    assert!(
+        root_path.join(NODE_CONFIG_FILE).exists(),
+        "config file should be present at the root of the node folder: {}",
+        root_path.join(NODE_CONFIG_FILE).display()
     );
 
     // Verify the path follows the expected naming convention: <node_name>_<tag>_<uuid>
@@ -92,15 +110,72 @@ async fn listen_for_node_add_success() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_no_config_found() {
+    const TARGET_NODE_NAME: &str = "runnable_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_INSTANCE_ID: &str = "runnable_instance";
+
+    let started_master = start_master_node().await;
+    let node_stack = started_master.node_stack.clone();
+
+    let node_root = tempdir().expect("failed to create temp nodes root directory");
+    let node_root = node_root.path();
+    let response = NodeInitRequest::new(node_root, TARGET_NODE_NAME)
+        .with_build_system(BuildSystem::Rust)
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("node_init request should complete");
+
+    assert!(
+        response.success,
+        "node_init should succeed, got error: {}",
+        response.error_message
+    );
+
+    let source_dir = node_root.join(TARGET_NODE_NAME);
+    std::fs::remove_file(source_dir.join(NODE_CONFIG_FILE))
+        .expect("failed to remove peppy.json5 config file");
+
+    let node_add_request =
+        NodeAddRequest::new(source_dir.as_path()).with_instance_id(TARGET_INSTANCE_ID);
+    let add_response = node_add_request
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_add request should succeed");
+
+    assert!(
+        !add_response.success,
+        "node_add should not succeed, the config file is missing",
+    );
+
+    assert!(!node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    assert_eq!(node_stack.len(), 1, "root");
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_invalid_config_fails() {
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{ manifest: [unclosed"#;
+    write_peppy_json5(source_dir.path(), peppy_json5);
 
-    let node_add_request =
-        NodeAddRequest::new(peppy_json5, source_dir.path()).with_instance_id("bad_node");
+    let node_add_request = NodeAddRequest::new(source_dir.path()).with_instance_id("bad_node");
     let add_response = node_add_request
         .poll(
             &started_master.caller_handle,
@@ -145,8 +220,9 @@ async fn listen_for_node_add_no_launch_cmd_fails() {
         },
         parameters: {}
     }"#;
+    write_peppy_json5(source_dir.path(), peppy_json5);
 
-    let node_add_request = NodeAddRequest::new(peppy_json5, source_dir.path());
+    let node_add_request = NodeAddRequest::new(source_dir.path());
     let add_response = node_add_request
         .poll(
             &started_master.caller_handle,
@@ -205,9 +281,9 @@ async fn listen_for_node_add_dependency_not_resolved() {
             }
         }
     }"#;
+    write_peppy_json5(source_dir.path(), peppy_json5);
 
-    let node_add_request =
-        NodeAddRequest::new(peppy_json5, source_dir.path()).with_instance_id("consumer_1");
+    let node_add_request = NodeAddRequest::new(source_dir.path()).with_instance_id("consumer_1");
     let add_response = node_add_request
         .poll(
             &started_master.caller_handle,
@@ -270,8 +346,9 @@ async fn listen_for_node_add_same_node_same_tags_fails() {
             parameters: {{}}
         }}"#
     );
+    write_peppy_json5(source_dir_v1.path(), &peppy_json5_v1);
 
-    let add_v1 = NodeAddRequest::new(&peppy_json5_v1, source_dir_v1.path())
+    let add_v1 = NodeAddRequest::new(source_dir_v1.path())
         .with_instance_id("mismatch_instance_1")
         .poll(
             &started_master.caller_handle,
@@ -312,8 +389,9 @@ async fn listen_for_node_add_same_node_same_tags_fails() {
             }}
         }}"#
     );
+    write_peppy_json5(source_dir_v2.path(), &peppy_json5_v2);
 
-    let add_v2 = NodeAddRequest::new(&peppy_json5_v2, source_dir_v2.path())
+    let add_v2 = NodeAddRequest::new(source_dir_v2.path())
         .with_instance_id("mismatch_instance_2")
         .poll(
             &started_master.caller_handle,
@@ -371,8 +449,9 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
             }}
         }}"#
     );
+    write_peppy_json5(source_dir_v1.path(), &peppy_json5_v1);
 
-    let add_v1 = NodeAddRequest::new(&peppy_json5_v1, source_dir_v1.path())
+    let add_v1 = NodeAddRequest::new(source_dir_v1.path())
         .with_instance_id("versioned_instance_1")
         .poll(
             &started_master.caller_handle,
@@ -400,8 +479,9 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
             }}
         }}"#
     );
+    write_peppy_json5(source_dir_v2.path(), &peppy_json5_v2);
 
-    let add_v2 = NodeAddRequest::new(&peppy_json5_v2, source_dir_v2.path())
+    let add_v2 = NodeAddRequest::new(source_dir_v2.path())
         .with_instance_id("versioned_instance_2")
         .poll(
             &started_master.caller_handle,
@@ -464,8 +544,9 @@ async fn listen_for_node_add_copies_files_to_storage() {
             }}
         }}"#
     );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let node_add_request = NodeAddRequest::new(&peppy_json5, source_dir.path());
+    let node_add_request = NodeAddRequest::new(source_dir.path());
     let add_response = node_add_request
         .poll(
             &started_master.caller_handle,
