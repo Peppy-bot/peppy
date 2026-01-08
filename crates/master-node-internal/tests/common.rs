@@ -111,8 +111,7 @@ fn main() -> Result<()> {
     tag: "{node_tag}",
     launch_cmd: [
       "cargo",
-      "run",
-      "--release"
+      "run"
     ]
   }},
   interfaces: {{
@@ -142,7 +141,6 @@ fn main() -> Result<()> {
 fn build_cargo_project(dir: &Path) {
     let output = Command::new("cargo")
         .arg("build")
-        .arg("--release")
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(dir)
         .output()
