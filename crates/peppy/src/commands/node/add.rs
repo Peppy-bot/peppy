@@ -10,7 +10,9 @@ use crate::context::{AppContext, DaemonState};
 use crate::error::{Error, Result};
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+// `node_add` can run an arbitrary `add_cmd` (e.g. `cargo build`) and copy build artifacts into
+// the daemon's storage dir, so it may legitimately take much longer than typical RPCs.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(900); // 15min
 
 pub fn add_node(
     ctx: &Arc<AppContext>,

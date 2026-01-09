@@ -9,7 +9,7 @@ use peppy::context::{AppContext, DaemonState};
 
 #[test]
 fn node_runtime_config_command_outputs_valid_config() {
-    let _serial_guard = helpers::serve_test_lock().lock().unwrap();
+    let _serial_guard = helpers::serve_test_guard();
     let serve = TestServeHandle::with_mock_messenger();
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
@@ -113,7 +113,7 @@ fn node_runtime_config_command_outputs_valid_config() {
 
 #[test]
 fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
-    let _serial_guard = helpers::serve_test_lock().lock().unwrap();
+    let _serial_guard = helpers::serve_test_guard();
     let serve = TestServeHandle::with_mock_messenger();
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");

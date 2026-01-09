@@ -49,7 +49,7 @@ fn write_node_config(
 
 #[test]
 fn service_reset_command_resets_node_stack() {
-    let _serial_guard = helpers::serve_test_lock().lock().unwrap();
+    let _serial_guard = helpers::serve_test_guard();
     let serve = TestServeHandle::with_mock_messenger();
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");

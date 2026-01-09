@@ -32,7 +32,7 @@ fn add_exposed_topic(peppy_json5: &Path) {
 
 #[test]
 fn node_sync_rust_command_succeeds() {
-    let _serial_guard = helpers::serve_test_lock().lock().unwrap();
+    let _serial_guard = helpers::serve_test_guard();
     let serve = TestServeHandle::with_mock_messenger();
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");

@@ -14,7 +14,7 @@ const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 #[test]
 fn node_run_command_succeeds() {
-    let _serial_guard = helpers::serve_test_lock().lock().unwrap();
+    let _serial_guard = helpers::serve_test_guard();
     // Use zenoh messaging so the spawned node process can communicate with the master node
     let serve = TestServeHandle::with_zenoh();
 
@@ -163,7 +163,7 @@ fn node_run_command_succeeds() {
 
 #[test]
 fn node_run_command_with_args_succeeds() {
-    let _serial_guard = helpers::serve_test_lock().lock().unwrap();
+    let _serial_guard = helpers::serve_test_guard();
     // Use zenoh messaging so the spawned node process can communicate with the master node
     let serve = TestServeHandle::with_zenoh();
 
@@ -371,7 +371,7 @@ fn node_run_command_with_args_succeeds() {
 
 #[test]
 fn node_run_command_with_custom_instance_id_succeeds() {
-    let _serial_guard = helpers::serve_test_lock().lock().unwrap();
+    let _serial_guard = helpers::serve_test_guard();
     // Use zenoh messaging so the spawned node process can communicate with the master node
     let serve = TestServeHandle::with_zenoh();
 
