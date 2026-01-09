@@ -45,7 +45,8 @@ fn node_runtime_config_command_outputs_valid_config() {
     .execute(&node_ctx)
     .expect("node init command should succeed");
 
-    let peppy_json5_path = node_dir.path().join(node_name).join("peppy.json5");
+    let node_path = node_dir.path().join(node_name);
+    let peppy_json5_path = node_path.join("peppy.json5");
     assert!(
         peppy_json5_path.exists(),
         "peppy.json5 should exist at {}",
@@ -54,7 +55,7 @@ fn node_runtime_config_command_outputs_valid_config() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            peppy_json5: peppy_json5_path,
+            node_dir: node_path,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -149,7 +150,8 @@ fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
     .execute(&node_ctx)
     .expect("node init command should succeed");
 
-    let peppy_json5_path = node_dir.path().join(node_name).join("peppy.json5");
+    let node_path = node_dir.path().join(node_name);
+    let peppy_json5_path = node_path.join("peppy.json5");
     assert!(
         peppy_json5_path.exists(),
         "peppy.json5 should exist at {}",
@@ -158,7 +160,7 @@ fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            peppy_json5: peppy_json5_path.clone(),
+            node_dir: node_path,
             start: false,
             args: Vec::new(),
             instance_id: None,

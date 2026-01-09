@@ -44,7 +44,7 @@ fn write_node_config(
         ),
     )
     .expect("failed to write node config");
-    node_config_path
+    node_dir
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn service_reset_command_resets_node_stack() {
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
     let node_name = "reset_test_node";
     let node_tag = "0.1.0";
-    let node_config_path = write_node_config(
+    let node_path = write_node_config(
         nodes_dir.path(),
         node_name,
         node_tag,
@@ -76,7 +76,7 @@ fn service_reset_command_resets_node_stack() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            peppy_json5: node_config_path,
+            node_dir: node_path,
             start: false,
             args: Vec::new(),
             instance_id: None,
