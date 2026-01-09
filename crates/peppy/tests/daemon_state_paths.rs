@@ -30,7 +30,7 @@ impl Drop for EnvGuard {
 }
 
 #[test]
-fn daemon_state_write_in_prod_uses_master_scoped_peppy_dir() {
+fn daemon_state_write_in_prod_uses_default_peppy_path() {
     set_app_env(AppEnv::Prod);
 
     let _state_file_guard = EnvGuard::remove(DAEMON_STATE_FILE_ENV);
@@ -42,9 +42,10 @@ fn daemon_state_write_in_prod_uses_master_scoped_peppy_dir() {
         .write()
         .expect("daemon state should be writable without sudo");
 
-    assert!(
-        written_path.starts_with(temp_home.path().join(".peppy").join("master-node")),
-        "expected daemon state to be written under ~/.peppy/<master_node_name>, got {}",
+    let expected_path = temp_home.path().join(".peppy").join("daemon_state.json");
+    assert_eq!(
+        written_path, expected_path,
+        "expected daemon state to be written under ~/.peppy/daemon_state.json, got {}",
         written_path.display()
     );
 
