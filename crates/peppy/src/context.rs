@@ -65,7 +65,7 @@ const DAEMON_STATE_FILENAME: &str = "daemon_state.json";
 ///
 /// This struct is serialized to JSON and stored on disk to track daemon state
 /// across restarts. The state file location is determined by the `PEPPY_DAEMON_STATE_FILE`
-/// environment variable, or defaults to `~/.peppy/<master_node_name>/daemon_state.json` in production
+/// environment variable, or defaults to `~/.peppy/$DAEMON_STATE_FILENAME` in production
 /// and a temp directory in development.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonState {
@@ -84,12 +84,7 @@ impl DaemonState {
     }
 
     pub fn write(&self) -> Result<PathBuf, io::Error> {
-        if let Some(path) = Self::env_state_file_path() {
-            Self::write_to(&path, self)?;
-            return Ok(path);
-        }
-
-        let path = Self::state_file_path_for_master_node(&self.master_node_name);
+        let path = Self::env_state_file_path().unwrap_or_else(Self::default_state_file_path);
         Self::write_to(&path, self)?;
         Ok(path)
     }
@@ -166,7 +161,11 @@ impl DaemonState {
             Err(e) => return Err(e),
         }
 
-        if let Some(parent) = path.parent() {
+        let state_root = Self::state_root_dir();
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| *parent != state_root.as_path())
+        {
             let _ = fs::remove_dir(parent);
         }
 
@@ -196,6 +195,11 @@ impl DaemonState {
         std::env::temp_dir().join("peppy")
     }
 
+    fn default_state_file_path() -> PathBuf {
+        Self::state_root_dir().join(DAEMON_STATE_FILENAME)
+    }
+
+    /// Legacy helper for callers that want per-master state files.
     pub fn state_file_path_for_master_node(master_node_name: &str) -> PathBuf {
         Self::state_root_dir()
             .join(master_node_name)
@@ -204,7 +208,7 @@ impl DaemonState {
 
     fn candidate_state_file_paths() -> Vec<PathBuf> {
         let root = Self::state_root_dir();
-        let mut paths = Vec::new();
+        let mut paths = vec![Self::default_state_file_path()];
 
         if let Ok(entries) = fs::read_dir(&root) {
             let mut dirs: Vec<PathBuf> = entries
