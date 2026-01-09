@@ -80,7 +80,7 @@ fn node_run_command_succeeds() {
     // Add the node to the node stack (without running)
     NodeCommand {
         command: NodeCommands::Add {
-            peppy_json5: peppy_json5_path,
+            node_dir: node_path,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -278,7 +278,7 @@ fn node_run_command_with_args_succeeds() {
     // Add the node to the node stack (without running)
     NodeCommand {
         command: NodeCommands::Add {
-            peppy_json5: peppy_json5_path,
+            node_dir: node_path,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -438,7 +438,7 @@ fn node_run_command_with_custom_instance_id_succeeds() {
     // Add the node to the node stack (without running)
     NodeCommand {
         command: NodeCommands::Add {
-            peppy_json5: peppy_json5_path,
+            node_dir: node_path,
             start: false,
             args: Vec::new(),
             instance_id: None,

@@ -89,7 +89,7 @@ fn node_stop_command_succeeds() {
     // Add the node to the node stack (without running)
     NodeCommand {
         command: NodeCommands::Add {
-            peppy_json5: peppy_json5_path,
+            node_dir: node_path,
             start: false,
             args: Vec::new(),
             instance_id: None,

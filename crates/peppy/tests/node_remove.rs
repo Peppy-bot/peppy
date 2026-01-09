@@ -68,7 +68,8 @@ fn node_remove_command_succeeds() {
     .execute(&node_ctx)
     .expect("node init command should succeed");
 
-    let peppy_json5_path = node_dir.path().join(node_name).join("peppy.json5");
+    let node_path = node_dir.path().join(node_name);
+    let peppy_json5_path = node_path.join("peppy.json5");
     assert!(
         peppy_json5_path.exists(),
         "peppy.json5 should exist at {}",
@@ -77,7 +78,7 @@ fn node_remove_command_succeeds() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            peppy_json5: peppy_json5_path,
+            node_dir: node_path,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -207,7 +208,7 @@ fn node_remove_command_fails_without_stop_instances_when_running_instance_exists
 
     NodeCommand {
         command: NodeCommands::Add {
-            peppy_json5: peppy_json5_path,
+            node_dir: node_path,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -363,7 +364,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            peppy_json5: peppy_json5_path,
+            node_dir: node_path,
             start: false,
             args: Vec::new(),
             instance_id: None,

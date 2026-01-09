@@ -146,7 +146,7 @@ fn node_list_command_succeeds() {
     // Add the provider
     NodeCommand {
         command: NodeCommands::Add {
-            peppy_json5: provider_peppy_json5,
+            node_dir: provider_path,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -158,7 +158,7 @@ fn node_list_command_succeeds() {
     // Add the consumer, it depends on the provider
     NodeCommand {
         command: NodeCommands::Add {
-            peppy_json5: consumer_peppy_json5,
+            node_dir: consumer_path,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -274,7 +274,7 @@ fn node_list_command_with_dot_representation_succeeds() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            peppy_json5: provider_peppy_json5,
+            node_dir: provider_path,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -285,7 +285,7 @@ fn node_list_command_with_dot_representation_succeeds() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            peppy_json5: consumer_peppy_json5,
+            node_dir: consumer_path,
             start: false,
             args: Vec::new(),
             instance_id: None,

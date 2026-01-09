@@ -44,7 +44,7 @@ fn write_node_config(
         ),
     )
     .expect("failed to write node config");
-    node_config_path
+    node_dir
 }
 
 #[test]
@@ -63,7 +63,7 @@ fn node_launch_command_succeed() {
     let node_a_name = "launch_succeed_node_a";
     let node_b_name = "launch_succeed_node_b";
     let node_tag = "0.1.0";
-    let node_a_config_path = write_node_config(
+    let node_a_path = write_node_config(
         nodes_dir.path(),
         node_a_name,
         node_tag,
@@ -85,7 +85,7 @@ fn node_launch_command_succeed() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            peppy_json5: node_a_config_path,
+            node_dir: node_a_path,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -247,13 +247,13 @@ fn node_launch_command_fails_when_node_never_becomes_healthy() {
     let node_a_name = "launch_node_a";
     let node_b_name = "launch_node_b";
     let node_tag = "0.1.0";
-    let node_a_config_path = write_node_config(
+    let node_a_path = write_node_config(
         nodes_dir.path(),
         node_a_name,
         node_tag,
         &["sh", "-c", "exit 0"],
     );
-    let _node_b_config_path = write_node_config(
+    let _node_b_path = write_node_config(
         nodes_dir.path(),
         node_b_name,
         node_tag,
@@ -275,7 +275,7 @@ fn node_launch_command_fails_when_node_never_becomes_healthy() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            peppy_json5: node_a_config_path,
+            node_dir: node_a_path,
             start: false,
             args: Vec::new(),
             instance_id: None,
