@@ -3,7 +3,7 @@ mod helpers;
 use std::path::Path;
 use std::sync::Arc;
 
-use config::node::{Name as ConfigName, NodeConfigParser, SubscribedTopic, SubscribesTo};
+use config::node::{ExposedTopic, Name as ConfigName, NodeConfigParser, SubscribedTopic, SubscribesTo};
 use helpers::TestServeHandle;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
@@ -11,19 +11,46 @@ use peppy::commands::stack::{StackCommand, StackCommands};
 use peppy::context::{AppContext, DaemonState};
 
 fn make_consumer_depend_on_provider(
+    provider_peppy_json5: &Path,
     consumer_peppy_json5: &Path,
     consumer_name: &str,
     provider_name: &str,
 ) {
+    let topic_name = "stack_list_topic";
+
+    let mut provider_cfg = NodeConfigParser::from_path(provider_peppy_json5)
+        .expect("provider peppy.json5 should read");
+
+    provider_cfg.manifest.add_cmd = None;
+
+    let exposes = provider_cfg
+        .interfaces
+        .exposes
+        .get_or_insert_with(Default::default);
+    let topics = exposes.topics.get_or_insert_with(Vec::new);
+    if !topics.iter().any(|topic| topic.name == topic_name) {
+        topics.push(ExposedTopic {
+            name: topic_name.to_string(),
+            ..Default::default()
+        });
+    }
+
+    let updated_provider_content =
+        serde_json::to_string_pretty(&provider_cfg).expect("provider peppy.json5 should serialize");
+    std::fs::write(provider_peppy_json5, updated_provider_content)
+        .expect("provider peppy.json5 should update");
+
     let mut consumer_cfg = NodeConfigParser::from_path(consumer_peppy_json5)
         .expect("consumer peppy.json5 should read");
 
+    consumer_cfg.manifest.add_cmd = None;
+
     consumer_cfg.interfaces.subscribes_to = Some(SubscribesTo {
         topics: Some(vec![SubscribedTopic {
-            id: ConfigName::new(format!("{consumer_name}_hello_world"))
+            id: ConfigName::new(format!("{consumer_name}_{topic_name}"))
                 .expect("subscribed topic id should be valid"),
             node: provider_name.to_string(),
-            name: "hello_world".to_string(),
+            name: topic_name.to_string(),
             tag: "0.1.0".to_string(),
         }]),
         ..Default::default()
@@ -106,8 +133,13 @@ fn node_list_command_succeeds() {
         consumer_peppy_json5.display()
     );
 
-    // Make the consumer depend on the provider by subscribing to its `hello_world` topic.
-    make_consumer_depend_on_provider(&consumer_peppy_json5, consumer_name, provider_name);
+    // Make the consumer depend on the provider by subscribing to a topic exposed by the provider.
+    make_consumer_depend_on_provider(
+        &provider_peppy_json5,
+        &consumer_peppy_json5,
+        consumer_name,
+        provider_name,
+    );
 
     // Add the provider
     NodeCommand {
@@ -231,7 +263,12 @@ fn node_list_command_with_dot_representation_succeeds() {
         consumer_peppy_json5.display()
     );
 
-    make_consumer_depend_on_provider(&consumer_peppy_json5, consumer_name, provider_name);
+    make_consumer_depend_on_provider(
+        &provider_peppy_json5,
+        &consumer_peppy_json5,
+        consumer_name,
+        provider_name,
+    );
 
     NodeCommand {
         command: NodeCommands::Add {
