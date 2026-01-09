@@ -1,7 +1,7 @@
 // PeppyOS Configuration
 // This is the main configuration file that defines the deployments on the current machine.
 // It's run using the `peppy serve set-config` command. It will automatically look into children folders for `peppy.json5` configuration files belonging to nodes.
-// Any new node that is created should be added to the node stack by running the command `peppy node add <path_to_peppy.json5>`
+// Any new node that is created should be added to the node stack by running the command `peppy node add <node_dir>`
 {
   // TODO: Allow the use of plugins. Compared to forks, plugins run in a separate thread, removing IPC overhead. Plugins are useful for things like a ROS2 bridge.
   // TODO: Zenohd pseudo-configuration could also live here
