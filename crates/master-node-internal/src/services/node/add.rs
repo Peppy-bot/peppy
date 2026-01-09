@@ -16,7 +16,7 @@ use tracing::debug;
 
 /// Returns the base directory for storing copied node folders.
 /// In production: ~/.peppy/<master_node_instance_id>/nodes
-/// In development: /tmp/peppy/<master_node_instance_id>/nodes
+/// In development: /tmp/.peppy/<master_node_instance_id>/nodes
 fn nodes_storage_dir(master_node_instance_id: &str) -> PathBuf {
     match app_env() {
         AppEnv::Prod => {
@@ -29,7 +29,7 @@ fn nodes_storage_dir(master_node_instance_id: &str) -> PathBuf {
                 .join("nodes")
         }
         AppEnv::Dev => std::env::temp_dir()
-            .join("peppy")
+            .join(".peppy")
             .join(master_node_instance_id)
             .join("nodes"),
     }
