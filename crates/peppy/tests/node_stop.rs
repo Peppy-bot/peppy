@@ -31,7 +31,7 @@ fn override_start_cmd(peppy_json5: &Path) {
 
 #[test]
 fn node_stop_command_succeeds() {
-    let _serial_guard = helpers::serve_test_lock().lock().unwrap();
+    let _serial_guard = helpers::serve_test_guard();
     // Mock messaging is sufficient: we run in-process node services for health/shutdown.
     let serve = TestServeHandle::with_mock_messenger();
 

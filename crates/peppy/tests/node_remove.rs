@@ -32,7 +32,7 @@ fn override_start_cmd(peppy_json5: &Path) {
 
 #[test]
 fn node_remove_command_succeeds() {
-    let _serial_guard = helpers::serve_test_lock().lock().unwrap();
+    let _serial_guard = helpers::serve_test_guard();
     let serve = TestServeHandle::with_mock_messenger();
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
@@ -156,7 +156,7 @@ fn node_remove_command_succeeds() {
 
 #[test]
 fn node_remove_command_fails_without_stop_instances_when_running_instance_exists() {
-    let _serial_guard = helpers::serve_test_lock().lock().unwrap();
+    let _serial_guard = helpers::serve_test_guard();
     let serve = TestServeHandle::with_mock_messenger();
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
@@ -314,7 +314,7 @@ fn node_remove_command_fails_without_stop_instances_when_running_instance_exists
 
 #[test]
 fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
-    let _serial_guard = helpers::serve_test_lock().lock().unwrap();
+    let _serial_guard = helpers::serve_test_guard();
     let serve = TestServeHandle::with_mock_messenger();
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");

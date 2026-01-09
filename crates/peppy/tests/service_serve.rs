@@ -13,7 +13,7 @@ use peppy::error::Error;
 
 #[test]
 fn serve_command() {
-    let _serial_guard = helpers::serve_test_lock().lock().unwrap();
+    let _serial_guard = helpers::serve_test_guard();
     let _serve_env = helpers::TempServeEnvGuard::new();
 
     let ctx = Arc::new(AppContext::default());
@@ -66,7 +66,7 @@ fn serve_command() {
 
 #[test]
 fn serve_command_fails_when_zenoh_port_already_in_use() {
-    let _serial_guard = helpers::serve_test_lock().lock().unwrap();
+    let _serial_guard = helpers::serve_test_guard();
     let _serve = TestServeHandle::with_zenoh();
 
     let ctx = Arc::new(AppContext::default());

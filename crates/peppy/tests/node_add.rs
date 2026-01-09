@@ -1,20 +1,36 @@
 mod helpers;
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use config::node::NodeConfigParser;
 use helpers::TestServeHandle;
 use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::context::{AppContext, DaemonState};
+use peppylib::MessengerHandle;
+use peppylib::services::health::listen_for_node_health;
+use peppylib::services::ready::listen_for_node_ready;
 
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
+fn override_start_cmd(peppy_json5: &Path) {
+    let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
+    // Avoid spawning a real node binary in tests, but keep the process alive long enough for
+    // `node_start` to complete its `node_ready` + health check phases.
+    cfg.manifest.start_cmd = vec!["sleep".to_string(), "5".to_string()];
+
+    // Write JSON (valid JSON5) back to disk.
+    let updated_content = serde_json::to_string_pretty(&cfg).expect("peppy.json5 should serialize");
+    std::fs::write(peppy_json5, updated_content).expect("peppy.json5 should update");
+}
+
 #[test]
 fn node_add_command_succeeds() {
-    let _serial_guard = helpers::serve_test_lock().lock().unwrap();
+    let _serial_guard = helpers::serve_test_guard();
     let serve = TestServeHandle::with_mock_messenger();
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
@@ -124,9 +140,9 @@ fn node_add_command_succeeds() {
 
 #[test]
 fn node_add_command_with_run_arg_succeeds() {
-    let _serial_guard = helpers::serve_test_lock().lock().unwrap();
-    // Use zenoh messaging so the spawned node process can communicate with the master node
-    let serve = TestServeHandle::with_zenoh();
+    let _serial_guard = helpers::serve_test_guard();
+    // Mock messaging is sufficient: we run in-process node services for health/ready.
+    let serve = TestServeHandle::with_mock_messenger();
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
     let master_node_name = daemon_state.master_node_name;
@@ -138,6 +154,7 @@ fn node_add_command_with_run_arg_succeeds() {
     // Create a temp directory for the node
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_add_run_node";
+    let instance_id = "test_add_run_instance";
 
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(AppContext::with_messenger(
@@ -174,18 +191,31 @@ fn node_add_command_with_run_arg_succeeds() {
         peppy_json5_path.display()
     );
 
-    // Build the node before running it
-    let build_output = std::process::Command::new("cargo")
-        .args(["build", "--release"])
-        .current_dir(&node_path)
-        .output()
-        .expect("failed to run cargo build");
+    // Avoid spawning a real node binary; provide `node_ready` + `node_health` in-process.
+    override_start_cmd(&peppy_json5_path);
 
-    assert!(
-        build_output.status.success(),
-        "cargo build should succeed. stderr: {}",
-        String::from_utf8_lossy(&build_output.stderr)
-    );
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("tokio runtime should create");
+    let node_messenger = MessengerHandle::from_shared(serve.messenger());
+    let _node_ready_handle = rt
+        .block_on(listen_for_node_ready(
+            &node_messenger,
+            &master_node_name,
+            instance_id,
+            node_name,
+        ))
+        .expect("node ready service should start");
+    let _node_health_handle = rt
+        .block_on(listen_for_node_health(
+            &node_messenger,
+            &master_node_name,
+            instance_id,
+            node_name,
+        ))
+        .expect("node health service should start");
 
     // Add the node to the node stack with run=true to also start an instance
     NodeCommand {
@@ -193,7 +223,7 @@ fn node_add_command_with_run_arg_succeeds() {
             peppy_json5: peppy_json5_path,
             start: true,
             args: Vec::new(),
-            instance_id: None,
+            instance_id: Some(instance_id.to_string()),
         },
     }
     .execute(&node_ctx)
@@ -213,7 +243,6 @@ fn node_add_command_with_run_arg_succeeds() {
     );
 
     // Query the node stack to verify the node was added with an instance
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime should create");
     let messenger_handle = node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");

@@ -76,6 +76,12 @@ pub fn serve_test_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+pub fn serve_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    serve_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 pub struct EnvVarGuard {
     key: &'static str,
 }
