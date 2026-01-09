@@ -16,12 +16,13 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(900); // 15min
 
 pub fn add_node(
     ctx: &Arc<AppContext>,
-    peppy_json5: PathBuf,
+    node_dir: PathBuf,
     run: bool,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
 ) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
+    let peppy_json5 = node_dir.join("peppy.json5");
     rt.block_on(add_node_async(ctx, peppy_json5, run, args, instance_id))
 }
 

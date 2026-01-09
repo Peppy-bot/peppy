@@ -75,9 +75,8 @@ pub enum NodeCommands {
     },
     /// Add a node to the node stack based on its peppy.json5 file
     Add {
-        /// Path to the node configuration file
-        #[arg(long)]
-        peppy_json5: PathBuf,
+        /// Directory containing the peppy.json5 configuration file
+        node_dir: PathBuf,
         /// If set, will attempt to spawn an instance directly after adding the node to the node stack
         #[arg(long)]
         start: bool,
@@ -165,13 +164,13 @@ impl Command for NodeCommand {
                 node_builder.build()
             }
             NodeCommands::Add {
-                peppy_json5,
+                node_dir,
                 start: run,
                 args,
                 instance_id,
             } => {
-                info!("Adding node {}...", peppy_json5.display());
-                add::add_node(ctx, peppy_json5, run, args, instance_id)
+                info!("Adding node from {}...", node_dir.display());
+                add::add_node(ctx, node_dir, run, args, instance_id)
             }
             NodeCommands::Sync { build_system } => {
                 info!("Syncing node interfaces...");

@@ -3,7 +3,9 @@ mod helpers;
 use std::path::Path;
 use std::sync::Arc;
 
-use config::node::{ExposedTopic, Name as ConfigName, NodeConfigParser, SubscribedTopic, SubscribesTo};
+use config::node::{
+    ExposedTopic, Name as ConfigName, NodeConfigParser, SubscribedTopic, SubscribesTo,
+};
 use helpers::TestServeHandle;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};

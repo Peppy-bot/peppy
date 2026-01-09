@@ -70,8 +70,9 @@ fn node_add_command_succeeds() {
     .execute(&node_ctx)
     .expect("node init command should succeed");
 
-    // Get the path to the peppy.json5 file
-    let peppy_json5_path = node_dir.path().join(node_name).join("peppy.json5");
+    // Get the path to the node directory
+    let node_path = node_dir.path().join(node_name);
+    let peppy_json5_path = node_path.join("peppy.json5");
     assert!(
         peppy_json5_path.exists(),
         "peppy.json5 should exist at {}",
@@ -81,7 +82,7 @@ fn node_add_command_succeeds() {
     // Now add the node to the node stack
     NodeCommand {
         command: NodeCommands::Add {
-            peppy_json5: peppy_json5_path,
+            node_dir: node_path,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -182,7 +183,7 @@ fn node_add_command_with_run_arg_succeeds() {
     .execute(&node_ctx)
     .expect("node init command should succeed");
 
-    // Get the path to the peppy.json5 file
+    // Get the path to the node directory
     let node_path = node_dir.path().join(node_name);
     let peppy_json5_path = node_path.join("peppy.json5");
     assert!(
@@ -220,7 +221,7 @@ fn node_add_command_with_run_arg_succeeds() {
     // Add the node to the node stack with run=true to also start an instance
     NodeCommand {
         command: NodeCommands::Add {
-            peppy_json5: peppy_json5_path,
+            node_dir: node_path,
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),

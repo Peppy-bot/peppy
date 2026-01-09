@@ -44,7 +44,8 @@ fn daemon_state_write_in_prod_uses_default_peppy_path() {
 
     let expected_path = temp_home.path().join(".peppy").join("daemon_state.json");
     assert_eq!(
-        written_path, expected_path,
+        written_path,
+        expected_path,
         "expected daemon state to be written under ~/.peppy/daemon_state.json, got {}",
         written_path.display()
     );
