@@ -610,12 +610,21 @@ async fn listen_for_node_add_runs_add_cmd() {
 
     let copied_path = entity.root_path();
 
-    // Verify that add_cmd was executed by checking for the marker file
+    // Verify that add_cmd was executed on the COPIED folder (not the source)
+    // by checking the marker file exists only in the copied path
     let marker_file = copied_path.join(ADD_CMD_MARKER_FILE);
     assert!(
         marker_file.exists(),
         "add_cmd should have created marker file at {}",
         marker_file.display()
+    );
+
+    // Verify add_cmd did NOT run on the source directory
+    let source_marker = source_dir.path().join(ADD_CMD_MARKER_FILE);
+    assert!(
+        !source_marker.exists(),
+        "add_cmd should NOT have created marker file in source dir at {}",
+        source_marker.display()
     );
 
     // Clean up
