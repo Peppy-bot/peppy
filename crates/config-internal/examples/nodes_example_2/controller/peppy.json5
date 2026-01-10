@@ -65,10 +65,11 @@
       actions: [],
     },
   },
-  resources: {
-    // This is the resource per instance
-    max_memory_mb: 256,
-  },
+  // In the future if we put nodes in containers we might want to be able to control resources
+  // resources: {
+  //   // This is the resource per instance
+  //   max_memory_mb: 256,
+  // },
   logging: {
     min_level: "info",
   }
