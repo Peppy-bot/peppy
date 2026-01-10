@@ -50,9 +50,17 @@ async fn list_nodes_async(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>
     let graph: SerializedNodeGraph = serde_json::from_str(&response.graph_json)
         .map_err(|e| Error::ExecutionFailed(format!("Failed to parse graph JSON: {}", e)))?;
 
-    // Sort nodes by label for consistent output
+    // Sort nodes by label for consistent output, with master node first
     let mut nodes = graph.nodes.clone();
-    nodes.sort_by_key(|node| node.label());
+    nodes.sort_by(|a, b| {
+        let a_is_master = a.label().starts_with(&master_node_name);
+        let b_is_master = b.label().starts_with(&master_node_name);
+        match (a_is_master, b_is_master) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.label().cmp(&b.label()),
+        }
+    });
 
     info!("Node stack:");
     for node in &nodes {
