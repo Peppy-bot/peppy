@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use tracing::error;
+use tracing_subscriber::EnvFilter;
 
 use config::consts::AppEnv;
 use peppy::{
@@ -36,6 +37,35 @@ enum Commands {
     },
 }
 
+#[derive(Clone, Copy)]
+enum LogStyle {
+    Verbose,
+    Compact,
+}
+
+fn default_env_filter(default_directive: &str) -> EnvFilter {
+    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_directive))
+}
+
+fn init_tracing(style: LogStyle) {
+    let env_filter = match style {
+        LogStyle::Verbose => default_env_filter("info"),
+        LogStyle::Compact => default_env_filter("peppy=info"),
+    };
+
+    let builder = tracing_subscriber::fmt().with_env_filter(env_filter);
+
+    match style {
+        LogStyle::Verbose => builder.init(),
+        LogStyle::Compact => builder
+            .with_ansi(false)
+            .without_time()
+            .with_level(false)
+            .with_target(false)
+            .init(),
+    }
+}
+
 fn main() {
     // Set app env based on build profile (release = Prod, debug = Dev)
     let env = if cfg!(debug_assertions) {
@@ -45,15 +75,20 @@ fn main() {
     };
     config::consts::set_app_env(env);
 
-    // Initialize tracing subscriber with environment filter
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
-        )
-        .init();
-
     let cli = Cli::parse();
+    let log_style = if cfg!(debug_assertions)
+        || matches!(
+            &cli.command,
+            Commands::Service {
+                command: service::ServiceCommands::Serve { .. }
+            }
+        ) {
+        LogStyle::Verbose
+    } else {
+        LogStyle::Compact
+    };
+    init_tracing(log_style);
+
     let app_ctx = Arc::new(AppContext::default());
 
     let result = match cli.command {
