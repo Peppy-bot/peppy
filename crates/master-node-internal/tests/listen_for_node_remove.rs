@@ -57,7 +57,7 @@ async fn listen_for_node_remove_success() {
         .expect("node should exist in stack");
     assert_eq!(entity.instances().len(), 0, "node should have no instances");
 
-    let response = NodeRemoveRequest::new(TARGET_NODE_NAME)
+    let response = NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -91,12 +91,13 @@ async fn listen_for_node_remove_success() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_remove_node_name_not_found_fails() {
     const MISSING_NODE_NAME: &str = "missing_node";
+    const MISSING_NODE_TAG: &str = "0.1.0";
 
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
     let before_len = node_stack.len();
 
-    let response = NodeRemoveRequest::new(MISSING_NODE_NAME)
+    let response = NodeRemoveRequest::new(MISSING_NODE_NAME, MISSING_NODE_TAG)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -190,7 +191,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     // Allow the shutdown service to fully establish its listener
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let response = NodeRemoveRequest::new(TARGET_NODE_NAME)
+    let response = NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .with_stop_instances(true)
         .poll(
             &started_master.caller_handle,
@@ -287,7 +288,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
 
     let before_len = node_stack.len();
 
-    let response = NodeRemoveRequest::new(TARGET_NODE_NAME)
+    let response = NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
