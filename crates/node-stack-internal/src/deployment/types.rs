@@ -59,6 +59,7 @@ pub struct SerializedNodeGraph {
 pub struct NodeEntity {
     config: NodeConfig,
     instances: Vec<NodeInstance>,
+    // TODO: In the future, for total isolation of the snapshot node we could use a solution like rootless Podman
     // Every node has a root path, it's the directory where the configuration resides
     fs_root_path: PathBuf,
 }

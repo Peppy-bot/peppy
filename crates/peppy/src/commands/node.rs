@@ -169,7 +169,8 @@ impl Command for NodeCommand {
                 args,
                 instance_id,
             } => {
-                info!("Adding node from {}...", node_dir.display());
+                let display_path = node_dir.canonicalize().unwrap_or_else(|_| node_dir.clone());
+                info!("Adding node from {}...", display_path.display());
                 add::add_node(ctx, node_dir, run, args, instance_id)
             }
             NodeCommands::Sync { build_system } => {
