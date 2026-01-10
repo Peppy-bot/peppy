@@ -2,13 +2,16 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use tracing::error;
-use tracing_subscriber::EnvFilter;
 
 use config::consts::AppEnv;
 use peppy::{
     commands::{Command, node, service, stack},
     context::AppContext,
 };
+
+mod logging;
+
+use logging::{LogStyle, init_tracing};
 
 #[derive(Parser)]
 #[command(name = "peppy")]
@@ -35,35 +38,6 @@ enum Commands {
         #[command(subcommand)]
         command: stack::StackCommands,
     },
-}
-
-#[derive(Clone, Copy)]
-enum LogStyle {
-    Verbose,
-    Compact,
-}
-
-fn default_env_filter(default_directive: &str) -> EnvFilter {
-    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_directive))
-}
-
-fn init_tracing(style: LogStyle) {
-    let env_filter = match style {
-        LogStyle::Verbose => default_env_filter("info"),
-        LogStyle::Compact => default_env_filter("peppy=info"),
-    };
-
-    let builder = tracing_subscriber::fmt().with_env_filter(env_filter);
-
-    match style {
-        LogStyle::Verbose => builder.init(),
-        LogStyle::Compact => builder
-            .with_ansi(false)
-            .without_time()
-            .with_level(false)
-            .with_target(false)
-            .init(),
-    }
 }
 
 fn main() {
