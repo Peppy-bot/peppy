@@ -12,6 +12,7 @@ const TEMPLATES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/templates");
 pub struct RustCargoToml<'a> {
     pub node_name: &'a str,
     pub pepygen_path: &'a str,
+    pub pepylib_path: &'a str,
 }
 
 /// Template for Python pyproject.toml file
@@ -65,6 +66,7 @@ pub fn apply_rust_templates(node_name: &str, node_dir: &Path) -> Result<()> {
     let cargo_toml = RustCargoToml {
         node_name,
         pepygen_path: config::consts::PEPPYGEN_OUTPUT_PATH,
+        pepylib_path: config::consts::PEPPYLIB_OUTPUT_PATH,
     };
     std::fs::write(node_dir.join("Cargo.toml"), cargo_toml.render()?)?;
 

@@ -9,7 +9,6 @@ use config::{consts::NODE_CONFIG_FILE, node::NodeConfigParser, peppy_config::Bui
 use python::PythonGenerator;
 use rust::RustGenerator;
 use std::{fs, path::Path};
-use toml::Value;
 use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 
 /// Generate an interface library for the given build system from a node directory.
@@ -115,16 +114,16 @@ where
 /// Creates or updates the node's Cargo.toml with the peppygen dependency.
 ///
 /// If the Cargo.toml doesn't exist, it creates a new one with the node name.
-/// If it exists, it ensures the peppygen dependency is present.
+/// If it exists, it ensures the peppygen dependency is present while preserving formatting.
 fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
     use std::io::ErrorKind;
-    use toml::map::Map;
+    use toml_edit::{DocumentMut, InlineTable, Item, Table, value};
 
     let cargo_toml_path = node_dir.join("Cargo.toml");
 
-    let mut doc: Value = if cargo_toml_path.exists() {
+    let mut doc: DocumentMut = if cargo_toml_path.exists() {
         let contents = fs::read_to_string(&cargo_toml_path)?;
-        toml::from_str(&contents).map_err(|e| {
+        contents.parse().map_err(|e| {
             Error::Io(std::io::Error::new(
                 ErrorKind::InvalidData,
                 format!("failed to parse Cargo.toml: {}", e),
@@ -132,44 +131,33 @@ fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
         })?
     } else {
         // Create new Cargo.toml structure
-        let mut doc = Map::new();
+        let mut doc = DocumentMut::new();
 
-        let mut package = Map::new();
-        package.insert("name".to_string(), Value::String(node_name.to_string()));
-        package.insert("version".to_string(), Value::String("0.1.0".to_string()));
-        package.insert("edition".to_string(), Value::String("2024".to_string()));
-        doc.insert("package".to_string(), Value::Table(package));
+        let mut package = Table::new();
+        package.insert("name", value(node_name));
+        package.insert("version", value("0.1.0"));
+        package.insert("edition", value("2024"));
+        doc.insert("package", Item::Table(package));
 
-        doc.insert("dependencies".to_string(), Value::Table(Map::new()));
+        doc.insert("dependencies", Item::Table(Table::new()));
 
-        Value::Table(doc)
+        doc
     };
 
     // Ensure dependencies section exists and add peppygen
-    if let Value::Table(ref mut root) = doc {
-        let dependencies = root
-            .entry("dependencies".to_string())
-            .or_insert_with(|| Value::Table(Map::new()));
+    if !doc.contains_key("dependencies") {
+        doc.insert("dependencies", Item::Table(Table::new()));
+    }
 
-        if let Value::Table(deps) = dependencies
-            && !deps.contains_key("peppygen")
-        {
-            let mut peppygen_dep = Map::new();
-            peppygen_dep.insert(
-                "path".to_string(),
-                Value::String(config::consts::PEPPYGEN_OUTPUT_PATH.to_string()),
-            );
-            deps.insert("peppygen".to_string(), Value::Table(peppygen_dep));
+    if let Some(dependencies) = doc.get_mut("dependencies").and_then(|d| d.as_table_mut()) {
+        if !dependencies.contains_key("peppygen") {
+            let mut peppygen_dep = InlineTable::new();
+            peppygen_dep.insert("path", config::consts::PEPPYGEN_OUTPUT_PATH.into());
+            dependencies.insert("peppygen", toml_edit::value(peppygen_dep));
         }
     }
 
-    let serialized = toml::to_string_pretty(&doc).map_err(|e| {
-        Error::Io(std::io::Error::new(
-            ErrorKind::InvalidData,
-            format!("failed to serialize Cargo.toml: {}", e),
-        ))
-    })?;
-    fs::write(&cargo_toml_path, serialized)?;
+    fs::write(&cargo_toml_path, doc.to_string())?;
 
     Ok(())
 }
@@ -178,6 +166,7 @@ fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use toml::Value;
 
     #[test]
     fn ensure_node_cargo_toml_creates_new_file_with_peppygen_dependency() {
