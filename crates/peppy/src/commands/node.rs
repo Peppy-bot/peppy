@@ -136,9 +136,12 @@ pub enum NodeCommands {
         /// Node reference in the format node_name:tag (e.g., my_node:v1)
         #[arg(value_parser = parse_node_ref)]
         node_ref: (String, String),
-        /// When set, stop all instances running on this node before removing the node itself. Without this flag, the command fails if the node has running instances
+        /// When set, stop all instances running on this node before removing the node itself. Without this flag, the command prompts if instances are still running
         #[arg(long)]
         stop_instances: bool,
+        /// When set, bypass the confirmation prompt and stop running instances before removal
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -203,9 +206,10 @@ impl Command for NodeCommand {
             NodeCommands::Remove {
                 node_ref: (node_name, tag),
                 stop_instances,
+                force,
             } => {
                 info!("Remove node {}:{}...", node_name, tag);
-                remove::remove_node(ctx, node_name, tag, stop_instances)
+                remove::remove_node(ctx, node_name, tag, stop_instances, force)
             }
         }
     }
