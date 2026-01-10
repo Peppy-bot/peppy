@@ -148,12 +148,25 @@ fn node_stop_command_succeeds() {
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    assert!(
-        graph.nodes.iter().any(|n| n
-            .label()
-            .contains(&format!("{node_name}:0.1.0 (0 instances)"))),
+    let node = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .unwrap_or_else(|| {
+            panic!(
+                "graph should contain the added node. Got: {:?}",
+                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        node.instance_count(),
+        0,
         "graph should show 0 instances before run. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(|n| (n.label(), n.instance_count()))
+            .collect::<Vec<_>>()
     );
 
     // Now run the node using the run command with a deterministic instance id
@@ -182,12 +195,25 @@ fn node_stop_command_succeeds() {
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    assert!(
-        graph.nodes.iter().any(|n| n
-            .label()
-            .contains(&format!("{node_name}:0.1.0 (1 instance)"))),
+    let node = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .unwrap_or_else(|| {
+            panic!(
+                "graph should contain the added node. Got: {:?}",
+                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        node.instance_count(),
+        1,
         "graph should show 1 instance after run. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(|n| (n.label(), n.instance_count()))
+            .collect::<Vec<_>>()
     );
 
     // Stop the running instance
@@ -220,12 +246,25 @@ fn node_stop_command_succeeds() {
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    assert!(
-        graph.nodes.iter().any(|n| n
-            .label()
-            .contains(&format!("{node_name}:0.1.0 (0 instances)"))),
+    let node = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .unwrap_or_else(|| {
+            panic!(
+                "graph should contain the added node. Got: {:?}",
+                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        node.instance_count(),
+        0,
         "graph should show 0 instances after stop. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(|n| (n.label(), n.instance_count()))
+            .collect::<Vec<_>>()
     );
 
     // Verify the logs contain success message

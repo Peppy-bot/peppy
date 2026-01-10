@@ -177,20 +177,28 @@ fn node_list_command_succeeds() {
     .expect("node list command should succeed");
 
     let logs = log_capture.logs();
+    let provider_label = format!("{provider_name}:0.1.0");
+    let consumer_label = format!("{consumer_name}:0.1.0");
+    let provider_line = logs
+        .lines()
+        .find(|line| line.contains(&provider_label) && line.contains("instances:"))
+        .expect("logs should contain the provider node");
     assert!(
-        logs.contains(&format!("{provider_name}:0.1.0 (0 instances)")),
+        provider_line.contains("0 instances:"),
         "logs should contain the provider node and instance count. Logs:\n{}",
         logs
     );
+    let consumer_line = logs
+        .lines()
+        .find(|line| line.contains(&consumer_label) && line.contains("instances:"))
+        .expect("logs should contain the consumer node");
     assert!(
-        logs.contains(&format!("{consumer_name}:0.1.0 (0 instances)")),
+        consumer_line.contains("0 instances:"),
         "logs should contain the consumer node and instance count. Logs:\n{}",
         logs
     );
     assert!(
-        logs.contains(&format!(
-            "{consumer_name}:0.1.0 (0 instances) -> {provider_name}:0.1.0 (0 instances)"
-        )),
+        logs.contains(&format!("{consumer_label} -> {provider_label}")),
         "logs should contain the dependency edge consumer -> provider. Logs:\n{}",
         logs
     );

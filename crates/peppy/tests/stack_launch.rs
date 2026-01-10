@@ -191,13 +191,25 @@ fn node_launch_command_succeed() {
         graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
     );
 
-    assert!(
-        graph.nodes.iter().any(|n| {
-            n.label().contains(&format!("{node_b_name}:{node_tag}"))
-                && n.label().contains("(1 instance)")
-        }),
+    let node_b = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == node_b_name && n.tag == node_tag)
+        .unwrap_or_else(|| {
+            panic!(
+                "graph should contain node_b after launch. Got: {:?}",
+                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        node_b.instance_count(),
+        1,
         "graph should contain node_b with 1 instance after launch. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(|n| (n.label(), n.instance_count()))
+            .collect::<Vec<_>>()
     );
 
     // TODO we shouldn't need to stop the instances manually. If the master node stops, all child instances pid should stop too
@@ -222,12 +234,25 @@ fn node_launch_command_succeed() {
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse after stop");
 
-    assert!(
-        graph.nodes.iter().any(|n| n
-            .label()
-            .contains(&format!("{node_b_name}:{node_tag} (0 instances)"))),
+    let node_b = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == node_b_name && n.tag == node_tag)
+        .unwrap_or_else(|| {
+            panic!(
+                "graph should contain node_b after stop. Got: {:?}",
+                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        node_b.instance_count(),
+        0,
         "graph should contain node_b with 0 instances after stop. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(|n| (n.label(), n.instance_count()))
+            .collect::<Vec<_>>()
     );
 }
 

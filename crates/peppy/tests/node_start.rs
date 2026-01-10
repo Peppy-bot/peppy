@@ -107,13 +107,25 @@ fn node_run_command_succeeds() {
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    assert!(
+    let node = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .unwrap_or_else(|| {
+            panic!(
+                "graph should contain the added node. Got: {:?}",
+                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        node.instance_count(),
+        0,
+        "graph should show 0 instances before run. Got: {:?}",
         graph
             .nodes
             .iter()
-            .any(|n| n.label().contains("(0 instances)")),
-        "graph should show 0 instances before run. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            .map(|n| (n.label(), n.instance_count()))
+            .collect::<Vec<_>>()
     );
 
     // Now run the node using the run command
@@ -151,13 +163,25 @@ fn node_run_command_succeeds() {
     // Verify the node has 1 instance now
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    assert!(
+    let node = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .unwrap_or_else(|| {
+            panic!(
+                "graph should contain the added node. Got: {:?}",
+                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        node.instance_count(),
+        1,
+        "graph should show 1 instance after run. Got: {:?}",
         graph
             .nodes
             .iter()
-            .any(|n| n.label().contains("(1 instance)")),
-        "graph should show 1 instance after run. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            .map(|n| (n.label(), n.instance_count()))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -305,13 +329,25 @@ fn node_run_command_with_args_succeeds() {
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    assert!(
-        graph.nodes.iter().any(|n| {
-            n.label().contains(&format!("{}:0.1.0", node_name))
-                && n.label().contains("(0 instances)")
-        }),
+    let node = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .unwrap_or_else(|| {
+            panic!(
+                "graph should contain the added node. Got: {:?}",
+                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        node.instance_count(),
+        0,
         "graph should show 0 instances before run. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(|n| (n.label(), n.instance_count()))
+            .collect::<Vec<_>>()
     );
 
     // Now run the node with arguments
@@ -359,13 +395,25 @@ fn node_run_command_with_args_succeeds() {
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    assert!(
-        graph.nodes.iter().any(|n| {
-            n.label().contains(&format!("{}:0.1.0", node_name))
-                && n.label().contains("(1 instance)")
-        }),
+    let node = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .unwrap_or_else(|| {
+            panic!(
+                "graph should contain the added node. Got: {:?}",
+                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        node.instance_count(),
+        1,
         "graph should show 1 instance after run. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(|n| (n.label(), n.instance_count()))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -465,13 +513,25 @@ fn node_run_command_with_custom_instance_id_succeeds() {
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    assert!(
-        graph.nodes.iter().any(|n| {
-            n.label().contains(&format!("{}:0.1.0", node_name))
-                && n.label().contains("(0 instances)")
-        }),
+    let node = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .unwrap_or_else(|| {
+            panic!(
+                "graph should contain the added node. Got: {:?}",
+                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        node.instance_count(),
+        0,
         "graph should show 0 instances before run. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(|n| (n.label(), n.instance_count()))
+            .collect::<Vec<_>>()
     );
 
     // Now run the node with a custom instance_id
@@ -514,12 +574,24 @@ fn node_run_command_with_custom_instance_id_succeeds() {
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-    assert!(
-        graph.nodes.iter().any(|n| {
-            n.label().contains(&format!("{}:0.1.0", node_name))
-                && n.label().contains("(1 instance)")
-        }),
+    let node = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .unwrap_or_else(|| {
+            panic!(
+                "graph should contain the added node. Got: {:?}",
+                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        node.instance_count(),
+        1,
         "graph should show 1 instance after run. Got: {:?}",
-        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        graph
+            .nodes
+            .iter()
+            .map(|n| (n.label(), n.instance_count()))
+            .collect::<Vec<_>>()
     );
 }
