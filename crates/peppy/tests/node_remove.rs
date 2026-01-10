@@ -11,14 +11,12 @@ use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::context::{AppContext, DaemonState};
-use peppy::error::Error as PeppyError;
 use peppylib::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 
 const CALLER_INSTANCE_ID: &str = "peppy-test";
-
 fn override_start_cmd(peppy_json5: &Path) {
     let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
     // Avoid spawning a real node binary in tests, but keep the process alive long enough for
@@ -44,6 +42,7 @@ fn node_remove_command_succeeds() {
 
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_remove_node";
+    let node_tag = "0.1.0";
 
     let node_ctx = Arc::new(AppContext::with_messenger(
         node_dir.path(),
@@ -115,8 +114,9 @@ fn node_remove_command_succeeds() {
 
     NodeCommand {
         command: NodeCommands::Remove {
-            node_name: NodeName::new(node_name).expect("valid node name"),
+            node_ref: (node_name.to_string(), node_tag.to_string()),
             stop_instances: false,
+            force: false,
         },
     }
     .execute(&node_ctx)
@@ -124,7 +124,7 @@ fn node_remove_command_succeeds() {
 
     let logs = log_capture.logs();
     assert!(
-        logs.contains(&format!("Removed node '{node_name}'")),
+        logs.contains(&format!("Removed node '{node_name}:{node_tag}'")),
         "logs should contain success message for removing node. Logs:\n{}",
         logs
     );
@@ -156,7 +156,7 @@ fn node_remove_command_succeeds() {
 }
 
 #[test]
-fn node_remove_command_fails_without_stop_instances_when_running_instance_exists() {
+fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
     let _serial_guard = helpers::serve_test_guard();
     let serve = TestServeHandle::with_mock_messenger();
 
@@ -169,6 +169,7 @@ fn node_remove_command_fails_without_stop_instances_when_running_instance_exists
 
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_remove_running_node";
+    let node_tag = "0.1.0";
     let instance_id = "test_remove_running_instance";
 
     let node_ctx = Arc::new(AppContext::with_messenger(
@@ -244,7 +245,7 @@ fn node_remove_command_fails_without_stop_instances_when_running_instance_exists
             node_name,
         ))
         .expect("node health service should start");
-    let (_node_shutdown_handle, _node_shutdown_rx) = rt
+    let (_node_shutdown_handle, node_shutdown_rx) = rt
         .block_on(listen_for_shutdown(
             &node_messenger,
             &master_node_name,
@@ -257,7 +258,7 @@ fn node_remove_command_fails_without_stop_instances_when_running_instance_exists
         command: NodeCommands::Start {
             node_ref: None,
             node_name: Some(node_name.to_string()),
-            tag: Some("0.1.0".to_string()),
+            tag: Some(node_tag.to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
         },
@@ -265,32 +266,24 @@ fn node_remove_command_fails_without_stop_instances_when_running_instance_exists
     .execute(&node_ctx)
     .expect("node run command should succeed");
 
-    let err = NodeCommand {
+    NodeCommand {
         command: NodeCommands::Remove {
-            node_name: NodeName::new(node_name).expect("valid node name"),
+            node_ref: (node_name.to_string(), node_tag.to_string()),
             stop_instances: false,
+            force: true,
         },
     }
     .execute(&node_ctx)
-    .expect_err("node remove command should fail");
+    .expect("node remove command should succeed");
 
-    match err {
-        PeppyError::ExecutionFailed(message) => {
-            assert!(
-                message.contains("has running instances"),
-                "error should mention running instances. Got: {}",
-                message
-            );
-            assert!(
-                message.contains(instance_id),
-                "error should include an example running instance id. Got: {}",
-                message
-            );
-        }
-        other => panic!("expected ExecutionFailed error, got: {other:?}"),
-    }
+    rt.block_on(async move {
+        tokio::time::timeout(Duration::from_secs(2), node_shutdown_rx)
+            .await
+            .expect("shutdown request should arrive")
+            .expect("shutdown signal should be delivered");
+    });
 
-    // Node should remain present in the stack.
+    // Node should be removed from the stack.
     let response = rt
         .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
@@ -305,10 +298,11 @@ fn node_remove_command_fails_without_stop_instances_when_running_instance_exists
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
 
     assert!(
-        graph.nodes.iter().any(|n| n
-            .label()
-            .contains(&format!("{node_name}:0.1.0 (1 instance)"))),
-        "graph should contain the node with 1 instance. Got: {:?}",
+        !graph
+            .nodes
+            .iter()
+            .any(|n| n.label().contains(&format!("{node_name}:{node_tag}"))),
+        "graph should not contain the removed node. Got: {:?}",
         graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
     );
 }
@@ -327,6 +321,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
 
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_remove_stop_instances_node";
+    let node_tag = "0.1.0";
     let instance_id = "test_remove_stop_instances_instance";
 
     let node_ctx = Arc::new(AppContext::with_messenger(
@@ -411,7 +406,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         command: NodeCommands::Start {
             node_ref: None,
             node_name: Some(node_name.to_string()),
-            tag: Some("0.1.0".to_string()),
+            tag: Some(node_tag.to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
         },
@@ -421,8 +416,9 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
 
     NodeCommand {
         command: NodeCommands::Remove {
-            node_name: NodeName::new(node_name).expect("valid node name"),
+            node_ref: (node_name.to_string(), node_tag.to_string()),
             stop_instances: true,
+            force: false,
         },
     }
     .execute(&node_ctx)
@@ -437,7 +433,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
 
     let logs = log_capture.logs();
     assert!(
-        logs.contains(&format!("Removed node '{node_name}'")),
+        logs.contains(&format!("Removed node '{node_name}:{node_tag}'")),
         "logs should contain success message for removing node. Logs:\n{}",
         logs
     );
@@ -464,7 +460,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         !graph
             .nodes
             .iter()
-            .any(|n| n.label().contains(&format!("{node_name}:0.1.0"))),
+            .any(|n| n.label().contains(&format!("{node_name}:{node_tag}"))),
         "graph should not contain the removed node. Got: {:?}",
         graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
     );
