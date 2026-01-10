@@ -633,58 +633,57 @@ fn workspace_package_metadata() -> Result<WorkspacePackageMetadata> {
 }
 
 fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetadata) -> Result<()> {
+    use toml_edit::{Array, DocumentMut, value};
+
     if !cargo_toml_path.exists() {
         return Ok(());
     }
 
     let contents = fs::read_to_string(cargo_toml_path)?;
-    let mut doc: Value =
-        toml::from_str(&contents).map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
+    let mut doc: DocumentMut = contents
+        .parse()
+        .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
 
-    if let Some(package) = doc.get_mut("package").and_then(Value::as_table_mut) {
+    if let Some(package) = doc.get_mut("package").and_then(|p| p.as_table_mut()) {
+        // Check if version uses workspace inheritance
         if package
             .get("version")
-            .and_then(Value::as_table)
+            .and_then(|v| v.as_table())
             .and_then(|table| table.get("workspace"))
-            == Some(&Value::Boolean(true))
+            .and_then(|w| w.as_bool())
+            == Some(true)
         {
-            package.insert(
-                "version".to_string(),
-                Value::String(metadata.version.clone()),
-            );
+            package.insert("version", value(&metadata.version));
         }
 
+        // Check if edition uses workspace inheritance
         if package
             .get("edition")
-            .and_then(Value::as_table)
+            .and_then(|v| v.as_table())
             .and_then(|table| table.get("workspace"))
-            == Some(&Value::Boolean(true))
+            .and_then(|w| w.as_bool())
+            == Some(true)
         {
-            package.insert(
-                "edition".to_string(),
-                Value::String(metadata.edition.clone()),
-            );
+            package.insert("edition", value(&metadata.edition));
         }
 
+        // Check if authors uses workspace inheritance
         if package
             .get("authors")
-            .and_then(Value::as_table)
+            .and_then(|v| v.as_table())
             .and_then(|table| table.get("workspace"))
-            == Some(&Value::Boolean(true))
+            .and_then(|w| w.as_bool())
+            == Some(true)
         {
-            let authors = metadata
-                .authors
-                .iter()
-                .cloned()
-                .map(Value::String)
-                .collect::<Vec<_>>();
-            package.insert("authors".to_string(), Value::Array(authors));
+            let mut authors = Array::new();
+            for author in &metadata.authors {
+                authors.push(author.as_str());
+            }
+            package.insert("authors", value(authors));
         }
     }
 
-    let serialized =
-        toml::to_string(&doc).map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
-    fs::write(cargo_toml_path, serialized)?;
+    fs::write(cargo_toml_path, doc.to_string())?;
     Ok(())
 }
 
