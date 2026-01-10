@@ -20,22 +20,31 @@ use std::{
 pub struct SerializedNode {
     pub name: String,
     pub tag: String,
-    pub instance_count: usize,
+    pub instance_ids: Vec<String>,
     pub fs_root_path: String,
 }
 
 impl SerializedNode {
-    /// Returns a display label in the format "name:tag (N instance(s))".
+    /// Returns a display label in the format "name:tag".
     pub fn label(&self) -> String {
-        let suffix = if self.instance_count == 1 {
-            "instance"
-        } else {
-            "instances"
-        };
-        format!(
-            "{}:{} ({} {})",
-            self.name, self.tag, self.instance_count, suffix
-        )
+        format!("{}:{}", self.name, self.tag)
+    }
+
+    /// Returns the number of instances.
+    pub fn instance_count(&self) -> usize {
+        self.instance_ids.len()
+    }
+
+    /// Returns instance info in the format "N instance(s): ["id1", "id2"]".
+    pub fn instance_info(&self) -> String {
+        let count = self.instance_count();
+        let suffix = if count == 1 { "instance" } else { "instances" };
+        let ids: Vec<String> = self
+            .instance_ids
+            .iter()
+            .map(|id| format!("\"{}\"", id))
+            .collect();
+        format!("{} {}: [{}]", count, suffix, ids.join(", "))
     }
 }
 
@@ -768,7 +777,11 @@ impl NodeStackInner {
             .map(|entity| SerializedNode {
                 name: entity.config().manifest.name.as_str().to_string(),
                 tag: entity.config().manifest.tag.clone(),
-                instance_count: entity.instances().len(),
+                instance_ids: entity
+                    .instances()
+                    .iter()
+                    .map(|i| i.instance_id().as_str().to_string())
+                    .collect(),
                 fs_root_path: entity.root_path().display().to_string(),
             })
             .collect();
@@ -784,13 +797,21 @@ impl NodeStackInner {
                     from: SerializedNode {
                         name: src_entity.config().manifest.name.as_str().to_string(),
                         tag: src_entity.config().manifest.tag.clone(),
-                        instance_count: src_entity.instances().len(),
+                        instance_ids: src_entity
+                            .instances()
+                            .iter()
+                            .map(|i| i.instance_id().as_str().to_string())
+                            .collect(),
                         fs_root_path: src_entity.root_path().display().to_string(),
                     },
                     to: SerializedNode {
                         name: dst_entity.config().manifest.name.as_str().to_string(),
                         tag: dst_entity.config().manifest.tag.clone(),
-                        instance_count: dst_entity.instances().len(),
+                        instance_ids: dst_entity
+                            .instances()
+                            .iter()
+                            .map(|i| i.instance_id().as_str().to_string())
+                            .collect(),
                         fs_root_path: dst_entity.root_path().display().to_string(),
                     },
                 })
