@@ -129,7 +129,6 @@ pub enum NodeCommands {
     /// Stop a running node instance
     Stop {
         /// Instance ID of the node to stop
-        #[arg(long)]
         instance_id: String,
     },
     /// Remove a node from the node stack
