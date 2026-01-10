@@ -113,7 +113,7 @@ pub enum NodeCommands {
         #[arg(value_parser = parse_key_value_arg)]
         args: Vec<(String, String)>,
         /// Optional: specify a deterministic instance ID
-        #[arg(long, hide = true)]
+        #[arg(long)]
         instance_id: Option<String>,
     },
     /// Prints out the runtime config of a node instance
