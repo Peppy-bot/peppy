@@ -106,6 +106,8 @@ struct NodeRemoveRequest {
     nodeName @0 :Text;
     # If set, will attempt to stop all the instances associated with this node first before removing the node
     stopInstances @1 :Bool;
+    # Tag of the node to remove
+    tag @2 :Text;
 }
 
 struct NodeRemoveResponse {

@@ -133,9 +133,9 @@ pub enum NodeCommands {
     },
     /// Remove a node from the node stack
     Remove {
-        /// Name of the node to remove
-        #[arg(long)]
-        node_name: NodeName,
+        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        #[arg(value_parser = parse_node_ref)]
+        node_ref: (String, String),
         /// When set, stop all instances running on this node before removing the node itself. Without this flag, the command fails if the node has running instances
         #[arg(long)]
         stop_instances: bool,
@@ -201,11 +201,11 @@ impl Command for NodeCommand {
                 stop::stop_node(ctx, instance_id)
             }
             NodeCommands::Remove {
-                node_name,
+                node_ref: (node_name, tag),
                 stop_instances,
             } => {
-                info!("Remove node {}...", node_name.as_str());
-                remove::remove_node(ctx, node_name, stop_instances)
+                info!("Remove node {}:{}...", node_name, tag);
+                remove::remove_node(ctx, node_name, tag, stop_instances)
             }
         }
     }

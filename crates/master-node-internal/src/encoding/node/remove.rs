@@ -13,13 +13,15 @@ use super::{decode_message, encode_message};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeRemoveRequest {
     pub node_name: String,
+    pub tag: String,
     pub stop_instances: bool,
 }
 
 impl NodeRemoveRequest {
-    pub fn new(node_name: impl Into<String>) -> Self {
+    pub fn new(node_name: impl Into<String>, tag: impl Into<String>) -> Self {
         Self {
             node_name: node_name.into(),
+            tag: tag.into(),
             stop_instances: false,
         }
     }
@@ -35,6 +37,7 @@ impl NodeRemoveRequest {
             let mut request = builder.init_root::<node_capnp::node_remove_request::Builder>();
             request.set_node_name(&self.node_name);
             request.set_stop_instances(self.stop_instances);
+            request.set_tag(&self.tag);
         }
         encode_message(&builder)
     }
@@ -44,6 +47,7 @@ impl NodeRemoveRequest {
         let request = reader.get_root::<node_capnp::node_remove_request::Reader>()?;
         Ok(Self {
             node_name: request.get_node_name()?.to_str()?.to_owned(),
+            tag: request.get_tag()?.to_str()?.to_owned(),
             stop_instances: request.get_stop_instances(),
         })
     }

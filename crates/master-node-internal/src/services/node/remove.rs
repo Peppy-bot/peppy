@@ -86,29 +86,32 @@ async fn handle_node_remove_request_inner(
     let request = NodeRemoveRequest::decode(&payload.as_bytes())?;
 
     debug!(
-        "Received `node_remove` request from {sender_instance_id}, node_name={}, stop_instances={}",
-        request.node_name, request.stop_instances
+        "Received `node_remove` request from {sender_instance_id}, node_name={}, tag={}, stop_instances={}",
+        request.node_name, request.tag, request.stop_instances
     );
 
-    let root_node_name = node_stack.root().config().manifest.name.as_str().to_owned();
-    if request.node_name == root_node_name {
+    let root_node = node_stack.root();
+    let root_node_name = root_node.config().manifest.name.as_str();
+    let root_node_tag = &root_node.config().manifest.tag;
+    if request.node_name == root_node_name && request.tag == *root_node_tag {
         return NodeRemoveResponse::failure("Cannot remove the master node from the node stack")
             .encode();
     }
 
-    let matching_entities: Vec<_> = node_stack
-        .snapshot()
-        .into_iter()
-        .filter(|entity| entity.config().manifest.name.as_str() == request.node_name)
-        .collect();
+    let matching_entity = node_stack.snapshot().into_iter().find(|entity| {
+        entity.config().manifest.name.as_str() == request.node_name
+            && entity.config().manifest.tag == request.tag
+    });
 
-    if matching_entities.is_empty() {
+    let Some(matching_entity) = matching_entity else {
         return NodeRemoveResponse::failure(format!(
-            "Node '{}' not found in node stack",
-            request.node_name
+            "Node '{}:{}' not found in node stack",
+            request.node_name, request.tag
         ))
         .encode();
-    }
+    };
+
+    let matching_entities = vec![matching_entity];
 
     #[derive(Debug, Clone)]
     struct RemovalTarget {

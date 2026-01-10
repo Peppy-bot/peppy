@@ -4,21 +4,26 @@ use std::time::Duration;
 use master_node::encoding::NodeRemoveRequest;
 use tracing::info;
 
-use super::NodeName;
 use crate::context::{AppContext, DaemonState};
 use crate::error::{Error, Result};
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub fn remove_node(ctx: &Arc<AppContext>, node_name: NodeName, stop_instances: bool) -> Result<()> {
+pub fn remove_node(
+    ctx: &Arc<AppContext>,
+    node_name: String,
+    tag: String,
+    stop_instances: bool,
+) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(remove_node_async(ctx, node_name, stop_instances))
+    rt.block_on(remove_node_async(ctx, node_name, tag, stop_instances))
 }
 
 async fn remove_node_async(
     ctx: &Arc<AppContext>,
-    node_name: NodeName,
+    node_name: String,
+    tag: String,
     stop_instances: bool,
 ) -> Result<()> {
     let daemon_state = DaemonState::read().map_err(|e| {
@@ -30,10 +35,8 @@ async fn remove_node_async(
     let master_node_name = daemon_state.master_node_name;
 
     info!(
-        "Calling node_remove for '{}' on master '{}' (stop_instances={})...",
-        node_name.as_str(),
-        master_node_name,
-        stop_instances
+        "Calling node_remove for '{}:{}' on master '{}' (stop_instances={})...",
+        node_name, tag, master_node_name, stop_instances
     );
 
     ctx.connect().await?;
@@ -42,7 +45,7 @@ async fn remove_node_async(
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
     let remove_request =
-        NodeRemoveRequest::new(node_name.as_str()).with_stop_instances(stop_instances);
+        NodeRemoveRequest::new(&node_name, &tag).with_stop_instances(stop_instances);
     let remove_response = remove_request
         .poll(
             messenger_handle,
@@ -64,6 +67,6 @@ async fn remove_node_async(
         ));
     }
 
-    info!("Removed node '{}'", node_name.as_str());
+    info!("Removed node '{}:{}'", node_name, tag);
     Ok(())
 }
