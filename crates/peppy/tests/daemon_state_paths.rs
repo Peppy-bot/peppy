@@ -1,5 +1,6 @@
+use config::consts::DAEMON_STATE_FILE_ENV;
 use config::consts::{AppEnv, set_app_env};
-use peppy::context::{DAEMON_STATE_FILE_ENV, DaemonState};
+use peppy::context::DaemonState;
 
 struct EnvGuard {
     key: &'static str,

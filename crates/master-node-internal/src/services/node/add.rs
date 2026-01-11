@@ -3,7 +3,7 @@ use crate::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddResult};
 use crate::names;
 use bytes::Bytes;
 use config::consts::{
-    AppEnv, NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH, app_env,
+    NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH, peppy_data_dir,
 };
 use config::node::NodeConfigParser;
 use config::runtime::RuntimeConfig;
@@ -18,23 +18,6 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::debug;
-
-/// Returns the base directory for storing copied node folders.
-/// In production: ~/.peppy/nodes
-/// In development: /tmp/.peppy/nodes
-fn nodes_storage_dir() -> PathBuf {
-    match app_env() {
-        AppEnv::Prod => {
-            let home = std::env::var_os("HOME")
-                .or_else(|| std::env::var_os("USERPROFILE"))
-                .map(PathBuf::from);
-            home.unwrap_or_else(std::env::temp_dir)
-                .join(".peppy")
-                .join("nodes")
-        }
-        AppEnv::Dev => std::env::temp_dir().join(".peppy").join("nodes"),
-    }
-}
 
 fn generate_random_id() -> String {
     let mut rng = rand::rng();
@@ -176,7 +159,7 @@ fn verify_node_config_fingerprint(node_dir: &Path) -> std::result::Result<(), St
 ///
 /// Returns the path to the copied folder.
 fn copy_node_to_storage(from_dir: &Path, node_name: &str, node_tag: &str) -> Result<PathBuf> {
-    let storage_dir = nodes_storage_dir();
+    let storage_dir = peppy_data_dir().join("nodes");
     let random_id = generate_random_id();
     let folder_name = format!("{}_{}_{}", node_name, node_tag, random_id);
     let dest_path = storage_dir.join(&folder_name);

@@ -9,7 +9,12 @@
       "brain"
     ],
     // Eventually in the future if we want to containarize the node
-    // container_file: "./Dockerfile",
+    // container: {
+    //   image_file: "./Dockerfile",
+    //   resources: {
+    //     max_memory_mb: 512,
+    //   },
+    // },
     start_cmd: [
       "cargo",
       "run",
@@ -35,13 +40,5 @@
         }
       ]
     },
-  },
-  // In the future if we put nodes in containers we might want to be able to control resources
-  // resources: {
-  //   // This is the resource per instance
-  //   max_memory_mb: 256,
-  // },
-  logging: {
-    min_level: "info",
   }
 }

@@ -9,6 +9,7 @@ pub const PEPPYLIB_OUTPUT_PATH: &str = ".peppy/libs/peppygen/crates/peppylib";
 pub const DEFAULT_ZENOH_HOST: &str = "127.0.0.1";
 // 7447 is the default port but we avoid using it to avoid conflicts with other services using Zenoh
 pub const DEFAULT_ZENOH_PORT: u16 = 7448;
+pub const DAEMON_STATE_FILE_ENV: &str = "PEPPY_DAEMON_STATE_FILE";
 
 pub const ALLOWED_CONFIG_CHARS: &str =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
@@ -39,5 +40,20 @@ pub fn logs_root_dir() -> &'static str {
     match app_env() {
         AppEnv::Dev => ".peppy/logs/",
         AppEnv::Prod => "/var/log/peppy/", // In prod the root dir is `/` on the system
+    }
+}
+
+/// Returns the base peppy data directory.
+/// In production: ~/.peppy
+/// In development: /tmp/.peppy
+pub fn peppy_data_dir() -> std::path::PathBuf {
+    match app_env() {
+        AppEnv::Prod => {
+            let home = std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(std::path::PathBuf::from);
+            home.unwrap_or_else(std::env::temp_dir).join(".peppy")
+        }
+        AppEnv::Dev => std::env::temp_dir().join(".peppy"),
     }
 }

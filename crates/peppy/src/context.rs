@@ -1,4 +1,4 @@
-use config::consts::{AppEnv, app_env};
+use config::consts::peppy_data_dir;
 use peppylib::MessengerHandle;
 use pmi::Messenger;
 use serde::{Deserialize, Serialize};
@@ -58,7 +58,6 @@ impl Default for AppContext {
     }
 }
 
-pub const DAEMON_STATE_FILE_ENV: &str = "PEPPY_DAEMON_STATE_FILE";
 const DAEMON_STATE_FILENAME: &str = "daemon_state.json";
 
 /// Persistent state for the peppy daemon.
@@ -84,7 +83,7 @@ impl DaemonState {
     }
 
     pub fn write(&self) -> Result<PathBuf, io::Error> {
-        let path = Self::env_state_file_path().unwrap_or_else(Self::default_state_file_path);
+        let path = Self::env_state_file_path().unwrap_or_else(|| Self::default_state_file_path());
         Self::write_to(&path, self)?;
         Ok(path)
     }
@@ -135,79 +134,16 @@ impl DaemonState {
         serde_json::from_str(&content).map_err(|e| io::Error::other(e.to_string()))
     }
 
-    pub fn remove() -> Result<(), io::Error> {
-        if let Some(path) = Self::env_state_file_path() {
-            return match fs::remove_file(&path) {
-                Ok(()) => Ok(()),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-                Err(e) => Err(e),
-            };
-        }
-
-        let mut states: Vec<(PathBuf, DaemonState)> = Vec::new();
-        for path in Self::candidate_state_file_paths() {
-            if let Ok(state) = Self::read_from(&path) {
-                states.push((path, state));
-            }
-        }
-
-        let Some((path, _)) = Self::select_best_state(states)? else {
-            return Ok(());
-        };
-
-        match fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
-        }
-
-        let state_root = Self::state_root_dir();
-        if let Some(parent) = path
-            .parent()
-            .filter(|parent| *parent != state_root.as_path())
-        {
-            let _ = fs::remove_dir(parent);
-        }
-
-        Ok(())
-    }
-
     fn env_state_file_path() -> Option<PathBuf> {
-        std::env::var_os(DAEMON_STATE_FILE_ENV).map(PathBuf::from)
-    }
-
-    fn state_root_dir() -> PathBuf {
-        match app_env() {
-            AppEnv::Prod => Self::prod_state_root_dir(),
-            AppEnv::Dev => Self::dev_state_root_dir(),
-        }
-    }
-
-    fn prod_state_root_dir() -> PathBuf {
-        let home = std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .map(PathBuf::from);
-
-        home.unwrap_or_else(std::env::temp_dir).join(".peppy")
-    }
-
-    fn dev_state_root_dir() -> PathBuf {
-        std::env::temp_dir().join("peppy")
+        std::env::var_os(config::consts::DAEMON_STATE_FILE_ENV).map(PathBuf::from)
     }
 
     fn default_state_file_path() -> PathBuf {
-        Self::state_root_dir().join(DAEMON_STATE_FILENAME)
-    }
-
-    /// Legacy helper for callers that want per-master state files.
-    pub fn state_file_path_for_master_node(master_node_name: &str) -> PathBuf {
-        Self::state_root_dir()
-            .join(master_node_name)
-            .join(DAEMON_STATE_FILENAME)
+        peppy_data_dir().join(DAEMON_STATE_FILENAME)
     }
 
     fn candidate_state_file_paths() -> Vec<PathBuf> {
-        let root = Self::state_root_dir();
+        let root = peppy_data_dir();
         let mut paths = vec![Self::default_state_file_path()];
 
         if let Ok(entries) = fs::read_dir(&root) {
@@ -252,7 +188,7 @@ impl DaemonState {
                     io::ErrorKind::Other,
                     format!(
                         "Multiple running peppy daemons detected. Set {} to select one.",
-                        DAEMON_STATE_FILE_ENV
+                        config::consts::DAEMON_STATE_FILE_ENV
                     ),
                 ));
             }

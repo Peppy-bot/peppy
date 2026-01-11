@@ -18,10 +18,6 @@ pub const STUB_NODE_CONFIG: &str = r#"{
     name: "generated_node",
     tag: "0.1.0",
     start_cmd: ["cargo", "run", "--release"]
-  },
-  logging: {
-    min_level: "info",
-    format: "text"
   }
 }
 "#;

@@ -19,10 +19,6 @@ pub struct NodeConfig {
     pub parameters: NodeArguments,
     #[serde(default)]
     pub interfaces: Interfaces,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resources: Option<Resources>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub logging: Option<Logging>,
 }
 
 /// Validated node name. Lowercase letters, digits, '_' and '-' only.
@@ -481,59 +477,6 @@ pub struct ActionTopicEndpoint {
 
 fn default_action_service_qos_profile() -> QoSProfile {
     QoSProfile::Reliable
-}
-
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Resources {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_memory_mb: Option<u32>,
-}
-
-#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum LogFormat {
-    #[default]
-    Text,
-    Json,
-}
-
-impl From<String> for LogFormat {
-    fn from(s: String) -> Self {
-        match s.as_str() {
-            "json" => LogFormat::Json,
-            _ => LogFormat::Text, // Default to Text for any other value
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Logging {
-    #[serde(default = "default_log_level")]
-    pub min_level: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub file_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_file_size_mb: Option<u32>,
-    #[serde(default)]
-    pub format: LogFormat,
-}
-
-impl Default for Logging {
-    fn default() -> Self {
-        Self {
-            min_level: default_log_level(),
-            file_name: None,
-            max_file_size_mb: None,
-            format: LogFormat::default(),
-        }
-    }
-}
-
-// Default value functions
-fn default_log_level() -> String {
-    "info".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

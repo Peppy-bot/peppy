@@ -267,10 +267,6 @@ fn node_run_command_with_args_succeeds() {
         }
       ],
     }
-  },
-  logging: {
-    min_level: "info",
-    format: "text"
   }
 }
 "#;
