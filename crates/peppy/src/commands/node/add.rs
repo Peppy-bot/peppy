@@ -1,5 +1,5 @@
 use config::node::NodeConfigParser;
-use master_node::encoding::NodeAddRequest;
+use master_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddResult};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,9 +10,10 @@ use crate::context::{AppContext, DaemonState};
 use crate::error::{Error, Result};
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
-// `node_add` can run an arbitrary `add_cmd` (e.g. `cargo build`) and copy build artifacts into
-// the daemon's storage dir, so it may legitimately take much longer than typical RPCs.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(900); // 15min
+// Timeout for the goal to be accepted (should be fast)
+const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
+// Timeout for the result (the actual add operation can take a long time)
+const RESULT_TIMEOUT: Duration = Duration::from_secs(900); // 15min
 
 pub fn add_node(
     ctx: &Arc<AppContext>,
@@ -71,21 +72,60 @@ async fn add_node_async(
         .messenger_handle()
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
-    let add_request = NodeAddRequest::new(from_dir);
-    let add_response = add_request
-        .poll(
+    // Send the goal to start the add action
+    let add_goal = NodeAddGoal::new(from_dir);
+    let mut action_handle = add_goal
+        .send_goal(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
-            REQUEST_TIMEOUT,
+            Some(&master_node_name),
+            None,
+            GOAL_TIMEOUT,
         )
         .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_add service: {}", e)))?;
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_add goal: {}", e)))?;
 
-    if !add_response.success {
+    // Listen for feedback (streaming output) in a separate task
+    let feedback_handle = tokio::spawn(async move {
+        loop {
+            match action_handle.on_next_feedback().await {
+                Ok(msg) => {
+                    let payload = msg.payload();
+                    if let Ok(feedback) = NodeAddFeedback::decode(&payload.to_bytes()) {
+                        // Print the output line
+                        if feedback.is_stderr() {
+                            eprintln!("{}", feedback.line);
+                        } else {
+                            println!("{}", feedback.line);
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Feedback channel closed, action is complete
+                    break;
+                }
+            }
+        }
+        action_handle
+    });
+
+    // Wait a bit for feedback to start flowing, then request the result
+    // We use a timeout-based approach to poll for the result
+    let action_handle = tokio::time::timeout(RESULT_TIMEOUT, feedback_handle)
+        .await
+        .map_err(|_| Error::ExecutionFailed("Timeout waiting for node_add feedback".to_string()))?
+        .map_err(|e| Error::ExecutionFailed(format!("Feedback task failed: {}", e)))?;
+
+    // Request the result
+    let add_result =
+        NodeAddResult::request_result(messenger_handle, &action_handle, RESULT_TIMEOUT)
+            .await
+            .map_err(|e| Error::ExecutionFailed(format!("Failed to get node_add result: {}", e)))?;
+
+    if !add_result.success {
         return Err(Error::ExecutionFailed(
-            add_response
+            add_result
                 .error_message
                 .unwrap_or_else(|| "node_add failed with no error message".to_string()),
         ));
@@ -94,7 +134,7 @@ async fn add_node_async(
     info!("Added node {}:{} to the node stack", node_name, node_tag);
     info!(
         "Snapshot path: {}",
-        add_response.snapshot_path.to_string_lossy()
+        add_result.snapshot_path.to_string_lossy()
     );
 
     if !run {

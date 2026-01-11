@@ -11,7 +11,7 @@ mod reset;
 pub use info::{InfoRequest, InfoResponse};
 pub use launch::{LaunchRequest, LaunchResponse};
 pub use node::{
-    add::NodeAddRequest, add::NodeAddResponse, generate::NodeGenerateRequest,
+    add::NodeAddFeedback, add::NodeAddGoal, add::NodeAddResult, generate::NodeGenerateRequest,
     generate::NodeGenerateResponse, init::NodeInitRequest, init::NodeInitResponse,
     list::NodeListRequest, list::NodeListResponse, remove::NodeRemoveRequest,
     remove::NodeRemoveResponse, start::NodeStartRequest, start::NodeStartResponse,

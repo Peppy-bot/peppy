@@ -2,21 +2,71 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, create_test_node_with_name, start_master_node};
 use config::consts::NODE_CONFIG_FILE;
-use master_node::encoding::NodeAddRequest;
+use master_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddResult};
+use peppylib::MessengerHandle;
 use std::path::Path;
 use std::time::Duration;
 
 const ADD_CMD_MARKER_FILE: &str = "add_cmd_executed.marker";
+const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
+const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
 
 fn write_peppy_json5(dir: &Path, content: &str) {
     std::fs::write(dir.join(NODE_CONFIG_FILE), content).expect("failed to write peppy.json5");
+}
+
+/// Helper function to send a node_add goal and wait for the result.
+/// This wraps the action pattern for simpler test usage.
+async fn send_node_add_and_wait(
+    messenger: &MessengerHandle,
+    master_node_name: &str,
+    from_dir: &Path,
+) -> Result<NodeAddResult, String> {
+    let goal = NodeAddGoal::new(from_dir);
+    let mut action_handle = goal
+        .send_goal(
+            messenger,
+            master_node_name,
+            CALLER_INSTANCE_ID,
+            Some(master_node_name),
+            None,
+            GOAL_TIMEOUT,
+        )
+        .await
+        .map_err(|e| format!("Failed to send goal: {}", e))?;
+
+    // TODO At least one test should test if the stdout and stderr feedback are correctly being sent here
+    // Collect feedback (optional, we drain it to completion)
+    let feedback_handle = tokio::spawn(async move {
+        let mut feedback_lines = Vec::new();
+        loop {
+            match action_handle.on_next_feedback().await {
+                Ok(msg) => {
+                    let payload = msg.payload();
+                    if let Ok(feedback) = NodeAddFeedback::decode(&payload.to_bytes()) {
+                        feedback_lines.push(feedback);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        (action_handle, feedback_lines)
+    });
+
+    let (action_handle, _feedback) = tokio::time::timeout(RESULT_TIMEOUT, feedback_handle)
+        .await
+        .map_err(|_| "Timeout waiting for feedback".to_string())?
+        .map_err(|e| format!("Feedback task failed: {}", e))?;
+
+    NodeAddResult::request_result(messenger, &action_handle, RESULT_TIMEOUT)
+        .await
+        .map_err(|e| format!("Failed to get result: {}", e))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_success() {
     const TARGET_NODE_NAME: &str = "runnable_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
-    const TARGET_INSTANCE_ID: &str = "runnable_instance";
 
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
@@ -24,24 +74,18 @@ async fn listen_for_node_add_success() {
     // Use a pre-built test node to avoid compilation delays during the test
     let node_dir = create_test_node_with_name(TARGET_NODE_NAME, TARGET_NODE_TAG);
 
-    let node_add_request = NodeAddRequest::new(&node_dir).with_instance_id(TARGET_INSTANCE_ID);
-    // Longer timeout to account for add_cmd (cargo build) execution on copied folder,
-    // which may need to recompile due to path changes or wait for cargo global lock
-    let add_response = node_add_request
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(120),
-        )
-        .await
-        .expect("node_add request should succeed");
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        &node_dir,
+    )
+    .await
+    .expect("node_add request should succeed");
 
     assert!(
-        add_response.success,
+        add_result.success,
         "node_add should succeed, got error: {:?}",
-        add_response.error_message
+        add_result.error_message
     );
 
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
@@ -54,7 +98,7 @@ async fn listen_for_node_add_success() {
     assert_eq!(entity.instances().len(), 0);
 
     // Verify the node was copied to the peppy storage directory
-    let snapshot_path = add_response.snapshot_path.as_path();
+    let snapshot_path = add_result.snapshot_path.as_path();
     let root_path = entity.root_path();
     assert_eq!(
         snapshot_path, root_path,
@@ -97,7 +141,6 @@ async fn listen_for_node_add_success() {
 async fn listen_for_node_add_no_config_found() {
     const TARGET_NODE_NAME: &str = "runnable_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
-    const TARGET_INSTANCE_ID: &str = "runnable_instance";
 
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
@@ -108,21 +151,16 @@ async fn listen_for_node_add_no_config_found() {
     std::fs::remove_file(node_dir.join(NODE_CONFIG_FILE))
         .expect("failed to remove peppy.json5 config file");
 
-    let node_add_request =
-        NodeAddRequest::new(node_dir.as_path()).with_instance_id(TARGET_INSTANCE_ID);
-    let add_response = node_add_request
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_add request should succeed");
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        &node_dir,
+    )
+    .await
+    .expect("node_add request should succeed");
 
     assert!(
-        !add_response.success,
+        !add_result.success,
         "node_add should not succeed, the config file is missing",
     );
 
@@ -141,30 +179,26 @@ async fn listen_for_node_add_invalid_config_fails() {
     let peppy_json5 = r#"{ manifest: [unclosed"#;
     write_peppy_json5(source_dir.path(), peppy_json5);
 
-    let node_add_request = NodeAddRequest::new(source_dir.path()).with_instance_id("bad_node");
-    let add_response = node_add_request
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_add request should complete");
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir.path(),
+    )
+    .await
+    .expect("node_add request should complete");
 
     assert!(
-        !add_response.success,
+        !add_result.success,
         "node_add should fail for invalid json5"
     );
     assert!(
-        add_response
+        add_result
             .error_message
             .as_ref()
             .map(|msg| msg.contains("Failed to parse node config"))
             .unwrap_or(false),
         "error message should indicate parse failure, got: {:?}",
-        add_response.error_message
+        add_result.error_message
     );
 
     assert_eq!(node_stack.len(), 1, "only root should exist");
@@ -188,30 +222,26 @@ async fn listen_for_node_add_no_start_cmd_fails() {
     }"#;
     write_peppy_json5(source_dir.path(), peppy_json5);
 
-    let node_add_request = NodeAddRequest::new(source_dir.path());
-    let add_response = node_add_request
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_add request should complete");
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir.path(),
+    )
+    .await
+    .expect("node_add request should complete");
 
     assert!(
-        !add_response.success,
+        !add_result.success,
         "node_add should fail when start_cmd is missing"
     );
     assert!(
-        add_response
+        add_result
             .error_message
             .as_ref()
             .map(|msg| msg.contains("start_cmd"))
             .unwrap_or(false),
         "error message should mention start_cmd, got: {:?}",
-        add_response.error_message
+        add_result.error_message
     );
 
     assert_eq!(node_stack.len(), 1, "only root should exist");
@@ -249,39 +279,35 @@ async fn listen_for_node_add_dependency_not_resolved() {
     }"#;
     write_peppy_json5(source_dir.path(), peppy_json5);
 
-    let node_add_request = NodeAddRequest::new(source_dir.path()).with_instance_id("consumer_1");
-    let add_response = node_add_request
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_add request should complete");
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir.path(),
+    )
+    .await
+    .expect("node_add request should complete");
 
     assert!(
-        !add_response.success,
+        !add_result.success,
         "node_add should fail when dependencies are missing"
     );
     assert!(
-        add_response
+        add_result
             .error_message
             .as_ref()
             .map(|msg| msg.contains("Failed to add node"))
             .unwrap_or(false),
         "error message should indicate add failure, got: {:?}",
-        add_response.error_message
+        add_result.error_message
     );
     assert!(
-        add_response
+        add_result
             .error_message
             .as_ref()
             .map(|msg| msg.contains("does not exist in the stack"))
             .unwrap_or(false),
         "error message should indicate missing dependency, got: {:?}",
-        add_response.error_message
+        add_result.error_message
     );
 
     assert_eq!(node_stack.len(), 1, "only root should exist");
@@ -314,17 +340,13 @@ async fn listen_for_node_add_same_node_same_tags_fails() {
     );
     write_peppy_json5(source_dir_v1.path(), &peppy_json5_v1);
 
-    let add_v1 = NodeAddRequest::new(source_dir_v1.path())
-        .with_instance_id("mismatch_instance_1")
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_add v1 should complete");
+    let add_v1 = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir_v1.path(),
+    )
+    .await
+    .expect("node_add v1 should complete");
 
     assert!(
         add_v1.success,
@@ -357,17 +379,13 @@ async fn listen_for_node_add_same_node_same_tags_fails() {
     );
     write_peppy_json5(source_dir_v2.path(), &peppy_json5_v2);
 
-    let add_v2 = NodeAddRequest::new(source_dir_v2.path())
-        .with_instance_id("mismatch_instance_2")
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_add v2 should complete");
+    let add_v2 = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir_v2.path(),
+    )
+    .await
+    .expect("node_add v2 should complete");
 
     assert!(
         !add_v2.success,
@@ -417,17 +435,13 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
     );
     write_peppy_json5(source_dir_v1.path(), &peppy_json5_v1);
 
-    let add_v1 = NodeAddRequest::new(source_dir_v1.path())
-        .with_instance_id("versioned_instance_1")
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_add v1 should complete");
+    let add_v1 = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir_v1.path(),
+    )
+    .await
+    .expect("node_add v1 should complete");
 
     assert!(
         add_v1.success,
@@ -447,17 +461,13 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
     );
     write_peppy_json5(source_dir_v2.path(), &peppy_json5_v2);
 
-    let add_v2 = NodeAddRequest::new(source_dir_v2.path())
-        .with_instance_id("versioned_instance_2")
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_add v2 should complete");
+    let add_v2 = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir_v2.path(),
+    )
+    .await
+    .expect("node_add v2 should complete");
 
     assert!(
         add_v2.success,
@@ -512,22 +522,18 @@ async fn listen_for_node_add_copies_files_to_storage() {
     );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let node_add_request = NodeAddRequest::new(source_dir.path());
-    let add_response = node_add_request
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_add request should succeed");
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir.path(),
+    )
+    .await
+    .expect("node_add request should succeed");
 
     assert!(
-        add_response.success,
+        add_result.success,
         "node_add should succeed, got error: {:?}",
-        add_response.error_message
+        add_result.error_message
     );
 
     let entity = node_stack
@@ -536,7 +542,7 @@ async fn listen_for_node_add_copies_files_to_storage() {
 
     let copied_path = entity.root_path();
     assert_eq!(
-        add_response.snapshot_path.as_path(),
+        add_result.snapshot_path.as_path(),
         copied_path,
         "snapshot_path should match copied node path"
     );
@@ -586,22 +592,18 @@ async fn listen_for_node_add_runs_add_cmd() {
     );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let node_add_request = NodeAddRequest::new(source_dir.path());
-    let add_response = node_add_request
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_add request should succeed");
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir.path(),
+    )
+    .await
+    .expect("node_add request should succeed");
 
     assert!(
-        add_response.success,
+        add_result.success,
         "node_add should succeed, got error: {:?}",
-        add_response.error_message
+        add_result.error_message
     );
 
     let entity = node_stack
@@ -657,30 +659,26 @@ async fn listen_for_node_add_add_cmd_failure_fails_add() {
     );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let node_add_request = NodeAddRequest::new(source_dir.path());
-    let add_response = node_add_request
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_add request should complete");
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir.path(),
+    )
+    .await
+    .expect("node_add request should complete");
 
     assert!(
-        !add_response.success,
+        !add_result.success,
         "node_add should fail when add_cmd fails"
     );
     assert!(
-        add_response
+        add_result
             .error_message
             .as_ref()
             .map(|msg| msg.contains("add_cmd failed"))
             .unwrap_or(false),
         "error message should mention add_cmd failure, got: {:?}",
-        add_response.error_message
+        add_result.error_message
     );
 
     // Node should not be in the stack
@@ -717,30 +715,26 @@ async fn listen_for_node_add_add_cmd_nonzero_exit_fails_add() {
     );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let node_add_request = NodeAddRequest::new(source_dir.path());
-    let add_response = node_add_request
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_add request should complete");
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir.path(),
+    )
+    .await
+    .expect("node_add request should complete");
 
     assert!(
-        !add_response.success,
+        !add_result.success,
         "node_add should fail when add_cmd exits with non-zero status"
     );
     assert!(
-        add_response
+        add_result
             .error_message
             .as_ref()
             .map(|msg| msg.contains("add_cmd failed"))
             .unwrap_or(false),
         "error message should mention add_cmd failure, got: {:?}",
-        add_response.error_message
+        add_result.error_message
     );
 
     // Node should not be in the stack
