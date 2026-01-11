@@ -123,7 +123,8 @@ async fn add_node_async(
         }
         let remaining = deadline - now;
         let poll_timeout = Duration::from_millis(200).min(remaining);
-        match ActionMessenger::request_result(messenger_handle, &action_handle, poll_timeout).await {
+        match ActionMessenger::request_result(messenger_handle, &action_handle, poll_timeout).await
+        {
             Ok(msg) => {
                 let payload = msg.payload().to_bytes();
                 match NodeAddResult::decode(&payload) {

@@ -1,10 +1,14 @@
 #![allow(dead_code)]
 
 use config::consts::{DEFAULT_ZENOH_HOST, NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::node::QoSProfile;
 use config::peppy_config::BuildSystem;
+use master_node::encoding::{NodeAddGoal, NodeAddResult};
+use master_node::names;
 use master_node::{MasterNode, MasterNodeArguments};
 use node_stack::NodeStack;
 use peppylib::messaging::MessengerHandle;
+use peppylib::{ActionMessenger, PeppyError};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter, start_zenohd_process};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -15,6 +19,66 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
+
+pub async fn send_node_add_and_wait(
+    messenger: &MessengerHandle,
+    master_node_name: &str,
+    from_dir: &Path,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+) -> Result<NodeAddResult, String> {
+    let goal = NodeAddGoal::new(from_dir);
+    let goal_payload = goal
+        .encode()
+        .map_err(|e| format!("Failed to encode goal: {}", e))?;
+
+    let action_handle = ActionMessenger::send_goal(
+        messenger,
+        master_node_name,
+        CALLER_INSTANCE_ID,
+        master_node_name,
+        names::NODE_ADD_ACTION,
+        Some(master_node_name),
+        None,
+        goal_payload,
+        QoSProfile::default(),
+        goal_timeout,
+    )
+    .await
+    .map_err(|e| format!("Failed to send goal: {}", e))?;
+
+    let deadline = tokio::time::Instant::now() + result_timeout;
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err("Timeout waiting for node_add result".to_string());
+        }
+
+        let remaining = deadline - now;
+        let poll_timeout = Duration::from_millis(200).min(remaining);
+
+        match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
+            Ok(msg) => {
+                let payload = msg.payload().to_bytes();
+                match NodeAddResult::decode(&payload) {
+                    Ok(result) => return Ok(result),
+                    Err(err) => {
+                        let pending = std::str::from_utf8(payload.as_ref())
+                            .map(|text| text.starts_with("result pending"))
+                            .unwrap_or(false);
+                        if !pending {
+                            return Err(format!("Failed to decode result: {}", err));
+                        }
+                    }
+                }
+            }
+            Err(PeppyError::ActionResultTimeout { .. }) => {}
+            Err(err) => return Err(format!("Failed to get result: {}", err)),
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
 
 /// Creates a fresh test node in a new temp directory.
 /// Each call creates a completely new node with its own peppygen generation
