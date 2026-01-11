@@ -9,7 +9,6 @@ use std::time::Duration;
 async fn listen_for_node_list_returns_succeeds() {
     const TARGET_NODE_NAME: &str = "list_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
-    const TARGET_INSTANCE_ID: &str = "list_instance";
 
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
@@ -105,7 +104,6 @@ async fn listen_for_node_list_returns_succeeds() {
 async fn listen_for_node_list_returns_dot_graph() {
     const TARGET_NODE_NAME: &str = "list_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
-    const TARGET_INSTANCE_ID: &str = "list_instance";
 
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();

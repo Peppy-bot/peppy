@@ -241,8 +241,7 @@ fn main() -> Result<()> {
     tag: "{node_tag}",
     // Avoid `add_cmd` build step here to make the `add` tests faster
     add_cmd: [
-        "exit",
-        "0"
+        "true"
     ],
     start_cmd: [
       "cargo",
@@ -341,7 +340,7 @@ pub async fn start_master_node_with_zenoh_messenger() -> StartedMasterNode {
     let (shared_messenger, temp_dir) = create_zenoh_messenger().await;
     // When launching real nodes we often spawn `cargo run`, which may take a while due to
     // compilation or cargo's global package-cache lock.
-    let node_startup_timeout = Duration::from_secs(30);
+    let node_startup_timeout = Duration::from_secs(180);
     let node_start_health_timeout = Duration::from_secs(30);
     start_master_node_with_messenger(
         shared_messenger,
