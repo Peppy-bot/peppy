@@ -44,6 +44,7 @@ async fn listen_for_node_start_success() {
         // Longer timeout to account for add_cmd execution and copying the test node folder,
         // which may include build artifacts.
         Duration::from_secs(120),
+        None,
     )
     .await
     .expect("node_add should succeed");
@@ -143,6 +144,7 @@ async fn listen_for_node_start_timeout() {
         temp_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
+        None,
     )
     .await
     .expect("node_add should succeed");

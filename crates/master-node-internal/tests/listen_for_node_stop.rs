@@ -41,6 +41,7 @@ async fn listen_for_node_stop_success() {
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
+        None,
     )
     .await
     .expect("node_add should complete");

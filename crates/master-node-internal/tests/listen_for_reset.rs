@@ -49,6 +49,7 @@ async fn listen_for_node_reset_clears_node_stack() {
         source_dir_a.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
+        None,
     )
     .await
     .expect("node_add should complete");
@@ -79,6 +80,7 @@ async fn listen_for_node_reset_clears_node_stack() {
         source_dir_b.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
+        None,
     )
     .await
     .expect("node_add should complete");

@@ -39,6 +39,7 @@ async fn listen_for_node_remove_success() {
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
+        None,
     )
     .await
     .expect("node_add should complete");
@@ -159,6 +160,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
+        None,
     )
     .await
     .expect("node_add should complete");
@@ -253,6 +255,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
+        None,
     )
     .await
     .expect("node_add should complete");
