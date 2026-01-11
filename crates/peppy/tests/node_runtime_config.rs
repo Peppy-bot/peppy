@@ -160,7 +160,7 @@ fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_path,
+            node_dir: node_path.clone(),
             start: false,
             args: Vec::new(),
             instance_id: None,
