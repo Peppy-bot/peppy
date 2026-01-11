@@ -158,24 +158,21 @@ fn copy_node_to_storage(from_dir: &Path, node_name: &str, node_tag: &str) -> Res
     Ok(dest_path)
 }
 
-// TODO: Probably better as an enum?
 /// State for tracking the current node add action.
-struct NodeAddActionState {
-    /// The result of the action, populated when complete.
-    result: Option<NodeAddResult>,
-    /// Whether the action is currently running.
-    is_running: bool,
-    /// Whether the final result has been sent to a requester.
-    result_sent: bool,
+enum NodeAddActionState {
+    /// No action is currently running.
+    Idle,
+    /// An action is currently running.
+    Running,
+    /// The action completed and the result is ready to be sent.
+    Completed { result: NodeAddResult },
+    /// The result has been sent to the requester.
+    ResultSent { result: NodeAddResult },
 }
 
 impl Default for NodeAddActionState {
     fn default() -> Self {
-        Self {
-            result: None,
-            is_running: false,
-            result_sent: false,
-        }
+        Self::Idle
     }
 }
 
@@ -263,13 +260,8 @@ async fn run_node_add_action_loop(
                             match result_result {
                                 Ok(true) => {
                                     // Only reset and accept a new goal after we've delivered the final result.
-                                    let should_reset = {
-                                        let state_guard = state.lock().await;
-                                        !state_guard.is_running && state_guard.result_sent
-                                    };
-
-                                    if should_reset {
-                                        let mut state_guard = state.lock().await;
+                                    let mut state_guard = state.lock().await;
+                                    if matches!(*state_guard, NodeAddActionState::ResultSent { .. }) {
                                         *state_guard = NodeAddActionState::default();
                                         break;
                                     }
@@ -305,22 +297,15 @@ async fn handle_goal_request(
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    // Check if already running
+    // Check if already running and mark as running if not
     {
-        let state_guard = state.lock().await;
-        if state_guard.is_running {
+        let mut state_guard = state.lock().await;
+        if matches!(*state_guard, NodeAddActionState::Running) {
             return Ok(Bytes::from_static(
                 b"goal rejected: action already in progress",
             ));
         }
-    }
-
-    // Mark as running
-    {
-        let mut state_guard = state.lock().await;
-        state_guard.is_running = true;
-        state_guard.result = None;
-        state_guard.result_sent = false;
+        *state_guard = NodeAddActionState::Running;
     }
 
     let goal = match NodeAddGoal::decode(&payload.as_bytes()) {
@@ -328,9 +313,7 @@ async fn handle_goal_request(
         Err(e) => {
             let result = NodeAddResult::failure(format!("Failed to decode goal: {}", e));
             let mut state_guard = state.lock().await;
-            state_guard.result = Some(result);
-            state_guard.is_running = false;
-            state_guard.result_sent = false;
+            *state_guard = NodeAddActionState::Completed { result };
             return Ok(Bytes::from_static(b"goal rejected: invalid payload"));
         }
     };
@@ -346,9 +329,7 @@ async fn handle_goal_request(
     tokio::spawn(async move {
         let result = process_node_add(goal, node_stack, feedback_publisher_clone).await;
         let mut state_guard = state_clone.lock().await;
-        state_guard.result = Some(result);
-        state_guard.is_running = false;
-        state_guard.result_sent = false;
+        *state_guard = NodeAddActionState::Completed { result };
     });
 
     Ok(Bytes::from_static(b"goal accepted"))
@@ -420,7 +401,7 @@ async fn handle_cancel_request(
     // For now, we don't support cancellation of the add operation
     // Just acknowledge the request
     let state_guard = state.lock().await;
-    if state_guard.is_running {
+    if matches!(*state_guard, NodeAddActionState::Running) {
         Ok(Bytes::from_static(
             b"cancel acknowledged (operation cannot be interrupted)",
         ))
@@ -437,15 +418,15 @@ async fn handle_result_request(
 ) -> PeppyResult<Bytes> {
     let mut state_guard = state.lock().await;
 
-    if state_guard.is_running {
-        // Still running, return a pending status
-        return Ok(Bytes::from_static(
-            b"result pending: operation still in progress",
-        ));
-    }
-
-    match state_guard.result.as_ref() {
-        Some(result) => {
+    match std::mem::replace(&mut *state_guard, NodeAddActionState::Idle) {
+        NodeAddActionState::Running => {
+            // Still running, restore state and return pending status
+            *state_guard = NodeAddActionState::Running;
+            Ok(Bytes::from_static(
+                b"result pending: operation still in progress",
+            ))
+        }
+        NodeAddActionState::Completed { result } => {
             let payload =
                 result
                     .encode()
@@ -453,9 +434,21 @@ async fn handle_result_request(
                         identifier: "node_add_result".to_string(),
                         reason: format!("Failed to encode result: {}", e),
                     })?;
-            state_guard.result_sent = true;
+            *state_guard = NodeAddActionState::ResultSent { result };
             Ok(payload)
         }
-        None => Ok(Bytes::from_static(b"result pending: no result available")),
+        NodeAddActionState::ResultSent { result } => {
+            // Result was already sent, restore state and return it again
+            let payload =
+                result
+                    .encode()
+                    .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                        identifier: "node_add_result".to_string(),
+                        reason: format!("Failed to encode result: {}", e),
+                    })?;
+            *state_guard = NodeAddActionState::ResultSent { result };
+            Ok(payload)
+        }
+        NodeAddActionState::Idle => Ok(Bytes::from_static(b"result pending: no result available")),
     }
 }
