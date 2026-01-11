@@ -3,8 +3,8 @@ mod common;
 use common::{
     CALLER_INSTANCE_ID, create_test_node_with_name, send_node_add_and_wait, start_master_node,
     start_master_node_with_health_timeout, start_master_node_with_zenoh_messenger,
+    write_peppy_json5,
 };
-use config::consts::NODE_CONFIG_FILE;
 use config::node::Name as NodeName;
 use config::peppy_config::{DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
@@ -18,8 +18,7 @@ use tempfile::TempDir;
 /// Creates a temp directory with a peppy.json5 file
 fn create_node_config_dir(peppy_json5: &str) -> TempDir {
     let temp_dir = TempDir::new().expect("failed to create temp directory");
-    let config_path = temp_dir.path().join(NODE_CONFIG_FILE);
-    std::fs::write(&config_path, peppy_json5).expect("failed to write peppy.json5");
+    write_peppy_json5(temp_dir.path(), peppy_json5);
     temp_dir
 }
 

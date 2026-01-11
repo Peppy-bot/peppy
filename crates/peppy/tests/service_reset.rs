@@ -44,6 +44,7 @@ fn write_node_config(
         ),
     )
     .expect("failed to write node config");
+    helpers::update_peppy_json5_fingerprint(&node_config_path);
     node_dir
 }
 

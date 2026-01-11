@@ -3,6 +3,7 @@
 use config::consts::{DEFAULT_ZENOH_HOST, NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::QoSProfile;
 use config::peppy_config::BuildSystem;
+use config::runtime::RuntimeConfig;
 use master_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddResult};
 use master_node::names;
 use master_node::{MasterNode, MasterNodeArguments};
@@ -20,6 +21,24 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
+
+/// Writes a node config file and the corresponding fingerprint file expected by `node_add`.
+pub fn write_peppy_json5(dir: &Path, content: &str) {
+    use config::consts::NODE_CONFIG_FINGERPRINT_FILE;
+
+    let config_path = dir.join(NODE_CONFIG_FILE);
+    std::fs::write(&config_path, content).expect("failed to write peppy.json5");
+
+    let fingerprint_dir = dir.join(PEPPYGEN_OUTPUT_PATH);
+    std::fs::create_dir_all(&fingerprint_dir).expect("failed to create peppygen dir");
+    let fingerprint = RuntimeConfig::generate_peppy_config_fingerprint(&config_path)
+        .expect("failed to generate peppy.json5 fingerprint");
+    std::fs::write(
+        fingerprint_dir.join(NODE_CONFIG_FINGERPRINT_FILE),
+        format!("{fingerprint}\n"),
+    )
+    .expect("failed to write fingerprint file");
+}
 
 /// Helper function to send a node_add goal and wait for the result.
 /// This wraps the action pattern for simpler test usage.

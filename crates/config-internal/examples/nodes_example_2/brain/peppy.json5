@@ -8,7 +8,7 @@
     labels: [
       "brain"
     ],
-    // Eventually in the future if we want to containarize the node
+    // Eventually in the future if we want to use a container-like technology like apptainer or create WASM binary
     // container: {
     //   image_file: "./Dockerfile",
     //   resources: {

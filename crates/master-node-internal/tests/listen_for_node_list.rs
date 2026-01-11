@@ -1,7 +1,6 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, send_node_add_and_wait, start_master_node};
-use config::consts::NODE_CONFIG_FILE;
+use common::{CALLER_INSTANCE_ID, send_node_add_and_wait, start_master_node, write_peppy_json5};
 use master_node::encoding::NodeListRequest;
 use std::time::Duration;
 
@@ -26,8 +25,7 @@ async fn listen_for_node_list_returns_succeeds() {
             parameters: {{}}
         }}"#
     );
-    std::fs::write(source_dir.path().join(NODE_CONFIG_FILE), &peppy_json5)
-        .expect("failed to write peppy.json5");
+    write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_response = send_node_add_and_wait(
         &started_master.caller_handle,
@@ -121,8 +119,7 @@ async fn listen_for_node_list_returns_dot_graph() {
             parameters: {{}}
         }}"#
     );
-    std::fs::write(source_dir.path().join(NODE_CONFIG_FILE), &peppy_json5)
-        .expect("failed to write peppy.json5");
+    write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_response = send_node_add_and_wait(
         &started_master.caller_handle,

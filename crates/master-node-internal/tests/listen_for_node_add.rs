@@ -1,30 +1,13 @@
 mod common;
 
-use common::{send_node_add_and_wait, start_master_node};
+use common::{send_node_add_and_wait, start_master_node, write_peppy_json5};
 use config::consts::{NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH};
-use config::runtime::RuntimeConfig;
 use master_node::encoding::NodeAddFeedback;
-use std::path::Path;
 use std::time::Duration;
 
 const ADD_CMD_MARKER_FILE: &str = "add_cmd_executed.marker";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
-
-fn write_peppy_json5(dir: &Path, content: &str) {
-    let config_path = dir.join(NODE_CONFIG_FILE);
-    std::fs::write(&config_path, content).expect("failed to write peppy.json5");
-
-    let fingerprint_dir = dir.join(PEPPYGEN_OUTPUT_PATH);
-    std::fs::create_dir_all(&fingerprint_dir).expect("failed to create peppygen dir");
-    let fingerprint = RuntimeConfig::generate_peppy_config_fingerprint(&config_path)
-        .expect("failed to generate peppy.json5 fingerprint");
-    std::fs::write(
-        fingerprint_dir.join(NODE_CONFIG_FINGERPRINT_FILE),
-        format!("{fingerprint}\n"),
-    )
-    .expect("failed to write fingerprint file");
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_success() {

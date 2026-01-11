@@ -1,7 +1,6 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, send_node_add_and_wait, start_master_node};
-use config::consts::NODE_CONFIG_FILE;
+use common::{CALLER_INSTANCE_ID, send_node_add_and_wait, start_master_node, write_peppy_json5};
 use config::node::Name;
 use master_node::encoding::NodeRemoveRequest;
 use peppylib::messaging::MessengerHandle;
@@ -30,8 +29,7 @@ async fn listen_for_node_remove_success() {
             parameters: {{}}
         }}"#
     );
-    std::fs::write(source_dir.path().join(NODE_CONFIG_FILE), &peppy_json5)
-        .expect("failed to write peppy.json5");
+    write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_response = send_node_add_and_wait(
         &started_master.caller_handle,
@@ -151,8 +149,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
             parameters: {{}}
         }}"#
     );
-    std::fs::write(source_dir.path().join(NODE_CONFIG_FILE), &peppy_json5)
-        .expect("failed to write peppy.json5");
+    write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_response = send_node_add_and_wait(
         &started_master.caller_handle,
@@ -246,8 +243,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
             parameters: {{}}
         }}"#
     );
-    std::fs::write(source_dir.path().join(NODE_CONFIG_FILE), &peppy_json5)
-        .expect("failed to write peppy.json5");
+    write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_response = send_node_add_and_wait(
         &started_master.caller_handle,

@@ -1,10 +1,8 @@
 mod helpers;
 
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::node::NodeConfigParser;
 use helpers::TestServeHandle;
 use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
@@ -17,17 +15,6 @@ use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 
 const CALLER_INSTANCE_ID: &str = "peppy-test";
-
-fn override_start_cmd(peppy_json5: &Path) {
-    let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
-    // Avoid spawning a real node binary in tests, but keep the process alive long enough for
-    // `node_start` to complete its `node_ready` + health check phases.
-    cfg.manifest.start_cmd = vec!["sleep".to_string(), "5".to_string()];
-
-    // Write JSON (valid JSON5) back to disk.
-    let updated_content = serde_json::to_string_pretty(&cfg).expect("peppy.json5 should serialize");
-    std::fs::write(peppy_json5, updated_content).expect("peppy.json5 should update");
-}
 
 #[test]
 fn node_stop_command_succeeds() {
@@ -84,7 +71,7 @@ fn node_stop_command_succeeds() {
 
     // Override the launch command to avoid spawning a real node process.
     // Health/shutdown services are provided in-process via the mock messenger.
-    override_start_cmd(&peppy_json5_path);
+    helpers::override_start_cmd(&peppy_json5_path);
 
     // Add the node to the node stack (without running)
     NodeCommand {
