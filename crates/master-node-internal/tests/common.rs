@@ -112,12 +112,14 @@ fn main() -> Result<()> {
   manifest: {{
     name: "{crate_name}",
     tag: "{node_tag}",
+    // Avoid `add_cmd` build step here to make the `add` tests faster
     add_cmd: [
-      "cargo",
-      "build"
+        "exit",
+        "0"
     ],
     start_cmd: [
-      "./target/debug/{crate_name}"
+      "cargo",
+      "run"
     ]
   }},
   interfaces: {{
