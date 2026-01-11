@@ -9,6 +9,7 @@ use tracing::info;
 use super::start::start_instance_async;
 use crate::context::{AppContext, DaemonState};
 use crate::error::{Error, Result};
+use crate::terminal::ScrollingOutput;
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 // Timeout for the goal to be accepted (should be fast)
@@ -64,7 +65,7 @@ async fn add_node_async(
         .unwrap_or_else(|| ctx.root_dir.clone());
 
     info!(
-        "Calling node_add for {}:{} on master '{}'...",
+        "Running `start_cmd` for {}:{} on master '{}'...",
         node_name, node_tag, master_node_name
     );
 
@@ -87,12 +88,17 @@ async fn add_node_async(
         .await
         .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_add goal: {}", e)))?;
 
+    // Number of lines to display in the scrolling output region
+    const SCROLLING_OUTPUT_LINES: usize = 10;
+    let mut scrolling_output = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
+
     let deadline = tokio::time::Instant::now() + RESULT_TIMEOUT;
     let add_result = loop {
         // Drain feedback so the publisher doesn't block on a full channel.
         loop {
             let now = tokio::time::Instant::now();
             if now >= deadline {
+                scrolling_output.clear();
                 return Err(Error::ExecutionFailed(
                     "Timeout waiting for node_add result".to_string(),
                 ));
@@ -103,11 +109,7 @@ async fn add_node_async(
                 Ok(Ok(msg)) => {
                     let payload = msg.payload();
                     if let Ok(feedback) = NodeAddFeedback::decode(&payload.to_bytes()) {
-                        if feedback.is_stderr() {
-                            eprintln!("{}", feedback.line);
-                        } else {
-                            println!("{}", feedback.line);
-                        }
+                        scrolling_output.add_line(&feedback.line, feedback.is_stderr());
                     }
                 }
                 Ok(Err(_)) => break,
@@ -117,6 +119,7 @@ async fn add_node_async(
 
         let now = tokio::time::Instant::now();
         if now >= deadline {
+            scrolling_output.clear();
             return Err(Error::ExecutionFailed(
                 "Timeout waiting for node_add result".to_string(),
             ));
@@ -134,6 +137,7 @@ async fn add_node_async(
                             .map(|text| text.starts_with("result pending"))
                             .unwrap_or(false);
                         if !pending {
+                            scrolling_output.clear();
                             return Err(Error::ExecutionFailed(format!(
                                 "Failed to decode node_add result: {}",
                                 err
@@ -144,6 +148,7 @@ async fn add_node_async(
             }
             Err(PeppyError::ActionResultTimeout { .. }) => {}
             Err(err) => {
+                scrolling_output.clear();
                 return Err(Error::ExecutionFailed(format!(
                     "Failed to get node_add result: {}",
                     err
@@ -153,6 +158,9 @@ async fn add_node_async(
 
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
+
+    // Clear the scrolling output now that we're done processing feedback
+    scrolling_output.clear();
 
     if !add_result.success {
         return Err(Error::ExecutionFailed(
