@@ -79,8 +79,6 @@ impl MasterNode {
             },
             parameters: node_arguments.into(),
             interfaces: Default::default(),
-            resources: None,
-            logging: None,
         };
 
         let messenger = MessengerHandle::from_shared(messenger);

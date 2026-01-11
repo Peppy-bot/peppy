@@ -261,10 +261,6 @@ fn main() -> Result<()> {
         }}
       ],
     }}
-  }},
-  logging: {{
-    min_level: "info",
-    format: "text"
   }}
 }}"#
         ),

@@ -36,9 +36,6 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
         }
       ]
     }
-  },
-  logging: {
-    min_level: "info"
   }
 }"#;
 

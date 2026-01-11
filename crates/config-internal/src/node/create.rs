@@ -24,7 +24,6 @@ struct SimpleNodeTemplate<'a> {
 struct FullNodeTemplate<'a> {
     name: &'a str,
     start_cmd: &'a str,
-    log_file_name: &'a str,
 }
 
 // Note: writing is handled by NodeConfigCreator using Askama templates
@@ -46,12 +45,10 @@ impl NodeConfigCreator {
     }
 
     pub fn full_node(node_name: &str) -> Result<Self> {
-        let log_file_name = format!("{}_node.log", node_name);
         // Default command can be parameterized later
         let tpl = FullNodeTemplate {
             name: node_name,
             start_cmd: "[\"cargo\", \"run\", \"--release\"]",
-            log_file_name: &log_file_name,
         };
         let redered_template = tpl.render().map_err(|e| Error::Serialize(e.to_string()))?;
 
@@ -111,10 +108,6 @@ mod tests {
                 name: "a_node",
                 tag: "0.1.0",
                 start_cmd: ["cargo", "run", "--release"],
-            },
-            logging: {
-                min_level: "info",
-                format: "text"
             }
         }"#;
 
@@ -144,15 +137,6 @@ mod tests {
                 name: "a_node",
                 tag: "0.1.0",
                 start_cmd: ["cargo", "run", "--release"]
-            },
-            resources: {
-                max_memory_mb: 1024
-            },
-            logging: {
-                min_level: "info",
-                file_name: "a_node_node.log",
-                max_file_size_mb: 10,
-                format: "text"
             }
         }"#;
 

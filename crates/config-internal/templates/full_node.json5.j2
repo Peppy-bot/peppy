@@ -4,14 +4,5 @@
     name: "{{ name }}",
     tag: "0.1.0",
     start_cmd: {{ start_cmd | safe }}
-  },
-  resources: {
-    max_memory_mb: 1024
-  },
-  logging: {
-    min_level: "info",
-    file_name: "{{ log_file_name }}",
-    max_file_size_mb: 10,
-    format: "text"
   }
 }

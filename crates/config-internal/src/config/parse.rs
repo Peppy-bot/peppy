@@ -42,9 +42,11 @@ impl PeppyLauncherParser {
 #[cfg(test)]
 mod tests {
     use crate::{
-        config::{DeploymentNodeSource, types::Name},
+        config::{
+            DeploymentNodeSource,
+            types::{LogFormat, Name},
+        },
         error::{Error, ParsingError},
-        node::LogFormat,
     };
     use tempfile::tempdir;
 

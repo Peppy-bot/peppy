@@ -45,14 +45,5 @@
       services: [],
       actions: [],
     },
-  },
-  resources: {
-    max_memory_mb: 512,
-  },
-  logging: {
-    min_level: "info",
-    file_name: "rest_api.log",
-    max_file_size_mb: 100,
-    format: "text",
   }
 }
