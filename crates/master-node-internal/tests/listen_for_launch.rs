@@ -612,6 +612,7 @@ async fn listen_for_launch_configuration_runs_generate_on_node_before_start() {
 
     // The sleep command doesn't implement health checks, so launcher will report failure,
     // but peppygen should still be generated before the node start attempt.
+    // Use a longer timeout to account for node startup timeout (180s) plus add operations.
     let response = LaunchRequest::new(
         launcher_json5,
         nodes_dir.path(),
@@ -623,7 +624,7 @@ async fn listen_for_launch_configuration_runs_generate_on_node_before_start() {
         CALLER_INSTANCE_ID,
         &started_master.master_node_name,
         None,
-        Duration::from_secs(60),
+        Duration::from_secs(300),
     )
     .await
     .expect("launcher request should complete");
@@ -634,9 +635,14 @@ async fn listen_for_launch_configuration_runs_generate_on_node_before_start() {
         !response.success,
         "launcher should fail because sleep doesn't implement the ready service"
     );
+    // The node can fail either because it times out waiting for ready signal,
+    // or because the sleep process exits before becoming ready.
     assert!(
-        response.error_message.contains("startup timed out"),
-        "failure should be due to startup timeout waiting for ready signal, got: {}",
+        response.error_message.contains("startup timed out")
+            || response
+                .error_message
+                .contains("node process exited during startup"),
+        "failure should be due to startup failure, got: {}",
         response.error_message
     );
 
@@ -710,6 +716,8 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     let launcher_runtime_config_json =
         serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
 
+    // Use a longer timeout to account for node compilation (60+ seconds) plus
+    // the unhealthy node's startup timeout (180s).
     let response = LaunchRequest::new(launcher_json5, nodes_dir, launcher_runtime_config_json)
         .poll(
             &started_master.caller_handle,
@@ -717,7 +725,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
             CALLER_INSTANCE_ID,
             &started_master.master_node_name,
             None,
-            Duration::from_secs(60),
+            Duration::from_secs(300),
         )
         .await
         .expect("launcher request should complete");
