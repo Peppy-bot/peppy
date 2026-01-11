@@ -15,21 +15,20 @@ struct NodeListResponse {
     graphJson @1 :Text;
 }
 
-# Node Add service
-struct NodeAddRequest {
-    # Peppy configuration in JSON5 format
-    peppyJson5 @0 :Text;
+# Node Add Action (streaming version with feedback)
+struct NodeAddGoal {
     # Directory the configuration was loaded from
-    fromDir @1 :Text;
-    # Optional instance ID to use for the node
-    instanceId @2 :Text;
-    # Whether to run the node immediately after adding
-    runImmediately @3 :Bool;
-    # Runtime configuration in JSON5 format (required if runImmediately is true)
-    runtimeConfigJson5 @4 :Text;
+    fromDir @0 :Text;
 }
 
-struct NodeAddResponse {
+struct NodeAddFeedback {
+    # Type of output: "stdout" or "stderr"
+    stream @0 :Text;
+    # The line of output
+    line @1 :Text;
+}
+
+struct NodeAddResult {
     # Whether the node was added successfully
     success @0 :Bool;
     # Error message if failed

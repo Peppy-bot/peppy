@@ -350,6 +350,7 @@ impl fmt::Debug for ServiceRequestContext {
     }
 }
 
+#[derive(Clone)]
 pub struct TopicPublisher {
     messenger: Arc<Mutex<Messenger>>,
     topic: String,

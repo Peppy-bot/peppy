@@ -9,7 +9,7 @@ pub const STACK_LAUNCH: &str = "stack_launch";
 pub const STACK_RESET: &str = "stack_reset";
 pub const STACK_LIST: &str = "stack_list";
 
-pub const NODE_ADD: &str = "node_add";
+pub const NODE_ADD_ACTION: &str = "node_add";
 pub const NODE_REMOVE: &str = "node_remove";
 pub const NODE_INIT: &str = "node_init";
 pub const NODE_START: &str = "node_start";
