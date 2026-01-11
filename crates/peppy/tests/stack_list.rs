@@ -41,6 +41,7 @@ fn make_consumer_depend_on_provider(
         serde_json::to_string_pretty(&provider_cfg).expect("provider peppy.json5 should serialize");
     std::fs::write(provider_peppy_json5, updated_provider_content)
         .expect("provider peppy.json5 should update");
+    helpers::update_peppy_json5_fingerprint(provider_peppy_json5);
 
     let mut consumer_cfg = NodeConfigParser::from_path(consumer_peppy_json5)
         .expect("consumer peppy.json5 should read");
@@ -63,6 +64,7 @@ fn make_consumer_depend_on_provider(
         serde_json::to_string_pretty(&consumer_cfg).expect("consumer peppy.json5 should serialize");
     std::fs::write(consumer_peppy_json5, updated_consumer_content)
         .expect("consumer peppy.json5 should update");
+    helpers::update_peppy_json5_fingerprint(consumer_peppy_json5);
 }
 
 #[test]

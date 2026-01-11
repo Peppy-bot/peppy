@@ -1,18 +1,54 @@
 #![allow(dead_code)]
 
-use config::consts::DAEMON_STATE_FILE_ENV;
+use config::consts::{DAEMON_STATE_FILE_ENV, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::node::NodeConfigParser;
+use config::runtime::RuntimeConfig;
 use peppy::commands::service::serve::{CancellationToken, ServeCommandBuilder};
 use pmi::Messenger;
 use pmi::zenohd_support::{reserve_free_tcp_port, write_zenohd_config};
 use std::ffi::OsStr;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tokio::sync::Mutex as TokioMutex;
 use tracing_subscriber::fmt::MakeWriter;
+
+pub fn update_peppy_json5_fingerprint(peppy_json5_path: impl AsRef<Path>) {
+    let peppy_json5_path = peppy_json5_path.as_ref();
+
+    let fingerprint = RuntimeConfig::generate_peppy_config_fingerprint(peppy_json5_path)
+        .expect("peppy.json5 fingerprint should generate");
+    let node_root = peppy_json5_path
+        .parent()
+        .expect("peppy.json5 should have a parent directory");
+    let fingerprint_path = node_root
+        .join(PEPPYGEN_OUTPUT_PATH)
+        .join(NODE_CONFIG_FINGERPRINT_FILE);
+
+    if let Some(parent) = fingerprint_path.parent() {
+        std::fs::create_dir_all(parent).expect("peppygen fingerprint dir should be creatable");
+    }
+
+    std::fs::write(&fingerprint_path, format!("{fingerprint}\n"))
+        .expect("peppygen fingerprint should be writable");
+}
+
+pub fn override_start_cmd(peppy_json5: &Path) {
+    let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
+    // Avoid spawning a real node binary in tests, but keep the process alive long enough for
+    // `node_start` to complete its `node_ready` + health check phases.
+    cfg.manifest.start_cmd = vec!["sleep".to_string(), "5".to_string()];
+
+    // Write JSON (valid JSON5) back to disk.
+    let updated_content = serde_json::to_string_pretty(&cfg).expect("peppy.json5 should serialize");
+    std::fs::write(peppy_json5, updated_content).expect("peppy.json5 should update");
+
+    // `node_init` generates a fingerprint during peppygen generation; keep it in sync.
+    update_peppy_json5_fingerprint(peppy_json5);
+}
 
 #[derive(Clone, Default)]
 pub struct LogCapture {
