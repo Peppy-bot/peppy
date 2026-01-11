@@ -192,12 +192,7 @@ pub async fn listen_for_node_add(
     )
     .await?;
 
-    let messenger = messenger.clone();
-    let master_node_name = master_node_name.to_string();
-
-    let handle = tokio::spawn(async move {
-        run_node_add_action_loop(action, node_stack, messenger, master_node_name).await
-    });
+    let handle = tokio::spawn(async move { run_node_add_action_loop(action, node_stack).await });
 
     Ok(handle)
 }
@@ -205,8 +200,6 @@ pub async fn listen_for_node_add(
 async fn run_node_add_action_loop(
     mut action: ActionCreation,
     node_stack: Arc<NodeStack>,
-    _messenger: MessengerHandle,
-    _master_node_name: String,
 ) -> Result<()> {
     let state = Arc::new(Mutex::new(NodeAddActionState::default()));
 
@@ -363,6 +356,9 @@ async fn process_node_add(
             return NodeAddResult::failure(format!("Failed to copy node folder: {}", e));
         }
     };
+
+    // TODO: Run generate on the copied node
+    // TODO: Make sure the received node_config fingerprint matches the one that is in the generated folder
 
     // Run add_cmd on the copied folder with streaming output
     if let Err(e) = run_add_cmd_with_streaming(
