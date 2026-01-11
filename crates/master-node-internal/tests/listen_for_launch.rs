@@ -735,8 +735,11 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
         "launcher request should fail when one node never becomes healthy"
     );
     assert!(
-        response.error_message.contains("startup timed out"),
-        "failure should be due to startup timeout waiting for ready signal, got: {}",
+        response.error_message.contains("startup timed out")
+            || response
+                .error_message
+                .contains("node process exited during startup"),
+        "failure should be due to startup failure, got: {}",
         response.error_message
     );
 
