@@ -117,14 +117,13 @@ pub enum NodeCommands {
         instance_id: Option<String>,
     },
     /// Prints out the runtime config of a node instance
-    #[command(group(ArgGroup::new("node_source").required(true).args(["node_name", "peppy_json5"])))]
+    #[command(group(ArgGroup::new("node_source").required(true).args(["node_name", "node_dir"])))]
     RuntimeConfig {
         /// Name of the node
         #[arg(long)]
         node_name: Option<String>,
-        /// Path to the node configuration file
-        #[arg(long)]
-        peppy_json5: Option<PathBuf>,
+        /// Directory containing the peppy.json5 configuration file
+        node_dir: Option<PathBuf>,
     },
     /// Stop a running node instance
     Stop {
@@ -194,10 +193,10 @@ impl Command for NodeCommand {
             }
             NodeCommands::RuntimeConfig {
                 node_name,
-                peppy_json5,
+                node_dir,
             } => {
                 info!("Printing runtime config...");
-                runtime_config::print_runtime_config(ctx, node_name, peppy_json5)
+                runtime_config::print_runtime_config(ctx, node_name, node_dir)
             }
             NodeCommands::Stop { instance_id } => {
                 info!("Stopping node instance {}...", instance_id);

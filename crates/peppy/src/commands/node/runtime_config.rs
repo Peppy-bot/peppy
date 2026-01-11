@@ -22,23 +22,25 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub fn print_runtime_config(
     ctx: &Arc<AppContext>,
     node_name: Option<String>,
-    peppy_json5: Option<PathBuf>,
+    node_dir: Option<PathBuf>,
 ) -> Result<()> {
-    let node_name = resolve_node_name(node_name, peppy_json5)?;
+    let node_name = resolve_node_name(node_name, node_dir)?;
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(print_runtime_config_async(ctx, node_name))
 }
 
-/// Resolves the node name from either the direct name or by reading the peppy.json5 file.
-fn resolve_node_name(node_name: Option<String>, peppy_json5: Option<PathBuf>) -> Result<String> {
-    match (node_name, peppy_json5) {
+/// Resolves the node name from either the direct name or by reading the peppy.json5 file in the directory.
+fn resolve_node_name(node_name: Option<String>, node_dir: Option<PathBuf>) -> Result<String> {
+    match (node_name, node_dir) {
         (Some(name), None) => Ok(name),
-        (None, Some(path)) => {
-            let config = NodeConfigParser::from_path(&path).map_err(Error::PeppyConfig)?;
+        (None, Some(dir)) => {
+            let peppy_json5_path = dir.join("peppy.json5");
+            let config =
+                NodeConfigParser::from_path(&peppy_json5_path).map_err(Error::PeppyConfig)?;
             Ok(config.manifest.name.as_str().to_string())
         }
         _ => Err(Error::ExecutionFailed(
-            "Exactly one of --node-name or --peppy-json5 must be provided".to_string(),
+            "Exactly one of --node-name or node_dir must be provided".to_string(),
         )),
     }
 }

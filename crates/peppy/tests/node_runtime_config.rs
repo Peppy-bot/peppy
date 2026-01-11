@@ -67,7 +67,7 @@ fn node_runtime_config_command_outputs_valid_config() {
     NodeCommand {
         command: NodeCommands::RuntimeConfig {
             node_name: Some(node_name.to_string()),
-            peppy_json5: None,
+            node_dir: None,
         },
     }
     .execute(&node_ctx)
@@ -169,15 +169,15 @@ fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
     .execute(&node_ctx)
     .expect("node add command should succeed");
 
-    // Use peppy_json5 instead of node_name
+    // Use node_dir instead of node_name
     NodeCommand {
         command: NodeCommands::RuntimeConfig {
             node_name: None,
-            peppy_json5: Some(peppy_json5_path),
+            node_dir: Some(node_path),
         },
     }
     .execute(&node_ctx)
-    .expect("node runtime-config command with peppy_json5 should succeed");
+    .expect("node runtime-config command with node_dir should succeed");
 
     let logs = log_capture.logs();
     let prefix = format!("{}=", config::consts::RUNTIME_CONFIG_VAR_NAME);
