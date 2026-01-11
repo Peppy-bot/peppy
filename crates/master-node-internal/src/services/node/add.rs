@@ -158,12 +158,15 @@ fn copy_node_to_storage(from_dir: &Path, node_name: &str, node_tag: &str) -> Res
     Ok(dest_path)
 }
 
+// TODO: Probably better as an enum?
 /// State for tracking the current node add action.
 struct NodeAddActionState {
     /// The result of the action, populated when complete.
     result: Option<NodeAddResult>,
     /// Whether the action is currently running.
     is_running: bool,
+    /// Whether the final result has been sent to a requester.
+    result_sent: bool,
 }
 
 impl Default for NodeAddActionState {
@@ -171,6 +174,7 @@ impl Default for NodeAddActionState {
         Self {
             result: None,
             is_running: false,
+            result_sent: false,
         }
     }
 }
@@ -258,10 +262,17 @@ async fn run_node_add_action_loop(
                         }) => {
                             match result_result {
                                 Ok(true) => {
-                                    // Result was requested, clear state and wait for next goal
-                                    let mut state_guard = state.lock().await;
-                                    *state_guard = NodeAddActionState::default();
-                                    break;
+                                    // Only reset and accept a new goal after we've delivered the final result.
+                                    let should_reset = {
+                                        let state_guard = state.lock().await;
+                                        !state_guard.is_running && state_guard.result_sent
+                                    };
+
+                                    if should_reset {
+                                        let mut state_guard = state.lock().await;
+                                        *state_guard = NodeAddActionState::default();
+                                        break;
+                                    }
                                 }
                                 Ok(false) => return Ok(()),
                                 Err(e) => {
@@ -309,6 +320,7 @@ async fn handle_goal_request(
         let mut state_guard = state.lock().await;
         state_guard.is_running = true;
         state_guard.result = None;
+        state_guard.result_sent = false;
     }
 
     let goal = match NodeAddGoal::decode(&payload.as_bytes()) {
@@ -318,6 +330,7 @@ async fn handle_goal_request(
             let mut state_guard = state.lock().await;
             state_guard.result = Some(result);
             state_guard.is_running = false;
+            state_guard.result_sent = false;
             return Ok(Bytes::from_static(b"goal rejected: invalid payload"));
         }
     };
@@ -335,6 +348,7 @@ async fn handle_goal_request(
         let mut state_guard = state_clone.lock().await;
         state_guard.result = Some(result);
         state_guard.is_running = false;
+        state_guard.result_sent = false;
     });
 
     Ok(Bytes::from_static(b"goal accepted"))
@@ -421,7 +435,7 @@ async fn handle_result_request(
     _context: ServiceRequestContext,
     state: Arc<Mutex<NodeAddActionState>>,
 ) -> PeppyResult<Bytes> {
-    let state_guard = state.lock().await;
+    let mut state_guard = state.lock().await;
 
     if state_guard.is_running {
         // Still running, return a pending status
@@ -430,13 +444,18 @@ async fn handle_result_request(
         ));
     }
 
-    match &state_guard.result {
-        Some(result) => result
-            .encode()
-            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                identifier: "node_add_result".to_string(),
-                reason: format!("Failed to encode result: {}", e),
-            }),
+    match state_guard.result.as_ref() {
+        Some(result) => {
+            let payload =
+                result
+                    .encode()
+                    .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                        identifier: "node_add_result".to_string(),
+                        reason: format!("Failed to encode result: {}", e),
+                    })?;
+            state_guard.result_sent = true;
+            Ok(payload)
+        }
         None => Ok(Bytes::from_static(b"result pending: no result available")),
     }
 }

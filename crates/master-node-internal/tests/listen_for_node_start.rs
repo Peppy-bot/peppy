@@ -1,14 +1,14 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, create_test_node_with_name, start_master_node,
+    CALLER_INSTANCE_ID, create_test_node_with_name, send_node_add_and_wait, start_master_node,
     start_master_node_with_health_timeout, start_master_node_with_zenoh_messenger,
 };
 use config::consts::NODE_CONFIG_FILE;
 use config::node::Name as NodeName;
 use config::peppy_config::{DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
-use master_node::encoding::{NodeAddRequest, NodeStartRequest};
+use master_node::encoding::NodeStartRequest;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::ready::listen_for_node_ready;
 use std::sync::Arc;
@@ -36,19 +36,17 @@ async fn listen_for_node_start_success() {
     let node_dir = create_test_node_with_name(TARGET_NODE_NAME, TARGET_NODE_TAG);
 
     // Add the node to the master node's node stack
-    let node_add_request = NodeAddRequest::new(&node_dir).with_instance_id(TARGET_INSTANCE_ID);
-    let add_response = node_add_request
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            // Longer timeout to account for add_cmd (cargo build) execution on copied folder,
-            // which may need to recompile due to path changes or wait for cargo global lock
-            Duration::from_secs(120),
-        )
-        .await
-        .expect("node_add request should succeed");
+    let add_response = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        &node_dir,
+        Duration::from_secs(30),
+        // Longer timeout to account for add_cmd execution and copying the test node folder,
+        // which may include build artifacts.
+        Duration::from_secs(120),
+    )
+    .await
+    .expect("node_add should succeed");
 
     assert!(
         add_response.success,
@@ -139,18 +137,15 @@ async fn listen_for_node_start_timeout() {
     let temp_dir = create_node_config_dir(&peppy_json5);
 
     // Add the node to the master node's node stack
-    let node_add_request =
-        NodeAddRequest::new(temp_dir.path()).with_instance_id(TARGET_INSTANCE_ID);
-    let add_response = node_add_request
-        .poll(
-            &started.caller_handle,
-            &started.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_add request should succeed");
+    let add_response = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.master_node_name,
+        temp_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_add should succeed");
 
     assert!(
         add_response.success,

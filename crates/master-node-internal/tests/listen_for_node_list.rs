@@ -1,8 +1,8 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, start_master_node};
+use common::{CALLER_INSTANCE_ID, send_node_add_and_wait, start_master_node};
 use config::consts::NODE_CONFIG_FILE;
-use master_node::encoding::{NodeAddRequest, NodeListRequest};
+use master_node::encoding::NodeListRequest;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -30,17 +30,15 @@ async fn listen_for_node_list_returns_succeeds() {
     std::fs::write(source_dir.path().join(NODE_CONFIG_FILE), &peppy_json5)
         .expect("failed to write peppy.json5");
 
-    let add_response = NodeAddRequest::new(source_dir.path())
-        .with_instance_id(TARGET_INSTANCE_ID)
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_add request should complete");
+    let add_response = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_add should complete");
 
     assert!(
         add_response.success,
@@ -127,17 +125,15 @@ async fn listen_for_node_list_returns_dot_graph() {
     std::fs::write(source_dir.path().join(NODE_CONFIG_FILE), &peppy_json5)
         .expect("failed to write peppy.json5");
 
-    let add_response = NodeAddRequest::new(source_dir.path())
-        .with_instance_id(TARGET_INSTANCE_ID)
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_add request should complete");
+    let add_response = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_add should complete");
 
     assert!(
         add_response.success,
