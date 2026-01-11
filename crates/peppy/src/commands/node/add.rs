@@ -1,5 +1,6 @@
 use config::node::NodeConfigParser;
 use master_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddResult};
+use peppylib::{ActionMessenger, PeppyError};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -86,14 +87,22 @@ async fn add_node_async(
         .await
         .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_add goal: {}", e)))?;
 
-    // Listen for feedback (streaming output) in a separate task
-    let feedback_handle = tokio::spawn(async move {
+    let deadline = tokio::time::Instant::now() + RESULT_TIMEOUT;
+    let add_result = loop {
+        // Drain feedback so the publisher doesn't block on a full channel.
         loop {
-            match action_handle.on_next_feedback().await {
-                Ok(msg) => {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Err(Error::ExecutionFailed(
+                    "Timeout waiting for node_add result".to_string(),
+                ));
+            }
+            let remaining = deadline - now;
+            let drain_timeout = Duration::from_millis(50).min(remaining);
+            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+                Ok(Ok(msg)) => {
                     let payload = msg.payload();
                     if let Ok(feedback) = NodeAddFeedback::decode(&payload.to_bytes()) {
-                        // Print the output line
                         if feedback.is_stderr() {
                             eprintln!("{}", feedback.line);
                         } else {
@@ -101,27 +110,48 @@ async fn add_node_async(
                         }
                     }
                 }
-                Err(_) => {
-                    // Feedback channel closed, action is complete
-                    break;
-                }
+                Ok(Err(_)) => break,
+                Err(_) => break,
             }
         }
-        action_handle
-    });
 
-    // Wait a bit for feedback to start flowing, then request the result
-    // We use a timeout-based approach to poll for the result
-    let action_handle = tokio::time::timeout(RESULT_TIMEOUT, feedback_handle)
-        .await
-        .map_err(|_| Error::ExecutionFailed("Timeout waiting for node_add feedback".to_string()))?
-        .map_err(|e| Error::ExecutionFailed(format!("Feedback task failed: {}", e)))?;
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(Error::ExecutionFailed(
+                "Timeout waiting for node_add result".to_string(),
+            ));
+        }
+        let remaining = deadline - now;
+        let poll_timeout = Duration::from_millis(200).min(remaining);
+        match ActionMessenger::request_result(messenger_handle, &action_handle, poll_timeout).await {
+            Ok(msg) => {
+                let payload = msg.payload().to_bytes();
+                match NodeAddResult::decode(&payload) {
+                    Ok(result) => break result,
+                    Err(err) => {
+                        let pending = std::str::from_utf8(payload.as_ref())
+                            .map(|text| text.starts_with("result pending"))
+                            .unwrap_or(false);
+                        if !pending {
+                            return Err(Error::ExecutionFailed(format!(
+                                "Failed to decode node_add result: {}",
+                                err
+                            )));
+                        }
+                    }
+                }
+            }
+            Err(PeppyError::ActionResultTimeout { .. }) => {}
+            Err(err) => {
+                return Err(Error::ExecutionFailed(format!(
+                    "Failed to get node_add result: {}",
+                    err
+                )));
+            }
+        }
 
-    // Request the result
-    let add_result =
-        NodeAddResult::request_result(messenger_handle, &action_handle, RESULT_TIMEOUT)
-            .await
-            .map_err(|e| Error::ExecutionFailed(format!("Failed to get node_add result: {}", e)))?;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
 
     if !add_result.success {
         return Err(Error::ExecutionFailed(

@@ -1,9 +1,11 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, create_test_node_with_name, start_master_node};
+use common::{CALLER_INSTANCE_ID, start_master_node};
 use config::consts::NODE_CONFIG_FILE;
+use config::node::QoSProfile;
 use master_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddResult};
-use peppylib::MessengerHandle;
+use master_node::names;
+use peppylib::{ActionMessenger, MessengerHandle, PeppyError};
 use std::path::Path;
 use std::time::Duration;
 
@@ -21,46 +23,112 @@ async fn send_node_add_and_wait(
     messenger: &MessengerHandle,
     master_node_name: &str,
     from_dir: &Path,
+    feedback_tx: Option<tokio::sync::mpsc::UnboundedSender<NodeAddFeedback>>,
 ) -> Result<NodeAddResult, String> {
     let goal = NodeAddGoal::new(from_dir);
-    let mut action_handle = goal
-        .send_goal(
-            messenger,
-            master_node_name,
-            CALLER_INSTANCE_ID,
-            Some(master_node_name),
-            None,
-            GOAL_TIMEOUT,
-        )
-        .await
-        .map_err(|e| format!("Failed to send goal: {}", e))?;
+    let (caller_master_node, caller_instance_id) = if feedback_tx.is_some() {
+        ("*", "*")
+    } else {
+        (master_node_name, CALLER_INSTANCE_ID)
+    };
+    let goal_payload = goal
+        .encode()
+        .map_err(|e| format!("Failed to encode goal: {}", e))?;
+    let mut action_handle = ActionMessenger::send_goal(
+        messenger,
+        caller_master_node,
+        caller_instance_id,
+        master_node_name,
+        names::NODE_ADD_ACTION,
+        Some(master_node_name),
+        None,
+        goal_payload,
+        QoSProfile::default(),
+        GOAL_TIMEOUT,
+    )
+    .await
+    .map_err(|e| format!("Failed to send goal: {}", e))?;
 
-    // TODO At least one test should test if the stdout and stderr feedback are correctly being sent here
-    // Collect feedback (optional, we drain it to completion)
-    let feedback_handle = tokio::spawn(async move {
-        let mut feedback_lines = Vec::new();
+    let deadline = tokio::time::Instant::now() + RESULT_TIMEOUT;
+    let feedback_tx = feedback_tx.as_ref();
+
+    loop {
+        // Drain feedback so the publisher doesn't block on a full channel.
         loop {
-            match action_handle.on_next_feedback().await {
-                Ok(msg) => {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Err("Timeout waiting for node_add result".to_string());
+            }
+            let remaining = deadline - now;
+            let drain_timeout = Duration::from_millis(50).min(remaining);
+            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+                Ok(Ok(msg)) => {
                     let payload = msg.payload();
                     if let Ok(feedback) = NodeAddFeedback::decode(&payload.to_bytes()) {
-                        feedback_lines.push(feedback);
+                        if let Some(tx) = feedback_tx {
+                            let _ = tx.send(feedback);
+                        }
                     }
                 }
+                Ok(Err(_)) => break,
                 Err(_) => break,
             }
         }
-        (action_handle, feedback_lines)
-    });
 
-    let (action_handle, _feedback) = tokio::time::timeout(RESULT_TIMEOUT, feedback_handle)
-        .await
-        .map_err(|_| "Timeout waiting for feedback".to_string())?
-        .map_err(|e| format!("Feedback task failed: {}", e))?;
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err("Timeout waiting for node_add result".to_string());
+        }
+        let remaining = deadline - now;
+        let poll_timeout = Duration::from_millis(200).min(remaining);
+        match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
+            Ok(msg) => {
+                let payload = msg.payload().to_bytes();
+                match NodeAddResult::decode(&payload) {
+                    Ok(result) => {
+                        let grace_deadline =
+                            tokio::time::Instant::now() + Duration::from_millis(500);
+                        while tokio::time::Instant::now() < grace_deadline {
+                            let remaining = grace_deadline - tokio::time::Instant::now();
+                            let drain_timeout = Duration::from_millis(50).min(remaining);
+                            match tokio::time::timeout(
+                                drain_timeout,
+                                action_handle.on_next_feedback(),
+                            )
+                            .await
+                            {
+                                Ok(Ok(msg)) => {
+                                    let payload = msg.payload();
+                                    if let Ok(feedback) =
+                                        NodeAddFeedback::decode(&payload.to_bytes())
+                                    {
+                                        if let Some(tx) = feedback_tx {
+                                            let _ = tx.send(feedback);
+                                        }
+                                    }
+                                }
+                                Ok(Err(_)) => break,
+                                Err(_) => break,
+                            }
+                        }
+                        return Ok(result);
+                    }
+                    Err(err) => {
+                        let pending = std::str::from_utf8(payload.as_ref())
+                            .map(|text| text.starts_with("result pending"))
+                            .unwrap_or(false);
+                        if !pending {
+                            return Err(format!("Failed to decode result: {}", err));
+                        }
+                    }
+                }
+            }
+            Err(PeppyError::ActionResultTimeout { .. }) => {}
+            Err(err) => return Err(format!("Failed to get result: {}", err)),
+        }
 
-    NodeAddResult::request_result(messenger, &action_handle, RESULT_TIMEOUT)
-        .await
-        .map_err(|e| format!("Failed to get result: {}", e))
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -71,13 +139,24 @@ async fn listen_for_node_add_success() {
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
 
-    // Use a pre-built test node to avoid compilation delays during the test
-    let node_dir = create_test_node_with_name(TARGET_NODE_NAME, TARGET_NODE_TAG);
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_result = send_node_add_and_wait(
         &started_master.caller_handle,
         &started_master.master_node_name,
-        &node_dir,
+        source_dir.path(),
+        None,
     )
     .await
     .expect("node_add request should succeed");
@@ -105,7 +184,7 @@ async fn listen_for_node_add_success() {
         "snapshot_path should match copied node path"
     );
     assert!(
-        root_path != node_dir.as_path(),
+        root_path != source_dir.path(),
         "node should be copied to a different location, got: {}",
         root_path.display()
     );
@@ -145,16 +224,27 @@ async fn listen_for_node_add_no_config_found() {
     let started_master = start_master_node().await;
     let node_stack = started_master.node_stack.clone();
 
-    // Use a pre-built test node to avoid compilation delays during the test
-    let node_dir = create_test_node_with_name(TARGET_NODE_NAME, TARGET_NODE_TAG);
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    std::fs::remove_file(node_dir.join(NODE_CONFIG_FILE))
+    std::fs::remove_file(source_dir.path().join(NODE_CONFIG_FILE))
         .expect("failed to remove peppy.json5 config file");
 
     let add_result = send_node_add_and_wait(
         &started_master.caller_handle,
         &started_master.master_node_name,
-        &node_dir,
+        source_dir.path(),
+        None,
     )
     .await
     .expect("node_add request should succeed");
@@ -183,6 +273,7 @@ async fn listen_for_node_add_invalid_config_fails() {
         &started_master.caller_handle,
         &started_master.master_node_name,
         source_dir.path(),
+        None,
     )
     .await
     .expect("node_add request should complete");
@@ -226,6 +317,7 @@ async fn listen_for_node_add_no_start_cmd_fails() {
         &started_master.caller_handle,
         &started_master.master_node_name,
         source_dir.path(),
+        None,
     )
     .await
     .expect("node_add request should complete");
@@ -283,6 +375,7 @@ async fn listen_for_node_add_dependency_not_resolved() {
         &started_master.caller_handle,
         &started_master.master_node_name,
         source_dir.path(),
+        None,
     )
     .await
     .expect("node_add request should complete");
@@ -344,6 +437,7 @@ async fn listen_for_node_add_same_node_same_tags_fails() {
         &started_master.caller_handle,
         &started_master.master_node_name,
         source_dir_v1.path(),
+        None,
     )
     .await
     .expect("node_add v1 should complete");
@@ -383,6 +477,7 @@ async fn listen_for_node_add_same_node_same_tags_fails() {
         &started_master.caller_handle,
         &started_master.master_node_name,
         source_dir_v2.path(),
+        None,
     )
     .await
     .expect("node_add v2 should complete");
@@ -439,6 +534,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
         &started_master.caller_handle,
         &started_master.master_node_name,
         source_dir_v1.path(),
+        None,
     )
     .await
     .expect("node_add v1 should complete");
@@ -465,6 +561,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
         &started_master.caller_handle,
         &started_master.master_node_name,
         source_dir_v2.path(),
+        None,
     )
     .await
     .expect("node_add v2 should complete");
@@ -526,6 +623,7 @@ async fn listen_for_node_add_copies_files_to_storage() {
         &started_master.caller_handle,
         &started_master.master_node_name,
         source_dir.path(),
+        None,
     )
     .await
     .expect("node_add request should succeed");
@@ -596,6 +694,7 @@ async fn listen_for_node_add_runs_add_cmd() {
         &started_master.caller_handle,
         &started_master.master_node_name,
         source_dir.path(),
+        None,
     )
     .await
     .expect("node_add request should succeed");
@@ -663,6 +762,7 @@ async fn listen_for_node_add_add_cmd_failure_fails_add() {
         &started_master.caller_handle,
         &started_master.master_node_name,
         source_dir.path(),
+        None,
     )
     .await
     .expect("node_add request should complete");
@@ -719,6 +819,7 @@ async fn listen_for_node_add_add_cmd_nonzero_exit_fails_add() {
         &started_master.caller_handle,
         &started_master.master_node_name,
         source_dir.path(),
+        None,
     )
     .await
     .expect("node_add request should complete");
@@ -742,6 +843,65 @@ async fn listen_for_node_add_add_cmd_nonzero_exit_fails_add() {
         !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
         "node should not be added when add_cmd fails"
     );
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_streams_stdout_and_stderr() {
+    const TARGET_NODE_NAME: &str = "stream_output_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const STDOUT_MARKER: &str = "peppy_add_stdout_marker";
+    const STDERR_MARKER: &str = "peppy_add_stderr_marker";
+
+    let started_master = start_master_node().await;
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    // Use wildcard caller IDs so mock pub/sub can match feedback topics with "*" segments.
+    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel();
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir.path(),
+        Some(feedback_tx),
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        add_result.success,
+        "node_add should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    let mut feedback = Vec::new();
+    while let Ok(entry) = feedback_rx.try_recv() {
+        feedback.push(entry);
+    }
+    let saw_stdout = feedback
+        .iter()
+        .any(|entry| entry.is_stdout() && entry.line.trim() == STDOUT_MARKER);
+    let saw_stderr = feedback
+        .iter()
+        .any(|entry| entry.is_stderr() && entry.line.trim() == STDERR_MARKER);
+
+    assert!(saw_stdout, "stdout feedback should include marker");
+    assert!(saw_stderr, "stderr feedback should include marker");
+
+    let _ = std::fs::remove_dir_all(&add_result.snapshot_path);
 
     started_master.task.abort();
 }
