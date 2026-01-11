@@ -3,7 +3,7 @@
 use config::consts::{DEFAULT_ZENOH_HOST, NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::QoSProfile;
 use config::peppy_config::BuildSystem;
-use master_node::encoding::{NodeAddGoal, NodeAddResult};
+use master_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddResult};
 use master_node::names;
 use master_node::{MasterNode, MasterNodeArguments};
 use node_stack::NodeStack;
@@ -16,26 +16,38 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
 
+/// Helper function to send a node_add goal and wait for the result.
+/// This wraps the action pattern for simpler test usage.
+///
+/// When `feedback_tx` is provided, wildcard caller IDs are used so mock pub/sub
+/// can match feedback topics with "*" segments.
 pub async fn send_node_add_and_wait(
     messenger: &MessengerHandle,
     master_node_name: &str,
     from_dir: &Path,
     goal_timeout: Duration,
     result_timeout: Duration,
+    feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
 ) -> Result<NodeAddResult, String> {
     let goal = NodeAddGoal::new(from_dir);
+    let (caller_master_node, caller_instance_id) = if feedback_tx.is_some() {
+        ("*", "*")
+    } else {
+        (master_node_name, CALLER_INSTANCE_ID)
+    };
     let goal_payload = goal
         .encode()
         .map_err(|e| format!("Failed to encode goal: {}", e))?;
 
-    let action_handle = ActionMessenger::send_goal(
+    let mut action_handle = ActionMessenger::send_goal(
         messenger,
-        master_node_name,
-        CALLER_INSTANCE_ID,
+        caller_master_node,
+        caller_instance_id,
         master_node_name,
         names::NODE_ADD_ACTION,
         Some(master_node_name),
@@ -48,12 +60,35 @@ pub async fn send_node_add_and_wait(
     .map_err(|e| format!("Failed to send goal: {}", e))?;
 
     let deadline = tokio::time::Instant::now() + result_timeout;
+    let feedback_tx = feedback_tx.as_ref();
+
     loop {
+        // Drain feedback so the publisher doesn't block on a full channel.
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Err("Timeout waiting for node_add result".to_string());
+            }
+            let remaining = deadline - now;
+            let drain_timeout = Duration::from_millis(50).min(remaining);
+            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+                Ok(Ok(msg)) => {
+                    let payload = msg.payload();
+                    if let Ok(feedback) = NodeAddFeedback::decode(&payload.to_bytes()) {
+                        if let Some(tx) = feedback_tx {
+                            let _ = tx.send(feedback);
+                        }
+                    }
+                }
+                Ok(Err(_)) => break,
+                Err(_) => break,
+            }
+        }
+
         let now = tokio::time::Instant::now();
         if now >= deadline {
             return Err("Timeout waiting for node_add result".to_string());
         }
-
         let remaining = deadline - now;
         let poll_timeout = Duration::from_millis(200).min(remaining);
 
@@ -61,7 +96,35 @@ pub async fn send_node_add_and_wait(
             Ok(msg) => {
                 let payload = msg.payload().to_bytes();
                 match NodeAddResult::decode(&payload) {
-                    Ok(result) => return Ok(result),
+                    Ok(result) => {
+                        // Grace period to drain remaining feedback
+                        let grace_deadline =
+                            tokio::time::Instant::now() + Duration::from_millis(500);
+                        while tokio::time::Instant::now() < grace_deadline {
+                            let remaining = grace_deadline - tokio::time::Instant::now();
+                            let drain_timeout = Duration::from_millis(50).min(remaining);
+                            match tokio::time::timeout(
+                                drain_timeout,
+                                action_handle.on_next_feedback(),
+                            )
+                            .await
+                            {
+                                Ok(Ok(msg)) => {
+                                    let payload = msg.payload();
+                                    if let Ok(feedback) =
+                                        NodeAddFeedback::decode(&payload.to_bytes())
+                                    {
+                                        if let Some(tx) = feedback_tx {
+                                            let _ = tx.send(feedback);
+                                        }
+                                    }
+                                }
+                                Ok(Err(_)) => break,
+                                Err(_) => break,
+                            }
+                        }
+                        return Ok(result);
+                    }
                     Err(err) => {
                         let pending = std::str::from_utf8(payload.as_ref())
                             .map(|text| text.starts_with("result pending"))
