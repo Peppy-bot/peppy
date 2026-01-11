@@ -1,6 +1,5 @@
 mod error;
 
-pub mod checker;
 pub mod encoding;
 pub mod messaging;
 pub mod runtime;
