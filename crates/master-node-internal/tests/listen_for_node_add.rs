@@ -1,7 +1,7 @@
 mod common;
 
 use common::{send_node_add_and_wait, start_master_node};
-use config::consts::NODE_CONFIG_FILE;
+use config::consts::{NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH};
 use master_node::encoding::NodeAddFeedback;
 use std::path::Path;
 use std::time::Duration;
@@ -813,6 +813,84 @@ async fn listen_for_node_add_streams_stdout_and_stderr() {
     assert!(saw_stderr, "stderr feedback should include marker");
 
     let _ = std::fs::remove_dir_all(&add_result.snapshot_path);
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_fingerprint_mismatch() {
+    const TARGET_NODE_NAME: &str = "fingerprint_mismatch_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_master = start_master_node().await;
+    let node_stack = started_master.node_stack.clone();
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    // Create the peppygen directory with a mismatched fingerprint
+    let peppygen_dir = source_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+    std::fs::create_dir_all(&peppygen_dir).expect("failed to create peppygen dir");
+
+    // Write an incorrect fingerprint (this won't match the actual peppy.json5 content)
+    let fingerprint_path = peppygen_dir.join(NODE_CONFIG_FINGERPRINT_FILE);
+    std::fs::write(
+        &fingerprint_path,
+        "incorrect_fingerprint_that_will_not_match\n",
+    )
+    .expect("failed to write fingerprint file");
+
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should complete");
+
+    assert!(
+        !add_result.success,
+        "node_add should fail when fingerprint mismatches"
+    );
+    assert!(
+        add_result
+            .error_message
+            .as_ref()
+            .map(|msg| msg.contains("Fingerprint verification failed"))
+            .unwrap_or(false),
+        "error message should indicate fingerprint verification failure, got: {:?}",
+        add_result.error_message
+    );
+    assert!(
+        add_result
+            .error_message
+            .as_ref()
+            .map(|msg| msg.contains("fingerprint mismatch"))
+            .unwrap_or(false),
+        "error message should mention fingerprint mismatch, got: {:?}",
+        add_result.error_message
+    );
+
+    // Node should not be in the stack
+    assert!(
+        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        "node should not be added when fingerprint mismatches"
+    );
+    assert_eq!(node_stack.len(), 1, "only root should exist");
 
     started_master.task.abort();
 }

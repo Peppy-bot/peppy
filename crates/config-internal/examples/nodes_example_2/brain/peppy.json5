@@ -8,6 +8,8 @@
     labels: [
       "brain"
     ],
+    // Eventually in the future if we want to containarize the node
+    // container_file: "./Dockerfile",
     start_cmd: [
       "cargo",
       "run",
