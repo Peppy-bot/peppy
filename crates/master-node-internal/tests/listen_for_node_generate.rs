@@ -256,3 +256,151 @@ async fn listen_for_node_generate_invalid_peppy_json5_fails() {
 
     started_master.task.abort();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_generate_missing_dependency_fails() {
+    let started_master = start_master_node().await;
+
+    let node_dir = tempdir().expect("failed to create temp node directory");
+    // The node subscribes to `video_stream` from `uvc_camera:0.1.0`, but this node doesn't exist in the node stack
+    // so the generation fails since it can't generate the Rust interfaces
+    write_node_config(
+        node_dir.path(),
+        r#"
+        {
+            schema_version: 1,
+            manifest: {
+                name: "my_robot_brain",
+                tag: "0.1.0",
+                labels: ["brain"],
+                add_cmd: ["cargo", "build", "--release"],
+                start_cmd: ["cargo", "run", "--release"],
+            },
+            parameters: {},
+            interfaces: {
+                exposes: {
+                    topics: [],
+                    services: [],
+                    actions: [],
+                },
+                subscribes_to: {
+                    topics: [
+                        {
+                            id: "camera_front",
+                            node: "uvc_camera",
+                            name: "video_stream",
+                            tag: "0.1.0",
+                        }
+                    ],
+                },
+            },
+        }
+        "#,
+    );
+
+    todo!(
+        "Finish. Currently this works so there is an issue with the business logic of `generate` service"
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_generate_generates_rust_interfaces() {
+    let started_master = start_master_node().await;
+
+    let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
+    write_node_config(
+        uvc_camera_node_dir.path(),
+        r#"
+        {
+            schema_version: 1,
+            manifest: {
+                name: "my_robot_brain",
+                tag: "0.1.0",
+                labels: ["brain"],
+                add_cmd: ["cargo", "build", "--release"],
+                start_cmd: ["cargo", "run", "--release"],
+            },
+            parameters: {},
+            interfaces: {
+                exposes: {
+                    topics: [
+                      {
+                        name: "video_stream",
+                        qos_profile: "sensor_data",
+                        message_format: {
+                            header: {
+                              $type: "object",
+                              stamp: "time",
+                              frame_id: "u32",
+                            },
+                            encoding: "string",
+                            width: "u32",
+                            height: "u32",
+                            image: {
+                              $type: "array",
+                              $items: "u8",
+                              $length: 3
+                            },
+                        },
+                      }
+                    ],
+                    services: [],
+                    actions: [],
+                },
+                subscribes_to: {
+                    topics: [
+                        {
+                            id: "camera_front",
+                            node: "uvc_camera",
+                            name: "video_stream",
+                            tag: "0.1.0",
+                        }
+                    ],
+                },
+            },
+        }
+        "#,
+    );
+
+    // TODO: Add uvc_camera to the node stack
+
+    // The second node depends on the first, but it's fine since the first node is now in the node stack
+    let brain_node_dir = tempdir().expect("failed to create temp node directory");
+    write_node_config(
+        brain_node_dir.path(),
+        r#"
+        {
+            schema_version: 1,
+            manifest: {
+                name: "my_robot_brain",
+                tag: "0.1.0",
+                labels: ["brain"],
+                add_cmd: ["cargo", "build", "--release"],
+                start_cmd: ["cargo", "run", "--release"],
+            },
+            parameters: {},
+            interfaces: {
+                exposes: {
+                    topics: [],
+                    services: [],
+                    actions: [],
+                },
+                subscribes_to: {
+                    topics: [
+                        {
+                          id: "camera_front",
+                          node: "uvc_camera",
+                          name: "video_stream",
+                          tag: "0.1.0",
+                        }
+                    ],
+                },
+            },
+        }
+        "#,
+    );
+
+    todo!(
+        "Finish. Check that the Rust interface in the my_robot_brain node has the generated Rust interface to communicate with uvc_camera"
+    )
+}
