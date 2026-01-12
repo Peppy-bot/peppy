@@ -8,9 +8,9 @@ use config::runtime::{LauncherRuntimeConfig, RuntimeConfig};
 use node_stack::{LaunchPlan, NodeEntity, NodeStack};
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
-use std::process::Child;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::process::Child;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -236,8 +236,10 @@ async fn start_launch_plan_instances(
                 Ok(child) => started_children.push(child),
                 Err(error) => {
                     for mut child in started_children {
-                        let _ = child.kill();
-                        drop(tokio::task::spawn_blocking(move || child.wait()));
+                        let _ = child.kill().await;
+                        drop(tokio::spawn(async move {
+                            let _ = child.wait().await;
+                        }));
                     }
                     return Err(error);
                 }
@@ -327,17 +329,17 @@ async fn kill_and_report_launch_error(
     instance_id: &str,
     error: &str,
 ) -> std::result::Result<Child, String> {
-    if let Err(kill_err) = child.kill() {
+    if let Err(kill_err) = child.kill().await {
         debug!(
             "Failed to kill process for node {}:{} instance {}: {}",
             node_name, tag, instance_id, kill_err
         );
     }
 
-    let stderr_output = tokio::task::spawn_blocking(move || child.wait_with_output())
+    let stderr_output = child
+        .wait_with_output()
         .await
         .ok()
-        .and_then(|result| result.ok())
         .map(|output| String::from_utf8_lossy(&output.stderr).to_string())
         .unwrap_or_default();
 

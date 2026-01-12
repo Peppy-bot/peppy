@@ -54,7 +54,8 @@ async fn listen_for_node_start_success() {
         "node_add should succeed, got error: {:?}",
         add_response.error_message
     );
-    // Leave aside for debugging
+    // Intentionally keep the started node process running: nodes are expected to linger
+    // and the test should still tear down cleanly.
     let _snapshot_node_path = add_response.snapshot_path;
 
     // Get the actual messaging endpoint from the Zenoh session
