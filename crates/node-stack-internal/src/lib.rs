@@ -6,7 +6,7 @@ mod error;
 pub use error::Error as NodeStackError;
 
 pub use deployment::types::{
-    collect_dependency_specs, exposes_interface, NodeEntity, NodeInstance, SerializedEdge,
-    SerializedNode, SerializedNodeGraph,
+    NodeEntity, NodeInstance, SerializedEdge, SerializedNode, SerializedNodeGraph,
+    collect_dependency_specs, exposes_interface,
 };
 pub use deployment::{LaunchPlan, NodeStack};

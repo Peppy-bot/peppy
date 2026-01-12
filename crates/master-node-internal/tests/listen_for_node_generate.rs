@@ -313,10 +313,121 @@ async fn listen_for_node_generate_missing_dependency_fails() {
 
     assert!(!response.success, "node_generate should fail");
     assert!(
-        response
-            .error_message
-            .contains("my_robot_brain:0.1.0 depends on `uvc_camera:0.1.0`, but it does not exist in the stack"),
+        response.error_message.contains(
+            "my_robot_brain:0.1.0 depends on `uvc_camera:0.1.0`, but it does not exist in the stack"
+        ),
         "error should mention missing dependency, got: {}",
+        response.error_message
+    );
+
+    assert!(
+        !peppygen_dir.exists(),
+        "peppygen directory should not exist at {}",
+        peppygen_dir.display()
+    );
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_generate_multiple_missing_dependencies_fails() {
+    let started_master = start_master_node().await;
+
+    let node_dir = tempdir().expect("failed to create temp node directory");
+    // The node subscribes to topics from multiple non-existent nodes, including
+    // duplicate subscriptions to the same node (uvc_camera appears twice)
+    write_node_config(
+        node_dir.path(),
+        r#"
+        {
+            schema_version: 1,
+            manifest: {
+                name: "my_robot_brain",
+                tag: "0.1.0",
+                labels: ["brain"],
+                add_cmd: ["cargo", "build", "--release"],
+                start_cmd: ["cargo", "run", "--release"],
+            },
+            parameters: {},
+            interfaces: {
+                exposes: {
+                    topics: [],
+                    services: [],
+                    actions: [],
+                },
+                subscribes_to: {
+                    topics: [
+                        {
+                            id: "camera_front",
+                            node: "uvc_camera",
+                            name: "video_stream",
+                            tag: "0.1.0",
+                        },
+                        {
+                            id: "camera_back",
+                            node: "uvc_camera",
+                            name: "video_stream_rear",
+                            tag: "0.1.0",
+                        },
+                        {
+                            id: "lidar_data",
+                            node: "lidar_sensor",
+                            name: "point_cloud",
+                            tag: "1.0.0",
+                        },
+                        {
+                            id: "gps_position",
+                            node: "gps_module",
+                            name: "location",
+                            tag: "2.0.0",
+                        }
+                    ],
+                },
+            },
+        }
+        "#,
+    );
+
+    let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+
+    let response = NodeGenerateRequest::new(node_dir.path())
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_generate request should complete");
+
+    assert!(!response.success, "node_generate should fail");
+    // The error message should contain all three unique missing dependencies
+    assert!(
+        response.error_message.contains("uvc_camera:0.1.0"),
+        "error should mention uvc_camera dependency, got: {}",
+        response.error_message
+    );
+    assert!(
+        response.error_message.contains("lidar_sensor:1.0.0"),
+        "error should mention lidar_sensor dependency, got: {}",
+        response.error_message
+    );
+    assert!(
+        response.error_message.contains("gps_module:2.0.0"),
+        "error should mention gps_module dependency, got: {}",
+        response.error_message
+    );
+    assert!(
+        response.error_message.contains("they do not exist"),
+        "error should use plural form for multiple missing dependencies, got: {}",
+        response.error_message
+    );
+    // Verify deduplication: uvc_camera should only appear once despite two subscriptions
+    assert_eq!(
+        response.error_message.matches("uvc_camera:0.1.0").count(),
+        1,
+        "uvc_camera:0.1.0 should appear exactly once (deduplicated), got: {}",
         response.error_message
     );
 

@@ -6,6 +6,7 @@ use config::node::NodeConfigParser;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -28,7 +29,9 @@ pub async fn listen_for_node_generate(
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(move |context| handle_node_generate_request(context, Arc::clone(&node_stack)))
+            .handle_requests(move |context| {
+                handle_node_generate_request(context, Arc::clone(&node_stack))
+            })
             .await
             .map_err(Into::into)
     });
@@ -36,7 +39,10 @@ pub async fn listen_for_node_generate(
     Ok(handle)
 }
 
-async fn handle_node_generate_request(context: ServiceRequestContext, node_stack: Arc<NodeStack>) -> PeppyResult<Bytes> {
+async fn handle_node_generate_request(
+    context: ServiceRequestContext,
+    node_stack: Arc<NodeStack>,
+) -> PeppyResult<Bytes> {
     let sender_instance_id = context.message().instance_id();
     handle_node_generate_request_inner(&context, &node_stack)
         .await
@@ -46,7 +52,10 @@ async fn handle_node_generate_request(context: ServiceRequestContext, node_stack
         })
 }
 
-async fn handle_node_generate_request_inner(context: &ServiceRequestContext, node_stack: &NodeStack) -> Result<Bytes> {
+async fn handle_node_generate_request_inner(
+    context: &ServiceRequestContext,
+    node_stack: &NodeStack,
+) -> Result<Bytes> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
@@ -85,33 +94,66 @@ async fn handle_node_generate_request_inner(context: &ServiceRequestContext, nod
                 // Validate dependencies exist in the node stack
                 let dependency_specs = node_stack::collect_dependency_specs(&node_config);
 
+                let mut missing_dependencies: HashSet<String> = HashSet::new();
+                let mut missing_interfaces: Vec<String> = Vec::new();
+
                 for spec in dependency_specs {
                     // Check if the dependency node exists in the stack
-                    if let Some(dependency_entity) = node_stack.find(&spec.node_name, &spec.node_tag) {
+                    if let Some(dependency_entity) =
+                        node_stack.find(&spec.node_name, &spec.node_tag)
+                    {
                         // Check if the dependency exposes the required interface
-                        if !node_stack::exposes_interface(dependency_entity.config(), &spec.interface) {
-                            return NodeGenerateResponse::failure(format!(
-                                "`{}:{} expects {} `{}` from `{}:{}`, but it is not exposed",
-                                node_config.manifest.name.as_str(),
-                                node_config.manifest.tag,
+                        if !node_stack::exposes_interface(
+                            dependency_entity.config(),
+                            &spec.interface,
+                        ) {
+                            missing_interfaces.push(format!(
+                                "expects {} `{}` from `{}:{}`, but it is not exposed",
                                 spec.interface.kind(),
                                 spec.interface.name(),
                                 spec.node_name,
                                 spec.node_tag
-                            ))
-                            .encode();
+                            ));
                         }
                     } else {
                         // Dependency node doesn't exist in the stack
-                        return NodeGenerateResponse::failure(format!(
-                            "`{}:{} depends on `{}:{}`, but it does not exist in the stack",
-                            node_config.manifest.name.as_str(),
-                            node_config.manifest.tag,
-                            spec.node_name,
-                            spec.node_tag
-                        ))
-                        .encode();
+                        missing_dependencies
+                            .insert(format!("{}:{}", spec.node_name, spec.node_tag));
                     }
+                }
+
+                if !missing_dependencies.is_empty() || !missing_interfaces.is_empty() {
+                    let mut errors: Vec<String> = Vec::new();
+
+                    if !missing_dependencies.is_empty() {
+                        let mut sorted_deps: Vec<_> = missing_dependencies.iter().collect();
+                        sorted_deps.sort();
+                        errors.push(format!(
+                            "depends on {}, but {} not exist in the stack",
+                            sorted_deps
+                                .iter()
+                                .map(|d| format!("`{}`", d))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            if missing_dependencies.len() == 1 {
+                                "it does"
+                            } else {
+                                "they do"
+                            }
+                        ));
+                    }
+
+                    for iface_error in missing_interfaces {
+                        errors.push(iface_error);
+                    }
+
+                    return NodeGenerateResponse::failure(format!(
+                        "`{}:{} {}",
+                        node_config.manifest.name.as_str(),
+                        node_config.manifest.tag,
+                        errors.join("; ")
+                    ))
+                    .encode();
                 }
             }
             Err(_) => {
