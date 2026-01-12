@@ -632,9 +632,16 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
         brain_lib_rs
     );
 
-    // The key test is that generation succeeded with dependency validation
-    // The uvc_camera node is in the stack, so the brain node can subscribe to its video_stream topic
-    // This proves that dependency validation is working correctly
+    // TODO: The assertion below is correct, but for some reason the uvc_camera_video_stream.rs is not generated. Check `topics_communication` in `/home/ekami/workspace/peppy/crates/generator-internal/tests/communication.rs` to understand how it's generated
+    let subscribed_topic_path = brain_peppygen_dir
+        .join("src")
+        .join("subscribed_topics")
+        .join("uvc_camera_video_stream.rs");
+    assert!(
+        subscribed_topic_path.exists(),
+        "peppygen uvc_camera_video_stream.rs should exist at {}",
+        subscribed_topic_path.display()
+    );
 
     started_master.task.abort();
 }
