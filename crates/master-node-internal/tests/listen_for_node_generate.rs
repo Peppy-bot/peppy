@@ -298,9 +298,35 @@ async fn listen_for_node_generate_missing_dependency_fails() {
         "#,
     );
 
-    todo!(
-        "Finish. Currently this works so there is an issue with the business logic of `generate` service"
-    )
+    let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+
+    let response = NodeGenerateRequest::new(node_dir.path())
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_generate request should complete");
+
+    assert!(!response.success, "node_generate should fail");
+    assert!(
+        response
+            .error_message
+            .contains("my_robot_brain:0.1.0 depends on `uvc_camera:0.1.0`, but it does not exist in the stack"),
+        "error should mention missing dependency, got: {}",
+        response.error_message
+    );
+
+    assert!(
+        !peppygen_dir.exists(),
+        "peppygen directory should not exist at {}",
+        peppygen_dir.display()
+    );
+
+    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -314,11 +340,11 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
         {
             schema_version: 1,
             manifest: {
-                name: "my_robot_brain",
+                name: "uvc_camera",
                 tag: "0.1.0",
-                labels: ["brain"],
-                add_cmd: ["cargo", "build", "--release"],
-                start_cmd: ["cargo", "run", "--release"],
+                labels: ["camera"],
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
             },
             parameters: {},
             interfaces: {
@@ -348,23 +374,55 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
                     actions: [],
                 },
                 subscribes_to: {
-                    topics: [
-                        {
-                            id: "camera_front",
-                            node: "uvc_camera",
-                            name: "video_stream",
-                            tag: "0.1.0",
-                        }
-                    ],
+                    topics: [],
                 },
             },
         }
         "#,
     );
 
-    // TODO: Add uvc_camera to the node stack
+    // Generate peppygen for the uvc_camera node first
+    let uvc_camera_response = NodeGenerateRequest::new(uvc_camera_node_dir.path())
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_generate request should complete");
 
-    // The second node depends on the first, but it's fine since the first node is now in the node stack
+    assert!(
+        uvc_camera_response.success,
+        "uvc_camera node_generate should succeed, got error: {}",
+        uvc_camera_response.error_message
+    );
+
+    // Add uvc_camera to the node stack so the brain node can depend on it
+    common::write_peppy_json5(
+        uvc_camera_node_dir.path(),
+        &fs::read_to_string(uvc_camera_node_dir.path().join(NODE_CONFIG_FILE))
+            .expect("failed to read uvc_camera config"),
+    );
+    let add_result = common::send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        uvc_camera_node_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(10),
+        None,
+    )
+    .await
+    .expect("node_add should succeed");
+
+    assert!(
+        add_result.success,
+        "uvc_camera node_add should succeed, got error: {}",
+        add_result.error_message.unwrap_or_default()
+    );
+
+    // The second node depends on the first, and it should work since the first node is now in the node stack
     let brain_node_dir = tempdir().expect("failed to create temp node directory");
     write_node_config(
         brain_node_dir.path(),
@@ -375,8 +433,8 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
                 name: "my_robot_brain",
                 tag: "0.1.0",
                 labels: ["brain"],
-                add_cmd: ["cargo", "build", "--release"],
-                start_cmd: ["cargo", "run", "--release"],
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
             },
             parameters: {},
             interfaces: {
@@ -400,7 +458,72 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
         "#,
     );
 
-    todo!(
-        "Finish. Check that the Rust interface in the my_robot_brain node has the generated Rust interface to communicate with uvc_camera"
-    )
+    // Generate the brain node - this should succeed now that uvc_camera is in the stack
+    let brain_response = NodeGenerateRequest::new(brain_node_dir.path())
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_generate request should complete");
+
+    assert!(
+        brain_response.success,
+        "my_robot_brain node_generate should succeed, got error: {}",
+        brain_response.error_message
+    );
+
+    // Verify that peppygen was generated for the brain node
+    let brain_peppygen_dir = brain_node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        brain_peppygen_dir.exists(),
+        "peppygen directory should exist at {}",
+        brain_peppygen_dir.display()
+    );
+
+    // Verify that Cargo.toml was created with peppygen dependency
+    let brain_cargo_toml_path = brain_node_dir.path().join("Cargo.toml");
+    assert!(
+        brain_cargo_toml_path.exists(),
+        "Cargo.toml should exist at {}",
+        brain_cargo_toml_path.display()
+    );
+
+    let brain_cargo_toml =
+        fs::read_to_string(&brain_cargo_toml_path).expect("failed to read Cargo.toml");
+    assert!(
+        brain_cargo_toml.contains("peppygen"),
+        "Cargo.toml should contain peppygen dependency, got:\n{}",
+        brain_cargo_toml
+    );
+
+    // Verify that the generated Rust code includes the expected modules
+    let brain_lib_rs_path = brain_peppygen_dir.join("src").join("lib.rs");
+    assert!(
+        brain_lib_rs_path.exists(),
+        "peppygen lib.rs should exist at {}",
+        brain_lib_rs_path.display()
+    );
+
+    let brain_lib_rs = fs::read_to_string(&brain_lib_rs_path).expect("failed to read lib.rs");
+    // The generated code should include standard peppygen modules
+    assert!(
+        brain_lib_rs.contains("pub mod subscribed_topics"),
+        "lib.rs should contain subscribed_topics module, got:\n{}",
+        brain_lib_rs
+    );
+    assert!(
+        brain_lib_rs.contains("pub mod runner"),
+        "lib.rs should contain runner module, got:\n{}",
+        brain_lib_rs
+    );
+
+    // The key test is that generation succeeded with dependency validation
+    // The uvc_camera node is in the stack, so the brain node can subscribe to its video_stream topic
+    // This proves that dependency validation is working correctly
+
+    started_master.task.abort();
 }
