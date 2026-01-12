@@ -13,11 +13,12 @@ use peppylib::messaging::{
 };
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Read};
-use std::process::{Child, Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, Notify, mpsc};
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -101,36 +102,42 @@ fn push_stderr_line(buffer: &Arc<StdMutex<VecDeque<String>>>, line: &str) {
     guard.push_back(line.to_string());
 }
 
-fn spawn_output_reader<R: Read + Send + 'static>(
+fn spawn_output_reader<R>(
     reader: R,
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     publish_enabled: Arc<AtomicBool>,
     feedback_sync: FeedbackSync,
     stream: FeedbackStream,
     stderr_buffer: Option<Arc<StdMutex<VecDeque<String>>>>,
-) {
-    tokio::task::spawn_blocking(move || {
-        let reader = BufReader::new(reader);
-        for line in reader.lines().flatten() {
+) -> JoinHandle<()>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(reader).lines();
+
+        loop {
+            let line = match lines.next_line().await {
+                Ok(Some(line)) => line,
+                Ok(None) => break,
+                Err(_) => break,
+            };
+
             if !publish_enabled.load(Ordering::Relaxed) {
                 continue;
             }
+
             if matches!(stream, FeedbackStream::Stderr) {
                 if let Some(buffer) = &stderr_buffer {
                     push_stderr_line(buffer, &line);
                 }
             }
-            if feedback_tx
-                .send(FeedbackLine {
-                    stream,
-                    line: line.to_string(),
-                })
-                .is_ok()
-            {
+
+            if feedback_tx.send(FeedbackLine { stream, line }).is_ok() {
                 feedback_sync.increment_read();
             }
         }
-    });
+    })
 }
 
 pub async fn listen_for_node_start(
@@ -414,26 +421,28 @@ async fn process_node_start(
         }
     });
 
+    let mut output_reader_handles = Vec::new();
+
     if let Some(stdout) = child.stdout.take() {
-        spawn_output_reader(
+        output_reader_handles.push(spawn_output_reader(
             stdout,
             feedback_tx.clone(),
             Arc::clone(&publish_enabled),
             feedback_sync.clone(),
             FeedbackStream::Stdout,
             None,
-        );
+        ));
     }
 
     if let Some(stderr) = child.stderr.take() {
-        spawn_output_reader(
+        output_reader_handles.push(spawn_output_reader(
             stderr,
             feedback_tx,
             Arc::clone(&publish_enabled),
             feedback_sync.clone(),
             FeedbackStream::Stderr,
             Some(Arc::clone(&stderr_buffer)),
-        );
+        ));
     }
 
     debug!(
@@ -459,7 +468,14 @@ async fn process_node_start(
             "Ready signal failed for node instance '{}': {}, killing process",
             instance_id_str, e
         );
-        let result = kill_and_report_error(child, instance_id_str, &e, stderr_buffer).await;
+        let result = kill_and_report_error(
+            child,
+            instance_id_str,
+            &e,
+            stderr_buffer,
+            output_reader_handles,
+        )
+        .await;
         feedback_sync.flush().await;
         publish_enabled.store(false, Ordering::Relaxed);
         return result;
@@ -489,7 +505,7 @@ async fn process_node_start(
                 instance_id_str
             );
             if let Err(e) = node_stack.add_instance(&node_name, &tag, Some(&instance_id)) {
-                if let Err(kill_err) = child.kill() {
+                if let Err(kill_err) = child.kill().await {
                     debug!(
                         "Failed to kill process for node instance '{}': {}",
                         instance_id_str, kill_err
@@ -511,7 +527,14 @@ async fn process_node_start(
                 "Health check failed for node instance '{}': {}, killing process",
                 instance_id_str, e
             );
-            let result = kill_and_report_error(child, instance_id_str, &e, stderr_buffer).await;
+            let result = kill_and_report_error(
+                child,
+                instance_id_str,
+                &e,
+                stderr_buffer,
+                output_reader_handles,
+            )
+            .await;
             feedback_sync.flush().await;
             publish_enabled.store(false, Ordering::Relaxed);
             result
@@ -582,15 +605,22 @@ async fn kill_and_report_error(
     instance_id_str: &str,
     error: &str,
     stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
+    output_reader_handles: Vec<JoinHandle<()>>,
 ) -> NodeStartResult {
-    if let Err(kill_err) = child.kill() {
+    if let Err(kill_err) = child.kill().await {
         debug!(
             "Failed to kill process for node instance '{}': {}",
             instance_id_str, kill_err
         );
     }
 
-    let _ = tokio::task::spawn_blocking(move || child.wait()).await;
+    let _ = child.wait().await;
+
+    // Drain any remaining output that was already in-flight so error reporting is stable.
+    // We intentionally ignore join errors so we don't mask the actual node start failure.
+    for handle in output_reader_handles {
+        let _ = handle.await;
+    }
 
     let stderr_output = {
         let guard = stderr_buffer.lock().expect("stderr buffer lock poisoned");
