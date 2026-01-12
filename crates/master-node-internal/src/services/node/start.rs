@@ -526,7 +526,7 @@ async fn kill_and_report_error(
 
     let stderr_output = {
         let guard = stderr_buffer.lock().expect("stderr buffer lock poisoned");
-        guard.join("\n")
+        guard.iter().cloned().collect::<Vec<_>>().join("\n")
     };
 
     if !stderr_output.is_empty() {
