@@ -1,9 +1,9 @@
 use config::peppy_config::{DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
 use config::{AnyType, NodeArguments};
-use master_node::encoding::NodeStartRequest;
+use master_node::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartResult};
 use names_generator2::get_random;
-use peppylib::MessengerHandle;
+use peppylib::{ActionMessenger, MessengerHandle, PeppyError};
 use rand::rng;
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,10 +11,13 @@ use tracing::info;
 
 use crate::context::{AppContext, DaemonState};
 use crate::error::{Error, Result};
+use crate::terminal::ScrollingOutput;
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
+const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 // Allow extra time for node startup (build verification, zenoh connection, health check)
-const START_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const RESULT_TIMEOUT: Duration = Duration::from_secs(60);
+const SCROLLING_OUTPUT_LINES: usize = 10;
 
 /// Converts a list of key=value string pairs into NodeArguments.
 /// Values are parsed with type inference:
@@ -111,22 +114,94 @@ pub async fn start_instance_async(
         node_name, tag, instance_id
     );
 
-    let start_request =
-        NodeStartRequest::new(&runtime_config_json, node_name.to_string(), tag.to_string());
-    let start_response = start_request
-        .poll(
+    let start_goal =
+        NodeStartGoal::new(&runtime_config_json, node_name.to_string(), tag.to_string());
+    let mut action_handle = start_goal
+        .send_goal(
             messenger_handle,
             master_node_name,
             CALLER_INSTANCE_ID,
-            master_node_name,
-            START_REQUEST_TIMEOUT,
+            Some(master_node_name),
+            None,
+            GOAL_TIMEOUT,
         )
         .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_start service: {}", e)))?;
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_start goal: {}", e)))?;
 
-    if !start_response.success {
+    let mut scrolling_output = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
+
+    let deadline = tokio::time::Instant::now() + RESULT_TIMEOUT;
+    let start_result = loop {
+        // Drain feedback so the publisher doesn't block on a full channel.
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                scrolling_output.clear();
+                return Err(Error::ExecutionFailed(
+                    "Timeout waiting for node_start result".to_string(),
+                ));
+            }
+            let remaining = deadline - now;
+            let drain_timeout = Duration::from_millis(50).min(remaining);
+            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+                Ok(Ok(msg)) => {
+                    let payload = msg.payload();
+                    if let Ok(feedback) = NodeStartFeedback::decode(&payload.to_bytes()) {
+                        scrolling_output.add_line(&feedback.line, feedback.is_stderr());
+                    }
+                }
+                Ok(Err(_)) => break,
+                Err(_) => break,
+            }
+        }
+
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            scrolling_output.clear();
+            return Err(Error::ExecutionFailed(
+                "Timeout waiting for node_start result".to_string(),
+            ));
+        }
+        let remaining = deadline - now;
+        let poll_timeout = Duration::from_millis(200).min(remaining);
+        match ActionMessenger::request_result(messenger_handle, &action_handle, poll_timeout).await
+        {
+            Ok(msg) => {
+                let payload = msg.payload().to_bytes();
+                match NodeStartResult::decode(&payload) {
+                    Ok(result) => break result,
+                    Err(err) => {
+                        let pending = std::str::from_utf8(payload.as_ref())
+                            .map(|text| text.starts_with("result pending"))
+                            .unwrap_or(false);
+                        if !pending {
+                            scrolling_output.clear();
+                            return Err(Error::ExecutionFailed(format!(
+                                "Failed to decode node_start result: {}",
+                                err
+                            )));
+                        }
+                    }
+                }
+            }
+            Err(PeppyError::ActionResultTimeout { .. }) => {}
+            Err(err) => {
+                scrolling_output.clear();
+                return Err(Error::ExecutionFailed(format!(
+                    "Failed to get node_start result: {}",
+                    err
+                )));
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+
+    scrolling_output.clear();
+
+    if !start_result.success {
         return Err(Error::ExecutionFailed(
-            start_response
+            start_result
                 .error_message
                 .unwrap_or_else(|| "node_start failed with no error message".to_string()),
         ));
