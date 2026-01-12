@@ -11,11 +11,11 @@ use node_stack::NodeStack;
 use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use rand::Rng;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -40,6 +40,33 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum FeedbackStream {
+    Stdout,
+    Stderr,
+}
+
+struct FeedbackLine {
+    stream: FeedbackStream,
+    line: String,
+}
+
+fn spawn_output_reader<R: Read + Send + 'static>(
+    reader: R,
+    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+    stream: FeedbackStream,
+) -> JoinHandle<()> {
+    tokio::task::spawn_blocking(move || {
+        let reader = BufReader::new(reader);
+        for line in reader.lines().flatten() {
+            let _ = feedback_tx.send(FeedbackLine {
+                stream,
+                line: line.to_string(),
+            });
+        }
+    })
 }
 
 /// Runs the add_cmd for a node and streams output via the feedback publisher.
@@ -70,42 +97,38 @@ async fn run_add_cmd_with_streaming(
         .spawn()
         .map_err(|e| format!("failed to execute add_cmd: {}", e))?;
 
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
+    let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
+    let feedback_publisher = feedback_publisher.clone();
+    let publisher_handle = tokio::spawn(async move {
+        while let Some(line) = feedback_rx.recv().await {
+            let feedback = match line.stream {
+                FeedbackStream::Stdout => NodeAddFeedback::stdout(&line.line),
+                FeedbackStream::Stderr => NodeAddFeedback::stderr(&line.line),
+            };
+            if let Ok(payload) = feedback.encode() {
+                let _ = feedback_publisher.publish(payload).await;
+            }
+        }
+    });
+
+    let mut reader_handles = Vec::new();
 
     // Stream stdout
-    if let Some(stdout) = stdout {
-        let feedback_publisher = feedback_publisher.clone();
-        tokio::task::spawn_blocking(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    let feedback = NodeAddFeedback::stdout(&line);
-                    if let Ok(payload) = feedback.encode() {
-                        // Use a blocking approach since we're in spawn_blocking
-                        let rt = tokio::runtime::Handle::current();
-                        let _ = rt.block_on(feedback_publisher.publish(payload));
-                    }
-                }
-            }
-        });
+    if let Some(stdout) = child.stdout.take() {
+        reader_handles.push(spawn_output_reader(
+            stdout,
+            feedback_tx.clone(),
+            FeedbackStream::Stdout,
+        ));
     }
 
     // Stream stderr
-    if let Some(stderr) = stderr {
-        let feedback_publisher = feedback_publisher.clone();
-        tokio::task::spawn_blocking(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    let feedback = NodeAddFeedback::stderr(&line);
-                    if let Ok(payload) = feedback.encode() {
-                        let rt = tokio::runtime::Handle::current();
-                        let _ = rt.block_on(feedback_publisher.publish(payload));
-                    }
-                }
-            }
-        });
+    if let Some(stderr) = child.stderr.take() {
+        reader_handles.push(spawn_output_reader(
+            stderr,
+            feedback_tx.clone(),
+            FeedbackStream::Stderr,
+        ));
     }
 
     // Wait for the process to complete
@@ -113,6 +136,12 @@ async fn run_add_cmd_with_streaming(
         .await
         .map_err(|e| format!("failed to wait for add_cmd: {}", e))?
         .map_err(|e| format!("failed to wait for add_cmd: {}", e))?;
+
+    for handle in reader_handles {
+        let _ = handle.await;
+    }
+    drop(feedback_tx);
+    let _ = publisher_handle.await;
 
     if !status.success() {
         return Err(format!("add_cmd failed with status {}", status));

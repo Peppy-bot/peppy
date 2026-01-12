@@ -15,10 +15,10 @@ use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult, Servic
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify, mpsc};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -42,19 +42,54 @@ impl Default for NodeStartActionState {
     }
 }
 
-struct FeedbackPublishGuard {
-    publish_enabled: Arc<AtomicBool>,
+#[derive(Clone, Copy)]
+enum FeedbackStream {
+    Stdout,
+    Stderr,
 }
 
-impl FeedbackPublishGuard {
-    fn new(publish_enabled: Arc<AtomicBool>) -> Self {
-        Self { publish_enabled }
+struct FeedbackLine {
+    stream: FeedbackStream,
+    line: String,
+}
+
+#[derive(Clone)]
+struct FeedbackSync {
+    read_count: Arc<AtomicU64>,
+    published_count: Arc<AtomicU64>,
+    notify: Arc<Notify>,
+}
+
+impl FeedbackSync {
+    fn new() -> Self {
+        Self {
+            read_count: Arc::new(AtomicU64::new(0)),
+            published_count: Arc::new(AtomicU64::new(0)),
+            notify: Arc::new(Notify::new()),
+        }
     }
-}
 
-impl Drop for FeedbackPublishGuard {
-    fn drop(&mut self) {
-        self.publish_enabled.store(false, Ordering::Relaxed);
+    fn increment_read(&self) {
+        self.read_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn increment_published(&self) {
+        self.published_count.fetch_add(1, Ordering::Relaxed);
+        self.notify.notify_waiters();
+    }
+
+    async fn flush(&self) {
+        let target = self.read_count.load(Ordering::Relaxed);
+        loop {
+            if self.published_count.load(Ordering::Relaxed) >= target {
+                break;
+            }
+            let notified = self.notify.notified();
+            if self.published_count.load(Ordering::Relaxed) >= target {
+                break;
+            }
+            notified.await;
+        }
     }
 }
 
@@ -68,29 +103,31 @@ fn push_stderr_line(buffer: &Arc<StdMutex<VecDeque<String>>>, line: &str) {
 
 fn spawn_output_reader<R: Read + Send + 'static>(
     reader: R,
-    feedback_publisher: TopicPublisher,
+    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     publish_enabled: Arc<AtomicBool>,
-    is_stderr: bool,
+    feedback_sync: FeedbackSync,
+    stream: FeedbackStream,
     stderr_buffer: Option<Arc<StdMutex<VecDeque<String>>>>,
 ) {
     tokio::task::spawn_blocking(move || {
         let reader = BufReader::new(reader);
-        let rt = tokio::runtime::Handle::current();
         for line in reader.lines().flatten() {
-            if is_stderr {
+            if !publish_enabled.load(Ordering::Relaxed) {
+                continue;
+            }
+            if matches!(stream, FeedbackStream::Stderr) {
                 if let Some(buffer) = &stderr_buffer {
                     push_stderr_line(buffer, &line);
                 }
             }
-            if publish_enabled.load(Ordering::Relaxed) {
-                let feedback = if is_stderr {
-                    NodeStartFeedback::stderr(&line)
-                } else {
-                    NodeStartFeedback::stdout(&line)
-                };
-                if let Ok(payload) = feedback.encode() {
-                    let _ = rt.block_on(feedback_publisher.publish(payload));
-                }
+            if feedback_tx
+                .send(FeedbackLine {
+                    stream,
+                    line: line.to_string(),
+                })
+                .is_ok()
+            {
+                feedback_sync.increment_read();
             }
         }
     });
@@ -358,15 +395,32 @@ async fn process_node_start(
     };
 
     let publish_enabled = Arc::new(AtomicBool::new(true));
-    let _publish_guard = FeedbackPublishGuard::new(Arc::clone(&publish_enabled));
+    let feedback_sync = FeedbackSync::new();
     let stderr_buffer = Arc::new(StdMutex::new(VecDeque::new()));
+
+    let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
+    let feedback_publisher = feedback_publisher.clone();
+    let feedback_sync_publisher = feedback_sync.clone();
+    tokio::spawn(async move {
+        while let Some(line) = feedback_rx.recv().await {
+            let feedback = match line.stream {
+                FeedbackStream::Stdout => NodeStartFeedback::stdout(&line.line),
+                FeedbackStream::Stderr => NodeStartFeedback::stderr(&line.line),
+            };
+            if let Ok(payload) = feedback.encode() {
+                let _ = feedback_publisher.publish(payload).await;
+            }
+            feedback_sync_publisher.increment_published();
+        }
+    });
 
     if let Some(stdout) = child.stdout.take() {
         spawn_output_reader(
             stdout,
-            feedback_publisher.clone(),
+            feedback_tx.clone(),
             Arc::clone(&publish_enabled),
-            false,
+            feedback_sync.clone(),
+            FeedbackStream::Stdout,
             None,
         );
     }
@@ -374,9 +428,10 @@ async fn process_node_start(
     if let Some(stderr) = child.stderr.take() {
         spawn_output_reader(
             stderr,
-            feedback_publisher.clone(),
+            feedback_tx,
             Arc::clone(&publish_enabled),
-            true,
+            feedback_sync.clone(),
+            FeedbackStream::Stderr,
             Some(Arc::clone(&stderr_buffer)),
         );
     }
@@ -404,7 +459,10 @@ async fn process_node_start(
             "Ready signal failed for node instance '{}': {}, killing process",
             instance_id_str, e
         );
-        return kill_and_report_error(child, instance_id_str, &e, stderr_buffer).await;
+        let result = kill_and_report_error(child, instance_id_str, &e, stderr_buffer).await;
+        feedback_sync.flush().await;
+        publish_enabled.store(false, Ordering::Relaxed);
+        return result;
     }
 
     debug!(
@@ -437,16 +495,26 @@ async fn process_node_start(
                         instance_id_str, kill_err
                     );
                 }
-                return NodeStartResult::failure(format!("Failed to register instance: {}", e));
+                let result =
+                    NodeStartResult::failure(format!("Failed to register instance: {}", e));
+                feedback_sync.flush().await;
+                publish_enabled.store(false, Ordering::Relaxed);
+                return result;
             }
-            NodeStartResult::success()
+            let result = NodeStartResult::success();
+            feedback_sync.flush().await;
+            publish_enabled.store(false, Ordering::Relaxed);
+            result
         }
         Err(e) => {
             debug!(
                 "Health check failed for node instance '{}': {}, killing process",
                 instance_id_str, e
             );
-            kill_and_report_error(child, instance_id_str, &e, stderr_buffer).await
+            let result = kill_and_report_error(child, instance_id_str, &e, stderr_buffer).await;
+            feedback_sync.flush().await;
+            publish_enabled.store(false, Ordering::Relaxed);
+            result
         }
     }
 }

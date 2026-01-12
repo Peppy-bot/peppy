@@ -118,32 +118,6 @@ pub async fn send_node_add_and_wait(
                 let payload = msg.payload().to_bytes();
                 match NodeAddResult::decode(&payload) {
                     Ok(result) => {
-                        // Grace period to drain remaining feedback
-                        let grace_deadline =
-                            tokio::time::Instant::now() + Duration::from_millis(500);
-                        while tokio::time::Instant::now() < grace_deadline {
-                            let remaining = grace_deadline - tokio::time::Instant::now();
-                            let drain_timeout = Duration::from_millis(50).min(remaining);
-                            match tokio::time::timeout(
-                                drain_timeout,
-                                action_handle.on_next_feedback(),
-                            )
-                            .await
-                            {
-                                Ok(Ok(msg)) => {
-                                    let payload = msg.payload();
-                                    if let Ok(feedback) =
-                                        NodeAddFeedback::decode(&payload.to_bytes())
-                                    {
-                                        if let Some(tx) = feedback_tx {
-                                            let _ = tx.send(feedback);
-                                        }
-                                    }
-                                }
-                                Ok(Err(_)) => break,
-                                Err(_) => break,
-                            }
-                        }
                         return Ok(result);
                     }
                     Err(err) => {
@@ -242,31 +216,6 @@ pub async fn send_node_start_and_wait(
                 let payload = msg.payload().to_bytes();
                 match NodeStartResult::decode(&payload) {
                     Ok(result) => {
-                        let grace_deadline =
-                            tokio::time::Instant::now() + Duration::from_millis(500);
-                        while tokio::time::Instant::now() < grace_deadline {
-                            let remaining = grace_deadline - tokio::time::Instant::now();
-                            let drain_timeout = Duration::from_millis(50).min(remaining);
-                            match tokio::time::timeout(
-                                drain_timeout,
-                                action_handle.on_next_feedback(),
-                            )
-                            .await
-                            {
-                                Ok(Ok(msg)) => {
-                                    let payload = msg.payload();
-                                    if let Ok(feedback) =
-                                        NodeStartFeedback::decode(&payload.to_bytes())
-                                    {
-                                        if let Some(tx) = feedback_tx {
-                                            let _ = tx.send(feedback);
-                                        }
-                                    }
-                                }
-                                Ok(Err(_)) => break,
-                                Err(_) => break,
-                            }
-                        }
                         return Ok(result);
                     }
                     Err(err) => {
