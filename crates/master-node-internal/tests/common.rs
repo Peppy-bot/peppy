@@ -260,7 +260,7 @@ fn init_test_node_project(node_name: &str, node_tag: &str) -> PathBuf {
     init_cargo_project(&node_dir, node_name);
     write_test_node_files(&node_dir, node_name, node_tag);
 
-    generator::generate_lib_for_build_system(BuildSystem::Rust, &node_dir)
+    generator::generate_lib_for_build_system(BuildSystem::Rust, &node_dir, Vec::new())
         .expect("failed to generate peppygen for test node");
 
     build_cargo_project(&node_dir);

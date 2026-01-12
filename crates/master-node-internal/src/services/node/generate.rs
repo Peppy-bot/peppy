@@ -171,7 +171,7 @@ async fn handle_node_generate_request_inner(
     let build_system = request.build_system;
     let node_root_dir = request.node_root_dir;
     match tokio::task::spawn_blocking(move || {
-        generator::generate_lib_for_build_system_with_subscribed(
+        generator::generate_lib_for_build_system(
             build_system,
             &node_root_dir,
             subscribed_interfaces,

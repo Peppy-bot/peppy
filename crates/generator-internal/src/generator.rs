@@ -14,30 +14,6 @@ use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 /// Generate an interface library for the given build system from a node directory.
 ///
 /// This function reads the `peppy.json5` configuration file from the `node_dir`,
-/// extracts the exposed interfaces, and generates a library for the specified build system.
-/// The library is generated at `node_dir/.peppy/libs/peppygen`.
-///
-/// # Arguments
-/// * `build_system` - The build system to generate for (Rust/Cargo or Python/Uv)
-/// * `node_dir` - Path to the node directory containing `peppy.json5`
-///
-/// # Errors
-/// Returns an error if:
-/// - The `peppy.json5` file is not found in `node_dir`
-/// - The configuration file cannot be parsed
-/// - Code generation fails
-pub fn generate_lib_for_build_system(
-    build_system: BuildSystem,
-    node_dir: impl AsRef<Path>,
-) -> Result<()> {
-    generate_lib_for_build_system_with_subscribed(build_system, node_dir, Vec::new())
-}
-
-/// Generate an interface library for the given build system from a node directory,
-/// including subscribed interfaces whose message formats have been resolved from
-/// dependency nodes.
-///
-/// This function reads the `peppy.json5` configuration file from the `node_dir`,
 /// extracts the exposed interfaces, combines them with the provided subscribed interfaces,
 /// and generates a library for the specified build system.
 /// The library is generated at `node_dir/.peppy/libs/peppygen`.
@@ -45,14 +21,14 @@ pub fn generate_lib_for_build_system(
 /// # Arguments
 /// * `build_system` - The build system to generate for (Rust/Cargo or Python/Uv)
 /// * `node_dir` - Path to the node directory containing `peppy.json5`
-/// * `subscribed_interfaces` - Subscribed interfaces with resolved message formats
+/// * `subscribed_interfaces` - Subscribed interfaces with resolved message formats from dependency nodes
 ///
 /// # Errors
 /// Returns an error if:
 /// - The `peppy.json5` file is not found in `node_dir`
 /// - The configuration file cannot be parsed
 /// - Code generation fails
-pub fn generate_lib_for_build_system_with_subscribed(
+pub fn generate_lib_for_build_system(
     build_system: BuildSystem,
     node_dir: impl AsRef<Path>,
     subscribed_interfaces: Vec<DeploymentInterface>,

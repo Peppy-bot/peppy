@@ -93,7 +93,9 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Byt
     }
 
     // Generate peppygen library (requires peppy.json5 to exist)
-    if let Err(e) = generator::generate_lib_for_build_system(request.build_system, &node_dir) {
+    if let Err(e) =
+        generator::generate_lib_for_build_system(request.build_system, &node_dir, Vec::new())
+    {
         return NodeInitResponse::failure(format!("Failed to generate peppygen: {}", e)).encode();
     }
 
