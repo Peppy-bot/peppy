@@ -24,6 +24,8 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 
 const STDERR_BUFFER_LINES: usize = 20;
+const STARTUP_OUTPUT_MAX_WAIT: Duration = Duration::from_millis(100);
+const STARTUP_OUTPUT_QUIET_WINDOW: Duration = Duration::from_millis(10);
 
 /// State for tracking the current node start action.
 enum NodeStartActionState {
@@ -59,6 +61,7 @@ struct FeedbackSync {
     read_count: Arc<AtomicU64>,
     published_count: Arc<AtomicU64>,
     notify: Arc<Notify>,
+    read_notify: Arc<Notify>,
 }
 
 impl FeedbackSync {
@@ -67,11 +70,13 @@ impl FeedbackSync {
             read_count: Arc::new(AtomicU64::new(0)),
             published_count: Arc::new(AtomicU64::new(0)),
             notify: Arc::new(Notify::new()),
+            read_notify: Arc::new(Notify::new()),
         }
     }
 
     fn increment_read(&self) {
         self.read_count.fetch_add(1, Ordering::Relaxed);
+        self.read_notify.notify_waiters();
     }
 
     fn increment_published(&self) {
@@ -90,6 +95,39 @@ impl FeedbackSync {
                 break;
             }
             notified.await;
+        }
+    }
+
+    async fn wait_for_read_quiescence(&self, max_wait: Duration, quiet_window: Duration) {
+        let start = Instant::now();
+        let mut last_read = self.read_count.load(Ordering::Relaxed);
+        let mut saw_read = last_read > 0;
+
+        loop {
+            let elapsed = Instant::now().duration_since(start);
+            if elapsed >= max_wait {
+                break;
+            }
+
+            let remaining = max_wait - elapsed;
+            let wait = quiet_window.min(remaining);
+
+            match tokio::time::timeout(wait, self.read_notify.notified()).await {
+                Ok(_) => {
+                    let current = self.read_count.load(Ordering::Relaxed);
+                    if current != last_read {
+                        last_read = current;
+                        saw_read = true;
+                    }
+                }
+                Err(_) => {
+                    // No reads during `wait` (quiet). If we've already seen at least one read,
+                    // treat that as the end of the initial burst.
+                    if saw_read {
+                        break;
+                    }
+                }
+            }
         }
     }
 }
@@ -517,6 +555,9 @@ async fn process_node_start(
                 publish_enabled.store(false, Ordering::Relaxed);
                 return result;
             }
+            feedback_sync
+                .wait_for_read_quiescence(STARTUP_OUTPUT_MAX_WAIT, STARTUP_OUTPUT_QUIET_WINDOW)
+                .await;
             let result = NodeStartResult::success();
             feedback_sync.flush().await;
             publish_enabled.store(false, Ordering::Relaxed);
