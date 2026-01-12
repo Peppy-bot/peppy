@@ -1,14 +1,13 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, create_test_node_with_name, send_node_add_and_wait, start_master_node,
-    start_master_node_with_health_timeout, start_master_node_with_zenoh_messenger,
-    write_peppy_json5,
+    create_test_node_with_name, send_node_add_and_wait, send_node_start_and_wait,
+    start_master_node, start_master_node_with_health_timeout,
+    start_master_node_with_zenoh_messenger, write_peppy_json5,
 };
 use config::node::Name as NodeName;
 use config::peppy_config::{DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
-use master_node::encoding::NodeStartRequest;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::ready::listen_for_node_ready;
 use std::sync::Arc;
@@ -79,18 +78,18 @@ async fn listen_for_node_start_success() {
     let runtime_config_json5 =
         serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
 
-    let node_start_request =
-        NodeStartRequest::new(&runtime_config_json5, TARGET_NODE_NAME, TARGET_NODE_TAG);
-    let start_response = node_start_request
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(60),
-        )
-        .await
-        .expect("node_start request should complete");
+    let start_response = send_node_start_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        Duration::from_secs(30),
+        Duration::from_secs(60),
+        None,
+    )
+    .await
+    .expect("node_start action should complete");
 
     // The start should succeed because the health check was responded to
     assert!(
@@ -186,18 +185,18 @@ async fn listen_for_node_start_timeout() {
         serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
 
     // Call node_start - this should timeout because the node won't respond to health checks
-    let node_start_request =
-        NodeStartRequest::new(&runtime_config_json5, TARGET_NODE_NAME, "0.1.0");
-    let start_response = node_start_request
-        .poll(
-            &started.caller_handle,
-            &started.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_start request should complete");
+    let start_response = send_node_start_and_wait(
+        &started.caller_handle,
+        &started.master_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        "0.1.0",
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        None,
+    )
+    .await
+    .expect("node_start action should complete");
 
     // The start should fail because the health check timed out
     assert!(
@@ -256,18 +255,18 @@ async fn listen_for_node_start_not_found() {
         serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
 
     // Call node_start - this should fail because the node doesn't exist in the node stack
-    let node_start_request =
-        NodeStartRequest::new(&runtime_config_json5, TARGET_NODE_NAME, "0.1.0");
-    let start_response = node_start_request
-        .poll(
-            &started.caller_handle,
-            &started.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_start request should complete");
+    let start_response = send_node_start_and_wait(
+        &started.caller_handle,
+        &started.master_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        "0.1.0",
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        None,
+    )
+    .await
+    .expect("node_start action should complete");
 
     // The start should fail because the node was not found
     assert!(
