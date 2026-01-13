@@ -48,7 +48,8 @@ fn run_generate_peppygen_lib_test(build_system: BuildSystem) -> (TempDir, std::p
     fs::write(&config_path, PEPPY_JSON5_CONFIG).expect("failed to write peppy.json5");
 
     // Generate the library
-    generate_lib_for_build_system(build_system, node_dir).expect("failed to generate library");
+    generate_lib_for_build_system(build_system, node_dir, Vec::new())
+        .expect("failed to generate library");
 
     // Verify the generated library structure exists
     let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
@@ -93,7 +94,7 @@ fn generate_peppygen_lib_minimal_config() {
     fs::write(&config_path, minimal_config).expect("failed to write peppy.json5");
 
     // Generate should succeed even with no interfaces
-    generate_lib_for_build_system(BuildSystem::Cargo, node_dir)
+    generate_lib_for_build_system(BuildSystem::Cargo, node_dir, Vec::new())
         .expect("failed to generate library for minimal config");
 
     // Verify the generated library exists
@@ -205,6 +206,6 @@ fn generate_peppygen_lib_missing_config() {
     let node_dir = temp_dir.path();
 
     // Try to generate without a peppy.json5 - should fail
-    let result = generate_lib_for_build_system(BuildSystem::Cargo, node_dir);
+    let result = generate_lib_for_build_system(BuildSystem::Cargo, node_dir, Vec::new());
     assert!(result.is_err(), "should fail when peppy.json5 is missing");
 }

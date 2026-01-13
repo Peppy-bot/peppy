@@ -69,8 +69,7 @@ struct NodeGenerateResponse {
     errorMessage @1 :Text;
 }
 
-# Node Start service
-struct NodeStartRequest {
+struct NodeStartGoal {
     # Runtime configuration in JSON5 format (PEPPY_RUNTIME_CONFIG)
     runtimeConfigJson5 @0 :Text;
     # Name of the node to start
@@ -79,7 +78,14 @@ struct NodeStartRequest {
     tag @2 :Text;
 }
 
-struct NodeStartResponse {
+struct NodeStartFeedback {
+    # Type of output: "stdout" or "stderr"
+    stream @0 :Text;
+    # The line of output
+    line @1 :Text;
+}
+
+struct NodeStartResult {
     # Whether the run was successful
     success @0 :Bool;
     # Error message if failed (optional)

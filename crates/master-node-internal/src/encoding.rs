@@ -14,8 +14,8 @@ pub use node::{
     add::NodeAddFeedback, add::NodeAddGoal, add::NodeAddResult, generate::NodeGenerateRequest,
     generate::NodeGenerateResponse, init::NodeInitRequest, init::NodeInitResponse,
     list::NodeListRequest, list::NodeListResponse, remove::NodeRemoveRequest,
-    remove::NodeRemoveResponse, start::NodeStartRequest, start::NodeStartResponse,
-    stop::NodeStopRequest, stop::NodeStopResponse,
+    remove::NodeRemoveResponse, start::NodeStartFeedback, start::NodeStartGoal,
+    start::NodeStartResult, stop::NodeStopRequest, stop::NodeStopResponse,
 };
 pub use ping::{PingRequest, PingResponse};
 pub use reset::{NodeResetRequest, NodeResetResponse};

@@ -19,7 +19,7 @@ rand = "0.9"
 serde_json = "1.0"
 serde_json5 = "0.2"
 thiserror = "2.0"
-tokio = { version = "1.47", features = ["sync", "rt", "time"] }
+tokio = { version = "1.47", features = ["io-util", "process", "sync", "rt", "time"] }
 tracing = "0.1"
 askama = "0.15"
 

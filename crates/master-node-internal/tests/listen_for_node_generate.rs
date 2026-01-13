@@ -256,3 +256,391 @@ async fn listen_for_node_generate_invalid_peppy_json5_fails() {
 
     started_master.task.abort();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_generate_missing_dependency_fails() {
+    let started_master = start_master_node().await;
+
+    let node_dir = tempdir().expect("failed to create temp node directory");
+    // The node subscribes to `video_stream` from `uvc_camera:0.1.0`, but this node doesn't exist in the node stack
+    // so the generation fails since it can't generate the Rust interfaces
+    write_node_config(
+        node_dir.path(),
+        r#"
+        {
+            schema_version: 1,
+            manifest: {
+                name: "my_robot_brain",
+                tag: "0.1.0",
+                labels: ["brain"],
+                add_cmd: ["cargo", "build", "--release"],
+                start_cmd: ["cargo", "run", "--release"],
+            },
+            parameters: {},
+            interfaces: {
+                exposes: {
+                    topics: [],
+                    services: [],
+                    actions: [],
+                },
+                subscribes_to: {
+                    topics: [
+                        {
+                            id: "camera_front",
+                            node: "uvc_camera",
+                            name: "video_stream",
+                            tag: "0.1.0",
+                        }
+                    ],
+                },
+            },
+        }
+        "#,
+    );
+
+    let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+
+    let response = NodeGenerateRequest::new(node_dir.path())
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_generate request should complete");
+
+    assert!(!response.success, "node_generate should fail");
+    assert!(
+        response.error_message.contains(
+            "my_robot_brain:0.1.0 depends on `uvc_camera:0.1.0`, but it does not exist in the stack"
+        ),
+        "error should mention missing dependency, got: {}",
+        response.error_message
+    );
+
+    assert!(
+        !peppygen_dir.exists(),
+        "peppygen directory should not exist at {}",
+        peppygen_dir.display()
+    );
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_generate_multiple_missing_dependencies_fails() {
+    let started_master = start_master_node().await;
+
+    let node_dir = tempdir().expect("failed to create temp node directory");
+    // The node subscribes to topics from multiple non-existent nodes, including
+    // duplicate subscriptions to the same node (uvc_camera appears twice)
+    write_node_config(
+        node_dir.path(),
+        r#"
+        {
+            schema_version: 1,
+            manifest: {
+                name: "my_robot_brain",
+                tag: "0.1.0",
+                labels: ["brain"],
+                add_cmd: ["cargo", "build", "--release"],
+                start_cmd: ["cargo", "run", "--release"],
+            },
+            parameters: {},
+            interfaces: {
+                exposes: {
+                    topics: [],
+                    services: [],
+                    actions: [],
+                },
+                subscribes_to: {
+                    topics: [
+                        {
+                            id: "camera_front",
+                            node: "uvc_camera",
+                            name: "video_stream",
+                            tag: "0.1.0",
+                        },
+                        {
+                            id: "camera_back",
+                            node: "uvc_camera",
+                            name: "video_stream_rear",
+                            tag: "0.1.0",
+                        },
+                        {
+                            id: "lidar_data",
+                            node: "lidar_sensor",
+                            name: "point_cloud",
+                            tag: "1.0.0",
+                        },
+                        {
+                            id: "gps_position",
+                            node: "gps_module",
+                            name: "location",
+                            tag: "2.0.0",
+                        }
+                    ],
+                },
+            },
+        }
+        "#,
+    );
+
+    let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+
+    let response = NodeGenerateRequest::new(node_dir.path())
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_generate request should complete");
+
+    assert!(!response.success, "node_generate should fail");
+    // The error message should contain all three unique missing dependencies
+    assert!(
+        response.error_message.contains("uvc_camera:0.1.0"),
+        "error should mention uvc_camera dependency, got: {}",
+        response.error_message
+    );
+    assert!(
+        response.error_message.contains("lidar_sensor:1.0.0"),
+        "error should mention lidar_sensor dependency, got: {}",
+        response.error_message
+    );
+    assert!(
+        response.error_message.contains("gps_module:2.0.0"),
+        "error should mention gps_module dependency, got: {}",
+        response.error_message
+    );
+    assert!(
+        response.error_message.contains("they do not exist"),
+        "error should use plural form for multiple missing dependencies, got: {}",
+        response.error_message
+    );
+    // Verify deduplication: uvc_camera should only appear once despite two subscriptions
+    assert_eq!(
+        response.error_message.matches("uvc_camera:0.1.0").count(),
+        1,
+        "uvc_camera:0.1.0 should appear exactly once (deduplicated), got: {}",
+        response.error_message
+    );
+
+    assert!(
+        !peppygen_dir.exists(),
+        "peppygen directory should not exist at {}",
+        peppygen_dir.display()
+    );
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_generate_generates_rust_interfaces() {
+    let started_master = start_master_node().await;
+
+    let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
+    write_node_config(
+        uvc_camera_node_dir.path(),
+        r#"
+        {
+            schema_version: 1,
+            manifest: {
+                name: "uvc_camera",
+                tag: "0.1.0",
+                labels: ["camera"],
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
+            },
+            parameters: {},
+            interfaces: {
+                exposes: {
+                    topics: [
+                      {
+                        name: "video_stream",
+                        qos_profile: "sensor_data",
+                        message_format: {
+                            header: {
+                              $type: "object",
+                              stamp: "time",
+                              frame_id: "u32",
+                            },
+                            encoding: "string",
+                            width: "u32",
+                            height: "u32",
+                            image: {
+                              $type: "array",
+                              $items: "u8",
+                              $length: 3
+                            },
+                        },
+                      }
+                    ],
+                    services: [],
+                    actions: [],
+                },
+                subscribes_to: {
+                    topics: [],
+                },
+            },
+        }
+        "#,
+    );
+
+    // Generate peppygen for the uvc_camera node first
+    let uvc_camera_response = NodeGenerateRequest::new(uvc_camera_node_dir.path())
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_generate request should complete");
+
+    assert!(
+        uvc_camera_response.success,
+        "uvc_camera node_generate should succeed, got error: {}",
+        uvc_camera_response.error_message
+    );
+
+    // Add uvc_camera to the node stack so the brain node can depend on it
+    common::write_peppy_json5(
+        uvc_camera_node_dir.path(),
+        &fs::read_to_string(uvc_camera_node_dir.path().join(NODE_CONFIG_FILE))
+            .expect("failed to read uvc_camera config"),
+    );
+    let add_result = common::send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        uvc_camera_node_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(10),
+        None,
+    )
+    .await
+    .expect("node_add should succeed");
+
+    assert!(
+        add_result.success,
+        "uvc_camera node_add should succeed, got error: {}",
+        add_result.error_message.unwrap_or_default()
+    );
+
+    // The second node depends on the first, and it should work since the first node is now in the node stack
+    let brain_node_dir = tempdir().expect("failed to create temp node directory");
+    write_node_config(
+        brain_node_dir.path(),
+        r#"
+        {
+            schema_version: 1,
+            manifest: {
+                name: "my_robot_brain",
+                tag: "0.1.0",
+                labels: ["brain"],
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
+            },
+            parameters: {},
+            interfaces: {
+                exposes: {
+                    topics: [],
+                    services: [],
+                    actions: [],
+                },
+                subscribes_to: {
+                    topics: [
+                        {
+                          id: "camera_front",
+                          node: "uvc_camera",
+                          name: "video_stream",
+                          tag: "0.1.0",
+                        }
+                    ],
+                },
+            },
+        }
+        "#,
+    );
+
+    // Generate the brain node - this should succeed now that uvc_camera is in the stack
+    let brain_response = NodeGenerateRequest::new(brain_node_dir.path())
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_generate request should complete");
+
+    assert!(
+        brain_response.success,
+        "my_robot_brain node_generate should succeed, got error: {}",
+        brain_response.error_message
+    );
+
+    // Verify that peppygen was generated for the brain node
+    let brain_peppygen_dir = brain_node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        brain_peppygen_dir.exists(),
+        "peppygen directory should exist at {}",
+        brain_peppygen_dir.display()
+    );
+
+    // Verify that Cargo.toml was created with peppygen dependency
+    let brain_cargo_toml_path = brain_node_dir.path().join("Cargo.toml");
+    assert!(
+        brain_cargo_toml_path.exists(),
+        "Cargo.toml should exist at {}",
+        brain_cargo_toml_path.display()
+    );
+
+    let brain_cargo_toml =
+        fs::read_to_string(&brain_cargo_toml_path).expect("failed to read Cargo.toml");
+    assert!(
+        brain_cargo_toml.contains("peppygen"),
+        "Cargo.toml should contain peppygen dependency, got:\n{}",
+        brain_cargo_toml
+    );
+
+    // Verify that the generated Rust code includes the expected modules
+    let brain_lib_rs_path = brain_peppygen_dir.join("src").join("lib.rs");
+    assert!(
+        brain_lib_rs_path.exists(),
+        "peppygen lib.rs should exist at {}",
+        brain_lib_rs_path.display()
+    );
+
+    let brain_lib_rs = fs::read_to_string(&brain_lib_rs_path).expect("failed to read lib.rs");
+    // The generated code should include standard peppygen modules
+    assert!(
+        brain_lib_rs.contains("pub mod subscribed_topics"),
+        "lib.rs should contain subscribed_topics module, got:\n{}",
+        brain_lib_rs
+    );
+    assert!(
+        brain_lib_rs.contains("pub mod runner"),
+        "lib.rs should contain runner module, got:\n{}",
+        brain_lib_rs
+    );
+
+    let subscribed_topic_path = brain_peppygen_dir
+        .join("src")
+        .join("subscribed_topics")
+        .join("uvc_camera_video_stream.rs");
+    assert!(
+        subscribed_topic_path.exists(),
+        "peppygen uvc_camera_video_stream.rs should exist at {}",
+        subscribed_topic_path.display()
+    );
+
+    started_master.task.abort();
+}

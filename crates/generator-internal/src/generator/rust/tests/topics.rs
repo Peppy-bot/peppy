@@ -24,6 +24,14 @@ const EXPOSED_TOPIC_EXAMPLE: &str = r#"
 }
 "#;
 
+const EXPOSED_TOPIC_EXAMPLE_EMPTY_FORMAT: &str = r#"
+{
+  name: "push_frame",
+  qos_profile: "sensor_data",
+  message_format: {}
+}
+"#;
+
 const EXPOSED_TOPIC_EXAMPLE2: &str = r#"
 {
   name: "push_lidar_object", // The name of the topic inside the `lidar_sensor` node
@@ -283,6 +291,92 @@ fn subscribed_to_two_topics_same_node() {
     for rendered in &artifacts {
         assert_contains_all(rendered, &["let node_name = \"uvc_camera\";"]);
     }
+}
+
+/// Checks for clippy warnings when there is only one exposed topic with an empty message format.
+#[test]
+fn clippy_single_exposed_topic_empty_format() {
+    let temp_dir = TempDir::new().unwrap();
+    let exposed_topic = parse_exposed_topic(EXPOSED_TOPIC_EXAMPLE_EMPTY_FORMAT);
+
+    let subscribed_action1: SubscribedAction = serde_json5::from_str(
+        r#"
+        {
+          id: "brain_move_arm",
+          node: "brain",
+          name: "move_arm",
+          tag: "0.1.0"
+        }
+        "#,
+    )
+    .unwrap();
+    let subscribed_action2: SubscribedAction = serde_json5::from_str(
+        r#"
+        {
+          id: "controller_rotate_servo",
+          node: "controller",
+          name: "rotate_servo_clockwise",
+          tag: "0.1.0"
+        }
+        "#,
+    )
+    .unwrap();
+    let goal_response_format: MessageFormat =
+        serde_json5::from_str(r#"{ accepted: "bool" }"#).unwrap();
+    let action_messages = SubscribedActionMessage {
+        goal_request: None,
+        goal_response: Some(goal_response_format),
+        feedback: None,
+        result_request: None,
+        result_response: None,
+    };
+
+    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    generator.add_exposed_topic(&exposed_topic).unwrap();
+    generator
+        .add_subscribed_action(&subscribed_action1, Some(&action_messages))
+        .unwrap();
+    generator
+        .add_subscribed_action(&subscribed_action2, Some(&action_messages))
+        .unwrap();
+    let output_config = copy_config_to_output(&user_node, &output_dir);
+    generator.build(&output_dir).unwrap();
+    fs::remove_file(output_config).unwrap();
+
+    let clippy_output = Command::new("cargo")
+        .arg("clippy")
+        .arg("--all-targets")
+        .arg("--color")
+        .arg("always")
+        .arg("--")
+        .arg("-D")
+        .arg("warnings")
+        .env("CARGO_NET_OFFLINE", "true")
+        .current_dir(&output_dir)
+        .output()
+        .expect("failed to run cargo clippy on generated crate");
+    assert!(
+        clippy_output.status.success(),
+        "cargo clippy failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        clippy_output.status.code(),
+        String::from_utf8_lossy(&clippy_output.stdout),
+        String::from_utf8_lossy(&clippy_output.stderr)
+    );
+
+    let exposed_topics_contents = std::fs::read_to_string(output_dir.join("src/exposed_topics.rs"))
+        .expect("failed to read exposed_topics module");
+    assert_contains_all(&exposed_topics_contents, &["pub mod push_frame;"]);
+
+    let subscribed_actions_contents =
+        std::fs::read_to_string(output_dir.join("src/subscribed_actions.rs"))
+            .expect("failed to read subscribed_actions module");
+    assert_contains_all(
+        &subscribed_actions_contents,
+        &[
+            "pub mod brain_move_arm;",
+            "pub mod controller_rotate_servo_clockwise;",
+        ],
+    );
 }
 
 /// This is a long running test that verifies the generated code compiles and passes clippy
