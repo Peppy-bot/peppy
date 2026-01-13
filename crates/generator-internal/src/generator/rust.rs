@@ -2742,15 +2742,21 @@ fn build_topic_emit(
         Some(spec) => {
             let builder_type = &spec.builder_type;
             let assignments = &spec.assignments;
-            let root_ident = Ident::new("root", Span::call_site());
+            let init_root_tokens = if assignments.is_empty() {
+                quote!(let _ = capnp_msg.init_root::<#builder_type>();)
+            } else {
+                quote! {
+                    let mut root = capnp_msg.init_root::<#builder_type>();
+                    #(#assignments)*
+                }
+            };
 
             quote! {
                 #[allow(clippy::too_many_arguments)]
                 pub async fn #method_ident(#method_signature) -> crate::Result<()> {
                     let mut capnp_msg = capnp::message::Builder::new_default();
                     {
-                        let mut #root_ident = capnp_msg.init_root::<#builder_type>();
-                        #(#assignments)*
+                        #init_root_tokens
                     }
 
                     let mut buffer = Vec::new();
@@ -3900,6 +3906,25 @@ fn build_request_deserializer(
     // Common deserialization body builder
     let build_deserializer_body =
         |return_ty: TokenStream, result_expr: TokenStream, field_statements: Vec<TokenStream>| {
+            let root_stmt = if field_statements.is_empty() {
+                quote! {
+                    message_reader
+                        .get_root::<#reader_type>()
+                        .map_err(|source| crate::Error::CapnpDeserialize {
+                            context: String::from(#context_expr),
+                            source,
+                        })?;
+                }
+            } else {
+                quote! {
+                    let root = message_reader
+                        .get_root::<#reader_type>()
+                        .map_err(|source| crate::Error::CapnpDeserialize {
+                            context: String::from(#context_expr),
+                            source,
+                        })?;
+                }
+            };
             quote! {
                 fn #deserializer_fn_name(payload: &[u8]) -> crate::Result<#return_ty> {
                     let mut cursor = std::io::Cursor::new(payload);
@@ -3912,12 +3937,7 @@ fn build_request_deserializer(
                             source,
                         })?;
 
-                    let root = message_reader
-                        .get_root::<#reader_type>()
-                        .map_err(|source| crate::Error::CapnpDeserialize {
-                            context: String::from(#context_expr),
-                            source,
-                        })?;
+                    #root_stmt
 
                     #(#field_statements)*
 
@@ -4020,8 +4040,17 @@ fn build_response_serialization_code(
         service_instance_ident,
     );
 
+    let uses_response_data = spec.format.0.iter().any(|(field_name, _)| {
+        !(spec.include_service_instance_id && field_name.as_str() == "instance_id")
+    });
+    let response_stmt = if uses_response_data {
+        quote!(let response = #callback_call?;)
+    } else {
+        quote!(let _ = #callback_call?;)
+    };
+
     quote!({
-        let response = #callback_call?;
+        #response_stmt
         #serialization
     })
 }
@@ -4157,9 +4186,17 @@ fn build_action_payload_handler(
         let error_context = quote!(format!("{} {}", stringify!(#handler_name), ACTION_NAME));
         let serialization =
             build_response_payload_tokens(spec, &response_ident, &error_context, None);
+        let uses_response_data = spec.format.0.iter().any(|(field_name, _)| {
+            !(spec.include_service_instance_id && field_name.as_str() == "instance_id")
+        });
+        let response_stmt = if uses_response_data {
+            quote!(let response = handler(request)?;)
+        } else {
+            quote!(let _ = handler(request)?;)
+        };
 
         quote!({
-            let response = handler(request)?;
+            #response_stmt
             #serialization
         })
     } else {
@@ -4170,6 +4207,11 @@ fn build_action_payload_handler(
     };
 
     if has_payload {
+        let request_deserialize_stmt = if request_data_struct.is_some() {
+            quote!(let request_data = #deserializer_name(payload)?;)
+        } else {
+            quote!(let () = #deserializer_name(payload)?;)
+        };
         quote! {
             fn #handler_name<F>(
                 payload: &[u8],
@@ -4180,7 +4222,7 @@ fn build_action_payload_handler(
             where
                 F: Fn(#request_struct) -> crate::Result<#response_ty>,
             {
-                let request_data = #deserializer_name(payload)?;
+                #request_deserialize_stmt
                 #request_construction
 
                 let response_payload = #response_serialization;
@@ -4228,6 +4270,25 @@ fn build_action_request_deserializer(
         deserialize_fields_from_format(request_format, params, label, &context_expr);
 
     let request_expr = build_result_expr_from_values(params, &value_idents, request_struct);
+    let root_stmt = if field_statements.is_empty() {
+        quote! {
+            message_reader
+                .get_root::<#reader_type>()
+                .map_err(|source| crate::Error::CapnpDeserialize {
+                    context: #context_expr,
+                    source,
+                })?;
+        }
+    } else {
+        quote! {
+            let root = message_reader
+                .get_root::<#reader_type>()
+                .map_err(|source| crate::Error::CapnpDeserialize {
+                    context: #context_expr,
+                    source,
+                })?;
+        }
+    };
 
     quote! {
         fn #deserializer_fn_name(payload: &[u8]) -> crate::Result<#return_ty> {
@@ -4241,12 +4302,7 @@ fn build_action_request_deserializer(
                     source,
                 })?;
 
-            let root = message_reader
-                .get_root::<#reader_type>()
-                .map_err(|source| crate::Error::CapnpDeserialize {
-                    context: #context_expr,
-                    source,
-                })?;
+            #root_stmt
 
             #(#field_statements)*
 
@@ -4283,15 +4339,21 @@ fn build_action_feedback_emit(
         Some(spec) => {
             let builder_type = &spec.builder_type;
             let assignments = &spec.assignments;
-            let root_ident = Ident::new("root", Span::call_site());
+            let init_root_tokens = if assignments.is_empty() {
+                quote!(let _ = capnp_msg.init_root::<#builder_type>();)
+            } else {
+                quote! {
+                    let mut root = capnp_msg.init_root::<#builder_type>();
+                    #(#assignments)*
+                }
+            };
 
             quote! {
                 #[allow(clippy::too_many_arguments)]
                 pub async fn emit_feedback(#method_signature) -> crate::Result<()> {
                     let mut capnp_msg = capnp::message::Builder::new_default();
                     {
-                        let mut #root_ident = capnp_msg.init_root::<#builder_type>();
-                        #(#assignments)*
+                        #init_root_tokens
                     }
 
                     let mut buffer = Vec::new();
@@ -4442,11 +4504,19 @@ fn build_response_payload_tokens(
         ));
     }
 
+    let init_root_tokens = if assignments.is_empty() {
+        quote!(let _ = capnp_msg.init_root::<#builder_type>();)
+    } else {
+        quote! {
+            let mut #builder_ident = capnp_msg.init_root::<#builder_type>();
+            #( #assignments )*
+        }
+    };
+
     quote!({
         let mut capnp_msg = capnp::message::Builder::new_default();
         {
-            let mut #builder_ident = capnp_msg.init_root::<#builder_type>();
-            #( #assignments )*
+            #init_root_tokens
         }
         let mut buffer = Vec::new();
         capnp::serialize::write_message(&mut buffer, &capnp_msg).map_err(|source| {

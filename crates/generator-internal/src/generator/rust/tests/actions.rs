@@ -48,6 +48,42 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
 }
 "#;
 
+const EXPOSED_ACTION_EXAMPLE_EMPTY_GOAL_REQUEST: &str = r#"
+{
+  name: "move_arm",
+  goal_service: {
+    request_message_format: {},
+    response_message_format: {
+      accepted: "bool"
+    }
+  },
+  feedback_topic: {
+    qos_profile: "sensor_data",
+    message_format: {
+      new_position: {
+        $type: "array",
+        $items: "i32",
+        $length: 3
+      }
+    }
+  },
+  result_service: {
+    response_message_format: {
+      success: "bool",
+      error_msg: {
+        $type: "string",
+        $optional: true
+      },
+      final_position: {
+        $type: "array",
+        $items: "i32",
+        $length: 3
+      }
+    }
+  }
+}
+"#;
+
 const EXPOSED_ACTION_EXAMPLE2: &str = r#"
 {
   name: "rotate_servo_clockwise",
@@ -767,6 +803,105 @@ fn subscribed_action_without_feedback() {
         !rendered.contains("fn deserialize_feedback_payload"),
         rendered,
         "expected feedback payload helper to be omitted without feedback format"
+    );
+}
+
+/// This is a long running test
+/// Checks for clippy warnings when there is only one exposed action with an empty goal request.
+#[test]
+fn clippy_single_exposed_action_empty_goal_request() {
+    let temp_dir = TempDir::new().unwrap();
+    let action: ExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE_EMPTY_GOAL_REQUEST).unwrap();
+
+    let subscribed_action1: SubscribedAction =
+        serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+    let subscribed_action1_goal_request: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
+    let subscribed_action1_goal_response: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT1).unwrap();
+    let subscribed_action1_feedback: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
+    let subscribed_action1_result_response: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
+    let subscribed_action1_messages = SubscribedActionMessage {
+        goal_request: Some(subscribed_action1_goal_request),
+        goal_response: Some(subscribed_action1_goal_response),
+        feedback: Some(subscribed_action1_feedback),
+        result_request: None,
+        result_response: Some(subscribed_action1_result_response),
+    };
+
+    let subscribed_action2: SubscribedAction =
+        serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE2).unwrap();
+    let subscribed_action2_goal_response: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT2).unwrap();
+    let subscribed_action2_feedback: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT2).unwrap();
+    let subscribed_action2_result_response: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2).unwrap();
+    let subscribed_action2_messages = SubscribedActionMessage {
+        goal_request: None,
+        goal_response: Some(subscribed_action2_goal_response),
+        feedback: Some(subscribed_action2_feedback),
+        result_request: None,
+        result_response: Some(subscribed_action2_result_response),
+    };
+
+    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    generator.add_exposed_action(&action).unwrap();
+    generator
+        .add_subscribed_action(&subscribed_action1, Some(&subscribed_action1_messages))
+        .unwrap();
+    generator
+        .add_subscribed_action(&subscribed_action2, Some(&subscribed_action2_messages))
+        .unwrap();
+    let output_config = copy_config_to_output(&user_node, &output_dir);
+    generator.build(&output_dir).unwrap();
+    fs::remove_file(output_config).unwrap();
+
+    let clippy_output = Command::new("cargo")
+        .arg("clippy")
+        .arg("--all-targets")
+        .arg("--color")
+        .arg("always")
+        .arg("--")
+        .arg("-D")
+        .arg("warnings")
+        .env("CARGO_NET_OFFLINE", "true")
+        .current_dir(&output_dir)
+        .output()
+        .expect("failed to run cargo clippy on generated crate");
+    assert!(
+        clippy_output.status.success(),
+        "cargo clippy failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        clippy_output.status.code(),
+        String::from_utf8_lossy(&clippy_output.stdout),
+        String::from_utf8_lossy(&clippy_output.stderr)
+    );
+
+    let exposed_actions_mod = output_dir.join("src/exposed_actions.rs");
+    assert!(
+        exposed_actions_mod.exists(),
+        "Expected exposed_actions module file so `peppygen::exposed_actions::<action>` resolves"
+    );
+    let exposed_actions_contents =
+        fs::read_to_string(&exposed_actions_mod).expect("failed to read exposed_actions module");
+    assert_contains_all(&exposed_actions_contents, &["pub mod move_arm;"]);
+
+    let subscribed_actions_mod = output_dir.join("src/subscribed_actions.rs");
+    assert!(
+        subscribed_actions_mod.exists(),
+        "Expected subscribed_actions module file so `peppygen::subscribed_actions::<action>` resolves"
+    );
+    let subscribed_actions_contents = fs::read_to_string(&subscribed_actions_mod)
+        .expect("failed to read subscribed_actions module");
+    assert_contains_all(
+        &subscribed_actions_contents,
+        &[
+            "pub mod brain_move_arm;",
+            "pub mod controller_rotate_servo_clockwise;",
+        ],
     );
 }
 
