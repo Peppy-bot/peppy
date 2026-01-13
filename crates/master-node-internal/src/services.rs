@@ -217,6 +217,7 @@ impl MasterNode {
                 master_node_name,
                 self.instance_id(),
                 self.node_name(),
+                Arc::clone(&self.node_stack),
             )
             .await?,
         ];

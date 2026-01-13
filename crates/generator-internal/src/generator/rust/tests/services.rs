@@ -342,6 +342,93 @@ fn subscribed_service_without_response_payload() {
     assert_artifact_contains(&artifacts, "let _ = peppylib::ServiceMessenger::poll(");
 }
 
+/// Checks for clippy warnings when there is only one exposed service without a request body.
+#[test]
+fn clippy_single_exposed_service_without_request_body() {
+    let temp_dir = TempDir::new().unwrap();
+    let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE3).unwrap();
+
+    let subscribed_action1: SubscribedAction = serde_json5::from_str(
+        r#"
+        {
+          id: "brain_move_arm",
+          node: "brain",
+          name: "move_arm",
+          tag: "0.1.0"
+        }
+        "#,
+    )
+    .unwrap();
+    let subscribed_action2: SubscribedAction = serde_json5::from_str(
+        r#"
+        {
+          id: "controller_rotate_servo",
+          node: "controller",
+          name: "rotate_servo_clockwise",
+          tag: "0.1.0"
+        }
+        "#,
+    )
+    .unwrap();
+    let goal_response_format: MessageFormat =
+        serde_json5::from_str(r#"{ accepted: "bool" }"#).unwrap();
+    let action_messages = SubscribedActionMessage {
+        goal_request: None,
+        goal_response: Some(goal_response_format),
+        feedback: None,
+        result_request: None,
+        result_response: None,
+    };
+
+    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    generator.add_exposed_service(&exposed_service).unwrap();
+    generator
+        .add_subscribed_action(&subscribed_action1, Some(&action_messages))
+        .unwrap();
+    generator
+        .add_subscribed_action(&subscribed_action2, Some(&action_messages))
+        .unwrap();
+    let output_config = copy_config_to_output(&user_node, &output_dir);
+    generator.build(&output_dir).unwrap();
+    fs::remove_file(output_config).unwrap();
+
+    let clippy_output = Command::new("cargo")
+        .arg("clippy")
+        .arg("--all-targets")
+        .arg("--color")
+        .arg("always")
+        .arg("--")
+        .arg("-D")
+        .arg("warnings")
+        .env("CARGO_NET_OFFLINE", "true")
+        .current_dir(&output_dir)
+        .output()
+        .expect("failed to run cargo clippy on generated crate");
+    assert!(
+        clippy_output.status.success(),
+        "cargo clippy failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        clippy_output.status.code(),
+        String::from_utf8_lossy(&clippy_output.stdout),
+        String::from_utf8_lossy(&clippy_output.stderr)
+    );
+
+    let exposed_services_contents =
+        std::fs::read_to_string(output_dir.join("src/exposed_services.rs"))
+            .expect("failed to read exposed_services module");
+    assert_contains_all(&exposed_services_contents, &["pub mod get_system_status;"]);
+
+    let subscribed_actions_contents =
+        std::fs::read_to_string(output_dir.join("src/subscribed_actions.rs"))
+            .expect("failed to read subscribed_actions module");
+    assert_contains_all(
+        &subscribed_actions_contents,
+        &[
+            "pub mod brain_move_arm;",
+            "pub mod controller_rotate_servo_clockwise;",
+        ],
+    );
+}
+
 /// This is a long running test that verifies the generated code compiles and passes clippy
 #[test]
 fn compile_lib_with_exposed_and_subscribed_services() {

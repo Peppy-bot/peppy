@@ -1,15 +1,16 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, create_test_node_with_name, send_node_add_and_wait, start_master_node,
-    start_master_node_with_health_timeout, start_master_node_with_zenoh_messenger,
-    write_peppy_json5,
+    create_test_node_with_name, send_node_add_and_wait, send_node_start_and_wait,
+    start_master_node, start_master_node_with_health_timeout,
+    start_master_node_with_zenoh_messenger, write_peppy_json5,
 };
 use config::node::Name as NodeName;
 use config::peppy_config::{DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
-use master_node::encoding::NodeStartRequest;
+use master_node::encoding::NodeStartFeedback;
 use peppylib::messaging::MessengerHandle;
+use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,7 +54,8 @@ async fn listen_for_node_start_success() {
         "node_add should succeed, got error: {:?}",
         add_response.error_message
     );
-    // Leave aside for debugging
+    // Intentionally keep the started node process running: nodes are expected to linger
+    // and the test should still tear down cleanly.
     let _snapshot_node_path = add_response.snapshot_path;
 
     // Get the actual messaging endpoint from the Zenoh session
@@ -79,18 +81,18 @@ async fn listen_for_node_start_success() {
     let runtime_config_json5 =
         serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
 
-    let node_start_request =
-        NodeStartRequest::new(&runtime_config_json5, TARGET_NODE_NAME, TARGET_NODE_TAG);
-    let start_response = node_start_request
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(60),
-        )
-        .await
-        .expect("node_start request should complete");
+    let start_response = send_node_start_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        Duration::from_secs(30),
+        Duration::from_secs(60),
+        None,
+    )
+    .await
+    .expect("node_start action should complete");
 
     // The start should succeed because the health check was responded to
     assert!(
@@ -186,18 +188,18 @@ async fn listen_for_node_start_timeout() {
         serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
 
     // Call node_start - this should timeout because the node won't respond to health checks
-    let node_start_request =
-        NodeStartRequest::new(&runtime_config_json5, TARGET_NODE_NAME, "0.1.0");
-    let start_response = node_start_request
-        .poll(
-            &started.caller_handle,
-            &started.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_start request should complete");
+    let start_response = send_node_start_and_wait(
+        &started.caller_handle,
+        &started.master_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        "0.1.0",
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        None,
+    )
+    .await
+    .expect("node_start action should complete");
 
     // The start should fail because the health check timed out
     assert!(
@@ -256,18 +258,18 @@ async fn listen_for_node_start_not_found() {
         serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
 
     // Call node_start - this should fail because the node doesn't exist in the node stack
-    let node_start_request =
-        NodeStartRequest::new(&runtime_config_json5, TARGET_NODE_NAME, "0.1.0");
-    let start_response = node_start_request
-        .poll(
-            &started.caller_handle,
-            &started.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_start request should complete");
+    let start_response = send_node_start_and_wait(
+        &started.caller_handle,
+        &started.master_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        "0.1.0",
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        None,
+    )
+    .await
+    .expect("node_start action should complete");
 
     // The start should fail because the node was not found
     assert!(
@@ -285,5 +287,122 @@ async fn listen_for_node_start_not_found() {
     );
 
     // Abort the master node task
+    started.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_start_streams_stdout_and_stderr() {
+    const TARGET_NODE_NAME: &str = "stream_output_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_INSTANCE_ID: &str = "stream_output_instance";
+    const STDOUT_MARKER: &str = "peppy_start_stdout_marker";
+    const STDERR_MARKER: &str = "peppy_start_stderr_marker";
+
+    let started = start_master_node().await;
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                start_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_response = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.master_node_name,
+        source_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        None,
+    )
+    .await
+    .expect("node_add should succeed");
+
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let ready_task = listen_for_node_ready(
+        &node_messenger,
+        &started.master_node_name,
+        TARGET_INSTANCE_ID,
+        TARGET_NODE_NAME,
+    )
+    .await
+    .expect("node ready service should start");
+    let health_task = listen_for_node_health(
+        &node_messenger,
+        &started.master_node_name,
+        TARGET_INSTANCE_ID,
+        TARGET_NODE_NAME,
+    )
+    .await
+    .expect("node health service should start");
+
+    // Allow ready/health services to establish listeners.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let runtime_config = RuntimeConfig::new(
+        "127.0.0.1",
+        7448,
+        DeploymentInstance {
+            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
+            arguments: Default::default(),
+        },
+        TARGET_NODE_NAME,
+        &started.master_node_name,
+    )
+    .expect("runtime config should be valid");
+
+    let runtime_config_json5 =
+        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+
+    let (feedback_tx, mut feedback_rx) =
+        tokio::sync::mpsc::unbounded_channel::<NodeStartFeedback>();
+    let start_response = send_node_start_and_wait(
+        &started.caller_handle,
+        &started.master_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        Duration::from_secs(5),
+        Duration::from_secs(10),
+        Some(feedback_tx),
+    )
+    .await
+    .expect("node_start action should complete");
+
+    assert!(
+        start_response.success,
+        "node_start should succeed, got error: {:?}",
+        start_response.error_message
+    );
+
+    let mut feedback = Vec::new();
+    while let Ok(entry) = feedback_rx.try_recv() {
+        feedback.push(entry);
+    }
+    let saw_stdout = feedback
+        .iter()
+        .any(|entry| entry.is_stdout() && entry.line.trim() == STDOUT_MARKER);
+    let saw_stderr = feedback
+        .iter()
+        .any(|entry| entry.is_stderr() && entry.line.trim() == STDERR_MARKER);
+
+    assert!(saw_stdout, "stdout feedback should include marker");
+    assert!(saw_stderr, "stderr feedback should include marker");
+
+    ready_task.abort();
+    health_task.abort();
+    let _ = std::fs::remove_dir_all(&add_response.snapshot_path);
     started.task.abort();
 }
