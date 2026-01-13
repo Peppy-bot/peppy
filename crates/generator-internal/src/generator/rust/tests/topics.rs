@@ -4,7 +4,7 @@ use std::process::Command;
 
 const EXPOSED_TOPIC_EXAMPLE: &str = r#"
 {
-  name: "push_frame",
+  name: "video_stream",
   qos_profile: "sensor_data",
   message_format: {
     header: {
@@ -15,10 +15,9 @@ const EXPOSED_TOPIC_EXAMPLE: &str = r#"
     encoding: "string",
     width: "u32",
     height: "u32",
-    image: {
+    frame: {
       $type: "array",
-      $items: "u8",
-      $length: 3
+      $items: "u8"
     }
   }
 }
@@ -26,7 +25,7 @@ const EXPOSED_TOPIC_EXAMPLE: &str = r#"
 
 const EXPOSED_TOPIC_EXAMPLE_EMPTY_FORMAT: &str = r#"
 {
-  name: "push_frame",
+  name: "video_stream",
   qos_profile: "sensor_data",
   message_format: {}
 }
@@ -71,10 +70,9 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1: &str = r#"
     encoding: "string",
     width: "u32",
     height: "u32",
-    image: {
+    frame: {
         $type: "array",
-        $items: "u8",
-        $length: 3
+        $items: "u8"
     }
 }
 "#;
@@ -139,7 +137,7 @@ fn expose_topic() {
         &rendered,
         &[
             "let mut capnp_msg = capnp::message::Builder::new_default();",
-            "crate::capnp::push_frame_message_capnp::push_frame_message::Builder",
+            "crate::capnp::video_stream_message_capnp::video_stream_message::Builder",
         ],
     );
 
@@ -148,7 +146,7 @@ fn expose_topic() {
         &rendered,
         &[
             "root.set_encoding(encoding.as_str());",
-            "root.set_image(image.as_ref());",
+            "root.set_frame(frame.as_ref());",
             "root.reborrow().init_header();",
             "peppylib::encoding::convert_time",
         ],
@@ -159,7 +157,7 @@ fn expose_topic() {
         &rendered,
         &[
             "pub struct MessageHeader",
-            "image: [u8; 3]",
+            "frame: Vec<u8>",
             "pub async fn emit(",
         ],
     );
@@ -168,7 +166,7 @@ fn expose_topic() {
     assert_contains_all(
         &rendered,
         &[
-            "let as_topic = \"push_frame\";",
+            "let as_topic = \"video_stream\";",
             "let qos = peppylib::config::QoSProfile::SensorData;",
             "peppylib::TopicMessenger::emit(",
         ],
@@ -192,7 +190,7 @@ fn expose_two_topics() {
     );
 
     // Verify each topic gets its own distinct artifact with correct schema
-    assert_artifact_contains(&artifacts, "push_frame_message_capnp");
+    assert_artifact_contains(&artifacts, "video_stream_message_capnp");
     assert_artifact_contains(&artifacts, "push_lidar_object_message_capnp");
 }
 
@@ -220,7 +218,7 @@ fn subscribed_to_topic() {
             "pub struct Message",
             "pub struct MessageHeader",
             "pub stamp: std::time::SystemTime",
-            "pub image: [u8; 3]",
+            "pub frame: Vec<u8>",
         ],
     );
 
@@ -255,7 +253,7 @@ fn subscribed_to_topic() {
         &rendered,
         &[
             "crate::Error::TopicSubscribe",
-            "crate::Error::InvalidFixedBytes",
+            "crate::Error::SubscriptionClosed",
         ],
     );
 }
@@ -365,7 +363,7 @@ fn clippy_single_exposed_topic_empty_format() {
 
     let exposed_topics_contents = std::fs::read_to_string(output_dir.join("src/exposed_topics.rs"))
         .expect("failed to read exposed_topics module");
-    assert_contains_all(&exposed_topics_contents, &["pub mod push_frame;"]);
+    assert_contains_all(&exposed_topics_contents, &["pub mod video_stream;"]);
 
     let subscribed_actions_contents =
         std::fs::read_to_string(output_dir.join("src/subscribed_actions.rs"))
@@ -456,8 +454,10 @@ fn compile_lib_with_exposed_and_subscribed_topics() {
 
     // Verify expected module files exist
     assert!(
-        output_dir.join("src/exposed_topics/push_frame.rs").exists(),
-        "Expected push_frame module"
+        output_dir
+            .join("src/exposed_topics/video_stream.rs")
+            .exists(),
+        "Expected video_stream module"
     );
     assert!(
         output_dir

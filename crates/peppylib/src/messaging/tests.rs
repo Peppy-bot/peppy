@@ -120,7 +120,7 @@ async fn topic_publish_subscribe_no_target_instance_id() {
 
     let qos = QoSProfile::Reliable;
     let node_name = "uvc_camera";
-    let topic = "video_frame";
+    let topic = "video_stream";
     let payload = Bytes::from_static(b"A message");
 
     let subscriber_master_node = "master_node_subscribe";
@@ -181,7 +181,7 @@ async fn topic_publish_subscribe_with_target_instance_id() {
 
     let qos = QoSProfile::Reliable;
     let node_name = "uvc_camera";
-    let topic = "video_frame";
+    let topic = "video_stream";
 
     // Use the same master_node for both emitters to isolate instance_id filtering
     let emitter_master_node = "master_node_emit";
@@ -269,7 +269,7 @@ async fn topic_publish_subscribe_with_target_master_node() {
 
     let qos = QoSProfile::Reliable;
     let node_name = "uvc_camera";
-    let topic = "video_frame";
+    let topic = "video_stream";
 
     // The messages emitted from this one will never be received by any subscriber
     let emitter_master_node1 = "master_node_emit1";
@@ -355,7 +355,7 @@ async fn topic_publish_reliable_5000hz_messages() {
     let router = TestRouterContext::start().await;
 
     let node_name = "uvc_camera";
-    let topic = "video_frame";
+    let topic = "video_stream";
     let qos = QoSProfile::Reliable;
 
     let sender_handle = router.topic_messenger().await;

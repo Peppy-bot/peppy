@@ -32,7 +32,7 @@ const BRAIN_NODE_NAME: &str = "brain";
 // --- Topics exposes and its corresponding subscriber
 const EXPOSED_TOPIC_EXAMPLE: &str = r#"
 {
-  name: "push_frame",
+  name: "video_stream",
   qos_profile: "sensor_data",
   message_format: {
     header: {
@@ -43,10 +43,9 @@ const EXPOSED_TOPIC_EXAMPLE: &str = r#"
   encoding: "string",
     width: "u32",
     height: "u32",
-    image: {
+    frame: {
       $type: "array",
-      $items: "u8",
-      $length: 3
+      $items: "u8"
     }
   }
 }
@@ -56,7 +55,7 @@ const SUBSCRIBED_TOPIC_EXAMPLE: &str = r#"
 {
   id: "camera_frame",
   node: "uvc_camera",
-  name: "push_frame",
+  name: "video_stream",
   tag: "0.1.0"
 }
 "#;
@@ -71,10 +70,9 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
   encoding: "string",
   width: "u32",
   height: "u32",
-  image: {
+  frame: {
     $type: "array",
-    $items: "u8",
-    $length: 3
+    $items: "u8"
   }
 }
 "#;
@@ -124,7 +122,7 @@ async fn topics_communication() {
     // TODO: An exit signal should be sent to the subscriber to terminate the process
     let subscriber_main = r#"
 use peppygen::runner;
-use peppygen::subscribed_topics::uvc_camera_push_frame::on_next_message_received;
+use peppygen::subscribed_topics::uvc_camera_video_stream::on_next_message_received;
 use peppygen::Result;
 
 fn main() -> Result<()> {
@@ -185,7 +183,7 @@ fn main() -> Result<()> {
     init_cargo_user_node(&user_node_exposer);
     // TODO: An exit signal should be sent to the exposer to terminate the process
     let exposer_main = r#"
-use peppygen::exposed_topics::push_frame;
+use peppygen::exposed_topics::video_stream;
 use peppygen::runner;
 use peppygen::Result;
 use std::time::Duration;
@@ -199,16 +197,16 @@ fn main() -> Result<()> {
         tokio::spawn(async move {
             let mut frame_id = 0u32;
             loop {
-                let _ = push_frame::emit(
+                let _ = video_stream::emit(
                     &node_runner_clone,
-                    push_frame::MessageHeader {
+                    video_stream::MessageHeader {
                         stamp: std::time::SystemTime::now(),
                         frame_id,
                     },
                     "rgb8".to_owned(),
                     640,
                     480,
-                    [1, 2, 3],
+                    vec![1, 2, 3],
                 )
                 .await;
 
