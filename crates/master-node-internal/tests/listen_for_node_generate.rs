@@ -473,10 +473,9 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
                             encoding: "string",
                             width: "u32",
                             height: "u32",
-                            image: {
+                            frame: {
                               $type: "array",
-                              $items: "u8",
-                              $length: 3
+                              $items: "u8"
                             },
                         },
                       }

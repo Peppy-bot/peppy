@@ -33,7 +33,7 @@
     exposes: {
       topics: [
         {
-          name: "stream",
+          name: "video_stream",
           qos_profile: "sensor_data",
           message_format: {
             header: {
@@ -44,10 +44,9 @@
             encoding: "string",
             width: "u32",
             height: "u32",
-            image: {
+            frame: {
               $type: "array",
-              $items: "u8",
-              $length: 3
+              $items: "u8"
             },
           },
         }
