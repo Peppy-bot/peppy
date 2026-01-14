@@ -63,3 +63,8 @@ pub fn nodes_cache_dir() -> std::path::PathBuf {
 pub fn logs_dir() -> std::path::PathBuf {
     peppy_data_dir().join("logs")
 }
+
+/// Returns the runtime config file path.
+pub fn runtime_config_path() -> std::path::PathBuf {
+    peppy_data_dir().join("runtime/runtime_config.json")
+}

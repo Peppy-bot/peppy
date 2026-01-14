@@ -2,7 +2,7 @@ use crate::Result;
 use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartResult};
 use crate::names;
 use bytes::Bytes;
-use config::consts::{RUNTIME_CONFIG_VAR_NAME, logs_dir};
+use config::consts::{RUNTIME_CONFIG_VAR_NAME, logs_dir, runtime_config_path};
 use config::node::Name;
 use config::runtime::RuntimeConfig;
 use config::{AnyType, NodeArguments};
@@ -802,13 +802,9 @@ pub fn start_node(entity: &NodeEntity, runtime_config_json5: &str) -> std::io::R
         entity.root_path()
     );
 
-    // Write the runtime config to a file in the node's .peppy directory
+    // Write the runtime config to a file in the .peppy directory
     // PEPPY_RUNTIME_CONFIG expects a file path, not JSON content
-    let runtime_config_path = entity
-        .root_path()
-        .join(".peppy")
-        .join("runtime")
-        .join("runtime_config.json");
+    let runtime_config_path = runtime_config_path();
 
     if let Some(parent) = runtime_config_path.parent() {
         std::fs::create_dir_all(parent)?;
