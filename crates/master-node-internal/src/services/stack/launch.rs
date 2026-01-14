@@ -132,7 +132,7 @@ async fn handle_stack_launch_request_inner(
     }
 
     let plan = tokio::task::spawn_blocking(move || -> std::result::Result<LaunchPlan, String> {
-        LaunchPlan::from_config(master_node_config, peppy_launcher, &nodes_directory, None)
+        LaunchPlan::from_config(master_node_config, peppy_launcher, &nodes_directory)
             .map_err(|e| format!("failed to build launch plan: {e}"))
     })
     .await
