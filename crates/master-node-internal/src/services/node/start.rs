@@ -2,7 +2,8 @@ use crate::Result;
 use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartResult};
 use crate::names;
 use bytes::Bytes;
-use config::consts::{RUNTIME_CONFIG_VAR_NAME, logs_dir, runtime_config_path};
+use chrono::Local;
+use config::consts::{RUNTIME_CONFIG_VAR_NAME, runtime_config_path, start_logs_dir};
 use config::node::Name;
 use config::runtime::RuntimeConfig;
 use config::{AnyType, NodeArguments};
@@ -228,7 +229,8 @@ where
 
             // Always write to log file, regardless of publish_enabled state
             if let Ok(mut file) = log_file.lock() {
-                let _ = writeln!(file, "[{}] {}", stream_prefix, line);
+                let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+                let _ = writeln!(file, "[{}] [{}] {}", timestamp, stream_prefix, line);
             }
 
             if !publish_enabled.load(Ordering::Relaxed) {
@@ -527,7 +529,7 @@ async fn process_node_start(
     let stderr_buffer = Arc::new(StdMutex::new(VecDeque::new()));
 
     // Create log file for stdout/stderr
-    let log_dir = logs_dir();
+    let log_dir = start_logs_dir();
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
         debug!("Failed to create logs directory {:?}: {}", log_dir, e);
         return NodeStartResult::failure(format!("Failed to create logs directory: {}", e));

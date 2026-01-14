@@ -11,6 +11,7 @@ node-stack = { path = "../node-stack-internal" }
 peppylib = { path = "../peppylib" }
 generator = { path = "../generator-internal" }
 bytes = "1.10"
+chrono = "0.4"
 hostname = "0.4"
 capnp = "0.25"
 futures = "0.3"
