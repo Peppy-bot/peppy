@@ -262,8 +262,7 @@ fn launcher_file_resolves_dependency_graph() {
 
     // DO NOT add lidar_sensor and uvc_camera to project_dir, they will be automatically pulled fromt the local github repo
 
-    let plan =
-        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    let plan = LaunchPlan::from_launch_file(master_node_config(), &launch_file).expect("plan");
     let stack = plan.node_stack();
 
     assert_eq!(
@@ -286,7 +285,7 @@ fn launcher_file_resolves_dependency_graph() {
         );
     }
 
-    let nodes_cache_dir = project_dir.join(".peppy").join("nodes");
+    let nodes_cache_dir = config::consts::nodes_cache_dir();
     assert!(
         nodes_cache_dir.is_dir(),
         "nodes cache dir {:?} should exist",
@@ -365,7 +364,6 @@ fn launcher_deployment_with_zero_instances_is_unresolved() {
 
     let plan = LaunchPlan::with_nodes(
         &launch_file,
-        None,
         NodeStack::new(master_node_config(), None, PathBuf::from("/tmp")),
     )
     .expect("plan");
@@ -420,8 +418,8 @@ fn remote_deployment_manifest_mismatch_is_unresolved() {
                 .replace("$GIT_REPO", &remote.path().to_string_lossy()),
             );
 
-            let plan = LaunchPlan::from_launch_file(master_node_config(), &launch_file, None)
-                .expect("plan");
+            let plan =
+                LaunchPlan::from_launch_file(master_node_config(), &launch_file).expect("plan");
             assert_eq!(plan.node_stack().len(), 1, "only master should be present");
             assert_deployment_not_resolvable(
                 &plan,
@@ -460,8 +458,8 @@ fn remote_deployment_manifest_mismatch_is_unresolved() {
                 .replace("$URL", &url.to_string()),
             );
 
-            let plan = LaunchPlan::from_launch_file(master_node_config(), &launch_file, None)
-                .expect("plan");
+            let plan =
+                LaunchPlan::from_launch_file(master_node_config(), &launch_file).expect("plan");
             assert_eq!(plan.node_stack().len(), 1, "only master should be present");
             assert_deployment_not_resolvable(
                 &plan,
@@ -545,7 +543,7 @@ fn deployment_with_invalid_parameters_is_unresolved() {
         .push_config(lidar_node, true, PathBuf::from("/tmp"))
         .expect("lidar node inserted");
 
-    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+    let plan = LaunchPlan::with_nodes(&launch_file, input_stack).expect("plan");
 
     assert_eq!(plan.node_stack().len(), 1, "only master should be present");
 
@@ -646,7 +644,7 @@ fn deployment_parameters_with_invalid_type_is_unresolved() {
         .push_config(sensor_node, true, PathBuf::from("/tmp"))
         .expect("sensor node inserted");
 
-    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+    let plan = LaunchPlan::with_nodes(&launch_file, input_stack).expect("plan");
 
     assert_eq!(plan.node_stack().len(), 1, "only master should be present");
 
@@ -704,7 +702,7 @@ fn build_node_stack_uses_deployment_instance_ids() {
         .push_config(alpha_node, true, PathBuf::from("/tmp"))
         .expect("alpha node inserted");
 
-    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+    let plan = LaunchPlan::with_nodes(&launch_file, input_stack).expect("plan");
     let stack = plan.node_stack();
 
     assert_eq!(
@@ -816,8 +814,7 @@ fn optional_node_excluded_when_unresolvable() {
     let launch_file = root.join("peppy_launcher.json5");
     std::fs::write(&launch_file, launch_content).expect("failed to write launch config");
 
-    let plan =
-        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    let plan = LaunchPlan::from_launch_file(master_node_config(), &launch_file).expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
@@ -860,7 +857,7 @@ fn optional_node_excluded_when_unresolvable() {
         "optional deployment should not appear in the stack when it fails to resolve"
     );
 
-    let nodes_cache_dir = root.join(".peppy").join("nodes");
+    let nodes_cache_dir = config::consts::nodes_cache_dir();
     assert!(
         nodes_cache_dir.is_dir(),
         "nodes cache dir {:?} should exist",
@@ -909,7 +906,7 @@ fn optional_dependency_from_launcher_missing_is_unresolved() {
         .push_config(alpha_node, true, PathBuf::from("/tmp"))
         .expect("alpha node inserted");
 
-    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+    let plan = LaunchPlan::with_nodes(&launch_file, input_stack).expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
@@ -986,7 +983,7 @@ fn optional_dependency_from_launcher_with_wrong_tag_is_unresolved() {
         .push_config(beta_node, true, PathBuf::from("/tmp"))
         .expect("beta v1 inserted (but deployment expects v2)");
 
-    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+    let plan = LaunchPlan::with_nodes(&launch_file, input_stack).expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
@@ -1062,7 +1059,7 @@ fn dependant_resolves_when_optional_dependency_resolves() {
         .push_config(beta_node, true, PathBuf::from("/tmp"))
         .expect("beta node inserted");
 
-    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+    let plan = LaunchPlan::with_nodes(&launch_file, input_stack).expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
@@ -1146,7 +1143,7 @@ fn dependant_errors_when_optional_dependency_unresolved() {
         .push_config(gamma_node, true, PathBuf::from("/tmp"))
         .expect("gamma node inserted");
 
-    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+    let plan = LaunchPlan::with_nodes(&launch_file, input_stack).expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
@@ -1251,7 +1248,7 @@ fn required_optional_dependency_surfaces_error() {
         .push_config(beta_node, true, PathBuf::from("/tmp"))
         .expect("beta node inserted");
 
-    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+    let plan = LaunchPlan::with_nodes(&launch_file, input_stack).expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
@@ -1342,7 +1339,7 @@ fn unlisted_dependency_reports_missing_error() {
         .push_config(alpha_node, true, PathBuf::from("/tmp"))
         .expect("alpha node inserted");
 
-    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+    let plan = LaunchPlan::with_nodes(&launch_file, input_stack).expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
@@ -1414,7 +1411,7 @@ fn missing_interface_on_dependency_is_reported() {
         .push_config(lidar_node, true, PathBuf::from("/tmp"))
         .expect("lidar node inserted");
 
-    let plan = LaunchPlan::with_nodes(&launch_file, None, input_stack).expect("plan");
+    let plan = LaunchPlan::with_nodes(&launch_file, input_stack).expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 

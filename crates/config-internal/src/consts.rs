@@ -38,8 +38,8 @@ pub fn app_env() -> AppEnv {
 /// Environment-aware root dir value.
 pub fn logs_root_dir() -> &'static str {
     match app_env() {
-        AppEnv::Dev => ".peppy/logs/",
-        AppEnv::Prod => "/var/log/peppy/", // In prod the root dir is `/` on the system
+        AppEnv::Dev => ".peppy/logs/", // "~/.peppy/logs/"
+        AppEnv::Prod => "/tmp/.peppy/logs/",
     }
 }
 
@@ -56,4 +56,11 @@ pub fn peppy_data_dir() -> std::path::PathBuf {
         }
         AppEnv::Dev => std::env::temp_dir().join(".peppy"),
     }
+}
+
+/// Returns the nodes cache directory.
+/// In production: ~/.peppy/nodes
+/// In development: /tmp/.peppy/nodes
+pub fn nodes_cache_dir() -> std::path::PathBuf {
+    peppy_data_dir().join("nodes")
 }

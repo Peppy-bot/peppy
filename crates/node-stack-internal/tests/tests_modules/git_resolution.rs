@@ -39,8 +39,7 @@ fn git_repo_is_cloned_and_resolved() {
         launcher_config,
     );
 
-    let plan =
-        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    let plan = LaunchPlan::from_launch_file(master_node_config(), &launch_file).expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
@@ -92,7 +91,7 @@ fn git_repo_missing_tag_is_unresolvable() {
     let launch_file =
         write_config_str(project_root.join("peppy_launcher.json5"), &launcher_content);
 
-    let plan = LaunchPlan::from_launch_file(master_node_config(), launch_file, None).expect("plan");
+    let plan = LaunchPlan::from_launch_file(master_node_config(), launch_file).expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
@@ -131,7 +130,7 @@ fn git_repo_missing_tag_is_unresolvable() {
         reason
     );
 
-    let nodes_cache_dir = project_root.join(".peppy").join("nodes");
+    let nodes_cache_dir = config::consts::nodes_cache_dir();
     assert!(
         nodes_cache_dir.is_dir(),
         "nodes cache dir {:?} should be created even on failure",
@@ -169,8 +168,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
         launcher_config,
     );
 
-    let plan =
-        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    let plan = LaunchPlan::from_launch_file(master_node_config(), &launch_file).expect("plan");
     assert_eq!(plan.node_stack().len(), 2, "master + uvc_camera");
     let deployment = plan
         .report()
@@ -206,8 +204,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
     repo.tag("1.0.0", &commit, &signature, "tag", true)
         .expect("retag commit");
 
-    let plan =
-        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    let plan = LaunchPlan::from_launch_file(master_node_config(), &launch_file).expect("plan");
     assert_eq!(plan.node_stack().len(), 2, "master + uvc_camera");
     let deployment = plan
         .report()

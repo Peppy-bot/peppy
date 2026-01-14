@@ -44,8 +44,7 @@ fn http_bundle_is_downloaded_and_resolved() {
         launcher_config,
     );
 
-    let plan =
-        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    let plan = LaunchPlan::from_launch_file(master_node_config(), &launch_file).expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
@@ -114,8 +113,7 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
         launcher_config,
     );
 
-    let plan =
-        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    let plan = LaunchPlan::from_launch_file(master_node_config(), &launch_file).expect("plan");
     assert_eq!(plan.node_stack().len(), 2, "master + uvc_camera");
     let planned = plan
         .report()
@@ -144,8 +142,7 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
     };
     write_config(launch_file.clone(), launcher_config);
 
-    let plan =
-        LaunchPlan::from_launch_file(master_node_config(), &launch_file, None).expect("plan");
+    let plan = LaunchPlan::from_launch_file(master_node_config(), &launch_file).expect("plan");
     assert_eq!(plan.node_stack().len(), 2, "master + uvc_camera");
     let planned = plan
         .report()

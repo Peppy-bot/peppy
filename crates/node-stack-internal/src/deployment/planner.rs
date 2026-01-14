@@ -123,7 +123,6 @@ impl LaunchPlan {
     pub fn from_launch_file(
         master_node: NodeConfig,
         launch_file: impl AsRef<Path>,
-        nodes_cache_dir: Option<PathBuf>,
     ) -> Result<Self> {
         let launch_file = PathBuf::from(launch_file.as_ref());
 
@@ -139,7 +138,7 @@ impl LaunchPlan {
 
         let peppy_launcher = load_peppy_launcher(&launch_file)?;
 
-        Self::from_config(master_node, peppy_launcher, &root_dir, nodes_cache_dir)
+        Self::from_config(master_node, peppy_launcher, &root_dir)
     }
 
     /// Creates a launch plan from an already-parsed launcher configuration.
@@ -150,7 +149,6 @@ impl LaunchPlan {
         master_node: NodeConfig,
         peppy_launcher: PeppyLauncher,
         nodes_directory: impl AsRef<Path>,
-        nodes_cache_dir: Option<PathBuf>,
     ) -> Result<Self> {
         let nodes_directory = nodes_directory.as_ref();
 
@@ -158,37 +156,15 @@ impl LaunchPlan {
             return Err(Error::FileNotFound(nodes_directory.to_path_buf()));
         }
 
-        let nodes_cache_dir = nodes_cache_dir_for(nodes_directory, nodes_cache_dir)?;
         let node_stack = load_nodes_from_fs(nodes_directory, master_node)?;
 
-        Ok(build_launch_plan(
-            peppy_launcher,
-            nodes_cache_dir,
-            node_stack,
-        ))
+        Ok(build_launch_plan(peppy_launcher, node_stack))
     }
 
-    pub fn with_nodes(
-        launch_file: impl AsRef<Path>,
-        nodes_cache_dir: Option<PathBuf>,
-        node_stack: NodeStack,
-    ) -> Result<Self> {
-        let launch_file = PathBuf::from(launch_file.as_ref());
+    pub fn with_nodes(launch_file: impl AsRef<Path>, node_stack: NodeStack) -> Result<Self> {
+        let peppy_launcher = load_peppy_launcher(launch_file.as_ref())?;
 
-        let root_dir = launch_file
-            .canonicalize()?
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-
-        let nodes_cache_dir = nodes_cache_dir_for(&root_dir, nodes_cache_dir)?;
-        let peppy_launcher = load_peppy_launcher(&launch_file)?;
-
-        Ok(build_launch_plan(
-            peppy_launcher,
-            nodes_cache_dir,
-            node_stack,
-        ))
+        Ok(build_launch_plan(peppy_launcher, node_stack))
     }
 
     pub fn node_stack(&self) -> &NodeStack {
@@ -202,13 +178,6 @@ impl LaunchPlan {
     pub fn report(&self) -> &PlanReport {
         &self.report
     }
-}
-
-fn nodes_cache_dir_for(root_dir: &Path, nodes_cache_dir: Option<PathBuf>) -> Result<PathBuf> {
-    Ok(match nodes_cache_dir {
-        Some(path) => std::fs::canonicalize(path)?,
-        None => root_dir.join(".peppy").join("nodes"),
-    })
 }
 
 fn load_peppy_launcher(launch_file: &Path) -> Result<PeppyLauncher> {
@@ -363,12 +332,9 @@ fn resolve_deployment(
     }
 }
 
-fn build_launch_plan(
-    mut peppy_launcher: PeppyLauncher,
-    nodes_cache_dir: PathBuf,
-    source_stack: NodeStack,
-) -> LaunchPlan {
+fn build_launch_plan(mut peppy_launcher: PeppyLauncher, source_stack: NodeStack) -> LaunchPlan {
     let deployments = peppy_launcher.deployments.take().unwrap_or_default();
+    let nodes_cache_dir = config::consts::nodes_cache_dir();
 
     let master_config = source_stack.root().config().clone();
     let stack = NodeStack::new(master_config, None, &nodes_cache_dir);
