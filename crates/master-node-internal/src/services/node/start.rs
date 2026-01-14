@@ -5,6 +5,7 @@ use bytes::Bytes;
 use config::consts::{RUNTIME_CONFIG_VAR_NAME, logs_dir};
 use config::node::Name;
 use config::runtime::RuntimeConfig;
+use config::{AnyType, NodeArguments};
 use node_stack::{NodeEntity, NodeStack};
 use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
@@ -28,6 +29,62 @@ use tracing::debug;
 const STDERR_BUFFER_LINES: usize = 20;
 const STARTUP_OUTPUT_MAX_WAIT: Duration = Duration::from_millis(100);
 const STARTUP_OUTPUT_QUIET_WINDOW: Duration = Duration::from_millis(10);
+
+/// Validates that all required parameters from the schema are present in the provided arguments.
+/// Returns a list of all missing parameter paths (e.g., ["device.physical", "video.frame_rate"]).
+fn validate_parameters(
+    schema: &NodeArguments,
+    arguments: &NodeArguments,
+    prefix: &str,
+) -> Vec<String> {
+    let mut missing = Vec::new();
+
+    for (key, schema_value) in schema {
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{}.{}", prefix, key)
+        };
+
+        match arguments.get(key) {
+            None => {
+                // Parameter is missing - collect all nested paths if it's an object schema
+                collect_all_required_paths(schema_value, &path, &mut missing);
+            }
+            Some(arg_value) => {
+                // Parameter exists - check nested objects recursively
+                if let AnyType::Object(schema_fields) = schema_value {
+                    if let AnyType::Object(arg_fields) = arg_value {
+                        missing.extend(validate_parameters(schema_fields, arg_fields, &path));
+                    } else {
+                        // Schema expects an object but argument is not an object
+                        collect_all_required_paths(schema_value, &path, &mut missing);
+                    }
+                }
+            }
+        }
+    }
+
+    missing
+}
+
+/// Recursively collects all required parameter paths from a schema value.
+/// Used when a parameter is completely missing to report all its nested fields.
+fn collect_all_required_paths(schema_value: &AnyType, path: &str, missing: &mut Vec<String>) {
+    match schema_value {
+        AnyType::Object(fields) => {
+            // For object schemas, recursively collect all nested paths
+            for (key, nested_value) in fields {
+                let nested_path = format!("{}.{}", path, key);
+                collect_all_required_paths(nested_value, &nested_path, missing);
+            }
+        }
+        _ => {
+            // Leaf value (type specification like "string", "u16", etc.)
+            missing.push(path.to_string());
+        }
+    }
+}
 
 /// State for tracking the current node start action.
 enum NodeStartActionState {
@@ -443,6 +500,19 @@ async fn process_node_start(
             ));
         }
     };
+
+    // Validate that all required parameters are provided before starting the node
+    let missing_params = validate_parameters(
+        &entity.config().parameters,
+        &runtime_config.deployment_instance.arguments,
+        "",
+    );
+    if !missing_params.is_empty() {
+        return NodeStartResult::failure(format!(
+            "Missing required parameters: {}",
+            missing_params.join(", ")
+        ));
+    }
 
     let mut child = match start_node(&entity, &runtime_config_json5) {
         Ok(child) => child,

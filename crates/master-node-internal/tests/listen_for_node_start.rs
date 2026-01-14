@@ -541,3 +541,270 @@ async fn listen_for_node_start_writes_log_file() {
     let _ = std::fs::remove_dir_all(&add_response.snapshot_path);
     started.task.abort();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_start_reports_all_missing_parameters() {
+    const TARGET_NODE_NAME: &str = "params_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_INSTANCE_ID: &str = "params_instance";
+
+    let started = start_master_node().await;
+
+    // Create a node config with multiple required parameters
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                start_cmd: ["echo", "test"]
+            }},
+            parameters: {{
+                device: {{
+                    physical: "string",
+                    sim: "string"
+                }},
+                video: {{
+                    frame_rate: "u16",
+                    encoding: "string"
+                }}
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_response = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.master_node_name,
+        source_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        None,
+    )
+    .await
+    .expect("node_add should succeed");
+
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    // Create a runtime config WITHOUT providing any parameters
+    let runtime_config = RuntimeConfig::new(
+        "127.0.0.1",
+        7448,
+        DeploymentInstance {
+            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
+            arguments: Default::default(), // No parameters provided
+        },
+        TARGET_NODE_NAME,
+        &started.master_node_name,
+    )
+    .expect("runtime config should be valid");
+
+    let runtime_config_json5 =
+        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+
+    // Call node_start - this should fail with all missing parameters listed
+    let start_response = send_node_start_and_wait(
+        &started.caller_handle,
+        &started.master_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeStartTestTimeouts {
+            goal: Duration::from_secs(5),
+            result: Duration::from_secs(5),
+        },
+        None,
+    )
+    .await
+    .expect("node_start action should complete");
+
+    // The start should fail due to missing parameters
+    assert!(
+        !start_response.success,
+        "node_start should fail due to missing parameters"
+    );
+
+    let error_msg = start_response
+        .error_message
+        .as_ref()
+        .expect("error message should be present");
+
+    // Verify the error message contains "Missing required parameters"
+    assert!(
+        error_msg.contains("Missing required parameters"),
+        "error message should indicate missing parameters, got: {}",
+        error_msg
+    );
+
+    // Verify ALL missing parameters are listed (not just the first one)
+    assert!(
+        error_msg.contains("device.physical"),
+        "error message should list device.physical, got: {}",
+        error_msg
+    );
+    assert!(
+        error_msg.contains("device.sim"),
+        "error message should list device.sim, got: {}",
+        error_msg
+    );
+    assert!(
+        error_msg.contains("video.frame_rate"),
+        "error message should list video.frame_rate, got: {}",
+        error_msg
+    );
+    assert!(
+        error_msg.contains("video.encoding"),
+        "error message should list video.encoding, got: {}",
+        error_msg
+    );
+
+    let _ = std::fs::remove_dir_all(&add_response.snapshot_path);
+    started.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_start_reports_only_missing_parameters_when_some_provided() {
+    const TARGET_NODE_NAME: &str = "partial_params_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_INSTANCE_ID: &str = "partial_params_instance";
+
+    let started = start_master_node().await;
+
+    // Create a node config with multiple required parameters
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                start_cmd: ["echo", "test"]
+            }},
+            parameters: {{
+                device: {{
+                    physical: "string",
+                    sim: "string"
+                }},
+                video: {{
+                    frame_rate: "u16",
+                    encoding: "string"
+                }}
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_response = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.master_node_name,
+        source_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        None,
+    )
+    .await
+    .expect("node_add should succeed");
+
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    // Create a runtime config with SOME parameters provided (device is complete, video is missing)
+    use config::AnyType;
+    use std::collections::BTreeMap;
+
+    let mut device_args = BTreeMap::new();
+    device_args.insert(
+        "physical".to_string(),
+        AnyType::String("/dev/video0".to_string()),
+    );
+    device_args.insert(
+        "sim".to_string(),
+        AnyType::String("mock:camera".to_string()),
+    );
+
+    let mut arguments = BTreeMap::new();
+    arguments.insert("device".to_string(), AnyType::Object(device_args));
+    // video is NOT provided
+
+    let runtime_config = RuntimeConfig::new(
+        "127.0.0.1",
+        7448,
+        DeploymentInstance {
+            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
+            arguments,
+        },
+        TARGET_NODE_NAME,
+        &started.master_node_name,
+    )
+    .expect("runtime config should be valid");
+
+    let runtime_config_json5 =
+        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+
+    // Call node_start - this should fail with only the missing video parameters listed
+    let start_response = send_node_start_and_wait(
+        &started.caller_handle,
+        &started.master_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeStartTestTimeouts {
+            goal: Duration::from_secs(5),
+            result: Duration::from_secs(5),
+        },
+        None,
+    )
+    .await
+    .expect("node_start action should complete");
+
+    // The start should fail due to missing video parameters
+    assert!(
+        !start_response.success,
+        "node_start should fail due to missing parameters"
+    );
+
+    let error_msg = start_response
+        .error_message
+        .as_ref()
+        .expect("error message should be present");
+
+    // Verify the error message contains "Missing required parameters"
+    assert!(
+        error_msg.contains("Missing required parameters"),
+        "error message should indicate missing parameters, got: {}",
+        error_msg
+    );
+
+    // Verify only the video parameters are listed as missing (device is complete)
+    assert!(
+        !error_msg.contains("device.physical"),
+        "device.physical was provided and should NOT be in error, got: {}",
+        error_msg
+    );
+    assert!(
+        !error_msg.contains("device.sim"),
+        "device.sim was provided and should NOT be in error, got: {}",
+        error_msg
+    );
+    assert!(
+        error_msg.contains("video.frame_rate"),
+        "error message should list video.frame_rate, got: {}",
+        error_msg
+    );
+    assert!(
+        error_msg.contains("video.encoding"),
+        "error message should list video.encoding, got: {}",
+        error_msg
+    );
+
+    let _ = std::fs::remove_dir_all(&add_response.snapshot_path);
+    started.task.abort();
+}
