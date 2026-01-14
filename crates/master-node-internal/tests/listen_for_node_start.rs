@@ -5,7 +5,7 @@ use common::{
     send_node_start_and_wait, start_master_node, start_master_node_with_health_timeout,
     start_master_node_with_zenoh_messenger, write_peppy_json5,
 };
-use config::consts::logs_dir;
+use config::consts::start_logs_dir;
 use config::node::Name as NodeName;
 use config::peppy_config::{DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
@@ -514,7 +514,7 @@ async fn listen_for_node_start_writes_log_file() {
     );
 
     // Verify the log file exists and contains expected content
-    let log_path = logs_dir().join(format!("{}.log", TARGET_INSTANCE_ID));
+    let log_path = start_logs_dir().join(format!("{}.log", TARGET_INSTANCE_ID));
     assert!(log_path.exists(), "log file should exist at {:?}", log_path);
 
     let log_content = std::fs::read_to_string(&log_path).expect("should be able to read log file");

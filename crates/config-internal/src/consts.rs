@@ -57,11 +57,18 @@ pub fn nodes_cache_dir() -> std::path::PathBuf {
     peppy_data_dir().join("nodes")
 }
 
-/// Returns the logs cache directory.
+/// Returns the add logs cache directory.
 /// In production: ~/.peppy/logs
 /// In development: /tmp/.peppy/logs
-pub fn logs_dir() -> std::path::PathBuf {
-    peppy_data_dir().join("logs")
+pub fn add_logs_dir() -> std::path::PathBuf {
+    peppy_data_dir().join("logs").join("add")
+}
+
+/// Returns the start logs cache directory.
+/// In production: ~/.peppy/logs
+/// In development: /tmp/.peppy/logs
+pub fn start_logs_dir() -> std::path::PathBuf {
+    peppy_data_dir().join("logs").join("start")
 }
 
 /// Returns the runtime config file path.
