@@ -65,7 +65,7 @@ async fn add_node_async(
         .unwrap_or_else(|| ctx.root_dir.clone());
 
     info!(
-        "Running `start_cmd` for {}:{} on master '{}'...",
+        "Running `add_cmd` for {}:{} on master '{}'...",
         node_name, node_tag, master_node_name
     );
 
