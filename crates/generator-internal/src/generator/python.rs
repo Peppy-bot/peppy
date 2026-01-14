@@ -10,15 +10,20 @@ use config::node::{
 use std::path::Path;
 
 /// Python-specific implementation of the interface generator.
+#[derive(Default)]
 pub struct PythonGenerator {
     sections: Vec<InterfaceArtifact>,
+    parameters: config::NodeArguments,
 }
 
 impl PythonGenerator {
     pub fn new() -> Self {
-        Self {
-            sections: Vec::new(),
-        }
+        Self::default()
+    }
+
+    /// Sets the node parameters for code generation.
+    pub fn set_parameters(&mut self, parameters: config::NodeArguments) {
+        self.parameters = parameters;
     }
 
     fn push_section(&mut self, section: InterfaceArtifact) {
