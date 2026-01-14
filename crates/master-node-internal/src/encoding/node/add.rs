@@ -98,12 +98,23 @@ impl NodeAddFeedback {
         }
     }
 
+    pub fn log_path(path: impl Into<String>) -> Self {
+        Self {
+            stream: "log_path".to_string(),
+            line: path.into(),
+        }
+    }
+
     pub fn is_stdout(&self) -> bool {
         self.stream == "stdout"
     }
 
     pub fn is_stderr(&self) -> bool {
         self.stream == "stderr"
+    }
+
+    pub fn is_log_path(&self) -> bool {
+        self.stream == "log_path"
     }
 
     pub fn encode(&self) -> Result<Bytes> {
@@ -130,6 +141,7 @@ impl NodeAddFeedback {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeAddResult {
     pub snapshot_path: PathBuf,
+    pub log_path: PathBuf,
     pub success: bool,
     pub error_message: Option<String>,
 }
@@ -137,22 +149,24 @@ pub struct NodeAddResult {
 impl NodeAddResult {
     pub fn new(
         snapshot_path: impl Into<PathBuf>,
+        log_path: impl Into<PathBuf>,
         success: bool,
         error_message: Option<String>,
     ) -> Self {
         Self {
             snapshot_path: snapshot_path.into(),
+            log_path: log_path.into(),
             success,
             error_message,
         }
     }
 
-    pub fn success(snapshot_path: impl Into<PathBuf>) -> Self {
-        Self::new(snapshot_path, true, None)
+    pub fn success(snapshot_path: impl Into<PathBuf>, log_path: impl Into<PathBuf>) -> Self {
+        Self::new(snapshot_path, log_path, true, None)
     }
 
-    pub fn failure(error_message: impl Into<String>) -> Self {
-        Self::new(PathBuf::new(), false, Some(error_message.into()))
+    pub fn failure(log_path: impl Into<PathBuf>, error_message: impl Into<String>) -> Self {
+        Self::new(PathBuf::new(), log_path, false, Some(error_message.into()))
     }
 
     pub fn encode(&self) -> Result<Bytes> {
@@ -164,6 +178,7 @@ impl NodeAddResult {
                 result.set_error_message(error_message);
             }
             result.set_snapshot_path(self.snapshot_path.to_string_lossy().as_ref());
+            result.set_log_path(self.log_path.to_string_lossy().as_ref());
         }
         encode_message(&builder)
     }
@@ -178,8 +193,10 @@ impl NodeAddResult {
             Some(error_message_str.to_owned())
         };
         let snapshot_path = PathBuf::from(result.get_snapshot_path()?.to_str()?);
+        let log_path = PathBuf::from(result.get_log_path()?.to_str()?);
         Ok(Self {
             snapshot_path,
+            log_path,
             success: result.get_success(),
             error_message,
         })

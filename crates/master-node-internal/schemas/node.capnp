@@ -35,6 +35,8 @@ struct NodeAddResult {
     errorMessage @1 :Text;
     # Path where the node was copied (empty on failure)
     snapshotPath @2 :Text;
+    # Path to the log file containing stdout/stderr output
+    logPath @3 :Text;
 }
 
 # Node Init service

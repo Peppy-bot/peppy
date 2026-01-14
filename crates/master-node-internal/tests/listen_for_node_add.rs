@@ -1,7 +1,9 @@
 mod common;
 
 use common::{send_node_add_and_wait, start_master_node, write_peppy_json5};
-use config::consts::{NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::consts::{
+    NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH, logs_dir_add,
+};
 use master_node::encoding::NodeAddFeedback;
 use std::time::Duration;
 
@@ -886,6 +888,112 @@ async fn listen_for_node_add_fingerprint_mismatch() {
         "node should not be added when fingerprint mismatches"
     );
     assert_eq!(node_stack.len(), 1, "only root should exist");
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_writes_log_file() {
+    const TARGET_NODE_NAME: &str = "log_file_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const STDOUT_MARKER: &str = "peppy_logfile_stdout_marker";
+    const STDERR_MARKER: &str = "peppy_logfile_stderr_marker";
+
+    let started_master = start_master_node().await;
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        add_result.success,
+        "node_add should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    // Verify the log file path is returned
+    assert!(
+        add_result.log_path.as_os_str().len() > 0,
+        "log_path should not be empty"
+    );
+
+    // Verify the log file exists
+    assert!(
+        add_result.log_path.exists(),
+        "log file should exist at {:?}",
+        add_result.log_path
+    );
+
+    // Verify the log file is in the expected directory
+    let log_dir = logs_dir_add();
+    assert!(
+        add_result.log_path.starts_with(&log_dir),
+        "log file should be in logs_dir_add(), expected to start with {:?}, got {:?}",
+        log_dir,
+        add_result.log_path
+    );
+
+    // Verify the log file name follows the expected pattern: <node_name>_<tag>_<timestamp>.log
+    let log_filename = add_result
+        .log_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("should have log filename");
+    assert!(
+        log_filename.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
+        "log filename should start with '<node_name>_<tag>_', got: {}",
+        log_filename
+    );
+    assert!(
+        log_filename.ends_with(".log"),
+        "log filename should end with '.log', got: {}",
+        log_filename
+    );
+
+    // Verify the log file contains expected content
+    let log_content =
+        std::fs::read_to_string(&add_result.log_path).expect("should be able to read log file");
+
+    // Check that stdout marker is present with correct prefix
+    assert!(
+        log_content.contains(&format!("[stdout] {}", STDOUT_MARKER)),
+        "log file should contain stdout marker with [stdout] prefix, got:\n{}",
+        log_content
+    );
+
+    // Check that stderr marker is present with correct prefix
+    assert!(
+        log_content.contains(&format!("[stderr] {}", STDERR_MARKER)),
+        "log file should contain stderr marker with [stderr] prefix, got:\n{}",
+        log_content
+    );
+
+    // Clean up log file
+    let _ = std::fs::remove_file(&add_result.log_path);
+
+    // Clean up snapshot directory
+    let _ = std::fs::remove_dir_all(&add_result.snapshot_path);
 
     started_master.task.abort();
 }

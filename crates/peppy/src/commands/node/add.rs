@@ -109,7 +109,11 @@ async fn add_node_async(
                 Ok(Ok(msg)) => {
                     let payload = msg.payload();
                     if let Ok(feedback) = NodeAddFeedback::decode(&payload.to_bytes()) {
-                        scrolling_output.add_line(&feedback.line, feedback.is_stderr());
+                        if feedback.is_log_path() {
+                            info!("Log file: {}", feedback.line);
+                        } else {
+                            scrolling_output.add_line(&feedback.line, feedback.is_stderr());
+                        }
                     }
                 }
                 Ok(Err(_)) => break,
