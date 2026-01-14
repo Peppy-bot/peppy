@@ -643,3 +643,101 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
 
     started_master.task.abort();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_generate_generates_rust_parameters() {
+    let started_master = start_master_node().await;
+
+    let node_dir = tempdir().expect("failed to create temp node directory");
+    write_node_config(
+        node_dir.path(),
+        r#"
+        {
+            schema_version: 1,
+            manifest: {
+                name: "uvc_camera",
+                tag: "0.1.0",
+                labels: ["camera"],
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
+            },
+            parameters: {
+              device: {
+                physical: "string",
+                sim: "string",
+                priority: "string"
+              },
+              video: {
+                frame_rate: "u16",
+                resolution: {
+                  width: "u16",
+                  height: "u16",
+                },
+                encoding: "string",
+              },
+            },
+            interfaces: {},
+        }
+        "#,
+    );
+
+    // Generate peppygen for the uvc_camera node first
+    let response = NodeGenerateRequest::new(node_dir.path())
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_generate request should complete");
+
+    assert!(
+        response.success,
+        "uvc_camera node_generate should succeed, got error: {}",
+        response.error_message
+    );
+
+    // Add uvc_camera to the node stack so the brain node can depend on it
+    common::write_peppy_json5(
+        node_dir.path(),
+        &fs::read_to_string(node_dir.path().join(NODE_CONFIG_FILE))
+            .expect("failed to read uvc_camera config"),
+    );
+    let add_result = common::send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        node_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(10),
+        None,
+    )
+    .await
+    .expect("node_add should succeed");
+
+    assert!(
+        add_result.success,
+        "uvc_camera node_add should succeed, got error: {}",
+        add_result.error_message.unwrap_or_default()
+    );
+
+    // Verify that the generated Rust code includes the parameters modules
+    let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+    let parameters_rs_path = peppygen_dir.join("src").join("parameters.rs");
+    assert!(
+        parameters_rs_path.exists(),
+        "uvc_camera peppygen parameters.rs should exist at {}",
+        parameters_rs_path.display()
+    );
+
+    let parameters_rs_content =
+        fs::read_to_string(&parameters_rs_path).expect("failed to read parameters.rs");
+    assert!(
+        parameters_rs_content.contains("frame_rate"),
+        "parameters.rs should contain `frame_rate`, got:\n{}",
+        parameters_rs_content
+    );
+
+    started_master.task.abort();
+}
