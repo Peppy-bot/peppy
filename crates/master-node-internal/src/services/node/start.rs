@@ -178,10 +178,10 @@ where
                 continue;
             }
 
-            if matches!(stream, FeedbackStream::Stderr) {
-                if let Some(buffer) = &stderr_buffer {
-                    push_stderr_line(buffer, &line);
-                }
+            if matches!(stream, FeedbackStream::Stderr)
+                && let Some(buffer) = &stderr_buffer
+            {
+                push_stderr_line(buffer, &line);
             }
 
             if feedback_tx.send(FeedbackLine { stream, line }).is_ok() {

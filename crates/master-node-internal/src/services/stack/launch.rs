@@ -16,6 +16,11 @@ use tracing::debug;
 
 const NODE_GENERATE_TIMEOUT: Duration = Duration::from_secs(30);
 
+struct NodeStartTimeouts {
+    startup: Duration,
+    health_check: Duration,
+}
+
 pub async fn listen_for_stack_launch(
     messenger: &MessengerHandle,
     master_node_node: &str,
@@ -221,6 +226,10 @@ async fn start_launch_plan_instances(
                 format!("failed to serialize runtime config for {node_name}:{tag}: {e}")
             })?;
 
+            let timeouts = NodeStartTimeouts {
+                startup: node_startup_timeout,
+                health_check: node_start_health_timeout,
+            };
             match start_node_instance(
                 messenger,
                 master_node_name,
@@ -228,8 +237,7 @@ async fn start_launch_plan_instances(
                 &entity,
                 deployment_instance.instance_id.as_str(),
                 &runtime_config_json5,
-                node_startup_timeout,
-                node_start_health_timeout,
+                &timeouts,
             )
             .await
             {
@@ -257,8 +265,7 @@ async fn start_node_instance(
     entity: &NodeEntity,
     instance_id: &str,
     runtime_config_json5: &str,
-    node_startup_timeout: Duration,
-    node_start_health_timeout: Duration,
+    timeouts: &NodeStartTimeouts,
 ) -> std::result::Result<Child, String> {
     let manifest = entity.config().manifest.clone();
 
@@ -279,14 +286,14 @@ async fn start_node_instance(
         manifest.name.as_str(),
         master_node_name,
         instance_id,
-        node_startup_timeout,
+        timeouts.startup,
         &mut child,
     )
     .await
     {
         return kill_and_report_launch_error(
             child,
-            &manifest.name.as_str(),
+            manifest.name.as_str(),
             &manifest.tag,
             instance_id,
             &error,
@@ -302,7 +309,7 @@ async fn start_node_instance(
         manifest.name.as_str(),
         master_node_name,
         instance_id,
-        node_start_health_timeout,
+        timeouts.health_check,
         &mut child,
     )
     .await
@@ -311,7 +318,7 @@ async fn start_node_instance(
         Err(error) => {
             kill_and_report_launch_error(
                 child,
-                &manifest.name.as_str(),
+                manifest.name.as_str(),
                 &manifest.tag,
                 instance_id,
                 &error,

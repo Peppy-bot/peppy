@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    create_test_node_with_name, send_node_add_and_wait, send_node_start_and_wait,
-    start_master_node, start_master_node_with_health_timeout,
+    NodeStartTestTimeouts, create_test_node_with_name, send_node_add_and_wait,
+    send_node_start_and_wait, start_master_node, start_master_node_with_health_timeout,
     start_master_node_with_zenoh_messenger, write_peppy_json5,
 };
 use config::consts::logs_dir;
@@ -88,8 +88,10 @@ async fn listen_for_node_start_success() {
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        Duration::from_secs(30),
-        Duration::from_secs(60),
+        &NodeStartTestTimeouts {
+            goal: Duration::from_secs(30),
+            result: Duration::from_secs(60),
+        },
         None,
     )
     .await
@@ -195,8 +197,10 @@ async fn listen_for_node_start_timeout() {
         &runtime_config_json5,
         TARGET_NODE_NAME,
         "0.1.0",
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        &NodeStartTestTimeouts {
+            goal: Duration::from_secs(5),
+            result: Duration::from_secs(5),
+        },
         None,
     )
     .await
@@ -265,8 +269,10 @@ async fn listen_for_node_start_not_found() {
         &runtime_config_json5,
         TARGET_NODE_NAME,
         "0.1.0",
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        &NodeStartTestTimeouts {
+            goal: Duration::from_secs(5),
+            result: Duration::from_secs(5),
+        },
         None,
     )
     .await
@@ -375,8 +381,10 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        Duration::from_secs(5),
-        Duration::from_secs(10),
+        &NodeStartTestTimeouts {
+            goal: Duration::from_secs(5),
+            result: Duration::from_secs(10),
+        },
         Some(feedback_tx),
     )
     .await
@@ -490,8 +498,10 @@ async fn listen_for_node_start_writes_log_file() {
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        Duration::from_secs(5),
-        Duration::from_secs(10),
+        &NodeStartTestTimeouts {
+            goal: Duration::from_secs(5),
+            result: Duration::from_secs(10),
+        },
         None,
     )
     .await

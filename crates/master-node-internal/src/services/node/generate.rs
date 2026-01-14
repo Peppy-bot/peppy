@@ -216,22 +216,20 @@ fn collect_subscribed_interfaces(
                 node_stack.find(&subscribed_topic.node, &subscribed_topic.tag)
             {
                 // Find the exposed topic with the matching name
-                if let Some(exposes) = &dependency_entity.config().interfaces.exposes {
-                    if let Some(exposed_topics) = &exposes.topics {
-                        if let Some(exposed_topic) = exposed_topics
-                            .iter()
-                            .find(|t| t.name.trim() == subscribed_topic.name.trim())
-                        {
-                            // Get the message format from the exposed topic
-                            if let Some(message_format) = &exposed_topic.message_format {
-                                interfaces.push(DeploymentInterface::new(
-                                    InterfaceVariant::SubscribedTopic(
-                                        subscribed_topic.clone(),
-                                        message_format.clone(),
-                                    ),
-                                ));
-                            }
-                        }
+                if let Some(exposes) = &dependency_entity.config().interfaces.exposes
+                    && let Some(exposed_topics) = &exposes.topics
+                    && let Some(exposed_topic) = exposed_topics
+                        .iter()
+                        .find(|t| t.name.trim() == subscribed_topic.name.trim())
+                {
+                    // Get the message format from the exposed topic
+                    if let Some(message_format) = &exposed_topic.message_format {
+                        interfaces.push(DeploymentInterface::new(
+                            InterfaceVariant::SubscribedTopic(
+                                subscribed_topic.clone(),
+                                message_format.clone(),
+                            ),
+                        ));
                     }
                 }
             }
@@ -246,26 +244,24 @@ fn collect_subscribed_interfaces(
                 node_stack.find(&subscribed_service.node, &subscribed_service.tag)
             {
                 // Find the exposed service with the matching name
-                if let Some(exposes) = &dependency_entity.config().interfaces.exposes {
-                    if let Some(exposed_services) = &exposes.services {
-                        if let Some(exposed_service) = exposed_services
-                            .iter()
-                            .find(|s| s.name.trim() == subscribed_service.name.trim())
-                        {
-                            // Get the message formats from the exposed service
-                            if let (Some(request_format), Some(response_format)) = (
-                                &exposed_service.request_message_format,
-                                &exposed_service.response_message_format,
-                            ) {
-                                interfaces.push(DeploymentInterface::new(
-                                    InterfaceVariant::SubscribedService(
-                                        subscribed_service.clone(),
-                                        request_format.clone(),
-                                        response_format.clone(),
-                                    ),
-                                ));
-                            }
-                        }
+                if let Some(exposes) = &dependency_entity.config().interfaces.exposes
+                    && let Some(exposed_services) = &exposes.services
+                    && let Some(exposed_service) = exposed_services
+                        .iter()
+                        .find(|s| s.name.trim() == subscribed_service.name.trim())
+                {
+                    // Get the message formats from the exposed service
+                    if let (Some(request_format), Some(response_format)) = (
+                        &exposed_service.request_message_format,
+                        &exposed_service.response_message_format,
+                    ) {
+                        interfaces.push(DeploymentInterface::new(
+                            InterfaceVariant::SubscribedService(
+                                subscribed_service.clone(),
+                                request_format.clone(),
+                                response_format.clone(),
+                            ),
+                        ));
                     }
                 }
             }
@@ -280,44 +276,42 @@ fn collect_subscribed_interfaces(
                 node_stack.find(&subscribed_action.node, &subscribed_action.tag)
             {
                 // Find the exposed action with the matching name
-                if let Some(exposes) = &dependency_entity.config().interfaces.exposes {
-                    if let Some(exposed_actions) = &exposes.actions {
-                        if let Some(exposed_action) = exposed_actions
-                            .iter()
-                            .find(|a| a.name.trim() == subscribed_action.name.trim())
-                        {
-                            // Build the SubscribedActionMessage from exposed action endpoints
-                            let action_message = SubscribedActionMessage {
-                                goal_request: exposed_action
-                                    .goal_service
-                                    .as_ref()
-                                    .and_then(|s| s.request_message_format.clone()),
-                                goal_response: exposed_action
-                                    .goal_service
-                                    .as_ref()
-                                    .and_then(|s| s.response_message_format.clone()),
-                                feedback: exposed_action
-                                    .feedback_topic
-                                    .as_ref()
-                                    .and_then(|t| t.message_format.clone()),
-                                result_request: exposed_action
-                                    .result_service
-                                    .as_ref()
-                                    .and_then(|s| s.request_message_format.clone()),
-                                result_response: exposed_action
-                                    .result_service
-                                    .as_ref()
-                                    .and_then(|s| s.response_message_format.clone()),
-                            };
+                if let Some(exposes) = &dependency_entity.config().interfaces.exposes
+                    && let Some(exposed_actions) = &exposes.actions
+                    && let Some(exposed_action) = exposed_actions
+                        .iter()
+                        .find(|a| a.name.trim() == subscribed_action.name.trim())
+                {
+                    // Build the SubscribedActionMessage from exposed action endpoints
+                    let action_message = SubscribedActionMessage {
+                        goal_request: exposed_action
+                            .goal_service
+                            .as_ref()
+                            .and_then(|s| s.request_message_format.clone()),
+                        goal_response: exposed_action
+                            .goal_service
+                            .as_ref()
+                            .and_then(|s| s.response_message_format.clone()),
+                        feedback: exposed_action
+                            .feedback_topic
+                            .as_ref()
+                            .and_then(|t| t.message_format.clone()),
+                        result_request: exposed_action
+                            .result_service
+                            .as_ref()
+                            .and_then(|s| s.request_message_format.clone()),
+                        result_response: exposed_action
+                            .result_service
+                            .as_ref()
+                            .and_then(|s| s.response_message_format.clone()),
+                    };
 
-                            interfaces.push(DeploymentInterface::new(
-                                InterfaceVariant::SubscribedAction(
-                                    subscribed_action.clone(),
-                                    action_message,
-                                ),
-                            ));
-                        }
-                    }
+                    interfaces.push(DeploymentInterface::new(
+                        InterfaceVariant::SubscribedAction(
+                            subscribed_action.clone(),
+                            action_message,
+                        ),
+                    ));
                 }
             }
         }

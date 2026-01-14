@@ -79,21 +79,21 @@ impl ZenohdFacade {
     fn get_zenohd_binary() -> Option<String> {
         // 1) Runtime override for packaged installs / system configuration.
         for key in ["PEPPY_ZENOHD_PATH", "ZENOHD_BINARY_PATH"] {
-            if let Ok(path) = env::var(key).map(|path| path.trim().to_string()) {
-                if !path.is_empty() {
-                    return Some(path);
-                }
+            if let Ok(path) = env::var(key).map(|path| path.trim().to_string())
+                && !path.is_empty()
+            {
+                return Some(path);
             }
         }
 
         // 2) Prefer a `zenohd` binary placed next to the current executable.
         // This is important for `sudo peppy ...` where PATH may be restricted by `secure_path`.
-        if let Ok(exe_path) = env::current_exe() {
-            if let Some(exe_dir) = exe_path.parent() {
-                let candidate = exe_dir.join("zenohd");
-                if candidate.is_file() {
-                    return Some(candidate.to_string_lossy().into_owned());
-                }
+        if let Ok(exe_path) = env::current_exe()
+            && let Some(exe_dir) = exe_path.parent()
+        {
+            let candidate = exe_dir.join("zenohd");
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().into_owned());
             }
         }
 
