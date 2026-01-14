@@ -2,8 +2,10 @@ use crate::Result;
 use crate::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddResult};
 use crate::names;
 use bytes::Bytes;
+use chrono::Local;
 use config::consts::{
-    NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH, peppy_data_dir,
+    NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH, logs_dir_add,
+    peppy_data_dir,
 };
 use config::node::NodeConfigParser;
 use config::runtime::RuntimeConfig;
@@ -11,10 +13,11 @@ use node_stack::NodeStack;
 use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use rand::Rng;
-use std::io::{BufRead, BufReader, Read};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -57,10 +60,22 @@ fn spawn_output_reader<R: Read + Send + 'static>(
     reader: R,
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     stream: FeedbackStream,
+    log_file: Arc<StdMutex<File>>,
 ) -> JoinHandle<()> {
+    let stream_prefix = match stream {
+        FeedbackStream::Stdout => "stdout",
+        FeedbackStream::Stderr => "stderr",
+    };
+
     tokio::task::spawn_blocking(move || {
         let reader = BufReader::new(reader);
         for line in reader.lines().map_while(|r| r.ok()) {
+            // Always write to log file
+            if let Ok(mut file) = log_file.lock() {
+                let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+                let _ = writeln!(file, "[{}] [{}] {}", timestamp, stream_prefix, line);
+            }
+
             let _ = feedback_tx.send(FeedbackLine {
                 stream,
                 line: line.to_string(),
@@ -75,6 +90,7 @@ async fn run_add_cmd_with_streaming(
     add_cmd: Option<&Vec<String>>,
     working_dir: &Path,
     feedback_publisher: &TopicPublisher,
+    log_file: Arc<StdMutex<File>>,
 ) -> std::result::Result<(), String> {
     let Some(cmd) = add_cmd else {
         return Ok(());
@@ -119,6 +135,7 @@ async fn run_add_cmd_with_streaming(
             stdout,
             feedback_tx.clone(),
             FeedbackStream::Stdout,
+            Arc::clone(&log_file),
         ));
     }
 
@@ -128,6 +145,7 @@ async fn run_add_cmd_with_streaming(
             stderr,
             feedback_tx.clone(),
             FeedbackStream::Stderr,
+            Arc::clone(&log_file),
         ));
     }
 
@@ -350,7 +368,8 @@ async fn handle_goal_request(
     let goal = match NodeAddGoal::decode(&payload.as_bytes()) {
         Ok(g) => g,
         Err(e) => {
-            let result = NodeAddResult::failure(format!("Failed to decode goal: {}", e));
+            let result =
+                NodeAddResult::failure(PathBuf::new(), format!("Failed to decode goal: {}", e));
             let mut state_guard = state.lock().await;
             *state_guard = NodeAddActionState::Completed { result };
             return Ok(Bytes::from_static(b"goal rejected: invalid payload"));
@@ -384,22 +403,56 @@ async fn process_node_add(
     let node_config = match NodeConfigParser::from_path(&config_path) {
         Ok(config) => config,
         Err(e) => {
-            return NodeAddResult::failure(format!(
-                "Failed to parse node config at {}: {}",
-                config_path.display(),
-                e
-            ));
+            return NodeAddResult::failure(
+                PathBuf::new(),
+                format!(
+                    "Failed to parse node config at {}: {}",
+                    config_path.display(),
+                    e
+                ),
+            );
         }
     };
 
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
 
+    // Create log file with timestamp-based filename
+    let log_dir = logs_dir_add();
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        debug!("Failed to create logs directory {:?}: {}", log_dir, e);
+        return NodeAddResult::failure(
+            PathBuf::new(),
+            format!("Failed to create logs directory: {}", e),
+        );
+    }
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
+    let log_filename = format!("{}_{}_{}.log", node_name, node_tag, timestamp);
+    let log_path = log_dir.join(&log_filename);
+    let log_file = match File::create(&log_path) {
+        Ok(file) => Arc::new(StdMutex::new(file)),
+        Err(e) => {
+            debug!("Failed to create log file {:?}: {}", log_path, e);
+            return NodeAddResult::failure(
+                PathBuf::new(),
+                format!("Failed to create log file: {}", e),
+            );
+        }
+    };
+
+    debug!("Created log file for node add: {}", log_path.display());
+
+    // Send log file path as feedback before running add_cmd
+    let log_path_feedback = NodeAddFeedback::log_path(log_path.to_string_lossy());
+    if let Ok(payload) = log_path_feedback.encode() {
+        let _ = feedback_publisher.publish(payload).await;
+    }
+
     // Copy the node folder to the peppy storage directory.
     let copied_path = match copy_node_to_storage(&goal.from_dir, &node_name, &node_tag) {
         Ok(path) => path,
         Err(e) => {
-            return NodeAddResult::failure(format!("Failed to copy node folder: {}", e));
+            return NodeAddResult::failure(&log_path, format!("Failed to copy node folder: {}", e));
         }
     };
 
@@ -407,7 +460,10 @@ async fn process_node_add(
     if let Err(e) = verify_node_config_fingerprint(&copied_path) {
         // Clean up the copied folder on failure
         let _ = std::fs::remove_dir_all(&copied_path);
-        return NodeAddResult::failure(format!("Fingerprint verification failed: {}", e));
+        return NodeAddResult::failure(
+            &log_path,
+            format!("Fingerprint verification failed: {}", e),
+        );
     }
 
     // Run add_cmd on the copied folder with streaming output
@@ -415,19 +471,20 @@ async fn process_node_add(
         node_config.manifest.add_cmd.as_ref(),
         &copied_path,
         &feedback_publisher,
+        log_file,
     )
     .await
     {
         // Clean up the copied folder on failure
         let _ = std::fs::remove_dir_all(&copied_path);
-        return NodeAddResult::failure(format!("add_cmd failed: {}", e));
+        return NodeAddResult::failure(&log_path, format!("add_cmd failed: {}", e));
     }
 
     // Add the node config to the stack
     if let Err(e) = node_stack.push_config(node_config, false, &copied_path) {
         // Clean up the copied folder on failure
         let _ = std::fs::remove_dir_all(&copied_path);
-        return NodeAddResult::failure(format!("Failed to add node config: {}", e));
+        return NodeAddResult::failure(&log_path, format!("Failed to add node config: {}", e));
     }
 
     debug!(
@@ -437,7 +494,7 @@ async fn process_node_add(
         copied_path.display()
     );
 
-    NodeAddResult::success(copied_path)
+    NodeAddResult::success(copied_path, &log_path)
 }
 
 async fn handle_cancel_request(

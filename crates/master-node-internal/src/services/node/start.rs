@@ -3,7 +3,7 @@ use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartResult};
 use crate::names;
 use bytes::Bytes;
 use chrono::Local;
-use config::consts::{RUNTIME_CONFIG_VAR_NAME, runtime_config_path, start_logs_dir};
+use config::consts::{RUNTIME_CONFIG_VAR_NAME, logs_dir_start, runtime_config_path};
 use config::node::Name;
 use config::runtime::RuntimeConfig;
 use config::{AnyType, NodeArguments};
@@ -529,7 +529,7 @@ async fn process_node_start(
     let stderr_buffer = Arc::new(StdMutex::new(VecDeque::new()));
 
     // Create log file for stdout/stderr
-    let log_dir = start_logs_dir();
+    let log_dir = logs_dir_start();
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
         debug!("Failed to create logs directory {:?}: {}", log_dir, e);
         return NodeStartResult::failure(format!("Failed to create logs directory: {}", e));
