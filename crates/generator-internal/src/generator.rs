@@ -53,13 +53,17 @@ pub fn generate_lib_for_build_system(
 
     let result = match build_system {
         BuildSystem::Rust | BuildSystem::Cargo => {
-            generate_with_backend(RustGenerator::new(), &interfaces, &output_dir)?;
+            let mut rust_generator = RustGenerator::new();
+            rust_generator.set_parameters(node_config.parameters);
+            generate_with_backend(rust_generator, &interfaces, &output_dir)?;
             // Create or update the node's Cargo.toml with peppygen dependency
             ensure_node_cargo_toml(node_dir, node_config.manifest.name.as_str())?;
             Ok(())
         }
         BuildSystem::Python | BuildSystem::Uv => {
-            generate_with_backend(PythonGenerator::new(), &interfaces, &output_dir)
+            let mut python_generator = PythonGenerator::new();
+            python_generator.set_parameters(node_config.parameters);
+            generate_with_backend(python_generator, &interfaces, &output_dir)
         }
     };
 

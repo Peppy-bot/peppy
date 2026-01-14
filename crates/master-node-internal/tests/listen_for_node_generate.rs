@@ -734,6 +734,23 @@ async fn listen_for_node_generate_generates_rust_parameters() {
     let parameters_rs_content =
         fs::read_to_string(&parameters_rs_path).expect("failed to read parameters.rs");
     assert!(
+        parameters_rs_content.contains("mod video"),
+        "parameters.rs should contain `mod video`, got:\n{}",
+        parameters_rs_content
+    );
+
+    assert!(
+        parameters_rs_content.contains("Resolution"),
+        "parameters.rs should contain `Resolution`, got:\n{}",
+        parameters_rs_content
+    );
+
+    assert!(
+        parameters_rs_content.contains("Video"),
+        "parameters.rs should contain `Video`, got:\n{}",
+        parameters_rs_content
+    );
+    assert!(
         parameters_rs_content.contains("frame_rate"),
         "parameters.rs should contain `frame_rate`, got:\n{}",
         parameters_rs_content
