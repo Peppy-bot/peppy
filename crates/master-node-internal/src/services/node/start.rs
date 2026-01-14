@@ -2,7 +2,7 @@ use crate::Result;
 use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartResult};
 use crate::names;
 use bytes::Bytes;
-use config::consts::RUNTIME_CONFIG_VAR_NAME;
+use config::consts::{RUNTIME_CONFIG_VAR_NAME, logs_dir};
 use config::node::Name;
 use config::runtime::RuntimeConfig;
 use node_stack::{NodeEntity, NodeStack};
@@ -13,6 +13,8 @@ use peppylib::messaging::{
 };
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::collections::VecDeque;
+use std::fs::File;
+use std::io::Write;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -147,10 +149,16 @@ fn spawn_output_reader<R>(
     feedback_sync: FeedbackSync,
     stream: FeedbackStream,
     stderr_buffer: Option<Arc<StdMutex<VecDeque<String>>>>,
+    log_file: Arc<StdMutex<File>>,
 ) -> JoinHandle<()>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
+    let stream_prefix = match stream {
+        FeedbackStream::Stdout => "stdout",
+        FeedbackStream::Stderr => "stderr",
+    };
+
     tokio::spawn(async move {
         let mut lines = BufReader::new(reader).lines();
 
@@ -160,6 +168,11 @@ where
                 Ok(None) => break,
                 Err(_) => break,
             };
+
+            // Always write to log file, regardless of publish_enabled state
+            if let Ok(mut file) = log_file.lock() {
+                let _ = writeln!(file, "[{}] {}", stream_prefix, line);
+            }
 
             if !publish_enabled.load(Ordering::Relaxed) {
                 continue;
@@ -443,6 +456,21 @@ async fn process_node_start(
     let feedback_sync = FeedbackSync::new();
     let stderr_buffer = Arc::new(StdMutex::new(VecDeque::new()));
 
+    // Create log file for stdout/stderr
+    let log_dir = logs_dir();
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        debug!("Failed to create logs directory {:?}: {}", log_dir, e);
+        return NodeStartResult::failure(format!("Failed to create logs directory: {}", e));
+    }
+    let log_path = log_dir.join(format!("{}.log", instance_id_str));
+    let log_file = match File::create(&log_path) {
+        Ok(file) => Arc::new(StdMutex::new(file)),
+        Err(e) => {
+            debug!("Failed to create log file {:?}: {}", log_path, e);
+            return NodeStartResult::failure(format!("Failed to create log file: {}", e));
+        }
+    };
+
     let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
     let feedback_publisher = feedback_publisher.clone();
     let feedback_sync_publisher = feedback_sync.clone();
@@ -469,6 +497,7 @@ async fn process_node_start(
             feedback_sync.clone(),
             FeedbackStream::Stdout,
             None,
+            Arc::clone(&log_file),
         ));
     }
 
@@ -480,6 +509,7 @@ async fn process_node_start(
             feedback_sync.clone(),
             FeedbackStream::Stderr,
             Some(Arc::clone(&stderr_buffer)),
+            Arc::clone(&log_file),
         ));
     }
 
