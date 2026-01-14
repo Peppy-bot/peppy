@@ -68,19 +68,19 @@ mod zenoh_build {
             }
 
             if in_zenoh_table {
-                if let Some((key, value)) = trimmed.split_once('=') {
-                    if key.trim() == "version" {
-                        return parse_version_value(value);
-                    }
+                if let Some((key, value)) = trimmed.split_once('=')
+                    && key.trim() == "version"
+                {
+                    return parse_version_value(value);
                 }
                 continue;
             }
 
             if in_zenoh_inline_table {
-                if let Some((key, value)) = trimmed.split_once('=') {
-                    if key.trim() == "version" {
-                        return parse_version_value(value);
-                    }
+                if let Some((key, value)) = trimmed.split_once('=')
+                    && key.trim() == "version"
+                {
+                    return parse_version_value(value);
                 }
                 if trimmed.contains('}') {
                     in_zenoh_inline_table = false;

@@ -24,6 +24,11 @@ use tokio::task::JoinHandle;
 
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
 
+pub struct NodeStartTestTimeouts {
+    pub goal: Duration,
+    pub result: Duration,
+}
+
 /// Writes a node config file and the corresponding fingerprint file expected by `node_add`.
 pub fn write_peppy_json5(dir: &Path, content: &str) {
     use config::consts::NODE_CONFIG_FINGERPRINT_FILE;
@@ -95,10 +100,10 @@ pub async fn send_node_add_and_wait(
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
                     let payload = msg.payload();
-                    if let Ok(feedback) = NodeAddFeedback::decode(&payload.to_bytes()) {
-                        if let Some(tx) = feedback_tx {
-                            let _ = tx.send(feedback);
-                        }
+                    if let Ok(feedback) = NodeAddFeedback::decode(&payload.to_bytes())
+                        && let Some(tx) = feedback_tx
+                    {
+                        let _ = tx.send(feedback);
                     }
                 }
                 Ok(Err(_)) => break,
@@ -149,8 +154,7 @@ pub async fn send_node_start_and_wait(
     runtime_config_json5: &str,
     node_name: &str,
     tag: &str,
-    goal_timeout: Duration,
-    result_timeout: Duration,
+    timeouts: &NodeStartTestTimeouts,
     feedback_tx: Option<UnboundedSender<NodeStartFeedback>>,
 ) -> Result<NodeStartResult, String> {
     let goal = NodeStartGoal::new(runtime_config_json5, node_name, tag);
@@ -173,12 +177,12 @@ pub async fn send_node_start_and_wait(
         None,
         goal_payload,
         QoSProfile::default(),
-        goal_timeout,
+        timeouts.goal,
     )
     .await
     .map_err(|e| format!("Failed to send goal: {}", e))?;
 
-    let deadline = tokio::time::Instant::now() + result_timeout;
+    let deadline = tokio::time::Instant::now() + timeouts.result;
     let feedback_tx = feedback_tx.as_ref();
 
     loop {
@@ -193,10 +197,10 @@ pub async fn send_node_start_and_wait(
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
                     let payload = msg.payload();
-                    if let Ok(feedback) = NodeStartFeedback::decode(&payload.to_bytes()) {
-                        if let Some(tx) = feedback_tx {
-                            let _ = tx.send(feedback);
-                        }
+                    if let Ok(feedback) = NodeStartFeedback::decode(&payload.to_bytes())
+                        && let Some(tx) = feedback_tx
+                    {
+                        let _ = tx.send(feedback);
                     }
                 }
                 Ok(Err(_)) => break,

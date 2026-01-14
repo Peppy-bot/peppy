@@ -50,7 +50,7 @@ impl ScrollingOutput {
 
     /// Checks if the NO_COLOR environment variable is set.
     fn no_color_requested() -> bool {
-        std::env::var("NO_COLOR").map_or(false, |v| !v.is_empty())
+        std::env::var("NO_COLOR").is_ok_and(|v| !v.is_empty())
     }
 
     /// Adds a line to the output and refreshes the display.

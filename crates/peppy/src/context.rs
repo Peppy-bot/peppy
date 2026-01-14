@@ -83,7 +83,7 @@ impl DaemonState {
     }
 
     pub fn write(&self) -> Result<PathBuf, io::Error> {
-        let path = Self::env_state_file_path().unwrap_or_else(|| Self::default_state_file_path());
+        let path = Self::env_state_file_path().unwrap_or_else(Self::default_state_file_path);
         Self::write_to(&path, self)?;
         Ok(path)
     }
@@ -172,11 +172,7 @@ impl DaemonState {
 
         let mut running: Vec<(PathBuf, DaemonState)> = states
             .iter()
-            .filter(|(_, state)| {
-                state
-                    .daemon_pid
-                    .map_or(false, |pid| Self::pid_looks_alive(pid))
-            })
+            .filter(|(_, state)| state.daemon_pid.is_some_and(Self::pid_looks_alive))
             .cloned()
             .collect();
 
@@ -184,13 +180,10 @@ impl DaemonState {
             0 => {}
             1 => return Ok(running.pop()),
             _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!(
-                        "Multiple running peppy daemons detected. Set {} to select one.",
-                        config::consts::DAEMON_STATE_FILE_ENV
-                    ),
-                ));
+                return Err(io::Error::other(format!(
+                    "Multiple running peppy daemons detected. Set {} to select one.",
+                    config::consts::DAEMON_STATE_FILE_ENV
+                )));
             }
         }
 

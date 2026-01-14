@@ -28,19 +28,6 @@ use crate::Result;
 use crate::launch_capnp;
 
 /// Encode a Cap'n Proto message builder into bytes.
-///
-/// # Example
-/// ```ignore
-/// use master_node::encoding::encode_message;
-/// use master_node::messages_capnp;
-///
-/// let mut message = capnp::message::Builder::new_default();
-/// let mut ping = message.init_root::<messages_capnp::ping_response::Builder>();
-/// ping.set_message("pong");
-/// ping.set_timestamp(12345);
-///
-/// let bytes = encode_message(&message)?;
-/// ```
 pub fn encode_message(message: &Builder<HeapAllocator>) -> Result<Bytes> {
     let mut buffer = Vec::new();
     serialize::write_message(&mut buffer, message)?;
@@ -48,18 +35,6 @@ pub fn encode_message(message: &Builder<HeapAllocator>) -> Result<Bytes> {
 }
 
 /// Decode bytes into a Cap'n Proto message reader.
-///
-/// Returns an owned segments reader that can be used to read the message.
-///
-/// # Example
-/// ```ignore
-/// use master_node::encoding::decode_message;
-/// use master_node::messages_capnp;
-///
-/// let reader = decode_message(&bytes)?;
-/// let ping = reader.get_root::<messages_capnp::ping_request::Reader>()?;
-/// let timestamp = ping.get_timestamp();
-/// ```
 pub fn decode_message(
     data: &[u8],
 ) -> Result<capnp::message::Reader<capnp::serialize::OwnedSegments>> {

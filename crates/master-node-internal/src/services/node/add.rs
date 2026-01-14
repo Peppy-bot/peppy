@@ -60,7 +60,7 @@ fn spawn_output_reader<R: Read + Send + 'static>(
 ) -> JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
         let reader = BufReader::new(reader);
-        for line in reader.lines().flatten() {
+        for line in reader.lines().map_while(|r| r.ok()) {
             let _ = feedback_tx.send(FeedbackLine {
                 stream,
                 line: line.to_string(),
