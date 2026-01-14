@@ -20,18 +20,69 @@ const RESULT_TIMEOUT: Duration = Duration::from_secs(60);
 const SCROLLING_OUTPUT_LINES: usize = 10;
 
 /// Converts a list of key=value string pairs into NodeArguments.
+/// Dot-separated keys are converted into nested objects.
+/// For example: "device.physical=/dev/video0" becomes {"device": {"physical": "/dev/video0"}}
+///
 /// Values are parsed with type inference:
 /// - "true"/"false" -> Bool
 /// - Integer strings -> Int
 /// - Float strings -> Float
 /// - Everything else -> String
 pub fn args_to_node_arguments(args: &[(String, String)]) -> NodeArguments {
-    args.iter()
-        .map(|(key, value)| {
-            let any_value = parse_value(value);
-            (key.clone(), any_value)
-        })
-        .collect()
+    let mut result: NodeArguments = std::collections::BTreeMap::new();
+
+    for (key, value) in args {
+        let parsed_value = parse_value(value);
+        insert_nested_value(&mut result, key, parsed_value);
+    }
+
+    result
+}
+
+/// Inserts a value at a dot-separated path into a nested NodeArguments structure.
+/// For example, path "device.physical" with value "foo" creates:
+/// {"device": {"physical": "foo"}}
+fn insert_nested_value(root: &mut NodeArguments, path: &str, value: AnyType) {
+    let parts: Vec<&str> = path.split('.').collect();
+
+    if parts.len() == 1 {
+        // Simple key, insert directly
+        root.insert(path.to_string(), value);
+        return;
+    }
+
+    // For nested paths, we need to navigate/create the path
+    insert_at_path(root, &parts, value);
+}
+
+/// Recursively inserts a value at the given path parts.
+fn insert_at_path(current: &mut NodeArguments, parts: &[&str], value: AnyType) {
+    if parts.is_empty() {
+        return;
+    }
+
+    let key = parts[0].to_string();
+
+    if parts.len() == 1 {
+        // Last part - insert the actual value
+        current.insert(key, value);
+        return;
+    }
+
+    // Intermediate part - ensure an Object exists at this key
+    let entry = current
+        .entry(key)
+        .or_insert_with(|| AnyType::Object(std::collections::BTreeMap::new()));
+
+    // If the entry isn't an object, make it one
+    if !matches!(entry, AnyType::Object(_)) {
+        *entry = AnyType::Object(std::collections::BTreeMap::new());
+    }
+
+    // Navigate into the object and recurse
+    if let AnyType::Object(obj) = entry {
+        insert_at_path(obj, &parts[1..], value);
+    }
 }
 
 /// Parses a string value into an AnyType with type inference
@@ -315,5 +366,60 @@ mod tests {
         assert_eq!(node_args.get("frequency"), Some(&AnyType::Int(30)));
         assert_eq!(node_args.get("enabled"), Some(&AnyType::Bool(true)));
         assert_eq!(node_args.get("gain"), Some(&AnyType::Float(1.5)));
+    }
+
+    #[test]
+    fn args_to_node_arguments_handles_nested_keys() {
+        let args = vec![
+            ("device.physical".to_string(), "/dev/video0".to_string()),
+            ("device.sim".to_string(), "mock:camera".to_string()),
+            ("video.frame_rate".to_string(), "30".to_string()),
+            ("video.resolution.width".to_string(), "1280".to_string()),
+            ("video.resolution.height".to_string(), "720".to_string()),
+        ];
+
+        let node_args = args_to_node_arguments(&args);
+
+        // Should have 2 top-level keys: device and video
+        assert_eq!(node_args.len(), 2);
+
+        // Check device object
+        let device = node_args.get("device").expect("device should exist");
+        match device {
+            AnyType::Object(device_obj) => {
+                assert_eq!(device_obj.len(), 2);
+                assert_eq!(
+                    device_obj.get("physical"),
+                    Some(&AnyType::String("/dev/video0".to_string()))
+                );
+                assert_eq!(
+                    device_obj.get("sim"),
+                    Some(&AnyType::String("mock:camera".to_string()))
+                );
+            }
+            _ => panic!("device should be an object"),
+        }
+
+        // Check video object with nested resolution
+        let video = node_args.get("video").expect("video should exist");
+        match video {
+            AnyType::Object(video_obj) => {
+                assert_eq!(video_obj.len(), 2);
+                assert_eq!(video_obj.get("frame_rate"), Some(&AnyType::Int(30)));
+
+                let resolution = video_obj
+                    .get("resolution")
+                    .expect("resolution should exist");
+                match resolution {
+                    AnyType::Object(res_obj) => {
+                        assert_eq!(res_obj.len(), 2);
+                        assert_eq!(res_obj.get("width"), Some(&AnyType::Int(1280)));
+                        assert_eq!(res_obj.get("height"), Some(&AnyType::Int(720)));
+                    }
+                    _ => panic!("resolution should be an object"),
+                }
+            }
+            _ => panic!("video should be an object"),
+        }
     }
 }
