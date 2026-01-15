@@ -12,4 +12,4 @@ pub mod subscribed_topics;
 pub use parameters::Parameters;
 pub use peppylib::config::QoSProfile;
 pub use peppylib::{MessengerHandle, PeppyError as Error, PeppyResult as Result};
-pub use runner::{run, NodeRunner};
+pub use runner::{ExecutionMode, NodeBuilder, NodeContext, NodeRunner, Processor, StandaloneConfig};
