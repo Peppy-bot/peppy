@@ -11,11 +11,11 @@ mod reset;
 pub use info::{InfoRequest, InfoResponse};
 pub use launch::{LaunchRequest, LaunchResponse};
 pub use node::{
-    add::NodeAddFeedback, add::NodeAddGoal, add::NodeAddResult, generate::NodeGenerateRequest,
-    generate::NodeGenerateResponse, init::NodeInitRequest, init::NodeInitResponse,
-    list::NodeListRequest, list::NodeListResponse, remove::NodeRemoveRequest,
-    remove::NodeRemoveResponse, start::NodeStartFeedback, start::NodeStartGoal,
-    start::NodeStartResult, stop::NodeStopRequest, stop::NodeStopResponse,
+    add::NodeAddFeedback, add::NodeAddGoal, add::NodeAddGoalResponse, add::NodeAddResult,
+    generate::NodeGenerateRequest, generate::NodeGenerateResponse, init::NodeInitRequest,
+    init::NodeInitResponse, list::NodeListRequest, list::NodeListResponse,
+    remove::NodeRemoveRequest, remove::NodeRemoveResponse, start::NodeStartFeedback,
+    start::NodeStartGoal, start::NodeStartResult, stop::NodeStopRequest, stop::NodeStopResponse,
 };
 pub use ping::{PingRequest, PingResponse};
 pub use reset::{NodeResetRequest, NodeResetResponse};

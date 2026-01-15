@@ -1,5 +1,5 @@
 use config::node::NodeConfigParser;
-use master_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddResult};
+use master_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult};
 use peppylib::{ActionMessenger, PeppyError};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -88,6 +88,22 @@ async fn add_node_async(
         .await
         .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_add goal: {}", e)))?;
 
+    // Read the goal response to get the log file path
+    let goal_response_payload = action_handle.goal_response().payload().to_bytes();
+    let goal_response = NodeAddGoalResponse::decode(&goal_response_payload)
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
+
+    if !goal_response.accepted {
+        return Err(Error::ExecutionFailed(format!(
+            "Goal rejected: {}",
+            goal_response
+                .rejection_reason
+                .unwrap_or_else(|| "unknown reason".to_string())
+        )));
+    }
+
+    info!("Log file: {}", goal_response.log_path.display());
+
     // Number of lines to display in the scrolling output region
     const SCROLLING_OUTPUT_LINES: usize = 10;
     let mut scrolling_output = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
@@ -109,11 +125,7 @@ async fn add_node_async(
                 Ok(Ok(msg)) => {
                     let payload = msg.payload();
                     if let Ok(feedback) = NodeAddFeedback::decode(&payload.to_bytes()) {
-                        if feedback.is_log_path() {
-                            info!("Log file: {}", feedback.line);
-                        } else {
-                            scrolling_output.add_line(&feedback.line, feedback.is_stderr());
-                        }
+                        scrolling_output.add_line(&feedback.line, feedback.is_stderr());
                     }
                 }
                 Ok(Err(_)) => break,
