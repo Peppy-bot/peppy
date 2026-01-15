@@ -38,7 +38,24 @@ pub enum Error {
 
 impl Display for Error {
     fn fmt(&self, fmt: &mut Formatter) -> core::result::Result<(), core::fmt::Error> {
-        write!(fmt, "{self:?}")
+        match self {
+            Error::Io(e) => write!(fmt, "IO error: {e}"),
+            Error::UnsupportedEngine => write!(fmt, "Unsupported engine"),
+            Error::MissingEngineConfig => write!(fmt, "Missing engine config"),
+            Error::MissingMessagingRouter => write!(fmt, "Missing messaging router"),
+            Error::ExecutionFailed(msg) => {
+                // Convert escaped newlines to actual newlines for readable output
+                let readable_msg = msg.replace("\\n", "\n");
+                write!(fmt, "{readable_msg}")
+            }
+            Error::Zenohd(msg) => write!(fmt, "Zenohd error: {msg}"),
+            Error::Sync(msg) => write!(fmt, "Sync error: {msg}"),
+            Error::InvalidNodeName(name) => write!(fmt, "Invalid node name: {name}"),
+            Error::NodeWatcher(msg) => write!(fmt, "Node watcher error: {msg}"),
+            Error::PeppyMessagingInterface(e) => write!(fmt, "Messaging interface error: {e}"),
+            Error::PeppyConfig(e) => write!(fmt, "Config error: {e}"),
+            Error::Peppy(e) => write!(fmt, "{e}"),
+        }
     }
 }
 

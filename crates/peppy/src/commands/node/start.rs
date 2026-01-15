@@ -276,7 +276,11 @@ pub async fn start_instance_async(
         ));
     }
 
-    info!("Started node instance '{}'", instance_id);
+    if let Some(pid) = start_result.pid {
+        info!("Started node instance '{}' (pid: {})", instance_id, pid);
+    } else {
+        info!("Started node instance '{}'", instance_id);
+    }
     Ok(instance_id)
 }
 

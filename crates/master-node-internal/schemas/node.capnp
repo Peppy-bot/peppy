@@ -110,6 +110,8 @@ struct NodeStartResult {
     success @0 :Bool;
     # Error message if failed (optional)
     errorMessage @1 :Text;
+    # Process ID of the started node (0 if not available or failed)
+    pid @2 :UInt32;
 }
 
 # Node Stop service

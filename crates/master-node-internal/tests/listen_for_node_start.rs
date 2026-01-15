@@ -104,6 +104,16 @@ async fn listen_for_node_start_success() {
         start_response.result.error_message
     );
 
+    // Verify that the PID is returned on success
+    assert!(
+        start_response.result.pid.is_some(),
+        "node_start should return a PID on success"
+    );
+    assert!(
+        start_response.result.pid.unwrap() > 0,
+        "node_start PID should be a positive number"
+    );
+
     // Verify that the instance was added to the node stack
     let instance_id = NodeName::new(TARGET_INSTANCE_ID).expect("valid instance id");
     let found_instance = started_master.node_stack.find_by_instance_id(&instance_id);
@@ -222,6 +232,12 @@ async fn listen_for_node_start_timeout() {
         start_response.result.error_message
     );
 
+    // Verify that PID is None on failure
+    assert!(
+        start_response.result.pid.is_none(),
+        "node_start should not return a PID on failure"
+    );
+
     // Verify that the instance was NOT added to the node stack since start failed
     let instance_id = NodeName::new(TARGET_INSTANCE_ID).expect("valid instance id");
     let found_instance = started.node_stack.find_by_instance_id(&instance_id);
@@ -293,6 +309,12 @@ async fn listen_for_node_start_not_found() {
             .unwrap_or(false),
         "error message should indicate node not found, got: {:?}",
         start_response.result.error_message
+    );
+
+    // Verify that PID is None on failure
+    assert!(
+        start_response.result.pid.is_none(),
+        "node_start should not return a PID on failure"
     );
 
     // Abort the master node task
@@ -396,6 +418,12 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
         start_response.result.success,
         "node_start should succeed, got error: {:?}",
         start_response.result.error_message
+    );
+
+    // Verify that the PID is returned on success
+    assert!(
+        start_response.result.pid.is_some(),
+        "node_start should return a PID on success"
     );
 
     let mut feedback = Vec::new();
@@ -513,6 +541,12 @@ async fn listen_for_node_start_writes_log_file() {
         start_response.result.success,
         "node_start should succeed, got error: {:?}",
         start_response.result.error_message
+    );
+
+    // Verify that the PID is returned on success
+    assert!(
+        start_response.result.pid.is_some(),
+        "node_start should return a PID on success"
     );
 
     // Verify the goal response contains the correct log_path
@@ -677,6 +711,12 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
         error_msg
     );
 
+    // Verify that PID is None on failure
+    assert!(
+        start_response.result.pid.is_none(),
+        "node_start should not return a PID on failure"
+    );
+
     let _ = std::fs::remove_dir_all(&add_response.snapshot_path);
     started.task.abort();
 }
@@ -818,6 +858,12 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
         error_msg.contains("video.encoding"),
         "error message should list video.encoding, got: {}",
         error_msg
+    );
+
+    // Verify that PID is None on failure
+    assert!(
+        start_response.result.pid.is_none(),
+        "node_start should not return a PID on failure"
     );
 
     let _ = std::fs::remove_dir_all(&add_response.snapshot_path);

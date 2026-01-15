@@ -714,7 +714,8 @@ async fn process_node_start(
             feedback_sync
                 .wait_for_read_quiescence(STARTUP_OUTPUT_MAX_WAIT, STARTUP_OUTPUT_QUIET_WINDOW)
                 .await;
-            let result = NodeStartResult::success();
+            let pid = child.id().unwrap_or(0);
+            let result = NodeStartResult::success(pid);
             feedback_sync.flush().await;
             publish_enabled.store(false, Ordering::Relaxed);
             result

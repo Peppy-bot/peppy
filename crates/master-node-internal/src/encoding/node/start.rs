@@ -198,22 +198,25 @@ impl NodeStartFeedback {
 pub struct NodeStartResult {
     pub success: bool,
     pub error_message: Option<String>,
+    /// Process ID of the started node (None if not available or failed).
+    pub pid: Option<u32>,
 }
 
 impl NodeStartResult {
-    pub fn new(success: bool, error_message: Option<String>) -> Self {
+    pub fn new(success: bool, error_message: Option<String>, pid: Option<u32>) -> Self {
         Self {
             success,
             error_message,
+            pid,
         }
     }
 
-    pub fn success() -> Self {
-        Self::new(true, None)
+    pub fn success(pid: u32) -> Self {
+        Self::new(true, None, Some(pid))
     }
 
     pub fn failure(error_message: impl Into<String>) -> Self {
-        Self::new(false, Some(error_message.into()))
+        Self::new(false, Some(error_message.into()), None)
     }
 
     pub fn encode(&self) -> Result<Bytes> {
@@ -224,6 +227,7 @@ impl NodeStartResult {
             if let Some(ref error_message) = self.error_message {
                 result.set_error_message(error_message);
             }
+            result.set_pid(self.pid.unwrap_or(0));
         }
         encode_message(&builder)
     }
@@ -237,9 +241,16 @@ impl NodeStartResult {
         } else {
             Some(error_message_str.to_owned())
         };
+        let pid_value = result.get_pid();
+        let pid = if pid_value == 0 {
+            None
+        } else {
+            Some(pid_value)
+        };
         Ok(Self {
             success: result.get_success(),
             error_message,
+            pid,
         })
     }
 
