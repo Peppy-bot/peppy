@@ -96,7 +96,7 @@ impl Drop for RouterGuard {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn runner_succeed() {
+async fn daemon_runner_succeed() {
     let (router, router_temp_dir, router_host, router_port) =
         peppylib::start_zenohd_process("127.0.0.1", None)
             .await
@@ -242,6 +242,63 @@ async fn runner_succeed() {
     assert_eq!(shutdown_response.instance_id(), TEST_INSTANCE_ID);
 
     tokio::time::timeout(Duration::from_secs(10), &mut runner_task)
+        .await
+        .expect("runner should exit")
+        .expect("runner task should not panic")
+        .expect("runner should return Ok");
+
+    router_guard.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_runner_succeed() {
+    let (router, router_temp_dir, router_host, router_port) =
+        peppylib::start_zenohd_process("127.0.0.1", None)
+            .await
+            .expect("failed to start zenoh router for test");
+    let mut router_guard = RouterGuard {
+        router: Some(router),
+        _temp_dir: Some(router_temp_dir),
+    };
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
+    let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
+    let peppy_config = r#"{
+      schema_version: 1,
+      manifest: {
+        name: "test_node",
+        tag: "0.1.0",
+        start_cmd: ["cargo", "run"]
+      },
+      parameters: {
+        frequency_hz: "f64"
+      }
+    }"#;
+    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
+
+    let standalone_config = peppylib::runtime::StandaloneConfig::new()
+        .with_parameters(serde_json::json!({ "frequency_hz": TEST_FREQUENCY_HZ }))
+        .with_messaging(&router_host, router_port)
+        .with_instance_id(TEST_INSTANCE_ID);
+
+    let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<f64>();
+    let runner_task = tokio::task::spawn_blocking(move || {
+        NodeBuilder::new()
+            .with_config_path(&peppy_config_path)
+            .standalone(standalone_config)
+            .run(|parameters: Parameters, _node_runner| async move {
+                let _ = setup_tx.send(parameters.frequency_hz);
+                Ok(())
+            })
+    });
+
+    let frequency_hz = tokio::time::timeout(Duration::from_secs(5), setup_rx)
+        .await
+        .expect("runner setup should complete")
+        .expect("runner setup signal should be sent");
+    assert_eq!(frequency_hz, TEST_FREQUENCY_HZ);
+
+    tokio::time::timeout(Duration::from_secs(10), runner_task)
         .await
         .expect("runner should exit")
         .expect("runner task should not panic")
