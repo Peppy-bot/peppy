@@ -287,8 +287,8 @@ impl RustGenerator {
 
                     let action_handle = peppylib::ActionMessenger::send_goal(
                         node_runner.messenger(),
-                        node_runner.runtime().bound_master_node(),
-                        node_runner.runtime().bound_instance_id(),
+                        node_runner.processor().bound_master_node(),
+                        node_runner.processor().bound_instance_id(),
                         TARGET_NODE_NAME,
                         TARGET_ACTION_NAME,
                         target_master_node,
@@ -371,8 +371,8 @@ impl RustGenerator {
 
                     let action_handle = peppylib::ActionMessenger::send_goal(
                         node_runner.messenger(),
-                        node_runner.runtime().bound_master_node(),
-                        node_runner.runtime().bound_instance_id(),
+                        node_runner.processor().bound_master_node(),
+                        node_runner.processor().bound_instance_id(),
                         TARGET_NODE_NAME,
                         TARGET_ACTION_NAME,
                         target_master_node,
@@ -1543,8 +1543,8 @@ impl LanguageGenerator for RustGenerator {
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 node_runner.messenger(),
-                node_runner.runtime().bound_master_node(),
-                node_runner.runtime().bound_instance_id(),
+                node_runner.processor().bound_master_node(),
+                node_runner.processor().bound_instance_id(),
                 NODE_NAME,
                 SERVICE_NAME,
                 target_master_node,
@@ -2770,9 +2770,9 @@ fn build_topic_emit(
                     let payload = bytes::Bytes::from(buffer);
                     let qos = #qos_tokens;
                     let as_topic = #topic_literal;
-                    let as_node_name = node_runner.runtime().node_name();
-                    let as_instance_id = node_runner.runtime().bound_instance_id();
-                    let with_master_node = node_runner.runtime().bound_master_node();
+                    let as_node_name = node_runner.processor().node_name();
+                    let as_instance_id = node_runner.processor().bound_instance_id();
+                    let with_master_node = node_runner.processor().bound_master_node();
 
                     peppylib::TopicMessenger::emit(
                         node_runner.messenger(),
@@ -2862,8 +2862,8 @@ fn build_subscribed_topic_callback(
             let message = {
                 let subscription_future = peppylib::TopicMessenger::subscribe(
                     node_runner.messenger(),
-                    node_runner.runtime().bound_master_node(),
-                    node_runner.runtime().bound_instance_id(),
+                    node_runner.processor().bound_master_node(),
+                    node_runner.processor().bound_instance_id(),
                     node_name,
                     topic_name,
                     master_node_target,
@@ -3738,9 +3738,9 @@ fn build_exposed_service_method(
             {
                 let mut service = peppylib::ServiceMessenger::listen(
                     node_runner.messenger(),
-                    node_runner.runtime().bound_master_node(),
-                    node_runner.runtime().bound_instance_id(),
-                    node_runner.runtime().node_name(),
+                    node_runner.processor().bound_master_node(),
+                    node_runner.processor().bound_instance_id(),
+                    node_runner.processor().node_name(),
                     #service_name_ref,
                 )
                 .await?;
@@ -4085,9 +4085,9 @@ fn build_action_expose_method() -> TokenStream {
         pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self> {
             let action = peppylib::ActionMessenger::expose(
                 node_runner.messenger(),
-                node_runner.runtime().bound_master_node(),
-                node_runner.runtime().bound_instance_id(),
-                node_runner.runtime().node_name(),
+                node_runner.processor().bound_master_node(),
+                node_runner.processor().bound_instance_id(),
+                node_runner.processor().node_name(),
                 ACTION_NAME,
             )
             .await?;
