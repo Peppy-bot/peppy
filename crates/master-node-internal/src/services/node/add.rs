@@ -1,5 +1,5 @@
 use crate::Result;
-use crate::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddResult};
+use crate::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult};
 use crate::names;
 use bytes::Bytes;
 use chrono::Local;
@@ -7,7 +7,7 @@ use config::consts::{
     NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH, logs_dir_add,
     peppy_data_dir,
 };
-use config::node::NodeConfigParser;
+use config::node::{NodeConfig, NodeConfigParser};
 use config::runtime::RuntimeConfig;
 use node_stack::NodeStack;
 use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
@@ -358,9 +358,13 @@ async fn handle_goal_request(
     {
         let mut state_guard = state.lock().await;
         if matches!(*state_guard, NodeAddActionState::Running) {
-            return Ok(Bytes::from_static(
-                b"goal rejected: action already in progress",
-            ));
+            let response = NodeAddGoalResponse::rejected("action already in progress");
+            return response
+                .encode()
+                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                    identifier: "node_add_goal".to_string(),
+                    reason: format!("Failed to encode response: {}", e),
+                });
         }
         *state_guard = NodeAddActionState::Running;
     }
@@ -372,7 +376,13 @@ async fn handle_goal_request(
                 NodeAddResult::failure(PathBuf::new(), format!("Failed to decode goal: {}", e));
             let mut state_guard = state.lock().await;
             *state_guard = NodeAddActionState::Completed { result };
-            return Ok(Bytes::from_static(b"goal rejected: invalid payload"));
+            let response = NodeAddGoalResponse::rejected(format!("invalid payload: {}", e));
+            return response
+                .encode()
+                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                    identifier: "node_add_goal".to_string(),
+                    reason: format!("Failed to encode response: {}", e),
+                });
         }
     };
 
@@ -381,36 +391,26 @@ async fn handle_goal_request(
         goal.from_dir.display()
     );
 
-    // Process the add operation in a separate task to not block goal response
-    let state_clone = Arc::clone(&state);
-    let feedback_publisher_clone = feedback_publisher.clone();
-    tokio::spawn(async move {
-        let result = process_node_add(goal, node_stack, feedback_publisher_clone).await;
-        let mut state_guard = state_clone.lock().await;
-        *state_guard = NodeAddActionState::Completed { result };
-    });
-
-    Ok(Bytes::from_static(b"goal accepted"))
-}
-
-async fn process_node_add(
-    goal: NodeAddGoal,
-    node_stack: Arc<NodeStack>,
-    feedback_publisher: TopicPublisher,
-) -> NodeAddResult {
-    // Parse the node configuration from the request directory.
+    // Parse node config to get node_name and tag for log file naming
     let config_path = goal.from_dir.join(NODE_CONFIG_FILE);
     let node_config = match NodeConfigParser::from_path(&config_path) {
         Ok(config) => config,
         Err(e) => {
-            return NodeAddResult::failure(
-                PathBuf::new(),
-                format!(
-                    "Failed to parse node config at {}: {}",
-                    config_path.display(),
-                    e
-                ),
+            let error_msg = format!(
+                "Failed to parse node config at {}: {}",
+                config_path.display(),
+                e
             );
+            let result = NodeAddResult::failure(PathBuf::new(), &error_msg);
+            let mut state_guard = state.lock().await;
+            *state_guard = NodeAddActionState::Completed { result };
+            let response = NodeAddGoalResponse::rejected(&error_msg);
+            return response
+                .encode()
+                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                    identifier: "node_add_goal".to_string(),
+                    reason: format!("Failed to encode response: {}", e),
+                });
         }
     };
 
@@ -420,33 +420,80 @@ async fn process_node_add(
     // Create log file with timestamp-based filename
     let log_dir = logs_dir_add();
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        let error_msg = format!("Failed to create logs directory: {}", e);
         debug!("Failed to create logs directory {:?}: {}", log_dir, e);
-        return NodeAddResult::failure(
-            PathBuf::new(),
-            format!("Failed to create logs directory: {}", e),
-        );
+        let result = NodeAddResult::failure(PathBuf::new(), &error_msg);
+        let mut state_guard = state.lock().await;
+        *state_guard = NodeAddActionState::Completed { result };
+        let response = NodeAddGoalResponse::rejected(&error_msg);
+        return response
+            .encode()
+            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                identifier: "node_add_goal".to_string(),
+                reason: format!("Failed to encode response: {}", e),
+            });
     }
+
     let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
     let log_filename = format!("{}_{}_{}.log", node_name, node_tag, timestamp);
     let log_path = log_dir.join(&log_filename);
     let log_file = match File::create(&log_path) {
         Ok(file) => Arc::new(StdMutex::new(file)),
         Err(e) => {
+            let error_msg = format!("Failed to create log file: {}", e);
             debug!("Failed to create log file {:?}: {}", log_path, e);
-            return NodeAddResult::failure(
-                PathBuf::new(),
-                format!("Failed to create log file: {}", e),
-            );
+            let result = NodeAddResult::failure(PathBuf::new(), &error_msg);
+            let mut state_guard = state.lock().await;
+            *state_guard = NodeAddActionState::Completed { result };
+            let response = NodeAddGoalResponse::rejected(&error_msg);
+            return response
+                .encode()
+                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                    identifier: "node_add_goal".to_string(),
+                    reason: format!("Failed to encode response: {}", e),
+                });
         }
     };
 
     debug!("Created log file for node add: {}", log_path.display());
 
-    // Send log file path as feedback before running add_cmd
-    let log_path_feedback = NodeAddFeedback::log_path(log_path.to_string_lossy());
-    if let Ok(payload) = log_path_feedback.encode() {
-        let _ = feedback_publisher.publish(payload).await;
-    }
+    // Process the add operation in a separate task to not block goal response
+    let state_clone = Arc::clone(&state);
+    let feedback_publisher_clone = feedback_publisher.clone();
+    let log_path_clone = log_path.clone();
+    tokio::spawn(async move {
+        let result = process_node_add(
+            goal,
+            node_config,
+            node_stack,
+            feedback_publisher_clone,
+            log_file,
+            log_path_clone,
+        )
+        .await;
+        let mut state_guard = state_clone.lock().await;
+        *state_guard = NodeAddActionState::Completed { result };
+    });
+
+    let response = NodeAddGoalResponse::accepted(&log_path);
+    response
+        .encode()
+        .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+            identifier: "node_add_goal".to_string(),
+            reason: format!("Failed to encode response: {}", e),
+        })
+}
+
+async fn process_node_add(
+    goal: NodeAddGoal,
+    node_config: NodeConfig,
+    node_stack: Arc<NodeStack>,
+    feedback_publisher: TopicPublisher,
+    log_file: Arc<StdMutex<File>>,
+    log_path: PathBuf,
+) -> NodeAddResult {
+    let node_name = node_config.manifest.name.as_str().to_owned();
+    let node_tag = node_config.manifest.tag.clone();
 
     // Copy the node folder to the peppy storage directory.
     let copied_path = match copy_node_to_storage(&goal.from_dir, &node_name, &node_tag) {

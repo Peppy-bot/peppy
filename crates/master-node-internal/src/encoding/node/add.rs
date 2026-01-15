@@ -73,6 +73,61 @@ impl NodeAddGoal {
     }
 }
 
+/// Response to the NodeAdd goal request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeAddGoalResponse {
+    pub accepted: bool,
+    pub log_path: PathBuf,
+    pub rejection_reason: Option<String>,
+}
+
+impl NodeAddGoalResponse {
+    pub fn accepted(log_path: impl Into<PathBuf>) -> Self {
+        Self {
+            accepted: true,
+            log_path: log_path.into(),
+            rejection_reason: None,
+        }
+    }
+
+    pub fn rejected(reason: impl Into<String>) -> Self {
+        Self {
+            accepted: false,
+            log_path: PathBuf::new(),
+            rejection_reason: Some(reason.into()),
+        }
+    }
+
+    pub fn encode(&self) -> Result<Bytes> {
+        let mut builder = Builder::new_default();
+        {
+            let mut response = builder.init_root::<node_capnp::node_add_goal_response::Builder>();
+            response.set_accepted(self.accepted);
+            response.set_log_path(self.log_path.to_string_lossy().as_ref());
+            if let Some(ref reason) = self.rejection_reason {
+                response.set_rejection_reason(reason);
+            }
+        }
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let response = reader.get_root::<node_capnp::node_add_goal_response::Reader>()?;
+        let rejection_reason_str = response.get_rejection_reason()?.to_str()?;
+        let rejection_reason = if rejection_reason_str.is_empty() {
+            None
+        } else {
+            Some(rejection_reason_str.to_owned())
+        };
+        Ok(Self {
+            accepted: response.get_accepted(),
+            log_path: PathBuf::from(response.get_log_path()?.to_str()?),
+            rejection_reason,
+        })
+    }
+}
+
 /// Feedback message for the NodeAdd action.
 /// Represents a single line of output from the add_cmd process.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,23 +153,12 @@ impl NodeAddFeedback {
         }
     }
 
-    pub fn log_path(path: impl Into<String>) -> Self {
-        Self {
-            stream: "log_path".to_string(),
-            line: path.into(),
-        }
-    }
-
     pub fn is_stdout(&self) -> bool {
         self.stream == "stdout"
     }
 
     pub fn is_stderr(&self) -> bool {
         self.stream == "stderr"
-    }
-
-    pub fn is_log_path(&self) -> bool {
-        self.stream == "log_path"
     }
 
     pub fn encode(&self) -> Result<Bytes> {

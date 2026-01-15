@@ -21,6 +21,15 @@ struct NodeAddGoal {
     fromDir @0 :Text;
 }
 
+struct NodeAddGoalResponse {
+    # Whether the goal was accepted
+    accepted @0 :Bool;
+    # Path to the log file (empty if rejected)
+    logPath @1 :Text;
+    # Rejection reason (empty if accepted)
+    rejectionReason @2 :Text;
+}
+
 struct NodeAddFeedback {
     # Type of output: "stdout" or "stderr"
     stream @0 :Text;
