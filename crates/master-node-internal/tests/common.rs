@@ -328,6 +328,7 @@ fn main() -> Result<()> {
     // Use the pre-built binary path in start_cmd instead of "cargo run".
     // This avoids recompilation after the folder is copied to storage,
     // since cargo's fingerprinting invalidates the cache when absolute paths change.
+    let binary_path = node_dir.join("target/debug").join(crate_name);
     std::fs::write(
         node_dir.join(NODE_CONFIG_FILE),
         format!(
@@ -341,8 +342,7 @@ fn main() -> Result<()> {
         "true"
     ],
     start_cmd: [
-      "cargo",
-      "run"
+      "{}"
     ]
   }},
   interfaces: {{
@@ -359,7 +359,8 @@ fn main() -> Result<()> {
       ],
     }}
   }}
-}}"#
+}}"#,
+            binary_path.display()
         ),
     )
     .expect("failed to write test node peppy.json5");
