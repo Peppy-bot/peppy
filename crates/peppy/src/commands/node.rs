@@ -17,7 +17,7 @@ use tracing::info;
 use super::Command;
 use crate::{context::AppContext, error::Error as CommandError};
 
-use init::NodeBuilder;
+use init::NodeInitBuilder;
 
 pub use types::NodeName;
 
@@ -160,7 +160,8 @@ impl Command for NodeCommand {
                 build_system,
                 node_name,
             } => {
-                let mut node_builder = NodeBuilder::new(ctx, node_name).build_system(build_system);
+                let mut node_builder =
+                    NodeInitBuilder::new(ctx, node_name).build_system(build_system);
 
                 if let Some(dir) = to_dir {
                     node_builder = node_builder.to_dir(dir);
