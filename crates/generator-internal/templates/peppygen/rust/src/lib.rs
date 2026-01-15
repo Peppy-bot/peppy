@@ -1,5 +1,4 @@
 pub mod parameters;
-pub mod runner;
 
 pub mod capnp;
 pub mod exposed_actions;
@@ -11,5 +10,5 @@ pub mod subscribed_topics;
 
 pub use parameters::Parameters;
 pub use peppylib::config::QoSProfile;
+pub use peppylib::runtime::{NodeBuilder, NodeRunner};
 pub use peppylib::{MessengerHandle, PeppyError as Error, PeppyResult as Result};
-pub use runner::{ExecutionMode, NodeBuilder, NodeContext, NodeRunner, Processor, StandaloneConfig};
