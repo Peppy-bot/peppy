@@ -68,6 +68,7 @@ fn node_runtime_config_command_outputs_valid_config() {
         command: NodeCommands::RuntimeConfig {
             node_name: Some(node_name.to_string()),
             node_dir: None,
+            args: Vec::new(),
         },
     }
     .execute(&node_ctx)
@@ -174,6 +175,7 @@ fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
         command: NodeCommands::RuntimeConfig {
             node_name: None,
             node_dir: Some(node_path),
+            args: Vec::new(),
         },
     }
     .execute(&node_ctx)
