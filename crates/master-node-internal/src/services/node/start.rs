@@ -3,9 +3,7 @@ use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, N
 use crate::names;
 use bytes::Bytes;
 use chrono::Local;
-use config::consts::{
-    RUNTIME_CONFIG_VAR_NAME, STARTED_FROM_DAEMON_ENV_MARKER, logs_dir_start, runtime_config_path,
-};
+use config::consts::{RUNTIME_CONFIG_VAR_NAME, logs_dir_start, runtime_config_path};
 use config::node::Name;
 use config::runtime::RuntimeConfig;
 use config::{AnyType, NodeArguments};
@@ -875,7 +873,6 @@ pub fn start_node(entity: &NodeEntity, runtime_config_json5: &str) -> std::io::R
     command
         .args(args)
         .env(RUNTIME_CONFIG_VAR_NAME, &runtime_config_path)
-        .env(STARTED_FROM_DAEMON_ENV_MARKER, "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
