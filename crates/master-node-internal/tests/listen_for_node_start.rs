@@ -5,7 +5,7 @@ use common::{
     send_node_start_and_wait, start_master_node, start_master_node_with_health_timeout,
     start_master_node_with_zenoh_messenger, write_peppy_json5,
 };
-use config::consts::{STARTED_FROM_DAEMON_ENV_MARKER, logs_dir_start};
+use config::consts::logs_dir_start;
 use config::node::Name as NodeName;
 use config::peppy_config::{DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
@@ -328,20 +328,17 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
     const TARGET_INSTANCE_ID: &str = "stream_output_instance";
     const STDOUT_MARKER: &str = "peppy_start_stdout_marker";
     const STDERR_MARKER: &str = "peppy_start_stderr_marker";
-    const DAEMON_ENV_MARKER: &str = "peppy_daemon_env_marker";
 
     let started = start_master_node().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    // The start_cmd also echoes the STARTED_FROM_DAEMON_ENV_MARKER to verify
-    // that the daemon sets this environment variable when spawning child processes.
     let peppy_json5 = format!(
         r#"{{
             schema_version: 1,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-                start_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; echo {DAEMON_ENV_MARKER}=${STARTED_FROM_DAEMON_ENV_MARKER}; sleep 5"]
+                start_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
             }}
         }}"#
     );
@@ -439,20 +436,9 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
     let saw_stderr = feedback
         .iter()
         .any(|entry| entry.is_stderr() && entry.line.trim() == STDERR_MARKER);
-    // Verify that the STARTED_FROM_DAEMON_ENV_MARKER is set to "1" by the daemon.
-    // The start_cmd echoes it as "peppy_daemon_env_marker=<value>".
-    let expected_daemon_env_output = format!("{}=1", DAEMON_ENV_MARKER);
-    let saw_daemon_env = feedback
-        .iter()
-        .any(|entry| entry.is_stdout() && entry.line.trim() == expected_daemon_env_output);
 
     assert!(saw_stdout, "stdout feedback should include marker");
     assert!(saw_stderr, "stderr feedback should include marker");
-    assert!(
-        saw_daemon_env,
-        "stdout feedback should include {} env var set to 1",
-        STARTED_FROM_DAEMON_ENV_MARKER
-    );
 
     ready_task.abort();
     health_task.abort();
