@@ -1,5 +1,5 @@
 use crate::Result;
-use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartResult};
+use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult};
 use crate::names;
 use bytes::Bytes;
 use chrono::Local;
@@ -407,9 +407,13 @@ async fn handle_goal_request(
     {
         let mut state_guard = state.lock().await;
         if matches!(*state_guard, NodeStartActionState::Running) {
-            return Ok(Bytes::from_static(
-                b"goal rejected: action already in progress",
-            ));
+            let response = NodeStartGoalResponse::rejected("action already in progress");
+            return response
+                .encode()
+                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                    identifier: "node_start_goal".to_string(),
+                    reason: format!("Failed to encode response: {}", e),
+                });
         }
         *state_guard = NodeStartActionState::Running;
     }
@@ -420,21 +424,87 @@ async fn handle_goal_request(
             let result = NodeStartResult::failure(format!("Failed to decode goal: {}", e));
             let mut state_guard = state.lock().await;
             *state_guard = NodeStartActionState::Completed { result };
-            return Ok(Bytes::from_static(b"goal rejected: invalid payload"));
+            let response = NodeStartGoalResponse::rejected(format!("invalid payload: {}", e));
+            return response
+                .encode()
+                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                    identifier: "node_start_goal".to_string(),
+                    reason: format!("Failed to encode response: {}", e),
+                });
         }
     };
 
+    // Parse runtime config to get instance_id for log file naming
+    let runtime_config: RuntimeConfig = match serde_json5::from_str(&goal.runtime_config_json5) {
+        Ok(config) => config,
+        Err(e) => {
+            let error_msg = format!("Failed to parse PEPPY_RUNTIME_CONFIG: {}", e);
+            let result = NodeStartResult::failure(&error_msg);
+            let mut state_guard = state.lock().await;
+            *state_guard = NodeStartActionState::Completed { result };
+            let response = NodeStartGoalResponse::rejected(&error_msg);
+            return response
+                .encode()
+                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                    identifier: "node_start_goal".to_string(),
+                    reason: format!("Failed to encode response: {}", e),
+                });
+        }
+    };
+
+    let instance_id_str = runtime_config.deployment_instance.instance_id.as_str();
+
     debug!(
-        "Received `node_start` goal from {sender_instance_id}, node={}:{}, runtime_config_len={}",
+        "Received `node_start` goal from {sender_instance_id}, node={}:{}, instance_id={}, runtime_config_len={}",
         goal.node_name,
         goal.tag,
+        instance_id_str,
         goal.runtime_config_json5.len()
     );
+
+    // Create log file for stdout/stderr
+    let log_dir = logs_dir_start();
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        let error_msg = format!("Failed to create logs directory: {}", e);
+        debug!("Failed to create logs directory {:?}: {}", log_dir, e);
+        let result = NodeStartResult::failure(&error_msg);
+        let mut state_guard = state.lock().await;
+        *state_guard = NodeStartActionState::Completed { result };
+        let response = NodeStartGoalResponse::rejected(&error_msg);
+        return response
+            .encode()
+            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                identifier: "node_start_goal".to_string(),
+                reason: format!("Failed to encode response: {}", e),
+            });
+    }
+
+    let log_path = log_dir.join(format!("{}.log", instance_id_str));
+    let log_file = match File::create(&log_path) {
+        Ok(file) => Arc::new(StdMutex::new(file)),
+        Err(e) => {
+            let error_msg = format!("Failed to create log file: {}", e);
+            debug!("Failed to create log file {:?}: {}", log_path, e);
+            let result = NodeStartResult::failure(&error_msg);
+            let mut state_guard = state.lock().await;
+            *state_guard = NodeStartActionState::Completed { result };
+            let response = NodeStartGoalResponse::rejected(&error_msg);
+            return response
+                .encode()
+                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                    identifier: "node_start_goal".to_string(),
+                    reason: format!("Failed to encode response: {}", e),
+                });
+        }
+    };
+
+    debug!("Created log file for node start: {}", log_path.display());
 
     let state_clone = Arc::clone(&state);
     tokio::spawn(async move {
         let result = process_node_start(
             goal,
+            runtime_config,
             sender_instance_id,
             node_stack,
             messenger,
@@ -443,18 +513,26 @@ async fn handle_goal_request(
             node_startup_timeout,
             node_start_health_timeout,
             feedback_publisher,
+            log_file,
         )
         .await;
         let mut state_guard = state_clone.lock().await;
         *state_guard = NodeStartActionState::Completed { result };
     });
 
-    Ok(Bytes::from_static(b"goal accepted"))
+    let response = NodeStartGoalResponse::accepted(&log_path);
+    response
+        .encode()
+        .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+            identifier: "node_start_goal".to_string(),
+            reason: format!("Failed to encode response: {}", e),
+        })
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn process_node_start(
     goal: NodeStartGoal,
+    runtime_config: RuntimeConfig,
     sender_instance_id: String,
     node_stack: Arc<NodeStack>,
     messenger: MessengerHandle,
@@ -463,22 +541,13 @@ async fn process_node_start(
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
     feedback_publisher: TopicPublisher,
+    log_file: Arc<StdMutex<File>>,
 ) -> NodeStartResult {
     let NodeStartGoal {
         runtime_config_json5,
         node_name,
         tag,
     } = goal;
-
-    let runtime_config: RuntimeConfig = match serde_json5::from_str(&runtime_config_json5) {
-        Ok(config) => config,
-        Err(e) => {
-            return NodeStartResult::failure(format!(
-                "Failed to parse PEPPY_RUNTIME_CONFIG: {}",
-                e
-            ));
-        }
-    };
 
     let instance_id_str = runtime_config.deployment_instance.instance_id.as_str();
     let instance_id = match Name::new(instance_id_str) {
@@ -489,7 +558,7 @@ async fn process_node_start(
     };
 
     debug!(
-        "Received `node_start` goal from {sender_instance_id}, node={}:{}, instance_id={}",
+        "Processing `node_start` from {sender_instance_id}, node={}:{}, instance_id={}",
         node_name, tag, instance_id_str
     );
 
@@ -527,21 +596,6 @@ async fn process_node_start(
     let publish_enabled = Arc::new(AtomicBool::new(true));
     let feedback_sync = FeedbackSync::new();
     let stderr_buffer = Arc::new(StdMutex::new(VecDeque::new()));
-
-    // Create log file for stdout/stderr
-    let log_dir = logs_dir_start();
-    if let Err(e) = std::fs::create_dir_all(&log_dir) {
-        debug!("Failed to create logs directory {:?}: {}", log_dir, e);
-        return NodeStartResult::failure(format!("Failed to create logs directory: {}", e));
-    }
-    let log_path = log_dir.join(format!("{}.log", instance_id_str));
-    let log_file = match File::create(&log_path) {
-        Ok(file) => Arc::new(StdMutex::new(file)),
-        Err(e) => {
-            debug!("Failed to create log file {:?}: {}", log_path, e);
-            return NodeStartResult::failure(format!("Failed to create log file: {}", e));
-        }
-    };
 
     let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
     let feedback_publisher = feedback_publisher.clone();

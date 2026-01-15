@@ -99,9 +99,9 @@ async fn listen_for_node_start_success() {
 
     // The start should succeed because the health check was responded to
     assert!(
-        start_response.success,
+        start_response.result.success,
         "node_start should succeed, got error: {:?}",
-        start_response.error_message
+        start_response.result.error_message
     );
 
     // Verify that the instance was added to the node stack
@@ -208,17 +208,18 @@ async fn listen_for_node_start_timeout() {
 
     // The start should fail because the health check timed out
     assert!(
-        !start_response.success,
+        !start_response.result.success,
         "node_start should fail due to health check timeout"
     );
     assert!(
         start_response
+            .result
             .error_message
             .as_ref()
             .map(|msg| msg.contains("health check timed out"))
             .unwrap_or(false),
         "error message should indicate health check failure, got: {:?}",
-        start_response.error_message
+        start_response.result.error_message
     );
 
     // Verify that the instance was NOT added to the node stack since start failed
@@ -280,17 +281,18 @@ async fn listen_for_node_start_not_found() {
 
     // The start should fail because the node was not found
     assert!(
-        !start_response.success,
+        !start_response.result.success,
         "node_start should fail because node not found"
     );
     assert!(
         start_response
+            .result
             .error_message
             .as_ref()
             .map(|msg| msg.contains("not found in node stack"))
             .unwrap_or(false),
         "error message should indicate node not found, got: {:?}",
-        start_response.error_message
+        start_response.result.error_message
     );
 
     // Abort the master node task
@@ -391,9 +393,9 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
     .expect("node_start action should complete");
 
     assert!(
-        start_response.success,
+        start_response.result.success,
         "node_start should succeed, got error: {:?}",
-        start_response.error_message
+        start_response.result.error_message
     );
 
     let mut feedback = Vec::new();
@@ -508,13 +510,24 @@ async fn listen_for_node_start_writes_log_file() {
     .expect("node_start action should complete");
 
     assert!(
-        start_response.success,
+        start_response.result.success,
         "node_start should succeed, got error: {:?}",
-        start_response.error_message
+        start_response.result.error_message
+    );
+
+    // Verify the goal response contains the correct log_path
+    assert!(
+        start_response.goal_response.accepted,
+        "goal should be accepted"
+    );
+    let expected_log_path = logs_dir_start().join(format!("{}.log", TARGET_INSTANCE_ID));
+    assert_eq!(
+        start_response.goal_response.log_path, expected_log_path,
+        "goal response log_path should match expected path"
     );
 
     // Verify the log file exists and contains expected content
-    let log_path = logs_dir_start().join(format!("{}.log", TARGET_INSTANCE_ID));
+    let log_path = &start_response.goal_response.log_path;
     assert!(log_path.exists(), "log file should exist at {:?}", log_path);
 
     let log_content = std::fs::read_to_string(&log_path).expect("should be able to read log file");
@@ -625,11 +638,12 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
 
     // The start should fail due to missing parameters
     assert!(
-        !start_response.success,
+        !start_response.result.success,
         "node_start should fail due to missing parameters"
     );
 
     let error_msg = start_response
+        .result
         .error_message
         .as_ref()
         .expect("error message should be present");
@@ -767,11 +781,12 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
 
     // The start should fail due to missing video parameters
     assert!(
-        !start_response.success,
+        !start_response.result.success,
         "node_start should fail due to missing parameters"
     );
 
     let error_msg = start_response
+        .result
         .error_message
         .as_ref()
         .expect("error message should be present");
