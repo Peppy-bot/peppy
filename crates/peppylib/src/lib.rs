@@ -8,6 +8,8 @@ pub mod services;
 pub use error::{Error as PeppyError, Result as PeppyResult};
 pub use messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, TopicMessenger};
 pub use pmi::start_zenohd_process;
+pub use runtime::StandaloneConfig;
+pub use runtime::runner::run_standalone;
 
 // Reexport useful modules for the user of the lib
 pub mod config {

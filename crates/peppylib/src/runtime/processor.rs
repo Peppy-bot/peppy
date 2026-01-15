@@ -5,6 +5,7 @@ use config::{
     NodeArguments,
     consts::{NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
     node::NodeConfig,
+    peppy_config::{DeploymentInstance, Name},
     runtime::RuntimeConfig,
 };
 
@@ -37,6 +38,49 @@ impl Processor {
             &runtime_config.deployment_instance.arguments,
             &node_config.parameters,
         )?;
+
+        Ok(Self { runtime_config })
+    }
+
+    /// Creates a Processor for standalone mode without reading from PEPPY_RUNTIME_CONFIG.
+    ///
+    /// This skips:
+    /// - Reading from the environment variable
+    /// - Fingerprint validation
+    /// - Parameter type validation against peppy.json5
+    ///
+    /// Use this when running a node directly with `cargo run` and a local Zenoh router.
+    pub fn new_standalone(
+        messaging_host: impl Into<String>,
+        messaging_port: u16,
+        node_name: impl Into<String>,
+        instance_id: impl Into<String>,
+        master_node: impl Into<String>,
+        arguments: NodeArguments,
+    ) -> Result<Self> {
+        let node_name_str = node_name.into();
+        let instance_id_str = instance_id.into();
+        let master_node_str = master_node.into();
+
+        let instance_id_name =
+            Name::new(&instance_id_str).map_err(|_| Error::InvalidStandaloneName {
+                field: "instance_id".to_string(),
+                value: instance_id_str,
+            })?;
+
+        let runtime_config = RuntimeConfig::new(
+            &messaging_host.into(),
+            messaging_port,
+            DeploymentInstance {
+                instance_id: instance_id_name,
+                arguments,
+            },
+            &node_name_str,
+            &master_node_str,
+        )
+        .map_err(|e| Error::StandaloneConfigCreation {
+            reason: e.to_string(),
+        })?;
 
         Ok(Self { runtime_config })
     }

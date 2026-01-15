@@ -1,4 +1,5 @@
 use config::consts::NODE_CONFIG_FILE;
+use config::NodeArguments;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tracing::info;
@@ -7,6 +8,7 @@ use crate::MessengerHandle;
 use crate::config::deserialize_parameters;
 use crate::error::{Error, Result};
 use crate::runtime::Processor;
+use crate::runtime::standalone::StandaloneConfig;
 use crate::services::health::listen_for_node_health;
 use crate::services::ready::listen_for_node_ready;
 use crate::services::shutdown::listen_for_shutdown;
@@ -90,6 +92,84 @@ where
         Ok(())
     })
     // Runtime drops here → all spawned tasks are cancelled
+}
+
+/// Runs a node in standalone mode without requiring the peppy daemon.
+///
+/// This allows running nodes directly with `cargo run` while still having
+/// full messaging capabilities with a local Zenoh router.
+///
+/// Unlike `run()`, this function:
+/// - Does not read from `PEPPY_RUNTIME_CONFIG` environment variable
+/// - Does not validate the peppy.json5 fingerprint
+/// - Does not start ready/health/shutdown services (no daemon to coordinate with)
+/// - Runs until the setup_fn completes or ctrl-c is received
+///
+/// # Example
+/// ```ignore
+/// let config = StandaloneConfig::new("127.0.0.1", 7448, "my_node", "instance_1", my_params);
+///
+/// run_standalone(config, |params, node_runner| async move {
+///     // Use node_runner.messenger() for topics/services
+///     Ok(())
+/// })
+/// ```
+pub fn run_standalone<F, Fut, Params>(config: StandaloneConfig<Params>, setup_fn: F) -> Result<()>
+where
+    F: FnOnce(Params, Arc<NodeRunner>) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+    Params: serde::Serialize,
+{
+    let rt = tokio::runtime::Runtime::new().map_err(|source| Error::RuntimeInitialization {
+        context: "standalone node runner".to_string(),
+        source,
+    })?;
+
+    // Convert the Params to NodeArguments for the Processor
+    let arguments = params_to_node_arguments(&config.parameters)?;
+
+    let runtime_processor = Processor::new_standalone(
+        &config.messaging_host,
+        config.messaging_port,
+        &config.node_name,
+        &config.instance_id,
+        config.effective_master_node(),
+        arguments,
+    )?;
+
+    rt.block_on(async move {
+        let node_runner = Arc::new(NodeRunner::new(runtime_processor).await?);
+
+        info!(
+            "Starting standalone node with name {} and instance_id {}...",
+            node_runner.runtime().node_name(),
+            node_runner.runtime().bound_instance_id(),
+        );
+
+        // In standalone mode, we run until setup_fn completes or ctrl-c
+        tokio::select! {
+            result = setup_fn(config.parameters, Arc::clone(&node_runner)) => {
+                result?;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                info!("Received ctrl-c, shutting down standalone node...");
+            }
+        }
+
+        info!("Shutting down standalone node...");
+        Ok(())
+    })
+}
+
+/// Converts a serializable Params struct to NodeArguments.
+fn params_to_node_arguments<Params: serde::Serialize>(params: &Params) -> Result<NodeArguments> {
+    let json_value = serde_json::to_value(params).map_err(|e| Error::StandaloneConfigCreation {
+        reason: format!("failed to serialize parameters: {}", e),
+    })?;
+
+    serde_json::from_value(json_value).map_err(|e| Error::StandaloneConfigCreation {
+        reason: format!("failed to convert parameters to NodeArguments: {}", e),
+    })
 }
 
 /// Services that must start BEFORE setup_fn runs.

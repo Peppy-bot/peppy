@@ -198,6 +198,13 @@ pub enum Error {
 
     #[error("message format for `{context}` is not available in the generator")]
     MessageFormatUnavailable { context: String },
+
+    // --- Standalone mode
+    #[error("invalid standalone config {field}: `{value}`")]
+    InvalidStandaloneName { field: String, value: String },
+
+    #[error("failed to create standalone config: {reason}")]
+    StandaloneConfigCreation { reason: String },
 }
 
 struct InstanceSuffix<'a>(Option<&'a str>);
