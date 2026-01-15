@@ -9,6 +9,7 @@ pub const PEPPYLIB_OUTPUT_PATH: &str = ".peppy/libs/peppygen/crates/peppylib";
 pub const DEFAULT_ZENOH_HOST: &str = "127.0.0.1";
 // 7447 is the default port but we avoid using it to avoid conflicts with other services using Zenoh
 pub const DEFAULT_ZENOH_PORT: u16 = 7448;
+pub const STARTED_FROM_DAEMON_ENV_MARKER: &str = "STARTED_FROM_PEPPY_DAEMON";
 pub const DAEMON_STATE_FILE_ENV: &str = "PEPPY_DAEMON_STATE_FILE";
 
 pub const ALLOWED_CONFIG_CHARS: &str =
