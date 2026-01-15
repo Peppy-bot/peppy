@@ -1,7 +1,9 @@
 use config::peppy_config::{DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
 use config::{AnyType, NodeArguments};
-use master_node::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartResult};
+use master_node::encoding::{
+    NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
+};
 use names_generator2::get_random;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError};
 use rand::rng;
@@ -178,6 +180,22 @@ pub async fn start_instance_async(
         )
         .await
         .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_start goal: {}", e)))?;
+
+    // Decode the goal response to get log_path
+    let goal_response_payload = action_handle.goal_response().payload().to_bytes();
+    let goal_response = NodeStartGoalResponse::decode(&goal_response_payload)
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
+
+    if !goal_response.accepted {
+        return Err(Error::ExecutionFailed(format!(
+            "Goal rejected: {}",
+            goal_response
+                .rejection_reason
+                .unwrap_or_else(|| "unknown reason".to_string())
+        )));
+    }
+
+    info!("Log file: {}", goal_response.log_path.display());
 
     let mut scrolling_output = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
 

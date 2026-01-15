@@ -5,7 +5,8 @@ use config::node::QoSProfile;
 use config::peppy_config::BuildSystem;
 use config::runtime::RuntimeConfig;
 use master_node::encoding::{
-    NodeAddFeedback, NodeAddGoal, NodeAddResult, NodeStartFeedback, NodeStartGoal, NodeStartResult,
+    NodeAddFeedback, NodeAddGoal, NodeAddResult, NodeStartFeedback, NodeStartGoal,
+    NodeStartGoalResponse, NodeStartResult,
 };
 use master_node::names;
 use master_node::{MasterNode, MasterNodeArguments};
@@ -27,6 +28,12 @@ pub const CALLER_INSTANCE_ID: &str = "caller_instance";
 pub struct NodeStartTestTimeouts {
     pub goal: Duration,
     pub result: Duration,
+}
+
+/// Combined response from send_node_start_and_wait containing both goal and result responses.
+pub struct NodeStartTestResponse {
+    pub goal_response: NodeStartGoalResponse,
+    pub result: NodeStartResult,
 }
 
 /// Writes a node config file and the corresponding fingerprint file expected by `node_add`.
@@ -156,7 +163,7 @@ pub async fn send_node_start_and_wait(
     tag: &str,
     timeouts: &NodeStartTestTimeouts,
     feedback_tx: Option<UnboundedSender<NodeStartFeedback>>,
-) -> Result<NodeStartResult, String> {
+) -> Result<NodeStartTestResponse, String> {
     let goal = NodeStartGoal::new(runtime_config_json5, node_name, tag);
     let (caller_master_node, caller_instance_id) = if feedback_tx.is_some() {
         ("*", "*")
@@ -181,6 +188,11 @@ pub async fn send_node_start_and_wait(
     )
     .await
     .map_err(|e| format!("Failed to send goal: {}", e))?;
+
+    // Decode the goal response to get log_path
+    let goal_response_payload = action_handle.goal_response().payload().to_bytes();
+    let goal_response = NodeStartGoalResponse::decode(&goal_response_payload)
+        .map_err(|e| format!("Failed to decode goal response: {}", e))?;
 
     let deadline = tokio::time::Instant::now() + timeouts.result;
     let feedback_tx = feedback_tx.as_ref();
@@ -220,7 +232,10 @@ pub async fn send_node_start_and_wait(
                 let payload = msg.payload().to_bytes();
                 match NodeStartResult::decode(&payload) {
                     Ok(result) => {
-                        return Ok(result);
+                        return Ok(NodeStartTestResponse {
+                            goal_response,
+                            result,
+                        });
                     }
                     Err(err) => {
                         let pending = std::str::from_utf8(payload.as_ref())

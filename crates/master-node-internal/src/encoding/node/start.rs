@@ -1,5 +1,6 @@
 //! Encoding types for the NodeStart action (streaming version with feedback).
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -81,6 +82,61 @@ impl NodeStartGoal {
         )
         .await?;
         Ok(handle)
+    }
+}
+
+/// Response to the NodeStart goal request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeStartGoalResponse {
+    pub accepted: bool,
+    pub log_path: PathBuf,
+    pub rejection_reason: Option<String>,
+}
+
+impl NodeStartGoalResponse {
+    pub fn accepted(log_path: impl Into<PathBuf>) -> Self {
+        Self {
+            accepted: true,
+            log_path: log_path.into(),
+            rejection_reason: None,
+        }
+    }
+
+    pub fn rejected(reason: impl Into<String>) -> Self {
+        Self {
+            accepted: false,
+            log_path: PathBuf::new(),
+            rejection_reason: Some(reason.into()),
+        }
+    }
+
+    pub fn encode(&self) -> Result<Bytes> {
+        let mut builder = Builder::new_default();
+        {
+            let mut response = builder.init_root::<node_capnp::node_start_goal_response::Builder>();
+            response.set_accepted(self.accepted);
+            response.set_log_path(self.log_path.to_string_lossy().as_ref());
+            if let Some(ref reason) = self.rejection_reason {
+                response.set_rejection_reason(reason);
+            }
+        }
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let response = reader.get_root::<node_capnp::node_start_goal_response::Reader>()?;
+        let rejection_reason_str = response.get_rejection_reason()?.to_str()?;
+        let rejection_reason = if rejection_reason_str.is_empty() {
+            None
+        } else {
+            Some(rejection_reason_str.to_owned())
+        };
+        Ok(Self {
+            accepted: response.get_accepted(),
+            log_path: PathBuf::from(response.get_log_path()?.to_str()?),
+            rejection_reason,
+        })
     }
 }
 
