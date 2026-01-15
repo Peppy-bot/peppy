@@ -2,7 +2,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::NodeArguments;
 use config::node::NodeConfigParser;
 use config::peppy_config::{DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
@@ -15,6 +14,8 @@ use tracing::info;
 use crate::context::{AppContext, DaemonState};
 use crate::error::{Error, Result};
 
+use super::start::args_to_node_arguments;
+
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -23,10 +24,11 @@ pub fn print_runtime_config(
     ctx: &Arc<AppContext>,
     node_name: Option<String>,
     node_dir: Option<PathBuf>,
+    args: Vec<(String, String)>,
 ) -> Result<()> {
     let node_name = resolve_node_name(node_name, node_dir)?;
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(print_runtime_config_async(ctx, node_name))
+    rt.block_on(print_runtime_config_async(ctx, node_name, args))
 }
 
 /// Resolves the node name from either the direct name or by reading the peppy.json5 file in the directory.
@@ -45,7 +47,11 @@ fn resolve_node_name(node_name: Option<String>, node_dir: Option<PathBuf>) -> Re
     }
 }
 
-async fn print_runtime_config_async(ctx: &Arc<AppContext>, node_name: String) -> Result<()> {
+async fn print_runtime_config_async(
+    ctx: &Arc<AppContext>,
+    node_name: String,
+    args: Vec<(String, String)>,
+) -> Result<()> {
     let daemon_state = DaemonState::read().map_err(|e| {
         Error::ExecutionFailed(format!(
             "Failed to read daemon state. Is the peppy daemon running? Error: {}",
@@ -111,7 +117,7 @@ async fn print_runtime_config_async(ctx: &Arc<AppContext>, node_name: String) ->
         messaging_port,
         DeploymentInstance {
             instance_id: Name::new(instance_id).map_err(|e| Error::PeppyConfig(e.into()))?,
-            arguments: NodeArguments::new(),
+            arguments: args_to_node_arguments(&args),
         },
         node_name,
         master_node_name,

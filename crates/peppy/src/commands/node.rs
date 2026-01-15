@@ -124,6 +124,10 @@ pub enum NodeCommands {
         node_name: Option<String>,
         /// Directory containing the peppy.json5 configuration file
         node_dir: Option<PathBuf>,
+        /// Runtime arguments as key=value pairs (e.g., device.physical=/dev/video0 video.frame_rate=30)
+        /// Dot-separated keys create nested objects in the arguments
+        #[arg(value_parser = parse_key_value_arg)]
+        args: Vec<(String, String)>,
     },
     /// Stop a running node instance
     Stop {
@@ -194,10 +198,8 @@ impl Command for NodeCommand {
             NodeCommands::RuntimeConfig {
                 node_name,
                 node_dir,
-            } => {
-                info!("Printing runtime config...");
-                runtime_config::print_runtime_config(ctx, node_name, node_dir)
-            }
+                args,
+            } => runtime_config::print_runtime_config(ctx, node_name, node_dir, args),
             NodeCommands::Stop { instance_id } => {
                 info!("Stopping node instance {}...", instance_id);
                 stop::stop_node(ctx, instance_id)
