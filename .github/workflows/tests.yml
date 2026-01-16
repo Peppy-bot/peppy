@@ -17,5 +17,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Build
+        run: cargo build
+
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test
