@@ -16,7 +16,7 @@ const TEST_INSTANCE_ID: &str = "test_instance";
 const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const TEST_FREQUENCY_HZ: f64 = 10.0;
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct Parameters {
     frequency_hz: f64,
 }

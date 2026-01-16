@@ -150,7 +150,7 @@ pub struct NodeBuilder<Params> {
 
 impl<Params> NodeBuilder<Params>
 where
-    Params: serde::de::DeserializeOwned,
+    Params: serde::de::DeserializeOwned + schemars::JsonSchema,
 {
     /// Create a new NodeBuilder with auto-detect mode
     pub fn new() -> Self {
@@ -239,7 +239,7 @@ where
 
 impl<Params> Default for NodeBuilder<Params>
 where
-    Params: serde::de::DeserializeOwned,
+    Params: serde::de::DeserializeOwned + schemars::JsonSchema,
 {
     fn default() -> Self {
         Self::new()
@@ -258,7 +258,7 @@ pub struct NodeContext<Params> {
 
 impl<Params> NodeContext<Params>
 where
-    Params: serde::de::DeserializeOwned,
+    Params: serde::de::DeserializeOwned + schemars::JsonSchema,
 {
     /// Create the NodeRunner, connecting to the messaging system.
     pub async fn create_node_runner(&self) -> Result<Arc<NodeRunner>> {
