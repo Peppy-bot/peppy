@@ -252,6 +252,8 @@ async fn daemon_runner_succeed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn standalone_runner_succeed() {
+    use tokio_util::sync::CancellationToken;
+
     let (router, router_temp_dir, router_host, router_port) =
         peppylib::start_zenohd_process("127.0.0.1", None)
             .await
@@ -281,23 +283,28 @@ async fn standalone_runner_succeed() {
         .with_messaging(&router_host, router_port)
         .with_instance_id(TEST_INSTANCE_ID);
 
-    let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<f64>();
+    let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<CancellationToken>();
     let runner_task = tokio::task::spawn_blocking(move || {
         NodeBuilder::new()
             .with_config_path(&peppy_config_path)
             .standalone(standalone_config)
-            .run(|parameters: Parameters, _node_runner| async move {
-                let _ = setup_tx.send(parameters.frequency_hz);
+            .run(|parameters: Parameters, node_runner| async move {
+                assert_eq!(parameters.frequency_hz, TEST_FREQUENCY_HZ);
+                let _ = setup_tx.send(node_runner.cancellation_token().clone());
                 Ok(())
             })
     });
 
-    let frequency_hz = tokio::time::timeout(Duration::from_secs(5), setup_rx)
+    // Wait for setup to complete and get the cancellation token
+    let cancellation_token = tokio::time::timeout(Duration::from_secs(5), setup_rx)
         .await
         .expect("runner setup should complete")
         .expect("runner setup signal should be sent");
-    assert_eq!(frequency_hz, TEST_FREQUENCY_HZ);
 
+    // Signal shutdown via cancellation token
+    cancellation_token.cancel();
+
+    // Runner should exit after cancellation
     tokio::time::timeout(Duration::from_secs(10), runner_task)
         .await
         .expect("runner should exit")
