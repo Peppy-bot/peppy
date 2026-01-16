@@ -126,7 +126,7 @@ use peppygen::subscribed_topics::uvc_camera_video_stream::on_next_message_receiv
 use peppygen::Result;
 
 fn main() -> Result<()> {
-    NodeBuilder::new().daemon().run(|_parameters: peppygen::Parameters, node_runner| async move {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         let (instance_id, frame) = on_next_message_received(&node_runner, None, None).await?;
         println!(
             "got {}x{} frame encoded as {} from {}",
@@ -189,7 +189,7 @@ use peppygen::Result;
 use std::time::Duration;
 
 fn main() -> Result<()> {
-    NodeBuilder::new().daemon().run(|parameters: peppygen::Parameters, node_runner| async move {
+    NodeBuilder::new().run(|parameters: peppygen::Parameters, node_runner| async move {
         let frequency_hz: f64 = parameters.frequency;
         let interval = Duration::from_secs_f64(1.0 / frequency_hz);
 
@@ -435,7 +435,7 @@ use peppygen::Result;
 use std::time::Duration;
 
 fn main() -> Result<()> {
-    NodeBuilder::new().daemon().run(|_parameters: peppygen::Parameters, node_runner| async move {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         let request = uvc_camera_enable_camera::Request::new(true);
         let response =
             uvc_camera_enable_camera::poll(&node_runner, Duration::from_secs(5), None, None, request).await?;
@@ -489,7 +489,7 @@ use peppygen::NodeBuilder;
 use peppygen::Result;
 
 fn main() -> Result<()> {
-    NodeBuilder::new().daemon().run(|_parameters: peppygen::Parameters, node_runner| async move {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         enable_camera::handle_next_request(&node_runner, |request| -> Result<enable_camera::Response> {
             println!("received enable_camera request from {}: enable = {}", request.instance_id, request.data.enable);
             Ok(enable_camera::Response::new(
@@ -706,7 +706,7 @@ use peppygen::Result;
 use std::time::Duration;
 
 fn main() -> Result<()> {
-    NodeBuilder::new().daemon().run(|_parameters: peppygen::Parameters, node_runner| async move {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         let request = uvc_camera_enable_camera::Request::new(true);
         let response =
             uvc_camera_enable_camera::poll(&node_runner, Duration::from_secs(5), None, None, request).await?;
@@ -759,7 +759,7 @@ use peppygen::NodeBuilder;
 use peppygen::Result;
 
 fn main() -> Result<()> {
-    NodeBuilder::new().daemon().run(|_parameters: peppygen::Parameters, node_runner| async move {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         enable_camera::handle_next_request(&node_runner, |request| -> Result<enable_camera::Response> {
             println!("received enable_camera request for {}: {}", request.instance_id, request.data.enable);
             Ok(enable_camera::Response::new(
@@ -814,7 +814,7 @@ use peppygen::Result;
 use std::time::Duration;
 
 fn main() -> Result<()> {
-    NodeBuilder::new().daemon().run(|_parameters: peppygen::Parameters, node_runner| async move {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         enable_camera::handle_next_request(&node_runner, |request| -> Result<enable_camera::Response> {
             println!("received enable_camera request for {}: {}", request.instance_id, request.data.enable);
             // Sleep to ensure exposer1 responds first
@@ -1171,7 +1171,7 @@ use peppygen::Result;
 use std::time::Duration;
 
 fn main() -> Result<()> {
-    NodeBuilder::new().daemon().run(|_parameters: peppygen::Parameters, node_runner| async move {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         let request = brain_move_arm::GoalRequest {
             arm_id: 7,
             desired_position: [10, 20, 30],
@@ -1240,7 +1240,7 @@ use peppygen::NodeBuilder;
 use peppygen::Result;
 
 fn main() -> Result<()> {
-    NodeBuilder::new().daemon().run(|_parameters: peppygen::Parameters, node_runner| async move {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
 
         action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
@@ -1479,7 +1479,7 @@ use peppygen::Result;
 use std::time::Duration;
 
 fn main() -> Result<()> {
-    NodeBuilder::new().daemon().run(|_parameters: peppygen::Parameters, node_runner| async move {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         let request = brain_move_arm::GoalRequest {
             arm_id: 7,
             desired_position: [10, 20, 30],
@@ -1544,7 +1544,7 @@ use peppygen::NodeBuilder;
 use peppygen::Result;
 
 fn main() -> Result<()> {
-    NodeBuilder::new().daemon().run(|_parameters: peppygen::Parameters, node_runner| async move {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
 
         action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
