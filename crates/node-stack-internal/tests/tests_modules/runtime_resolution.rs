@@ -35,7 +35,7 @@ fn add_instance_creates_new_entity() {
 
     // Spawn an instance
     let instance_id = stack
-        .add_instance("sensor", "1.0.0", None)
+        .add_instance("sensor", "1.0.0", None, None)
         .expect("should spawn instance");
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
@@ -101,7 +101,7 @@ fn add_instance_to_existing_entity() {
 
     // Spawn first instance
     let first_id = stack
-        .add_instance("sensor", "1.0.0", None)
+        .add_instance("sensor", "1.0.0", None, None)
         .expect("should spawn first instance");
 
     assert_eq!(stack.len(), 2, "stack should have master node + one entity");
@@ -114,7 +114,7 @@ fn add_instance_to_existing_entity() {
 
     // Spawn second instance to same entity
     let second_id = stack
-        .add_instance("sensor", "1.0.0", None)
+        .add_instance("sensor", "1.0.0", None, None)
         .expect("should spawn second instance");
 
     assert_eq!(stack.len(), 2, "stack should still have root + one entity");
@@ -165,7 +165,7 @@ fn add_instance_with_specific_id() {
 
     // Then spawn an instance with the specific ID
     let returned_id = stack
-        .add_instance("sensor", "1.0.0", Some(&custom_id))
+        .add_instance("sensor", "1.0.0", Some(&custom_id), None)
         .expect("should spawn instance");
 
     assert_eq!(
@@ -206,10 +206,10 @@ fn remove_instance_from_entity_with_multiple_instances() {
 
     // Spawn instances
     stack
-        .add_instance("sensor", "1.0.0", Some(&first_id))
+        .add_instance("sensor", "1.0.0", Some(&first_id), None)
         .expect("should spawn first instance");
     stack
-        .add_instance("sensor", "1.0.0", Some(&second_id))
+        .add_instance("sensor", "1.0.0", Some(&second_id), None)
         .expect("should spawn second instance");
 
     assert_eq!(stack.len(), 2, "stack should have master node + one entity");
@@ -263,7 +263,7 @@ fn remove_last_instance_removes_entity() {
         .push_config(config, false, PathBuf::from("/tmp"))
         .expect("should push config");
     stack
-        .add_instance("sensor", "1.0.0", Some(&instance_id))
+        .add_instance("sensor", "1.0.0", Some(&instance_id), None)
         .expect("should spawn instance");
     assert_eq!(stack.len(), 2, "stack should have root + one entity");
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
@@ -310,7 +310,7 @@ fn remove_nonexistent_instance_returns_false() {
         .push_config(config, false, PathBuf::from("/tmp"))
         .expect("should push config");
     stack
-        .add_instance("sensor", "1.0.0", Some(&instance_id))
+        .add_instance("sensor", "1.0.0", Some(&instance_id), None)
         .expect("should spawn instance");
 
     // Try to remove non-existent instance
@@ -415,7 +415,7 @@ fn spawning_multiple_instances_on_same_entity() {
 
     // Spawn first instance
     stack
-        .add_instance("sensor", "1.0.0", None)
+        .add_instance("sensor", "1.0.0", None, None)
         .expect("should spawn instance");
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
@@ -427,7 +427,7 @@ fn spawning_multiple_instances_on_same_entity() {
 
     // Spawn second instance on the same entity
     stack
-        .add_instance("sensor", "1.0.0", None)
+        .add_instance("sensor", "1.0.0", None, None)
         .expect("should spawn instance");
     assert_eq!(
         stack.len(),
