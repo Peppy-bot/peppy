@@ -16,21 +16,13 @@ use crate::services::ready::listen_for_node_ready;
 use crate::services::shutdown::listen_for_shutdown;
 use config::consts::{DEFAULT_ZENOH_HOST, DEFAULT_ZENOH_PORT, NODE_CONFIG_FILE};
 
-/// Execution mode for the node
+/// Resolved execution mode for the node runtime
 #[derive(Debug, Clone)]
-pub enum ExecutionMode {
-    /// Auto-detect based on PEPPY_RUNTIME_CONFIG presence
-    Auto,
-    /// Force daemon mode - requires PEPPY_RUNTIME_CONFIG
+pub(crate) enum ExecutionMode {
+    /// Daemon mode - managed by CLI via PEPPY_RUNTIME_CONFIG
     Daemon,
-    /// Standalone mode with optional configuration
+    /// Standalone mode with configuration
     Standalone(StandaloneConfig),
-}
-
-impl Default for ExecutionMode {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 /// Configuration for standalone execution.
@@ -110,12 +102,15 @@ impl StandaloneConfig {
 
 /// Builder for configuring and running a Peppy node.
 ///
+/// The builder automatically detects execution mode:
+/// - If `PEPPY_RUNTIME_CONFIG` is set (by CLI), runs in daemon mode
+/// - Otherwise, runs in standalone mode with the provided config (or defaults)
+///
 /// # Examples
 ///
-/// ## Auto-detect mode (recommended for most cases)
+/// ## Default (auto-detect)
 /// ```ignore
 /// NodeBuilder::<MyParams>::new()
-///     .auto_detect()
 ///     .run(|params, node_runner| async move {
 ///         // your code
 ///         Ok(())
@@ -136,7 +131,7 @@ impl StandaloneConfig {
 /// ```ignore
 /// #[tokio::main]
 /// async fn main() -> Result<()> {
-///     let ctx = NodeBuilder::<MyParams>::new().auto_detect().init()?;
+///     let ctx = NodeBuilder::<MyParams>::new().init()?;
 ///     let node_runner = ctx.create_node_runner().await?;
 ///     let params = ctx.parameters()?;
 ///
@@ -145,7 +140,7 @@ impl StandaloneConfig {
 /// }
 /// ```
 pub struct NodeBuilder<Params> {
-    mode: ExecutionMode,
+    standalone_config: Option<StandaloneConfig>,
     peppy_config_path: PathBuf,
     _params: PhantomData<Params>,
 }
@@ -154,32 +149,22 @@ impl<Params> NodeBuilder<Params>
 where
     Params: serde::de::DeserializeOwned + schemars::JsonSchema,
 {
-    /// Create a new NodeBuilder with auto-detect mode
+    /// Create a new NodeBuilder
     pub fn new() -> Self {
         Self {
-            mode: ExecutionMode::Auto,
+            standalone_config: None,
             peppy_config_path: PathBuf::from(NODE_CONFIG_FILE),
             _params: PhantomData,
         }
     }
 
-    /// Auto-detect execution mode based on environment.
-    /// - PEPPY_RUNTIME_CONFIG set → Daemon mode
-    /// - Otherwise → Standalone mode with default messaging
-    pub fn auto_detect(mut self) -> Self {
-        self.mode = ExecutionMode::Auto;
-        self
-    }
-
-    /// Force daemon mode (requires PEPPY_RUNTIME_CONFIG)
-    pub fn daemon(mut self) -> Self {
-        self.mode = ExecutionMode::Daemon;
-        self
-    }
-
-    /// Force standalone mode with configuration
+    /// Configure standalone mode with custom settings.
+    ///
+    /// This config is used as a fallback when not running in daemon mode.
+    /// If the CLI launches this node (setting `PEPPY_RUNTIME_CONFIG`),
+    /// daemon mode takes precedence and this config is ignored.
     pub fn standalone(mut self, config: StandaloneConfig) -> Self {
-        self.mode = ExecutionMode::Standalone(config);
+        self.standalone_config = Some(config);
         self
     }
 
@@ -202,7 +187,6 @@ where
             ExecutionMode::Standalone(config) => {
                 Processor::new_standalone(&self.peppy_config_path, config)?
             }
-            ExecutionMode::Auto => unreachable!("Auto is resolved before this point"),
         };
 
         Ok(NodeContext {
@@ -227,16 +211,14 @@ where
     }
 
     fn resolve_mode(&self) -> ExecutionMode {
-        match &self.mode {
-            ExecutionMode::Auto => {
-                if std::env::var(config::consts::RUNTIME_CONFIG_VAR_NAME).is_ok() {
-                    ExecutionMode::Daemon
-                } else {
-                    ExecutionMode::Standalone(StandaloneConfig::new())
-                }
-            }
-            other => other.clone(),
+        // Daemon mode takes precedence - CLI sets PEPPY_RUNTIME_CONFIG
+        // This allows nodes to specify .standalone(config) as a fallback
+        // while still running in daemon mode when launched by the CLI
+        if std::env::var(config::consts::RUNTIME_CONFIG_VAR_NAME).is_ok() {
+            return ExecutionMode::Daemon;
         }
+
+        ExecutionMode::Standalone(self.standalone_config.clone().unwrap_or_default())
     }
 }
 
