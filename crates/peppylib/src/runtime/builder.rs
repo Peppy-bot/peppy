@@ -251,10 +251,7 @@ where
     /// If a cancellation token was set via `with_cancellation_token()`, it will be
     /// used by the NodeRunner. Otherwise, a new token is created.
     pub async fn create_node_runner(&self) -> Result<Arc<NodeRunner>> {
-        let token = self
-            .cancellation_token
-            .clone()
-            .unwrap_or_else(CancellationToken::new);
+        let token = self.cancellation_token.clone().unwrap_or_default();
         let node_runner =
             NodeRunner::with_cancellation_token(self.processor.clone(), token).await?;
         Ok(Arc::new(node_runner))

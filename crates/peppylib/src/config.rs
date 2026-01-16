@@ -11,10 +11,10 @@ fn format_validation_error(error: &jsonschema::ValidationError) -> String {
 
     // Extract field name from "required property" errors
     // e.g., '"device" is a required property' -> 'device'
-    if message.contains("is a required property") {
-        if let Some(field) = message.split('"').nth(1) {
-            return field.to_string();
-        }
+    if message.contains("is a required property")
+        && let Some(field) = message.split('"').nth(1)
+    {
+        return field.to_string();
     }
 
     // For other errors, include the path if present
