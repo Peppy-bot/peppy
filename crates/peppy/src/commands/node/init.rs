@@ -13,14 +13,14 @@ use crate::error::{Error, Result};
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub struct NodeBuilder {
+pub struct NodeInitBuilder {
     ctx: Arc<AppContext>,
     to_dir: PathBuf,
     node_name: NodeName,
     build_system: BuildSystem,
 }
 
-impl NodeBuilder {
+impl NodeInitBuilder {
     pub fn new(ctx: &Arc<AppContext>, node_name: NodeName) -> Self {
         Self {
             ctx: Arc::clone(ctx),
