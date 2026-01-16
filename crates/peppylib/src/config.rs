@@ -3,19 +3,43 @@
 pub use config::NodeArguments;
 pub use config::consts::{NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, RUNTIME_CONFIG_VAR_NAME};
 pub use config::node::*;
+pub use schemars::JsonSchema;
 
-/// Deserialize node arguments into a custom parameter struct.
+/// Format a JSON schema validation error into a human-readable message.
+fn format_validation_error(error: &jsonschema::ValidationError) -> String {
+    let message = error.to_string();
+
+    // Extract field name from "required property" errors
+    // e.g., '"device" is a required property' -> 'device'
+    if message.contains("is a required property") {
+        if let Some(field) = message.split('"').nth(1) {
+            return field.to_string();
+        }
+    }
+
+    // For other errors, include the path if present
+    let path = error.instance_path().to_string();
+    if path.is_empty() {
+        message
+    } else {
+        format!("{}: {}", path.trim_start_matches('/'), message)
+    }
+}
+
+/// Deserialize node arguments into a custom parameter struct with validation.
 ///
-/// This function converts a [`NodeArguments`] map into a user-defined struct type
-/// using serde's deserialization.
+/// This function converts a [`NodeArguments`] map into a user-defined struct type.
+/// It first validates the input against the JSON schema derived from the type,
+/// collecting all validation errors (including multiple missing fields) and
+/// reporting them at once.
 ///
 /// # Example
 ///
 /// ```ignore
 /// use serde::Deserialize;
-/// use peppylib::config::{NodeArguments, deserialize_parameters};
+/// use peppylib::config::{NodeArguments, deserialize_parameters, JsonSchema};
 ///
-/// #[derive(Deserialize)]
+/// #[derive(Deserialize, JsonSchema)]
 /// struct MyParams {
 ///     timeout: u32,
 ///     name: String,
@@ -27,7 +51,7 @@ pub use config::node::*;
 /// ```
 pub fn deserialize_parameters<T>(args: &NodeArguments) -> Result<T, crate::PeppyError>
 where
-    T: serde::de::DeserializeOwned,
+    T: serde::de::DeserializeOwned + schemars::JsonSchema,
 {
     let json_value = serde_json::to_value(args).map_err(|e| {
         crate::PeppyError::ParameterDeserialization(format!(
@@ -35,6 +59,29 @@ where
             e
         ))
     })?;
+
+    // Generate JSON schema from the target type
+    let schema = schemars::schema_for!(T);
+    let schema_value = serde_json::to_value(&schema).map_err(|e| {
+        crate::PeppyError::ParameterDeserialization(format!("failed to generate schema: {}", e))
+    })?;
+
+    // Validate input against the schema
+    let validator = jsonschema::validator_for(&schema_value).map_err(|e| {
+        crate::PeppyError::ParameterDeserialization(format!("failed to create validator: {}", e))
+    })?;
+
+    let errors: Vec<_> = validator.iter_errors(&json_value).collect();
+    if !errors.is_empty() {
+        let error_messages: Vec<String> =
+            errors.iter().map(|e| format_validation_error(e)).collect();
+        return Err(crate::PeppyError::ParameterDeserialization(format!(
+            "missing required parameters:\n  - {}",
+            error_messages.join("\n  - ")
+        )));
+    }
+
+    // Schema validation passed, now deserialize
     serde_json::from_value(json_value).map_err(|e| {
         crate::PeppyError::ParameterDeserialization(format!(
             "failed to deserialize parameters: {}",
