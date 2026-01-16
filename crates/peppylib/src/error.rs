@@ -4,6 +4,38 @@ use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
+/// Errors that can occur during parameter deserialization or validation.
+#[derive(Debug)]
+pub struct ParameterDeserializationError(pub Vec<String>);
+
+impl ParameterDeserializationError {
+    pub fn single(message: impl Into<String>) -> Self {
+        Self(vec![message.into()])
+    }
+
+    pub fn multiple(messages: Vec<String>) -> Self {
+        Self(messages)
+    }
+}
+
+impl fmt::Display for ParameterDeserializationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0.as_slice() {
+            [] => write!(f, "parameter deserialization error: unknown error"),
+            [single] => write!(f, "parameter deserialization error: {}", single),
+            multiple => {
+                write!(f, "missing required parameters:")?;
+                for msg in multiple {
+                    write!(f, "\n  - {}", msg)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl std::error::Error for ParameterDeserializationError {}
+
 #[derive(Debug, Error)]
 pub enum Error {
     // -- general
@@ -109,8 +141,8 @@ pub enum Error {
     #[error("missing parameter `{path}` in compiled node parameters")]
     MissingCompiledParameter { path: String },
 
-    #[error("parameter deserialization error: {0}")]
-    ParameterDeserialization(String),
+    #[error(transparent)]
+    ParameterDeserialization(#[from] ParameterDeserializationError),
 
     // --- Capnp
     #[error("capnp encoding error: {0}")]
