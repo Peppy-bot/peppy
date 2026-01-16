@@ -94,7 +94,12 @@ async fn listen_for_node_reset_clears_node_stack() {
 
     let instance_id_a = Name::new(TARGET_NODE_A_INSTANCE_ID).expect("valid instance id");
     node_stack
-        .add_instance(TARGET_NODE_A_NAME, TARGET_NODE_A_TAG, Some(&instance_id_a))
+        .add_instance(
+            TARGET_NODE_A_NAME,
+            TARGET_NODE_A_TAG,
+            Some(&instance_id_a),
+            None,
+        )
         .expect("add_instance should succeed");
     let entity_a = node_stack
         .find(TARGET_NODE_A_NAME, TARGET_NODE_A_TAG)
