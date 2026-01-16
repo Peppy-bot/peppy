@@ -626,8 +626,8 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
         brain_lib_rs
     );
     assert!(
-        brain_lib_rs.contains("pub mod runner"),
-        "lib.rs should contain runner module, got:\n{}",
+        brain_lib_rs.contains("NodeBuilder"),
+        "lib.rs should re-export NodeBuilder, got:\n{}",
         brain_lib_rs
     );
 

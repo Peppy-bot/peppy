@@ -4,7 +4,7 @@ use config::peppy_config::{DeploymentInstance, Name};
 use config::runtime::RuntimeConfig;
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
 use peppylib::messaging::{NODE_HEALTH_SERVICE, NODE_READY_SERVICE, SHUTDOWN_SERVICE};
-use peppylib::runtime::runner;
+use peppylib::runtime::NodeBuilder;
 use pmi::MessengerBackend;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -16,7 +16,7 @@ const TEST_INSTANCE_ID: &str = "test_instance";
 const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const TEST_FREQUENCY_HZ: f64 = 10.0;
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct Parameters {
     frequency_hz: f64,
 }
@@ -96,7 +96,7 @@ impl Drop for RouterGuard {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn runner_succeed() {
+async fn daemon_runner_succeed() {
     let (router, router_temp_dir, router_host, router_port) =
         peppylib::start_zenohd_process("127.0.0.1", None)
             .await
@@ -157,7 +157,7 @@ async fn runner_succeed() {
 
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<f64>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        runner::run(|parameters: Parameters, _node_runner| async move {
+        NodeBuilder::new().run(|parameters: Parameters, _node_runner| async move {
             let _ = setup_tx.send(parameters.frequency_hz);
             Ok(())
         })
@@ -249,6 +249,70 @@ async fn runner_succeed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_runner_succeed() {
+    use tokio_util::sync::CancellationToken;
+
+    let (router, router_temp_dir, router_host, router_port) =
+        peppylib::start_zenohd_process("127.0.0.1", None)
+            .await
+            .expect("failed to start zenoh router for test");
+    let mut router_guard = RouterGuard {
+        router: Some(router),
+        _temp_dir: Some(router_temp_dir),
+    };
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
+    let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
+    let peppy_config = r#"{
+      schema_version: 1,
+      manifest: {
+        name: "test_node",
+        tag: "0.1.0",
+        start_cmd: ["cargo", "run"]
+      },
+      parameters: {
+        frequency_hz: "f64"
+      }
+    }"#;
+    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
+
+    let standalone_config = peppylib::runtime::StandaloneConfig::new()
+        .with_parameters(serde_json::json!({ "frequency_hz": TEST_FREQUENCY_HZ }))
+        .with_messaging(&router_host, router_port)
+        .with_instance_id(TEST_INSTANCE_ID);
+
+    let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<CancellationToken>();
+    let runner_task = tokio::task::spawn_blocking(move || {
+        NodeBuilder::new()
+            .with_config_path(&peppy_config_path)
+            .standalone(standalone_config)
+            .run(|parameters: Parameters, node_runner| async move {
+                assert_eq!(parameters.frequency_hz, TEST_FREQUENCY_HZ);
+                let _ = setup_tx.send(node_runner.cancellation_token().clone());
+                Ok(())
+            })
+    });
+
+    // Wait for setup to complete and get the cancellation token
+    let cancellation_token = tokio::time::timeout(Duration::from_secs(5), setup_rx)
+        .await
+        .expect("runner setup should complete")
+        .expect("runner setup signal should be sent");
+
+    // Signal shutdown via cancellation token
+    cancellation_token.cancel();
+
+    // Runner should exit after cancellation
+    tokio::time::timeout(Duration::from_secs(10), runner_task)
+        .await
+        .expect("runner should exit")
+        .expect("runner task should not panic")
+        .expect("runner should return Ok");
+
+    router_guard.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_ready_but_not_healthy() {
     let (router, router_temp_dir, router_host, router_port) =
         peppylib::start_zenohd_process("127.0.0.1", None)
@@ -311,7 +375,7 @@ async fn node_ready_but_not_healthy() {
     let (setup_started_tx, setup_started_rx) = tokio::sync::oneshot::channel::<()>();
     let (setup_continue_tx, setup_continue_rx) = tokio::sync::oneshot::channel::<()>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        runner::run(|_parameters: Parameters, _node_runner| async move {
+        NodeBuilder::new().run(|_parameters: Parameters, _node_runner| async move {
             let _ = setup_started_tx.send(());
             let _ = setup_continue_rx.await;
             Ok(())
