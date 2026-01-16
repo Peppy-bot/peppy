@@ -42,6 +42,7 @@ mod tests {
                 config_manifest.name.as_str(),
                 &config_manifest.tag,
                 Some(&Name::new("test-instance").unwrap()),
+                None, // Test instance without actual process
             )
             .expect("should spawn instance");
 

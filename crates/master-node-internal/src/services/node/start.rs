@@ -698,7 +698,9 @@ async fn process_node_start(
                 "Health check passed for node instance '{}'",
                 instance_id_str
             );
-            if let Err(e) = node_stack.add_instance(&node_name, &tag, Some(&instance_id)) {
+            let pid = child.id().unwrap_or(0);
+            if let Err(e) = node_stack.add_instance(&node_name, &tag, Some(&instance_id), Some(pid))
+            {
                 if let Err(kill_err) = child.kill().await {
                     debug!(
                         "Failed to kill process for node instance '{}': {}",
@@ -714,7 +716,6 @@ async fn process_node_start(
             feedback_sync
                 .wait_for_read_quiescence(STARTUP_OUTPUT_MAX_WAIT, STARTUP_OUTPUT_QUIET_WINDOW)
                 .await;
-            let pid = child.id().unwrap_or(0);
             let result = NodeStartResult::success(pid);
             feedback_sync.flush().await;
             publish_enabled.store(false, Ordering::Relaxed);

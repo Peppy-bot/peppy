@@ -5,8 +5,22 @@ use config::node::Name;
 use master_node::encoding::NodeStopRequest;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Checks if a process with the given PID is still running.
+fn is_process_running(pid: u32) -> bool {
+    // SAFETY: kill(pid, 0) is safe - it doesn't send any signal,
+    // just checks if the process exists and we have permission to signal it.
+    let result = unsafe { libc::kill(pid as i32, 0) };
+    if result == 0 {
+        true
+    } else {
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        errno != libc::ESRCH
+    }
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_stop_success() {
@@ -51,12 +65,33 @@ async fn listen_for_node_stop_success() {
     );
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
 
+    // Spawn a real process to simulate the running node
+    let mut child_process = Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .expect("failed to spawn sleep process");
+    let pid = child_process.id();
+
+    // Register the instance with the actual PID
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
     node_stack
-        .add_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id))
+        .add_instance(
+            TARGET_NODE_NAME,
+            TARGET_NODE_TAG,
+            Some(&instance_id),
+            Some(pid),
+        )
         .expect("add_instance should succeed");
 
+    // Verify the process is running before we try to stop it
+    assert!(
+        is_process_running(pid),
+        "process {} should be running before stop",
+        pid
+    );
+
     // Simulate the target node exposing the shutdown service.
+    // When it receives the shutdown signal, it will kill the actual process.
     let shutdown_handle =
         MessengerHandle::from_shared(Arc::clone(&started_master.shared_messenger));
     let (shutdown_task, shutdown_rx) = listen_for_shutdown(
@@ -70,6 +105,18 @@ async fn listen_for_node_stop_success() {
 
     // Allow the shutdown service to fully establish its listener
     tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Spawn a task to kill the process when shutdown is received
+    let kill_task = tokio::spawn(async move {
+        shutdown_rx
+            .await
+            .expect("shutdown channel should not be dropped");
+        // Kill the actual process when shutdown signal is received
+        child_process.kill().expect("failed to kill child process");
+        child_process
+            .wait()
+            .expect("failed to wait for child process");
+    });
 
     let response = NodeStopRequest::new(TARGET_INSTANCE_ID)
         .poll(
@@ -90,10 +137,18 @@ async fn listen_for_node_stop_success() {
         response.error_message
     );
 
-    tokio::time::timeout(Duration::from_millis(100), shutdown_rx)
+    // Verify the process has been killed
+    assert!(
+        !is_process_running(pid),
+        "process {} should no longer be running after successful stop",
+        pid
+    );
+
+    // Wait for the kill task to complete
+    tokio::time::timeout(Duration::from_millis(500), kill_task)
         .await
-        .expect("shutdown signal should be received within timeout")
-        .expect("shutdown channel should not be dropped");
+        .expect("kill task should complete within timeout")
+        .expect("kill task should not panic");
 
     shutdown_task.abort();
     started_master.task.abort();

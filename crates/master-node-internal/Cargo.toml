@@ -11,6 +11,7 @@ node-stack = { path = "../node-stack-internal" }
 peppylib = { path = "../peppylib" }
 generator = { path = "../generator-internal" }
 bytes = "1.10"
+libc = "0.2"
 chrono = "0.4"
 hostname = "0.4"
 capnp = "0.25"
@@ -28,5 +29,6 @@ askama = "0.15"
 capnpc = "0.25"
 
 [dev-dependencies]
+libc = "0.2"
 tempfile = "3.10"
 tokio = { version = "1.47", features = ["full"] }
