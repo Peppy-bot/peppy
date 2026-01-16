@@ -49,7 +49,7 @@ pub enum Error {
         interface_name: String,
     },
     #[error(
-        "`{dependant}`:{dependant_tag} depends on `{dependency}`:{dependency_tag}, but it does not exist in the stack"
+        "`{dependant}:{dependant_tag}` depends on `{dependency}:{dependency_tag}`, but it does not exist in the stack"
     )]
     MissingDependency {
         dependant: String,
