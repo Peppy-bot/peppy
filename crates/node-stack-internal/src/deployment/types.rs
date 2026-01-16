@@ -127,15 +127,22 @@ impl NodeEntity {
 #[derive(Debug, Clone)]
 pub struct NodeInstance {
     instance_id: Name,
+    /// Process ID of the running instance. This is `None` for instances running on remote
+    /// locations (e.g., embedded systems) where a local PID is not available.
+    pid: Option<u32>,
 }
 
 impl NodeInstance {
-    pub fn new(instance_id: Name) -> Self {
-        Self { instance_id }
+    pub fn new(instance_id: Name, pid: Option<u32>) -> Self {
+        Self { instance_id, pid }
     }
 
     pub fn instance_id(&self) -> &Name {
         &self.instance_id
+    }
+
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
     }
 }
 
@@ -651,6 +658,7 @@ impl NodeStackInner {
         name: &str,
         tag: &str,
         instance_id: Option<&Name>,
+        pid: Option<u32>,
     ) -> Result<Name> {
         let key = NodeKey::new(name, tag);
 
@@ -681,7 +689,7 @@ impl NodeStackInner {
                     node_tag: tag.to_owned(),
                 });
             }
-            let instance = NodeInstance::new(instance_id.clone());
+            let instance = NodeInstance::new(instance_id.clone(), pid);
             entity.add_instance(instance);
         }
 
@@ -869,7 +877,7 @@ impl NodeStack {
         let instance_id = instance_id.unwrap_or_else(|| {
             Name::new(get_random(rng())).expect("random name generation failed")
         });
-        let instance = NodeInstance::new(instance_id);
+        let instance = NodeInstance::new(instance_id, Some(std::process::id()));
         let mut root_entity = NodeEntity::new(root_config, root_path);
         root_entity.add_instance(instance);
         Self {
@@ -941,9 +949,10 @@ impl NodeStack {
         node_name: &str,
         tag: &str,
         instance_id: Option<&Name>,
+        pid: Option<u32>,
     ) -> Result<Name> {
         let mut guard = self.shared.write().expect("node stack poisoned");
-        guard.add_instance_impl(node_name, tag, instance_id)
+        guard.add_instance_impl(node_name, tag, instance_id, pid)
     }
 
     pub fn snapshot(&self) -> Vec<NodeEntity> {
@@ -1050,6 +1059,7 @@ impl NodeStack {
                     config.manifest.name.as_str(),
                     &config.manifest.tag,
                     Some(instance.instance_id()),
+                    instance.pid(),
                 )
                 .map_err(|e| {
                     format!(

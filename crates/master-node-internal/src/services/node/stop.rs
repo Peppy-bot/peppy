@@ -12,6 +12,8 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+const PROCESS_TERMINATION_TIMEOUT: Duration = Duration::from_secs(5);
+const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 pub async fn listen_for_node_stop(
     messenger: &MessengerHandle,
@@ -98,7 +100,18 @@ async fn handle_node_stop_request_inner(
         }
     };
 
-    // Find the entity by instance_id
+    // Find the instance and entity by instance_id
+    let instance = match node_stack.find_by_instance_id(&instance_id) {
+        Some(instance) => instance,
+        None => {
+            return NodeStopResponse::failure(format!(
+                "Node instance '{}' not found in node stack",
+                request.instance_id
+            ))
+            .encode();
+        }
+    };
+
     let entity = match node_stack.find_entity_by_instance_id(&instance_id) {
         Some(entity) => entity,
         None => {
@@ -109,6 +122,9 @@ async fn handle_node_stop_request_inner(
             .encode();
         }
     };
+
+    // Get the PID for later verification (if available)
+    let pid = instance.pid();
 
     let root_node_name = node_stack.root().config().manifest.name.as_str().to_owned();
     let node_name = entity.config().manifest.name.as_str().to_owned();
@@ -143,9 +159,24 @@ async fn handle_node_stop_request_inner(
     match shutdown_result {
         Ok(_) => {
             debug!(
-                "Node instance '{}' shutdown successfully",
+                "Node instance '{}' shutdown acknowledged",
                 request.instance_id
             );
+
+            // Verify the process has actually terminated (if we have a PID)
+            if let Some(pid) = pid {
+                if !wait_for_process_termination(pid).await {
+                    return NodeStopResponse::failure(format!(
+                        "Process {} for node instance '{}' did not terminate within timeout",
+                        pid, request.instance_id
+                    ))
+                    .encode();
+                }
+                debug!(
+                    "Process {} for node instance '{}' has terminated",
+                    pid, request.instance_id
+                );
+            }
 
             match node_stack.remove_instance(&node_name, &node_tag, &instance_id) {
                 Ok(true) => {}
@@ -185,4 +216,28 @@ async fn handle_node_stop_request_inner(
             NodeStopResponse::failure(format!("Failed to shutdown node: {}", e)).encode()
         }
     }
+}
+
+/// Waits for a process to terminate, polling at regular intervals.
+/// Returns `true` if the process has terminated, `false` if it's still running after the timeout.
+async fn wait_for_process_termination(pid: u32) -> bool {
+    let deadline = tokio::time::Instant::now() + PROCESS_TERMINATION_TIMEOUT;
+
+    while tokio::time::Instant::now() < deadline {
+        if !is_process_running(pid) {
+            return true;
+        }
+        tokio::time::sleep(PROCESS_POLL_INTERVAL).await;
+    }
+
+    // Final check after timeout
+    !is_process_running(pid)
+}
+
+/// Checks if a process with the given PID is still running.
+fn is_process_running(pid: u32) -> bool {
+    let system = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
+    );
+    system.process(sysinfo::Pid::from_u32(pid)).is_some()
 }

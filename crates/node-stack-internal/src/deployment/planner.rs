@@ -396,6 +396,8 @@ fn build_launch_plan(mut peppy_launcher: PeppyLauncher, source_stack: NodeStack)
                 node.manifest.name.as_str(),
                 &node.manifest.tag,
                 Some(&instance_id),
+                // TODO/FIXME PIDs are supposed to be tracked for every instance started on the same machine
+                None, // PIDs not tracked in deployment plans
             ) {
                 add_failed = Some(err);
                 break;

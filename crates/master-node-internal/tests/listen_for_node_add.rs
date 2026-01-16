@@ -934,7 +934,7 @@ async fn listen_for_node_add_writes_log_file() {
 
     // Verify the log file path is returned
     assert!(
-        add_result.log_path.as_os_str().len() > 0,
+        !add_result.log_path.as_os_str().is_empty(),
         "log_path should not be empty"
     );
 

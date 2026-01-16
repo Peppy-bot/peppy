@@ -251,10 +251,7 @@ where
     /// If a cancellation token was set via `with_cancellation_token()`, it will be
     /// used by the NodeRunner. Otherwise, a new token is created.
     pub async fn create_node_runner(&self) -> Result<Arc<NodeRunner>> {
-        let token = self
-            .cancellation_token
-            .clone()
-            .unwrap_or_else(CancellationToken::new);
+        let token = self.cancellation_token.clone().unwrap_or_default();
         let node_runner =
             NodeRunner::with_cancellation_token(self.processor.clone(), token).await?;
         Ok(Arc::new(node_runner))
@@ -304,7 +301,7 @@ where
         self.processor.bound_instance_id()
     }
 
-    fn run_with_closure<F, Fut>(self, setup_fn: F) -> Result<()>
+    fn run_with_closure<F, Fut>(mut self, setup_fn: F) -> Result<()>
     where
         F: FnOnce(Params, Arc<NodeRunner>) -> Fut,
         Fut: std::future::Future<Output = Result<()>>,
@@ -322,6 +319,10 @@ where
             }
 
             // Daemon mode: full service lifecycle
+            // Create cancellation token for daemon mode so it can be triggered on shutdown
+            let cancellation_token = CancellationToken::new();
+            self.cancellation_token = Some(cancellation_token.clone());
+
             let node_runner = self.create_node_runner().await?;
             info!(
                 "Running in daemon mode [{}:{}] as '{}/{}'",
@@ -340,6 +341,7 @@ where
                 }
                 _ = &mut shutdown_rx => {
                     info!("Shutdown requested during setup");
+                    cancellation_token.cancel();
                     return Ok(());
                 }
             }
@@ -349,6 +351,7 @@ where
                 pre_setup.ready_handle,
                 pre_setup.shutdown_handle,
                 shutdown_rx,
+                cancellation_token,
             )
             .await
         })
@@ -444,6 +447,7 @@ async fn run_post_setup_services(
     ready_handle: JoinHandle<Result<()>>,
     shutdown_handle: JoinHandle<Result<()>>,
     mut shutdown_rx: oneshot::Receiver<()>,
+    cancellation_token: CancellationToken,
 ) -> Result<()> {
     let processor = node_runner.processor();
 
@@ -463,6 +467,7 @@ async fn run_post_setup_services(
         }
         _ = &mut shutdown_rx => {
             info!("Received shutdown request");
+            cancellation_token.cancel();
         }
     }
 
