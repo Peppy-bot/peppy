@@ -157,12 +157,10 @@ async fn daemon_runner_succeed() {
 
     let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<f64>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new()
-            .daemon()
-            .run(|parameters: Parameters, _node_runner| async move {
-                let _ = setup_tx.send(parameters.frequency_hz);
-                Ok(())
-            })
+        NodeBuilder::new().run(|parameters: Parameters, _node_runner| async move {
+            let _ = setup_tx.send(parameters.frequency_hz);
+            Ok(())
+        })
     });
 
     let frequency_hz = tokio::time::timeout(Duration::from_secs(5), setup_rx)
@@ -377,13 +375,11 @@ async fn node_ready_but_not_healthy() {
     let (setup_started_tx, setup_started_rx) = tokio::sync::oneshot::channel::<()>();
     let (setup_continue_tx, setup_continue_rx) = tokio::sync::oneshot::channel::<()>();
     let mut runner_task = tokio::task::spawn_blocking(move || {
-        NodeBuilder::new()
-            .daemon()
-            .run(|_parameters: Parameters, _node_runner| async move {
-                let _ = setup_started_tx.send(());
-                let _ = setup_continue_rx.await;
-                Ok(())
-            })
+        NodeBuilder::new().run(|_parameters: Parameters, _node_runner| async move {
+            let _ = setup_started_tx.send(());
+            let _ = setup_continue_rx.await;
+            Ok(())
+        })
     });
 
     tokio::time::timeout(Duration::from_secs(5), setup_started_rx)
