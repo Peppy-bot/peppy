@@ -564,7 +564,7 @@ async fn listen_for_node_start_writes_log_file() {
     let log_path = &start_response.goal_response.log_path;
     assert!(log_path.exists(), "log file should exist at {:?}", log_path);
 
-    let log_content = std::fs::read_to_string(&log_path).expect("should be able to read log file");
+    let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
 
     // Check that stdout marker is present with correct prefix
     assert!(
@@ -581,7 +581,7 @@ async fn listen_for_node_start_writes_log_file() {
     );
 
     // Clean up log file
-    let _ = std::fs::remove_file(&log_path);
+    let _ = std::fs::remove_file(log_path);
 
     ready_task.abort();
     health_task.abort();
