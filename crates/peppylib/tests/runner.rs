@@ -9,6 +9,7 @@ use pmi::MessengerBackend;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 
 const TEST_MASTER_NODE: &str = "test_master";
 const TEST_NODE_NAME: &str = "test_node";
@@ -576,6 +577,152 @@ async fn node_ready_but_not_healthy() {
         .expect("runner should exit")
         .expect("runner task should not panic")
         .expect("runner should return Ok");
+
+    router_guard.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn daemon_cancellation_token_cancelled_on_shutdown() {
+    let (router, router_temp_dir, router_host, router_port) =
+        peppylib::start_zenohd_process("127.0.0.1", None)
+            .await
+            .expect("failed to start zenoh router for test");
+    let mut router_guard = RouterGuard {
+        router: Some(router),
+        _temp_dir: Some(router_temp_dir),
+    };
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
+    let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
+    let peppy_config = r#"{
+      schema_version: 1,
+      manifest: {
+        name: "test_node",
+        tag: "0.1.0",
+        start_cmd: ["cargo", "run"]
+      },
+      parameters: {
+        frequency_hz: "f64"
+      }
+    }"#;
+    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
+
+    let fingerprint = RuntimeConfig::generate_peppy_config_fingerprint(&peppy_config_path)
+        .expect("failed to generate peppy config fingerprint");
+    let fingerprint_path = temp_dir
+        .path()
+        .join(PEPPYGEN_OUTPUT_PATH)
+        .join(peppylib::config::NODE_CONFIG_FINGERPRINT_FILE);
+    std::fs::create_dir_all(
+        fingerprint_path
+            .parent()
+            .expect("fingerprint path should have a parent dir"),
+    )
+    .expect("failed to create peppygen output dir");
+    std::fs::write(&fingerprint_path, format!("{fingerprint}\n"))
+        .expect("failed to write fingerprint file");
+
+    let runtime_config = RuntimeConfig::new(
+        &router_host,
+        router_port,
+        DeploymentInstance {
+            instance_id: Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
+            arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
+                .expect("runtime args should parse"),
+        },
+        TEST_NODE_NAME,
+        TEST_MASTER_NODE,
+    )
+    .expect("runtime config should build");
+    let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
+    runtime_config
+        .save_json5_launch_config(&runtime_config_path)
+        .expect("failed to write runtime config");
+
+    let _env_guard = EnvAndDirGuard::new(temp_dir.path(), &runtime_config_path);
+
+    let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<CancellationToken>();
+    let mut runner_task = tokio::task::spawn_blocking(move || {
+        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+            let _ = setup_tx.send(node_runner.cancellation_token().clone());
+            Ok(())
+        })
+    });
+
+    // Wait for setup to complete and get the cancellation token
+    let cancellation_token = tokio::time::timeout(Duration::from_secs(5), setup_rx)
+        .await
+        .expect("runner setup should complete")
+        .expect("runner setup signal should be sent");
+
+    // Verify the token is NOT cancelled before shutdown
+    assert!(
+        !cancellation_token.is_cancelled(),
+        "cancellation token should not be cancelled before shutdown request"
+    );
+
+    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+        .await
+        .expect("failed to create messenger");
+
+    // Wait for shutdown service to become reachable
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if runner_task.is_finished() {
+            let result = runner_task.await.expect("runner task should not panic");
+            panic!("runner exited early: {result:?}");
+        }
+
+        if peppylib::ServiceMessenger::is_reachable(
+            &messenger,
+            TEST_MASTER_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            TEST_NODE_NAME,
+            SHUTDOWN_SERVICE,
+            Some(TEST_MASTER_NODE),
+            Some(TEST_INSTANCE_ID),
+        )
+        .await
+        .expect("reachability check should succeed")
+        {
+            break;
+        }
+
+        if Instant::now() >= deadline {
+            panic!("shutdown service did not become reachable");
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Send shutdown request
+    let shutdown_payload = Bytes::from_static(b"shutdown");
+    peppylib::ServiceMessenger::poll(
+        &messenger,
+        TEST_MASTER_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        TEST_NODE_NAME,
+        SHUTDOWN_SERVICE,
+        Some(TEST_MASTER_NODE),
+        Some(TEST_INSTANCE_ID),
+        shutdown_payload,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("shutdown service should respond");
+
+    // Wait for runner to exit
+    tokio::time::timeout(Duration::from_secs(10), &mut runner_task)
+        .await
+        .expect("runner should exit")
+        .expect("runner task should not panic")
+        .expect("runner should return Ok");
+
+    // Verify the cancellation token IS cancelled after shutdown
+    assert!(
+        cancellation_token.is_cancelled(),
+        "cancellation token should be cancelled after shutdown request"
+    );
 
     router_guard.stop().await;
 }

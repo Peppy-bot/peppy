@@ -66,11 +66,4 @@ impl NodeRunner {
     pub fn cancellation_token(&self) -> &CancellationToken {
         &self.cancellation_token
     }
-
-    /// Check if shutdown has been requested.
-    ///
-    /// Returns `true` if the cancellation token has been cancelled.
-    pub fn is_shutting_down(&self) -> bool {
-        self.cancellation_token.is_cancelled()
-    }
 }
