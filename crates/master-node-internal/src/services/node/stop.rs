@@ -235,19 +235,9 @@ async fn wait_for_process_termination(pid: u32) -> bool {
 }
 
 /// Checks if a process with the given PID is still running.
-/// Uses kill(pid, 0) which doesn't send a signal but checks if the process exists.
 fn is_process_running(pid: u32) -> bool {
-    // SAFETY: kill(pid, 0) is safe - it doesn't send any signal,
-    // just checks if the process exists and we have permission to signal it.
-    let result = unsafe { libc::kill(pid as i32, 0) };
-    if result == 0 {
-        // Process exists and we can signal it
-        true
-    } else {
-        // Check errno to determine why it failed
-        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        // ESRCH (3) means no such process - it has terminated
-        // EPERM (1) means process exists but we don't have permission (still running)
-        errno != libc::ESRCH
-    }
+    let system = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
+    );
+    system.process(sysinfo::Pid::from_u32(pid)).is_some()
 }
