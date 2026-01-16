@@ -1,9 +1,11 @@
 use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use crate::error::{Error, Result};
@@ -206,6 +208,7 @@ where
         Ok(NodeContext {
             processor,
             mode: resolved_mode,
+            cancellation_token: None,
             _params: PhantomData,
         })
     }
@@ -253,6 +256,7 @@ where
 pub struct NodeContext<Params> {
     processor: Processor,
     mode: ExecutionMode,
+    cancellation_token: Option<CancellationToken>,
     _params: PhantomData<Params>,
 }
 
@@ -261,9 +265,26 @@ where
     Params: serde::de::DeserializeOwned + schemars::JsonSchema,
 {
     /// Create the NodeRunner, connecting to the messaging system.
+    ///
+    /// If a cancellation token was set via `with_cancellation_token()`, it will be
+    /// used by the NodeRunner. Otherwise, a new token is created.
     pub async fn create_node_runner(&self) -> Result<Arc<NodeRunner>> {
-        let node_runner = NodeRunner::new(self.processor.clone()).await?;
+        let token = self
+            .cancellation_token
+            .clone()
+            .unwrap_or_else(CancellationToken::new);
+        let node_runner =
+            NodeRunner::with_cancellation_token(self.processor.clone(), token).await?;
         Ok(Arc::new(node_runner))
+    }
+
+    /// Set a cancellation token for the NodeRunner.
+    ///
+    /// This is useful when using `init()` for manual async execution and you want
+    /// to control the cancellation token yourself.
+    pub fn with_cancellation_token(mut self, token: CancellationToken) -> Self {
+        self.cancellation_token = Some(token);
+        self
     }
 
     /// Deserialize and return the parameters
@@ -312,21 +333,14 @@ where
         })?;
 
         rt.block_on(async move {
-            let node_runner = self.create_node_runner().await?;
             let parameters: Params = self.parameters()?;
 
             if self.is_standalone() {
-                info!(
-                    "Running in standalone mode [{}:{}] as '{}/{}'",
-                    self.messaging_host(),
-                    self.messaging_port(),
-                    self.node_name(),
-                    self.instance_id(),
-                );
-                return setup_fn(parameters, node_runner).await;
+                return self.run_standalone(parameters, setup_fn).await;
             }
 
             // Daemon mode: full service lifecycle
+            let node_runner = self.create_node_runner().await?;
             info!(
                 "Running in daemon mode [{}:{}] as '{}/{}'",
                 self.messaging_host(),
@@ -356,6 +370,58 @@ where
             )
             .await
         })
+    }
+
+    /// Run in standalone mode with Ctrl+C signal handling.
+    ///
+    /// Sets up:
+    /// - A cancellation token that is cancelled on Ctrl+C
+    /// - Graceful shutdown waiting for tasks to observe cancellation
+    async fn run_standalone<F, Fut>(mut self, parameters: Params, setup_fn: F) -> Result<()>
+    where
+        F: FnOnce(Params, Arc<NodeRunner>) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
+        // Create cancellation token for standalone mode
+        let cancellation_token = CancellationToken::new();
+        self.cancellation_token = Some(cancellation_token.clone());
+
+        let node_runner = self.create_node_runner().await?;
+
+        info!(
+            "Running in standalone mode [{}:{}] as '{}/{}'",
+            self.messaging_host(),
+            self.messaging_port(),
+            self.node_name(),
+            self.instance_id(),
+        );
+
+        // Spawn Ctrl+C signal handler
+        let shutdown_token = cancellation_token.clone();
+        tokio::spawn(async move {
+            match tokio::signal::ctrl_c().await {
+                Ok(()) => {
+                    info!("Received Ctrl+C, initiating graceful shutdown...");
+                    shutdown_token.cancel();
+                }
+                Err(e) => {
+                    tracing::error!("Failed to listen for Ctrl+C signal: {}", e);
+                }
+            }
+        });
+
+        // Run the user's setup function
+        setup_fn(parameters, Arc::clone(&node_runner)).await?;
+
+        // Wait for Ctrl+C (cancellation signal) before exiting
+        info!("Node running. Press Ctrl+C to shutdown.");
+        cancellation_token.cancelled().await;
+
+        // Give spawned tasks time to observe cancellation and clean up
+        info!("Shutting down...");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        Ok(())
     }
 }
 
