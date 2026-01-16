@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, ParameterDeserializationError, Result};
 use config::{
     NodeArguments,
     consts::{NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
@@ -63,7 +63,7 @@ impl Processor {
 
         let arguments = match &config.parameters {
             Some(params) => serde_json::from_value(params.clone()).map_err(|e| {
-                Error::ParameterDeserialization(format!("failed to parse parameters: {}", e))
+                ParameterDeserializationError::single(format!("failed to parse parameters: {}", e))
             })?,
             None => NodeArguments::new(),
         };

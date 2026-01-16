@@ -54,7 +54,7 @@ where
     T: serde::de::DeserializeOwned + schemars::JsonSchema,
 {
     let json_value = serde_json::to_value(args).map_err(|e| {
-        crate::PeppyError::ParameterDeserialization(format!(
+        crate::ParameterDeserializationError::single(format!(
             "failed to serialize parameters: {}",
             e
         ))
@@ -63,29 +63,26 @@ where
     // Generate JSON schema from the target type
     let schema = schemars::schema_for!(T);
     let schema_value = serde_json::to_value(&schema).map_err(|e| {
-        crate::PeppyError::ParameterDeserialization(format!("failed to generate schema: {}", e))
+        crate::ParameterDeserializationError::single(format!("failed to generate schema: {}", e))
     })?;
 
     // Validate input against the schema
     let validator = jsonschema::validator_for(&schema_value).map_err(|e| {
-        crate::PeppyError::ParameterDeserialization(format!("failed to create validator: {}", e))
+        crate::ParameterDeserializationError::single(format!("failed to create validator: {}", e))
     })?;
 
     let errors: Vec<_> = validator.iter_errors(&json_value).collect();
     if !errors.is_empty() {
         let error_messages: Vec<String> =
             errors.iter().map(|e| format_validation_error(e)).collect();
-        return Err(crate::PeppyError::ParameterDeserialization(format!(
-            "missing required parameters:\n  - {}",
-            error_messages.join("\n  - ")
-        )));
+        return Err(crate::ParameterDeserializationError::multiple(error_messages).into());
     }
 
     // Schema validation passed, now deserialize
-    serde_json::from_value(json_value).map_err(|e| {
-        crate::PeppyError::ParameterDeserialization(format!(
+    Ok(serde_json::from_value(json_value).map_err(|e| {
+        crate::ParameterDeserializationError::single(format!(
             "failed to deserialize parameters: {}",
             e
         ))
-    })
+    })?)
 }
