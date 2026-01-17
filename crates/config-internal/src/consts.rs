@@ -1,6 +1,8 @@
 pub const MASTER_NODE_TOPIC_NAME: &str = "command";
 pub const NODE_CONFIG_FILE: &str = "peppy.json5";
 pub const RUNTIME_CONFIG_VAR_NAME: &str = "PEPPY_RUNTIME_CONFIG";
+/// The peppy output directory relative to node_dir (contains generated libraries).
+pub const PEPPY_OUTPUT_DIR: &str = ".peppy";
 /// The standard output directory for generated peppygen libraries relative to node_dir.
 pub const PEPPYGEN_OUTPUT_PATH: &str = ".peppy/libs/peppygen";
 pub const PEPPYLIB_OUTPUT_PATH: &str = ".peppy/libs/peppygen/crates/peppylib";
