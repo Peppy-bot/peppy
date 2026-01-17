@@ -1,7 +1,7 @@
 mod common;
 mod config;
 mod error;
-mod watch;
+mod node_index;
 
 pub mod consts;
 pub mod encoding;
@@ -16,7 +16,7 @@ pub mod test_helpers;
 
 pub use common::{AnyType, NodeArguments, TypeMismatch};
 
-// To watch projects
-pub use watch::{FSNodeConfigWatcher, NodeIndexState};
+// Node configuration index (filesystem snapshot)
+pub use node_index::{FSNodeConfigIndex, NodeIndexState};
 
 pub use error::{Error as ConfigError, ParsingError, Result as ConfigResult};

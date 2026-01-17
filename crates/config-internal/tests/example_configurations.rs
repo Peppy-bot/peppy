@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use config::FSNodeConfigWatcher;
+use config::FSNodeConfigIndex;
 
 fn find_example_projects(base_directory: &Path) -> Vec<PathBuf> {
     let mut example_project_paths = Vec::new();
@@ -28,7 +28,7 @@ fn find_example_projects(base_directory: &Path) -> Vec<PathBuf> {
 
 #[test]
 // Uses the node configuration examples in `examples/nodes_example_*` and builds
-// the node index with `NodeConfigWatcher`. Each project directory is scanned
+// the node index. Each project directory is scanned
 // recursively and all `peppy.json5` files are parsed. The files in
 // `examples/nodes_example_*` are the ground truth; if this test fails, the
 // parsing/types are out of sync with the examples.
@@ -48,10 +48,10 @@ fn test_example_project_parsing() {
     );
 
     for project in projects {
-        // Initialize watcher on the project directory to build the aggregated state
-        let watcher = FSNodeConfigWatcher::new(&project).expect("watcher init");
-        let rx = watcher.subscribe();
-        let state = rx.borrow().clone();
+        // Build the aggregated index snapshot for the project directory
+        let state = FSNodeConfigIndex::new(&project)
+            .expect("index init")
+            .into_state();
 
         println!("\nProject: {}", project.display());
 
