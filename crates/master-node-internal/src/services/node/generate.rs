@@ -172,6 +172,12 @@ async fn handle_node_generate_request_inner(
     let build_system = request.build_system;
     let node_root_dir = request.node_root_dir;
     match tokio::task::spawn_blocking(move || {
+        // Delete the previous .peppy folder to ensure a clean generation
+        let peppy_output_dir = node_root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
+        if peppy_output_dir.exists() {
+            std::fs::remove_dir_all(&peppy_output_dir)?;
+        }
+
         generator::generate_lib_for_build_system(
             build_system,
             &node_root_dir,

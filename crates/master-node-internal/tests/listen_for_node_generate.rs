@@ -1,7 +1,7 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, start_master_node};
-use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use master_node::encoding::NodeGenerateRequest;
 use std::fs;
 use std::path::Path;
@@ -753,6 +753,100 @@ async fn listen_for_node_generate_generates_rust_parameters() {
         parameters_rs_content.contains("frame_rate"),
         "parameters.rs should contain `frame_rate`, got:\n{}",
         parameters_rs_content
+    );
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_generate_deletes_previous_peppy_folder() {
+    let started_master = start_master_node().await;
+
+    let node_dir = tempdir().expect("failed to create temp node directory");
+    write_node_config(
+        node_dir.path(),
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "example_node",
+                tag: "0.1.0",
+                start_cmd: ["sleep", "10"]
+            }
+        }"#,
+    );
+
+    // First generation - creates the .peppy folder
+    let response = NodeGenerateRequest::new(node_dir.path())
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_generate request should complete");
+
+    assert!(
+        response.success,
+        "first node_generate should succeed, got error: {}",
+        response.error_message
+    );
+
+    let peppy_dir = node_dir.path().join(PEPPY_OUTPUT_DIR);
+    assert!(
+        peppy_dir.exists(),
+        ".peppy directory should exist at {}",
+        peppy_dir.display()
+    );
+
+    // Add a stale file to simulate leftover content from a previous generation
+    let stale_file = peppy_dir.join("stale_file.txt");
+    fs::write(&stale_file, "stale content").expect("failed to write stale file");
+    assert!(
+        stale_file.exists(),
+        "stale file should exist at {}",
+        stale_file.display()
+    );
+
+    // Second generation - should delete the .peppy folder and recreate it
+    let response = NodeGenerateRequest::new(node_dir.path())
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_generate request should complete");
+
+    assert!(
+        response.success,
+        "second node_generate should succeed, got error: {}",
+        response.error_message
+    );
+
+    // The .peppy folder should still exist (recreated by generation)
+    assert!(
+        peppy_dir.exists(),
+        ".peppy directory should exist after regeneration at {}",
+        peppy_dir.display()
+    );
+
+    // But the stale file should be gone (folder was deleted before regeneration)
+    assert!(
+        !stale_file.exists(),
+        "stale file should NOT exist after regeneration at {}",
+        stale_file.display()
+    );
+
+    // Verify the generated content still exists
+    let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        peppygen_dir.exists(),
+        "peppygen directory should exist at {}",
+        peppygen_dir.display()
     );
 
     started_master.task.abort();
