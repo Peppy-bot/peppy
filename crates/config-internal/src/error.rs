@@ -113,6 +113,13 @@ pub enum Error {
         "Node config fingerprint mismatch: expected {expected}, got {actual}. The config may have been modified after code generation. Run `node sync` to update the peppygen lib on your node."
     )]
     FingerprintMismatch { expected: String, actual: String },
+    #[error(
+        "Release fingerprint mismatch: node was generated with peppy version {node_version}, but current peppy version is {current_version}. Run `node sync` to regenerate with the current version."
+    )]
+    ReleaseFingerprintMismatch {
+        node_version: String,
+        current_version: String,
+    },
 }
 
 #[cfg(test)]
