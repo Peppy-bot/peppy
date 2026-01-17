@@ -1,4 +1,3 @@
-mod checker;
 mod common;
 mod python;
 pub mod rust;
@@ -69,7 +68,7 @@ pub fn generate_lib_for_build_system(
 
     // Lastly generate the codegen fingerprint based on the peppy.json5 config file
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
-    checker::generate_node_config_fingerprint(&node_config_path, &output_dir)?;
+    config::fingerprint::generate_node_config_fingerprint(&node_config_path, &output_dir)?;
 
     result
 }

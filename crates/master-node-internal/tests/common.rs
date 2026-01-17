@@ -3,7 +3,6 @@
 use config::consts::{DEFAULT_ZENOH_HOST, NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::QoSProfile;
 use config::peppy_config::BuildSystem;
-use config::runtime::RuntimeConfig;
 use master_node::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddResult, NodeStartFeedback, NodeStartGoal,
     NodeStartGoalResponse, NodeStartResult,
@@ -38,20 +37,9 @@ pub struct NodeStartTestResponse {
 
 /// Writes a node config file and the corresponding fingerprint file expected by `node_add`.
 pub fn write_peppy_json5(dir: &Path, content: &str) {
-    use config::consts::NODE_CONFIG_FINGERPRINT_FILE;
-
     let config_path = dir.join(NODE_CONFIG_FILE);
     std::fs::write(&config_path, content).expect("failed to write peppy.json5");
-
-    let fingerprint_dir = dir.join(PEPPYGEN_OUTPUT_PATH);
-    std::fs::create_dir_all(&fingerprint_dir).expect("failed to create peppygen dir");
-    let fingerprint = RuntimeConfig::generate_peppy_config_fingerprint(&config_path)
-        .expect("failed to generate peppy.json5 fingerprint");
-    std::fs::write(
-        fingerprint_dir.join(NODE_CONFIG_FINGERPRINT_FILE),
-        format!("{fingerprint}\n"),
-    )
-    .expect("failed to write fingerprint file");
+    config::fingerprint::create_codegen_fingerprint(&config_path, Path::new(PEPPYGEN_OUTPUT_PATH));
 }
 
 /// Helper function to send a node_add goal and wait for the result.

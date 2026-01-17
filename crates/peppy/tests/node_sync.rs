@@ -79,18 +79,11 @@ fn node_sync_rust_command_succeeds() {
         peppy_json5_path.display()
     );
 
-    let fingerprint_path = node_path
-        .join(config::consts::PEPPYGEN_OUTPUT_PATH)
-        .join(config::consts::NODE_CONFIG_FINGERPRINT_FILE);
-    assert!(
-        fingerprint_path.exists(),
-        "fingerprint file should exist at {}",
-        fingerprint_path.display()
-    );
-    let old_fingerprint = std::fs::read_to_string(&fingerprint_path)
-        .expect("fingerprint should be readable")
-        .trim()
-        .to_string();
+    let old_fingerprint = config::fingerprint::read_codegen_fingerprint(
+        &peppy_json5_path,
+        config::consts::PEPPYGEN_OUTPUT_PATH,
+    )
+    .expect("fingerprint should be readable");
     assert!(
         !old_fingerprint.is_empty(),
         "fingerprint should not be empty"
@@ -118,10 +111,11 @@ fn node_sync_rust_command_succeeds() {
     .execute(&sync_ctx)
     .expect("node sync command should succeed");
 
-    let new_fingerprint = std::fs::read_to_string(&fingerprint_path)
-        .expect("updated fingerprint should be readable")
-        .trim()
-        .to_string();
+    let new_fingerprint = config::fingerprint::read_codegen_fingerprint(
+        &peppy_json5_path,
+        config::consts::PEPPYGEN_OUTPUT_PATH,
+    )
+    .expect("updated fingerprint should be readable");
     assert_eq!(
         new_fingerprint, expected_fingerprint,
         "fingerprint file should be updated by sync"

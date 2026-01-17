@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::consts::NODE_CONFIG_FILE;
+use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use helpers::TestServeHandle;
 use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
@@ -44,7 +44,10 @@ fn write_node_config(
         ),
     )
     .expect("failed to write node config");
-    helpers::update_peppy_json5_fingerprint(&node_config_path);
+    config::fingerprint::create_codegen_fingerprint(
+        &node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
     node_dir
 }
 

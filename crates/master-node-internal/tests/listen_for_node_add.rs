@@ -1,10 +1,9 @@
 mod common;
 
 use common::{send_node_add_and_wait, start_master_node, write_peppy_json5};
-use config::consts::{
-    NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH, logs_dir_add,
-};
+use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, logs_dir_add};
 use master_node::encoding::NodeAddFeedback;
+use std::path::Path;
 use std::time::Duration;
 
 const ADD_CMD_MARKER_FILE: &str = "add_cmd_executed.marker";
@@ -834,19 +833,15 @@ async fn listen_for_node_add_fingerprint_mismatch() {
             }}
         }}"#
     );
-    write_peppy_json5(source_dir.path(), &peppy_json5);
+    // Write the config file only (without fingerprint)
+    let config_path = source_dir.path().join(NODE_CONFIG_FILE);
+    std::fs::write(&config_path, &peppy_json5).expect("failed to write peppy.json5");
 
-    // Create the peppygen directory with a mismatched fingerprint
-    let peppygen_dir = source_dir.path().join(PEPPYGEN_OUTPUT_PATH);
-    std::fs::create_dir_all(&peppygen_dir).expect("failed to create peppygen dir");
-
-    // Write an incorrect fingerprint (this won't match the actual peppy.json5 content)
-    let fingerprint_path = peppygen_dir.join(NODE_CONFIG_FINGERPRINT_FILE);
-    std::fs::write(
-        &fingerprint_path,
-        "incorrect_fingerprint_that_will_not_match\n",
-    )
-    .expect("failed to write fingerprint file");
+    // Create a wrong fingerprint that won't match the actual peppy.json5 content
+    config::fingerprint::create_wrong_codegen_fingerprint(
+        &config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
 
     let add_result = send_node_add_and_wait(
         &started_master.caller_handle,
