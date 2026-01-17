@@ -121,21 +121,10 @@ async fn daemon_runner_succeed() {
       }
     }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
-
-    let fingerprint = RuntimeConfig::generate_peppy_config_fingerprint(&peppy_config_path)
-        .expect("failed to generate peppy config fingerprint");
-    let fingerprint_path = temp_dir
-        .path()
-        .join(PEPPYGEN_OUTPUT_PATH)
-        .join(peppylib::config::NODE_CONFIG_FINGERPRINT_FILE);
-    std::fs::create_dir_all(
-        fingerprint_path
-            .parent()
-            .expect("fingerprint path should have a parent dir"),
-    )
-    .expect("failed to create peppygen output dir");
-    std::fs::write(&fingerprint_path, format!("{fingerprint}\n"))
-        .expect("failed to write fingerprint file");
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
 
     let runtime_config = RuntimeConfig::new(
         &router_host,
@@ -338,21 +327,10 @@ async fn node_ready_but_not_healthy() {
       }
     }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
-
-    let fingerprint = RuntimeConfig::generate_peppy_config_fingerprint(&peppy_config_path)
-        .expect("failed to generate peppy config fingerprint");
-    let fingerprint_path = temp_dir
-        .path()
-        .join(PEPPYGEN_OUTPUT_PATH)
-        .join(peppylib::config::NODE_CONFIG_FINGERPRINT_FILE);
-    std::fs::create_dir_all(
-        fingerprint_path
-            .parent()
-            .expect("fingerprint path should have a parent dir"),
-    )
-    .expect("failed to create peppygen output dir");
-    std::fs::write(&fingerprint_path, format!("{fingerprint}\n"))
-        .expect("failed to write fingerprint file");
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
 
     let runtime_config = RuntimeConfig::new(
         &router_host,
@@ -606,21 +584,10 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
       }
     }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
-
-    let fingerprint = RuntimeConfig::generate_peppy_config_fingerprint(&peppy_config_path)
-        .expect("failed to generate peppy config fingerprint");
-    let fingerprint_path = temp_dir
-        .path()
-        .join(PEPPYGEN_OUTPUT_PATH)
-        .join(peppylib::config::NODE_CONFIG_FINGERPRINT_FILE);
-    std::fs::create_dir_all(
-        fingerprint_path
-            .parent()
-            .expect("fingerprint path should have a parent dir"),
-    )
-    .expect("failed to create peppygen output dir");
-    std::fs::write(&fingerprint_path, format!("{fingerprint}\n"))
-        .expect("failed to write fingerprint file");
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
 
     let runtime_config = RuntimeConfig::new(
         &router_host,

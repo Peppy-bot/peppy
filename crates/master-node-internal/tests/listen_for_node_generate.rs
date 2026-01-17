@@ -1,7 +1,7 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, start_master_node};
-use config::consts::{NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use master_node::encoding::NodeGenerateRequest;
 use std::fs;
 use std::path::Path;
@@ -54,11 +54,11 @@ async fn listen_for_node_generate_success() {
         peppygen_dir.display()
     );
 
-    let fingerprint_path = peppygen_dir.join(NODE_CONFIG_FINGERPRINT_FILE);
+    let config_path = node_dir.path().join(NODE_CONFIG_FILE);
     assert!(
-        fingerprint_path.exists(),
-        "fingerprint file should exist at {}",
-        fingerprint_path.display()
+        config::fingerprint::codegen_fingerprint_exists(&config_path, PEPPYGEN_OUTPUT_PATH)
+            .is_some(),
+        "fingerprint file should exist in peppygen directory"
     );
 
     let cargo_toml_path = node_dir.path().join("Cargo.toml");

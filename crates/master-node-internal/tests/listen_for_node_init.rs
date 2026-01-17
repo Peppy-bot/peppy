@@ -1,7 +1,7 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, start_master_node};
-use config::consts::{NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::peppy_config::BuildSystem;
 use master_node::encoding::NodeInitRequest;
 use std::fs;
@@ -81,11 +81,10 @@ async fn listen_for_node_init_rust_success() {
         peppygen_dir.display()
     );
 
-    let fingerprint_path = peppygen_dir.join(NODE_CONFIG_FINGERPRINT_FILE);
     assert!(
-        fingerprint_path.exists(),
-        "fingerprint file should exist at {}",
-        fingerprint_path.display()
+        config::fingerprint::codegen_fingerprint_exists(&node_config_path, PEPPYGEN_OUTPUT_PATH)
+            .is_some(),
+        "fingerprint file should exist in peppygen directory"
     );
 
     let gitignore_path = node_dir.join(".gitignore");
@@ -160,11 +159,10 @@ async fn listen_for_node_init_python_success() {
         peppygen_dir.display()
     );
 
-    let fingerprint_path = peppygen_dir.join(NODE_CONFIG_FINGERPRINT_FILE);
     assert!(
-        fingerprint_path.exists(),
-        "fingerprint file should exist at {}",
-        fingerprint_path.display()
+        config::fingerprint::codegen_fingerprint_exists(&node_config_path, PEPPYGEN_OUTPUT_PATH)
+            .is_some(),
+        "fingerprint file should exist in peppygen directory"
     );
 
     let gitignore_path = node_dir.join(".gitignore");

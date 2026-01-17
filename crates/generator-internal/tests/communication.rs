@@ -1,6 +1,6 @@
 mod helpers;
 
-use config::consts::RUNTIME_CONFIG_VAR_NAME;
+use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::{
     node::{
         ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
@@ -14,9 +14,9 @@ use helpers::{
     WaitContext, compile_project, copy_config_to_output, init_cargo_user_node, init_test_env,
     send_shutdown, spawn_cargo_run, wait_for_action_service_reachable_or_exit, wait_for_child,
     wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
-    write_codegen_fingerprint,
 };
 use pmi::MessengerBackend;
+use std::path::Path;
 use std::{fs, time::Duration};
 use tempfile::TempDir;
 
@@ -100,7 +100,10 @@ async fn topics_communication() {
     let output_config = copy_config_to_output(&user_node_subscriber, &subscriber_dir);
     generator.build(&subscriber_dir).unwrap();
     fs::remove_file(output_config).unwrap();
-    write_codegen_fingerprint(&peppy_node_config_path);
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
 
     let subscriber_runtime_config = RuntimeConfig::new(
         &router_host,
@@ -162,7 +165,10 @@ fn main() -> Result<()> {
         serde_json5::to_string(&node_config).unwrap(),
     )
     .unwrap();
-    write_codegen_fingerprint(&peppy_node_config_path);
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
 
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
@@ -409,7 +415,10 @@ async fn services_communication_no_target_instance_id() {
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
     fs::remove_file(output_config).unwrap();
-    write_codegen_fingerprint(&peppy_node_config_path);
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
 
     let subscriber_runtime_config = RuntimeConfig::new(
         &router_host,
@@ -464,7 +473,10 @@ fn main() -> Result<()> {
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator.build(&output_dir_exposer).unwrap();
     fs::remove_file(output_config).unwrap();
-    write_codegen_fingerprint(&peppy_node_config_path);
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
 
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
@@ -680,7 +692,10 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
     fs::remove_file(output_config).unwrap();
-    write_codegen_fingerprint(&peppy_node_config_path);
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
 
     let subscriber_runtime_config = RuntimeConfig::new(
         &router_host,
@@ -734,7 +749,10 @@ fn main() -> Result<()> {
     let output_config = copy_config_to_output(&user_node_exposer1, &output_dir_exposer1);
     generator.build(&output_dir_exposer1).unwrap();
     fs::remove_file(output_config).unwrap();
-    write_codegen_fingerprint(&peppy_node_config_path);
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
 
     let exposer1_runtime_config = RuntimeConfig::new(
         &router_host,
@@ -788,7 +806,10 @@ fn main() -> Result<()> {
     let output_config = copy_config_to_output(&user_node_exposer2, &output_dir_exposer2);
     generator.build(&output_dir_exposer2).unwrap();
     fs::remove_file(output_config).unwrap();
-    write_codegen_fingerprint(&peppy_node_config_path);
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
 
     let exposer2_runtime_config = RuntimeConfig::new(
         &router_host,
@@ -1145,7 +1166,10 @@ async fn actions_communication() {
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
     fs::remove_file(output_config).unwrap();
-    write_codegen_fingerprint(&peppy_node_config_path);
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
 
     let subscriber_runtime_config = RuntimeConfig::new(
         &router_host,
@@ -1215,7 +1239,10 @@ fn main() -> Result<()> {
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator.build(&output_dir_exposer).unwrap();
     fs::remove_file(output_config).unwrap();
-    write_codegen_fingerprint(&peppy_node_config_path);
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
 
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
@@ -1453,7 +1480,10 @@ async fn actions_communication_cancel_goal() {
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
     fs::remove_file(output_config).unwrap();
-    write_codegen_fingerprint(&peppy_node_config_path);
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
 
     let subscriber_runtime_config = RuntimeConfig::new(
         &router_host,
@@ -1519,7 +1549,10 @@ fn main() -> Result<()> {
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator.build(&output_dir_exposer).unwrap();
     fs::remove_file(output_config).unwrap();
-    write_codegen_fingerprint(&peppy_node_config_path);
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
 
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,

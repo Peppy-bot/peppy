@@ -1,5 +1,4 @@
-use config::consts::{NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH};
-use config::runtime::RuntimeConfig;
+use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use generator::RustGenerator;
 use peppylib::messaging::{NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::{MessengerHandle, ServiceMessenger};
@@ -221,17 +220,6 @@ pub struct WaitContext<'a> {
     pub bound_master_node: &'a str,
     pub caller_instance_id: &'a str,
     pub target_master_node: Option<&'a str>,
-}
-
-pub fn write_codegen_fingerprint(peppy_config_path: impl AsRef<Path>) {
-    let peppy_config_path = peppy_config_path.as_ref();
-    let fingerprint = RuntimeConfig::generate_peppy_config_fingerprint(peppy_config_path)
-        .expect("failed to generate peppy.json5 fingerprint");
-    let peppy_config_dir = peppy_config_path.parent().unwrap_or_else(|| Path::new("."));
-    let fingerprint_path = peppy_config_dir
-        .join(PEPPYGEN_OUTPUT_PATH)
-        .join(NODE_CONFIG_FINGERPRINT_FILE);
-    fs::write(&fingerprint_path, fingerprint).expect("failed to write codegen fingerprint");
 }
 
 pub async fn wait_for_service_reachable_or_exit(
