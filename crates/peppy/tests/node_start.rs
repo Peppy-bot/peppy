@@ -1,7 +1,10 @@
 mod helpers;
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+
+use config::consts::PEPPYGEN_OUTPUT_PATH;
 
 use helpers::TestServeHandle;
 use master_node::encoding::NodeListRequest;
@@ -273,14 +276,10 @@ fn node_run_command_with_args_succeeds() {
     std::fs::write(&peppy_json5_path, peppy_config).expect("peppy.json5 should be writable");
 
     // Update the fingerprint to match the new config
-    let fingerprint =
-        config::runtime::RuntimeConfig::generate_peppy_config_fingerprint(&peppy_json5_path)
-            .expect("peppy.json5 fingerprint should generate");
-    let fingerprint_path = node_path
-        .join(config::consts::PEPPYGEN_OUTPUT_PATH)
-        .join(config::consts::NODE_CONFIG_FINGERPRINT_FILE);
-    std::fs::write(&fingerprint_path, fingerprint)
-        .expect("peppygen fingerprint should be writable");
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_json5_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
 
     // Build the node before running it
     let build_output = std::process::Command::new("cargo")

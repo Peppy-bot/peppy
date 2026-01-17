@@ -3,12 +3,8 @@ use crate::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAdd
 use crate::names;
 use bytes::Bytes;
 use chrono::Local;
-use config::consts::{
-    NODE_CONFIG_FILE, NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH, logs_dir_add,
-    peppy_data_dir,
-};
+use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, logs_dir_add, peppy_data_dir};
 use config::node::{NodeConfig, NodeConfigParser};
-use config::runtime::RuntimeConfig;
 use node_stack::NodeStack;
 use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
@@ -166,37 +162,6 @@ async fn run_add_cmd_with_streaming(
     }
 
     debug!("add_cmd completed successfully");
-    Ok(())
-}
-
-/// Verifies that the node config fingerprint matches the one in the generated folder.
-fn verify_node_config_fingerprint(node_dir: &Path) -> std::result::Result<(), String> {
-    let config_path = node_dir.join(NODE_CONFIG_FILE);
-    let fingerprint_path = node_dir
-        .join(PEPPYGEN_OUTPUT_PATH)
-        .join(NODE_CONFIG_FINGERPRINT_FILE);
-
-    let actual_fingerprint = RuntimeConfig::generate_peppy_config_fingerprint(&config_path)
-        .map_err(|e| format!("Failed to generate fingerprint for node config: {}", e))?;
-
-    let expected_fingerprint = std::fs::read_to_string(&fingerprint_path).map_err(|e| {
-        format!(
-            "Failed to read fingerprint file '{}': {}",
-            fingerprint_path.display(),
-            e
-        )
-    })?;
-    let expected_fingerprint = expected_fingerprint.trim();
-
-    if expected_fingerprint != actual_fingerprint {
-        return Err(format!(
-            "Node config fingerprint mismatch: expected {}, got {}. \
-             The config may have been modified after code generation. \
-             Run `node generate` to update the peppygen lib on your node. ",
-            expected_fingerprint, actual_fingerprint
-        ));
-    }
-
     Ok(())
 }
 
@@ -504,7 +469,10 @@ async fn process_node_add(
     };
 
     // Verify that the node config fingerprint matches the one in the generated folder
-    if let Err(e) = verify_node_config_fingerprint(&copied_path) {
+    let config_path = copied_path.join(NODE_CONFIG_FILE);
+    if let Err(e) =
+        config::fingerprint::verify_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
+    {
         // Clean up the copied folder on failure
         let _ = std::fs::remove_dir_all(&copied_path);
         return NodeAddResult::failure(

@@ -107,6 +107,12 @@ pub enum Error {
     AskamaError(String),
     #[error("Encoding error: {0}")]
     Encoding(String),
+
+    // -- Fingerprint
+    #[error(
+        "Node config fingerprint mismatch: expected {expected}, got {actual}. The config may have been modified after code generation. Run `node sync` to update the peppygen lib on your node."
+    )]
+    FingerprintMismatch { expected: String, actual: String },
 }
 
 #[cfg(test)]
