@@ -469,10 +469,12 @@ async fn start_master_node_with_messenger(
     let master_node_name = master_node.node_name().to_string();
     let node_stack = master_node.node_stack().clone();
 
-    let task = tokio::spawn(async move { master_node.start().await });
+    // Use start_with_ready to properly synchronize instead of a time-based sleep
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move { master_node.start_with_ready(Some(ready_tx)).await });
 
-    // Allow the MasterNode services to fully establish their listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait for all services to be fully registered before returning
+    ready_rx.await.expect("master node ready signal failed");
 
     StartedMasterNode {
         shared_messenger,
