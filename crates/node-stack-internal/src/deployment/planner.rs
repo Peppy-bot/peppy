@@ -8,7 +8,7 @@ use super::{
 use crate::error::{Error, Result};
 use config::node::NodeConfig;
 use config::peppy_config::{Deployment, DeploymentNodeSource, PeppyLauncher, PeppyLauncherParser};
-use config::{AnyType, FSNodeConfigWatcher, TypeMismatch};
+use config::{AnyType, FSNodeConfigIndex, TypeMismatch};
 
 #[derive(Debug)]
 pub enum PlannedDeployment {
@@ -189,8 +189,7 @@ fn load_peppy_launcher(launch_file: &Path) -> Result<PeppyLauncher> {
 }
 
 fn load_nodes_from_fs(root_dir: &Path, master_node: NodeConfig) -> Result<NodeStack> {
-    let watcher = FSNodeConfigWatcher::new(root_dir)?;
-    let state_snapshot = watcher.subscribe().borrow().clone();
+    let state_snapshot = FSNodeConfigIndex::new(root_dir)?.into_state();
 
     let local_nodes: Vec<(PathBuf, NodeConfig)> = state_snapshot
         .into_iter()

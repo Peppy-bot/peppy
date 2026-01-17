@@ -1,7 +1,7 @@
 use crate::consts::NODE_CONFIG_FILE;
 use std::path::{Path, PathBuf};
 
-/// Finds the `PEPPY_CONFIG_FILE` recursively starting at `from_dir`
+/// Finds `peppy.json5` files recursively starting at `from_dir`.
 pub fn find_peppy_nodes_from_dir(from_dir: impl AsRef<Path>) -> Vec<PathBuf> {
     let mut peppy_files = Vec::new();
     let from_dir = from_dir.as_ref();
