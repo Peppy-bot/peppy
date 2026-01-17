@@ -3,7 +3,7 @@ use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, N
 use crate::names;
 use bytes::Bytes;
 use chrono::Local;
-use config::consts::{RUNTIME_CONFIG_VAR_NAME, logs_dir_start, runtime_config_path};
+use config::consts::{RUNTIME_CONFIG_VAR_NAME, logs_dir_start, runtime_config_dir};
 use config::node::Name;
 use config::runtime::RuntimeConfig;
 use config::{AnyType, NodeArguments};
@@ -865,10 +865,7 @@ pub fn start_node(entity: &NodeEntity, runtime_config_json5: &str) -> std::io::R
     // Write runtime config to a unique file per spawned process.
     // Using a shared path can cause cross-test and cross-instance races where a node reads the
     // wrong config (instance_id/port), leading to hangs waiting for ready/health responses.
-    let runtime_dir = runtime_config_path()
-        .parent()
-        .map(|path| path.to_path_buf())
-        .unwrap_or_else(std::env::temp_dir);
+    let runtime_dir = runtime_config_dir();
     std::fs::create_dir_all(&runtime_dir)?;
     let counter = RUNTIME_CONFIG_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
