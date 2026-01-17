@@ -236,6 +236,17 @@ __wrap__() {
         chmod +x "$PEPPY_BIN_DIR/zenohd"
     fi
 
+    GIT_HASH_PATH=""
+    if [ -f "$TEMP_DIR/git.hash" ]; then
+        GIT_HASH_PATH="$TEMP_DIR/git.hash"
+    else
+        GIT_HASH_PATH="$(find "$TEMP_DIR" -type f -name git.hash -print | head -n 1 || true)"
+    fi
+
+    if [ -n "${GIT_HASH_PATH-}" ] && [ -f "$GIT_HASH_PATH" ]; then
+        mv "$GIT_HASH_PATH" "$PEPPY_BIN_DIR/git.hash"
+    fi
+
     if [ "$PEPPY_BIN_DIR" = "$PEPPY_HOME/bin" ]; then
         echo "The 'peppy' binary is installed into '${PEPPY_HOME}'"
     else
