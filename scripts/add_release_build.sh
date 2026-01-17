@@ -4,7 +4,7 @@ set -eu
 # Build peppy for the current host architecture and upload it to an existing GitHub Release.
 #
 # Requires:
-#   - GITHUB_TOKEN env var (repo-scoped token)
+#   - GITHUB_PEPPY_RELEASE_TOKEN env var (repo-scoped token)
 #   - git, curl, python3, cargo, rustc, tar
 #
 # Usage:
@@ -117,7 +117,7 @@ __wrap__() {
 
         if [ -n "${DATA_FILE-}" ]; then
             curl -sS -L $FAIL_FLAG -X "$METHOD" \
-                -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                -H "Authorization: Bearer ${GITHUB_PEPPY_RELEASE_TOKEN}" \
                 -H "Accept: application/vnd.github+json" \
                 -H "X-GitHub-Api-Version: 2022-11-28" \
                 -H "Content-Type: application/json" \
@@ -131,7 +131,7 @@ __wrap__() {
             }
         else
             curl -sS -L $FAIL_FLAG -X "$METHOD" \
-                -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                -H "Authorization: Bearer ${GITHUB_PEPPY_RELEASE_TOKEN}" \
                 -H "Accept: application/vnd.github+json" \
                 -H "X-GitHub-Api-Version: 2022-11-28" \
                 -D "$HEADER_FILE" \
@@ -203,7 +203,7 @@ PY
         UPLOAD_URL="https://uploads.github.com/repos/${OWNER}/${REPO}/releases/${RELEASE_ID}/assets?name=${ASSET_NAME}"
 
         curl -sS -L $FAIL_FLAG -X POST \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Authorization: Bearer ${GITHUB_PEPPY_RELEASE_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -H "Content-Type: application/octet-stream" \
@@ -328,8 +328,8 @@ PY
         fi
     }
 
-    if [ -z "${GITHUB_TOKEN:-}" ]; then
-        die "GITHUB_TOKEN env var is required"
+    if [ -z "${GITHUB_PEPPY_RELEASE_TOKEN:-}" ]; then
+        die "GITHUB_PEPPY_RELEASE_TOKEN env var is required"
     fi
 
     need_cmd git
@@ -398,7 +398,12 @@ PY
     cp "$ZENOHD_PATH" "$PKG_DIR/zenohd"
     chmod +x "$PKG_DIR/zenohd"
 
-    tar -czf "$ASSET_PATH" -C "$PKG_DIR" peppy zenohd
+    # Copy git.hash if it exists (created by build.rs)
+    if [ -f "git.hash" ]; then
+        cp "git.hash" "$PKG_DIR/git.hash"
+    fi
+
+    tar -czf "$ASSET_PATH" -C "$PKG_DIR" .
     echo "Built artifact: $ASSET_PATH"
 
     delete_asset_if_exists "$RELEASE_ID" "$ASSET_NAME" "$OWNER" "$REPO"

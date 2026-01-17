@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
+// TODO: This should delete all the content of the previous `.peppy` folder
 pub async fn listen_for_node_generate(
     messenger: &MessengerHandle,
     master_node_node: &str,
