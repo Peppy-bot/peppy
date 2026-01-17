@@ -110,7 +110,7 @@ pub enum Error {
 
     // -- Fingerprint
     #[error(
-        "Node config fingerprint mismatch: expected {expected}, got {actual}. The config may have been modified after code generation. Run `node generate` to update the peppygen lib on your node."
+        "Node config fingerprint mismatch: expected {expected}, got {actual}. The config may have been modified after code generation. Run `node sync` to update the peppygen lib on your node."
     )]
     FingerprintMismatch { expected: String, actual: String },
 }
