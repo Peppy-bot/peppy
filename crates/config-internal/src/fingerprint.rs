@@ -73,28 +73,6 @@ pub fn verify_codegen_fingerprint(
     }
 }
 
-/// Checks if a codegen fingerprint file exists at the expected location.
-///
-/// Returns the path to the fingerprint file if it exists, or None if it doesn't.
-pub fn codegen_fingerprint_exists(
-    peppy_config: impl AsRef<Path>,
-    output_path: impl AsRef<Path>,
-) -> Option<std::path::PathBuf> {
-    let peppy_config_dir = peppy_config
-        .as_ref()
-        .parent()
-        .unwrap_or_else(|| Path::new("."));
-    let fingerprint_path = peppy_config_dir
-        .join(output_path.as_ref())
-        .join(NODE_CONFIG_FINGERPRINT_FILE);
-
-    if fingerprint_path.exists() {
-        Some(fingerprint_path)
-    } else {
-        None
-    }
-}
-
 /// Creates the fingerprint file at the expected location for runtime checks.
 #[cfg(feature = "test_helpers")]
 pub fn create_codegen_fingerprint(peppy_config_path: &Path, output_path: &Path) {

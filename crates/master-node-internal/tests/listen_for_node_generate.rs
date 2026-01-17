@@ -56,8 +56,7 @@ async fn listen_for_node_generate_success() {
 
     let config_path = node_dir.path().join(NODE_CONFIG_FILE);
     assert!(
-        config::fingerprint::codegen_fingerprint_exists(&config_path, PEPPYGEN_OUTPUT_PATH)
-            .is_some(),
+        config::fingerprint::read_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH).is_ok(),
         "fingerprint file should exist in peppygen directory"
     );
 

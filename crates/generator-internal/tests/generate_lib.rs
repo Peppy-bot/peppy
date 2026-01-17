@@ -61,14 +61,9 @@ fn run_generate_peppygen_lib_test(build_system: BuildSystem) -> (TempDir, std::p
 
     // Check that the fingerprint was created
     let config_path = node_dir.join(NODE_CONFIG_FILE);
-    assert!(
-        config::fingerprint::codegen_fingerprint_exists(&config_path, PEPPYGEN_OUTPUT_PATH)
-            .is_some(),
-        "fingerprint file should exist in peppygen directory"
-    );
     let fingerprint =
         config::fingerprint::read_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
-            .expect("failed to read fingerprint");
+            .expect("fingerprint file should exist in peppygen directory");
     assert!(!fingerprint.is_empty(), "fingerprint should not be empty");
 
     (temp_dir, peppygen_dir)

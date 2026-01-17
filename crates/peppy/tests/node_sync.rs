@@ -79,14 +79,6 @@ fn node_sync_rust_command_succeeds() {
         peppy_json5_path.display()
     );
 
-    assert!(
-        config::fingerprint::codegen_fingerprint_exists(
-            &peppy_json5_path,
-            config::consts::PEPPYGEN_OUTPUT_PATH
-        )
-        .is_some(),
-        "fingerprint file should exist in peppygen directory"
-    );
     let old_fingerprint = config::fingerprint::read_codegen_fingerprint(
         &peppy_json5_path,
         config::consts::PEPPYGEN_OUTPUT_PATH,
