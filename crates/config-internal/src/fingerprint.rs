@@ -7,6 +7,20 @@ const NODE_CONFIG_FINGERPRINT_FILE: &str = "peppy.json5.sha256";
 // This extra fingerprint tracks changes to the peppy client across releases
 const RELEASE_FINGERPRINT_FILE: &str = "git.hash";
 
+/// Writes the release fingerprint (git hash) to the peppy data directory.
+///
+/// This should be called when the serve command starts to ensure the
+/// release fingerprint is available for node generation and verification.
+pub fn write_release_fingerprint(git_hash: &str) -> Result<()> {
+    let data_dir = crate::consts::peppy_data_dir();
+    fs::create_dir_all(&data_dir)?;
+
+    let fingerprint_path = data_dir.join(RELEASE_FINGERPRINT_FILE);
+    fs::write(&fingerprint_path, format!("{}\n", git_hash))?;
+
+    Ok(())
+}
+
 /// Generates the initial node fingerprint and copies the release fingerprint.
 ///
 /// This function:

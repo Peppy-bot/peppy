@@ -1,26 +1,13 @@
-use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 
-fn _get_temp_cache_dir(cache_suffix: &str) -> PathBuf {
-    let temp_dir = env::temp_dir();
-    let cache_dir = temp_dir.join(format!("{}-peppy-cache", cache_suffix));
-
-    // Create cache directory if it doesn't exist
-    if !cache_dir.exists() {
-        std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
-    }
-
-    cache_dir
-}
-
 fn main() {
-    // Generate git.hash file next to the binary for release fingerprint tracking.
-    // This allows development builds to work with the fingerprint verification system.
-    generate_git_hash();
+    // Embed the git hash into the binary at compile time.
+    // The serve command will write this to ~/.peppy/git.hash at runtime.
+    embed_git_hash();
 }
 
-fn generate_git_hash() {
+fn embed_git_hash() {
     // Get the git repository root directory
     let git_root = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
@@ -50,21 +37,8 @@ fn generate_git_hash() {
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    // Write git.hash to the peppy data directory (~/.peppy/)
-    // This matches the logic in config::consts::peppy_data_dir()
-    let peppy_data_dir = env::var_os("HOME")
-        .or_else(|| env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(env::temp_dir)
-        .join(".peppy");
-
-    if std::fs::create_dir_all(&peppy_data_dir).is_ok() {
-        let git_hash_path = peppy_data_dir.join("git.hash");
-        if std::fs::write(&git_hash_path, format!("{}\n", git_hash)).is_err() {
-            // Silently ignore write errors (e.g., permission issues)
-            // The fingerprint check will fail later with a clear error message
-        }
-    }
+    // Embed the git hash into the binary via environment variable
+    println!("cargo:rustc-env=PEPPY_GIT_HASH={}", git_hash);
 
     // Tell cargo to rerun this if git HEAD changes.
     // We must use absolute paths because cargo resolves relative paths from the
