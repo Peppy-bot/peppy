@@ -3,6 +3,8 @@ use sha2::{Digest, Sha256};
 use std::{fs, path::Path};
 
 const NODE_CONFIG_FINGERPRINT_FILE: &str = "peppy.json5.sha256";
+// This extra fingerprint tracks changes to the peppy client across releases
+const RELEASE_FINGERPRINT_FILE: &str = "git.hash";
 
 /// Generates the initial node fingerprint
 pub fn generate_node_config_fingerprint(
