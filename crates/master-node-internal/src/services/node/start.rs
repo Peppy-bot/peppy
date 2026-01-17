@@ -31,6 +31,8 @@ const STDERR_BUFFER_LINES: usize = 20;
 const STARTUP_OUTPUT_MAX_WAIT: Duration = Duration::from_millis(100);
 const STARTUP_OUTPUT_QUIET_WINDOW: Duration = Duration::from_millis(10);
 
+static RUNTIME_CONFIG_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// Validates that all required parameters from the schema are present in the provided arguments.
 /// Returns a list of all missing parameter paths (e.g., ["device.physical", "video.frame_rate"]).
 fn validate_parameters(
@@ -860,13 +862,17 @@ pub fn start_node(entity: &NodeEntity, runtime_config_json5: &str) -> std::io::R
         entity.root_path()
     );
 
-    // Write the runtime config to a file in the .peppy directory
-    // PEPPY_RUNTIME_CONFIG expects a file path, not JSON content
-    let runtime_config_path = runtime_config_path();
-
-    if let Some(parent) = runtime_config_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    // Write runtime config to a unique file per spawned process.
+    // Using a shared path can cause cross-test and cross-instance races where a node reads the
+    // wrong config (instance_id/port), leading to hangs waiting for ready/health responses.
+    let runtime_dir = runtime_config_path()
+        .parent()
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(std::env::temp_dir);
+    std::fs::create_dir_all(&runtime_dir)?;
+    let counter = RUNTIME_CONFIG_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let runtime_config_path = runtime_dir.join(format!("runtime_config_{pid}_{counter}.json5"));
     std::fs::write(&runtime_config_path, runtime_config_json5)?;
 
     let mut command = Command::new(program);
