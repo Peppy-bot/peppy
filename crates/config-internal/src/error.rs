@@ -120,6 +120,8 @@ pub enum Error {
         node_version: String,
         current_version: String,
     },
+    #[error("Release fingerprint missing: {0}")]
+    ReleaseFingerprintMissing(String),
 }
 
 #[cfg(test)]
