@@ -10,6 +10,8 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Template(#[from] askama::Error),
+    #[error(transparent)]
+    Config(#[from] ConfigError),
     #[error("unknown template `{0}`")]
     UnknownTemplate(String),
 

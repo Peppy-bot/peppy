@@ -5,6 +5,7 @@ mod node_index;
 
 pub mod consts;
 pub mod encoding;
+pub mod fingerprint;
 pub mod node;
 pub mod runtime;
 pub mod peppy_config {

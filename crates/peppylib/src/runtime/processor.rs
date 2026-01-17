@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::error::{Error, ParameterDeserializationError, Result};
 use config::{
     NodeArguments,
-    consts::{NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
+    consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
     node::NodeConfig,
     peppy_config::{DeploymentInstance, Name},
     runtime::RuntimeConfig,
@@ -32,7 +32,14 @@ impl Processor {
 
         let runtime_config = Self::load_runtime_config(&launch_config_path)?;
 
-        let codegen_fingerprint = Self::read_codegen_fingerprint(peppy_config.as_ref())?;
+        let codegen_fingerprint = config::fingerprint::read_codegen_fingerprint(
+            peppy_config.as_ref(),
+            PEPPYGEN_OUTPUT_PATH,
+        )
+        .map_err(|source| Error::CodegenFingerprintRead {
+            path: peppy_config.as_ref().display().to_string(),
+            source: std::io::Error::new(std::io::ErrorKind::Other, source.to_string()),
+        })?;
         Self::validate_fingerprint(peppy_config.as_ref(), &codegen_fingerprint)?;
 
         let node_config: NodeConfig =
@@ -111,20 +118,6 @@ impl Processor {
         })
     }
 
-    fn read_codegen_fingerprint(peppy_config: &Path) -> Result<String> {
-        let peppy_config_dir = peppy_config.parent().unwrap_or_else(|| Path::new("."));
-        let fingerprint_path = peppy_config_dir
-            .join(PEPPYGEN_OUTPUT_PATH)
-            .join(NODE_CONFIG_FINGERPRINT_FILE);
-
-        std::fs::read_to_string(&fingerprint_path)
-            .map(|s| s.trim().to_string())
-            .map_err(|source| Error::CodegenFingerprintRead {
-                path: fingerprint_path.display().to_string(),
-                source,
-            })
-    }
-
     fn validate_fingerprint(peppy_config: &Path, expected: &str) -> Result<()> {
         let actual = RuntimeConfig::generate_peppy_config_fingerprint(peppy_config)?;
         if actual == expected {
@@ -178,12 +171,10 @@ impl Processor {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        NODE_CONFIG_FINGERPRINT_FILE, PEPPYGEN_OUTPUT_PATH, Processor, RUNTIME_CONFIG_VAR_NAME,
-    };
+    use super::{PEPPYGEN_OUTPUT_PATH, Processor, RUNTIME_CONFIG_VAR_NAME};
     use crate::runtime::builder::StandaloneConfig;
     use config::{AnyType, NodeArguments, runtime::RuntimeConfig};
-    use std::{collections::BTreeMap, env, fs, path::Path, sync::Mutex};
+    use std::{collections::BTreeMap, env, path::Path, sync::Mutex};
     use tempfile::TempDir;
 
     static ENV_VAR_MUTEX: Mutex<()> = Mutex::new(());
@@ -220,28 +211,6 @@ mod tests {
         }
     }
 
-    /// Creates the fingerprint file at the expected location for runtime checks.
-    fn create_codegen_fingerprint(peppy_config_path: &Path) {
-        let peppy_config_dir = peppy_config_path.parent().unwrap_or(Path::new("."));
-        let fingerprint_dir = peppy_config_dir.join(PEPPYGEN_OUTPUT_PATH);
-        fs::create_dir_all(&fingerprint_dir).expect("fingerprint dir should be created");
-        let fingerprint_path = fingerprint_dir.join(NODE_CONFIG_FINGERPRINT_FILE);
-        let fingerprint = RuntimeConfig::generate_peppy_config_fingerprint(peppy_config_path)
-            .expect("fingerprint should be generated");
-        fs::write(&fingerprint_path, format!("{fingerprint}\n"))
-            .expect("fingerprint should be written");
-    }
-
-    /// Creates a fingerprint file with incorrect content to test mismatch errors.
-    fn create_wrong_codegen_fingerprint(peppy_config_path: &Path) {
-        let peppy_config_dir = peppy_config_path.parent().unwrap_or(Path::new("."));
-        let fingerprint_dir = peppy_config_dir.join(PEPPYGEN_OUTPUT_PATH);
-        fs::create_dir_all(&fingerprint_dir).expect("fingerprint dir should be created");
-        let fingerprint_path = fingerprint_dir.join(NODE_CONFIG_FINGERPRINT_FILE);
-        fs::write(&fingerprint_path, "wrong_fingerprint_value\n")
-            .expect("fingerprint should be written");
-    }
-
     #[test]
     fn loads_runtime_config_from_env() {
         let bound_master_node = "epic-whale-6789";
@@ -275,7 +244,10 @@ mod tests {
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
-        create_codegen_fingerprint(&peppy_config_path);
+        config::fingerprint::create_codegen_fingerprint(
+            &peppy_config_path,
+            Path::new(PEPPYGEN_OUTPUT_PATH),
+        );
 
         let json5_config = r#"{
             messaging_host: "127.0.0.1",
@@ -352,7 +324,10 @@ mod tests {
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
-        create_wrong_codegen_fingerprint(&peppy_config_path);
+        config::fingerprint::create_wrong_codegen_fingerprint(
+            &peppy_config_path,
+            Path::new(PEPPYGEN_OUTPUT_PATH),
+        );
 
         let json5_config = r#"{
             messaging_host: "127.0.0.1",
@@ -401,7 +376,10 @@ mod tests {
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
-        create_codegen_fingerprint(&peppy_config_path);
+        config::fingerprint::create_codegen_fingerprint(
+            &peppy_config_path,
+            Path::new(PEPPYGEN_OUTPUT_PATH),
+        );
 
         // Runtime config has 'value' AND 'extra_param' - but 'extra_param' is not in compiled
         let json5_config = r#"{
@@ -452,7 +430,10 @@ mod tests {
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
-        create_codegen_fingerprint(&peppy_config_path);
+        config::fingerprint::create_codegen_fingerprint(
+            &peppy_config_path,
+            Path::new(PEPPYGEN_OUTPUT_PATH),
+        );
 
         // Runtime config provides 'value' as a string instead of i64
         let json5_config = r#"{
@@ -509,7 +490,10 @@ mod tests {
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
-        create_codegen_fingerprint(&peppy_config_path);
+        config::fingerprint::create_codegen_fingerprint(
+            &peppy_config_path,
+            Path::new(PEPPYGEN_OUTPUT_PATH),
+        );
 
         // Runtime config provides 'enabled' as string instead of bool
         let json5_config = r#"{
@@ -565,7 +549,10 @@ mod tests {
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
-        create_codegen_fingerprint(&peppy_config_path);
+        config::fingerprint::create_codegen_fingerprint(
+            &peppy_config_path,
+            Path::new(PEPPYGEN_OUTPUT_PATH),
+        );
 
         // Runtime config provides array with mixed types (string and int)
         let json5_config = r#"{
