@@ -245,6 +245,9 @@ __wrap__() {
 
     if [ -n "${GIT_HASH_PATH-}" ] && [ -f "$GIT_HASH_PATH" ]; then
         mv "$GIT_HASH_PATH" "$PEPPY_BIN_DIR/git.hash"
+        if [ -n "${PEPPY_DEBUG:-}" ]; then
+            echo "Installed git.hash for version tracking"
+        fi
     fi
 
     if [ "$PEPPY_BIN_DIR" = "$PEPPY_HOME/bin" ]; then

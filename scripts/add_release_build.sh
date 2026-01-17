@@ -398,7 +398,12 @@ PY
     cp "$ZENOHD_PATH" "$PKG_DIR/zenohd"
     chmod +x "$PKG_DIR/zenohd"
 
-    tar -czf "$ASSET_PATH" -C "$PKG_DIR" peppy zenohd
+    # Copy git.hash if it exists (created by build.rs)
+    if [ -f "git.hash" ]; then
+        cp "git.hash" "$PKG_DIR/git.hash"
+    fi
+
+    tar -czf "$ASSET_PATH" -C "$PKG_DIR" .
     echo "Built artifact: $ASSET_PATH"
 
     delete_asset_if_exists "$RELEASE_ID" "$ASSET_NAME" "$OWNER" "$REPO"
