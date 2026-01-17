@@ -102,10 +102,6 @@ pub enum Error {
     #[error("Unsupported language")]
     UnsupportedLanguage,
 
-    // -- Node watcher
-    #[error("Node watcher error: {0}")]
-    NodeWatcher(String),
-
     // -- Askama
     #[error("Askama error: {0}")]
     AskamaError(String),
