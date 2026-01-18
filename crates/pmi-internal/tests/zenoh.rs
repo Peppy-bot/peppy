@@ -3,9 +3,9 @@ mod zenoh_tests {
     use bytes::Bytes;
     use pmi::{
         Message, Messenger, MessengerBackend, PublisherQoS, SubscriberQoS,
-        zenohd_support::{pick_free_tcp_port, prepare_zenohd_test_router},
+        zenohd_support::prepare_zenohd_test_router,
     };
-    use std::{fs, path::PathBuf, time::Duration};
+    use std::{path::PathBuf, time::Duration};
 
     const INSTANCE_ID: &str = "test-instance";
     const MASTER_NODE: &str = "test-master";
