@@ -70,7 +70,7 @@ impl ServeCommandBuilder {
             self.composite_command
                 .add_async_command(Box::new(MessagingRouter::new(
                     messenger,
-                    Some(messaging_ready_tx),
+                    messaging_ready_tx,
                 )));
         self
     }
