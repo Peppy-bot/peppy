@@ -12,7 +12,69 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-// TODO: This should delete all the content of the previous `.peppy` folder
+/// Safely removes the `.peppy` directory by atomically renaming it first.
+///
+/// This avoids TOCTOU (Time Of Check, Time Of Use) race conditions that can occur
+/// when using `exists()` followed by `remove_dir_all()`. If multiple processes try
+/// to generate for the same node concurrently, the simple pattern can fail with
+/// "Directory not empty" errors when one process adds files while another is deleting.
+///
+/// The atomic rename approach:
+/// 1. Renames `.peppy` → `.peppy-old-{pid}-{timestamp}` (atomic operation)
+/// 2. Spawns background cleanup of the old directory
+/// 3. Lets the generator create a fresh `.peppy` directory
+fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
+    let peppy_output_dir = node_root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
+
+    // Safety checks: ensure we're only operating on a `.peppy` directory
+    if !peppy_output_dir.exists() {
+        return;
+    }
+    if !peppy_output_dir.is_dir() {
+        debug!(
+            "Expected .peppy to be a directory, but it's a file: {}",
+            peppy_output_dir.display()
+        );
+        return;
+    }
+    if peppy_output_dir.file_name() != Some(std::ffi::OsStr::new(config::consts::PEPPY_OUTPUT_DIR))
+    {
+        debug!(
+            "Unexpected directory name, expected {}: {}",
+            config::consts::PEPPY_OUTPUT_DIR,
+            peppy_output_dir.display()
+        );
+        return;
+    }
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let old_peppy_dir =
+        node_root_dir.join(format!(".peppy-old-{}-{}", std::process::id(), timestamp));
+
+    match std::fs::rename(&peppy_output_dir, &old_peppy_dir) {
+        Ok(()) => {
+            // Best-effort cleanup of old directory in background
+            std::thread::spawn(move || {
+                let _ = std::fs::remove_dir_all(&old_peppy_dir);
+            });
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Directory was already removed by another process, that's fine
+        }
+        Err(e) => {
+            // Log warning but proceed - generator will create directories as needed.
+            // This handles edge cases like permission issues or concurrent renames.
+            debug!(
+                "Failed to move old .peppy directory: {}, proceeding with generation",
+                e
+            );
+        }
+    }
+}
+
 pub async fn listen_for_node_generate(
     messenger: &MessengerHandle,
     master_node_node: &str,
@@ -172,11 +234,7 @@ async fn handle_node_generate_request_inner(
     let build_system = request.build_system;
     let node_root_dir = request.node_root_dir;
     match tokio::task::spawn_blocking(move || {
-        // Delete the previous .peppy folder to ensure a clean generation
-        let peppy_output_dir = node_root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
-        if peppy_output_dir.exists() {
-            std::fs::remove_dir_all(&peppy_output_dir)?;
-        }
+        remove_previous_peppy_dir(&node_root_dir);
 
         generator::generate_lib_for_build_system(
             build_system,
