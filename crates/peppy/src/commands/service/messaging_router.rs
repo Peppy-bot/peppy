@@ -7,14 +7,11 @@ use tracing::info;
 
 pub struct MessagingRouter {
     messenger: Arc<Mutex<Messenger>>,
-    messaging_ready: Option<watch::Sender<bool>>,
+    messaging_ready: watch::Sender<bool>,
 }
 
 impl MessagingRouter {
-    pub fn new(
-        messenger: Arc<Mutex<Messenger>>,
-        messaging_ready: Option<watch::Sender<bool>>,
-    ) -> Self {
+    pub fn new(messenger: Arc<Mutex<Messenger>>, messaging_ready: watch::Sender<bool>) -> Self {
         Self {
             messenger,
             messaging_ready,
@@ -43,11 +40,8 @@ impl ServeAsyncCommand for MessagingRouter {
                 info!("Messaging session initialized");
             }
 
-            if let Some(messaging_ready) = messaging_ready {
-                let _ = messaging_ready.send(true);
-            }
-
-            let _ = ready_tx.send(());
+            messaging_ready.send(true).ok();
+            ready_tx.send(()).ok();
 
             tokio::signal::ctrl_c().await.map_err(|e| {
                 Error::ExecutionFailed(format!("Failed to listen for ctrl-c: {}", e))
