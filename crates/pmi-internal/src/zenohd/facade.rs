@@ -206,23 +206,6 @@ impl ZenohdFacade {
     /// Starts a zenohd process, using std::process::Command is the recommended way as using the
     /// rust crate directly prevents the user from using plugins/adminspace
     pub fn start_router(&mut self) -> Result<()> {
-        let refreshed_endpoint = Self::get_endpoint_from_config(&self.zenohd_config_path)?;
-        if self.zenoh_endpoint.host != refreshed_endpoint.host
-            || self.zenoh_endpoint.port != refreshed_endpoint.port
-            || self.zenoh_endpoint.protocol != refreshed_endpoint.protocol
-        {
-            tracing::info!(
-                "Zenoh endpoint updated from {}://{}:{} to {}://{}:{}",
-                self.zenoh_endpoint.protocol,
-                self.zenoh_endpoint.host,
-                self.zenoh_endpoint.port,
-                refreshed_endpoint.protocol,
-                refreshed_endpoint.host,
-                refreshed_endpoint.port
-            );
-            self.zenoh_endpoint = refreshed_endpoint;
-        }
-
         let zenohd_path = self.zenohd_path.as_ref().ok_or_else(|| {
             Error::ZenohdError(
                 "Zenohd binary not found. Install `zenohd` (or place it next to the `peppy` binary), or set PEPPY_ZENOHD_PATH/ZENOHD_BINARY_PATH."
@@ -261,7 +244,6 @@ impl ZenohdFacade {
                 self.zenoh_endpoint.protocol,
                 connect_addr
             );
-            let mut attempts = 0u64;
             loop {
                 match child.try_wait() {
                     Ok(Some(status)) => {
@@ -289,48 +271,8 @@ impl ZenohdFacade {
                 }
 
                 match TcpStream::connect(&connect_addr) {
-                    Ok(stream) => {
-                        drop(stream);
-                        match child.try_wait() {
-                            Ok(Some(status)) => {
-                                let output = child.wait_with_output().map_err(|e| {
-                                    Error::BackendError(format!(
-                                        "Failed to capture zenohd output: {}",
-                                        e
-                                    ))
-                                })?;
-                                let stderr = String::from_utf8_lossy(&output.stderr);
-                                return Err(Error::BackendError(format!(
-                                    "zenohd exited unexpectedly with status: {}{}",
-                                    status,
-                                    if stderr.trim().is_empty() {
-                                        String::new()
-                                    } else {
-                                        format!(" – {}", stderr.trim())
-                                    }
-                                )));
-                            }
-                            Ok(None) => break,
-                            Err(e) => {
-                                return Err(Error::BackendError(format!(
-                                    "Failed to check zenohd status: {}",
-                                    e
-                                )));
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        attempts += 1;
-                        if attempts % 50 == 0 {
-                            tracing::debug!(
-                                "Zenoh router not ready yet on {} (attempt {}): {}",
-                                connect_addr,
-                                attempts,
-                                err
-                            );
-                        }
-                        std::thread::yield_now();
-                    }
+                    Ok(_) => break,
+                    Err(_) => std::thread::yield_now(),
                 }
             }
         } else {
