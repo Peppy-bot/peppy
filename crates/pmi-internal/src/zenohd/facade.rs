@@ -220,13 +220,13 @@ impl ZenohdFacade {
         };
         let connect_addr = format!("{connect_host}:{}", self.zenoh_endpoint.port);
 
-        if self.zenoh_endpoint.protocol == ZenohNetProtocol::Tcp {
-            if TcpStream::connect(&connect_addr).is_ok() {
-                return Err(Error::BackendError(format!(
-                    "Zenoh router port already in use: {}",
-                    connect_addr
-                )));
-            }
+        if self.zenoh_endpoint.protocol == ZenohNetProtocol::Tcp
+            && TcpStream::connect(&connect_addr).is_ok()
+        {
+            return Err(Error::BackendError(format!(
+                "Zenoh router port already in use: {}",
+                connect_addr
+            )));
         }
 
         let mut child = Command::new(zenohd_path)

@@ -103,7 +103,7 @@ impl ServeCommandBuilder {
                     DEFAULT_NODE_STARTUP_TIMEOUT,
                     DEFAULT_NODE_START_HEALTH_TIMEOUT,
                     self.root_dir.clone(),
-                    self.messaging_ready.as_ref().map(|ready| ready.clone()),
+                    self.messaging_ready.clone(),
                 );
 
                 // Write the daemon state file with the master node name
