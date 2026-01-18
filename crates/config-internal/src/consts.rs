@@ -72,7 +72,7 @@ pub fn logs_dir_start() -> std::path::PathBuf {
     peppy_data_dir().join("logs").join("start")
 }
 
-/// Returns the runtime config file path.
-pub fn runtime_config_path() -> std::path::PathBuf {
-    peppy_data_dir().join("runtime/runtime_config.json")
+/// Returns the runtime config directory path.
+pub fn runtime_config_dir() -> std::path::PathBuf {
+    peppy_data_dir().join("runtime")
 }
