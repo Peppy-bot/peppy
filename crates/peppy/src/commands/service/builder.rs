@@ -11,7 +11,7 @@ use pmi::ZenohAdapter;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -24,6 +24,7 @@ const DEFAULT_NODE_START_HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
 pub struct ServeCommandBuilder {
     composite_command: CompositeCommand,
     messenger: Option<Arc<Mutex<Messenger>>>,
+    messaging_ready: Option<watch::Receiver<bool>>,
     master_node_requested: bool,
     master_node_name: Option<String>,
     shutdown_token: Option<CancellationToken>,
@@ -35,6 +36,7 @@ impl ServeCommandBuilder {
         Ok(Self {
             composite_command: CompositeCommand::default(),
             messenger: None,
+            messaging_ready: None,
             master_node_requested: false,
             master_node_name: None,
             shutdown_token: None,
@@ -61,10 +63,15 @@ impl ServeCommandBuilder {
             }
         };
         let messenger = Arc::new(Mutex::new(Messenger::new(adapter)));
+        let (messaging_ready_tx, messaging_ready_rx) = watch::channel(false);
         self.messenger = Some(Arc::clone(&messenger));
-        self.composite_command = self
-            .composite_command
-            .add_async_command(Box::new(MessagingRouter::new(messenger)));
+        self.messaging_ready = Some(messaging_ready_rx);
+        self.composite_command =
+            self.composite_command
+                .add_async_command(Box::new(MessagingRouter::new(
+                    messenger,
+                    messaging_ready_tx,
+                )));
         self
     }
 
@@ -96,6 +103,7 @@ impl ServeCommandBuilder {
                     DEFAULT_NODE_STARTUP_TIMEOUT,
                     DEFAULT_NODE_START_HEALTH_TIMEOUT,
                     self.root_dir.clone(),
+                    self.messaging_ready.clone(),
                 );
 
                 // Write the daemon state file with the master node name

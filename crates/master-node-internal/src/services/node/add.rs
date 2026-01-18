@@ -188,8 +188,10 @@ fn copy_node_to_storage(from_dir: &Path, node_name: &str, node_tag: &str) -> Res
 }
 
 /// State for tracking the current node add action.
+#[derive(Default)]
 enum NodeAddActionState {
     /// No action is currently running.
+    #[default]
     Idle,
     /// An action is currently running.
     Running,
@@ -197,12 +199,6 @@ enum NodeAddActionState {
     Completed { result: NodeAddResult },
     /// The result has been sent to the requester.
     ResultSent { result: NodeAddResult },
-}
-
-impl Default for NodeAddActionState {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 pub async fn listen_for_node_add(

@@ -7,7 +7,7 @@ fn test_with_zenoh_feature() {
         ZenohNetProtocol,
     };
 
-    assert!(cfg!(feature = "zenoh"), "zenoh feature should be enabled");
+    const { assert!(cfg!(feature = "zenoh"), "zenoh feature should be enabled") };
 
     let message = Message::new("test/topic", Bytes::from_static(b"test payload"));
     assert_eq!(message.identifier(), "test/topic");

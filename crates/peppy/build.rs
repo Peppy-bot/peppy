@@ -47,13 +47,13 @@ fn embed_git_hash() {
         let git_dir = root.join(".git");
         println!("cargo:rerun-if-changed={}", git_dir.join("HEAD").display());
         // Also track the current branch ref file for when commits are made
-        if let Ok(head_content) = std::fs::read_to_string(git_dir.join("HEAD")) {
-            if let Some(ref_path) = head_content.trim().strip_prefix("ref: ") {
-                println!(
-                    "cargo:rerun-if-changed={}",
-                    git_dir.join(ref_path).display()
-                );
-            }
+        if let Ok(head_content) = std::fs::read_to_string(git_dir.join("HEAD"))
+            && let Some(ref_path) = head_content.trim().strip_prefix("ref: ")
+        {
+            println!(
+                "cargo:rerun-if-changed={}",
+                git_dir.join(ref_path).display()
+            );
         }
     }
 }
