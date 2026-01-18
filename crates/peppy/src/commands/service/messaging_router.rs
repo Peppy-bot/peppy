@@ -2,16 +2,20 @@ use super::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use crate::error::Error;
 use pmi::{Messenger, MessengerBackend};
 use std::sync::Arc;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, oneshot, watch};
 use tracing::info;
 
 pub struct MessagingRouter {
     messenger: Arc<Mutex<Messenger>>,
+    messaging_ready: watch::Sender<bool>,
 }
 
 impl MessagingRouter {
-    pub fn new(messenger: Arc<Mutex<Messenger>>) -> Self {
-        Self { messenger }
+    pub fn new(messenger: Arc<Mutex<Messenger>>, messaging_ready: watch::Sender<bool>) -> Self {
+        Self {
+            messenger,
+            messaging_ready,
+        }
     }
 }
 
@@ -19,6 +23,7 @@ impl ServeAsyncCommand for MessagingRouter {
     fn run(self: Box<Self>) -> ServeAsyncHandle {
         let (ready_tx, ready_rx) = oneshot::channel();
         let messenger = self.messenger;
+        let messaging_ready = self.messaging_ready;
 
         let future = Box::pin(async move {
             {
@@ -35,7 +40,8 @@ impl ServeAsyncCommand for MessagingRouter {
                 info!("Messaging session initialized");
             }
 
-            let _ = ready_tx.send(());
+            messaging_ready.send(true).ok();
+            ready_tx.send(()).ok();
 
             tokio::signal::ctrl_c().await.map_err(|e| {
                 Error::ExecutionFailed(format!("Failed to listen for ctrl-c: {}", e))

@@ -38,7 +38,7 @@ impl Processor {
         )
         .map_err(|source| Error::CodegenFingerprintRead {
             path: peppy_config.as_ref().display().to_string(),
-            source: std::io::Error::new(std::io::ErrorKind::Other, source.to_string()),
+            source: std::io::Error::other(source.to_string()),
         })?;
         Self::validate_fingerprint(peppy_config.as_ref(), &codegen_fingerprint)?;
 

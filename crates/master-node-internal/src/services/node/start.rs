@@ -90,8 +90,10 @@ fn collect_all_required_paths(schema_value: &AnyType, path: &str, missing: &mut 
 }
 
 /// State for tracking the current node start action.
+#[derive(Default)]
 enum NodeStartActionState {
     /// No action is currently running.
+    #[default]
     Idle,
     /// An action is currently running.
     Running,
@@ -99,12 +101,6 @@ enum NodeStartActionState {
     Completed { result: NodeStartResult },
     /// The result has been sent to the requester.
     ResultSent { result: NodeStartResult },
-}
-
-impl Default for NodeStartActionState {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 #[derive(Clone, Copy)]
