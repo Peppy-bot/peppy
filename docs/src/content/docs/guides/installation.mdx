@@ -1,0 +1,73 @@
+---
+title: Installation
+description: How to install PeppyOS on your system
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+To install `peppy` you can run the following command in your terminal:
+
+```sh
+curl -fsSL https://peppy.bot/install.sh | bash
+```
+
+This installer also sets up the `peppy` background service. To skip that step, set `PEPPY_NO_SERVICE_INSTALL=1`.
+
+## Verifying the installation
+
+You can verify the service is running with:
+
+<Tabs>
+  <TabItem label="Linux">
+    ```sh
+    systemctl --user status peppy
+    ```
+  </TabItem>
+  <TabItem label="macOS">
+    ```sh
+    launchctl list | grep peppy
+    ```
+
+    To view detailed service info:
+    ```sh
+    launchctl print gui/$(id -u)/bot.peppy.agent
+    ```
+  </TabItem>
+</Tabs>
+
+## Managing the service
+
+<Tabs>
+  <TabItem label="Linux">
+    Start the service:
+    ```sh
+    systemctl --user start peppy
+    ```
+
+    Stop the service:
+    ```sh
+    systemctl --user stop peppy
+    ```
+
+    Restart the service:
+    ```sh
+    systemctl --user restart peppy
+    ```
+  </TabItem>
+  <TabItem label="macOS">
+    Start the service:
+    ```sh
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/bot.peppy.agent.plist
+    ```
+
+    Stop the service:
+    ```sh
+    launchctl bootout gui/$(id -u)/bot.peppy.agent
+    ```
+
+    Restart the service:
+    ```sh
+    launchctl kickstart -k gui/$(id -u)/bot.peppy.agent
+    ```
+  </TabItem>
+</Tabs>
