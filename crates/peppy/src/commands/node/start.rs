@@ -115,7 +115,6 @@ fn parse_value(value: &str) -> AnyType {
 /// Shared logic for starting a node instance.
 /// Used by both `run_node` and `add_node` (when --run is set).
 pub async fn start_instance_async(
-    ctx: &Arc<AppContext>,
     messenger_handle: &MessengerHandle,
     master_node_name: &str,
     node_name: &str,
@@ -324,7 +323,6 @@ async fn run_node_async(
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
     start_instance_async(
-        ctx,
         messenger_handle,
         &master_node_name,
         &node_name,

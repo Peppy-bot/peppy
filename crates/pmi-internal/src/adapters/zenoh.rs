@@ -4,9 +4,8 @@ use crate::zenohd::{self, ZenohNetProtocol};
 use crate::{Message, MessengerBackend, Subscription};
 use askama::Template;
 
-use serde_json::Value;
-
-use std::path::{Path, PathBuf};
+use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::{collections::HashMap, sync::Arc};
 use tracing::info;
 
@@ -47,109 +46,23 @@ pub struct ZenohAdapter {
 }
 
 impl ZenohAdapter {
-    /// If `zenohd_config_path` is `None`, a default configuration file will be used or `ZENOHD_CONFIG` env var if set
-    pub fn from_zenohd_config(zenohd_config_path: impl AsRef<Path>) -> Result<Self> {
+    pub fn with_endpoint(protocol: ZenohNetProtocol, host: &str, port: u16) -> Result<Self> {
+        let zenohd_config_path = Self::generate_zenohd_config_path(protocol, host, port)?;
         let facade = zenohd::ZenohdFacade::new(zenohd_config_path)?;
         // Create a client config that connects to the router
         // Extract the endpoint from the router's listen config
         let client_config = ZenohAdapter::derive_client_config_from_zenohd(&facade);
 
         Ok(Self {
-            zenohd: Some(facade),
+            zenohd: None,
             client_config,
             session: None,
             publishers: HashMap::new(),
         })
     }
 
-    pub fn from_client_config(client_config: impl AsRef<Path>) -> Self {
-        let client_config = ZenohAdapter::derive_client_config_from_client_file(client_config);
-
-        Self {
-            zenohd: None,
-            client_config,
-            session: None,
-            publishers: HashMap::new(),
-        }
-    }
-
-    pub fn from_host_port(protocol: ZenohNetProtocol, host: &str, port: u16) -> Self {
-        let host = host.to_string();
-        let client_template = ZenohClientConfigTemplate {
-            host: host.clone(),
-            port,
-            protocol,
-        };
-
-        let client_config_str = client_template
-            .render()
-            .expect("Failed to render client config template");
-
-        let zenoh_config = zenoh::config::Config::from_json5(&client_config_str)
-            .expect("Failed to create client config");
-
-        let client_config = ZenohClientConfig {
-            zenoh_config,
-            host,
-            port,
-            protocol,
-        };
-
-        Self {
-            zenohd: None,
-            client_config,
-            session: None,
-            publishers: HashMap::new(),
-        }
-    }
-
     pub fn client_endpoint(&self) -> (&str, u16) {
         (self.client_config.host.as_str(), self.client_config.port)
-    }
-
-    fn derive_client_config_from_client_file(client_config: impl AsRef<Path>) -> ZenohClientConfig {
-        fn map_protocol(proto: &str) -> Option<ZenohNetProtocol> {
-            match proto {
-                "tcp" => Some(ZenohNetProtocol::Tcp),
-                "udp" => Some(ZenohNetProtocol::Udp),
-                "quic" => Some(ZenohNetProtocol::Quic),
-                "ws" => Some(ZenohNetProtocol::Ws),
-                _ => None,
-            }
-        }
-
-        let config_path = client_config.as_ref();
-        let (host, port, protocol) = std::fs::read_to_string(config_path)
-            .ok()
-            .and_then(|contents| serde_json5::from_str::<Value>(&contents).ok())
-            .and_then(|value| {
-                let endpoints = value.get("connect")?.get("endpoints")?;
-                let endpoint_str = match endpoints {
-                    Value::Array(items) => items.iter().find_map(|item| item.as_str()),
-                    Value::String(s) => Some(s.as_str()),
-                    _ => None,
-                }?;
-                let mut parts = endpoint_str.splitn(2, '/');
-                let protocol = map_protocol(parts.next()?)?;
-                let address = parts.next()?;
-                let (host_part, port_part) = address.rsplit_once(':')?;
-                let port = port_part.parse::<u16>().ok()?;
-                Some((
-                    host_part.trim_matches(['[', ']']).to_string(),
-                    port,
-                    protocol,
-                ))
-            })
-            .unwrap_or_else(|| (String::new(), 0, ZenohNetProtocol::default()));
-        let zenoh_config =
-            zenoh::config::Config::from_file(config_path).expect("Failed to create client config");
-
-        ZenohClientConfig {
-            zenoh_config,
-            host,
-            port,
-            protocol,
-        }
     }
 
     fn derive_client_config_from_zenohd(zenohd: &zenohd::ZenohdFacade) -> ZenohClientConfig {
@@ -181,14 +94,18 @@ impl ZenohAdapter {
         }
     }
 
-    pub fn generate_zenohd_config_path(messaging_port: u16) -> Result<PathBuf> {
+    fn generate_zenohd_config_path(
+        protocol: ZenohNetProtocol,
+        host: &str,
+        messaging_port: u16,
+    ) -> Result<PathBuf> {
         let config_path =
             std::env::temp_dir().join(format!("zenohd_config_{}.json5", messaging_port));
 
         let template = ZenohRouterConfigTemplate {
-            host: config::consts::DEFAULT_MESSAGING_HOST.to_string(),
+            host: host.to_string(),
             port: messaging_port,
-            protocol: ZenohNetProtocol::default(),
+            protocol: protocol,
         };
 
         let config_content = template.render().map_err(|e| {
@@ -415,5 +332,15 @@ impl MessengerBackend for ZenohAdapter {
             .ok_or(Error::ZenohDConfigurationNotFound)?;
         zenohd.stop_router()?;
         Ok(())
+    }
+
+    fn get_host(&self) -> SocketAddr {
+        let host = &self.client_config.host;
+        let port = self.client_config.port;
+        // Parse host as IP address; use localhost as fallback for empty/invalid hosts
+        let ip = host
+            .parse()
+            .unwrap_or_else(|_| std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+        SocketAddr::new(ip, port)
     }
 }

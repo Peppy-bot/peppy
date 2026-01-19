@@ -388,7 +388,7 @@ fn build_cargo_project(dir: &Path) {
 
 pub async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
     let adapter = MockAdapter::default();
-    let mut messenger = Messenger::new(MessengerAdapter::Mock(adapter), 0);
+    let mut messenger = Messenger::new(MessengerAdapter::Mock(adapter));
     messenger
         .start_session()
         .await

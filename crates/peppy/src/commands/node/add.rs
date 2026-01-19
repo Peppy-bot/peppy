@@ -198,7 +198,6 @@ async fn add_node_async(
     }
 
     start_instance_async(
-        ctx,
         messenger_handle,
         &master_node_name,
         &node_name,

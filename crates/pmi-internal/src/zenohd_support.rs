@@ -1,13 +1,10 @@
-use std::{
-    fs,
-    net::TcpListener,
-    path::{Path, PathBuf},
-};
+use std::{fs, net::TcpListener, path::PathBuf};
 
 use tempfile::TempDir;
 
 use crate::{
     Messenger, MessengerAdapter, MessengerBackend, PeppyMessagingInterfaceError, ZenohAdapter,
+    ZenohNetProtocol,
 };
 
 /// Result of starting a zenohd router process.
@@ -97,16 +94,6 @@ pub fn write_zenohd_config(
     Ok((temp_dir, config_path, port))
 }
 
-/// Creates a messenger from an existing zenohd config file.
-fn messenger_from_config(config_path: &Path) -> Result<Messenger, PeppyMessagingInterfaceError> {
-    let adapter = ZenohAdapter::from_zenohd_config(config_path)?;
-    let (_, messaging_port) = adapter.client_endpoint();
-    Ok(Messenger::new(
-        MessengerAdapter::Zenoh(adapter),
-        messaging_port,
-    ))
-}
-
 /// Starts a `zenohd` router. When `port` is `None`, retries with new ports on bind failures.
 pub async fn start_zenohd_process(
     host: &str,
@@ -115,8 +102,9 @@ pub async fn start_zenohd_process(
     let max_attempts = if port.is_some() { 1 } else { 32 };
 
     for attempt in 0..max_attempts {
-        let (temp_dir, config_path, port) = write_zenohd_config(host, port)?;
-        let mut messenger = messenger_from_config(&config_path)?;
+        let (temp_dir, _config_path, port) = write_zenohd_config(host, port)?;
+        let adapter = ZenohAdapter::with_endpoint(ZenohNetProtocol::Tcp, host, port)?;
+        let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
 
         match messenger.start_router().await {
             Ok(()) => {

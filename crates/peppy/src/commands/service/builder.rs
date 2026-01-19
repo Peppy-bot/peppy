@@ -7,7 +7,7 @@ use config::fingerprint::write_release_fingerprint;
 use pmi::Messenger;
 use pmi::MessengerAdapter;
 use pmi::MockAdapter;
-use pmi::ZenohAdapter;
+use pmi::{ZenohAdapter, ZenohNetProtocol};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,8 +55,12 @@ impl ServeCommandBuilder {
         let listening_port = extract_messaging_port();
         let adapter = match engine.as_str() {
             "zenoh" => {
-                let zenohd_config_path = ZenohAdapter::generate_zenohd_config_path(listening_port)?;
-                MessengerAdapter::Zenoh(ZenohAdapter::from_zenohd_config(zenohd_config_path)?)
+                let adapter = ZenohAdapter::with_endpoint(
+                    ZenohNetProtocol::Tcp,
+                    config::consts::DEFAULT_MESSAGING_HOST,
+                    listening_port,
+                )?;
+                MessengerAdapter::Zenoh(adapter)
             }
             "mock" => MessengerAdapter::Mock(MockAdapter::default()),
             other => {
@@ -64,7 +68,7 @@ impl ServeCommandBuilder {
                 MessengerAdapter::Mock(MockAdapter::default())
             }
         };
-        let messenger = Arc::new(Mutex::new(Messenger::new(adapter, listening_port)));
+        let messenger = Arc::new(Mutex::new(Messenger::new(adapter)));
         let (messaging_ready_tx, messaging_ready_rx) = watch::channel(false);
         self.messenger = Some(Arc::clone(&messenger));
         self.messaging_ready = Some(messaging_ready_rx);
@@ -141,6 +145,7 @@ impl ServeCommandBuilder {
     }
 }
 
+/// Extracts the messaging port from the environment variable, falling back to the default port.
 fn extract_messaging_port() -> u16 {
     std::env::var(config::consts::PEPPY_MESSAGING_PORT_VAR_NAME)
         .ok()

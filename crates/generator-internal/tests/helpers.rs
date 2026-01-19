@@ -349,8 +349,9 @@ pub async fn wait_for_action_service_reachable_or_exit(
         .await
         .expect("zenoh messaging endpoint should be available for reachability checks");
 
-    let adapter = ZenohAdapter::from_host_port(ZenohNetProtocol::Tcp, &router_host, router_port);
-    let mut probe_messenger = Messenger::new(MessengerAdapter::Zenoh(adapter), 0);
+    let adapter = ZenohAdapter::with_endpoint(ZenohNetProtocol::Tcp, &router_host, router_port)
+        .expect("failed to create zenoh adapter for probe messenger");
+    let mut probe_messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
     probe_messenger
         .start_session()
         .await
