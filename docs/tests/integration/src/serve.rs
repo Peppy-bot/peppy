@@ -1,5 +1,6 @@
 use config::consts::DAEMON_STATE_FILE_ENV;
 use peppy::commands::service::serve::{CancellationToken, ServeCommandBuilder};
+use peppy::daemon_state::DaemonState;
 use pmi::zenohd_support::write_zenohd_config;
 use std::ffi::OsStr;
 use std::io::Write;

@@ -3,6 +3,7 @@ use super::super::types::{
     Message, MessengerBackend, PublisherQoS, SubscriberQoS, Subscription, TopicMessage,
 };
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
@@ -136,6 +137,10 @@ impl MessengerBackend for MockAdapter {
         self.is_router_started = false;
         Ok(())
     }
+
+    fn get_host(&self) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], 0))
+    }
 }
 
 impl MockAdapter {
@@ -235,7 +240,7 @@ mod tests {
 
     fn create_test_messenger() -> Messenger {
         let adapter = MockAdapter::default();
-        Messenger::new(MessengerAdapter::Mock(adapter), 0)
+        Messenger::new(MessengerAdapter::Mock(adapter))
     }
 
     #[tokio::test]

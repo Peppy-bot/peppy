@@ -3,7 +3,7 @@ mod zenoh_tests {
     use bytes::Bytes;
     use pmi::{
         Message, MessengerBackend, PublisherQoS, SubscriberQoS,
-        zenohd_support::{ZenohdInstance, start_zenohd_process},
+        zenohd_support::start_zenohd_process,
     };
     use std::time::Duration;
 
