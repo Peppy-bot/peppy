@@ -5,7 +5,6 @@ use config::node::NodeConfigParser;
 use peppy::commands::service::serve::{CancellationToken, ServeCommandBuilder};
 use peppy::daemon_state::DaemonState;
 use pmi::Messenger;
-use pmi::zenohd_support::write_zenohd_config;
 use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -132,35 +131,12 @@ impl TempServeEnvGuard {
     }
 }
 
-/// Guard that sets up a unique zenoh configuration for testing.
-/// The config file is kept alive by the TempDir and the ZENOH_CONFIG env var is set.
-pub struct ZenohConfigGuard {
-    _dir: TempDir,
-    _env: EnvVarGuard,
-    pub config_path: PathBuf,
-}
-
-impl ZenohConfigGuard {
-    /// Creates a new zenoh config with a unique port for parallel test isolation.
-    pub fn new() -> Self {
-        let (temp_dir, config_path, _port) =
-            write_zenohd_config("127.0.0.1", None).expect("failed to write zenoh config");
-        let env = EnvVarGuard::set("ZENOH_CONFIG", config_path.as_os_str());
-        Self {
-            _dir: temp_dir,
-            _env: env,
-            config_path,
-        }
-    }
-}
-
 /// A test helper that starts a serve command with mock messaging in the background.
 /// Each instance is fully isolated and can run in parallel with other tests.
 ///
 /// The serve command is automatically shut down when this handle is dropped.
 pub struct TestServeHandle {
     _env_guard: TempServeEnvGuard,
-    _zenoh_config_guard: Option<ZenohConfigGuard>,
     log_capture: LogCapture,
     messenger: Arc<TokioMutex<Messenger>>,
     shutdown_token: CancellationToken,
@@ -172,20 +148,17 @@ impl TestServeHandle {
     /// Blocks until the serve command is initialized and ready to accept commands.
     /// Uses mock messaging - suitable for in-process tests only.
     pub fn with_mock_messenger() -> Self {
-        Self::with_messaging_router("mock", None)
+        Self::with_messaging_router("mock")
     }
 
     /// Creates a new test serve handle with real zenoh messaging.
     /// This allows spawned node processes to communicate with the master node.
     /// Each call uses a unique port to enable parallel test execution.
     pub fn with_zenoh() -> Self {
-        // Create a unique zenoh config with a free port before starting the serve command.
-        // This sets ZENOH_CONFIG env var so spawned child processes can connect.
-        let zenoh_config_guard = ZenohConfigGuard::new();
-        Self::with_messaging_router("zenoh", Some(zenoh_config_guard))
+        Self::with_messaging_router("zenoh")
     }
 
-    fn with_messaging_router(router: &str, zenoh_config_guard: Option<ZenohConfigGuard>) -> Self {
+    fn with_messaging_router(router: &str) -> Self {
         let env_guard = TempServeEnvGuard::new();
 
         let log_capture = LogCapture::new();
@@ -234,7 +207,6 @@ impl TestServeHandle {
 
         Self {
             _env_guard: env_guard,
-            _zenoh_config_guard: zenoh_config_guard,
             log_capture,
             messenger,
             shutdown_token,
