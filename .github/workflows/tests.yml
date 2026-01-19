@@ -21,3 +21,6 @@ jobs:
 
       - name: Run tests
         run: cargo test
+
+      - name: Run documentation integration tests
+        run: cargo test --manifest-path docs/tests/integration/Cargo.toml

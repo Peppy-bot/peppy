@@ -1,0 +1,21 @@
+[package]
+name = "docs-integration-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+peppy = { path = "../../../crates/peppy" }
+pmi = { path = "../../../crates/pmi-internal" }
+config = { path = "../../../crates/config-internal" }
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+tempfile = "3"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[[test]]
+name = "hello_world"
+path = "tests/hello_world.rs"

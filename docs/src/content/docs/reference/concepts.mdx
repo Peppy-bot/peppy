@@ -1,0 +1,119 @@
+---
+title: Concepts
+description: The different concepts of PeppyOS
+---
+
+## Node
+
+A **Node** is the fundamental unit of computation in PeppyOS. It represents a runnable application or service that can expose interfaces (topics, services, actions) and subscribe to interfaces from other nodes.
+
+A node is defined by its **configuration** file (`peppy.json5`) which includes:
+
+- **Manifest**: The node's identity and execution commands
+- **Parameters**: Configuration values passed to the node
+- **Interfaces**: What the node exposes and subscribes to
+
+### Manifest
+
+The manifest defines a node's identity:
+
+| Field | Description |
+|-------|-------------|
+| `name` | A validated identifier (lowercase letters, digits, `_`, `-`) |
+| `tag` | A version or variant identifier (e.g., `latest`, `v1.0.0`) |
+| `labels` | Optional metadata labels |
+| `add_cmd` | Command to run before adding to the stack |
+| `start_cmd` | Command to launch the node |
+
+A node is uniquely identified by its `name:tag` combination.
+
+### Interfaces
+
+Nodes communicate through three types of interfaces:
+
+| Type | Description |
+|------|-------------|
+| **Topic** | Publish/subscribe messaging for streaming data |
+| **Service** | Request/response communication for synchronous calls |
+| **Action** | Long-running tasks with feedback and cancellation support |
+
+A node can **expose** interfaces (make them available to others) and **subscribe** to interfaces from other nodes.
+
+## Node Instance
+
+A **Node Instance** represents a single running execution of a node. Each instance has:
+
+- **Instance ID**: A unique identifier for this running process
+- **PID**: The process ID (when running locally)
+
+A node can have multiple instances running simultaneously. For example, you might run multiple instances of a worker node to handle increased load.
+
+:::note
+For nodes running on remote systems (e.g., embedded devices), the PID may not be available.
+:::
+
+## Node Stack
+
+The **Node Stack** is the central data structure that manages all active nodes in the system. It maintains a directed acyclic graph (DAG) where:
+
+- **Vertices** are node entities
+- **Edges** represent dependency relationships (pointing from dependent to dependency)
+
+### Key Responsibilities
+
+1. **Dependency Management**: Tracks which nodes depend on which other nodes
+2. **Interface Validation**: Ensures nodes expose the interfaces their dependents require
+3. **Instance Lifecycle**: Manages the creation and removal of node instances
+4. **Root Node**: Always contains a root node (the master node) that cannot be removed
+
+### How Dependencies Work
+
+1. Validates that all required dependencies exist
+2. Checks that dependencies expose the required interfaces
+3. Tracks pending requirements when dependencies are not yet available
+4. Resolves pending requirements when dependencies are added
+
+### Visualization
+
+The node stack can be visualized in multiple formats:
+
+- **DOT format**: For Graphviz visualization of the dependency graph
+- **Serialized graph**: JSON representation for programmatic access
+
+## Master Node
+
+The **Master Node** is a special node that serves as the root of the node stack and is always present. It is responsible for:
+
+- **Dependency Creation**: When a node subscribes to an interface, the master node creates a dependency on the node that exposes that interface
+- **Stack Management**: Managing the lifecycle of all other nodes in the system
+- **System Coordination**: Acting as the central coordinator for the entire PeppyOS runtime
+
+## Node Entity
+
+A **Node Entity** combines a node's configuration with its running instances. It represents:
+
+- The static configuration (what the node is)
+- All running instances (the node's active processes)
+- The filesystem path where the node's data resides
+
+When all instances of a node entity are removed, the entity itself is automatically removed from the stack.
+
+## Summary
+
+```
+Node Stack
+├── Root Node Entity (master node - always present)
+│   ├── Configuration
+│   │   ├── Manifest (name, tag, commands)
+│   │   └── Interfaces (exposes/subscribes)
+│   └── Instances (running processes)
+│
+└── Other Node Entities
+    ├── Node Entity A
+    │   ├── Configuration
+    │   └── Instances (1 or more)
+    │
+    └── Node Entity B
+        ├── Configuration
+        └── Instances (1 or more)
+```

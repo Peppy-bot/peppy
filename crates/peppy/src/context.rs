@@ -82,8 +82,21 @@ impl DaemonState {
         }
     }
 
+    /// Returns the path where the daemon state file will be stored.
+    ///
+    /// If the `PEPPY_DAEMON_STATE_FILE` environment variable is set, returns that path.
+    /// Otherwise, returns `peppy_data_dir()/daemon_state.json`.
+    pub fn state_file_path() -> PathBuf {
+        Self::env_state_file_path().unwrap_or_else(Self::default_state_file_path)
+    }
+
+    /// Returns the path where the daemon state file would be stored in the given directory.
+    pub fn state_file_in(dir: impl AsRef<Path>) -> PathBuf {
+        dir.as_ref().join(DAEMON_STATE_FILENAME)
+    }
+
     pub fn write(&self) -> Result<PathBuf, io::Error> {
-        let path = Self::env_state_file_path().unwrap_or_else(Self::default_state_file_path);
+        let path = Self::state_file_path();
         Self::write_to(&path, self)?;
         Ok(path)
     }
