@@ -50,15 +50,13 @@ impl ServeCommandBuilder {
     }
 
     /// The messaging router (Zenoh/MQTT etc...) is reponsible for message passing between the nodes and between the nodes and the peppy program
-    pub fn with_messaging_router(mut self, engine: String) -> Self {
+    pub fn with_messaging_router(mut self, engine: String) -> Result<Self> {
         let engine = engine.to_lowercase();
         let listening_port = extract_messaging_port();
         let adapter = match engine.as_str() {
             "zenoh" => {
-                let zenohd_config_path = ZenohAdapter::generate_zenohd_config_path(listening_port);
-                MessengerAdapter::Zenoh(
-                    ZenohAdapter::from_zenohd_config(zenohd_config_path).unwrap(),
-                )
+                let zenohd_config_path = ZenohAdapter::generate_zenohd_config_path(listening_port)?;
+                MessengerAdapter::Zenoh(ZenohAdapter::from_zenohd_config(zenohd_config_path)?)
             }
             "mock" => MessengerAdapter::Mock(MockAdapter::default()),
             other => {
@@ -76,7 +74,7 @@ impl ServeCommandBuilder {
                     messenger,
                     messaging_ready_tx,
                 )));
-        self
+        Ok(self)
     }
 
     pub fn with_master_node(mut self, master_name: Option<String>) -> Result<Self> {

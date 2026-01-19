@@ -11,7 +11,8 @@ use helpers::TestServeHandle;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::commands::stack::{StackCommand, StackCommands};
-use peppy::context::{AppContext, DaemonState};
+use peppy::context::AppContext;
+use peppy::daemon_state::DaemonState;
 
 fn make_consumer_depend_on_provider(
     provider_peppy_json5: &Path,

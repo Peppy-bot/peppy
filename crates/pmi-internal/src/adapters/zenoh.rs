@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::types::{PublisherQoS, SubscriberQoS, TopicMessage};
+use crate::zenohd::{self, ZenohNetProtocol};
 use crate::{Message, MessengerBackend, Subscription};
-use crate::{ZenohNetProtocol, zenohd};
 use askama::Template;
 
 use serde_json::Value;
@@ -19,6 +19,14 @@ pub struct ZenohClientConfigTemplate {
     pub host: String,
     pub port: u16,
     pub protocol: zenohd::ZenohNetProtocol,
+}
+
+#[derive(Template)]
+#[template(path = "zenoh/default_router_config.json5.j2")]
+pub struct ZenohRouterConfigTemplate {
+    pub host: String,
+    pub port: u16,
+    pub protocol: ZenohNetProtocol,
 }
 
 pub struct ZenohClientConfig {
@@ -173,8 +181,25 @@ impl ZenohAdapter {
         }
     }
 
-    pub fn generate_zenohd_config_path(messaging_port: u16) -> PathBuf {
-        todo!("Generate a zenohd config path ")
+    pub fn generate_zenohd_config_path(messaging_port: u16) -> Result<PathBuf> {
+        let config_path =
+            std::env::temp_dir().join(format!("zenohd_config_{}.json5", messaging_port));
+
+        let template = ZenohRouterConfigTemplate {
+            host: config::consts::DEFAULT_MESSAGING_HOST.to_string(),
+            port: messaging_port,
+            protocol: ZenohNetProtocol::default(),
+        };
+
+        let config_content = template.render().map_err(|e| {
+            Error::ConfigurationError(format!("Failed to render zenohd config template: {}", e))
+        })?;
+
+        std::fs::write(&config_path, config_content).map_err(|e| {
+            Error::ConfigurationError(format!("Failed to write zenohd config: {}", e))
+        })?;
+
+        Ok(config_path)
     }
 }
 

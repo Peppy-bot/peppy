@@ -1,6 +1,9 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, send_node_add_and_wait, start_master_node, write_peppy_json5};
+use common::{
+    CALLER_INSTANCE_ID, send_node_add_and_wait, start_master_node_with_mock_messenger,
+    write_peppy_json5,
+};
 use master_node::encoding::NodeListRequest;
 use std::time::Duration;
 
@@ -9,7 +12,7 @@ async fn listen_for_node_list_returns_succeeds() {
     const TARGET_NODE_NAME: &str = "list_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
@@ -103,7 +106,7 @@ async fn listen_for_node_list_returns_dot_graph() {
     const TARGET_NODE_NAME: &str = "list_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
