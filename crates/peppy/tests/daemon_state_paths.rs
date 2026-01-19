@@ -43,7 +43,7 @@ fn daemon_state_write_in_prod_uses_default_peppy_path() {
         .write()
         .expect("daemon state should be writable without sudo");
 
-    let expected_path = temp_home.path().join(".peppy").join("daemon_state.json");
+    let expected_path = DaemonState::state_file_path();
     assert_eq!(
         written_path,
         expected_path,
