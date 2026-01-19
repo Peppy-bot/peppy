@@ -52,45 +52,6 @@ impl Drop for ZenohdInstance {
     }
 }
 
-/// Writes a zenohd configuration file. When `port` is `None`, reserves an ephemeral port
-/// and holds it until the config is written, eliminating TOCTOU race conditions.
-pub fn write_zenohd_config(
-    host: &str,
-    port: Option<u16>,
-) -> Result<(TempDir, PathBuf, u16), PeppyMessagingInterfaceError> {
-    // Reserve port if not specified - the listener holds it until we finish writing
-    let (port, _reservation) = match port {
-        Some(p) => (p, None),
-        None => {
-            let listener =
-                TcpListener::bind(("127.0.0.1", 0)).expect("failed to bind ephemeral TCP port");
-            let port = listener
-                .local_addr()
-                .expect("listener has local addr")
-                .port();
-            (port, Some(listener))
-        }
-    };
-
-    let temp_dir =
-        TempDir::new().map_err(|e| PeppyMessagingInterfaceError::BackendError(e.to_string()))?;
-    let config_path = temp_dir.path().join("test_zenoh_config.json5");
-    let config_content = format!(
-        r#"{{
-              "listen": {{
-                "endpoints": {{
-                  "router": ["tcp/{host}:{port}"]
-                }}
-              }}
-            }}"#
-    );
-    fs::write(&config_path, config_content)
-        .map_err(|e| PeppyMessagingInterfaceError::BackendError(e.to_string()))?;
-
-    // _reservation dropped here, releasing the port for zenohd to bind
-    Ok((temp_dir, config_path, port))
-}
-
 /// Starts a `zenohd` router. When `port` is `None`, retries with new ports on bind failures.
 pub async fn start_zenohd_process(
     host: &str,

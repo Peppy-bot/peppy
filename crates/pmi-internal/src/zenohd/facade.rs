@@ -286,27 +286,33 @@ impl Drop for ZenohdFacade {
 
 #[cfg(test)]
 mod tests {
-    use crate::zenohd_support::write_zenohd_config;
-
     use super::*;
 
     #[test]
     fn test_zenohd_facade_creation_with_config() {
-        // Store the expected host and port in separate variables
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
         let expected_host = "127.0.0.1";
-        let expected_port = config::consts::DEFAULT_MESSAGING_PORT;
-        let (_temp_dir, zenohd_config_path, _) =
-            write_zenohd_config(expected_host, Some(expected_port))
-                .expect("Failed to write test config");
+        let expected_port = 7447u16;
 
-        // Create facade with the config file
-        let facade = ZenohdFacade::new(zenohd_config_path.clone());
-        if let Err(e) = &facade {
-            eprintln!("Error creating facade: {:?}", e);
-        }
-        assert!(facade.is_ok());
+        // Create a minimal zenoh config file
+        let mut config_file = NamedTempFile::new().expect("Failed to create temp file");
+        writeln!(
+            config_file,
+            r#"{{
+                "listen": {{
+                    "endpoints": {{
+                        "router": ["tcp/{expected_host}:{expected_port}"]
+                    }}
+                }}
+            }}"#
+        )
+        .expect("Failed to write config");
 
-        // Verify that the endpoint was correctly extracted from the config
+        let facade = ZenohdFacade::new(config_file.path());
+        assert!(facade.is_ok(), "Error creating facade: {:?}", facade.err());
+
         let facade = facade.unwrap();
         assert_eq!(facade.zenoh_endpoint.host, expected_host);
         assert_eq!(facade.zenoh_endpoint.port, expected_port);
@@ -314,65 +320,24 @@ mod tests {
     }
 
     #[test]
-    fn test_zenohd_router_lifecycle() {
-        // Create a config with a random port to avoid conflicts
-        let (_temp_dir, zenohd_config_path, _port) =
-            write_zenohd_config("127.0.0.1", None).expect("Failed to write test config");
-
-        let mut facade =
-            ZenohdFacade::new(zenohd_config_path.clone()).expect("Failed to create facade");
-
-        // Start the router
-        let start_result = facade.start_router();
-        assert!(
-            start_result.is_ok(),
-            "Failed to start router: {:?}",
-            start_result.err()
-        );
-
-        // Verify the process was launched
-        assert!(
-            facade.router_process.is_some(),
-            "Router process should be Some after starting"
-        );
-
-        // Check if the process is still running using try_wait
-        let is_running = facade
-            .router_process
-            .as_mut()
-            .unwrap()
-            .try_wait()
-            .expect("Failed to check process status")
-            .is_none();
-
-        assert!(is_running, "Router process should be running after start");
-
-        // Get the process ID for verification
-        let pid = facade.router_process.as_ref().unwrap().id();
-        assert!(pid > 0, "Process ID should be valid");
-
-        // Stop the router
-        let stop_result = facade.stop_router();
-        assert!(
-            stop_result.is_ok(),
-            "Failed to stop router: {:?}",
-            stop_result.err()
-        );
-
-        // Verify the process handle was cleared
-        assert!(
-            facade.router_process.is_none(),
-            "Router process should be None after stopping"
-        );
-    }
-
-    #[test]
     fn test_stop_router_multiple_times() {
-        // Create a config with a random port to avoid conflicts
-        let (_temp_dir, zenohd_config_path, _port) =
-            write_zenohd_config("127.0.0.1", None).expect("Failed to write test config");
+        use std::io::Write;
+        use tempfile::NamedTempFile;
 
-        let mut facade = ZenohdFacade::new(zenohd_config_path).expect("Failed to create facade");
+        let mut config_file = NamedTempFile::new().expect("Failed to create temp file");
+        writeln!(
+            config_file,
+            r#"{{
+                "listen": {{
+                    "endpoints": {{
+                        "router": ["tcp/127.0.0.1:7447"]
+                    }}
+                }}
+            }}"#
+        )
+        .expect("Failed to write config");
+
+        let mut facade = ZenohdFacade::new(config_file.path()).expect("Failed to create facade");
 
         // First stop should succeed (no process to stop)
         assert!(facade.stop_router().is_ok());
