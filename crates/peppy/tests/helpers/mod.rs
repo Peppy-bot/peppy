@@ -5,7 +5,7 @@ use config::node::NodeConfigParser;
 use peppy::commands::service::serve::{CancellationToken, ServeCommandBuilder};
 use peppy::daemon_state::DaemonState;
 use pmi::Messenger;
-use pmi::zenohd_support::{reserve_free_tcp_port, write_zenohd_config};
+use pmi::zenohd_support::write_zenohd_config;
 use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -143,15 +143,8 @@ pub struct ZenohConfigGuard {
 impl ZenohConfigGuard {
     /// Creates a new zenoh config with a unique port for parallel test isolation.
     pub fn new() -> Self {
-        let host = "127.0.0.1";
-        // Reserve a port to prevent parallel tests from getting the same port.
-        // The reservation is released after writing the config, right before zenoh binds.
-        let reservation = reserve_free_tcp_port();
-        let port = reservation.port();
-        let (temp_dir, config_path) =
-            write_zenohd_config(host, port).expect("failed to write zenoh config");
-        // Release the reservation now - zenoh will bind to this port next.
-        drop(reservation);
+        let (temp_dir, config_path, _port) =
+            write_zenohd_config("127.0.0.1", None).expect("failed to write zenoh config");
         let env = EnvVarGuard::set("ZENOH_CONFIG", config_path.as_os_str());
         Self {
             _dir: temp_dir,

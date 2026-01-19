@@ -3,7 +3,7 @@ mod zenoh_tests {
     use bytes::Bytes;
     use pmi::{
         Message, Messenger, MessengerBackend, PublisherQoS, SubscriberQoS,
-        zenohd_support::prepare_zenohd_test_router,
+        zenohd_support::{messenger_from_config, write_zenohd_config},
     };
     use std::{path::PathBuf, time::Duration};
 
@@ -28,9 +28,10 @@ mod zenoh_tests {
 
     /// Helper function to create a configured messenger with a unique port
     fn create_test_messenger() -> (Messenger, tempfile::TempDir, PathBuf) {
-        let (messenger, temp_dir, config_path, _, _) =
-            prepare_zenohd_test_router("127.0.0.1", None)
-                .expect("Failed to prepare zenoh test messenger");
+        let (temp_dir, config_path, _port) =
+            write_zenohd_config("127.0.0.1", None).expect("Failed to write zenoh config");
+        let messenger =
+            messenger_from_config(&config_path).expect("Failed to create messenger from config");
         (messenger, temp_dir, config_path)
     }
 

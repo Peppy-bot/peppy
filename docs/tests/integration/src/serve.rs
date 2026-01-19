@@ -1,6 +1,6 @@
 use config::consts::DAEMON_STATE_FILE_ENV;
 use peppy::commands::service::serve::{CancellationToken, ServeCommandBuilder};
-use pmi::zenohd_support::{reserve_free_tcp_port, write_zenohd_config};
+use pmi::zenohd_support::write_zenohd_config;
 use std::ffi::OsStr;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -61,12 +61,8 @@ struct ZenohConfigGuard {
 
 impl ZenohConfigGuard {
     fn new() -> Self {
-        let host = "127.0.0.1";
-        let reservation = reserve_free_tcp_port();
-        let port = reservation.port();
-        let (temp_dir, config_path) =
-            write_zenohd_config(host, port).expect("failed to write zenoh config");
-        drop(reservation);
+        let (temp_dir, config_path, port) =
+            write_zenohd_config("127.0.0.1", None).expect("failed to write zenoh config");
         let env = EnvVarGuard::set("ZENOH_CONFIG", config_path.as_os_str());
         Self {
             _dir: temp_dir,
