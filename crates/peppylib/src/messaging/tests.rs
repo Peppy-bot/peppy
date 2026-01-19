@@ -1,6 +1,9 @@
 use bytes::Bytes;
 use config::node::QoSProfile;
-use pmi::{MessengerBackend, zenohd_support::{ZenohdInstance, start_zenohd_process}};
+use pmi::{
+    MessengerBackend,
+    zenohd_support::{ZenohdInstance, start_zenohd_process},
+};
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
 use std::sync::Arc;
