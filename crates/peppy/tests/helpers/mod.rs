@@ -3,7 +3,7 @@
 use config::consts::{DAEMON_STATE_FILE_ENV, PEPPYGEN_OUTPUT_PATH};
 use config::node::NodeConfigParser;
 use peppy::commands::service::serve::{CancellationToken, ServeCommandBuilder};
-use peppy::context::DaemonState;
+use peppy::daemon_state::DaemonState;
 use pmi::Messenger;
 use pmi::zenohd_support::{reserve_free_tcp_port, write_zenohd_config};
 use std::ffi::OsStr;
@@ -207,6 +207,7 @@ impl TestServeHandle {
             .expect("builder should create")
             .with_shutdown_token(shutdown_token_for_serve)
             .with_messaging_router(router.to_string())
+            .expect("messaging router should configure")
             .with_master_node(None)
             .expect("master node should configure");
 

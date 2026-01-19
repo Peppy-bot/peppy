@@ -1,6 +1,5 @@
 use config::consts::DAEMON_STATE_FILE_ENV;
 use peppy::commands::service::serve::{CancellationToken, ServeCommandBuilder};
-use peppy::context::DaemonState;
 use pmi::zenohd_support::{reserve_free_tcp_port, write_zenohd_config};
 use std::ffi::OsStr;
 use std::io::Write;
@@ -157,6 +156,7 @@ impl TestServeHandle {
             .expect("builder should create")
             .with_shutdown_token(shutdown_token_for_serve)
             .with_messaging_router("zenoh".to_string())
+            .expect("messaging router should configure")
             .with_master_node(None)
             .expect("master node should configure")
             .build()

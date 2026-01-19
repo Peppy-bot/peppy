@@ -203,7 +203,7 @@ pub struct ServeCommand {
 impl Command for ServeCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
         let mut builder = ServeCommandBuilder::new(&ctx.root_dir)?
-            .with_messaging_router(self.messaging_engine)
+            .with_messaging_router(self.messaging_engine)?
             .with_master_node(self.master_name)?;
 
         if let Some(token) = self.shutdown_token {

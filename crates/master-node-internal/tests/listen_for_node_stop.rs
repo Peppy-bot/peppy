@@ -1,6 +1,9 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, send_node_add_and_wait, start_master_node, write_peppy_json5};
+use common::{
+    CALLER_INSTANCE_ID, send_node_add_and_wait, start_master_node_with_mock_messenger,
+    write_peppy_json5,
+};
 use config::node::Name;
 use master_node::encoding::NodeStopRequest;
 use peppylib::messaging::MessengerHandle;
@@ -28,7 +31,7 @@ async fn listen_for_node_stop_success() {
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "stoppable_instance";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
@@ -158,7 +161,7 @@ async fn listen_for_node_stop_success() {
 async fn listen_for_node_stop_fails_when_instance_id_not_found() {
     const MISSING_INSTANCE_ID: &str = "missing_instance";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
 
     let response = NodeStopRequest::new(MISSING_INSTANCE_ID)
         .poll(

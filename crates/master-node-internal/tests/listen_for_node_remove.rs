@@ -1,6 +1,9 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, send_node_add_and_wait, start_master_node, write_peppy_json5};
+use common::{
+    CALLER_INSTANCE_ID, send_node_add_and_wait, start_master_node_with_mock_messenger,
+    write_peppy_json5,
+};
 use config::node::Name;
 use master_node::encoding::NodeRemoveRequest;
 use peppylib::messaging::MessengerHandle;
@@ -13,7 +16,7 @@ async fn listen_for_node_remove_success() {
     const TARGET_NODE_NAME: &str = "removable_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
@@ -91,7 +94,7 @@ async fn listen_for_node_remove_node_name_not_found_fails() {
     const MISSING_NODE_NAME: &str = "missing_node";
     const MISSING_NODE_TAG: &str = "0.1.0";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
     let before_len = node_stack.len();
 
@@ -133,7 +136,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "running_instance";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
@@ -227,7 +230,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "running_instance";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");

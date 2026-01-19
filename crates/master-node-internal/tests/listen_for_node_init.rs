@@ -1,6 +1,6 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, start_master_node};
+use common::{CALLER_INSTANCE_ID, start_master_node_with_mock_messenger};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::peppy_config::BuildSystem;
 use master_node::encoding::NodeInitRequest;
@@ -12,7 +12,7 @@ use tempfile::tempdir;
 async fn listen_for_node_init_rust_success() {
     const NODE_NAME: &str = "example_node";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
 
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
@@ -102,7 +102,7 @@ async fn listen_for_node_init_rust_success() {
 async fn listen_for_node_init_python_success() {
     const NODE_NAME: &str = "example_node";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
 
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
@@ -179,7 +179,7 @@ async fn listen_for_node_init_python_success() {
 async fn listen_for_node_init_fails_if_directory_exists() {
     const NODE_NAME: &str = "existing_node";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
 
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
     let node_dir = nodes_root.path().join(NODE_NAME);

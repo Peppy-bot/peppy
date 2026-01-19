@@ -2,8 +2,9 @@ mod common;
 
 use common::{
     NodeStartTestTimeouts, create_test_node_with_name, send_node_add_and_wait,
-    send_node_start_and_wait, start_master_node, start_master_node_with_health_timeout,
-    start_master_node_with_zenoh_messenger, write_peppy_json5,
+    send_node_start_and_wait, start_master_node_with_health_timeout,
+    start_master_node_with_mock_messenger, start_master_node_with_real_messenger,
+    write_peppy_json5,
 };
 use config::consts::logs_dir_start;
 use config::node::Name as NodeName;
@@ -31,7 +32,7 @@ async fn listen_for_node_start_success() {
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "runnable_instance";
 
-    let started_master = start_master_node_with_zenoh_messenger().await;
+    let started_master = start_master_node_with_real_messenger().await;
 
     // Use a pre-built test node to avoid compilation delays during the test
     let node_dir = create_test_node_with_name(TARGET_NODE_NAME, TARGET_NODE_TAG);
@@ -258,7 +259,7 @@ async fn listen_for_node_start_not_found() {
     const TARGET_NODE_NAME: &str = "nonexistent_node";
     const TARGET_INSTANCE_ID: &str = "nonexistent_instance";
 
-    let started = start_master_node().await;
+    let started = start_master_node_with_mock_messenger().await;
 
     // Note: We intentionally do NOT add any node to the node stack
     // This simulates trying to start a node that doesn't exist
@@ -329,7 +330,7 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
     const STDOUT_MARKER: &str = "peppy_start_stdout_marker";
     const STDERR_MARKER: &str = "peppy_start_stderr_marker";
 
-    let started = start_master_node().await;
+    let started = start_master_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = format!(
@@ -454,7 +455,7 @@ async fn listen_for_node_start_writes_log_file() {
     const STDOUT_MARKER: &str = "peppy_logfile_stdout_marker";
     const STDERR_MARKER: &str = "peppy_logfile_stderr_marker";
 
-    let started = start_master_node().await;
+    let started = start_master_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = format!(
@@ -595,7 +596,7 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "params_instance";
 
-    let started = start_master_node().await;
+    let started = start_master_node_with_mock_messenger().await;
 
     // Create a node config with multiple required parameters
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
@@ -727,7 +728,7 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "partial_params_instance";
 
-    let started = start_master_node().await;
+    let started = start_master_node_with_mock_messenger().await;
 
     // Create a node config with multiple required parameters
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");

@@ -1,5 +1,4 @@
 use super::super::error::{Error, Result};
-use askama::Template;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -26,14 +25,6 @@ impl fmt::Display for ZenohNetProtocol {
             ZenohNetProtocol::Ws => write!(f, "ws"),
         }
     }
-}
-
-#[derive(Template)]
-#[template(path = "zenoh/default_router_config.json5.j2")]
-pub struct ZenohRouterConfigTemplate {
-    pub host: String,
-    pub port: u16,
-    pub protocol: ZenohNetProtocol,
 }
 
 /// This structure stores the Zenoh endpoint to be reused by clients by extracting it from the config file
