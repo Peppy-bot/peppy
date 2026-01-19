@@ -80,10 +80,10 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
 /// Creates 2 projects in separate directory and check if they can send/receive topics
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn topics_communication() {
-    let (mut router, _dir, router_host, router_port) =
-        peppylib::start_zenohd_process("127.0.0.1", None)
-            .await
-            .expect("failed to start zenoh router for test");
+    let instance = peppylib::start_zenohd_process("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     // --- Subscriber project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
@@ -338,11 +338,6 @@ fn main() -> Result<()> {
         exposer_stdout,
         exposer_stderr
     );
-
-    router
-        .stop_router()
-        .await
-        .expect("failed to stop zenoh router");
 }
 
 // --- Services exposes and its corresponding subscriber
@@ -389,10 +384,10 @@ const SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn services_communication_no_target_instance_id() {
-    let (mut router, _dir, router_host, router_port) =
-        peppylib::start_zenohd_process("127.0.0.1", None)
-            .await
-            .expect("failed to start zenoh router for test");
+    let instance = peppylib::start_zenohd_process("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     // --- Subscriber (client) project
     let subscriber_instance_id = "the_subscriber";
@@ -656,20 +651,15 @@ fn main() -> Result<()> {
         exposer_stdout,
         exposer_stderr
     );
-
-    router
-        .stop_router()
-        .await
-        .expect("failed to stop zenoh router");
 }
 
 /// If there are multiple services of the same name and the subscriber does not specify an instance_id, it's the first service that respond that connects with the subscriber
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn services_communication_multiple_exposed_instances_same_service_not_target_instance_id() {
-    let (mut router, _dir, router_host, router_port) =
-        peppylib::start_zenohd_process("127.0.0.1", None)
-            .await
-            .expect("failed to start zenoh router for test");
+    let instance = peppylib::start_zenohd_process("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     // --- Subscriber (client) project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
@@ -1029,11 +1019,6 @@ fn main() -> Result<()> {
         subscriber_stdout,
         subscriber_stderr
     );
-
-    router
-        .stop_router()
-        .await
-        .expect("failed to stop zenoh router");
 }
 
 // --- Actions
@@ -1133,10 +1118,10 @@ const SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT: &str = r#"
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_communication() {
-    let (mut router, _dir, router_host, router_port) =
-        peppylib::start_zenohd_process("127.0.0.1", None)
-            .await
-            .expect("failed to start zenoh router for test");
+    let instance = peppylib::start_zenohd_process("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     // --- Subscriber (client) project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
@@ -1438,19 +1423,14 @@ fn main() -> Result<()> {
         exposer_stdout,
         exposer_stderr
     );
-
-    router
-        .stop_router()
-        .await
-        .expect("failed to stop zenoh router");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_communication_cancel_goal() {
-    let (mut router, _dir, router_host, router_port) =
-        peppylib::start_zenohd_process("127.0.0.1", None)
-            .await
-            .expect("failed to start zenoh router for test");
+    let instance = peppylib::start_zenohd_process("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     // --- Subscriber (client) project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
@@ -1742,9 +1722,4 @@ fn main() -> Result<()> {
         exposer_stdout,
         exposer_stderr
     );
-
-    router
-        .stop_router()
-        .await
-        .expect("failed to stop zenoh router");
 }

@@ -420,20 +420,20 @@ pub async fn start_master_node_with_mock_messenger() -> StartedMasterNode {
 }
 
 pub async fn start_master_node_with_real_messenger() -> StartedMasterNode {
-    let (mut messenger, zenohd_temp_dir, _host, _port) =
-        pmi::zenohd_support::start_zenohd_process(DEFAULT_MESSAGING_HOST, None)
-            .await
-            .expect("failed to start zenoh router for test");
-    messenger
+    let mut instance = pmi::zenohd_support::start_zenohd_process(DEFAULT_MESSAGING_HOST, None)
+        .await
+        .expect("failed to start zenoh router for test");
+    instance
+        .messenger()
         .start_session()
         .await
         .expect("failed to start zenoh session");
-    let shared_messenger = Arc::new(Mutex::new(messenger));
+    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
     let node_startup_timeout = Duration::from_secs(10);
     let node_start_health_timeout = Duration::from_secs(30);
     start_master_node_with_messenger(
         shared_messenger,
-        Some(zenohd_temp_dir),
+        Some(instance.temp_dir),
         node_startup_timeout,
         node_start_health_timeout,
     )
