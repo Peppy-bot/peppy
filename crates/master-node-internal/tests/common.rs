@@ -17,7 +17,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
-use tempfile::TempDir;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
@@ -403,7 +402,6 @@ pub struct StartedMasterNode {
     pub master_node_name: String,
     pub node_stack: NodeStack,
     pub task: JoinHandle<master_node::Result<()>>,
-    pub _zenohd_temp_dir: Option<TempDir>,
 }
 
 pub async fn start_master_node_with_mock_messenger() -> StartedMasterNode {
@@ -412,7 +410,6 @@ pub async fn start_master_node_with_mock_messenger() -> StartedMasterNode {
     let node_start_health_timeout = Duration::from_secs(30);
     start_master_node_with_messenger(
         shared_messenger,
-        None,
         node_startup_timeout,
         node_start_health_timeout,
     )
@@ -433,7 +430,6 @@ pub async fn start_master_node_with_real_messenger() -> StartedMasterNode {
     let node_start_health_timeout = Duration::from_secs(30);
     start_master_node_with_messenger(
         shared_messenger,
-        Some(instance.take_temp_dir()),
         node_startup_timeout,
         node_start_health_timeout,
     )
@@ -447,7 +443,6 @@ pub async fn start_master_node_with_health_timeout(
     let node_startup_timeout = Duration::from_secs(10);
     start_master_node_with_messenger(
         shared_messenger,
-        None,
         node_startup_timeout,
         node_start_health_timeout,
     )
@@ -456,7 +451,6 @@ pub async fn start_master_node_with_health_timeout(
 
 async fn start_master_node_with_messenger(
     shared_messenger: Arc<Mutex<Messenger>>,
-    zenohd_temp_dir: Option<TempDir>,
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
 ) -> StartedMasterNode {
@@ -488,6 +482,5 @@ async fn start_master_node_with_messenger(
         master_node_name,
         node_stack,
         task,
-        _zenohd_temp_dir: zenohd_temp_dir,
     }
 }
