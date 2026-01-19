@@ -286,7 +286,7 @@ impl Drop for ZenohdFacade {
 
 #[cfg(test)]
 mod tests {
-    use crate::zenohd_support::{pick_free_tcp_port, write_zenohd_config};
+    use crate::zenohd_support::write_zenohd_config;
 
     use super::*;
 
@@ -295,8 +295,9 @@ mod tests {
         // Store the expected host and port in separate variables
         let expected_host = "127.0.0.1";
         let expected_port = config::consts::DEFAULT_MESSAGING_PORT;
-        let (_temp_dir, zenohd_config_path) =
-            write_zenohd_config(expected_host, expected_port).expect("Failed to write test config");
+        let (_temp_dir, zenohd_config_path, _) =
+            write_zenohd_config(expected_host, Some(expected_port))
+                .expect("Failed to write test config");
 
         // Create facade with the config file
         let facade = ZenohdFacade::new(zenohd_config_path.clone());
@@ -315,9 +316,8 @@ mod tests {
     #[test]
     fn test_zenohd_router_lifecycle() {
         // Create a config with a random port to avoid conflicts
-        let port = pick_free_tcp_port();
-        let (_temp_dir, zenohd_config_path) =
-            write_zenohd_config("127.0.0.1", port).expect("Failed to write test config");
+        let (_temp_dir, zenohd_config_path, _port) =
+            write_zenohd_config("127.0.0.1", None).expect("Failed to write test config");
 
         let mut facade =
             ZenohdFacade::new(zenohd_config_path.clone()).expect("Failed to create facade");
@@ -369,9 +369,8 @@ mod tests {
     #[test]
     fn test_stop_router_multiple_times() {
         // Create a config with a random port to avoid conflicts
-        let port = pick_free_tcp_port();
-        let (_temp_dir, zenohd_config_path) =
-            write_zenohd_config("127.0.0.1", port).expect("Failed to write test config");
+        let (_temp_dir, zenohd_config_path, _port) =
+            write_zenohd_config("127.0.0.1", None).expect("Failed to write test config");
 
         let mut facade = ZenohdFacade::new(zenohd_config_path).expect("Failed to create facade");
 
