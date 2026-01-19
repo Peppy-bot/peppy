@@ -68,8 +68,6 @@ The **Node Stack** is the central data structure that manages all active nodes i
 
 ### How Dependencies Work
 
-When a node subscribes to an interface, it creates a dependency on the node that exposes that interface. The node stack:
-
 1. Validates that all required dependencies exist
 2. Checks that dependencies expose the required interfaces
 3. Tracks pending requirements when dependencies are not yet available
@@ -77,10 +75,18 @@ When a node subscribes to an interface, it creates a dependency on the node that
 
 ### Visualization
 
-The node stack can be exported in multiple formats:
+The node stack can be visualized in multiple formats:
 
 - **DOT format**: For Graphviz visualization of the dependency graph
 - **Serialized graph**: JSON representation for programmatic access
+
+## Master Node
+
+The **Master Node** is a special node that serves as the root of the node stack and is always present. It is responsible for:
+
+- **Dependency Creation**: When a node subscribes to an interface, the master node creates a dependency on the node that exposes that interface
+- **Stack Management**: Managing the lifecycle of all other nodes in the system
+- **System Coordination**: Acting as the central coordinator for the entire PeppyOS runtime
 
 ## Node Entity
 
