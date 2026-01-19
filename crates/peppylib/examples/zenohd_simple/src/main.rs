@@ -14,7 +14,7 @@ async fn main() {
         }
     };
 
-    let config_path = instance.temp_dir.path().join("test_zenoh_config.json5");
+    let config_path = instance.temp_dir().path().join("test_zenoh_config.json5");
     println!(
         "zenohd router ready on tcp/{}/{}. Using config at {}. Press Ctrl+C to stop.",
         instance.host,

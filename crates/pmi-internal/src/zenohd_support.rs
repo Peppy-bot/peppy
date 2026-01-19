@@ -15,7 +15,7 @@ use crate::{
 /// The router is automatically stopped when this instance is dropped.
 pub struct ZenohdInstance {
     messenger: Option<Messenger>,
-    pub temp_dir: TempDir,
+    temp_dir: Option<TempDir>,
     pub host: String,
     pub port: u16,
 }
@@ -31,6 +31,16 @@ impl ZenohdInstance {
     /// Takes ownership of the messenger, preventing automatic cleanup on drop.
     pub fn take_messenger(&mut self) -> Messenger {
         self.messenger.take().expect("messenger was already taken")
+    }
+
+    /// Returns a reference to the temp directory.
+    pub fn temp_dir(&self) -> &TempDir {
+        self.temp_dir.as_ref().expect("temp_dir was already taken")
+    }
+
+    /// Takes ownership of the temp directory.
+    pub fn take_temp_dir(&mut self) -> TempDir {
+        self.temp_dir.take().expect("temp_dir was already taken")
     }
 }
 
@@ -114,7 +124,7 @@ pub async fn start_zenohd_process(
             Ok(()) => {
                 return Ok(ZenohdInstance {
                     messenger: Some(messenger),
-                    temp_dir,
+                    temp_dir: Some(temp_dir),
                     host: host.to_string(),
                     port,
                 });

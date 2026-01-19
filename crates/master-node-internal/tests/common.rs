@@ -433,7 +433,7 @@ pub async fn start_master_node_with_real_messenger() -> StartedMasterNode {
     let node_start_health_timeout = Duration::from_secs(30);
     start_master_node_with_messenger(
         shared_messenger,
-        Some(instance.temp_dir),
+        Some(instance.take_temp_dir()),
         node_startup_timeout,
         node_start_health_timeout,
     )
