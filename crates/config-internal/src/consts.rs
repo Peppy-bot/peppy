@@ -37,9 +37,15 @@ pub fn app_env() -> AppEnv {
 }
 
 /// Returns the base peppy data directory.
+/// Can be overridden with PEPPY_DATA_DIR environment variable.
 /// In production: ~/.peppy
 /// In development: /tmp/.peppy
 pub fn peppy_data_dir() -> std::path::PathBuf {
+    // Check for environment variable override first
+    if let Some(override_path) = std::env::var_os("PEPPY_DATA_DIR") {
+        return std::path::PathBuf::from(override_path);
+    }
+
     match app_env() {
         AppEnv::Prod => {
             let home = std::env::var_os("HOME")
