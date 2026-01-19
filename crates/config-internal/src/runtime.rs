@@ -97,11 +97,8 @@ mod tests {
 
         let populated = json
             .replace("$INSTANCE_ID", instance_id)
-            .replace("$MESSAGING_HOST", crate::consts::DEFAULT_ZENOH_HOST)
-            .replace(
-                "$MESSAGING_PORT",
-                &crate::consts::DEFAULT_ZENOH_PORT.to_string(),
-            );
+            .replace("$MESSAGING_HOST", "127.0.0.1")
+            .replace("$MESSAGING_PORT", "7448");
         serde_json5::from_str(&populated).map_err(|err| Error::Parsing(err.into()))
     }
 

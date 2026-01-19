@@ -33,7 +33,7 @@ pub async fn get_client_server() -> (MasterNodeClient, Arc<Mutex<Messenger>>) {
 
 async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
     let adapter = MockAdapter::default();
-    let mut messenger = Messenger::new(MessengerAdapter::Mock(adapter));
+    let mut messenger = Messenger::new(MessengerAdapter::Mock(adapter), 0);
     messenger
         .start_session()
         .await

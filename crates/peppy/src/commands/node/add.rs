@@ -7,7 +7,8 @@ use std::time::Duration;
 use tracing::info;
 
 use super::start::start_instance_async;
-use crate::context::{AppContext, DaemonState};
+use crate::context::AppContext;
+use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
 
@@ -197,6 +198,7 @@ async fn add_node_async(
     }
 
     start_instance_async(
+        ctx,
         messenger_handle,
         &master_node_name,
         &node_name,

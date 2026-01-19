@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use config::consts::{DEFAULT_ZENOH_HOST, NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::consts::{DEFAULT_MESSAGING_HOST, NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::QoSProfile;
 use config::peppy_config::BuildSystem;
 use master_node::encoding::{
@@ -388,7 +388,7 @@ fn build_cargo_project(dir: &Path) {
 
 pub async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
     let adapter = MockAdapter::default();
-    let mut messenger = Messenger::new(MessengerAdapter::Mock(adapter));
+    let mut messenger = Messenger::new(MessengerAdapter::Mock(adapter), 0);
     messenger
         .start_session()
         .await
@@ -488,9 +488,10 @@ async fn start_master_node_with_messenger(
 
 pub async fn create_zenoh_messenger() -> (Arc<Mutex<Messenger>>, TempDir) {
     // Use a real router so spawned nodes can connect over zenoh.
-    let (mut messenger, temp_dir, _host, _port) = start_zenohd_process(DEFAULT_ZENOH_HOST, None)
-        .await
-        .expect("failed to start zenoh router for tests");
+    let (mut messenger, temp_dir, _host, _port) =
+        start_zenohd_process(DEFAULT_MESSAGING_HOST, None)
+            .await
+            .expect("failed to start zenoh router for tests");
     messenger
         .start_session()
         .await

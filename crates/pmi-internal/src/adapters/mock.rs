@@ -235,7 +235,7 @@ mod tests {
 
     fn create_test_messenger() -> Messenger {
         let adapter = MockAdapter::default();
-        Messenger::new(MessengerAdapter::Mock(adapter))
+        Messenger::new(MessengerAdapter::Mock(adapter), 0)
     }
 
     #[tokio::test]

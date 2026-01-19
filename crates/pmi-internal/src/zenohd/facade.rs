@@ -1,6 +1,5 @@
 use super::super::error::{Error, Result};
 use askama::Template;
-use std::io::Write;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -37,16 +36,6 @@ pub struct ZenohRouterConfigTemplate {
     pub protocol: ZenohNetProtocol,
 }
 
-impl Default for ZenohRouterConfigTemplate {
-    fn default() -> Self {
-        Self {
-            host: "0.0.0.0".to_string(),
-            port: config::consts::DEFAULT_ZENOH_PORT,
-            protocol: ZenohNetProtocol::default(),
-        }
-    }
-}
-
 /// This structure stores the Zenoh endpoint to be reused by clients by extracting it from the config file
 pub struct ZenohEndpoint {
     pub host: String,
@@ -65,13 +54,12 @@ pub struct ZenohdFacade {
 
 impl ZenohdFacade {
     /// Creates a new ZenohdFacade instance with a working directory
-    pub fn new(zenohd_config_path: Option<impl AsRef<Path>>) -> Result<Self> {
+    pub fn new(zenohd_config_path: impl AsRef<Path>) -> Result<Self> {
         let zenohd_path = ZenohdFacade::get_zenohd_binary();
-        let zenohd_config_path = ZenohdFacade::get_zenohd_config_path(zenohd_config_path);
         let zenoh_endpoint = ZenohdFacade::get_endpoint_from_config(&zenohd_config_path)?;
         Ok(Self {
             zenohd_path,
-            zenohd_config_path,
+            zenohd_config_path: zenohd_config_path.as_ref().to_path_buf(),
             router_process: None,
             zenoh_endpoint,
         })
@@ -121,33 +109,6 @@ impl ZenohdFacade {
         None
     }
 
-    fn get_zenohd_config_path(zenohd_config_path: Option<impl AsRef<Path>>) -> PathBuf {
-        match zenohd_config_path {
-            Some(cfg) => cfg.as_ref().to_path_buf(),
-            None => match env::var("ZENOH_CONFIG") {
-                Ok(zenohd_config_path) => PathBuf::from(zenohd_config_path),
-                Err(_) => {
-                    let config_content = Self::render_default_config();
-                    let mut temp_file = tempfile::Builder::new()
-                        .prefix("zenohd_config_")
-                        .suffix(".json5")
-                        .tempfile()
-                        .expect("Failed to create temporary zenoh config file");
-
-                    temp_file
-                        .write_all(config_content.as_bytes())
-                        .expect("Failed to write temporary zenoh config file");
-
-                    let (_, temp_path) = temp_file
-                        .keep()
-                        .expect("Failed to persist temporary zenoh config file");
-
-                    temp_path
-                }
-            },
-        }
-    }
-
     fn get_endpoint_from_config(zenohd_config_path: impl AsRef<Path>) -> Result<ZenohEndpoint> {
         let config = Config::from_file(zenohd_config_path).unwrap();
         let listen_json = config.get_json("listen").map_err(|e| {
@@ -192,15 +153,6 @@ impl ZenohdFacade {
             port,
             protocol,
         })
-    }
-
-    /// Renders the Zenoh configuration from the template
-    fn render_default_config() -> String {
-        let template = ZenohRouterConfigTemplate::default();
-
-        template
-            .render()
-            .unwrap_or_else(|e| panic!("Failed to render Zenoh config: {}", e))
     }
 
     /// Starts a zenohd process, using std::process::Command is the recommended way as using the
@@ -348,21 +300,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_zenohd_facade_creation_default_config() {
-        let facade = ZenohdFacade::new(None::<&Path>);
-        assert!(facade.is_ok());
-    }
-
-    #[test]
     fn test_zenohd_facade_creation_with_config() {
         // Store the expected host and port in separate variables
         let expected_host = "127.0.0.1";
-        let expected_port = config::consts::DEFAULT_ZENOH_PORT;
+        let expected_port = config::consts::DEFAULT_MESSAGING_PORT;
         let (_temp_dir, zenohd_config_path) =
             write_zenohd_config(expected_host, expected_port).expect("Failed to write test config");
 
         // Create facade with the config file
-        let facade = ZenohdFacade::new(Some(zenohd_config_path.clone()));
+        let facade = ZenohdFacade::new(zenohd_config_path.clone());
         if let Err(e) = &facade {
             eprintln!("Error creating facade: {:?}", e);
         }
@@ -383,7 +329,7 @@ mod tests {
             write_zenohd_config("127.0.0.1", port).expect("Failed to write test config");
 
         let mut facade =
-            ZenohdFacade::new(Some(zenohd_config_path.clone())).expect("Failed to create facade");
+            ZenohdFacade::new(zenohd_config_path.clone()).expect("Failed to create facade");
 
         // Start the router
         let start_result = facade.start_router();
@@ -431,7 +377,12 @@ mod tests {
 
     #[test]
     fn test_stop_router_multiple_times() {
-        let mut facade = ZenohdFacade::new(None::<&Path>).expect("Failed to create facade");
+        // Create a config with a random port to avoid conflicts
+        let port = pick_free_tcp_port();
+        let (_temp_dir, zenohd_config_path) =
+            write_zenohd_config("127.0.0.1", port).expect("Failed to write test config");
+
+        let mut facade = ZenohdFacade::new(zenohd_config_path).expect("Failed to create facade");
 
         // First stop should succeed (no process to stop)
         assert!(facade.stop_router().is_ok());

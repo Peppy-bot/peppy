@@ -381,11 +381,19 @@ pub enum MessengerAdapter {
 /// Main messaging implementation
 pub struct Messenger {
     pub adapter: MessengerAdapter,
+    pub messaging_port: u16,
 }
 
 impl Messenger {
-    pub fn new(adapter: MessengerAdapter) -> Self {
-        Self { adapter }
+    pub fn new(adapter: MessengerAdapter, messaging_port: u16) -> Self {
+        Self {
+            adapter,
+            messaging_port,
+        }
+    }
+
+    pub fn messaging_port(&self) -> u16 {
+        self.messaging_port
     }
 }
 

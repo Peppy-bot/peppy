@@ -89,8 +89,12 @@ pub fn write_zenohd_config(
 }
 
 fn messenger_from_config(config_path: &Path) -> Result<Messenger, PeppyMessagingInterfaceError> {
-    let adapter = ZenohAdapter::from_zenohd_config(Some(config_path))?;
-    Ok(Messenger::new(MessengerAdapter::Zenoh(adapter)))
+    let adapter = ZenohAdapter::from_zenohd_config(config_path)?;
+    let (_, messaging_port) = adapter.client_endpoint();
+    Ok(Messenger::new(
+        MessengerAdapter::Zenoh(adapter),
+        messaging_port,
+    ))
 }
 
 fn create_messenger_with_config(
