@@ -27,3 +27,6 @@ target
 
 # Peppy stuff, anywhere
 .peppy
+
+# Documentation stuff
+‎node_modules
