@@ -29,7 +29,9 @@ impl Drop for EnvVarGuard {
 
 struct TempServeEnvGuard {
     _dir: TempDir,
+    _data_dir: TempDir,
     _state_env: EnvVarGuard,
+    _data_dir_env: EnvVarGuard,
 }
 
 impl TempServeEnvGuard {
@@ -37,9 +39,16 @@ impl TempServeEnvGuard {
         let dir = tempfile::tempdir().expect("failed to create temp dir for serve env");
         let state_file = DaemonState::state_file_in(dir.path());
         let state_env = EnvVarGuard::set(DAEMON_STATE_FILE_ENV, state_file.as_os_str());
+
+        // Create isolated peppy data directory for doc tests
+        let data_dir = tempfile::tempdir().expect("failed to create temp peppy data dir");
+        let data_dir_env = EnvVarGuard::set("PEPPY_DATA_DIR", data_dir.path().as_os_str());
+
         Self {
             _dir: dir,
+            _data_dir: data_dir,
             _state_env: state_env,
+            _data_dir_env: data_dir_env,
         }
     }
 }
