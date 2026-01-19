@@ -1,0 +1,18 @@
+{
+    schema_version: 1,
+    manifest: {
+        name: "my_first_node",
+        tag: "0.1.0",
+        add_cmd: [
+            "cargo",
+            "build",
+            "--release"
+        ],
+        start_cmd: [
+            "cargo",
+            "run",
+            "--release"
+        ]
+    },
+    interfaces: {}
+}

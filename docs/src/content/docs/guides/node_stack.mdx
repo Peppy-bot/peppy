@@ -1,0 +1,49 @@
+---
+title: The Node stack
+description: Learn how to add, start, stop, and manage nodes in the PeppyOS stack
+---
+
+
+## Adding your node to the stack
+
+Add your node to the PeppyOS stack:
+
+```sh
+peppy add .
+```
+
+This command registers your node with the master node and makes it available for execution.
+
+## Starting your node
+
+Start your node:
+
+```sh
+peppy start my-first-node
+```
+
+You should see output indicating your node is running.
+
+## Checking node status
+
+View all running nodes:
+
+```sh
+peppy list
+```
+
+## Stopping your node
+
+When you're done, stop your node:
+
+```sh
+peppy stop my-first-node
+```
+
+## Next steps
+
+Now that you've created your first node, you can:
+
+- Add [interfaces](/reference/concepts/#interfaces) to communicate with other nodes
+- Configure [parameters](/reference/concepts/#manifest) for your node
+- Learn about the [node stack](/reference/concepts/#node-stack) and dependencies

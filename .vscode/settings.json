@@ -1,4 +1,8 @@
 {
+  "rust-analyzer.linkedProjects": [
+    "Cargo.toml",
+    "docs/tests/integration/Cargo.toml"
+  ],
   "python.terminal.activateEnvironment": false,
   "debug.inlineValues": "on",
   "debug.allowBreakpointsEverywhere": true,
