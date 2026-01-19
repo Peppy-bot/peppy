@@ -98,9 +98,7 @@ pub fn write_zenohd_config(
 }
 
 /// Creates a messenger from an existing zenohd config file.
-pub fn messenger_from_config(
-    config_path: &Path,
-) -> Result<Messenger, PeppyMessagingInterfaceError> {
+fn messenger_from_config(config_path: &Path) -> Result<Messenger, PeppyMessagingInterfaceError> {
     let adapter = ZenohAdapter::from_zenohd_config(config_path)?;
     let (_, messaging_port) = adapter.client_endpoint();
     Ok(Messenger::new(

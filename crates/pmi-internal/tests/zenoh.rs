@@ -2,10 +2,10 @@
 mod zenoh_tests {
     use bytes::Bytes;
     use pmi::{
-        Message, Messenger, MessengerBackend, PublisherQoS, SubscriberQoS,
-        zenohd_support::{messenger_from_config, write_zenohd_config},
+        Message, MessengerBackend, PublisherQoS, SubscriberQoS,
+        zenohd_support::{ZenohdInstance, start_zenohd_process},
     };
-    use std::{path::PathBuf, time::Duration};
+    use std::time::Duration;
 
     const INSTANCE_ID: &str = "test-instance";
     const MASTER_NODE: &str = "test-master";
@@ -26,31 +26,21 @@ mod zenoh_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    /// Helper function to create a configured messenger with a unique port
-    fn create_test_messenger() -> (Messenger, tempfile::TempDir, PathBuf) {
-        let (temp_dir, config_path, _port) =
-            write_zenohd_config("127.0.0.1", None).expect("Failed to write zenoh config");
-        let messenger =
-            messenger_from_config(&config_path).expect("Failed to create messenger from config");
-        (messenger, temp_dir, config_path)
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_publish_before_start_session_fails() {
-        let (mut messenger, _temp_dir, _) = create_test_messenger();
-
-        // Start the router but not the session
-        messenger
-            .start_router()
+        let mut instance = start_zenohd_process("127.0.0.1", None)
             .await
-            .expect("Failed to start router");
+            .expect("Failed to start zenohd process");
 
         // Attempt to publish without starting session - should fail
         let msg = Message::new(
             &format!("test/topic/<INSTANCE_ID:{}>", INSTANCE_ID),
             Bytes::from_static(b"This should fail"),
         );
-        let result = messenger.publish(msg, PublisherQoS::Standard).await;
+        let result = instance
+            .messenger()
+            .publish(msg, PublisherQoS::Standard)
+            .await;
         assert!(
             result.is_err(),
             "Publishing before start_session should fail"
@@ -59,20 +49,19 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_publish_subscribe() {
-        let (mut messenger, _temp_dir, _) = create_test_messenger();
-
-        messenger
-            .start_router()
+        let mut instance = start_zenohd_process("127.0.0.1", None)
             .await
-            .expect("Failed to start router");
+            .expect("Failed to start zenohd process");
 
-        messenger
+        instance
+            .messenger()
             .start_session()
             .await
             .expect("Failed to start session");
 
         // Subscribe to a topic pattern that matches the key expression format
-        let mut sub = messenger
+        let mut sub = instance
+            .messenger()
             .subscribe("target_master/**/test_topic", SubscriberQoS::Standard)
             .await
             .expect("Failed to subscribe");
@@ -83,7 +72,8 @@ mod zenoh_tests {
         // Publish a message using the correct key expression format
         let key_expr = make_key_expr("test_topic");
         let msg = Message::new(&key_expr, Bytes::from_static(b"Hello World"));
-        messenger
+        instance
+            .messenger()
             .publish(msg.clone(), PublisherQoS::Standard)
             .await
             .expect("Failed to publish");
@@ -97,24 +87,24 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple_topics() {
-        let (mut messenger, _temp_dir, _) = create_test_messenger();
-
-        messenger
-            .start_router()
+        let mut instance = start_zenohd_process("127.0.0.1", None)
             .await
-            .expect("Failed to start router");
+            .expect("Failed to start zenohd process");
 
-        messenger
+        instance
+            .messenger()
             .start_session()
             .await
             .expect("Failed to start session");
 
         // Subscribe to multiple topics with different throughput modes
-        let mut sub1 = messenger
+        let mut sub1 = instance
+            .messenger()
             .subscribe("target_master/**/topic1", SubscriberQoS::Standard)
             .await
             .expect("Failed to subscribe to topic1");
-        let mut sub2 = messenger
+        let mut sub2 = instance
+            .messenger()
             .subscribe("target_master/**/topic2", SubscriberQoS::HighThroughput)
             .await
             .expect("Failed to subscribe to topic2");
@@ -128,11 +118,13 @@ mod zenoh_tests {
         let msg1 = Message::new(&key_expr1, Bytes::from_static(b"Message for topic1"));
         let msg2 = Message::new(&key_expr2, Bytes::from_static(b"Message for topic2"));
 
-        messenger
+        instance
+            .messenger()
             .publish(msg1.clone(), PublisherQoS::Standard)
             .await
             .expect("Failed to publish to topic1");
-        messenger
+        instance
+            .messenger()
             .publish(msg2.clone(), PublisherQoS::Standard)
             .await
             .expect("Failed to publish to topic2");
@@ -151,19 +143,18 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple_messages_same_topic() {
-        let (mut messenger, _temp_dir, _) = create_test_messenger();
-
-        messenger
-            .start_router()
+        let mut instance = start_zenohd_process("127.0.0.1", None)
             .await
-            .expect("Failed to start router");
+            .expect("Failed to start zenohd process");
 
-        messenger
+        instance
+            .messenger()
             .start_session()
             .await
             .expect("Failed to start session");
 
-        let mut sub = messenger
+        let mut sub = instance
+            .messenger()
             .subscribe("target_master/**/test_topic", SubscriberQoS::Standard)
             .await
             .expect("Failed to subscribe");
@@ -177,15 +168,18 @@ mod zenoh_tests {
         let msg2 = Message::new(&key_expr, Bytes::from_static(b"Second message"));
         let msg3 = Message::new(&key_expr, Bytes::from_static(b"Third message"));
 
-        messenger
+        instance
+            .messenger()
             .publish(msg1.clone(), PublisherQoS::Standard)
             .await
             .expect("Failed to publish msg1");
-        messenger
+        instance
+            .messenger()
             .publish(msg2.clone(), PublisherQoS::Standard)
             .await
             .expect("Failed to publish msg2");
-        messenger
+        instance
+            .messenger()
             .publish(msg3.clone(), PublisherQoS::Standard)
             .await
             .expect("Failed to publish msg3");
@@ -203,14 +197,12 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_late_subscription() {
-        let (mut messenger, _temp_dir, _) = create_test_messenger();
-
-        messenger
-            .start_router()
+        let mut instance = start_zenohd_process("127.0.0.1", None)
             .await
-            .expect("Failed to start router");
+            .expect("Failed to start zenohd process");
 
-        messenger
+        instance
+            .messenger()
             .start_session()
             .await
             .expect("Failed to start session");
@@ -219,13 +211,15 @@ mod zenoh_tests {
 
         // Publish a message before any subscription
         let early_msg = Message::new(&key_expr, Bytes::from_static(b"Early message"));
-        messenger
+        instance
+            .messenger()
             .publish(early_msg.clone(), PublisherQoS::Standard)
             .await
             .expect("Failed to publish early message");
 
         // Create subscription after the message was published
-        let mut late_sub = messenger
+        let mut late_sub = instance
+            .messenger()
             .subscribe("target_master/**/test_topic", SubscriberQoS::Standard)
             .await
             .expect("Failed to create late subscription");
@@ -238,7 +232,8 @@ mod zenoh_tests {
             &key_expr,
             Bytes::from_static(b"New message for late subscriber"),
         );
-        messenger
+        instance
+            .messenger()
             .publish(new_msg.clone(), PublisherQoS::Standard)
             .await
             .expect("Failed to publish new message");
