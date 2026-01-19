@@ -7,7 +7,7 @@ use askama::Template;
 use serde_json::Value;
 
 use std::path::{Path, PathBuf};
-use std::{collections::HashMap, env, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 use tracing::info;
 
 use zenoh::qos::{CongestionControl, Priority};
@@ -40,7 +40,7 @@ pub struct ZenohAdapter {
 
 impl ZenohAdapter {
     /// If `zenohd_config_path` is `None`, a default configuration file will be used or `ZENOHD_CONFIG` env var if set
-    pub fn from_zenohd_config(zenohd_config_path: Option<impl AsRef<Path>>) -> Result<Self> {
+    pub fn from_zenohd_config(zenohd_config_path: impl AsRef<Path>) -> Result<Self> {
         let facade = zenohd::ZenohdFacade::new(zenohd_config_path)?;
         // Create a client config that connects to the router
         // Extract the endpoint from the router's listen config
@@ -172,24 +172,9 @@ impl ZenohAdapter {
             protocol: client_template.protocol,
         }
     }
-}
 
-impl Default for ZenohAdapter {
-    /// Uses the default pubsub config or the one defined in `ZENOH_CONFIG`
-    /// The `default()` function does not build for zenohd
-    fn default() -> Self {
-        if let Ok(config_path) = env::var("ZENOH_CONFIG") {
-            let config_path = PathBuf::from(config_path);
-            if config_path.exists() {
-                return ZenohAdapter::from_client_config(config_path);
-            }
-        }
-
-        ZenohAdapter::from_host_port(
-            ZenohNetProtocol::default(),
-            "127.0.0.1",
-            config::consts::DEFAULT_ZENOH_PORT,
-        )
+    pub fn generate_zenohd_config_path(messaging_port: u16) -> PathBuf {
+        todo!("Generate a zenohd config path ")
     }
 }
 

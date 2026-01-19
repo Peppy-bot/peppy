@@ -7,7 +7,8 @@ use config::runtime::LauncherRuntimeConfig;
 use master_node::encoding::LaunchRequest;
 use tracing::info;
 
-use crate::context::{AppContext, DaemonState};
+use crate::context::AppContext;
+use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
@@ -50,8 +51,8 @@ async fn launch_async(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> R
         .await
         .unwrap_or_else(|| {
             (
-                config::consts::DEFAULT_ZENOH_HOST.to_string(),
-                config::consts::DEFAULT_ZENOH_PORT,
+                config::consts::DEFAULT_MESSAGING_HOST.to_string(),
+                daemon_state.messaging_port,
             )
         });
 

@@ -1,12 +1,10 @@
 use pmi::{MessengerBackend, start_zenohd_process};
 use tokio::signal;
 
-pub const DEFAULT_ZENOH_PORT: u16 = 7448;
-
 #[tokio::main]
 async fn main() {
     let host = "0.0.0.0";
-    let port = DEFAULT_ZENOH_PORT;
+    let port = config::consts::DEFAULT_MESSAGING_PORT;
 
     println!("Starting zenohd router on tcp/{host}:{port}…");
     let (mut messenger, temp_dir, router_host, router_port) =

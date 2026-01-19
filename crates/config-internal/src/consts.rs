@@ -6,11 +6,11 @@ pub const PEPPY_OUTPUT_DIR: &str = ".peppy";
 /// The standard output directory for generated peppygen libraries relative to node_dir.
 pub const PEPPYGEN_OUTPUT_PATH: &str = ".peppy/libs/peppygen";
 pub const PEPPYLIB_OUTPUT_PATH: &str = ".peppy/libs/peppygen/crates/peppylib";
-// 7447 is the default port but we avoid using it to avoid conflicts with other services using Zenoh
-pub const DEFAULT_ZENOH_HOST: &str = "127.0.0.1";
-// 7447 is the default port but we avoid using it to avoid conflicts with other services using Zenoh
-pub const DEFAULT_ZENOH_PORT: u16 = 7448;
 pub const DAEMON_STATE_FILE_ENV: &str = "PEPPY_DAEMON_STATE_FILE";
+
+pub const DEFAULT_MESSAGING_HOST: &str = "127.0.0.1";
+pub const DEFAULT_MESSAGING_PORT: u16 = 7448;
+pub const PEPPY_MESSAGING_PORT_VAR_NAME: &str = "PEPPY_MESSAGING_PORT";
 
 pub const ALLOWED_CONFIG_CHARS: &str =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";

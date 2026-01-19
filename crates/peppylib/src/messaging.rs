@@ -734,7 +734,8 @@ impl MessengerHandle {
     }
 
     async fn new_session(adapter: ZenohAdapter) -> Result<Messenger> {
-        let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
+        let (_, messaging_port) = adapter.client_endpoint();
+        let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter), messaging_port);
         messenger
             .start_session()
             .await

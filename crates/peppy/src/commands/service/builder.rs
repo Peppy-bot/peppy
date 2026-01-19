@@ -1,14 +1,14 @@
 use super::master_node::MasterNodeRunner;
 use super::messaging_router::MessagingRouter;
 use super::serve::{CompositeCommand, Serve};
-use crate::context::DaemonState;
+use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
 use config::fingerprint::write_release_fingerprint;
 use pmi::Messenger;
 use pmi::MessengerAdapter;
 use pmi::MockAdapter;
 use pmi::ZenohAdapter;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, watch};
@@ -52,9 +52,13 @@ impl ServeCommandBuilder {
     /// The messaging router (Zenoh/MQTT etc...) is reponsible for message passing between the nodes and between the nodes and the peppy program
     pub fn with_messaging_router(mut self, engine: String) -> Self {
         let engine = engine.to_lowercase();
+        let listening_port = extract_messaging_port();
         let adapter = match engine.as_str() {
             "zenoh" => {
-                MessengerAdapter::Zenoh(ZenohAdapter::from_zenohd_config(None::<&Path>).unwrap())
+                let zenohd_config_path = ZenohAdapter::generate_zenohd_config_path(listening_port);
+                MessengerAdapter::Zenoh(
+                    ZenohAdapter::from_zenohd_config(zenohd_config_path).unwrap(),
+                )
             }
             "mock" => MessengerAdapter::Mock(MockAdapter::default()),
             other => {
@@ -62,7 +66,7 @@ impl ServeCommandBuilder {
                 MessengerAdapter::Mock(MockAdapter::default())
             }
         };
-        let messenger = Arc::new(Mutex::new(Messenger::new(adapter)));
+        let messenger = Arc::new(Mutex::new(Messenger::new(adapter, listening_port)));
         let (messaging_ready_tx, messaging_ready_rx) = watch::channel(false);
         self.messenger = Some(Arc::clone(&messenger));
         self.messaging_ready = Some(messaging_ready_rx);
@@ -108,7 +112,10 @@ impl ServeCommandBuilder {
 
                 // Write the daemon state file with the master node name
                 let master_node_name = master_node.node_name().to_string();
-                let daemon_state = DaemonState::new(&master_node_name);
+                let daemon_state = DaemonState::new(
+                    &master_node_name,
+                    messenger.blocking_lock().messaging_port(),
+                );
                 let state_path = daemon_state.write().map_err(|e| {
                     Error::ExecutionFailed(format!("Failed to write daemon state: {}", e))
                 })?;
@@ -134,4 +141,11 @@ impl ServeCommandBuilder {
         };
         Ok(serve)
     }
+}
+
+fn extract_messaging_port() -> u16 {
+    std::env::var(config::consts::PEPPY_MESSAGING_PORT_VAR_NAME)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(config::consts::DEFAULT_MESSAGING_PORT)
 }

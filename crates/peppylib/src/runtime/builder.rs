@@ -14,7 +14,7 @@ use crate::runtime::processor::Processor;
 use crate::services::health::listen_for_node_health;
 use crate::services::ready::listen_for_node_ready;
 use crate::services::shutdown::listen_for_shutdown;
-use config::consts::{DEFAULT_ZENOH_HOST, DEFAULT_ZENOH_PORT, NODE_CONFIG_FILE};
+use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, NODE_CONFIG_FILE};
 
 /// Resolved execution mode for the node runtime
 #[derive(Debug, Clone)]
@@ -70,13 +70,13 @@ impl StandaloneConfig {
         self
     }
 
-    /// Set messaging host (defaults to DEFAULT_ZENOH_HOST)
+    /// Set messaging host (defaults to DEFAULT_MESSAGING_HOST)
     pub fn with_messaging_host(mut self, host: impl Into<String>) -> Self {
         self.messaging_host = Some(host.into());
         self
     }
 
-    /// Set messaging port (defaults to DEFAULT_ZENOH_PORT)
+    /// Set messaging port (defaults to DEFAULT_MESSAGING_PORT)
     pub fn with_messaging_port(mut self, port: u16) -> Self {
         self.messaging_port = Some(port);
         self
@@ -92,11 +92,11 @@ impl StandaloneConfig {
     pub(crate) fn messaging_host_or_default(&self) -> String {
         self.messaging_host
             .clone()
-            .unwrap_or_else(|| DEFAULT_ZENOH_HOST.to_string())
+            .unwrap_or_else(|| DEFAULT_MESSAGING_HOST.to_string())
     }
 
     pub(crate) fn messaging_port_or_default(&self) -> u16 {
-        self.messaging_port.unwrap_or(DEFAULT_ZENOH_PORT)
+        self.messaging_port.unwrap_or(DEFAULT_MESSAGING_PORT)
     }
 }
 

@@ -7,7 +7,8 @@ use master_node::encoding::NodeInitRequest;
 use tracing::info;
 
 use super::types::NodeName;
-use crate::context::{AppContext, DaemonState};
+use crate::context::AppContext;
+use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";

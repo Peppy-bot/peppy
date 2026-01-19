@@ -187,7 +187,7 @@ async fn listen_for_node_start_timeout() {
     // Create a runtime config for the node_start request
     let runtime_config = RuntimeConfig::new(
         "127.0.0.1",
-        7448,
+        config::consts::DEFAULT_MESSAGING_PORT,
         DeploymentInstance {
             instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
             arguments: Default::default(),
@@ -266,7 +266,7 @@ async fn listen_for_node_start_not_found() {
     // Create a runtime config for a node that was never added
     let runtime_config = RuntimeConfig::new(
         "127.0.0.1",
-        7448,
+        config::consts::DEFAULT_MESSAGING_PORT,
         DeploymentInstance {
             instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
             arguments: Default::default(),
@@ -384,7 +384,7 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
 
     let runtime_config = RuntimeConfig::new(
         "127.0.0.1",
-        7448,
+        config::consts::DEFAULT_MESSAGING_PORT,
         DeploymentInstance {
             instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
             arguments: Default::default(),
@@ -509,7 +509,7 @@ async fn listen_for_node_start_writes_log_file() {
 
     let runtime_config = RuntimeConfig::new(
         "127.0.0.1",
-        7448,
+        config::consts::DEFAULT_MESSAGING_PORT,
         DeploymentInstance {
             instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
             arguments: Default::default(),
@@ -641,7 +641,7 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
     // Create a runtime config WITHOUT providing any parameters
     let runtime_config = RuntimeConfig::new(
         "127.0.0.1",
-        7448,
+        config::consts::DEFAULT_MESSAGING_PORT,
         DeploymentInstance {
             instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
             arguments: Default::default(), // No parameters provided
@@ -790,7 +790,7 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
 
     let runtime_config = RuntimeConfig::new(
         "127.0.0.1",
-        7448,
+        config::consts::DEFAULT_MESSAGING_PORT,
         DeploymentInstance {
             instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
             arguments,
