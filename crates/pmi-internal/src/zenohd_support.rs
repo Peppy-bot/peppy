@@ -10,6 +10,44 @@ use crate::{
     Messenger, MessengerAdapter, MessengerBackend, PeppyMessagingInterfaceError, ZenohAdapter,
 };
 
+/// Result of starting a zenohd router process.
+///
+/// The router is automatically stopped when this instance is dropped.
+pub struct ZenohdInstance {
+    messenger: Option<Messenger>,
+    pub temp_dir: TempDir,
+    pub host: String,
+    pub port: u16,
+}
+
+impl ZenohdInstance {
+    /// Returns a mutable reference to the messenger.
+    pub fn messenger(&mut self) -> &mut Messenger {
+        self.messenger
+            .as_mut()
+            .expect("messenger was already taken")
+    }
+
+    /// Takes ownership of the messenger, preventing automatic cleanup on drop.
+    pub fn take_messenger(&mut self) -> Messenger {
+        self.messenger.take().expect("messenger was already taken")
+    }
+}
+
+impl Drop for ZenohdInstance {
+    fn drop(&mut self) {
+        let Some(mut messenger) = self.messenger.take() else {
+            return;
+        };
+        let _ = std::thread::spawn(move || {
+            if let Ok(rt) = tokio::runtime::Runtime::new() {
+                let _ = rt.block_on(async move { messenger.stop_router().await });
+            }
+        })
+        .join();
+    }
+}
+
 /// Writes a zenohd configuration file. When `port` is `None`, reserves an ephemeral port
 /// and holds it until the config is written, eliminating TOCTOU race conditions.
 pub fn write_zenohd_config(
@@ -65,7 +103,7 @@ pub fn messenger_from_config(
 pub async fn start_zenohd_process(
     host: &str,
     port: Option<u16>,
-) -> Result<(Messenger, TempDir, String, u16), PeppyMessagingInterfaceError> {
+) -> Result<ZenohdInstance, PeppyMessagingInterfaceError> {
     let max_attempts = if port.is_some() { 1 } else { 32 };
 
     for attempt in 0..max_attempts {
@@ -73,7 +111,14 @@ pub async fn start_zenohd_process(
         let mut messenger = messenger_from_config(&config_path)?;
 
         match messenger.start_router().await {
-            Ok(()) => return Ok((messenger, temp_dir, host.to_string(), port)),
+            Ok(()) => {
+                return Ok(ZenohdInstance {
+                    messenger: Some(messenger),
+                    temp_dir,
+                    host: host.to_string(),
+                    port,
+                });
+            }
             Err(PeppyMessagingInterfaceError::BackendError(_)) if attempt + 1 < max_attempts => {
                 continue;
             }
