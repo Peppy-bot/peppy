@@ -3,6 +3,7 @@
 use config::consts::{DAEMON_STATE_FILE_ENV, PEPPYGEN_OUTPUT_PATH};
 use config::node::NodeConfigParser;
 use peppy::commands::service::serve::{CancellationToken, ServeCommandBuilder};
+use peppy::context::DaemonState;
 use pmi::Messenger;
 use pmi::zenohd_support::{reserve_free_tcp_port, write_zenohd_config};
 use std::ffi::OsStr;
@@ -122,7 +123,7 @@ pub struct TempServeEnvGuard {
 impl TempServeEnvGuard {
     pub fn new() -> Self {
         let dir = tempfile::tempdir().expect("failed to create temp dir for serve env");
-        let state_file = dir.path().join("daemon_state.json");
+        let state_file = DaemonState::state_file_in(dir.path());
         let state_env = EnvVarGuard::set(DAEMON_STATE_FILE_ENV, state_file.as_os_str());
         Self {
             _dir: dir,
