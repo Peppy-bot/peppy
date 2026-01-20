@@ -33,10 +33,10 @@ fn node_remove_command_succeeds() {
     let node_name = "test_remove_node";
     let node_tag = "0.1.0";
 
-    let node_ctx = Arc::new(AppContext::with_messenger(
-        node_dir.path(),
-        shared_messenger.clone(),
-    ));
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
 
     let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
@@ -63,6 +63,8 @@ fn node_remove_command_succeeds() {
         "peppy.json5 should exist at {}",
         peppy_json5_path.display()
     );
+
+    helpers::disable_add_cmd(&peppy_json5_path);
 
     NodeCommand {
         command: NodeCommands::Add {
@@ -161,10 +163,10 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
     let node_tag = "0.1.0";
     let instance_id = "test_remove_running_instance";
 
-    let node_ctx = Arc::new(AppContext::with_messenger(
-        node_dir.path(),
-        shared_messenger.clone(),
-    ));
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
 
     let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
@@ -196,17 +198,6 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
     // Health/shutdown services are provided in-process via the mock messenger.
     helpers::override_start_cmd(&peppy_json5_path);
 
-    NodeCommand {
-        command: NodeCommands::Add {
-            node_dir: node_path,
-            start: false,
-            args: Vec::new(),
-            instance_id: None,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node add command should succeed");
-
     // Start in-process node services for health/shutdown so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
     let _node_ready_handle = rt
@@ -234,17 +225,18 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
         ))
         .expect("node shutdown service should start");
 
+    // Use Add with start=true to add and start in a single command execution
+    // (avoids cross-runtime issues when using separate Add and Start commands)
     NodeCommand {
-        command: NodeCommands::Start {
-            node_ref: None,
-            node_name: Some(node_name.to_string()),
-            tag: Some(node_tag.to_string()),
+        command: NodeCommands::Add {
+            node_dir: node_path,
+            start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
         },
     }
     .execute(&node_ctx)
-    .expect("node run command should succeed");
+    .expect("node add+start command should succeed");
 
     NodeCommand {
         command: NodeCommands::Remove {
@@ -307,10 +299,10 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
     let node_tag = "0.1.0";
     let instance_id = "test_remove_stop_instances_instance";
 
-    let node_ctx = Arc::new(AppContext::with_messenger(
-        node_dir.path(),
-        shared_messenger.clone(),
-    ));
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
 
     let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
@@ -339,17 +331,6 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
     );
 
     helpers::override_start_cmd(&peppy_json5_path);
-
-    NodeCommand {
-        command: NodeCommands::Add {
-            node_dir: node_path,
-            start: false,
-            args: Vec::new(),
-            instance_id: None,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node add command should succeed");
 
     let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
 
@@ -380,17 +361,18 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         ))
         .expect("node shutdown service should start");
 
+    // Use Add with start=true to add and start in a single command execution
+    // (avoids cross-runtime issues when using separate Add and Start commands)
     NodeCommand {
-        command: NodeCommands::Start {
-            node_ref: None,
-            node_name: Some(node_name.to_string()),
-            tag: Some(node_tag.to_string()),
+        command: NodeCommands::Add {
+            node_dir: node_path,
+            start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
         },
     }
     .execute(&node_ctx)
-    .expect("node run command should succeed");
+    .expect("node add+start command should succeed");
 
     NodeCommand {
         command: NodeCommands::Remove {
