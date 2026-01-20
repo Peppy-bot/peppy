@@ -43,15 +43,28 @@ pub struct ZenohAdapter {
 }
 
 impl ZenohAdapter {
-    pub fn with_endpoint(protocol: ZenohNetProtocol, host: &str, port: u16) -> Result<Self> {
+    /// Creates a ZenohAdapter that owns and manages its own zenohd router.
+    /// Use this when you need to start a new router instance.
+    pub fn with_router(protocol: ZenohNetProtocol, host: &str, port: u16) -> Result<Self> {
         let zenohd_config_path = Self::get_zenohd_config_path(protocol, host, port)?;
         let facade = zenohd::ZenohdFacade::new(zenohd_config_path)?;
-        // Create a client config that connects to the router
-        // Extract the endpoint from the router's listen config
-        let client_config = ZenohAdapter::derive_client_config_from_zenohd(&facade);
+        let client_config = Self::derive_client_config_from_zenohd(&facade);
 
         Ok(Self {
             zenohd: Some(facade),
+            client_config,
+            session: None,
+            publishers: HashMap::new(),
+        })
+    }
+
+    /// Creates a ZenohAdapter that connects to an existing zenohd router.
+    /// Use this when you want to connect to a router that's already running.
+    pub fn connect_to(protocol: ZenohNetProtocol, host: &str, port: u16) -> Result<Self> {
+        let client_config = Self::create_client_config(protocol, host, port);
+
+        Ok(Self {
+            zenohd: None,
             client_config,
             session: None,
             publishers: HashMap::new(),
@@ -62,18 +75,21 @@ impl ZenohAdapter {
         (self.client_config.host.as_str(), self.client_config.port)
     }
 
-    fn derive_client_config_from_zenohd(zenohd: &zenohd::ZenohdFacade) -> ZenohClientConfig {
-        // Use the same config from the router to infer the client connection
-        let connect_host = if zenohd.zenoh_endpoint.host == "0.0.0.0" {
+    fn create_client_config(
+        protocol: ZenohNetProtocol,
+        host: &str,
+        port: u16,
+    ) -> ZenohClientConfig {
+        let connect_host = if host == "0.0.0.0" {
             "127.0.0.1".to_string()
         } else {
-            zenohd.zenoh_endpoint.host.clone()
+            host.to_string()
         };
 
         let client_template = ZenohClientConfigTemplate {
             host: connect_host,
-            port: zenohd.zenoh_endpoint.port,
-            protocol: zenohd.zenoh_endpoint.protocol,
+            port,
+            protocol,
         };
 
         let client_config_str = client_template
@@ -89,6 +105,14 @@ impl ZenohAdapter {
             port: client_template.port,
             protocol: client_template.protocol,
         }
+    }
+
+    fn derive_client_config_from_zenohd(zenohd: &zenohd::ZenohdFacade) -> ZenohClientConfig {
+        Self::create_client_config(
+            zenohd.zenoh_endpoint.protocol,
+            &zenohd.zenoh_endpoint.host,
+            zenohd.zenoh_endpoint.port,
+        )
     }
 
     fn get_zenohd_config_path(
