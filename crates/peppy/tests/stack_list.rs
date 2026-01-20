@@ -1,13 +1,15 @@
 mod helpers;
 
+use helpers::LogCapture;
+use pmi::{MessengerBackend, MockAdapter};
 use std::path::Path;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::{
     ExposedTopic, Name as ConfigName, NodeConfigParser, SubscribedTopic, SubscribesTo,
 };
-use helpers::TestServeHandle;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::commands::stack::{StackCommand, StackCommands};
@@ -75,11 +77,18 @@ fn make_consumer_depend_on_provider(
     );
 }
 
-#[test]
-fn node_list_command_succeeds() {
-    let _serial_guard = helpers::serve_test_guard();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_list_command_succeeds() {
     // Mock messaging is sufficient for listing and dependency graph tests (no spawned node process).
-    let serve = TestServeHandle::with_mock_messenger();
+    let mut instance = MockAdapter::start_router()
+        .await
+        .expect("failed to start mock router");
+    instance
+        .messenger()
+        .start_session()
+        .await
+        .expect("failed to start mock session");
+    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
     let master_node_name = daemon_state.master_node_name;
@@ -96,11 +105,11 @@ fn node_list_command_succeeds() {
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(AppContext::with_messenger(
         node_dir.path(),
-        serve.messenger(),
+        shared_messenger.clone(),
     ));
 
     // Set up logging
-    let log_capture = serve.log_capture().clone();
+    let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()
@@ -214,10 +223,17 @@ fn node_list_command_succeeds() {
     );
 }
 
-#[test]
-fn node_list_command_with_dot_representation_succeeds() {
-    let _serial_guard = helpers::serve_test_guard();
-    let serve = TestServeHandle::with_mock_messenger();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_list_command_with_dot_representation_succeeds() {
+    let mut instance = MockAdapter::start_router()
+        .await
+        .expect("failed to start mock router");
+    instance
+        .messenger()
+        .start_session()
+        .await
+        .expect("failed to start mock session");
+    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
     let master_node_name = daemon_state.master_node_name;
@@ -234,11 +250,11 @@ fn node_list_command_with_dot_representation_succeeds() {
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(AppContext::with_messenger(
         node_dir.path(),
-        serve.messenger(),
+        shared_messenger.clone(),
     ));
 
     // Set up logging
-    let log_capture = serve.log_capture().clone();
+    let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()

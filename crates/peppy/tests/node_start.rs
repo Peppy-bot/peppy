@@ -1,12 +1,14 @@
 mod helpers;
 
+use helpers::LogCapture;
+use pmi::{MessengerBackend, ZenohAdapter};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 
-use helpers::TestServeHandle;
 use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
@@ -16,11 +18,18 @@ use peppy::daemon_state::DaemonState;
 
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
-#[test]
-fn node_run_command_succeeds() {
-    let _serial_guard = helpers::serve_test_guard();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_run_command_succeeds() {
     // Use zenoh messaging so the spawned node process can communicate with the master node
-    let serve = TestServeHandle::with_zenoh();
+    let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router");
+    instance
+        .messenger()
+        .start_session()
+        .await
+        .expect("failed to start zenoh session");
+    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
     let master_node_name = daemon_state.master_node_name;
@@ -36,11 +45,11 @@ fn node_run_command_succeeds() {
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(AppContext::with_messenger(
         node_dir.path(),
-        serve.messenger(),
+        shared_messenger.clone(),
     ));
 
     // Set up logging
-    let log_capture = serve.log_capture().clone();
+    let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()
@@ -94,19 +103,19 @@ fn node_run_command_succeeds() {
     .expect("node add command should succeed");
 
     // Verify the node was added with 0 instances
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime should create");
     let messenger_handle = node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =
@@ -154,14 +163,15 @@ fn node_run_command_succeeds() {
     );
 
     // Query the node stack to verify the node now has an instance
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete");
 
     // Verify the node has 1 instance now
@@ -189,11 +199,18 @@ fn node_run_command_succeeds() {
     );
 }
 
-#[test]
-fn node_run_command_with_args_succeeds() {
-    let _serial_guard = helpers::serve_test_guard();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_run_command_with_args_succeeds() {
     // Use zenoh messaging so the spawned node process can communicate with the master node
-    let serve = TestServeHandle::with_zenoh();
+    let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router");
+    instance
+        .messenger()
+        .start_session()
+        .await
+        .expect("failed to start zenoh session");
+    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
     let master_node_name = daemon_state.master_node_name;
@@ -209,11 +226,11 @@ fn node_run_command_with_args_succeeds() {
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(AppContext::with_messenger(
         node_dir.path(),
-        serve.messenger(),
+        shared_messenger.clone(),
     ));
 
     // Set up logging
-    let log_capture = serve.log_capture().clone();
+    let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()
@@ -308,19 +325,19 @@ fn node_run_command_with_args_succeeds() {
     .expect("node add command should succeed");
 
     // Verify the node was added with 0 instances before run
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime should create");
     let messenger_handle = node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =
@@ -379,14 +396,15 @@ fn node_run_command_with_args_succeeds() {
     );
 
     // Query the node stack to verify the node now has an instance
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =
@@ -413,11 +431,18 @@ fn node_run_command_with_args_succeeds() {
     );
 }
 
-#[test]
-fn node_run_command_with_custom_instance_id_succeeds() {
-    let _serial_guard = helpers::serve_test_guard();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_run_command_with_custom_instance_id_succeeds() {
     // Use zenoh messaging so the spawned node process can communicate with the master node
-    let serve = TestServeHandle::with_zenoh();
+    let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router");
+    instance
+        .messenger()
+        .start_session()
+        .await
+        .expect("failed to start zenoh session");
+    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
     let master_node_name = daemon_state.master_node_name;
@@ -434,11 +459,11 @@ fn node_run_command_with_custom_instance_id_succeeds() {
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(AppContext::with_messenger(
         node_dir.path(),
-        serve.messenger(),
+        shared_messenger.clone(),
     ));
 
     // Set up logging
-    let log_capture = serve.log_capture().clone();
+    let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()
@@ -492,19 +517,19 @@ fn node_run_command_with_custom_instance_id_succeeds() {
     .expect("node add command should succeed");
 
     // Verify the node was added with 0 instances before run
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime should create");
     let messenger_handle = node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =
@@ -558,14 +583,15 @@ fn node_run_command_with_custom_instance_id_succeeds() {
     );
 
     // Query the node stack to verify the node now has an instance
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =

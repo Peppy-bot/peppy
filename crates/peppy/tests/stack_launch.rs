@@ -1,12 +1,14 @@
 mod helpers;
 
+use helpers::LogCapture;
+use pmi::{MessengerBackend, MockAdapter, ZenohAdapter};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use helpers::TestServeHandle;
 use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
@@ -52,10 +54,18 @@ fn write_node_config(
     node_dir
 }
 
-#[test]
-fn node_launch_command_succeed() {
-    let _serial_guard = helpers::serve_test_guard();
-    let serve = TestServeHandle::with_zenoh();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_launch_command_succeed() {
+    let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (_router_host, _router_port) = (instance.host.clone(), instance.port);
+    instance
+        .messenger()
+        .start_session()
+        .await
+        .expect("failed to start zenoh session");
+    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
     let master_node_name = daemon_state.master_node_name;
@@ -77,10 +87,10 @@ fn node_launch_command_succeed() {
 
     let ctx = Arc::new(AppContext::with_messenger(
         nodes_dir.path(),
-        serve.messenger(),
+        shared_messenger.clone(),
     ));
 
-    let log_capture = serve.log_capture().clone();
+    let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()
@@ -122,19 +132,19 @@ fn node_launch_command_succeed() {
         String::from_utf8_lossy(&build_output.stderr)
     );
 
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime should create");
     let messenger_handle = ctx
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =
@@ -174,14 +184,15 @@ fn node_launch_command_succeed() {
     .execute(&ctx)
     .expect("launch command should succeed");
 
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete after launch");
 
     let graph: SerializedNodeGraph =
@@ -226,14 +237,15 @@ fn node_launch_command_succeed() {
     .execute(&ctx)
     .expect("node stop command should succeed");
 
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete after stop");
 
     let graph: SerializedNodeGraph =
@@ -261,10 +273,17 @@ fn node_launch_command_succeed() {
     );
 }
 
-#[test]
-fn node_launch_command_fails_when_node_never_becomes_healthy() {
-    let _serial_guard = helpers::serve_test_guard();
-    let serve = TestServeHandle::with_mock_messenger();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_launch_command_fails_when_node_never_becomes_healthy() {
+    let mut instance = MockAdapter::start_router()
+        .await
+        .expect("failed to start mock router");
+    instance
+        .messenger()
+        .start_session()
+        .await
+        .expect("failed to start mock session");
+    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
     let master_node_name = daemon_state.master_node_name;
@@ -292,10 +311,10 @@ fn node_launch_command_fails_when_node_never_becomes_healthy() {
 
     let ctx = Arc::new(AppContext::with_messenger(
         nodes_dir.path(),
-        serve.messenger(),
+        shared_messenger.clone(),
     ));
 
-    let log_capture = serve.log_capture().clone();
+    let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()
@@ -314,19 +333,19 @@ fn node_launch_command_fails_when_node_never_becomes_healthy() {
     .execute(&ctx)
     .expect("node add command should succeed");
 
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime should create");
     let messenger_handle = ctx
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =
@@ -368,14 +387,15 @@ fn node_launch_command_fails_when_node_never_becomes_healthy() {
         "launch command should fail because the launched node never becomes healthy"
     );
 
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete after launch");
 
     let graph: SerializedNodeGraph =

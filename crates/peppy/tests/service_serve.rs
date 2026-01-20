@@ -1,10 +1,10 @@
 mod helpers;
 
+use pmi::{MessengerBackend, ZenohAdapter};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use helpers::TestServeHandle;
 use peppy::commands::Command;
 use peppy::commands::service::serve::CancellationToken;
 use peppy::commands::service::serve::ServeCommand;
@@ -14,9 +14,6 @@ use peppy::error::Error;
 
 #[test]
 fn serve_command() {
-    let _serial_guard = helpers::serve_test_guard();
-    let _serve_env = helpers::TempServeEnvGuard::new();
-
     let ctx = Arc::new(AppContext::default());
     let log_capture = helpers::LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
@@ -65,10 +62,16 @@ fn serve_command() {
     );
 }
 
-#[test]
-fn serve_command_fails_when_zenoh_port_already_in_use() {
-    let _serial_guard = helpers::serve_test_guard();
-    let _serve = TestServeHandle::with_zenoh();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serve_command_fails_when_zenoh_port_already_in_use() {
+    let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    instance
+        .messenger()
+        .start_session()
+        .await
+        .expect("failed to start zenoh session");
 
     let ctx = Arc::new(AppContext::default());
 
