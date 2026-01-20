@@ -7,7 +7,7 @@ use peppy::daemon_state::DaemonState;
 use pmi::Messenger;
 use std::ffi::OsStr;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};

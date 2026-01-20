@@ -221,7 +221,7 @@ impl ZenohAdapter {
         let template = ZenohRouterConfigTemplate {
             host: host.to_string(),
             port: messaging_port,
-            protocol: protocol,
+            protocol,
         };
 
         let config_content = template.render().map_err(|e| {
@@ -456,7 +456,7 @@ impl MessengerBackend for ZenohAdapter {
         // Parse host as IP address; use localhost as fallback for empty/invalid hosts
         let ip = host
             .parse()
-            .unwrap_or_else(|_| std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+            .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
         SocketAddr::new(ip, port)
     }
 }
