@@ -18,7 +18,7 @@ pub use types::{
     Subscription, TopicMessage,
 };
 
-pub use adapters::mock::MockAdapter;
+pub use adapters::mock::{MockAdapter, MockInstance};
 
 // Zenoh specific exports (only when feature is enabled)
 #[cfg(feature = "zenoh")]

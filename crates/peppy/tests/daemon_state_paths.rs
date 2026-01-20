@@ -38,7 +38,11 @@ fn daemon_state_write_in_prod_uses_default_peppy_path() {
     let temp_home = tempfile::tempdir().expect("temp home dir should create");
     let _home_guard = EnvGuard::set("HOME", temp_home.path().as_os_str());
 
-    let daemon_state = DaemonState::new("master-node", config::consts::DEFAULT_MESSAGING_PORT);
+    let daemon_state = DaemonState::new(
+        "master-node",
+        config::consts::DEFAULT_MESSAGING_PORT,
+        "abc123",
+    );
     let written_path = daemon_state
         .write()
         .expect("daemon state should be writable without sudo");
@@ -54,4 +58,5 @@ fn daemon_state_write_in_prod_uses_default_peppy_path() {
     let read_back = DaemonState::read().expect("daemon state should be readable");
     assert_eq!(read_back.master_node_name, "master-node");
     assert_eq!(read_back.daemon_pid, Some(std::process::id()));
+    assert_eq!(read_back.git_hash, "abc123");
 }

@@ -1,12 +1,11 @@
 mod helpers;
 
-use helpers::TestServeHandle;
+use helpers::{LogCapture, ServeCommandEmulation};
 use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::context::AppContext;
-use peppy::daemon_state::DaemonState;
 use peppylib::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
@@ -17,11 +16,13 @@ const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 #[test]
 fn node_add_command_succeeds() {
-    let _serial_guard = helpers::serve_test_guard();
-    let serve = TestServeHandle::with_mock_messenger();
-
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
-    let master_node_name = daemon_state.master_node_name;
+    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let master_node_name = serve.daemon_state().master_node_name.clone();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -34,11 +35,11 @@ fn node_add_command_succeeds() {
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(AppContext::with_messenger(
         node_dir.path(),
-        serve.messenger(),
+        shared_messenger.clone(),
     ));
 
     // Set up logging
-    let log_capture = serve.log_capture().clone();
+    let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()
@@ -87,7 +88,6 @@ fn node_add_command_succeeds() {
     );
 
     // Query the node stack to verify the node was added
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime should create");
     let messenger_handle = node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
@@ -130,12 +130,14 @@ fn node_add_command_succeeds() {
 
 #[test]
 fn node_add_command_with_run_arg_succeeds() {
-    let _serial_guard = helpers::serve_test_guard();
+    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     // Mock messaging is sufficient: we run in-process node services for health/ready.
-    let serve = TestServeHandle::with_mock_messenger();
-
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
-    let master_node_name = daemon_state.master_node_name;
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let master_node_name = serve.daemon_state().master_node_name.clone();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -149,11 +151,11 @@ fn node_add_command_with_run_arg_succeeds() {
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(AppContext::with_messenger(
         node_dir.path(),
-        serve.messenger(),
+        shared_messenger.clone(),
     ));
 
     // Set up logging
-    let log_capture = serve.log_capture().clone();
+    let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()
@@ -184,12 +186,7 @@ fn node_add_command_with_run_arg_succeeds() {
     // Avoid spawning a real node binary; provide `node_ready` + `node_health` in-process.
     helpers::override_start_cmd(&peppy_json5_path);
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .expect("tokio runtime should create");
-    let node_messenger = MessengerHandle::from_shared(serve.messenger());
+    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
     let _node_ready_handle = rt
         .block_on(listen_for_node_ready(
             &node_messenger,
