@@ -89,9 +89,7 @@ impl ServeTestConfig {
     /// Pass `None` for an ephemeral port (recommended for tests to avoid conflicts),
     /// or `Some(port)` for a specific port.
     #[cfg(feature = "zenoh")]
-    pub async fn with_zenoh_port(
-        port: Option<u16>,
-    ) -> Result<Self, PeppyMessagingInterfaceError> {
+    pub async fn with_zenoh_port(port: Option<u16>) -> Result<Self, PeppyMessagingInterfaceError> {
         let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", port).await?;
         instance.messenger().start_session().await?;
         let messenger = Arc::new(Mutex::new(instance.take_messenger()));
@@ -221,7 +219,7 @@ impl ServeTestContext {
 /// ```
 pub async fn setup_serve_test(
     backend: MessengerBackendType,
-) -> Result<(ServeTestContext, super::serve::ServeHandle), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(ServeTestContext, super::serve::Serve), Box<dyn std::error::Error + Send + Sync>> {
     use super::builder::ServeCommandBuilder;
     use tokio_util::sync::CancellationToken;
 
@@ -235,7 +233,10 @@ pub async fn setup_serve_test(
         MessengerBackendType::Zenoh => ServeTestConfig::with_zenoh().await?,
     };
 
-    let messenger = test_config.messenger.clone().ok_or("messenger not configured")?;
+    let messenger = test_config
+        .messenger
+        .clone()
+        .ok_or("messenger not configured")?;
 
     // Build the serve command with test configuration
     let shutdown_token = CancellationToken::new();
@@ -253,34 +254,23 @@ pub async fn setup_serve_test(
     // Get the port from the original instance_handle
     let messaging_port = instance_handle.as_ref().map(|h| h.port()).unwrap_or(0);
 
-    let builder = ServeCommandBuilder::new(temp_dir.path())?
+    // Create the ready signal channel
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+    let serve = ServeCommandBuilder::new(temp_dir.path())?
         .with_test_config(builder_config)
         .with_master_node(Some("test-master".to_string()))?
         .with_daemon_state_path(daemon_state_path.clone())
         .with_shutdown_token(shutdown_token.clone())
-        .with_messaging_port(messaging_port);
-
-    let handle = builder.build_with_handle()?;
+        .with_messaging_port(messaging_port)
+        .build()?
+        .with_ready_signal(ready_tx);
 
     // Create daemon state that tests can use with AppContext::with_messenger_and_state
     let daemon_state = DaemonState::new(
-        handle.master_node_name(),
-        handle.messaging_port(),
+        serve.master_node_name(),
+        serve.messaging_port(),
         test_config.git_hash.as_deref().unwrap_or("test-git-hash"),
-    );
-
-    // Create the ready signal channel
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-
-    // Configure the serve with the ready signal
-    let serve = handle.into_serve().with_ready_signal(ready_tx);
-
-    // Recreate the handle with the updated serve
-    let handle = super::serve::ServeHandle::new(
-        serve,
-        Arc::clone(&messenger),
-        daemon_state.master_node_name.clone(),
-        daemon_state.messaging_port,
     );
 
     let context = ServeTestContext {
@@ -293,5 +283,5 @@ pub async fn setup_serve_test(
         _instance_handle: instance_handle,
     };
 
-    Ok((context, handle))
+    Ok((context, serve))
 }

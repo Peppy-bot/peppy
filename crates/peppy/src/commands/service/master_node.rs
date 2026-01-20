@@ -33,10 +33,6 @@ impl MasterNodeRunner {
             messaging_ready,
         }
     }
-
-    pub fn node_name(&self) -> &str {
-        self.master_node.node_name()
-    }
 }
 
 impl ServeAsyncCommand for MasterNodeRunner {

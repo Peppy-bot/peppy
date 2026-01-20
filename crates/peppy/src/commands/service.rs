@@ -8,10 +8,10 @@ pub mod serve;
 pub mod test_support;
 
 // Re-export commonly used types
-pub use serve::{CancellationToken, Serve, ServeCommand, ServeCommandBuilder, ServeHandle};
+pub use serve::{CancellationToken, Serve, ServeCommand, ServeCommandBuilder};
 pub use test_support::{
-    setup_serve_test, MessengerBackendType, MessengerInstanceHandle, ServeTestConfig,
-    ServeTestContext,
+    MessengerBackendType, MessengerInstanceHandle, ServeTestConfig, ServeTestContext,
+    setup_serve_test,
 };
 
 use super::Command;

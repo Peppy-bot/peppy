@@ -3,8 +3,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use pmi::Messenger;
-use tokio::sync::oneshot;
 use tokio::sync::Mutex;
+use tokio::sync::oneshot;
 use tokio::task::{JoinError, JoinSet};
 use tracing::{error, info};
 
@@ -76,6 +76,10 @@ pub struct Serve {
     shutdown_token: Option<CancellationToken>,
     /// Optional channel to signal external readiness after initialization.
     ready_signal: Option<tokio::sync::oneshot::Sender<()>>,
+
+    messenger: Arc<Mutex<Messenger>>,
+    master_node_name: String,
+    messaging_port: u16,
 }
 
 /// The serve command is the command that runs as a daemon in systemd and maintains a "node stack" (a graph representation of nodes)
@@ -93,11 +97,19 @@ impl Serve {
         }
     }
 
-    pub fn new(composite_command: CompositeCommand) -> Self {
+    pub fn new(
+        composite_command: CompositeCommand,
+        messenger: Arc<Mutex<Messenger>>,
+        master_node_name: String,
+        messaging_port: u16,
+    ) -> Self {
         Self {
             composite_command,
             shutdown_token: None,
             ready_signal: None,
+            messenger,
+            master_node_name,
+            messaging_port,
         }
     }
 
@@ -286,39 +298,6 @@ impl Serve {
         }
 
         Ok(())
-    }
-}
-
-/// Handle returned from `ServeCommandBuilder::build_with_handle()`.
-///
-/// Provides access to the serve command and its internal messenger,
-/// which is useful for tests that need to interact with the messenger.
-pub struct ServeHandle {
-    serve: Serve,
-    messenger: Arc<Mutex<Messenger>>,
-    master_node_name: String,
-    messaging_port: u16,
-}
-
-impl ServeHandle {
-    /// Creates a new ServeHandle.
-    pub fn new(
-        serve: Serve,
-        messenger: Arc<Mutex<Messenger>>,
-        master_node_name: String,
-        messaging_port: u16,
-    ) -> Self {
-        Self {
-            serve,
-            messenger,
-            master_node_name,
-            messaging_port,
-        }
-    }
-
-    /// Consumes the handle and returns the Serve executor.
-    pub fn into_serve(self) -> Serve {
-        self.serve
     }
 
     /// Returns a clone of the shared messenger.

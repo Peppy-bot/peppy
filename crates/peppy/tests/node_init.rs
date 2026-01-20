@@ -1,9 +1,9 @@
 mod helpers;
 
 use helpers::LogCapture;
-use peppy::commands::service::{setup_serve_test, MessengerBackendType};
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
+use peppy::commands::service::{MessengerBackendType, setup_serve_test};
 use peppy::context::AppContext;
 use std::sync::Arc;
 
@@ -12,12 +12,12 @@ fn node_rust_init_command_success() {
     // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
 
-    let (mut ctx, handle) = rt
+    let (mut ctx, serve) = rt
         .block_on(setup_serve_test(MessengerBackendType::Mock))
         .expect("failed to setup serve test");
 
-    // Get master node name and daemon state before consuming handle
-    let master_node_name = handle.master_node_name().to_string();
+    // Get master node name and daemon state before consuming serve
+    let master_node_name = serve.master_node_name().to_string();
     let daemon_state = ctx.daemon_state();
     assert!(
         !master_node_name.is_empty(),
@@ -25,11 +25,11 @@ fn node_rust_init_command_success() {
     );
 
     // Start serve in background
-    let serve = handle.into_serve();
     rt.spawn(serve.execute_async());
 
     // Wait for serve to be ready
-    rt.block_on(ctx.wait_ready()).expect("serve should become ready");
+    rt.block_on(ctx.wait_ready())
+        .expect("serve should become ready");
 
     // Create a temp directory for the node
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");

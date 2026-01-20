@@ -3,9 +3,9 @@ mod helpers;
 use helpers::LogCapture;
 use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
-use peppy::commands::service::{setup_serve_test, MessengerBackendType};
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
+use peppy::commands::service::{MessengerBackendType, setup_serve_test};
 use peppy::context::AppContext;
 use peppylib::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
@@ -20,12 +20,12 @@ fn node_add_command_succeeds() {
     // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
 
-    let (mut ctx, handle) = rt
+    let (mut ctx, serve) = rt
         .block_on(setup_serve_test(MessengerBackendType::Mock))
         .expect("failed to setup serve test");
 
-    // Get master node name and daemon state before consuming handle
-    let master_node_name = handle.master_node_name().to_string();
+    // Get master node name and daemon state before consuming serve
+    let master_node_name = serve.master_node_name().to_string();
     let daemon_state = ctx.daemon_state();
     let shared_messenger = ctx.messenger();
     assert!(
@@ -34,11 +34,11 @@ fn node_add_command_succeeds() {
     );
 
     // Start serve in background
-    let serve = handle.into_serve();
     rt.spawn(serve.execute_async());
 
     // Wait for serve to be ready
-    rt.block_on(ctx.wait_ready()).expect("serve should become ready");
+    rt.block_on(ctx.wait_ready())
+        .expect("serve should become ready");
 
     // Create a temp directory for the node
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
@@ -150,12 +150,12 @@ fn node_add_command_with_run_arg_succeeds() {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
 
     // Mock messaging is sufficient: we run in-process node services for health/ready.
-    let (mut ctx, handle) = rt
+    let (mut ctx, serve) = rt
         .block_on(setup_serve_test(MessengerBackendType::Mock))
         .expect("failed to setup serve test");
 
-    // Get master node name and daemon state before consuming handle
-    let master_node_name = handle.master_node_name().to_string();
+    // Get master node name and daemon state before consuming serve
+    let master_node_name = serve.master_node_name().to_string();
     let daemon_state = ctx.daemon_state();
     let shared_messenger = ctx.messenger();
     assert!(
@@ -164,11 +164,11 @@ fn node_add_command_with_run_arg_succeeds() {
     );
 
     // Start serve in background
-    let serve = handle.into_serve();
     rt.spawn(serve.execute_async());
 
     // Wait for serve to be ready
-    rt.block_on(ctx.wait_ready()).expect("serve should become ready");
+    rt.block_on(ctx.wait_ready())
+        .expect("serve should become ready");
 
     // Create a temp directory for the node
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");

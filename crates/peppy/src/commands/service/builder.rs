@@ -1,6 +1,6 @@
 use super::master_node::MasterNodeRunner;
 use super::messaging_router::MessagingRouter;
-use super::serve::{CompositeCommand, Serve, ServeHandle};
+use super::serve::{CompositeCommand, Serve};
 use super::test_support::ServeTestConfig;
 use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
@@ -152,78 +152,64 @@ impl ServeCommandBuilder {
         self
     }
 
-    /// Builds the serve command and returns a handle with access to internals.
-    ///
-    /// This is useful for tests that need access to the messenger after building.
-    pub fn build_with_handle(self) -> Result<ServeHandle> {
-        let messenger = self.messenger.clone();
+    pub fn build(mut self) -> Result<Serve> {
+        let messenger = self
+            .messenger
+            .clone()
+            .ok_or(Error::MissingMessagingRouter)?;
+
         let master_node_name = self
             .master_node_name
             .clone()
             .unwrap_or_else(|| "master".to_string());
-        // Use cached port if available (from test config), otherwise try to get it from messenger
-        let messaging_port = self.messaging_port_override.unwrap_or(0);
 
-        let serve = self.build()?;
+        // Use cached port if available (from test config), otherwise get from messenger
+        let messaging_port = self
+            .messaging_port_override
+            .unwrap_or_else(|| messenger.blocking_lock().messaging_port());
 
-        let messenger = messenger.ok_or(Error::MissingMessagingRouter)?;
+        if self.master_node_requested {
+            let master_node = MasterNodeRunner::new(
+                Arc::clone(&messenger),
+                self.master_node_name.clone(),
+                DEFAULT_NODE_STARTUP_TIMEOUT,
+                DEFAULT_NODE_START_HEALTH_TIMEOUT,
+                self.root_dir.clone(),
+                self.messaging_ready.clone(),
+            );
 
-        Ok(ServeHandle::new(
-            serve,
+            // Write the daemon state file with the master node name
+            let git_hash = self.git_hash_override.as_deref().unwrap_or(GIT_HASH);
+            let daemon_state = DaemonState::new(&master_node_name, messaging_port, git_hash);
+
+            // Use override path if provided, otherwise default behavior
+            let state_path = if let Some(path) = &self.daemon_state_path {
+                DaemonState::write_to(path, &daemon_state).map_err(|e| {
+                    Error::ExecutionFailed(format!("Failed to write daemon state: {}", e))
+                })?;
+                path.clone()
+            } else {
+                daemon_state.write().map_err(|e| {
+                    Error::ExecutionFailed(format!("Failed to write daemon state: {}", e))
+                })?
+            };
+            info!(
+                "Wrote daemon state to {} with master_node_name={}",
+                state_path.display(),
+                master_node_name
+            );
+
+            self.composite_command = self
+                .composite_command
+                .add_async_command(Box::new(master_node));
+        }
+
+        let serve = Serve::new(
+            self.composite_command,
             messenger,
             master_node_name,
             messaging_port,
-        ))
-    }
-
-    pub fn build(mut self) -> Result<Serve> {
-        if self.master_node_requested {
-            if let Some(messenger) = &self.messenger {
-                let master_node = MasterNodeRunner::new(
-                    Arc::clone(messenger),
-                    self.master_node_name.clone(),
-                    DEFAULT_NODE_STARTUP_TIMEOUT,
-                    DEFAULT_NODE_START_HEALTH_TIMEOUT,
-                    self.root_dir.clone(),
-                    self.messaging_ready.clone(),
-                );
-
-                // Write the daemon state file with the master node name
-                let master_node_name = master_node.node_name().to_string();
-                let git_hash = self.git_hash_override.as_deref().unwrap_or(GIT_HASH);
-                // Use cached port if available (from test config), otherwise get from messenger
-                let messaging_port = self
-                    .messaging_port_override
-                    .unwrap_or_else(|| messenger.blocking_lock().messaging_port());
-                let daemon_state = DaemonState::new(&master_node_name, messaging_port, git_hash);
-
-                // Use override path if provided, otherwise default behavior
-                let state_path = if let Some(path) = &self.daemon_state_path {
-                    DaemonState::write_to(path, &daemon_state).map_err(|e| {
-                        Error::ExecutionFailed(format!("Failed to write daemon state: {}", e))
-                    })?;
-                    path.clone()
-                } else {
-                    daemon_state.write().map_err(|e| {
-                        Error::ExecutionFailed(format!("Failed to write daemon state: {}", e))
-                    })?
-                };
-                info!(
-                    "Wrote daemon state to {} with master_node_name={}",
-                    state_path.display(),
-                    master_node_name
-                );
-
-                self.composite_command = self
-                    .composite_command
-                    .add_async_command(Box::new(master_node));
-            } else {
-                warn!("Commands listener requires a messaging router");
-                return Err(Error::MissingMessagingRouter);
-            }
-        }
-
-        let serve = Serve::new(self.composite_command);
+        );
         let serve = match self.shutdown_token {
             Some(token) => serve.with_shutdown_token(token),
             None => serve,
