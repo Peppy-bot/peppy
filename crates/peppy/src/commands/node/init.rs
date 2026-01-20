@@ -42,8 +42,7 @@ impl NodeInitBuilder {
     }
 
     pub fn build(self) -> Result<()> {
-        let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(self.build_async())
+        crate::commands::block_on(self.build_async())
     }
 
     async fn build_async(self) -> Result<()> {

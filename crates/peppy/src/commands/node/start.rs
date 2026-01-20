@@ -289,8 +289,7 @@ pub fn run_node(
     args: Vec<(String, String)>,
     instance_id: Option<String>,
 ) -> Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_node_async(ctx, node_name, tag, args, instance_id))
+    crate::commands::block_on(run_node_async(ctx, node_name, tag, args, instance_id))
 }
 
 async fn run_node_async(

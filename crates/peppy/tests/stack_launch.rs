@@ -1,12 +1,10 @@
 mod helpers;
 
-use helpers::LogCapture;
-use pmi::{MessengerBackend, MockAdapter, ZenohAdapter};
+use helpers::{LogCapture, ServeCommandEmulation};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use master_node::encoding::NodeListRequest;
@@ -15,7 +13,10 @@ use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::stack::{StackCommand, StackCommands};
 use peppy::context::AppContext;
-use peppy::daemon_state::DaemonState;
+use peppylib::MessengerHandle;
+use peppylib::services::health::listen_for_node_health;
+use peppylib::services::ready::listen_for_node_ready;
+use peppylib::services::shutdown::listen_for_shutdown;
 
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
@@ -56,19 +57,11 @@ fn write_node_config(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_launch_command_succeed() {
-    let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+    let serve = ServeCommandEmulation::with_mock()
         .await
-        .expect("failed to start zenoh router for test");
-    let (_router_host, _router_port) = (instance.host.clone(), instance.port);
-    instance
-        .messenger()
-        .start_session()
-        .await
-        .expect("failed to start zenoh session");
-    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
-
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
-    let master_node_name = daemon_state.master_node_name;
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let master_node_name = serve.daemon_state().master_node_name.clone();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -85,10 +78,10 @@ async fn node_launch_command_succeed() {
         &["sh", "-c", "exit 0"],
     );
 
-    let ctx = Arc::new(AppContext::with_messenger(
-        nodes_dir.path(),
-        shared_messenger.clone(),
-    ));
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), shared_messenger.clone())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
 
     let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
@@ -120,17 +113,8 @@ async fn node_launch_command_succeed() {
     .expect("node init command should succeed");
 
     let node_b_path = nodes_dir.path().join(node_b_name);
-    let build_output = std::process::Command::new("cargo")
-        .args(["build", "--release"])
-        .current_dir(&node_b_path)
-        .output()
-        .expect("cargo build should start");
-    assert!(
-        build_output.status.success(),
-        "cargo build --release failed.\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&build_output.stdout),
-        String::from_utf8_lossy(&build_output.stderr)
-    );
+    let node_b_peppy_json5_path = node_b_path.join(NODE_CONFIG_FILE);
+    helpers::override_start_cmd(&node_b_peppy_json5_path);
 
     let messenger_handle = ctx
         .messenger_handle()
@@ -160,6 +144,19 @@ async fn node_launch_command_succeed() {
     );
 
     let instance_id = "node_b_instance";
+    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
+    let _node_ready_handle =
+        listen_for_node_ready(&node_messenger, &master_node_name, instance_id, node_b_name)
+            .await
+            .expect("node ready service should start");
+    let _node_health_handle =
+        listen_for_node_health(&node_messenger, &master_node_name, instance_id, node_b_name)
+            .await
+            .expect("node health service should start");
+    let (_node_shutdown_handle, _node_shutdown_rx) =
+        listen_for_shutdown(&node_messenger, &master_node_name, instance_id, node_b_name)
+            .await
+            .expect("node shutdown service should start");
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
@@ -275,18 +272,11 @@ async fn node_launch_command_succeed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_launch_command_fails_when_node_never_becomes_healthy() {
-    let mut instance = MockAdapter::start_router()
+    let serve = ServeCommandEmulation::with_mock()
         .await
-        .expect("failed to start mock router");
-    instance
-        .messenger()
-        .start_session()
-        .await
-        .expect("failed to start mock session");
-    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
-
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
-    let master_node_name = daemon_state.master_node_name;
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let master_node_name = serve.daemon_state().master_node_name.clone();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -309,10 +299,10 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
         &["sh", "-c", "exit 0"],
     );
 
-    let ctx = Arc::new(AppContext::with_messenger(
-        nodes_dir.path(),
-        shared_messenger.clone(),
-    ));
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), shared_messenger.clone())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
 
     let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()

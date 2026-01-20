@@ -19,7 +19,7 @@ pub fn override_start_cmd(peppy_json5: &Path) {
     let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
     // Avoid spawning a real node binary in tests, but keep the process alive long enough for
     // `node_start` to complete its `node_ready` + health check phases.
-    cfg.manifest.start_cmd = vec!["sleep".to_string(), "5".to_string()];
+    cfg.manifest.start_cmd = vec!["sleep".to_string(), "4".to_string()];
     // Avoid `add_cmd` build step (network access is not available in the test runner).
     cfg.manifest.add_cmd = None;
 

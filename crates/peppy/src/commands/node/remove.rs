@@ -19,8 +19,7 @@ pub fn remove_node(
     stop_instances: bool,
     force: bool,
 ) -> Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(remove_node_async(
+    crate::commands::block_on(remove_node_async(
         ctx,
         node_name,
         tag,

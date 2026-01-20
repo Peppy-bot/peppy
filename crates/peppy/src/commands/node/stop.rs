@@ -10,8 +10,7 @@ const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn stop_node(ctx: &Arc<AppContext>, instance_id: String) -> Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(stop_node_async(ctx, instance_id))
+    crate::commands::block_on(stop_node_async(ctx, instance_id))
 }
 
 async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<()> {
