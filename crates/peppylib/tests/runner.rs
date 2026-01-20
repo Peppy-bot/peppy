@@ -105,7 +105,7 @@ async fn daemon_runner_succeed() {
       }
     }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
-    config::fingerprint::create_codegen_fingerprint(
+    config::fingerprint::create_node_git_fingerprint(
         &peppy_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
@@ -309,7 +309,7 @@ async fn node_ready_but_not_healthy() {
       }
     }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
-    config::fingerprint::create_codegen_fingerprint(
+    config::fingerprint::create_node_git_fingerprint(
         &peppy_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
@@ -565,7 +565,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
       }
     }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
-    config::fingerprint::create_codegen_fingerprint(
+    config::fingerprint::create_node_git_fingerprint(
         &peppy_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );

@@ -21,6 +21,7 @@ use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 /// * `build_system` - The build system to generate for (Rust/Cargo or Python/Uv)
 /// * `node_dir` - Path to the node directory containing `peppy.json5`
 /// * `subscribed_interfaces` - Subscribed interfaces with resolved message formats from dependency nodes
+/// * `daemon_git_hash` - The git commit hash of the daemon binary for fingerprinting
 ///
 /// # Errors
 /// Returns an error if:
@@ -31,6 +32,7 @@ pub fn generate_lib_for_build_system(
     build_system: BuildSystem,
     node_dir: impl AsRef<Path>,
     subscribed_interfaces: Vec<DeploymentInterface>,
+    daemon_git_hash: &str,
 ) -> Result<()> {
     let node_dir = node_dir.as_ref();
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
@@ -68,7 +70,11 @@ pub fn generate_lib_for_build_system(
 
     // Lastly generate the codegen fingerprint based on the peppy.json5 config file
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
-    config::fingerprint::generate_node_config_fingerprint(&node_config_path, &output_dir)?;
+    config::fingerprint::generate_node_config_fingerprint(
+        &node_config_path,
+        &output_dir,
+        daemon_git_hash,
+    )?;
 
     result
 }

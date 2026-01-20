@@ -504,6 +504,7 @@ dependencies = [
  "indexmap 2.13.0",
  "proc-macro2",
  "serde",
+ "serde_json",
  "serde_json5",
  "sha2",
  "tempfile",

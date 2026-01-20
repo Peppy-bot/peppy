@@ -54,4 +54,5 @@ fn daemon_state_write_in_prod_uses_default_peppy_path() {
     let read_back = DaemonState::read().expect("daemon state should be readable");
     assert_eq!(read_back.master_node_name, "master-node");
     assert_eq!(read_back.daemon_pid, Some(std::process::id()));
+    assert_eq!(read_back.git_hash, env!("PEPPY_GIT_HASH"));
 }

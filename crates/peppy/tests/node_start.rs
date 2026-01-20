@@ -277,7 +277,7 @@ fn node_run_command_with_args_succeeds() {
     std::fs::write(&peppy_json5_path, peppy_config).expect("peppy.json5 should be writable");
 
     // Update the fingerprint to match the new config
-    config::fingerprint::create_codegen_fingerprint(
+    config::fingerprint::create_node_git_fingerprint(
         &peppy_json5_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );

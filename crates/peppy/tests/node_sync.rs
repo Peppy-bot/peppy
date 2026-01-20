@@ -80,7 +80,7 @@ fn node_sync_rust_command_succeeds() {
         peppy_json5_path.display()
     );
 
-    let old_fingerprint = config::fingerprint::read_codegen_fingerprint(
+    let old_fingerprint = config::fingerprint::read_node_git_fingerprint(
         &peppy_json5_path,
         config::consts::PEPPYGEN_OUTPUT_PATH,
     )
@@ -112,7 +112,7 @@ fn node_sync_rust_command_succeeds() {
     .execute(&sync_ctx)
     .expect("node sync command should succeed");
 
-    let new_fingerprint = config::fingerprint::read_codegen_fingerprint(
+    let new_fingerprint = config::fingerprint::read_node_git_fingerprint(
         &peppy_json5_path,
         config::consts::PEPPYGEN_OUTPUT_PATH,
     )

@@ -22,6 +22,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
+pub const TEST_GIT_HASH: &str = "test_git_hash_abc123";
 
 pub struct NodeStartTestTimeouts {
     pub goal: Duration,
@@ -38,7 +39,7 @@ pub struct NodeStartTestResponse {
 pub fn write_peppy_json5(dir: &Path, content: &str) {
     let config_path = dir.join(NODE_CONFIG_FILE);
     std::fs::write(&config_path, content).expect("failed to write peppy.json5");
-    config::fingerprint::create_codegen_fingerprint(&config_path, Path::new(PEPPYGEN_OUTPUT_PATH));
+    config::fingerprint::create_node_git_fingerprint(&config_path, Path::new(PEPPYGEN_OUTPUT_PATH));
 }
 
 /// Helper function to send a node_add goal and wait for the result.
@@ -266,7 +267,7 @@ fn init_test_node_project(node_name: &str, node_tag: &str) -> PathBuf {
     init_cargo_project(&node_dir, node_name);
     write_test_node_files(&node_dir, node_name, node_tag);
 
-    generator::generate_lib_for_build_system(BuildSystem::Rust, &node_dir, Vec::new())
+    generator::generate_lib_for_build_system(BuildSystem::Rust, &node_dir, Vec::new(), TEST_GIT_HASH)
         .expect("failed to generate peppygen for test node");
 
     build_cargo_project(&node_dir);
@@ -465,6 +466,7 @@ async fn start_master_node_with_messenger(
         Some("test_master_node"),
         node_arguments,
         root_dir,
+        TEST_GIT_HASH,
     );
     let master_node_name = master_node.node_name().to_string();
     let node_stack = master_node.node_stack().clone();

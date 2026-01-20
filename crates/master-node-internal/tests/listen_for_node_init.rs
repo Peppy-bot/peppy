@@ -82,7 +82,7 @@ async fn listen_for_node_init_rust_success() {
     );
 
     assert!(
-        config::fingerprint::read_codegen_fingerprint(&node_config_path, PEPPYGEN_OUTPUT_PATH)
+        config::fingerprint::read_node_git_fingerprint(&node_config_path, PEPPYGEN_OUTPUT_PATH)
             .is_ok(),
         "fingerprint file should exist in peppygen directory"
     );
@@ -160,7 +160,7 @@ async fn listen_for_node_init_python_success() {
     );
 
     assert!(
-        config::fingerprint::read_codegen_fingerprint(&node_config_path, PEPPYGEN_OUTPUT_PATH)
+        config::fingerprint::read_node_git_fingerprint(&node_config_path, PEPPYGEN_OUTPUT_PATH)
             .is_ok(),
         "fingerprint file should exist in peppygen directory"
     );

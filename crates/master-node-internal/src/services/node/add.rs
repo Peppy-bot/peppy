@@ -467,7 +467,7 @@ async fn process_node_add(
     // Verify that the node config fingerprint matches the one in the generated folder
     let config_path = copied_path.join(NODE_CONFIG_FILE);
     if let Err(e) =
-        config::fingerprint::verify_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
+        config::fingerprint::verify_node_git_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
     {
         // Clean up the copied folder on failure
         let _ = std::fs::remove_dir_all(&copied_path);

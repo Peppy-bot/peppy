@@ -81,6 +81,7 @@ pub async fn listen_for_node_generate(
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
+    daemon_git_hash: String,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
@@ -94,7 +95,11 @@ pub async fn listen_for_node_generate(
     let handle = tokio::spawn(async move {
         endpoint
             .handle_requests(move |context| {
-                handle_node_generate_request(context, Arc::clone(&node_stack))
+                let node_stack = Arc::clone(&node_stack);
+                let daemon_git_hash = daemon_git_hash.clone();
+                async move {
+                    handle_node_generate_request(context, node_stack, &daemon_git_hash).await
+                }
             })
             .await
             .map_err(Into::into)
@@ -106,9 +111,10 @@ pub async fn listen_for_node_generate(
 async fn handle_node_generate_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
+    daemon_git_hash: &str,
 ) -> PeppyResult<Bytes> {
     let sender_instance_id = context.message().instance_id();
-    handle_node_generate_request_inner(&context, &node_stack)
+    handle_node_generate_request_inner(&context, &node_stack, daemon_git_hash)
         .await
         .map_err(|e| PeppyError::InvalidServiceRequest {
             identifier: sender_instance_id.to_string(),
@@ -119,6 +125,7 @@ async fn handle_node_generate_request(
 async fn handle_node_generate_request_inner(
     context: &ServiceRequestContext,
     node_stack: &NodeStack,
+    daemon_git_hash: &str,
 ) -> Result<Bytes> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -233,6 +240,7 @@ async fn handle_node_generate_request_inner(
 
     let build_system = request.build_system;
     let node_root_dir = request.node_root_dir;
+    let daemon_git_hash = daemon_git_hash.to_string();
     match tokio::task::spawn_blocking(move || {
         remove_previous_peppy_dir(&node_root_dir);
 
@@ -240,6 +248,7 @@ async fn handle_node_generate_request_inner(
             build_system,
             &node_root_dir,
             subscribed_interfaces,
+            &daemon_git_hash,
         )
     })
     .await

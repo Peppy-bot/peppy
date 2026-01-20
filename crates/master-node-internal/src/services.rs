@@ -51,6 +51,7 @@ pub struct MasterNode {
     start_time: Instant,
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
+    daemon_git_hash: String,
 }
 
 impl MasterNode {
@@ -59,6 +60,7 @@ impl MasterNode {
         node_name: Option<&str>,
         node_arguments: MasterNodeArguments,
         root_dir: P,
+        daemon_git_hash: impl Into<String>,
     ) -> Self {
         let manifest_name = match node_name {
             Some(name) => Name::new(name).unwrap(),
@@ -94,6 +96,7 @@ impl MasterNode {
             start_time: Instant::now(),
             node_startup_timeout,
             node_start_health_timeout,
+            daemon_git_hash: daemon_git_hash.into(),
         }
     }
 
@@ -210,6 +213,7 @@ impl MasterNode {
                 master_node_name,
                 self.instance_id(),
                 self.node_name(),
+                self.daemon_git_hash.clone(),
             )
             .await?,
             node::listen_for_node_generate(
@@ -218,6 +222,7 @@ impl MasterNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
+                self.daemon_git_hash.clone(),
             )
             .await?,
         ];

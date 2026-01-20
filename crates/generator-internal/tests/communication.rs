@@ -99,7 +99,7 @@ async fn topics_communication() {
     let output_config = copy_config_to_output(&user_node_subscriber, &subscriber_dir);
     generator.build(&subscriber_dir).unwrap();
     fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
+    config::fingerprint::create_node_git_fingerprint(
         &peppy_node_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
@@ -164,7 +164,7 @@ fn main() -> Result<()> {
         serde_json5::to_string(&node_config).unwrap(),
     )
     .unwrap();
-    config::fingerprint::create_codegen_fingerprint(
+    config::fingerprint::create_node_git_fingerprint(
         &peppy_node_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
@@ -409,7 +409,7 @@ async fn services_communication_no_target_instance_id() {
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
     fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
+    config::fingerprint::create_node_git_fingerprint(
         &peppy_node_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
@@ -467,7 +467,7 @@ fn main() -> Result<()> {
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator.build(&output_dir_exposer).unwrap();
     fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
+    config::fingerprint::create_node_git_fingerprint(
         &peppy_node_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
@@ -681,7 +681,7 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
     fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
+    config::fingerprint::create_node_git_fingerprint(
         &peppy_node_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
@@ -738,7 +738,7 @@ fn main() -> Result<()> {
     let output_config = copy_config_to_output(&user_node_exposer1, &output_dir_exposer1);
     generator.build(&output_dir_exposer1).unwrap();
     fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
+    config::fingerprint::create_node_git_fingerprint(
         &peppy_node_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
@@ -795,7 +795,7 @@ fn main() -> Result<()> {
     let output_config = copy_config_to_output(&user_node_exposer2, &output_dir_exposer2);
     generator.build(&output_dir_exposer2).unwrap();
     fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
+    config::fingerprint::create_node_git_fingerprint(
         &peppy_node_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
@@ -1150,7 +1150,7 @@ async fn actions_communication() {
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
     fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
+    config::fingerprint::create_node_git_fingerprint(
         &peppy_node_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
@@ -1223,7 +1223,7 @@ fn main() -> Result<()> {
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator.build(&output_dir_exposer).unwrap();
     fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
+    config::fingerprint::create_node_git_fingerprint(
         &peppy_node_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
@@ -1459,7 +1459,7 @@ async fn actions_communication_cancel_goal() {
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
     fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
+    config::fingerprint::create_node_git_fingerprint(
         &peppy_node_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
@@ -1528,7 +1528,7 @@ fn main() -> Result<()> {
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator.build(&output_dir_exposer).unwrap();
     fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
+    config::fingerprint::create_node_git_fingerprint(
         &peppy_node_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );

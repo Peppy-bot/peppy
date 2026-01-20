@@ -838,7 +838,7 @@ async fn listen_for_node_add_fingerprint_mismatch() {
     std::fs::write(&config_path, &peppy_json5).expect("failed to write peppy.json5");
 
     // Create a wrong fingerprint that won't match the actual peppy.json5 content
-    config::fingerprint::create_wrong_codegen_fingerprint(
+    config::fingerprint::create_wrong_node_git_fingerprint(
         &config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );

@@ -26,7 +26,7 @@ pub fn override_start_cmd(peppy_json5: &Path) {
     std::fs::write(peppy_json5, updated_content).expect("peppy.json5 should update");
 
     // `node_init` generates a fingerprint during peppygen generation; keep it in sync.
-    config::fingerprint::create_codegen_fingerprint(peppy_json5, Path::new(PEPPYGEN_OUTPUT_PATH));
+    config::fingerprint::create_node_git_fingerprint(peppy_json5, Path::new(PEPPYGEN_OUTPUT_PATH));
 }
 
 #[derive(Clone, Default)]

@@ -3,7 +3,6 @@ use super::messaging_router::MessagingRouter;
 use super::serve::{CompositeCommand, Serve};
 use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
-use config::fingerprint::write_release_fingerprint;
 use pmi::Messenger;
 use pmi::MessengerAdapter;
 use pmi::MockAdapter;
@@ -94,13 +93,6 @@ impl ServeCommandBuilder {
     }
 
     pub fn build(mut self) -> Result<Serve> {
-        // Write the release fingerprint (git hash) to the peppy data directory.
-        // This ensures nodes can verify they were generated with this peppy version.
-        write_release_fingerprint(GIT_HASH).map_err(|e| {
-            Error::ExecutionFailed(format!("Failed to write release fingerprint: {}", e))
-        })?;
-        info!("Wrote release fingerprint: {}", GIT_HASH);
-
         if self.master_node_requested {
             if let Some(messenger) = &self.messenger {
                 let master_node = MasterNodeRunner::new(
@@ -110,6 +102,7 @@ impl ServeCommandBuilder {
                     DEFAULT_NODE_START_HEALTH_TIMEOUT,
                     self.root_dir.clone(),
                     self.messaging_ready.clone(),
+                    GIT_HASH,
                 );
 
                 // Write the daemon state file with the master node name

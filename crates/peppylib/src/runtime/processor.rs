@@ -32,7 +32,7 @@ impl Processor {
 
         let runtime_config = Self::load_runtime_config(&launch_config_path)?;
 
-        let codegen_fingerprint = config::fingerprint::read_codegen_fingerprint(
+        let codegen_fingerprint = config::fingerprint::read_node_git_fingerprint(
             peppy_config.as_ref(),
             PEPPYGEN_OUTPUT_PATH,
         )
@@ -244,7 +244,7 @@ mod tests {
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
-        config::fingerprint::create_codegen_fingerprint(
+        config::fingerprint::create_node_git_fingerprint(
             &peppy_config_path,
             Path::new(PEPPYGEN_OUTPUT_PATH),
         );
@@ -324,7 +324,7 @@ mod tests {
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
-        config::fingerprint::create_wrong_codegen_fingerprint(
+        config::fingerprint::create_wrong_node_git_fingerprint(
             &peppy_config_path,
             Path::new(PEPPYGEN_OUTPUT_PATH),
         );
@@ -376,7 +376,7 @@ mod tests {
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
-        config::fingerprint::create_codegen_fingerprint(
+        config::fingerprint::create_node_git_fingerprint(
             &peppy_config_path,
             Path::new(PEPPYGEN_OUTPUT_PATH),
         );
@@ -430,7 +430,7 @@ mod tests {
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
-        config::fingerprint::create_codegen_fingerprint(
+        config::fingerprint::create_node_git_fingerprint(
             &peppy_config_path,
             Path::new(PEPPYGEN_OUTPUT_PATH),
         );
@@ -490,7 +490,7 @@ mod tests {
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
-        config::fingerprint::create_codegen_fingerprint(
+        config::fingerprint::create_node_git_fingerprint(
             &peppy_config_path,
             Path::new(PEPPYGEN_OUTPUT_PATH),
         );
@@ -549,7 +549,7 @@ mod tests {
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
-        config::fingerprint::create_codegen_fingerprint(
+        config::fingerprint::create_node_git_fingerprint(
             &peppy_config_path,
             Path::new(PEPPYGEN_OUTPUT_PATH),
         );

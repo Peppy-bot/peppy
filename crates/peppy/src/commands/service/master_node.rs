@@ -21,13 +21,19 @@ impl MasterNodeRunner {
         node_start_health_timeout: Duration,
         root_dir: PathBuf,
         messaging_ready: Option<watch::Receiver<bool>>,
+        daemon_git_hash: impl Into<String>,
     ) -> Self {
         let node_arguments = MasterNodeArguments {
             node_startup_timeout,
             node_start_health_timeout,
         };
-        let master_node =
-            MasterNode::new(messenger, master_name.as_deref(), node_arguments, root_dir);
+        let master_node = MasterNode::new(
+            messenger,
+            master_name.as_deref(),
+            node_arguments,
+            root_dir,
+            daemon_git_hash,
+        );
         Self {
             master_node,
             messaging_ready,

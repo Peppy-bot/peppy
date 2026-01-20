@@ -45,7 +45,7 @@ fn write_node_config(
         ),
     )
     .expect("failed to write node config");
-    config::fingerprint::create_codegen_fingerprint(
+    config::fingerprint::create_node_git_fingerprint(
         &node_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );

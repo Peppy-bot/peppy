@@ -2,37 +2,71 @@ use crate::error::Result;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
-use std::sync::OnceLock;
 
 const NODE_CONFIG_FINGERPRINT_FILE: &str = "peppy.json5.sha256";
 // This extra fingerprint tracks changes to the peppy client across releases
-const RELEASE_FINGERPRINT_FILE: &str = "git.hash";
+const NODE_GIT_FINGERPRINT_FILE: &str = "git.hash";
+const DAEMON_STATE_FILENAME: &str = "daemon_state.json";
 
-/// Writes the release fingerprint (git hash) to the peppy data directory.
+/// Reads the git hash from the daemon state file.
 ///
-/// This should be called when the serve command starts to ensure the
-/// release fingerprint is available for node generation and verification.
-pub fn write_release_fingerprint(git_hash: &str) -> Result<()> {
-    let data_dir = crate::consts::peppy_data_dir();
-    fs::create_dir_all(&data_dir)?;
+/// The daemon state file is located at:
+/// - The path specified by `PEPPY_DAEMON_STATE_FILE` environment variable, or
+/// - `{peppy_data_dir()}/daemon_state.json`
+///
+/// Returns an error if the file doesn't exist or can't be parsed.
+pub fn read_daemon_git_hash() -> Result<String> {
+    let state_path = daemon_state_file_path();
 
-    let fingerprint_path = data_dir.join(RELEASE_FINGERPRINT_FILE);
-    fs::write(&fingerprint_path, format!("{}\n", git_hash))?;
+    if !state_path.exists() {
+        return Err(crate::error::Error::ReleaseFingerprintMissing(format!(
+            "daemon state file not found at {}",
+            state_path.display()
+        )));
+    }
 
-    Ok(())
+    let content = fs::read_to_string(&state_path)?;
+
+    // Parse JSON to extract just the git_hash field
+    let json: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+        crate::error::Error::ReleaseFingerprintMissing(format!(
+            "failed to parse daemon state file: {}",
+            e
+        ))
+    })?;
+
+    json.get("git_hash")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| {
+            crate::error::Error::ReleaseFingerprintMissing(
+                "git_hash field not found in daemon state file".to_string(),
+            )
+        })
 }
 
-/// Generates the initial node fingerprint and copies the release fingerprint.
+fn daemon_state_file_path() -> std::path::PathBuf {
+    // Check for environment variable override first
+    if let Some(path) = std::env::var_os(crate::consts::DAEMON_STATE_FILE_ENV) {
+        return std::path::PathBuf::from(path);
+    }
+
+    // Default to peppy_data_dir/daemon_state.json
+    crate::consts::peppy_data_dir().join(DAEMON_STATE_FILENAME)
+}
+
+/// Generates the initial node fingerprint and writes the release fingerprint.
 ///
 /// This function:
 /// 1. Computes and writes the SHA256 hash of the node config to `{output_path}/peppy.json5.sha256`
-/// 2. Copies the release fingerprint (`git.hash`) from the peppy data directory
+/// 2. Writes the release fingerprint (`git.hash`) with the provided `daemon_git_hash`
 ///    to the node's `.peppy/git.hash`
 ///
 /// Both fingerprints are required and must be created successfully.
 pub fn generate_node_config_fingerprint(
     node_config: impl AsRef<Path>,
     output_path: impl AsRef<Path>,
+    daemon_git_hash: &str,
 ) -> Result<()> {
     let node_config = node_config.as_ref();
     let generated_crate = output_path.as_ref();
@@ -47,23 +81,15 @@ pub fn generate_node_config_fingerprint(
     let fingerprint = fingerprint_for_bytes(&config_bytes);
     fs::write(&fingerprint_path, format!("{fingerprint}\n"))?;
 
-    // Copy release fingerprint from peppy data directory to node's .peppy directory
+    // Write release fingerprint to node's .peppy directory
     // output_path is .peppy/libs/peppygen, so .peppy is two levels up
-    let data_dir = crate::consts::peppy_data_dir();
-    let source_release_fingerprint = data_dir.join(RELEASE_FINGERPRINT_FILE);
-    if !source_release_fingerprint.exists() {
-        return Err(crate::error::Error::ReleaseFingerprintMissing(format!(
-            "release fingerprint not found at {}",
-            source_release_fingerprint.display()
-        )));
-    }
-
     let node_peppy_dir = generated_crate
         .parent()
         .and_then(|p| p.parent())
         .unwrap_or(generated_crate);
-    let dest_release_fingerprint = node_peppy_dir.join(RELEASE_FINGERPRINT_FILE);
-    fs::copy(&source_release_fingerprint, &dest_release_fingerprint)?;
+    fs::create_dir_all(node_peppy_dir)?;
+    let dest_release_fingerprint = node_peppy_dir.join(NODE_GIT_FINGERPRINT_FILE);
+    fs::write(&dest_release_fingerprint, format!("{daemon_git_hash}\n"))?;
 
     Ok(())
 }
@@ -78,10 +104,10 @@ pub fn fingerprint_for_bytes(bytes: &[u8]) -> String {
         .collect::<String>()
 }
 
-/// Reads the codegen fingerprint from the generated output directory.
+/// Reads the node git fingerprint from the generated output directory.
 ///
 /// The fingerprint file is located at `{peppy_config_dir}/{output_path}/{fingerprint_file}`.
-pub fn read_codegen_fingerprint(
+pub fn read_node_git_fingerprint(
     peppy_config: impl AsRef<Path>,
     output_path: impl AsRef<Path>,
 ) -> Result<String> {
@@ -104,10 +130,10 @@ pub fn read_codegen_fingerprint(
 /// 1. The config fingerprint stored in `{peppy_config_dir}/{output_path}/peppy.json5.sha256`
 ///    matches a freshly computed fingerprint of the config file.
 /// 2. The release fingerprint stored in `{peppy_config_dir}/.peppy/git.hash`
-///    matches the one in the peppy data directory.
+///    matches the `git_hash` from the daemon state file (`daemon_state.json`).
 ///
 /// Both fingerprints must exist for verification to pass.
-pub fn verify_codegen_fingerprint(
+pub fn verify_node_git_fingerprint(
     peppy_config: impl AsRef<Path>,
     output_path: impl AsRef<Path>,
 ) -> Result<()> {
@@ -115,22 +141,19 @@ pub fn verify_codegen_fingerprint(
     let output_path = output_path.as_ref();
 
     // Verify config fingerprint
-    let expected = read_codegen_fingerprint(peppy_config, output_path)?;
+    let expected = read_node_git_fingerprint(peppy_config, output_path)?;
     let actual = fingerprint_for_bytes(&fs::read(peppy_config)?);
 
     if expected != actual {
         return Err(crate::error::Error::FingerprintMismatch { expected, actual });
     }
 
-    // Verify release fingerprint (both must exist)
-    // Release fingerprint is stored in node_dir/.peppy/git.hash
+    // Verify release fingerprint
+    // Release fingerprint is stored in daemon_state.json with the git_hash property
     let peppy_config_dir = peppy_config.parent().unwrap_or_else(|| Path::new("."));
     let node_release_fingerprint_path = peppy_config_dir
         .join(".peppy")
-        .join(RELEASE_FINGERPRINT_FILE);
-
-    let data_dir = crate::consts::peppy_data_dir();
-    let current_release_fingerprint_path = data_dir.join(RELEASE_FINGERPRINT_FILE);
+        .join(NODE_GIT_FINGERPRINT_FILE);
 
     if !node_release_fingerprint_path.exists() {
         return Err(crate::error::Error::ReleaseFingerprintMissing(format!(
@@ -139,19 +162,12 @@ pub fn verify_codegen_fingerprint(
         )));
     }
 
-    if !current_release_fingerprint_path.exists() {
-        return Err(crate::error::Error::ReleaseFingerprintMissing(format!(
-            "release fingerprint not found at {}",
-            current_release_fingerprint_path.display()
-        )));
-    }
-
     let node_version = fs::read_to_string(&node_release_fingerprint_path)
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    let current_version = fs::read_to_string(&current_release_fingerprint_path)
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
+
+    // Read the current version from the daemon state file
+    let current_version = read_daemon_git_hash()?;
 
     if node_version != current_version {
         return Err(crate::error::Error::ReleaseFingerprintMismatch {
@@ -163,52 +179,14 @@ pub fn verify_codegen_fingerprint(
     Ok(())
 }
 
-#[cfg(feature = "test_helpers")]
-fn ensure_isolated_test_data_dir() {
-    static DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
-
-    // Respect explicit override via env var.
-    if std::env::var_os("PEPPY_DATA_DIR").is_some() {
-        return;
-    }
-
-    DIR.get_or_init(|| {
-        let dir = tempfile::Builder::new()
-            .prefix("peppy-test-data-")
-            .tempdir()
-            .expect("test data dir should be created")
-            .keep();
-        crate::consts::set_peppy_data_dir_override(dir.clone());
-        dir
-    });
-}
-
-#[cfg(feature = "test_helpers")]
-fn ensure_test_release_fingerprint() {
-    static INIT: OnceLock<()> = OnceLock::new();
-
-    ensure_isolated_test_data_dir();
-
-    INIT.get_or_init(|| {
-        let data_dir = crate::consts::peppy_data_dir();
-        fs::create_dir_all(&data_dir).expect("peppy data dir should be created");
-
-        let data_release_fingerprint = data_dir.join(RELEASE_FINGERPRINT_FILE);
-        fs::write(&data_release_fingerprint, "test_release_version\n")
-            .expect("should be able to write data release fingerprint");
-    });
-}
-
 /// Creates the fingerprint files at the expected location for runtime checks.
 ///
 /// This creates both:
 /// 1. The config fingerprint (`peppy.json5.sha256`) in the peppygen output directory
-/// 2. A matching release fingerprint (`git.hash`) in both the peppy data directory
-///    and the node's `.peppy` directory
+/// 2. A matching release fingerprint (`git.hash`) in the node's `.peppy` directory
+///    using the `git_hash` read from the daemon state file (`daemon_state.json`)
 #[cfg(feature = "test_helpers")]
-pub fn create_codegen_fingerprint(peppy_config_path: &Path, output_path: &Path) {
-    ensure_test_release_fingerprint();
-
+pub fn create_node_git_fingerprint(peppy_config_path: &Path, output_path: &Path) {
     let peppy_config_dir = peppy_config_path.parent().unwrap_or(Path::new("."));
     let fingerprint_dir = peppy_config_dir.join(output_path);
     fs::create_dir_all(&fingerprint_dir).expect("fingerprint dir should be created");
@@ -221,22 +199,21 @@ pub fn create_codegen_fingerprint(peppy_config_path: &Path, output_path: &Path) 
     fs::write(&fingerprint_path, format!("{fingerprint}\n"))
         .expect("fingerprint should be written");
 
-    // Create a matching node release fingerprint.
-    let data_dir = crate::consts::peppy_data_dir();
-    let data_release_fingerprint = data_dir.join(RELEASE_FINGERPRINT_FILE);
-
+    // Create a matching node release fingerprint using the daemon's git hash
     // Node's release fingerprint is in node_dir/.peppy/git.hash
+    let daemon_git_hash =
+        read_daemon_git_hash().expect("daemon state file should exist with git_hash");
     let node_peppy_dir = peppy_config_dir.join(".peppy");
     fs::create_dir_all(&node_peppy_dir).expect("node peppy dir should be created");
-    let node_release_fingerprint = node_peppy_dir.join(RELEASE_FINGERPRINT_FILE);
+    let node_release_fingerprint = node_peppy_dir.join(NODE_GIT_FINGERPRINT_FILE);
 
-    fs::copy(&data_release_fingerprint, &node_release_fingerprint)
-        .expect("should be able to copy node release fingerprint");
+    fs::write(&node_release_fingerprint, format!("{daemon_git_hash}\n"))
+        .expect("release fingerprint should be written");
 }
 
 /// Creates a config fingerprint file with incorrect content to test mismatch errors.
 #[cfg(feature = "test_helpers")]
-pub fn create_wrong_codegen_fingerprint(peppy_config_path: &Path, output_path: &Path) {
+pub fn create_wrong_node_git_fingerprint(peppy_config_path: &Path, output_path: &Path) {
     let peppy_config_dir = peppy_config_path.parent().unwrap_or(Path::new("."));
     let fingerprint_dir = peppy_config_dir.join(output_path);
     fs::create_dir_all(&fingerprint_dir).expect("fingerprint dir should be created");
@@ -255,8 +232,6 @@ pub fn create_wrong_codegen_fingerprint(peppy_config_path: &Path, output_path: &
 /// This simulates the scenario where a node was generated with a different peppy version.
 #[cfg(feature = "test_helpers")]
 pub fn create_wrong_release_fingerprint(peppy_config_path: &Path, output_path: &Path) {
-    ensure_test_release_fingerprint();
-
     // First create a valid config fingerprint (without release fingerprint copy)
     let peppy_config_dir = peppy_config_path.parent().unwrap_or(Path::new("."));
     let fingerprint_dir = peppy_config_dir.join(output_path);
@@ -273,7 +248,7 @@ pub fn create_wrong_release_fingerprint(peppy_config_path: &Path, output_path: &
     // Create a mismatched release fingerprint in the node's .peppy directory
     let node_peppy_dir = peppy_config_dir.join(".peppy");
     fs::create_dir_all(&node_peppy_dir).expect("node peppy dir should be created");
-    let release_fingerprint_path = node_peppy_dir.join(RELEASE_FINGERPRINT_FILE);
+    let release_fingerprint_path = node_peppy_dir.join(NODE_GIT_FINGERPRINT_FILE);
     fs::write(
         &release_fingerprint_path,
         "wrong_release_fingerprint_value\n",
@@ -287,20 +262,19 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    const TEST_GIT_HASH: &str = "test_git_hash_abc123";
+
     #[test]
     fn generate_node_config_fingerprint_writes_expected_digest() {
         let tmp = TempDir::new().expect("failed to create temp dir");
         let config_path = tmp.path().join(crate::consts::NODE_CONFIG_FILE);
         let generated_crate = prepare_generated_crate(&tmp);
 
-        // Set up release fingerprint before generating
-        write_release_fingerprint("test_git_hash").expect("failed to write release fingerprint");
-
         let config_contents =
             r#"{ schema_version: 1, manifest: { name: "camera", tag: "0.1.0" } }"#;
         fs::write(&config_path, config_contents).expect("failed to write config");
 
-        generate_node_config_fingerprint(&config_path, &generated_crate)
+        generate_node_config_fingerprint(&config_path, &generated_crate, TEST_GIT_HASH)
             .expect("failed to generate fingerprint");
 
         let written =
@@ -317,9 +291,6 @@ mod tests {
         let config_path = tmp.path().join(crate::consts::NODE_CONFIG_FILE);
         let generated_crate = prepare_generated_crate(&tmp);
 
-        // Set up release fingerprint before generating
-        write_release_fingerprint("test_git_hash").expect("failed to write release fingerprint");
-
         // Write initial fingerprint
         let fingerprint_path = generated_crate.join(NODE_CONFIG_FINGERPRINT_FILE);
         fs::write(&fingerprint_path, "old_fingerprint\n").expect("failed to write old fingerprint");
@@ -328,7 +299,7 @@ mod tests {
             r#"{ schema_version: 1, manifest: { name: "camera", tag: "0.1.0" } }"#;
         fs::write(&config_path, config_contents).expect("failed to write config");
 
-        generate_node_config_fingerprint(&config_path, &generated_crate)
+        generate_node_config_fingerprint(&config_path, &generated_crate, TEST_GIT_HASH)
             .expect("failed to generate fingerprint");
 
         let written = fs::read_to_string(&fingerprint_path).unwrap();

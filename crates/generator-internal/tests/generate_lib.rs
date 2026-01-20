@@ -4,6 +4,8 @@ use generator::generate_lib_for_build_system;
 use std::fs;
 use tempfile::TempDir;
 
+const TEST_GIT_HASH: &str = "test_git_hash_abc123";
+
 const PEPPY_JSON5_CONFIG: &str = r#"{
   schema_version: 1,
   manifest: {
@@ -48,7 +50,7 @@ fn run_generate_peppygen_lib_test(build_system: BuildSystem) -> (TempDir, std::p
     fs::write(&config_path, PEPPY_JSON5_CONFIG).expect("failed to write peppy.json5");
 
     // Generate the library
-    generate_lib_for_build_system(build_system, node_dir, Vec::new())
+    generate_lib_for_build_system(build_system, node_dir, Vec::new(), TEST_GIT_HASH)
         .expect("failed to generate library");
 
     // Verify the generated library structure exists
@@ -62,7 +64,7 @@ fn run_generate_peppygen_lib_test(build_system: BuildSystem) -> (TempDir, std::p
     // Check that the fingerprint was created
     let config_path = node_dir.join(NODE_CONFIG_FILE);
     let fingerprint =
-        config::fingerprint::read_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
+        config::fingerprint::read_node_git_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
             .expect("fingerprint file should exist in peppygen directory");
     assert!(!fingerprint.is_empty(), "fingerprint should not be empty");
 
@@ -88,7 +90,7 @@ fn generate_peppygen_lib_minimal_config() {
     fs::write(&config_path, minimal_config).expect("failed to write peppy.json5");
 
     // Generate should succeed even with no interfaces
-    generate_lib_for_build_system(BuildSystem::Cargo, node_dir, Vec::new())
+    generate_lib_for_build_system(BuildSystem::Cargo, node_dir, Vec::new(), TEST_GIT_HASH)
         .expect("failed to generate library for minimal config");
 
     // Verify the generated library exists
@@ -200,6 +202,6 @@ fn generate_peppygen_lib_missing_config() {
     let node_dir = temp_dir.path();
 
     // Try to generate without a peppy.json5 - should fail
-    let result = generate_lib_for_build_system(BuildSystem::Cargo, node_dir, Vec::new());
+    let result = generate_lib_for_build_system(BuildSystem::Cargo, node_dir, Vec::new(), TEST_GIT_HASH);
     assert!(result.is_err(), "should fail when peppy.json5 is missing");
 }

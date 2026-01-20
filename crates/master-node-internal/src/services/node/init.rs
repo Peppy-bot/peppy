@@ -13,6 +13,7 @@ pub async fn listen_for_node_init(
     master_node_node: &str,
     instance_id: &str,
     node_name: &str,
+    daemon_git_hash: String,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
@@ -25,7 +26,10 @@ pub async fn listen_for_node_init(
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(handle_node_init_request)
+            .handle_requests(move |context| {
+                let daemon_git_hash = daemon_git_hash.clone();
+                async move { handle_node_init_request(context, &daemon_git_hash).await }
+            })
             .await
             .map_err(Into::into)
     });
@@ -33,15 +37,23 @@ pub async fn listen_for_node_init(
     Ok(handle)
 }
 
-async fn handle_node_init_request(context: ServiceRequestContext) -> PeppyResult<Bytes> {
+async fn handle_node_init_request(
+    context: ServiceRequestContext,
+    daemon_git_hash: &str,
+) -> PeppyResult<Bytes> {
     let sender_instance_id = context.message().instance_id();
-    handle_node_init_request_inner(&context).map_err(|e| PeppyError::InvalidServiceRequest {
-        identifier: sender_instance_id.to_string(),
-        reason: e.to_string(),
+    handle_node_init_request_inner(&context, daemon_git_hash).map_err(|e| {
+        PeppyError::InvalidServiceRequest {
+            identifier: sender_instance_id.to_string(),
+            reason: e.to_string(),
+        }
     })
 }
 
-fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Bytes> {
+fn handle_node_init_request_inner(
+    context: &ServiceRequestContext,
+    daemon_git_hash: &str,
+) -> Result<Bytes> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
@@ -93,9 +105,12 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Byt
     }
 
     // Generate peppygen library (requires peppy.json5 to exist)
-    if let Err(e) =
-        generator::generate_lib_for_build_system(request.build_system, &node_dir, Vec::new())
-    {
+    if let Err(e) = generator::generate_lib_for_build_system(
+        request.build_system,
+        &node_dir,
+        Vec::new(),
+        daemon_git_hash,
+    ) {
         return NodeInitResponse::failure(format!("Failed to generate peppygen: {}", e)).encode();
     }
 
