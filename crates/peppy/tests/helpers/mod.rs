@@ -194,22 +194,13 @@ impl ServeCommandEmulation {
     ///
     /// Use this when you need to test real zenoh messaging behavior.
     pub async fn with_zenoh() -> Result<Self, pmi::PeppyMessagingInterfaceError> {
-        Self::with_zenoh_port(None).await
-    }
-
-    /// Creates a test setup using ZenohAdapter with a specific port.
-    ///
-    /// Pass `None` for an ephemeral port, or `Some(port)` for a specific port.
-    pub async fn with_zenoh_port(
-        port: Option<u16>,
-    ) -> Result<Self, pmi::PeppyMessagingInterfaceError> {
         let temp_dir = TempDir::new().expect("failed to create temp dir for test");
         let daemon_state_path = DaemonState::state_file_in(temp_dir.path());
 
         // Set env var to isolate DaemonState to this test's temp directory
         let env_guard = EnvVarGuard::set(DAEMON_STATE_FILE_ENV, &daemon_state_path);
 
-        let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", port).await?;
+        let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None).await?;
         instance.messenger().start_session().await?;
         let actual_port = instance.port;
         let messenger = instance.take_messenger();

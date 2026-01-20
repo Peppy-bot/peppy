@@ -86,12 +86,6 @@ impl ServeCommandBuilder {
         Ok(self)
     }
 
-    /// Returns a clone of the shared messenger, if one has been configured.
-    /// This is useful for tests that need to share the messenger with other components.
-    pub fn messenger(&self) -> Option<Arc<Mutex<Messenger>>> {
-        self.messenger.clone()
-    }
-
     pub fn build(mut self) -> Result<Serve> {
         if self.master_node_requested {
             if let Some(messenger) = &self.messenger {
