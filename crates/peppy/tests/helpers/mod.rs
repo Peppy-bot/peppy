@@ -23,6 +23,23 @@ pub fn override_start_cmd(peppy_json5: &Path) {
     config::fingerprint::create_codegen_fingerprint(peppy_json5, Path::new(PEPPYGEN_OUTPUT_PATH));
 }
 
+/// Overrides the add_cmd in peppy.json5 to use a no-op command.
+///
+/// This avoids running `cargo build --release` during tests, which would cause
+/// contention on cargo's global locks when tests run in parallel.
+pub fn override_add_cmd(peppy_json5: &Path) {
+    let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
+    // Use a no-op command that completes immediately to avoid running cargo build
+    cfg.manifest.add_cmd = Some(vec!["true".to_string()]);
+
+    // Write JSON (valid JSON5) back to disk.
+    let updated_content = serde_json::to_string_pretty(&cfg).expect("peppy.json5 should serialize");
+    std::fs::write(peppy_json5, updated_content).expect("peppy.json5 should update");
+
+    // `node_init` generates a fingerprint during peppygen generation; keep it in sync.
+    config::fingerprint::create_codegen_fingerprint(peppy_json5, Path::new(PEPPYGEN_OUTPUT_PATH));
+}
+
 #[derive(Clone, Default)]
 pub struct LogCapture {
     buffer: Arc<std::sync::Mutex<Vec<u8>>>,

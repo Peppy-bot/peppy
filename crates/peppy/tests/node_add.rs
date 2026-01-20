@@ -80,6 +80,9 @@ fn node_add_command_succeeds() {
         peppy_json5_path.display()
     );
 
+    // Override add_cmd to avoid running cargo build (which causes contention when tests run in parallel)
+    helpers::override_add_cmd(&peppy_json5_path);
+
     // Now add the node to the node stack
     NodeCommand {
         command: NodeCommands::Add {
@@ -210,6 +213,9 @@ fn node_add_command_with_run_arg_succeeds() {
         "peppy.json5 should exist at {}",
         peppy_json5_path.display()
     );
+
+    // Override add_cmd to avoid running cargo build (which causes contention when tests run in parallel)
+    helpers::override_add_cmd(&peppy_json5_path);
 
     // Avoid spawning a real node binary; provide `node_ready` + `node_health` in-process.
     helpers::override_start_cmd(&peppy_json5_path);

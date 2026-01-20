@@ -1,40 +1,40 @@
 mod helpers;
 
 use helpers::LogCapture;
-use pmi::{MessengerBackend, MockAdapter};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
+use peppy::commands::service::{MessengerBackendType, setup_serve_test};
 use peppy::context::AppContext;
-use peppy::daemon_state::DaemonState;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_runtime_config_command_outputs_valid_config() {
-    let mut instance = MockAdapter::start_router()
-        .await
-        .expect("failed to start mock router");
-    instance
-        .messenger()
-        .start_session()
-        .await
-        .expect("failed to start mock session");
-    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
+#[test]
+fn node_runtime_config_command_outputs_valid_config() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
 
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
-    let master_node_name = daemon_state.master_node_name;
+    let (mut ctx, serve) = rt
+        .block_on(setup_serve_test(MessengerBackendType::Mock))
+        .expect("failed to setup serve test");
+
+    let master_node_name = serve.master_node_name().to_string();
+    let daemon_state = ctx.daemon_state();
+    let shared_messenger = ctx.messenger();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
     );
 
+    rt.spawn(serve.execute_async());
+    rt.block_on(ctx.wait_ready())
+        .expect("serve should become ready");
+
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_runtime_config_node";
 
-    let node_ctx = Arc::new(AppContext::with_messenger(
+    let node_ctx = Arc::new(AppContext::with_messenger_and_state(
         node_dir.path(),
         shared_messenger.clone(),
+        daemon_state,
     ));
 
     let log_capture = LogCapture::new();
@@ -121,33 +121,37 @@ async fn node_runtime_config_command_outputs_valid_config() {
             .is_empty(),
         "deployment_instance.instance_id should not be empty"
     );
+
+    ctx.shutdown();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
-    let mut instance = MockAdapter::start_router()
-        .await
-        .expect("failed to start mock router");
-    instance
-        .messenger()
-        .start_session()
-        .await
-        .expect("failed to start mock session");
-    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
+#[test]
+fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
 
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
-    let master_node_name = daemon_state.master_node_name;
+    let (mut ctx, serve) = rt
+        .block_on(setup_serve_test(MessengerBackendType::Mock))
+        .expect("failed to setup serve test");
+
+    let master_node_name = serve.master_node_name().to_string();
+    let daemon_state = ctx.daemon_state();
+    let shared_messenger = ctx.messenger();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
     );
 
+    rt.spawn(serve.execute_async());
+    rt.block_on(ctx.wait_ready())
+        .expect("serve should become ready");
+
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_runtime_config_json5_node";
 
-    let node_ctx = Arc::new(AppContext::with_messenger(
+    let node_ctx = Arc::new(AppContext::with_messenger_and_state(
         node_dir.path(),
         shared_messenger.clone(),
+        daemon_state,
     ));
 
     let log_capture = LogCapture::new();
@@ -223,4 +227,6 @@ async fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
     );
     assert_eq!(runtime_config.node_name, node_name);
     assert_eq!(runtime_config.bound_master_node, master_node_name.as_str());
+
+    ctx.shutdown();
 }

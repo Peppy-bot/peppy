@@ -1,11 +1,9 @@
 mod helpers;
 
 use helpers::LogCapture;
-use pmi::{MessengerBackend, ZenohAdapter};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 
@@ -13,39 +11,41 @@ use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
+use peppy::commands::service::{MessengerBackendType, setup_serve_test};
 use peppy::context::AppContext;
-use peppy::daemon_state::DaemonState;
 
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_run_command_succeeds() {
-    // Use zenoh messaging so the spawned node process can communicate with the master node
-    let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("failed to start zenoh router");
-    instance
-        .messenger()
-        .start_session()
-        .await
-        .expect("failed to start zenoh session");
-    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
+#[test]
+fn node_run_command_succeeds() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
 
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
-    let master_node_name = daemon_state.master_node_name;
+    // Use zenoh messaging so the spawned node process can communicate with the master node
+    let (mut ctx, serve) = rt
+        .block_on(setup_serve_test(MessengerBackendType::Zenoh))
+        .expect("failed to setup serve test");
+
+    let master_node_name = serve.master_node_name().to_string();
+    let daemon_state = ctx.daemon_state();
+    let shared_messenger = ctx.messenger();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
     );
+
+    rt.spawn(serve.execute_async());
+    rt.block_on(ctx.wait_ready())
+        .expect("serve should become ready");
 
     // Create a temp directory for the node
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_run_node";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(AppContext::with_messenger(
+    let node_ctx = Arc::new(AppContext::with_messenger_and_state(
         node_dir.path(),
         shared_messenger.clone(),
+        daemon_state,
     ));
 
     // Set up logging
@@ -107,15 +107,14 @@ async fn node_run_command_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = NodeListRequest::new(false)
-        .poll(
+    let response = rt
+        .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        )
-        .await
+        ))
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =
@@ -163,15 +162,14 @@ async fn node_run_command_succeeds() {
     );
 
     // Query the node stack to verify the node now has an instance
-    let response = NodeListRequest::new(false)
-        .poll(
+    let response = rt
+        .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        )
-        .await
+        ))
         .expect("node_list request should complete");
 
     // Verify the node has 1 instance now
@@ -197,36 +195,40 @@ async fn node_run_command_succeeds() {
             .map(|n| (n.label(), n.instance_count()))
             .collect::<Vec<_>>()
     );
+
+    ctx.shutdown();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_run_command_with_args_succeeds() {
-    // Use zenoh messaging so the spawned node process can communicate with the master node
-    let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("failed to start zenoh router");
-    instance
-        .messenger()
-        .start_session()
-        .await
-        .expect("failed to start zenoh session");
-    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
+#[test]
+fn node_run_command_with_args_succeeds() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
 
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
-    let master_node_name = daemon_state.master_node_name;
+    // Use zenoh messaging so the spawned node process can communicate with the master node
+    let (mut ctx, serve) = rt
+        .block_on(setup_serve_test(MessengerBackendType::Zenoh))
+        .expect("failed to setup serve test");
+
+    let master_node_name = serve.master_node_name().to_string();
+    let daemon_state = ctx.daemon_state();
+    let shared_messenger = ctx.messenger();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
     );
+
+    rt.spawn(serve.execute_async());
+    rt.block_on(ctx.wait_ready())
+        .expect("serve should become ready");
 
     // Create a temp directory for the node
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_run_args_node";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(AppContext::with_messenger(
+    let node_ctx = Arc::new(AppContext::with_messenger_and_state(
         node_dir.path(),
         shared_messenger.clone(),
+        daemon_state,
     ));
 
     // Set up logging
@@ -329,15 +331,14 @@ async fn node_run_command_with_args_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = NodeListRequest::new(false)
-        .poll(
+    let response = rt
+        .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        )
-        .await
+        ))
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =
@@ -396,15 +397,14 @@ async fn node_run_command_with_args_succeeds() {
     );
 
     // Query the node stack to verify the node now has an instance
-    let response = NodeListRequest::new(false)
-        .poll(
+    let response = rt
+        .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        )
-        .await
+        ))
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =
@@ -429,27 +429,30 @@ async fn node_run_command_with_args_succeeds() {
             .map(|n| (n.label(), n.instance_count()))
             .collect::<Vec<_>>()
     );
+
+    ctx.shutdown();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_run_command_with_custom_instance_id_succeeds() {
-    // Use zenoh messaging so the spawned node process can communicate with the master node
-    let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("failed to start zenoh router");
-    instance
-        .messenger()
-        .start_session()
-        .await
-        .expect("failed to start zenoh session");
-    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
+#[test]
+fn node_run_command_with_custom_instance_id_succeeds() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
 
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
-    let master_node_name = daemon_state.master_node_name;
+    // Use zenoh messaging so the spawned node process can communicate with the master node
+    let (mut ctx, serve) = rt
+        .block_on(setup_serve_test(MessengerBackendType::Zenoh))
+        .expect("failed to setup serve test");
+
+    let master_node_name = serve.master_node_name().to_string();
+    let daemon_state = ctx.daemon_state();
+    let shared_messenger = ctx.messenger();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
     );
+
+    rt.spawn(serve.execute_async());
+    rt.block_on(ctx.wait_ready())
+        .expect("serve should become ready");
 
     // Create a temp directory for the node
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
@@ -457,9 +460,10 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
     let custom_instance_id = "my-custom-instance";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(AppContext::with_messenger(
+    let node_ctx = Arc::new(AppContext::with_messenger_and_state(
         node_dir.path(),
         shared_messenger.clone(),
+        daemon_state,
     ));
 
     // Set up logging
@@ -521,15 +525,14 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = NodeListRequest::new(false)
-        .poll(
+    let response = rt
+        .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        )
-        .await
+        ))
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =
@@ -583,15 +586,14 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
     );
 
     // Query the node stack to verify the node now has an instance
-    let response = NodeListRequest::new(false)
-        .poll(
+    let response = rt
+        .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        )
-        .await
+        ))
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =
@@ -616,4 +618,6 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
             .map(|n| (n.label(), n.instance_count()))
             .collect::<Vec<_>>()
     );
+
+    ctx.shutdown();
 }

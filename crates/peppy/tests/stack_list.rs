@@ -1,10 +1,8 @@
 mod helpers;
 
 use helpers::LogCapture;
-use pmi::{MessengerBackend, MockAdapter};
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::{
@@ -12,9 +10,9 @@ use config::node::{
 };
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
+use peppy::commands::service::{MessengerBackendType, setup_serve_test};
 use peppy::commands::stack::{StackCommand, StackCommands};
 use peppy::context::AppContext;
-use peppy::daemon_state::DaemonState;
 
 fn make_consumer_depend_on_provider(
     provider_peppy_json5: &Path,
@@ -77,25 +75,26 @@ fn make_consumer_depend_on_provider(
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_list_command_succeeds() {
-    // Mock messaging is sufficient for listing and dependency graph tests (no spawned node process).
-    let mut instance = MockAdapter::start_router()
-        .await
-        .expect("failed to start mock router");
-    instance
-        .messenger()
-        .start_session()
-        .await
-        .expect("failed to start mock session");
-    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
+#[test]
+fn node_list_command_succeeds() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
 
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
-    let master_node_name = daemon_state.master_node_name;
+    // Mock messaging is sufficient for listing and dependency graph tests (no spawned node process).
+    let (mut ctx, serve) = rt
+        .block_on(setup_serve_test(MessengerBackendType::Mock))
+        .expect("failed to setup serve test");
+
+    let master_node_name = serve.master_node_name().to_string();
+    let daemon_state = ctx.daemon_state();
+    let shared_messenger = ctx.messenger();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
     );
+
+    rt.spawn(serve.execute_async());
+    rt.block_on(ctx.wait_ready())
+        .expect("serve should become ready");
 
     // Create a temp directory for the nodes
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for nodes");
@@ -103,9 +102,10 @@ async fn node_list_command_succeeds() {
     let consumer_name = "test_list_consumer";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(AppContext::with_messenger(
+    let node_ctx = Arc::new(AppContext::with_messenger_and_state(
         node_dir.path(),
         shared_messenger.clone(),
+        daemon_state,
     ));
 
     // Set up logging
@@ -221,26 +221,25 @@ async fn node_list_command_succeeds() {
         "logs should contain the dependency edge consumer -> provider. Logs:\n{}",
         logs
     );
+
+    ctx.shutdown();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_list_command_with_dot_representation_succeeds() {
-    let mut instance = MockAdapter::start_router()
-        .await
-        .expect("failed to start mock router");
-    instance
-        .messenger()
-        .start_session()
-        .await
-        .expect("failed to start mock session");
-    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
+#[test]
+fn node_list_command_with_dot_representation_succeeds() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
 
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
-    let master_node_name = daemon_state.master_node_name;
-    assert!(
-        !master_node_name.is_empty(),
-        "master_node_name should not be empty"
-    );
+    let (mut ctx, serve) = rt
+        .block_on(setup_serve_test(MessengerBackendType::Mock))
+        .expect("failed to setup serve test");
+
+    let _master_node_name = serve.master_node_name().to_string();
+    let daemon_state = ctx.daemon_state();
+    let shared_messenger = ctx.messenger();
+
+    rt.spawn(serve.execute_async());
+    rt.block_on(ctx.wait_ready())
+        .expect("serve should become ready");
 
     // Create a temp directory for the nodes
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for nodes");
@@ -248,9 +247,10 @@ async fn node_list_command_with_dot_representation_succeeds() {
     let consumer_name = "test_list_dot_consumer";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(AppContext::with_messenger(
+    let node_ctx = Arc::new(AppContext::with_messenger_and_state(
         node_dir.path(),
         shared_messenger.clone(),
+        daemon_state,
     ));
 
     // Set up logging
@@ -434,4 +434,6 @@ async fn node_list_command_with_dot_representation_succeeds() {
         "logs should mention DOT graph output path. Logs:\n{}",
         logs
     );
+
+    ctx.shutdown();
 }
