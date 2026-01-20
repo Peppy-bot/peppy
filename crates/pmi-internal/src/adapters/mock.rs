@@ -139,7 +139,7 @@ impl MessengerBackend for MockAdapter {
     }
 
     fn get_host(&self) -> SocketAddr {
-        SocketAddr::from(([127, 0, 0, 1], 0))
+        SocketAddr::from(([127, 0, 0, 1], config::consts::DEFAULT_MESSAGING_PORT))
     }
 }
 
