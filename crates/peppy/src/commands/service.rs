@@ -5,6 +5,14 @@ mod messaging_router;
 pub mod install;
 pub mod reset;
 pub mod serve;
+pub mod test_support;
+
+// Re-export commonly used types
+pub use serve::{CancellationToken, Serve, ServeCommand, ServeCommandBuilder, ServeHandle};
+pub use test_support::{
+    setup_serve_test, MessengerBackendType, MessengerInstanceHandle, ServeTestConfig,
+    ServeTestContext,
+};
 
 use super::Command;
 use crate::{context::AppContext, error::Error as CommandError};

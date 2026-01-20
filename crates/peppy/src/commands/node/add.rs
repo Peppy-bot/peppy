@@ -8,7 +8,6 @@ use tracing::info;
 
 use super::start::start_instance_async;
 use crate::context::AppContext;
-use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
 
@@ -37,7 +36,7 @@ async fn add_node_async(
     args: Vec<(String, String)>,
     instance_id: Option<String>,
 ) -> Result<()> {
-    let daemon_state = DaemonState::read().map_err(|e| {
+    let daemon_state = ctx.daemon_state().map_err(|e| {
         Error::ExecutionFailed(format!(
             "Failed to read daemon state. Is the peppy daemon running? Error: {}",
             e
@@ -204,6 +203,7 @@ async fn add_node_async(
         &node_tag,
         &args,
         instance_id,
+        daemon_state.messaging_port,
     )
     .await?;
 

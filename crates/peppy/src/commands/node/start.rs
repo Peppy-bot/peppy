@@ -12,7 +12,6 @@ use std::time::Duration;
 use tracing::info;
 
 use crate::context::AppContext;
-use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
 
@@ -114,6 +113,8 @@ fn parse_value(value: &str) -> AnyType {
 
 /// Shared logic for starting a node instance.
 /// Used by both `run_node` and `add_node` (when --run is set).
+///
+/// The `fallback_messaging_port` is used when the messenger endpoint cannot be determined.
 pub async fn start_instance_async(
     messenger_handle: &MessengerHandle,
     master_node_name: &str,
@@ -121,13 +122,8 @@ pub async fn start_instance_async(
     tag: &str,
     args: &[(String, String)],
     instance_id: Option<String>,
+    fallback_messaging_port: u16,
 ) -> Result<String> {
-    let daemon_state = DaemonState::read().map_err(|e| {
-        Error::ExecutionFailed(format!(
-            "Failed to read daemon state. Is the peppy daemon running? Error: {}",
-            e
-        ))
-    })?;
     // Generate or use provided instance_id
     let instance_id = instance_id.unwrap_or_else(|| get_random(rng()));
 
@@ -148,7 +144,7 @@ pub async fn start_instance_async(
         .unwrap_or_else(|| {
             (
                 config::consts::DEFAULT_MESSAGING_HOST.to_string(),
-                daemon_state.messaging_port,
+                fallback_messaging_port,
             )
         });
 
@@ -309,7 +305,7 @@ async fn run_node_async(
     args: Vec<(String, String)>,
     instance_id: Option<String>,
 ) -> Result<()> {
-    let daemon_state = DaemonState::read().map_err(|e| {
+    let daemon_state = ctx.daemon_state().map_err(|e| {
         Error::ExecutionFailed(format!(
             "Failed to read daemon state. Is the peppy daemon running? Error: {}",
             e
@@ -329,6 +325,7 @@ async fn run_node_async(
         &tag,
         &args,
         instance_id,
+        daemon_state.messaging_port,
     )
     .await?;
 

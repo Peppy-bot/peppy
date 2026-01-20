@@ -8,7 +8,6 @@ use master_node::encoding::LaunchRequest;
 use tracing::info;
 
 use crate::context::AppContext;
-use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
@@ -20,7 +19,7 @@ pub fn launch(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> Result<()
 }
 
 async fn launch_async(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> Result<()> {
-    let daemon_state = DaemonState::read().map_err(|e| {
+    let daemon_state = ctx.daemon_state().map_err(|e| {
         Error::ExecutionFailed(format!(
             "Failed to read daemon state. Is the peppy daemon running? Error: {}",
             e

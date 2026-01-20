@@ -3,8 +3,12 @@ name = "peppy"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["zenoh"]
+zenoh = ["pmi/zenoh"]
+
 [dependencies]
-pmi = { path = "../pmi-internal", features = ["zenoh"] }
+pmi = { path = "../pmi-internal", default-features = false }
 config = { path = "../config-internal" }
 peppylib = { path = "../peppylib" }
 master-node = { path = "../master-node-internal" }
@@ -28,6 +32,4 @@ libc = "0.2"
 names-generator2 = "0.2"
 rand = "0.9"
 crossterm = "0.29"
-
-[dev-dependencies]
 tempfile = "3.8"

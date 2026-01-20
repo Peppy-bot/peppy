@@ -1,8 +1,9 @@
 mod helpers;
 
-use helpers::{LogCapture, ServeCommandEmulation};
+use helpers::LogCapture;
 use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
+use peppy::commands::service::{setup_serve_test, MessengerBackendType};
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::context::AppContext;
@@ -18,24 +19,36 @@ const CALLER_INSTANCE_ID: &str = "peppy-test";
 fn node_add_command_succeeds() {
     // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
-    let master_node_name = serve.daemon_state().master_node_name.clone();
+
+    let (mut ctx, handle) = rt
+        .block_on(setup_serve_test(MessengerBackendType::Mock))
+        .expect("failed to setup serve test");
+
+    // Get master node name and daemon state before consuming handle
+    let master_node_name = handle.master_node_name().to_string();
+    let daemon_state = ctx.daemon_state();
+    let shared_messenger = ctx.messenger();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
     );
 
+    // Start serve in background
+    let serve = handle.into_serve();
+    rt.spawn(serve.execute_async());
+
+    // Wait for serve to be ready
+    rt.block_on(ctx.wait_ready()).expect("serve should become ready");
+
     // Create a temp directory for the node
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_add_node";
 
-    // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(AppContext::with_messenger(
+    // Create AppContext with messenger and daemon state for proper test isolation
+    let node_ctx = Arc::new(AppContext::with_messenger_and_state(
         node_dir.path(),
         shared_messenger.clone(),
+        daemon_state,
     ));
 
     // Set up logging
@@ -126,32 +139,47 @@ fn node_add_command_succeeds() {
             .map(|n| (n.label(), n.instance_count()))
             .collect::<Vec<_>>()
     );
+
+    // Shutdown the serve command
+    ctx.shutdown();
 }
 
 #[test]
 fn node_add_command_with_run_arg_succeeds() {
     // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+
     // Mock messaging is sufficient: we run in-process node services for health/ready.
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
-    let master_node_name = serve.daemon_state().master_node_name.clone();
+    let (mut ctx, handle) = rt
+        .block_on(setup_serve_test(MessengerBackendType::Mock))
+        .expect("failed to setup serve test");
+
+    // Get master node name and daemon state before consuming handle
+    let master_node_name = handle.master_node_name().to_string();
+    let daemon_state = ctx.daemon_state();
+    let shared_messenger = ctx.messenger();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
     );
+
+    // Start serve in background
+    let serve = handle.into_serve();
+    rt.spawn(serve.execute_async());
+
+    // Wait for serve to be ready
+    rt.block_on(ctx.wait_ready()).expect("serve should become ready");
 
     // Create a temp directory for the node
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_add_run_node";
     let instance_id = "test_add_run_instance";
 
-    // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(AppContext::with_messenger(
+    // Create AppContext with messenger and daemon state for proper test isolation
+    let node_ctx = Arc::new(AppContext::with_messenger_and_state(
         node_dir.path(),
         shared_messenger.clone(),
+        daemon_state,
     ));
 
     // Set up logging
@@ -268,4 +296,7 @@ fn node_add_command_with_run_arg_succeeds() {
             .map(|n| (n.label(), n.instance_count()))
             .collect::<Vec<_>>()
     );
+
+    // Shutdown the serve command
+    ctx.shutdown();
 }

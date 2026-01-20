@@ -2,7 +2,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use pmi::Messenger;
 use tokio::sync::oneshot;
+use tokio::sync::Mutex;
 use tokio::task::{JoinError, JoinSet};
 use tracing::{error, info};
 
@@ -72,6 +74,8 @@ impl CompositeCommand {
 pub struct Serve {
     composite_command: CompositeCommand,
     shutdown_token: Option<CancellationToken>,
+    /// Optional channel to signal external readiness after initialization.
+    ready_signal: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 /// The serve command is the command that runs as a daemon in systemd and maintains a "node stack" (a graph representation of nodes)
@@ -93,11 +97,18 @@ impl Serve {
         Self {
             composite_command,
             shutdown_token: None,
+            ready_signal: None,
         }
     }
 
     pub fn with_shutdown_token(mut self, token: CancellationToken) -> Self {
         self.shutdown_token = Some(token);
+        self
+    }
+
+    /// Sets a oneshot channel that will be signaled when the serve command is ready.
+    pub fn with_ready_signal(mut self, sender: tokio::sync::oneshot::Sender<()>) -> Self {
+        self.ready_signal = Some(sender);
         self
     }
 
@@ -191,6 +202,138 @@ impl Serve {
             Ok::<(), Error>(())
         })?;
         Ok(())
+    }
+
+    /// Executes the serve command asynchronously within an existing tokio runtime.
+    ///
+    /// This is useful for tests that already have a tokio runtime running.
+    /// Unlike `execute()`, this method does not create a new runtime and can
+    /// be awaited directly.
+    pub async fn execute_async(self) -> Result<()> {
+        let handles = self.composite_command.execute()?;
+        let shutdown_token = self.shutdown_token;
+        let ready_signal = self.ready_signal;
+
+        info!("Running serve command...");
+
+        let mut join_set = JoinSet::new();
+        let mut readiness = Vec::new();
+        for handle in handles {
+            let (future, ready) = handle.into_parts();
+            if let Some(rx) = ready {
+                readiness.push(rx);
+            }
+            join_set.spawn(future);
+        }
+
+        for ready in readiness {
+            if ready.await.is_err() {
+                let join_result = join_set.join_next().await;
+                let err = match join_result {
+                    Some(Ok(Ok(()))) => Error::ExecutionFailed(
+                        "Serve handler exited before signaling readiness".into(),
+                    ),
+                    Some(Ok(Err(e))) => e,
+                    Some(Err(join_err)) => Error::ExecutionFailed(format!(
+                        "Serve handler panicked before signaling readiness: {}",
+                        join_err
+                    )),
+                    None => Error::ExecutionFailed(
+                        "Serve handler dropped before signaling readiness".into(),
+                    ),
+                };
+                return Err(err);
+            }
+        }
+
+        info!("Serve command initialized!");
+
+        // Signal external readiness if configured
+        if let Some(tx) = ready_signal {
+            let _ = tx.send(());
+        }
+        loop {
+            tokio::select! {
+                result = join_set.join_next() => {
+                    match result {
+                        Some(result) => Self::log_task_result(result),
+                        None => {
+                            info!("All serve handlers completed. Exiting...");
+                            break;
+                        }
+                    }
+                }
+                _ = async {
+                    if let Some(token) = &shutdown_token {
+                        token.cancelled().await
+                    } else {
+                        std::future::pending::<()>().await
+                    }
+                } => {
+                    info!("Shutdown signal received");
+                    info!("Waiting for serve handlers to finish...");
+                    break;
+                }
+            }
+        }
+
+        // If shutdown was triggered by the cancellation token, abort remaining tasks
+        if shutdown_token.is_some() {
+            join_set.abort_all();
+        }
+        while let Some(result) = join_set.join_next().await {
+            Self::log_task_result(result);
+        }
+
+        Ok(())
+    }
+}
+
+/// Handle returned from `ServeCommandBuilder::build_with_handle()`.
+///
+/// Provides access to the serve command and its internal messenger,
+/// which is useful for tests that need to interact with the messenger.
+pub struct ServeHandle {
+    serve: Serve,
+    messenger: Arc<Mutex<Messenger>>,
+    master_node_name: String,
+    messaging_port: u16,
+}
+
+impl ServeHandle {
+    /// Creates a new ServeHandle.
+    pub fn new(
+        serve: Serve,
+        messenger: Arc<Mutex<Messenger>>,
+        master_node_name: String,
+        messaging_port: u16,
+    ) -> Self {
+        Self {
+            serve,
+            messenger,
+            master_node_name,
+            messaging_port,
+        }
+    }
+
+    /// Consumes the handle and returns the Serve executor.
+    pub fn into_serve(self) -> Serve {
+        self.serve
+    }
+
+    /// Returns a clone of the shared messenger.
+    pub fn messenger(&self) -> Arc<Mutex<Messenger>> {
+        Arc::clone(&self.messenger)
+    }
+
+    /// Returns the master node name.
+    pub fn master_node_name(&self) -> &str {
+        &self.master_node_name
+    }
+
+    /// Returns the messaging port.
+    pub fn messaging_port(&self) -> u16 {
+        self.messaging_port
     }
 }
 

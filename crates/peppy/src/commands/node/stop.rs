@@ -4,7 +4,6 @@ use std::time::Duration;
 use tracing::info;
 
 use crate::context::AppContext;
-use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
@@ -16,7 +15,7 @@ pub fn stop_node(ctx: &Arc<AppContext>, instance_id: String) -> Result<()> {
 }
 
 async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<()> {
-    let daemon_state = DaemonState::read().map_err(|e| {
+    let daemon_state = ctx.daemon_state().map_err(|e| {
         Error::ExecutionFailed(format!(
             "Failed to read daemon state. Is the peppy daemon running? Error: {}",
             e

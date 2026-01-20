@@ -8,6 +8,8 @@ use tokio::sync::{Mutex, OnceCell};
 pub struct AppContext {
     pub root_dir: PathBuf,
     messenger_handle: OnceCell<MessengerHandle>,
+    /// Optional pre-loaded daemon state (used in tests to avoid file-based state)
+    daemon_state: Option<DaemonState>,
 }
 
 impl AppContext {
@@ -15,6 +17,7 @@ impl AppContext {
         Self {
             root_dir: PathBuf::from(root_dir.as_ref()),
             messenger_handle: OnceCell::new(),
+            daemon_state: None,
         }
     }
 
@@ -26,6 +29,34 @@ impl AppContext {
             .messenger_handle
             .set(MessengerHandle::from_shared(messenger));
         ctx
+    }
+
+    /// Creates an AppContext with a pre-initialized messenger handle and daemon state.
+    /// This is the recommended constructor for tests as it avoids file-based state
+    /// and enables proper test isolation.
+    pub fn with_messenger_and_state(
+        root_dir: impl AsRef<Path>,
+        messenger: Arc<Mutex<Messenger>>,
+        daemon_state: DaemonState,
+    ) -> Self {
+        Self {
+            root_dir: PathBuf::from(root_dir.as_ref()),
+            messenger_handle: {
+                let cell = OnceCell::new();
+                let _ = cell.set(MessengerHandle::from_shared(messenger));
+                cell
+            },
+            daemon_state: Some(daemon_state),
+        }
+    }
+
+    /// Returns the daemon state, either from the pre-loaded state or by reading from disk.
+    pub fn daemon_state(&self) -> std::io::Result<DaemonState> {
+        if let Some(state) = &self.daemon_state {
+            Ok(state.clone())
+        } else {
+            DaemonState::read()
+        }
     }
 
     pub async fn connect(&self) -> crate::error::Result<()> {

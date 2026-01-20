@@ -12,7 +12,6 @@ use rand::rng;
 use tracing::info;
 
 use crate::context::AppContext;
-use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
 
 use super::start::args_to_node_arguments;
@@ -53,7 +52,7 @@ async fn print_runtime_config_async(
     node_name: String,
     args: Vec<(String, String)>,
 ) -> Result<()> {
-    let daemon_state = DaemonState::read().map_err(|e| {
+    let daemon_state = ctx.daemon_state().map_err(|e| {
         Error::ExecutionFailed(format!(
             "Failed to read daemon state. Is the peppy daemon running? Error: {}",
             e
