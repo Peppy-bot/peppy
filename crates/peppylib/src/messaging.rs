@@ -713,6 +713,11 @@ impl MessengerHandle {
         Self { messenger }
     }
 
+    pub async fn messaging_port(&self) -> u16 {
+        let messenger = self.messenger.lock().await;
+        messenger.get_host().port()
+    }
+
     pub async fn messaging_endpoint(&self) -> Option<(String, u16)> {
         let messenger = self.messenger.lock().await;
         match &messenger.adapter {
