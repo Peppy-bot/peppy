@@ -1,20 +1,22 @@
 mod helpers;
 
+use helpers::{LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 
-use helpers::TestServeHandle;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::context::AppContext;
-use peppy::daemon_state::DaemonState;
 
 #[test]
 fn node_rust_init_command_success() {
-    let _serial_guard = helpers::serve_test_guard();
-    let serve = TestServeHandle::with_mock_messenger();
+    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to start mock serve emulation");
 
-    // Verify the daemon state file was written
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
+    // Verify the daemon state
+    let daemon_state = serve.daemon_state();
     assert!(
         !daemon_state.master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -31,7 +33,7 @@ fn node_rust_init_command_success() {
     ));
 
     // Set up logging for the node command
-    let log_capture = serve.log_capture().clone();
+    let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()

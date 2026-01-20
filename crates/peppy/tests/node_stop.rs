@@ -1,9 +1,11 @@
 mod helpers;
 
+use helpers::LogCapture;
+use pmi::{MessengerBackend, MockAdapter};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
-use helpers::TestServeHandle;
 use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
@@ -17,11 +19,18 @@ use peppylib::services::shutdown::listen_for_shutdown;
 
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
-#[test]
-fn node_stop_command_succeeds() {
-    let _serial_guard = helpers::serve_test_guard();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_stop_command_succeeds() {
     // Mock messaging is sufficient: we run in-process node services for health/shutdown.
-    let serve = TestServeHandle::with_mock_messenger();
+    let mut instance = MockAdapter::start_router()
+        .await
+        .expect("failed to start mock router");
+    instance
+        .messenger()
+        .start_session()
+        .await
+        .expect("failed to start mock session");
+    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
     let master_node_name = daemon_state.master_node_name;
@@ -38,11 +47,11 @@ fn node_stop_command_succeeds() {
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(AppContext::with_messenger(
         node_dir.path(),
-        serve.messenger(),
+        shared_messenger.clone(),
     ));
 
     // Set up logging
-    let log_capture = serve.log_capture().clone();
+    let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()
@@ -86,52 +95,36 @@ fn node_stop_command_succeeds() {
     .execute(&node_ctx)
     .expect("node add command should succeed");
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .expect("tokio runtime should create");
     let messenger_handle = node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
 
     // Start in-process node services for health/shutdown so node_start can succeed.
-    let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    let _node_ready_handle = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &master_node_name,
-            instance_id,
-            node_name,
-        ))
-        .expect("node ready service should start");
-    let _node_health_handle = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &master_node_name,
-            instance_id,
-            node_name,
-        ))
-        .expect("node health service should start");
+    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
+    let _node_ready_handle =
+        listen_for_node_ready(&node_messenger, &master_node_name, instance_id, node_name)
+            .await
+            .expect("node ready service should start");
+    let _node_health_handle =
+        listen_for_node_health(&node_messenger, &master_node_name, instance_id, node_name)
+            .await
+            .expect("node health service should start");
 
-    let (_node_shutdown_handle, node_shutdown_rx) = rt
-        .block_on(listen_for_shutdown(
-            &node_messenger,
-            &master_node_name,
-            instance_id,
-            node_name,
-        ))
-        .expect("node shutdown service should start");
+    let (_node_shutdown_handle, node_shutdown_rx) =
+        listen_for_shutdown(&node_messenger, &master_node_name, instance_id, node_name)
+            .await
+            .expect("node shutdown service should start");
 
     // Verify the node was added with 0 instances
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =
@@ -171,14 +164,15 @@ fn node_stop_command_succeeds() {
     .expect("node run command should succeed");
 
     // Verify the node now has 1 instance
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =
@@ -214,22 +208,21 @@ fn node_stop_command_succeeds() {
     .expect("node stop command should succeed");
 
     // Verify the node received the shutdown request
-    rt.block_on(async move {
-        tokio::time::timeout(Duration::from_secs(2), node_shutdown_rx)
-            .await
-            .expect("shutdown request should arrive")
-            .expect("shutdown signal should be delivered");
-    });
+    tokio::time::timeout(Duration::from_secs(2), node_shutdown_rx)
+        .await
+        .expect("shutdown request should arrive")
+        .expect("shutdown signal should be delivered");
 
     // Verify the node now has 0 instances again
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =

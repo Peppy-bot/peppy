@@ -21,6 +21,9 @@ pub struct DaemonState {
     /// The port the messaging router is listening on.
     #[serde(default = "default_messaging_port")]
     pub messaging_port: u16,
+    /// The git hash of the peppy binary at compile time.
+    #[serde(default)]
+    pub git_hash: String,
 }
 
 fn default_messaging_port() -> u16 {
@@ -28,11 +31,16 @@ fn default_messaging_port() -> u16 {
 }
 
 impl DaemonState {
-    pub fn new(master_node_name: impl Into<String>, messaging_port: u16) -> Self {
+    pub fn new(
+        master_node_name: impl Into<String>,
+        messaging_port: u16,
+        git_hash: impl Into<String>,
+    ) -> Self {
         Self {
             master_node_name: master_node_name.into(),
             daemon_pid: Some(std::process::id()),
             messaging_port,
+            git_hash: git_hash.into(),
         }
     }
 

@@ -2,17 +2,18 @@
 
 use config::consts::{DAEMON_STATE_FILE_ENV, PEPPYGEN_OUTPUT_PATH};
 use config::node::NodeConfigParser;
-use peppy::commands::service::serve::{CancellationToken, ServeCommandBuilder};
+use master_node::{MasterNode, MasterNodeArguments};
 use peppy::daemon_state::DaemonState;
-use pmi::Messenger;
+use pmi::{Messenger, MessengerBackend, MockAdapter, MockInstance, ZenohAdapter, ZenohdInstance};
 use std::ffi::OsStr;
 use std::io::Write;
-use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::thread::{self, JoinHandle};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::thread::{self};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tokio::sync::Mutex as TokioMutex;
+use tokio::task::JoinHandle;
 use tracing_subscriber::fmt::MakeWriter;
 
 pub fn override_start_cmd(peppy_json5: &Path) {
@@ -31,7 +32,7 @@ pub fn override_start_cmd(peppy_json5: &Path) {
 
 #[derive(Clone, Default)]
 pub struct LogCapture {
-    buffer: Arc<Mutex<Vec<u8>>>,
+    buffer: Arc<std::sync::Mutex<Vec<u8>>>,
 }
 
 impl LogCapture {
@@ -46,7 +47,7 @@ impl LogCapture {
 }
 
 pub struct LogCaptureWriter {
-    buffer: Arc<Mutex<Vec<u8>>>,
+    buffer: Arc<std::sync::Mutex<Vec<u8>>>,
 }
 
 impl<'a> MakeWriter<'a> for LogCapture {
@@ -86,17 +87,6 @@ pub fn wait_for_log(log_capture: &LogCapture, needle: &str, timeout: Duration) {
     );
 }
 
-pub fn serve_test_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
-
-pub fn serve_test_guard() -> std::sync::MutexGuard<'static, ()> {
-    serve_test_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 pub struct EnvVarGuard {
     key: &'static str,
 }
@@ -114,128 +104,168 @@ impl Drop for EnvVarGuard {
     }
 }
 
-pub struct TempServeEnvGuard {
-    _dir: TempDir,
-    _state_env: EnvVarGuard,
+/// Holds either a MockInstance or ZenohdInstance for the test messenger setup.
+enum MessengerInstance {
+    Mock(MockInstance),
+    Zenoh(ZenohdInstance),
 }
 
-impl TempServeEnvGuard {
-    pub fn new() -> Self {
-        let dir = tempfile::tempdir().expect("failed to create temp dir for serve env");
-        let state_file = DaemonState::state_file_in(dir.path());
-        let state_env = EnvVarGuard::set(DAEMON_STATE_FILE_ENV, state_file.as_os_str());
-        Self {
-            _dir: dir,
-            _state_env: state_env,
-        }
-    }
-}
-
-/// A test helper that starts a serve command with mock messaging in the background.
-/// Each instance is fully isolated and can run in parallel with other tests.
+/// Emulates a running `peppy serve` command for tests.
 ///
-/// The serve command is automatically shut down when this handle is dropped.
-pub struct TestServeHandle {
-    _env_guard: TempServeEnvGuard,
-    log_capture: LogCapture,
-    messenger: Arc<TokioMutex<Messenger>>,
-    shutdown_token: CancellationToken,
-    serve_thread: Option<JoinHandle<()>>,
+/// This struct:
+/// - Creates a temporary directory for test isolation
+/// - Sets the `PEPPY_DAEMON_STATE_FILE` env var to isolate DaemonState
+/// - Starts either a MockAdapter or ZenohAdapter router
+/// - Starts a session and provides a shared messenger
+/// - Creates a DaemonState in the temp directory
+///
+/// # Example
+///
+/// ```ignore
+/// let setup = ServeCommandEmulation::with_mock().await.unwrap();
+/// let messenger = setup.messenger();
+/// let daemon_state = setup.daemon_state();
+/// ```
+pub struct ServeCommandEmulation {
+    _temp_dir: TempDir,
+    _env_guard: EnvVarGuard,
+    _instance: MessengerInstance,
+    _master_node_task: JoinHandle<master_node::Result<()>>,
+    shared_messenger: Arc<TokioMutex<Messenger>>,
+    daemon_state: DaemonState,
+    daemon_state_path: PathBuf,
 }
 
-impl TestServeHandle {
-    /// Creates a new test serve handle, starting the serve command in a background thread.
-    /// Blocks until the serve command is initialized and ready to accept commands.
-    /// Uses mock messaging - suitable for in-process tests only.
-    pub fn with_mock_messenger() -> Self {
-        Self::with_messaging_router("mock")
-    }
+/// We cannot use the read `serve` command as it expect ton run on a particular port and have access to the global `peppy_data_dir()` where the `daemon_state.json` is stored
+/// Both conditions are unwanted during testing
+impl ServeCommandEmulation {
+    /// Creates a test setup using MockAdapter.
+    ///
+    /// This is the recommended approach for most tests as it doesn't require
+    /// any external processes.
+    pub async fn with_mock() -> Result<Self, pmi::PeppyMessagingInterfaceError> {
+        let temp_dir = TempDir::new().expect("failed to create temp dir for test");
+        let daemon_state_path = DaemonState::state_file_in(temp_dir.path());
 
-    /// Creates a new test serve handle with real zenoh messaging.
-    /// This allows spawned node processes to communicate with the master node.
-    /// Each call uses a unique port to enable parallel test execution.
-    pub fn with_zenoh() -> Self {
-        Self::with_messaging_router("zenoh")
-    }
+        // Set env var to isolate DaemonState to this test's temp directory
+        let env_guard = EnvVarGuard::set(DAEMON_STATE_FILE_ENV, &daemon_state_path);
 
-    fn with_messaging_router(router: &str) -> Self {
-        let env_guard = TempServeEnvGuard::new();
+        let mut instance = MockAdapter::start_router().await?;
+        instance.messenger().start_session().await?;
+        let messenger = instance.take_messenger();
+        let port = messenger.get_host().port();
+        let shared_messenger = Arc::new(TokioMutex::new(messenger));
 
-        let log_capture = LogCapture::new();
-        let log_capture_for_serve = log_capture.clone();
-
-        let shutdown_token = CancellationToken::new();
-        let shutdown_token_for_serve = shutdown_token.clone();
-
-        // Build the serve command with the specified messaging router
-        let root_dir = std::env::current_dir().expect("failed to get current directory");
-        let builder = ServeCommandBuilder::new(root_dir)
-            .expect("builder should create")
-            .with_shutdown_token(shutdown_token_for_serve)
-            .with_messaging_router(router.to_string())
-            .expect("messaging router should configure")
-            .with_master_node(None)
-            .expect("master node should configure");
-
-        // Get the shared messenger before building
-        let messenger = builder
-            .messenger()
-            .expect("messenger should be available after configuring messaging router");
-
-        // Build and run the serve command
-        let serve = builder.build().expect("serve command should build");
-
-        let serve_thread = thread::spawn(move || {
-            let subscriber = tracing_subscriber::fmt()
-                .with_ansi(false)
-                .without_time()
-                .with_writer(log_capture_for_serve)
-                .finish();
-            let _guard = tracing::subscriber::set_default(subscriber);
-
-            serve
-                .execute()
-                .expect("serve command should start successfully");
-        });
-
-        // Wait for the serve command to initialize
-        wait_for_log(
-            &log_capture,
-            "Serve command initialized!",
-            Duration::from_secs(5),
+        // Start the master node to provide services (node_init, node_add, etc.)
+        let master_node = MasterNode::new(
+            Arc::clone(&shared_messenger),
+            Some("test-master"),
+            MasterNodeArguments {
+                node_startup_timeout: Duration::from_secs(10),
+                node_start_health_timeout: Duration::from_secs(30),
+            },
+            temp_dir.path().to_path_buf(),
         );
+        let master_node_name = master_node.node_name().to_string();
 
-        Self {
+        // Start master node with ready signal to ensure services are registered
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let master_node_task =
+            tokio::spawn(async move { master_node.start_with_ready(Some(ready_tx)).await });
+        ready_rx.await.expect("master node ready signal failed");
+
+        // Create and write daemon state
+        let daemon_state = DaemonState::new(&master_node_name, port, "test-git-hash");
+        DaemonState::write_to(&daemon_state_path, &daemon_state)
+            .expect("failed to write daemon state");
+
+        Ok(Self {
+            _temp_dir: temp_dir,
             _env_guard: env_guard,
-            log_capture,
-            messenger,
-            shutdown_token,
-            serve_thread: Some(serve_thread),
-        }
+            _instance: MessengerInstance::Mock(instance),
+            _master_node_task: master_node_task,
+            shared_messenger,
+            daemon_state,
+            daemon_state_path,
+        })
     }
 
-    /// Returns a clone of the shared messenger for use with AppContext.
+    /// Creates a test setup using ZenohAdapter with an ephemeral port.
+    ///
+    /// Use this when you need to test real zenoh messaging behavior.
+    pub async fn with_zenoh() -> Result<Self, pmi::PeppyMessagingInterfaceError> {
+        Self::with_zenoh_port(None).await
+    }
+
+    /// Creates a test setup using ZenohAdapter with a specific port.
+    ///
+    /// Pass `None` for an ephemeral port, or `Some(port)` for a specific port.
+    pub async fn with_zenoh_port(
+        port: Option<u16>,
+    ) -> Result<Self, pmi::PeppyMessagingInterfaceError> {
+        let temp_dir = TempDir::new().expect("failed to create temp dir for test");
+        let daemon_state_path = DaemonState::state_file_in(temp_dir.path());
+
+        // Set env var to isolate DaemonState to this test's temp directory
+        let env_guard = EnvVarGuard::set(DAEMON_STATE_FILE_ENV, &daemon_state_path);
+
+        let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", port).await?;
+        instance.messenger().start_session().await?;
+        let actual_port = instance.port;
+        let messenger = instance.take_messenger();
+        let shared_messenger = Arc::new(TokioMutex::new(messenger));
+
+        // Start the master node to provide services (node_init, node_add, etc.)
+        let master_node = MasterNode::new(
+            Arc::clone(&shared_messenger),
+            Some("test-master"),
+            MasterNodeArguments {
+                node_startup_timeout: Duration::from_secs(10),
+                node_start_health_timeout: Duration::from_secs(30),
+            },
+            temp_dir.path().to_path_buf(),
+        );
+        let master_node_name = master_node.node_name().to_string();
+
+        // Start master node with ready signal to ensure services are registered
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let master_node_task =
+            tokio::spawn(async move { master_node.start_with_ready(Some(ready_tx)).await });
+        ready_rx.await.expect("master node ready signal failed");
+
+        // Create and write daemon state
+        let daemon_state = DaemonState::new(&master_node_name, actual_port, "test-git-hash");
+        DaemonState::write_to(&daemon_state_path, &daemon_state)
+            .expect("failed to write daemon state");
+
+        Ok(Self {
+            _temp_dir: temp_dir,
+            _env_guard: env_guard,
+            _instance: MessengerInstance::Zenoh(instance),
+            _master_node_task: master_node_task,
+            shared_messenger,
+            daemon_state,
+            daemon_state_path,
+        })
+    }
+
+    /// Returns a clone of the shared messenger wrapped in Arc<TokioMutex<_>>.
     pub fn messenger(&self) -> Arc<TokioMutex<Messenger>> {
-        Arc::clone(&self.messenger)
+        self.shared_messenger.clone()
     }
 
-    /// Returns the log capture for inspecting serve logs.
-    pub fn log_capture(&self) -> &LogCapture {
-        &self.log_capture
+    /// Returns a reference to the DaemonState.
+    pub fn daemon_state(&self) -> &DaemonState {
+        &self.daemon_state
     }
 
-    fn shutdown(&mut self) {
-        self.shutdown_token.cancel();
-        if let Some(thread) = self.serve_thread.take() {
-            thread
-                .join()
-                .expect("serve thread should terminate after shutdown");
-        }
+    /// Returns the path to the temporary directory.
+    pub fn temp_dir(&self) -> &Path {
+        self._temp_dir.path()
     }
-}
 
-impl Drop for TestServeHandle {
-    fn drop(&mut self) {
-        self.shutdown();
+    /// Returns the path to the daemon state file.
+    pub fn daemon_state_path(&self) -> &Path {
+        &self.daemon_state_path
     }
 }

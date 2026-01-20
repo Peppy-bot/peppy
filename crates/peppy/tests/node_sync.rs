@@ -1,10 +1,12 @@
 mod helpers;
 
+use helpers::LogCapture;
+use pmi::{MessengerBackend, MockAdapter};
 use std::path::Path;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use config::node::{ExposedTopic, MessageFormat, NodeConfigParser, QoSProfile};
-use helpers::TestServeHandle;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::context::AppContext;
@@ -31,10 +33,17 @@ fn add_exposed_topic(peppy_json5: &Path) {
     std::fs::write(peppy_json5, updated_content).expect("peppy.json5 should update");
 }
 
-#[test]
-fn node_sync_rust_command_succeeds() {
-    let _serial_guard = helpers::serve_test_guard();
-    let serve = TestServeHandle::with_mock_messenger();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_sync_rust_command_succeeds() {
+    let mut instance = MockAdapter::start_router()
+        .await
+        .expect("failed to start mock router");
+    instance
+        .messenger()
+        .start_session()
+        .await
+        .expect("failed to start mock session");
+    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
     assert!(
@@ -49,11 +58,11 @@ fn node_sync_rust_command_succeeds() {
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(AppContext::with_messenger(
         node_dir.path(),
-        serve.messenger(),
+        shared_messenger.clone(),
     ));
 
     // Set up logging
-    let log_capture = serve.log_capture().clone();
+    let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()
@@ -103,7 +112,10 @@ fn node_sync_rust_command_succeeds() {
     );
 
     // Run sync from inside the node directory (ctx.root_dir must contain peppy.json5)
-    let sync_ctx = Arc::new(AppContext::with_messenger(&node_path, serve.messenger()));
+    let sync_ctx = Arc::new(AppContext::with_messenger(
+        &node_path,
+        shared_messenger.clone(),
+    ));
     NodeCommand {
         command: NodeCommands::Sync {
             build_system: config::peppy_config::BuildSystem::Rust,
