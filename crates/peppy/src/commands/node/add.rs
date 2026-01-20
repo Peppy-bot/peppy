@@ -24,9 +24,8 @@ pub fn add_node(
     args: Vec<(String, String)>,
     instance_id: Option<String>,
 ) -> Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
     let peppy_json5 = node_dir.join("peppy.json5");
-    rt.block_on(add_node_async(ctx, peppy_json5, run, args, instance_id))
+    crate::commands::block_on(add_node_async(ctx, peppy_json5, run, args, instance_id))
 }
 
 async fn add_node_async(
