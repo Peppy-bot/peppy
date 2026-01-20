@@ -2,6 +2,7 @@ use crate::error::Result;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
+use std::sync::OnceLock;
 
 const NODE_CONFIG_FINGERPRINT_FILE: &str = "peppy.json5.sha256";
 // This extra fingerprint tracks changes to the peppy client across releases
@@ -162,6 +163,42 @@ pub fn verify_codegen_fingerprint(
     Ok(())
 }
 
+#[cfg(feature = "test_helpers")]
+fn ensure_isolated_test_data_dir() {
+    static DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+    // Respect explicit override via env var.
+    if std::env::var_os("PEPPY_DATA_DIR").is_some() {
+        return;
+    }
+
+    DIR.get_or_init(|| {
+        let dir = tempfile::Builder::new()
+            .prefix("peppy-test-data-")
+            .tempdir()
+            .expect("test data dir should be created")
+            .keep();
+        crate::consts::set_peppy_data_dir_override(dir.clone());
+        dir
+    });
+}
+
+#[cfg(feature = "test_helpers")]
+fn ensure_test_release_fingerprint() {
+    static INIT: OnceLock<()> = OnceLock::new();
+
+    ensure_isolated_test_data_dir();
+
+    INIT.get_or_init(|| {
+        let data_dir = crate::consts::peppy_data_dir();
+        fs::create_dir_all(&data_dir).expect("peppy data dir should be created");
+
+        let data_release_fingerprint = data_dir.join(RELEASE_FINGERPRINT_FILE);
+        fs::write(&data_release_fingerprint, "test_release_version\n")
+            .expect("should be able to write data release fingerprint");
+    });
+}
+
 /// Creates the fingerprint files at the expected location for runtime checks.
 ///
 /// This creates both:
@@ -170,6 +207,8 @@ pub fn verify_codegen_fingerprint(
 ///    and the node's `.peppy` directory
 #[cfg(feature = "test_helpers")]
 pub fn create_codegen_fingerprint(peppy_config_path: &Path, output_path: &Path) {
+    ensure_test_release_fingerprint();
+
     let peppy_config_dir = peppy_config_path.parent().unwrap_or(Path::new("."));
     let fingerprint_dir = peppy_config_dir.join(output_path);
     fs::create_dir_all(&fingerprint_dir).expect("fingerprint dir should be created");
@@ -182,10 +221,8 @@ pub fn create_codegen_fingerprint(peppy_config_path: &Path, output_path: &Path) 
     fs::write(&fingerprint_path, format!("{fingerprint}\n"))
         .expect("fingerprint should be written");
 
-    // Create matching release fingerprints in both locations
-    // Always write a consistent value to ensure test isolation
+    // Create a matching node release fingerprint.
     let data_dir = crate::consts::peppy_data_dir();
-    fs::create_dir_all(&data_dir).expect("peppy data dir should be created");
     let data_release_fingerprint = data_dir.join(RELEASE_FINGERPRINT_FILE);
 
     // Node's release fingerprint is in node_dir/.peppy/git.hash
@@ -193,11 +230,8 @@ pub fn create_codegen_fingerprint(peppy_config_path: &Path, output_path: &Path) 
     fs::create_dir_all(&node_peppy_dir).expect("node peppy dir should be created");
     let node_release_fingerprint = node_peppy_dir.join(RELEASE_FINGERPRINT_FILE);
 
-    let release_version = "test_release_version\n";
-    fs::write(&data_release_fingerprint, release_version)
-        .expect("should be able to write data release fingerprint");
-    fs::write(&node_release_fingerprint, release_version)
-        .expect("should be able to write node release fingerprint");
+    fs::copy(&data_release_fingerprint, &node_release_fingerprint)
+        .expect("should be able to copy node release fingerprint");
 }
 
 /// Creates a config fingerprint file with incorrect content to test mismatch errors.
@@ -215,12 +249,14 @@ pub fn create_wrong_codegen_fingerprint(peppy_config_path: &Path, output_path: &
 ///
 /// This function:
 /// 1. Creates a valid config fingerprint
-/// 2. Creates a "current" release fingerprint in the peppy data directory
+/// 2. Ensures a stable "current" release fingerprint exists in the peppy data directory
 /// 3. Creates a mismatched release fingerprint in the node's `.peppy` directory
 ///
 /// This simulates the scenario where a node was generated with a different peppy version.
 #[cfg(feature = "test_helpers")]
 pub fn create_wrong_release_fingerprint(peppy_config_path: &Path, output_path: &Path) {
+    ensure_test_release_fingerprint();
+
     // First create a valid config fingerprint (without release fingerprint copy)
     let peppy_config_dir = peppy_config_path.parent().unwrap_or(Path::new("."));
     let fingerprint_dir = peppy_config_dir.join(output_path);
@@ -233,13 +269,6 @@ pub fn create_wrong_release_fingerprint(peppy_config_path: &Path, output_path: &
     );
     fs::write(&fingerprint_path, format!("{fingerprint}\n"))
         .expect("fingerprint should be written");
-
-    // Create a "current" release fingerprint in the peppy data directory
-    let data_dir = crate::consts::peppy_data_dir();
-    fs::create_dir_all(&data_dir).expect("peppy data dir should be created");
-    let current_release_fingerprint = data_dir.join(RELEASE_FINGERPRINT_FILE);
-    fs::write(&current_release_fingerprint, "current_release_version\n")
-        .expect("current release fingerprint should be written");
 
     // Create a mismatched release fingerprint in the node's .peppy directory
     let node_peppy_dir = peppy_config_dir.join(".peppy");

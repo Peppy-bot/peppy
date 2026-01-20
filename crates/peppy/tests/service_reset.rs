@@ -12,7 +12,8 @@ use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::service::{ServiceCommand, ServiceCommands};
-use peppy::context::{AppContext, DaemonState};
+use peppy::context::AppContext;
+use peppy::daemon_state::DaemonState;
 
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 

@@ -5,7 +5,7 @@ use config::runtime::RuntimeConfig;
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
 use peppylib::messaging::{NODE_HEALTH_SERVICE, NODE_READY_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::runtime::NodeBuilder;
-use pmi::MessengerBackend;
+use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -70,41 +70,25 @@ impl Drop for EnvAndDirGuard {
 }
 
 struct RouterGuard {
-    router: Option<pmi::Messenger>,
-    _temp_dir: Option<tempfile::TempDir>,
+    instance: Option<ZenohdInstance>,
 }
 
 impl RouterGuard {
     async fn stop(&mut self) {
-        if let Some(mut router) = self.router.take() {
-            let _ = router.stop_router().await;
+        if let Some(mut instance) = self.instance.take() {
+            let _ = instance.messenger().stop_router().await;
         }
-    }
-}
-
-impl Drop for RouterGuard {
-    fn drop(&mut self) {
-        let Some(mut router) = self.router.take() else {
-            return;
-        };
-        let _ = std::thread::spawn(move || {
-            if let Ok(rt) = tokio::runtime::Runtime::new() {
-                let _ = rt.block_on(async move { router.stop_router().await });
-            }
-        })
-        .join();
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_runner_succeed() {
-    let (router, router_temp_dir, router_host, router_port) =
-        peppylib::start_zenohd_process("127.0.0.1", None)
-            .await
-            .expect("failed to start zenoh router for test");
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
     let mut router_guard = RouterGuard {
-        router: Some(router),
-        _temp_dir: Some(router_temp_dir),
+        instance: Some(instance),
     };
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
@@ -242,13 +226,12 @@ async fn daemon_runner_succeed() {
 async fn standalone_runner_succeed() {
     use tokio_util::sync::CancellationToken;
 
-    let (router, router_temp_dir, router_host, router_port) =
-        peppylib::start_zenohd_process("127.0.0.1", None)
-            .await
-            .expect("failed to start zenoh router for test");
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
     let mut router_guard = RouterGuard {
-        router: Some(router),
-        _temp_dir: Some(router_temp_dir),
+        instance: Some(instance),
     };
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
@@ -304,13 +287,12 @@ async fn standalone_runner_succeed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_ready_but_not_healthy() {
-    let (router, router_temp_dir, router_host, router_port) =
-        peppylib::start_zenohd_process("127.0.0.1", None)
-            .await
-            .expect("failed to start zenoh router for test");
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
     let mut router_guard = RouterGuard {
-        router: Some(router),
-        _temp_dir: Some(router_temp_dir),
+        instance: Some(instance),
     };
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
@@ -561,13 +543,12 @@ async fn node_ready_but_not_healthy() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_cancellation_token_cancelled_on_shutdown() {
-    let (router, router_temp_dir, router_host, router_port) =
-        peppylib::start_zenohd_process("127.0.0.1", None)
-            .await
-            .expect("failed to start zenoh router for test");
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
     let mut router_guard = RouterGuard {
-        router: Some(router),
-        _temp_dir: Some(router_temp_dir),
+        instance: Some(instance),
     };
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");

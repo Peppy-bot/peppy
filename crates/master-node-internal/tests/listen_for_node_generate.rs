@@ -1,6 +1,6 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, start_master_node};
+use common::{CALLER_INSTANCE_ID, start_master_node_with_mock_messenger};
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use master_node::encoding::NodeGenerateRequest;
 use std::fs;
@@ -15,7 +15,7 @@ fn write_node_config(node_dir: &Path, peppy_json5: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_generate_success() {
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
     write_node_config(
@@ -83,7 +83,7 @@ async fn listen_for_node_generate_success() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_generate_missing_node_root_dir_fails() {
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
 
     let response = NodeGenerateRequest::new("")
         .poll(
@@ -108,7 +108,7 @@ async fn listen_for_node_generate_missing_node_root_dir_fails() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_generate_node_root_dir_does_not_exist_fails() {
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
 
     let tmp = tempdir().expect("failed to create temp directory");
     let missing_dir = tmp.path().join("does_not_exist");
@@ -143,7 +143,7 @@ async fn listen_for_node_generate_node_root_dir_does_not_exist_fails() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_generate_node_root_dir_is_not_a_directory_fails() {
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
 
     let tmp = tempdir().expect("failed to create temp directory");
     let file_path = tmp.path().join("not_a_directory");
@@ -174,7 +174,7 @@ async fn listen_for_node_generate_node_root_dir_is_not_a_directory_fails() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_generate_missing_peppy_json5_fails() {
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
@@ -221,7 +221,7 @@ async fn listen_for_node_generate_missing_peppy_json5_fails() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_generate_invalid_peppy_json5_fails() {
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
     write_node_config(node_dir.path(), r#"{ manifest: [unclosed"#);
@@ -258,7 +258,7 @@ async fn listen_for_node_generate_invalid_peppy_json5_fails() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_generate_missing_dependency_fails() {
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
     // The node subscribes to `video_stream` from `uvc_camera:0.1.0`, but this node doesn't exist in the node stack
@@ -330,7 +330,7 @@ async fn listen_for_node_generate_missing_dependency_fails() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_generate_multiple_missing_dependencies_fails() {
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
     // The node subscribes to topics from multiple non-existent nodes, including
@@ -441,7 +441,7 @@ async fn listen_for_node_generate_multiple_missing_dependencies_fails() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_generate_generates_rust_interfaces() {
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
 
     let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
     write_node_config(
@@ -645,7 +645,7 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_generate_generates_rust_parameters() {
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
     write_node_config(
@@ -760,7 +760,7 @@ async fn listen_for_node_generate_generates_rust_parameters() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_generate_deletes_previous_peppy_folder() {
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
     write_node_config(

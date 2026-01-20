@@ -1,6 +1,6 @@
 mod common;
 
-use common::{send_node_add_and_wait, start_master_node, write_peppy_json5};
+use common::{send_node_add_and_wait, start_master_node_with_mock_messenger, write_peppy_json5};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, logs_dir_add};
 use master_node::encoding::NodeAddFeedback;
 use std::path::Path;
@@ -15,7 +15,7 @@ async fn listen_for_node_add_success() {
     const TARGET_NODE_NAME: &str = "runnable_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
@@ -102,7 +102,7 @@ async fn listen_for_node_add_no_config_found() {
     const TARGET_NODE_NAME: &str = "runnable_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
@@ -145,7 +145,7 @@ async fn listen_for_node_add_no_config_found() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_invalid_config_fails() {
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
@@ -184,7 +184,7 @@ async fn listen_for_node_add_invalid_config_fails() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_no_start_cmd_fails() {
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
@@ -230,7 +230,7 @@ async fn listen_for_node_add_no_start_cmd_fails() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_dependency_not_resolved() {
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
@@ -302,7 +302,7 @@ async fn listen_for_node_add_same_node_same_tags_fails() {
     const NODE_NAME: &str = "mismatch_node";
     const NODE_TAG: &str = "1.0.0";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let source_dir_v1 = tempfile::tempdir().expect("failed to create temp source dir");
@@ -405,7 +405,7 @@ async fn listen_for_node_add_same_node_same_tags_fails() {
 async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
     const NODE_NAME: &str = "versioned_node";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let source_dir_v1 = tempfile::tempdir().expect("failed to create temp source dir");
@@ -489,7 +489,7 @@ async fn listen_for_node_add_copies_files_to_storage() {
     const TARGET_NODE_NAME: &str = "copy_test_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     // Create a temporary source directory with some files
@@ -570,7 +570,7 @@ async fn listen_for_node_add_runs_add_cmd() {
     const TARGET_NODE_NAME: &str = "add_cmd_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
@@ -640,7 +640,7 @@ async fn listen_for_node_add_add_cmd_failure_fails_add() {
     const TARGET_NODE_NAME: &str = "add_cmd_fail_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
@@ -699,7 +699,7 @@ async fn listen_for_node_add_add_cmd_nonzero_exit_fails_add() {
     const TARGET_NODE_NAME: &str = "add_cmd_exit_fail_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
@@ -759,7 +759,7 @@ async fn listen_for_node_add_streams_stdout_and_stderr() {
     const STDOUT_MARKER: &str = "peppy_add_stdout_marker";
     const STDERR_MARKER: &str = "peppy_add_stderr_marker";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = format!(
@@ -818,7 +818,7 @@ async fn listen_for_node_add_fingerprint_mismatch() {
     const TARGET_NODE_NAME: &str = "fingerprint_mismatch_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
@@ -894,7 +894,7 @@ async fn listen_for_node_add_writes_log_file() {
     const STDOUT_MARKER: &str = "peppy_logfile_stdout_marker";
     const STDERR_MARKER: &str = "peppy_logfile_stderr_marker";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = format!(
@@ -998,7 +998,7 @@ async fn listen_for_node_add_release_fingerprint_mismatch() {
     const TARGET_NODE_NAME: &str = "release_fingerprint_mismatch_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 
-    let started_master = start_master_node().await;
+    let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");

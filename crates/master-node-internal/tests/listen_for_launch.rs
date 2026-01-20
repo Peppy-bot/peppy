@@ -1,6 +1,6 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, start_master_node_with_zenoh_messenger};
+use common::CALLER_INSTANCE_ID;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::runtime::LauncherRuntimeConfig;
 use master_node::encoding::LaunchRequest;
@@ -8,13 +8,15 @@ use std::fs;
 use std::time::Duration;
 use tempfile::tempdir;
 
+use crate::common::start_master_node_with_real_messenger;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_configuration_succeed() {
     const TARGET_NODE_NAME: &str = "example_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "example_instance";
 
-    let started_master = start_master_node_with_zenoh_messenger().await;
+    let started_master = start_master_node_with_real_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let nodes_dir = common::create_test_node();
@@ -90,7 +92,7 @@ async fn listen_for_launch_configuration_two_instances_succeed() {
     const TARGET_INSTANCE_ID: &str = "example_instance1";
     const TARGET_INSTANCE_ID2: &str = "example_instance2";
 
-    let started_master = start_master_node_with_zenoh_messenger().await;
+    let started_master = start_master_node_with_real_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let nodes_dir = common::create_test_node();
@@ -168,7 +170,7 @@ async fn listen_for_launch_configuration_two_instances_succeed() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_error_and_does_not_mutate_stack()
  {
-    let started_master = start_master_node_with_zenoh_messenger().await;
+    let started_master = start_master_node_with_real_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let nodes_dir = common::create_test_node();
@@ -214,7 +216,7 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_configuration_launch_config_nodes_directory_must_be_a_directory() {
-    let started_master = start_master_node_with_zenoh_messenger().await;
+    let started_master = start_master_node_with_real_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let tmp = tempdir().expect("failed to create temp directory");
@@ -278,7 +280,7 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
     const MISSING_NODE_TAG: &str = "0.1.0";
     const MISSING_INSTANCE_ID: &str = "missing_instance";
 
-    let started_master = start_master_node_with_zenoh_messenger().await;
+    let started_master = start_master_node_with_real_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let nodes_dir = common::create_test_node();
@@ -350,7 +352,7 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
     const MISSING_NODE_NAME: &str = "provider_node";
     const MISSING_NODE_TAG: &str = "0.1.0";
 
-    let started_master = start_master_node_with_zenoh_messenger().await;
+    let started_master = start_master_node_with_real_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let nodes_dir = tempdir().expect("failed to create temp directory");
@@ -446,7 +448,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     const TARGET_INSTANCE_ID: &str = "example_instance1";
     const TARGET_INSTANCE_ID2: &str = "example_instance2";
 
-    let started_master = start_master_node_with_zenoh_messenger().await;
+    let started_master = start_master_node_with_real_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     let nodes_dir = common::create_test_node();
@@ -562,7 +564,7 @@ async fn listen_for_launch_configuration_runs_generate_on_node_before_start() {
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "generate_test_instance";
 
-    let started_master = start_master_node_with_zenoh_messenger().await;
+    let started_master = start_master_node_with_real_messenger().await;
 
     // Create a node directory with peppy.json5 but WITHOUT running generate
     let nodes_dir = tempdir().expect("failed to create temp directory");
@@ -665,7 +667,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     const UNHEALTHY_NODE_TAG: &str = "0.1.0";
     const UNHEALTHY_INSTANCE_ID: &str = "unhealthy_instance";
 
-    let started_master = start_master_node_with_zenoh_messenger().await;
+    let started_master = start_master_node_with_real_messenger().await;
     let node_stack = started_master.node_stack.clone();
 
     // Create a nodes directory with both a healthy node and an unhealthy node

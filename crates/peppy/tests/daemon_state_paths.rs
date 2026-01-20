@@ -1,6 +1,6 @@
 use config::consts::DAEMON_STATE_FILE_ENV;
 use config::consts::{AppEnv, set_app_env};
-use peppy::context::DaemonState;
+use peppy::daemon_state::DaemonState;
 
 struct EnvGuard {
     key: &'static str,
@@ -38,7 +38,7 @@ fn daemon_state_write_in_prod_uses_default_peppy_path() {
     let temp_home = tempfile::tempdir().expect("temp home dir should create");
     let _home_guard = EnvGuard::set("HOME", temp_home.path().as_os_str());
 
-    let daemon_state = DaemonState::new("master-node");
+    let daemon_state = DaemonState::new("master-node", config::consts::DEFAULT_MESSAGING_PORT);
     let written_path = daemon_state
         .write()
         .expect("daemon state should be writable without sudo");

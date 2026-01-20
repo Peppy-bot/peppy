@@ -1,14 +1,58 @@
 use crate::error::{Error, Result};
 use crate::types::{PublisherQoS, SubscriberQoS, TopicMessage};
-use crate::{Message, MessengerBackend, Subscription};
-use crate::{ZenohNetProtocol, zenohd};
+use crate::zenohd::{self, ZenohNetProtocol};
+use crate::{Message, Messenger, MessengerAdapter, MessengerBackend, Subscription};
 use askama::Template;
 
-use serde_json::Value;
-
-use std::path::{Path, PathBuf};
-use std::{collections::HashMap, env, sync::Arc};
+use std::net::{SocketAddr, TcpListener};
+use std::path::PathBuf;
+use std::{collections::HashMap, sync::Arc};
 use tracing::info;
+
+/// Reserves an ephemeral port by binding to port 0 and returning the assigned port.
+/// The returned `TcpListener` holds the port until dropped.
+fn reserve_ephemeral_port() -> std::io::Result<(u16, TcpListener)> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+    Ok((port, listener))
+}
+
+/// Result of starting a zenohd router process.
+///
+/// The router is automatically stopped when this instance is dropped.
+pub struct ZenohdInstance {
+    messenger: Option<Messenger>,
+    pub host: String,
+    pub port: u16,
+}
+
+impl ZenohdInstance {
+    /// Returns a mutable reference to the messenger.
+    pub fn messenger(&mut self) -> &mut Messenger {
+        self.messenger
+            .as_mut()
+            .expect("messenger was already taken")
+    }
+
+    /// Takes ownership of the messenger, preventing automatic cleanup on drop.
+    pub fn take_messenger(&mut self) -> Messenger {
+        self.messenger.take().expect("messenger was already taken")
+    }
+}
+
+impl Drop for ZenohdInstance {
+    fn drop(&mut self) {
+        let Some(mut messenger) = self.messenger.take() else {
+            return;
+        };
+        let _ = std::thread::spawn(move || {
+            if let Ok(rt) = tokio::runtime::Runtime::new() {
+                let _ = rt.block_on(async move { messenger.stop_router().await });
+            }
+        })
+        .join();
+    }
+}
 
 use zenoh::qos::{CongestionControl, Priority};
 use zenoh::sample::SampleFields;
@@ -21,6 +65,14 @@ pub struct ZenohClientConfigTemplate {
     pub protocol: zenohd::ZenohNetProtocol,
 }
 
+#[derive(Template)]
+#[template(path = "zenoh/default_router_config.json5.j2")]
+pub struct ZenohRouterConfigTemplate {
+    pub host: String,
+    pub port: u16,
+    pub protocol: ZenohNetProtocol,
+}
+
 pub struct ZenohClientConfig {
     zenoh_config: zenoh::config::Config,
     host: String,
@@ -30,21 +82,18 @@ pub struct ZenohClientConfig {
 
 pub struct ZenohAdapter {
     zenohd: Option<zenohd::ZenohdFacade>,
-
-    // TODO: client_config must turn into `session` once `start_session` is called, find the right design pattern
     client_config: ZenohClientConfig,
     session: Option<Arc<zenoh::Session>>,
-
     publishers: HashMap<String, Arc<zenoh::pubsub::Publisher<'static>>>,
 }
 
 impl ZenohAdapter {
-    /// If `zenohd_config_path` is `None`, a default configuration file will be used or `ZENOHD_CONFIG` env var if set
-    pub fn from_zenohd_config(zenohd_config_path: Option<impl AsRef<Path>>) -> Result<Self> {
+    /// Creates a ZenohAdapter that owns and manages its own zenohd router.
+    /// Use this when you need to start a new router instance.
+    pub fn with_router(protocol: ZenohNetProtocol, host: &str, port: u16) -> Result<Self> {
+        let zenohd_config_path = Self::get_zenohd_config_path(protocol, host, port)?;
         let facade = zenohd::ZenohdFacade::new(zenohd_config_path)?;
-        // Create a client config that connects to the router
-        // Extract the endpoint from the router's listen config
-        let client_config = ZenohAdapter::derive_client_config_from_zenohd(&facade);
+        let client_config = Self::derive_client_config_from_zenohd(&facade);
 
         Ok(Self {
             zenohd: Some(facade),
@@ -54,108 +103,84 @@ impl ZenohAdapter {
         })
     }
 
-    pub fn from_client_config(client_config: impl AsRef<Path>) -> Self {
-        let client_config = ZenohAdapter::derive_client_config_from_client_file(client_config);
+    /// Creates a ZenohAdapter that connects to an existing zenohd router.
+    /// Use this when you want to connect to a router that's already running.
+    pub fn connect_to(protocol: ZenohNetProtocol, host: &str, port: u16) -> Result<Self> {
+        let client_config = Self::create_client_config(protocol, host, port);
 
-        Self {
+        Ok(Self {
             zenohd: None,
             client_config,
             session: None,
             publishers: HashMap::new(),
-        }
+        })
     }
 
-    pub fn from_host_port(protocol: ZenohNetProtocol, host: &str, port: u16) -> Self {
-        let host = host.to_string();
-        let client_template = ZenohClientConfigTemplate {
-            host: host.clone(),
-            port,
-            protocol,
-        };
+    /// Starts a zenohd router with an ephemeral port, retrying on bind failures.
+    ///
+    /// When `port` is `None`, automatically selects an available port and retries
+    /// up to 32 times if the port becomes unavailable. When `port` is `Some`,
+    /// attempts exactly once with that port.
+    ///
+    /// Returns a [`ZenohdInstance`] that automatically stops the router when dropped.
+    pub async fn start_router_ephemeral(host: &str, port: Option<u16>) -> Result<ZenohdInstance> {
+        let max_attempts = if port.is_some() { 1 } else { 32 };
 
-        let client_config_str = client_template
-            .render()
-            .expect("Failed to render client config template");
+        for attempt in 0..max_attempts {
+            let (port, _reservation) = match port {
+                Some(p) => (p, None),
+                None => {
+                    let (p, listener) =
+                        reserve_ephemeral_port().map_err(|e| Error::BackendError(e.to_string()))?;
+                    (p, Some(listener))
+                }
+            };
 
-        let zenoh_config = zenoh::config::Config::from_json5(&client_config_str)
-            .expect("Failed to create client config");
+            let adapter = Self::with_router(ZenohNetProtocol::Tcp, host, port)?;
+            let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
 
-        let client_config = ZenohClientConfig {
-            zenoh_config,
-            host,
-            port,
-            protocol,
-        };
+            // Drop the port reservation before starting the router so zenohd can bind to it
+            drop(_reservation);
 
-        Self {
-            zenohd: None,
-            client_config,
-            session: None,
-            publishers: HashMap::new(),
+            match messenger.start_router().await {
+                Ok(()) => {
+                    return Ok(ZenohdInstance {
+                        messenger: Some(messenger),
+                        host: host.to_string(),
+                        port,
+                    });
+                }
+                Err(Error::BackendError(_)) if attempt + 1 < max_attempts => {
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }
         }
+
+        Err(Error::BackendError(format!(
+            "Failed to start zenoh router after {max_attempts} attempts"
+        )))
     }
 
     pub fn client_endpoint(&self) -> (&str, u16) {
         (self.client_config.host.as_str(), self.client_config.port)
     }
 
-    fn derive_client_config_from_client_file(client_config: impl AsRef<Path>) -> ZenohClientConfig {
-        fn map_protocol(proto: &str) -> Option<ZenohNetProtocol> {
-            match proto {
-                "tcp" => Some(ZenohNetProtocol::Tcp),
-                "udp" => Some(ZenohNetProtocol::Udp),
-                "quic" => Some(ZenohNetProtocol::Quic),
-                "ws" => Some(ZenohNetProtocol::Ws),
-                _ => None,
-            }
-        }
-
-        let config_path = client_config.as_ref();
-        let (host, port, protocol) = std::fs::read_to_string(config_path)
-            .ok()
-            .and_then(|contents| serde_json5::from_str::<Value>(&contents).ok())
-            .and_then(|value| {
-                let endpoints = value.get("connect")?.get("endpoints")?;
-                let endpoint_str = match endpoints {
-                    Value::Array(items) => items.iter().find_map(|item| item.as_str()),
-                    Value::String(s) => Some(s.as_str()),
-                    _ => None,
-                }?;
-                let mut parts = endpoint_str.splitn(2, '/');
-                let protocol = map_protocol(parts.next()?)?;
-                let address = parts.next()?;
-                let (host_part, port_part) = address.rsplit_once(':')?;
-                let port = port_part.parse::<u16>().ok()?;
-                Some((
-                    host_part.trim_matches(['[', ']']).to_string(),
-                    port,
-                    protocol,
-                ))
-            })
-            .unwrap_or_else(|| (String::new(), 0, ZenohNetProtocol::default()));
-        let zenoh_config =
-            zenoh::config::Config::from_file(config_path).expect("Failed to create client config");
-
-        ZenohClientConfig {
-            zenoh_config,
-            host,
-            port,
-            protocol,
-        }
-    }
-
-    fn derive_client_config_from_zenohd(zenohd: &zenohd::ZenohdFacade) -> ZenohClientConfig {
-        // Use the same config from the router to infer the client connection
-        let connect_host = if zenohd.zenoh_endpoint.host == "0.0.0.0" {
+    fn create_client_config(
+        protocol: ZenohNetProtocol,
+        host: &str,
+        port: u16,
+    ) -> ZenohClientConfig {
+        let connect_host = if host == "0.0.0.0" {
             "127.0.0.1".to_string()
         } else {
-            zenohd.zenoh_endpoint.host.clone()
+            host.to_string()
         };
 
         let client_template = ZenohClientConfigTemplate {
             host: connect_host,
-            port: zenohd.zenoh_endpoint.port,
-            protocol: zenohd.zenoh_endpoint.protocol,
+            port,
+            protocol,
         };
 
         let client_config_str = client_template
@@ -172,24 +197,42 @@ impl ZenohAdapter {
             protocol: client_template.protocol,
         }
     }
-}
 
-impl Default for ZenohAdapter {
-    /// Uses the default pubsub config or the one defined in `ZENOH_CONFIG`
-    /// The `default()` function does not build for zenohd
-    fn default() -> Self {
-        if let Ok(config_path) = env::var("ZENOH_CONFIG") {
-            let config_path = PathBuf::from(config_path);
-            if config_path.exists() {
-                return ZenohAdapter::from_client_config(config_path);
-            }
+    fn derive_client_config_from_zenohd(zenohd: &zenohd::ZenohdFacade) -> ZenohClientConfig {
+        Self::create_client_config(
+            zenohd.zenoh_endpoint.protocol,
+            &zenohd.zenoh_endpoint.host,
+            zenohd.zenoh_endpoint.port,
+        )
+    }
+
+    fn get_zenohd_config_path(
+        protocol: ZenohNetProtocol,
+        host: &str,
+        messaging_port: u16,
+    ) -> Result<PathBuf> {
+        if let Ok(config_path) = std::env::var("ZENOH_CONFIG") {
+            return Ok(PathBuf::from(config_path));
         }
 
-        ZenohAdapter::from_host_port(
-            ZenohNetProtocol::default(),
-            "127.0.0.1",
-            config::consts::DEFAULT_ZENOH_PORT,
-        )
+        let config_path =
+            std::env::temp_dir().join(format!("zenohd_config_{}.json5", messaging_port));
+
+        let template = ZenohRouterConfigTemplate {
+            host: host.to_string(),
+            port: messaging_port,
+            protocol,
+        };
+
+        let config_content = template.render().map_err(|e| {
+            Error::ConfigurationError(format!("Failed to render zenohd config template: {}", e))
+        })?;
+
+        std::fs::write(&config_path, config_content).map_err(|e| {
+            Error::ConfigurationError(format!("Failed to write zenohd config: {}", e))
+        })?;
+
+        Ok(config_path)
     }
 }
 
@@ -405,5 +448,15 @@ impl MessengerBackend for ZenohAdapter {
             .ok_or(Error::ZenohDConfigurationNotFound)?;
         zenohd.stop_router()?;
         Ok(())
+    }
+
+    fn get_host(&self) -> SocketAddr {
+        let host = &self.client_config.host;
+        let port = self.client_config.port;
+        // Parse host as IP address; use localhost as fallback for empty/invalid hosts
+        let ip = host
+            .parse()
+            .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+        SocketAddr::new(ip, port)
     }
 }

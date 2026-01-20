@@ -1,6 +1,6 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, start_master_node};
+use common::{CALLER_INSTANCE_ID, start_master_node_with_mock_messenger};
 use master_node::encoding::{PingRequest, PingResponse};
 use master_node::names;
 use peppylib::ServiceMessenger;
@@ -8,7 +8,7 @@ use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_ping_roundtrip_succeed() {
-    let started = start_master_node().await;
+    let started = start_master_node_with_mock_messenger().await;
 
     // Send a ping request to the master node
     let timestamp = 12345u64;

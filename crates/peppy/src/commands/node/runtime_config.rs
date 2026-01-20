@@ -11,7 +11,8 @@ use node_stack::SerializedNodeGraph;
 use rand::rng;
 use tracing::info;
 
-use crate::context::{AppContext, DaemonState};
+use crate::context::AppContext;
+use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
 
 use super::start::args_to_node_arguments;
@@ -106,8 +107,8 @@ async fn print_runtime_config_async(
         .await
         .unwrap_or_else(|| {
             (
-                config::consts::DEFAULT_ZENOH_HOST.to_string(),
-                config::consts::DEFAULT_ZENOH_PORT,
+                config::consts::DEFAULT_MESSAGING_HOST.to_string(),
+                daemon_state.messaging_port,
             )
         });
 
