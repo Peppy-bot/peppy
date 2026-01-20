@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 /// The git hash embedded at compile time by build.rs
-//const GIT_HASH: &str = env!("PEPPY_GIT_HASH");
+const GIT_HASH: &str = env!("PEPPY_GIT_HASH");
 
 const DEFAULT_NODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(600); // 10 minutes
 const DEFAULT_NODE_START_HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
@@ -109,6 +109,7 @@ impl ServeCommandBuilder {
                 let daemon_state = DaemonState::new(
                     &master_node_name,
                     messenger.blocking_lock().messaging_port(),
+                    GIT_HASH,
                 );
                 let state_path = daemon_state.write().map_err(|e| {
                     Error::ExecutionFailed(format!("Failed to write daemon state: {}", e))
