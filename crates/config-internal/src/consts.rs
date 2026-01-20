@@ -25,6 +25,7 @@ pub enum AppEnv {
 use std::sync::OnceLock;
 
 static APP_ENV: OnceLock<AppEnv> = OnceLock::new();
+static DEV_DATA_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
 
 /// Sets the application environment once. Subsequent calls are ignored.
 pub fn set_app_env(env: AppEnv) {
@@ -53,7 +54,15 @@ pub fn peppy_data_dir() -> std::path::PathBuf {
                 .map(std::path::PathBuf::from);
             home.unwrap_or_else(std::env::temp_dir).join(".peppy")
         }
-        AppEnv::Dev => std::env::temp_dir().join(".peppy"),
+        AppEnv::Dev => DEV_DATA_DIR
+            .get_or_init(|| {
+                let path = tempfile::tempdir()
+                    .expect("failed to create temp directory")
+                    .keep();
+                tracing::debug!("Using dev data directory: {}", path.display());
+                path
+            })
+            .clone(),
     }
 }
 
