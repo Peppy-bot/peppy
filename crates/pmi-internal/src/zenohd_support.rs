@@ -67,7 +67,7 @@ pub async fn start_zenohd_process(
             }
         };
 
-        let adapter = ZenohAdapter::with_endpoint(ZenohNetProtocol::Tcp, host, port)?;
+        let adapter = ZenohAdapter::with_router(ZenohNetProtocol::Tcp, host, port)?;
         let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
 
         // Drop the port reservation before starting the router so zenohd can bind to it
