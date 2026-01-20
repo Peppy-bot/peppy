@@ -6,7 +6,8 @@ use config::peppy_config::BuildSystem;
 use master_node::encoding::NodeGenerateRequest;
 use tracing::info;
 
-use crate::context::{AppContext, DaemonState};
+use crate::context::AppContext;
+use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";

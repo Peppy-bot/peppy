@@ -1,12 +1,11 @@
 use bytes::Bytes;
 use config::node::QoSProfile;
-use pmi::{Messenger, MessengerBackend};
+use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use tempfile::TempDir;
 use tokio::sync::oneshot;
 
 use crate::error::Error;
@@ -39,35 +38,27 @@ impl ActionClientCase {
 }
 
 struct TestRouterContext {
-    router: Messenger,
-    _temp_dir: TempDir,
-    host: String,
-    port: u16,
+    instance: ZenohdInstance,
 }
 
 impl TestRouterContext {
     async fn start() -> Self {
-        let (router, temp_dir, host, port) = crate::start_zenohd_process("127.0.0.1", None)
+        let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
             .await
             .expect("failed to start zenoh router for tests");
-        Self {
-            router,
-            _temp_dir: temp_dir,
-            host,
-            port,
-        }
+        Self { instance }
     }
 
     fn host(&self) -> &str {
-        &self.host
+        &self.instance.host
     }
 
     fn port(&self) -> u16 {
-        self.port
+        self.instance.port
     }
 
     fn connection_target(&self) -> (String, u16) {
-        (self.host.clone(), self.port)
+        (self.instance.host.clone(), self.instance.port)
     }
 
     async fn topic_messenger(&self) -> MessengerHandle {
@@ -83,7 +74,8 @@ impl TestRouterContext {
     }
 
     async fn shutdown(mut self) {
-        self.router
+        self.instance
+            .messenger()
             .stop_router()
             .await
             .expect("Failed to shutdown router");

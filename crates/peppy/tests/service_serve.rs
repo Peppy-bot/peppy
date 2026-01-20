@@ -8,7 +8,8 @@ use helpers::TestServeHandle;
 use peppy::commands::Command;
 use peppy::commands::service::serve::CancellationToken;
 use peppy::commands::service::serve::ServeCommand;
-use peppy::context::{AppContext, DaemonState};
+use peppy::context::AppContext;
+use peppy::daemon_state::DaemonState;
 use peppy::error::Error;
 
 #[test]

@@ -726,7 +726,7 @@ impl MessengerHandle {
     }
 
     pub async fn from_host_port(host: &str, port: u16) -> Result<Self> {
-        let adapter = ZenohAdapter::from_host_port(ZenohNetProtocol::Tcp, host, port);
+        let adapter = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port)?;
         let messenger = Self::new_session(adapter).await?;
         Ok(Self {
             messenger: Arc::new(Mutex::new(messenger)),

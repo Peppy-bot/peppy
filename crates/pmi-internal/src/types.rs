@@ -4,6 +4,7 @@ use config::node::QoSProfile;
 #[cfg(feature = "zenoh")]
 use std::borrow::Cow;
 use std::future::Future;
+use std::net::SocketAddr;
 #[cfg(feature = "zenoh")]
 use zenoh::bytes::ZBytes;
 
@@ -111,6 +112,9 @@ pub trait MessengerBackend {
 
     /// Stops the router
     fn stop_router(&mut self) -> impl Future<Output = Result<()>> + Send;
+
+    /// Returns the socket address (host and port) of this messenger backend.
+    fn get_host(&self) -> SocketAddr;
 }
 
 /// Handles message receiving and cleanup
@@ -387,6 +391,10 @@ impl Messenger {
     pub fn new(adapter: MessengerAdapter) -> Self {
         Self { adapter }
     }
+
+    pub fn messaging_port(&self) -> u16 {
+        self.get_host().port()
+    }
 }
 
 macro_rules! dispatch {
@@ -395,6 +403,16 @@ macro_rules! dispatch {
             #[cfg(feature = "zenoh")]
             MessengerAdapter::Zenoh(adapter) => adapter.$method($($arg),*).await,
             MessengerAdapter::Mock(adapter) => adapter.$method($($arg),*).await,
+        }
+    };
+}
+
+macro_rules! dispatch_sync {
+    ($adapter:expr, $method:ident $(, $arg:expr)*) => {
+        match $adapter {
+            #[cfg(feature = "zenoh")]
+            MessengerAdapter::Zenoh(adapter) => adapter.$method($($arg),*),
+            MessengerAdapter::Mock(adapter) => adapter.$method($($arg),*),
         }
     };
 }
@@ -426,5 +444,9 @@ impl MessengerBackend for Messenger {
 
     async fn stop_router(&mut self) -> Result<()> {
         dispatch!(&mut self.adapter, stop_router)
+    }
+
+    fn get_host(&self) -> SocketAddr {
+        dispatch_sync!(&self.adapter, get_host)
     }
 }

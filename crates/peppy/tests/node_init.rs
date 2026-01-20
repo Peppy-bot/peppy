@@ -5,7 +5,8 @@ use std::sync::Arc;
 use helpers::TestServeHandle;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
-use peppy::context::{AppContext, DaemonState};
+use peppy::context::AppContext;
+use peppy::daemon_state::DaemonState;
 
 #[test]
 fn node_rust_init_command_success() {

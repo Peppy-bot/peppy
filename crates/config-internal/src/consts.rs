@@ -6,11 +6,11 @@ pub const PEPPY_OUTPUT_DIR: &str = ".peppy";
 /// The standard output directory for generated peppygen libraries relative to node_dir.
 pub const PEPPYGEN_OUTPUT_PATH: &str = ".peppy/libs/peppygen";
 pub const PEPPYLIB_OUTPUT_PATH: &str = ".peppy/libs/peppygen/crates/peppylib";
-// 7447 is the default port but we avoid using it to avoid conflicts with other services using Zenoh
-pub const DEFAULT_ZENOH_HOST: &str = "127.0.0.1";
-// 7447 is the default port but we avoid using it to avoid conflicts with other services using Zenoh
-pub const DEFAULT_ZENOH_PORT: u16 = 7448;
 pub const DAEMON_STATE_FILE_ENV: &str = "PEPPY_DAEMON_STATE_FILE";
+
+pub const DEFAULT_MESSAGING_HOST: &str = "127.0.0.1";
+pub const DEFAULT_MESSAGING_PORT: u16 = 7448;
+pub const PEPPY_MESSAGING_PORT_VAR_NAME: &str = "PEPPY_MESSAGING_PORT";
 
 pub const ALLOWED_CONFIG_CHARS: &str =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
@@ -25,10 +25,18 @@ pub enum AppEnv {
 use std::sync::OnceLock;
 
 static APP_ENV: OnceLock<AppEnv> = OnceLock::new();
+static PEPPY_DATA_DIR_OVERRIDE: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+/// Overrides the peppy data directory for the current process.
+///
+/// This is primarily intended for tests to isolate filesystem state.
+pub fn set_peppy_data_dir_override(path: std::path::PathBuf) {
+    PEPPY_DATA_DIR_OVERRIDE.set(path).ok();
+}
 
 /// Sets the application environment once. Subsequent calls are ignored.
 pub fn set_app_env(env: AppEnv) {
-    let _ = APP_ENV.set(env);
+    APP_ENV.set(env).ok();
 }
 
 /// Returns the current application environment, defaulting to Dev.
@@ -41,6 +49,10 @@ pub fn app_env() -> AppEnv {
 /// In production: ~/.peppy
 /// In development: /tmp/.peppy
 pub fn peppy_data_dir() -> std::path::PathBuf {
+    if let Some(path) = PEPPY_DATA_DIR_OVERRIDE.get() {
+        return path.clone();
+    }
+
     // Check for environment variable override first
     if let Some(override_path) = std::env::var_os("PEPPY_DATA_DIR") {
         return std::path::PathBuf::from(override_path);

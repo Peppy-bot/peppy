@@ -11,7 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
 
-use crate::context::{AppContext, DaemonState};
+use crate::context::AppContext;
+use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
 
@@ -121,6 +122,12 @@ pub async fn start_instance_async(
     args: &[(String, String)],
     instance_id: Option<String>,
 ) -> Result<String> {
+    let daemon_state = DaemonState::read().map_err(|e| {
+        Error::ExecutionFailed(format!(
+            "Failed to read daemon state. Is the peppy daemon running? Error: {}",
+            e
+        ))
+    })?;
     // Generate or use provided instance_id
     let instance_id = instance_id.unwrap_or_else(|| get_random(rng()));
 
@@ -140,8 +147,8 @@ pub async fn start_instance_async(
         .await
         .unwrap_or_else(|| {
             (
-                config::consts::DEFAULT_ZENOH_HOST.to_string(),
-                config::consts::DEFAULT_ZENOH_PORT,
+                config::consts::DEFAULT_MESSAGING_HOST.to_string(),
+                daemon_state.messaging_port,
             )
         });
 

@@ -5,7 +5,8 @@ use std::sync::Arc;
 use helpers::TestServeHandle;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
-use peppy::context::{AppContext, DaemonState};
+use peppy::context::AppContext;
+use peppy::daemon_state::DaemonState;
 
 #[test]
 fn node_runtime_config_command_outputs_valid_config() {
@@ -91,11 +92,11 @@ fn node_runtime_config_command_outputs_valid_config() {
 
     assert_eq!(
         runtime_config.messaging_host,
-        config::consts::DEFAULT_ZENOH_HOST
+        config::consts::DEFAULT_MESSAGING_HOST
     );
     assert_eq!(
         runtime_config.messaging_port,
-        config::consts::DEFAULT_ZENOH_PORT
+        config::consts::DEFAULT_MESSAGING_PORT
     );
     assert_eq!(runtime_config.node_name, node_name);
     assert_eq!(runtime_config.bound_master_node, master_node_name.as_str());
@@ -198,11 +199,11 @@ fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
 
     assert_eq!(
         runtime_config.messaging_host,
-        config::consts::DEFAULT_ZENOH_HOST
+        config::consts::DEFAULT_MESSAGING_HOST
     );
     assert_eq!(
         runtime_config.messaging_port,
-        config::consts::DEFAULT_ZENOH_PORT
+        config::consts::DEFAULT_MESSAGING_PORT
     );
     assert_eq!(runtime_config.node_name, node_name);
     assert_eq!(runtime_config.bound_master_node, master_node_name.as_str());
