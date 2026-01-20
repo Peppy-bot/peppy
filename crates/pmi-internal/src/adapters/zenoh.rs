@@ -37,17 +37,14 @@ pub struct ZenohClientConfig {
 
 pub struct ZenohAdapter {
     zenohd: Option<zenohd::ZenohdFacade>,
-
-    // TODO: client_config must turn into `session` once `start_session` is called, find the right design pattern
     client_config: ZenohClientConfig,
     session: Option<Arc<zenoh::Session>>,
-
     publishers: HashMap<String, Arc<zenoh::pubsub::Publisher<'static>>>,
 }
 
 impl ZenohAdapter {
     pub fn with_endpoint(protocol: ZenohNetProtocol, host: &str, port: u16) -> Result<Self> {
-        let zenohd_config_path = Self::generate_zenohd_config_path(protocol, host, port)?;
+        let zenohd_config_path = Self::get_zenohd_config_path(protocol, host, port)?;
         let facade = zenohd::ZenohdFacade::new(zenohd_config_path)?;
         // Create a client config that connects to the router
         // Extract the endpoint from the router's listen config
@@ -94,11 +91,15 @@ impl ZenohAdapter {
         }
     }
 
-    fn generate_zenohd_config_path(
+    fn get_zenohd_config_path(
         protocol: ZenohNetProtocol,
         host: &str,
         messaging_port: u16,
     ) -> Result<PathBuf> {
+        if let Ok(config_path) = std::env::var("ZENOH_CONFIG") {
+            return Ok(PathBuf::from(config_path));
+        }
+
         let config_path =
             std::env::temp_dir().join(format!("zenohd_config_{}.json5", messaging_port));
 
