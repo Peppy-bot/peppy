@@ -3,7 +3,6 @@ use super::messaging_router::MessagingRouter;
 use super::serve::{CompositeCommand, Serve};
 use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
-use config::fingerprint::write_release_fingerprint;
 use pmi::Messenger;
 use pmi::MessengerAdapter;
 use pmi::MockAdapter;
@@ -16,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 /// The git hash embedded at compile time by build.rs
-const GIT_HASH: &str = env!("PEPPY_GIT_HASH");
+//const GIT_HASH: &str = env!("PEPPY_GIT_HASH");
 
 const DEFAULT_NODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(600); // 10 minutes
 const DEFAULT_NODE_START_HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
@@ -94,13 +93,6 @@ impl ServeCommandBuilder {
     }
 
     pub fn build(mut self) -> Result<Serve> {
-        // Write the release fingerprint (git hash) to the peppy data directory.
-        // This ensures nodes can verify they were generated with this peppy version.
-        write_release_fingerprint(GIT_HASH).map_err(|e| {
-            Error::ExecutionFailed(format!("Failed to write release fingerprint: {}", e))
-        })?;
-        info!("Wrote release fingerprint: {}", GIT_HASH);
-
         if self.master_node_requested {
             if let Some(messenger) = &self.messenger {
                 let master_node = MasterNodeRunner::new(
