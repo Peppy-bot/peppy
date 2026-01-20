@@ -1,6 +1,4 @@
-use std::{fs, net::TcpListener, path::PathBuf};
-
-use tempfile::TempDir;
+use std::net::TcpListener;
 
 use crate::{
     Messenger, MessengerAdapter, MessengerBackend, PeppyMessagingInterfaceError, ZenohAdapter,

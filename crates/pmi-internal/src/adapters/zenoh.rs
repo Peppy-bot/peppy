@@ -51,7 +51,7 @@ impl ZenohAdapter {
         let client_config = ZenohAdapter::derive_client_config_from_zenohd(&facade);
 
         Ok(Self {
-            zenohd: None,
+            zenohd: Some(facade),
             client_config,
             session: None,
             publishers: HashMap::new(),
