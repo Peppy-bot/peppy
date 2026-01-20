@@ -6,7 +6,6 @@ pub mod runtime;
 pub mod services;
 pub use error::{Error as PeppyError, ParameterDeserializationError, Result as PeppyResult};
 pub use messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, TopicMessenger};
-// pub use pmi::zenohd_support::start_zenohd_process;
 pub mod config;
 
 #[allow(clippy::all)]

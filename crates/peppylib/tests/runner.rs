@@ -5,7 +5,7 @@ use config::runtime::RuntimeConfig;
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
 use peppylib::messaging::{NODE_HEALTH_SERVICE, NODE_READY_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::runtime::NodeBuilder;
-use pmi::{MessengerBackend, zenohd_support::ZenohdInstance};
+use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -83,7 +83,7 @@ impl RouterGuard {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_runner_succeed() {
-    let instance = pmi::zenohd_support::start_zenohd_process("127.0.0.1", None)
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
@@ -226,7 +226,7 @@ async fn daemon_runner_succeed() {
 async fn standalone_runner_succeed() {
     use tokio_util::sync::CancellationToken;
 
-    let instance = pmi::zenohd_support::start_zenohd_process("127.0.0.1", None)
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
@@ -287,7 +287,7 @@ async fn standalone_runner_succeed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_ready_but_not_healthy() {
-    let instance = pmi::zenohd_support::start_zenohd_process("127.0.0.1", None)
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
@@ -543,7 +543,7 @@ async fn node_ready_but_not_healthy() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_cancellation_token_cancelled_on_shutdown() {
-    let instance = pmi::zenohd_support::start_zenohd_process("127.0.0.1", None)
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
