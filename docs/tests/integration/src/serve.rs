@@ -1,7 +1,8 @@
 use config::consts::DAEMON_STATE_FILE_ENV;
 use peppy::commands::service::serve::{CancellationToken, ServeCommandBuilder};
 use peppy::daemon_state::DaemonState;
-use pmi::zenohd_support::write_zenohd_config;
+// TODO: Fix write_zenohd_config after zenohd_support removal
+// use pmi::zenohd_support::write_zenohd_config;
 use std::ffi::OsStr;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -62,14 +63,8 @@ struct ZenohConfigGuard {
 
 impl ZenohConfigGuard {
     fn new() -> Self {
-        let (temp_dir, config_path, port) =
-            write_zenohd_config("127.0.0.1", None).expect("failed to write zenoh config");
-        let env = EnvVarGuard::set("ZENOH_CONFIG", config_path.as_os_str());
-        Self {
-            _dir: temp_dir,
-            _env: env,
-            port,
-        }
+        // TODO: Fix write_zenohd_config after zenohd_support removal
+        todo!("write_zenohd_config needs to be reimplemented")
     }
 }
 

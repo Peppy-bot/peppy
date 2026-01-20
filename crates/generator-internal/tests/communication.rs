@@ -79,7 +79,7 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
 /// Creates 2 projects in separate directory and check if they can send/receive topics
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn topics_communication() {
-    let instance = pmi::zenohd_support::start_zenohd_process("127.0.0.1", None)
+    let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
@@ -383,7 +383,7 @@ const SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn services_communication_no_target_instance_id() {
-    let instance = pmi::zenohd_support::start_zenohd_process("127.0.0.1", None)
+    let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
@@ -655,7 +655,7 @@ fn main() -> Result<()> {
 /// If there are multiple services of the same name and the subscriber does not specify an instance_id, it's the first service that respond that connects with the subscriber
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn services_communication_multiple_exposed_instances_same_service_not_target_instance_id() {
-    let instance = pmi::zenohd_support::start_zenohd_process("127.0.0.1", None)
+    let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
@@ -1117,7 +1117,7 @@ const SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT: &str = r#"
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_communication() {
-    let instance = pmi::zenohd_support::start_zenohd_process("127.0.0.1", None)
+    let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
@@ -1426,7 +1426,7 @@ fn main() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_communication_cancel_goal() {
-    let instance = pmi::zenohd_support::start_zenohd_process("127.0.0.1", None)
+    let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);

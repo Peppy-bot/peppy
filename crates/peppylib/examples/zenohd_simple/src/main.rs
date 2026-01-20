@@ -1,4 +1,4 @@
-use pmi::{zenohd_support::start_zenohd_process, MessengerBackend};
+use pmi::{MessengerBackend, ZenohAdapter};
 use tokio::signal;
 
 #[tokio::main]
@@ -7,7 +7,7 @@ async fn main() {
     let port = config::consts::DEFAULT_MESSAGING_PORT;
 
     println!("Starting zenohd router on tcp/{host}:{port}…");
-    let mut instance = match start_zenohd_process(host, Some(port)).await {
+    let mut instance = match ZenohAdapter::start_router_ephemeral(host, Some(port)).await {
         Ok(instance) => instance,
         Err(error) => {
             panic!("failed to start zenohd router on tcp/{host}:{port}: {error:?}");

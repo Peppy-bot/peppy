@@ -1,9 +1,6 @@
 use bytes::Bytes;
 use config::node::QoSProfile;
-use pmi::{
-    MessengerBackend,
-    zenohd_support::{ZenohdInstance, start_zenohd_process},
-};
+use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -46,7 +43,7 @@ struct TestRouterContext {
 
 impl TestRouterContext {
     async fn start() -> Self {
-        let instance = start_zenohd_process("127.0.0.1", None)
+        let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
             .await
             .expect("failed to start zenoh router for tests");
         Self { instance }

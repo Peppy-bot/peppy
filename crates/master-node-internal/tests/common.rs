@@ -417,7 +417,7 @@ pub async fn start_master_node_with_mock_messenger() -> StartedMasterNode {
 }
 
 pub async fn start_master_node_with_real_messenger() -> StartedMasterNode {
-    let mut instance = pmi::zenohd_support::start_zenohd_process(DEFAULT_MESSAGING_HOST, None)
+    let mut instance = pmi::ZenohAdapter::start_router_ephemeral(DEFAULT_MESSAGING_HOST, None)
         .await
         .expect("failed to start zenoh router for test");
     instance

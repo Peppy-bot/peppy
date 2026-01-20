@@ -8,8 +8,6 @@ mod types;
 #[cfg(feature = "zenoh")]
 mod zenohd;
 #[cfg(feature = "zenoh")]
-pub mod zenohd_support;
-#[cfg(feature = "zenoh")]
 pub use zenohd::ZenohNetProtocol;
 
 // Exports for users of the lib
@@ -24,8 +22,4 @@ pub use adapters::mock::MockAdapter;
 
 // Zenoh specific exports (only when feature is enabled)
 #[cfg(feature = "zenoh")]
-pub use adapters::zenoh::{ZenohAdapter, ZenohClientConfigTemplate};
-
-// TODO: We shouldn't have to export `start_zenohd_process` here for the tests
-// #[cfg(feature = "zenoh")]
-// pub use zenohd_support::start_zenohd_process;
+pub use adapters::zenoh::{ZenohAdapter, ZenohClientConfigTemplate, ZenohdInstance};

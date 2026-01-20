@@ -1,10 +1,7 @@
 #[cfg(feature = "zenoh")]
 mod zenoh_tests {
     use bytes::Bytes;
-    use pmi::{
-        Message, MessengerBackend, PublisherQoS, SubscriberQoS,
-        zenohd_support::start_zenohd_process,
-    };
+    use pmi::{Message, MessengerBackend, PublisherQoS, SubscriberQoS, ZenohAdapter};
     use std::time::Duration;
 
     const INSTANCE_ID: &str = "test-instance";
@@ -28,7 +25,7 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_publish_before_start_session_fails() {
-        let mut instance = start_zenohd_process("127.0.0.1", None)
+        let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
             .await
             .expect("Failed to start zenohd process");
 
@@ -49,7 +46,7 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_publish_subscribe() {
-        let mut instance = start_zenohd_process("127.0.0.1", None)
+        let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
             .await
             .expect("Failed to start zenohd process");
 
@@ -87,7 +84,7 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple_topics() {
-        let mut instance = start_zenohd_process("127.0.0.1", None)
+        let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
             .await
             .expect("Failed to start zenohd process");
 
@@ -143,7 +140,7 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple_messages_same_topic() {
-        let mut instance = start_zenohd_process("127.0.0.1", None)
+        let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
             .await
             .expect("Failed to start zenohd process");
 
@@ -197,7 +194,7 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_late_subscription() {
-        let mut instance = start_zenohd_process("127.0.0.1", None)
+        let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
             .await
             .expect("Failed to start zenohd process");
 
@@ -243,5 +240,132 @@ mod zenoh_tests {
         assert_eq!(received.instance_id(), INSTANCE_ID);
         assert_eq!(received.master_node(), MASTER_NODE);
         assert_eq!(received.payload(), new_msg.payload());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_with_router_creates_adapter_with_router() {
+        use pmi::{Messenger, MessengerAdapter, ZenohNetProtocol};
+
+        // Reserve a port first to ensure we have an available one
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        // Create adapter with router
+        let adapter = ZenohAdapter::with_router(ZenohNetProtocol::Tcp, "127.0.0.1", port).unwrap();
+
+        // Verify client endpoint is configured correctly
+        let (host, adapter_port) = adapter.client_endpoint();
+        assert_eq!(host, "127.0.0.1");
+        assert_eq!(adapter_port, port);
+
+        // Create messenger and start/stop router to verify it works
+        let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
+        messenger
+            .start_router()
+            .await
+            .expect("Failed to start router");
+        messenger
+            .stop_router()
+            .await
+            .expect("Failed to stop router");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_connect_to_existing_router() {
+        use pmi::{Messenger, MessengerAdapter, ZenohNetProtocol};
+
+        // Start a router using start_router_ephemeral
+        let mut router_instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+            .await
+            .expect("Failed to start router");
+
+        let router_host = router_instance.host.clone();
+        let router_port = router_instance.port;
+
+        // Create a separate adapter that connects to the existing router
+        let client_adapter =
+            ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &router_host, router_port).unwrap();
+
+        // Verify client endpoint matches the router
+        let (host, port) = client_adapter.client_endpoint();
+        assert_eq!(host, router_host);
+        assert_eq!(port, router_port);
+
+        // Create messenger and start session to verify connection works
+        let mut client_messenger = Messenger::new(MessengerAdapter::Zenoh(client_adapter));
+        client_messenger
+            .start_session()
+            .await
+            .expect("Failed to start client session");
+
+        // Start session on router side too
+        router_instance
+            .messenger()
+            .start_session()
+            .await
+            .expect("Failed to start router session");
+
+        // Subscribe on router, publish from client to verify connectivity
+        let mut sub = router_instance
+            .messenger()
+            .subscribe("target_master/**/connect_test", SubscriberQoS::Standard)
+            .await
+            .expect("Failed to subscribe");
+
+        wait_for_subscriber_discovery().await;
+
+        let key_expr = make_key_expr("connect_test");
+        let msg = Message::new(&key_expr, Bytes::from_static(b"Hello from client"));
+        client_messenger
+            .publish(msg.clone(), PublisherQoS::Standard)
+            .await
+            .expect("Failed to publish from client");
+
+        let received = sub.rx.recv().await.expect("Failed to receive message");
+        assert_eq!(received.payload(), msg.payload());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_start_router_ephemeral_with_specific_port() {
+        // Reserve a port first to ensure we have an available one
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        // Start router with specific port
+        let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", Some(port))
+            .await
+            .expect("Failed to start router with specific port");
+
+        // Verify the instance uses the requested port
+        assert_eq!(instance.port, port);
+        assert_eq!(instance.host, "127.0.0.1");
+
+        // Verify the router is functional
+        instance
+            .messenger()
+            .start_session()
+            .await
+            .expect("Failed to start session");
+
+        let mut sub = instance
+            .messenger()
+            .subscribe("target_master/**/port_test", SubscriberQoS::Standard)
+            .await
+            .expect("Failed to subscribe");
+
+        wait_for_subscriber_discovery().await;
+
+        let key_expr = make_key_expr("port_test");
+        let msg = Message::new(&key_expr, Bytes::from_static(b"Test with specific port"));
+        instance
+            .messenger()
+            .publish(msg.clone(), PublisherQoS::Standard)
+            .await
+            .expect("Failed to publish");
+
+        let received = sub.rx.recv().await.expect("Failed to receive message");
+        assert_eq!(received.payload(), msg.payload());
     }
 }
