@@ -159,7 +159,7 @@ async fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
         .expect("failed to start mock router");
     instance
         .messenger()
-        .start_session() 
+        .start_session()
         .await
         .expect("failed to start mock session");
     let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
