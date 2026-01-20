@@ -1,6 +1,6 @@
 mod helpers;
 
-use helpers::TestServeHandle;
+use helpers::LogCapture;
 use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
@@ -10,15 +10,24 @@ use peppy::daemon_state::DaemonState;
 use peppylib::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
+use pmi::{MessengerBackend, MockAdapter};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
-#[test]
-fn node_add_command_succeeds() {
-    let _serial_guard = helpers::serve_test_guard();
-    let serve = TestServeHandle::with_mock_messenger();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_add_command_succeeds() {
+    let mut instance = MockAdapter::start_router()
+        .await
+        .expect("failed to start mock router");
+    instance
+        .messenger()
+        .start_session()
+        .await
+        .expect("failed to start mock session");
+    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
     let master_node_name = daemon_state.master_node_name;
@@ -34,11 +43,11 @@ fn node_add_command_succeeds() {
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(AppContext::with_messenger(
         node_dir.path(),
-        serve.messenger(),
+        shared_messenger.clone(),
     ));
 
     // Set up logging
-    let log_capture = serve.log_capture().clone();
+    let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()
@@ -87,19 +96,19 @@ fn node_add_command_succeeds() {
     );
 
     // Query the node stack to verify the node was added
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime should create");
     let messenger_handle = node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =
@@ -128,11 +137,18 @@ fn node_add_command_succeeds() {
     );
 }
 
-#[test]
-fn node_add_command_with_run_arg_succeeds() {
-    let _serial_guard = helpers::serve_test_guard();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_add_command_with_run_arg_succeeds() {
     // Mock messaging is sufficient: we run in-process node services for health/ready.
-    let serve = TestServeHandle::with_mock_messenger();
+    let mut instance = MockAdapter::start_router()
+        .await
+        .expect("failed to start mock router");
+    instance
+        .messenger()
+        .start_session()
+        .await
+        .expect("failed to start mock session");
+    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
     let master_node_name = daemon_state.master_node_name;
@@ -149,11 +165,11 @@ fn node_add_command_with_run_arg_succeeds() {
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(AppContext::with_messenger(
         node_dir.path(),
-        serve.messenger(),
+        shared_messenger.clone(),
     ));
 
     // Set up logging
-    let log_capture = serve.log_capture().clone();
+    let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()
@@ -184,28 +200,15 @@ fn node_add_command_with_run_arg_succeeds() {
     // Avoid spawning a real node binary; provide `node_ready` + `node_health` in-process.
     helpers::override_start_cmd(&peppy_json5_path);
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .expect("tokio runtime should create");
-    let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    let _node_ready_handle = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &master_node_name,
-            instance_id,
-            node_name,
-        ))
-        .expect("node ready service should start");
-    let _node_health_handle = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &master_node_name,
-            instance_id,
-            node_name,
-        ))
-        .expect("node health service should start");
+    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
+    let _node_ready_handle =
+        listen_for_node_ready(&node_messenger, &master_node_name, instance_id, node_name)
+            .await
+            .expect("node ready service should start");
+    let _node_health_handle =
+        listen_for_node_health(&node_messenger, &master_node_name, instance_id, node_name)
+            .await
+            .expect("node health service should start");
 
     // Add the node to the node stack with run=true to also start an instance
     NodeCommand {
@@ -237,14 +240,15 @@ fn node_add_command_with_run_arg_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =

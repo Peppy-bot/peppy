@@ -1,12 +1,13 @@
 mod helpers;
 
+use pmi::{MessengerBackend, MockAdapter};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use helpers::TestServeHandle;
 use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
@@ -52,10 +53,17 @@ fn write_node_config(
     node_dir
 }
 
-#[test]
-fn service_reset_command_resets_node_stack() {
-    let _serial_guard = helpers::serve_test_guard();
-    let serve = TestServeHandle::with_mock_messenger();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_reset_command_resets_node_stack() {
+    let mut instance = MockAdapter::start_router()
+        .await
+        .expect("failed to start mock router");
+    instance
+        .messenger()
+        .start_session()
+        .await
+        .expect("failed to start mock session");
+    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
     let master_node_name = daemon_state.master_node_name;
@@ -76,7 +84,7 @@ fn service_reset_command_resets_node_stack() {
 
     let ctx = Arc::new(AppContext::with_messenger(
         nodes_dir.path(),
-        serve.messenger(),
+        shared_messenger.clone(),
     ));
 
     NodeCommand {
@@ -90,19 +98,19 @@ fn service_reset_command_resets_node_stack() {
     .execute(&ctx)
     .expect("node add command should succeed");
 
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime should create");
     let messenger_handle = ctx
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =
@@ -123,14 +131,15 @@ fn service_reset_command_resets_node_stack() {
     .execute(&ctx)
     .expect("service reset command should succeed");
 
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete after reset");
 
     let graph: SerializedNodeGraph =

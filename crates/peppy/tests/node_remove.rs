@@ -1,6 +1,6 @@
 mod helpers;
 
-use helpers::TestServeHandle;
+use helpers::LogCapture;
 use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
@@ -11,15 +11,24 @@ use peppylib::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
+use pmi::{MessengerBackend, MockAdapter};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
-#[test]
-fn node_remove_command_succeeds() {
-    let _serial_guard = helpers::serve_test_guard();
-    let serve = TestServeHandle::with_mock_messenger();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_remove_command_succeeds() {
+    let mut instance = MockAdapter::start_router()
+        .await
+        .expect("failed to start mock router");
+    instance
+        .messenger()
+        .start_session()
+        .await
+        .expect("failed to start mock session");
+    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
     let master_node_name = daemon_state.master_node_name;
@@ -34,10 +43,10 @@ fn node_remove_command_succeeds() {
 
     let node_ctx = Arc::new(AppContext::with_messenger(
         node_dir.path(),
-        serve.messenger(),
+        shared_messenger.clone(),
     ));
 
-    let log_capture = serve.log_capture().clone();
+    let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()
@@ -75,19 +84,19 @@ fn node_remove_command_succeeds() {
     .expect("node add command should succeed");
 
     // Assert there is one node + the master node in the node stack after add
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime should create");
     let messenger_handle = node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =
@@ -117,19 +126,19 @@ fn node_remove_command_succeeds() {
         logs
     );
 
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime should create");
     let messenger_handle = node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =
@@ -143,10 +152,17 @@ fn node_remove_command_succeeds() {
     );
 }
 
-#[test]
-fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
-    let _serial_guard = helpers::serve_test_guard();
-    let serve = TestServeHandle::with_mock_messenger();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
+    let mut instance = MockAdapter::start_router()
+        .await
+        .expect("failed to start mock router");
+    instance
+        .messenger()
+        .start_session() 
+        .await
+        .expect("failed to start mock session");
+    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
     let master_node_name = daemon_state.master_node_name;
@@ -162,10 +178,10 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
 
     let node_ctx = Arc::new(AppContext::with_messenger(
         node_dir.path(),
-        serve.messenger(),
+        shared_messenger.clone(),
     ));
 
-    let log_capture = serve.log_capture().clone();
+    let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()
@@ -206,41 +222,24 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
     .execute(&node_ctx)
     .expect("node add command should succeed");
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .expect("tokio runtime should create");
     let messenger_handle = node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
 
     // Start in-process node services for health/shutdown so node_run can succeed.
-    let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    let _node_ready_handle = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &master_node_name,
-            instance_id,
-            node_name,
-        ))
-        .expect("node ready service should start");
-    let _node_health_handle = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &master_node_name,
-            instance_id,
-            node_name,
-        ))
-        .expect("node health service should start");
-    let (_node_shutdown_handle, node_shutdown_rx) = rt
-        .block_on(listen_for_shutdown(
-            &node_messenger,
-            &master_node_name,
-            instance_id,
-            node_name,
-        ))
-        .expect("node shutdown service should start");
+    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
+    let _node_ready_handle =
+        listen_for_node_ready(&node_messenger, &master_node_name, instance_id, node_name)
+            .await
+            .expect("node ready service should start");
+    let _node_health_handle =
+        listen_for_node_health(&node_messenger, &master_node_name, instance_id, node_name)
+            .await
+            .expect("node health service should start");
+    let (_node_shutdown_handle, node_shutdown_rx) =
+        listen_for_shutdown(&node_messenger, &master_node_name, instance_id, node_name)
+            .await
+            .expect("node shutdown service should start");
 
     NodeCommand {
         command: NodeCommands::Start {
@@ -264,22 +263,21 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
     .execute(&node_ctx)
     .expect("node remove command should succeed");
 
-    rt.block_on(async move {
-        tokio::time::timeout(Duration::from_secs(2), node_shutdown_rx)
-            .await
-            .expect("shutdown request should arrive")
-            .expect("shutdown signal should be delivered");
-    });
+    tokio::time::timeout(Duration::from_secs(2), node_shutdown_rx)
+        .await
+        .expect("shutdown request should arrive")
+        .expect("shutdown signal should be delivered");
 
     // Node should be removed from the stack.
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =
@@ -295,10 +293,17 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
     );
 }
 
-#[test]
-fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
-    let _serial_guard = helpers::serve_test_guard();
-    let serve = TestServeHandle::with_mock_messenger();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
+    let mut instance = MockAdapter::start_router()
+        .await
+        .expect("failed to start mock router");
+    instance
+        .messenger()
+        .start_session()
+        .await
+        .expect("failed to start mock session");
+    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
 
     let daemon_state = DaemonState::read().expect("daemon state should be readable");
     let master_node_name = daemon_state.master_node_name;
@@ -314,10 +319,10 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
 
     let node_ctx = Arc::new(AppContext::with_messenger(
         node_dir.path(),
-        serve.messenger(),
+        shared_messenger.clone(),
     ));
 
-    let log_capture = serve.log_capture().clone();
+    let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()
@@ -356,39 +361,22 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
     .execute(&node_ctx)
     .expect("node add command should succeed");
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .expect("tokio runtime should create");
-    let node_messenger = MessengerHandle::from_shared(serve.messenger());
+    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
 
-    let _node_ready_handle = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &master_node_name,
-            instance_id,
-            node_name,
-        ))
-        .expect("node ready service should start");
+    let _node_ready_handle =
+        listen_for_node_ready(&node_messenger, &master_node_name, instance_id, node_name)
+            .await
+            .expect("node ready service should start");
 
-    let _node_health_handle = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &master_node_name,
-            instance_id,
-            node_name,
-        ))
-        .expect("node health service should start");
+    let _node_health_handle =
+        listen_for_node_health(&node_messenger, &master_node_name, instance_id, node_name)
+            .await
+            .expect("node health service should start");
 
-    let (_node_shutdown_handle, node_shutdown_rx) = rt
-        .block_on(listen_for_shutdown(
-            &node_messenger,
-            &master_node_name,
-            instance_id,
-            node_name,
-        ))
-        .expect("node shutdown service should start");
+    let (_node_shutdown_handle, node_shutdown_rx) =
+        listen_for_shutdown(&node_messenger, &master_node_name, instance_id, node_name)
+            .await
+            .expect("node shutdown service should start");
 
     NodeCommand {
         command: NodeCommands::Start {
@@ -412,12 +400,10 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
     .execute(&node_ctx)
     .expect("node remove command should succeed");
 
-    rt.block_on(async move {
-        tokio::time::timeout(Duration::from_secs(2), node_shutdown_rx)
-            .await
-            .expect("shutdown request should arrive")
-            .expect("shutdown signal should be delivered");
-    });
+    tokio::time::timeout(Duration::from_secs(2), node_shutdown_rx)
+        .await
+        .expect("shutdown request should arrive")
+        .expect("shutdown signal should be delivered");
 
     let logs = log_capture.logs();
     assert!(
@@ -426,19 +412,19 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         logs
     );
 
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime should create");
     let messenger_handle = node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+    let response = NodeListRequest::new(false)
+        .poll(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
             Duration::from_secs(5),
-        ))
+        )
+        .await
         .expect("node_list request should complete");
 
     let graph: SerializedNodeGraph =

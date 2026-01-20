@@ -1,11 +1,47 @@
 use super::super::error::{Error, Result};
 use super::super::types::{
-    Message, MessengerBackend, PublisherQoS, SubscriberQoS, Subscription, TopicMessage,
+    Message, Messenger, MessengerAdapter, MessengerBackend, PublisherQoS, SubscriberQoS,
+    Subscription, TopicMessage,
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
+
+/// RAII wrapper for a MockAdapter-based Messenger with router started.
+pub struct MockInstance {
+    messenger: Option<Messenger>,
+    pub host: String,
+    pub port: u16,
+}
+
+impl MockInstance {
+    /// Returns a mutable reference to the messenger.
+    pub fn messenger(&mut self) -> &mut Messenger {
+        self.messenger
+            .as_mut()
+            .expect("messenger was already taken")
+    }
+
+    /// Takes ownership of the messenger, preventing automatic cleanup on drop.
+    pub fn take_messenger(&mut self) -> Messenger {
+        self.messenger.take().expect("messenger was already taken")
+    }
+}
+
+impl Drop for MockInstance {
+    fn drop(&mut self) {
+        let Some(mut messenger) = self.messenger.take() else {
+            return;
+        };
+        let _ = std::thread::spawn(move || {
+            if let Ok(rt) = tokio::runtime::Runtime::new() {
+                let _ = rt.block_on(async move { messenger.stop_router().await });
+            }
+        })
+        .join();
+    }
+}
 
 pub struct MockAdapter {
     pub is_session_connected: bool,
@@ -144,6 +180,22 @@ impl MessengerBackend for MockAdapter {
 }
 
 impl MockAdapter {
+    /// Creates a new MockAdapter, wraps it in a Messenger, starts the router,
+    /// and returns a `MockInstance` for managing the lifecycle.
+    ///
+    /// This mirrors the interface of `ZenohAdapter::start_router_ephemeral`.
+    pub async fn start_router() -> Result<MockInstance> {
+        let adapter = Self::default();
+        let mut messenger = Messenger::new(MessengerAdapter::Mock(adapter));
+        messenger.start_router().await?;
+
+        Ok(MockInstance {
+            messenger: Some(messenger),
+            host: config::consts::DEFAULT_MESSAGING_HOST.to_string(),
+            port: config::consts::DEFAULT_MESSAGING_PORT,
+        })
+    }
+
     /// Matches a topic against a pattern using Zenoh key expression semantics.
     ///
     /// Zenoh wildcards:
