@@ -7,6 +7,7 @@ use tokio::sync::{Mutex, OnceCell};
 
 pub struct AppContext {
     pub root_dir: PathBuf,
+    daemon_state_path: Option<PathBuf>,
     messenger_handle: OnceCell<MessengerHandle>,
 }
 
@@ -14,7 +15,24 @@ impl AppContext {
     pub fn new(root_dir: impl AsRef<Path>) -> Self {
         Self {
             root_dir: PathBuf::from(root_dir.as_ref()),
+            daemon_state_path: None,
             messenger_handle: OnceCell::new(),
+        }
+    }
+
+    /// Overrides the daemon state file path for this context.
+    ///
+    /// This avoids relying on the process-wide `PEPPY_DAEMON_STATE_FILE` env var, which is not
+    /// safe to mutate from parallel tests.
+    pub fn with_daemon_state_file(mut self, daemon_state_path: impl AsRef<Path>) -> Self {
+        self.daemon_state_path = Some(daemon_state_path.as_ref().to_path_buf());
+        self
+    }
+
+    pub fn read_daemon_state(&self) -> std::io::Result<DaemonState> {
+        match &self.daemon_state_path {
+            Some(path) => DaemonState::read_from(path),
+            None => DaemonState::read(),
         }
     }
 
@@ -31,7 +49,7 @@ impl AppContext {
     pub async fn connect(&self) -> crate::error::Result<()> {
         self.messenger_handle
             .get_or_try_init(|| async {
-                let messaging_port = DaemonState::read()?.messaging_port;
+                let messaging_port = self.read_daemon_state()?.messaging_port;
                 MessengerHandle::from_host_port(
                     config::consts::DEFAULT_MESSAGING_HOST,
                     messaging_port,

@@ -104,7 +104,7 @@ impl DaemonState {
         }
     }
 
-    fn read_from(path: &Path) -> Result<Self, io::Error> {
+    pub fn read_from(path: &Path) -> Result<Self, io::Error> {
         let content = fs::read_to_string(path)?;
         serde_json::from_str(&content).map_err(|e| io::Error::other(e.to_string()))
     }

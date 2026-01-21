@@ -27,10 +27,10 @@ fn node_rust_init_command_success() {
     let node_name = "test_node";
 
     // Create a new AppContext pointing to the temp directory, using the shared messenger
-    let node_ctx = Arc::new(AppContext::with_messenger(
-        node_dir.path(),
-        serve.messenger(),
-    ));
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), serve.messenger())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
 
     // Set up logging for the node command
     let log_capture = LogCapture::new();

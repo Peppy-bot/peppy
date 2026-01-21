@@ -33,10 +33,10 @@ fn node_add_command_succeeds() {
     let node_name = "test_add_node";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(AppContext::with_messenger(
-        node_dir.path(),
-        shared_messenger.clone(),
-    ));
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -66,6 +66,8 @@ fn node_add_command_succeeds() {
         "peppy.json5 should exist at {}",
         peppy_json5_path.display()
     );
+
+    helpers::disable_add_cmd(&peppy_json5_path);
 
     // Now add the node to the node stack
     NodeCommand {
@@ -149,10 +151,10 @@ fn node_add_command_with_run_arg_succeeds() {
     let instance_id = "test_add_run_instance";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(AppContext::with_messenger(
-        node_dir.path(),
-        shared_messenger.clone(),
-    ));
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
 
     // Set up logging
     let log_capture = LogCapture::new();

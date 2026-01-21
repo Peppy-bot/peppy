@@ -8,7 +8,6 @@ use tracing::info;
 
 use super::start::start_instance_async;
 use crate::context::AppContext;
-use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
 
@@ -25,9 +24,8 @@ pub fn add_node(
     args: Vec<(String, String)>,
     instance_id: Option<String>,
 ) -> Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
     let peppy_json5 = node_dir.join("peppy.json5");
-    rt.block_on(add_node_async(ctx, peppy_json5, run, args, instance_id))
+    crate::commands::block_on(add_node_async(ctx, peppy_json5, run, args, instance_id))
 }
 
 async fn add_node_async(
@@ -37,7 +35,7 @@ async fn add_node_async(
     args: Vec<(String, String)>,
     instance_id: Option<String>,
 ) -> Result<()> {
-    let daemon_state = DaemonState::read().map_err(|e| {
+    let daemon_state = ctx.read_daemon_state().map_err(|e| {
         Error::ExecutionFailed(format!(
             "Failed to read daemon state. Is the peppy daemon running? Error: {}",
             e

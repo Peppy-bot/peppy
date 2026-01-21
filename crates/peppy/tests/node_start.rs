@@ -1,38 +1,28 @@
 mod helpers;
 
-use helpers::LogCapture;
-use pmi::{MessengerBackend, ZenohAdapter};
-use std::path::Path;
+use helpers::{LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
-
-use config::consts::PEPPYGEN_OUTPUT_PATH;
 
 use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::context::AppContext;
-use peppy::daemon_state::DaemonState;
+use peppylib::MessengerHandle;
+use peppylib::services::health::listen_for_node_health;
+use peppylib::services::ready::listen_for_node_ready;
 
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_run_command_succeeds() {
-    // Use zenoh messaging so the spawned node process can communicate with the master node
-    let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+    // Mock messaging is sufficient: we run in-process node services for health/ready.
+    let serve = ServeCommandEmulation::with_mock()
         .await
-        .expect("failed to start zenoh router");
-    instance
-        .messenger()
-        .start_session()
-        .await
-        .expect("failed to start zenoh session");
-    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
-
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
-    let master_node_name = daemon_state.master_node_name;
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let master_node_name = serve.daemon_state().master_node_name.clone();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -41,12 +31,13 @@ async fn node_run_command_succeeds() {
     // Create a temp directory for the node
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_run_node";
+    let instance_id = "test_run_instance";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(AppContext::with_messenger(
-        node_dir.path(),
-        shared_messenger.clone(),
-    ));
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -77,18 +68,7 @@ async fn node_run_command_succeeds() {
         peppy_json5_path.display()
     );
 
-    // Build the node before running it
-    let build_output = std::process::Command::new("cargo")
-        .args(["build", "--release"])
-        .current_dir(&node_path)
-        .output()
-        .expect("failed to run cargo build");
-
-    assert!(
-        build_output.status.success(),
-        "cargo build should succeed. stderr: {}",
-        String::from_utf8_lossy(&build_output.stderr)
-    );
+    helpers::override_start_cmd(&peppy_json5_path);
 
     // Add the node to the node stack (without running)
     NodeCommand {
@@ -141,6 +121,17 @@ async fn node_run_command_succeeds() {
             .collect::<Vec<_>>()
     );
 
+    // Start in-process node services for health/ready so node_start can succeed.
+    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
+    let _node_ready_handle =
+        listen_for_node_ready(&node_messenger, &master_node_name, instance_id, node_name)
+            .await
+            .expect("node ready service should start");
+    let _node_health_handle =
+        listen_for_node_health(&node_messenger, &master_node_name, instance_id, node_name)
+            .await
+            .expect("node health service should start");
+
     // Now run the node using the run command
     NodeCommand {
         command: NodeCommands::Start {
@@ -148,7 +139,7 @@ async fn node_run_command_succeeds() {
             node_name: Some(node_name.to_string()),
             tag: Some("0.1.0".to_string()),
             args: Vec::new(),
-            instance_id: None,
+            instance_id: Some(instance_id.to_string()),
         },
     }
     .execute(&node_ctx)
@@ -201,19 +192,12 @@ async fn node_run_command_succeeds() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_run_command_with_args_succeeds() {
-    // Use zenoh messaging so the spawned node process can communicate with the master node
-    let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+    // Mock messaging is sufficient: we run in-process node services for health/ready.
+    let serve = ServeCommandEmulation::with_mock()
         .await
-        .expect("failed to start zenoh router");
-    instance
-        .messenger()
-        .start_session()
-        .await
-        .expect("failed to start zenoh session");
-    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
-
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
-    let master_node_name = daemon_state.master_node_name;
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let master_node_name = serve.daemon_state().master_node_name.clone();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -222,12 +206,13 @@ async fn node_run_command_with_args_succeeds() {
     // Create a temp directory for the node
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_run_args_node";
+    let instance_id = "test_run_args_instance";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(AppContext::with_messenger(
-        node_dir.path(),
-        shared_messenger.clone(),
-    ));
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -292,25 +277,7 @@ async fn node_run_command_with_args_succeeds() {
 }
 "#;
     std::fs::write(&peppy_json5_path, peppy_config).expect("peppy.json5 should be writable");
-
-    // Update the fingerprint to match the new config
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_json5_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    // Build the node before running it
-    let build_output = std::process::Command::new("cargo")
-        .args(["build", "--release"])
-        .current_dir(&node_path)
-        .output()
-        .expect("failed to run cargo build");
-
-    assert!(
-        build_output.status.success(),
-        "cargo build should succeed. stderr: {}",
-        String::from_utf8_lossy(&build_output.stderr)
-    );
+    helpers::override_start_cmd(&peppy_json5_path);
 
     // Add the node to the node stack (without running)
     NodeCommand {
@@ -363,6 +330,17 @@ async fn node_run_command_with_args_succeeds() {
             .collect::<Vec<_>>()
     );
 
+    // Start in-process node services for health/ready so node_start can succeed.
+    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
+    let _node_ready_handle =
+        listen_for_node_ready(&node_messenger, &master_node_name, instance_id, node_name)
+            .await
+            .expect("node ready service should start");
+    let _node_health_handle =
+        listen_for_node_health(&node_messenger, &master_node_name, instance_id, node_name)
+            .await
+            .expect("node health service should start");
+
     // Now run the node with arguments
     let args = vec![
         ("resolution".to_string(), "1280x720".to_string()),
@@ -376,7 +354,7 @@ async fn node_run_command_with_args_succeeds() {
             node_name: Some(node_name.to_string()),
             tag: Some("0.1.0".to_string()),
             args,
-            instance_id: None,
+            instance_id: Some(instance_id.to_string()),
         },
     }
     .execute(&node_ctx)
@@ -433,19 +411,12 @@ async fn node_run_command_with_args_succeeds() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_run_command_with_custom_instance_id_succeeds() {
-    // Use zenoh messaging so the spawned node process can communicate with the master node
-    let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+    // Mock messaging is sufficient: we run in-process node services for health/ready.
+    let serve = ServeCommandEmulation::with_mock()
         .await
-        .expect("failed to start zenoh router");
-    instance
-        .messenger()
-        .start_session()
-        .await
-        .expect("failed to start zenoh session");
-    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
-
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
-    let master_node_name = daemon_state.master_node_name;
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let master_node_name = serve.daemon_state().master_node_name.clone();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -457,10 +428,10 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
     let custom_instance_id = "my-custom-instance";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(AppContext::with_messenger(
-        node_dir.path(),
-        shared_messenger.clone(),
-    ));
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -491,18 +462,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         peppy_json5_path.display()
     );
 
-    // Build the node before running it
-    let build_output = std::process::Command::new("cargo")
-        .args(["build", "--release"])
-        .current_dir(&node_path)
-        .output()
-        .expect("failed to run cargo build");
-
-    assert!(
-        build_output.status.success(),
-        "cargo build should succeed. stderr: {}",
-        String::from_utf8_lossy(&build_output.stderr)
-    );
+    helpers::override_start_cmd(&peppy_json5_path);
 
     // Add the node to the node stack (without running)
     NodeCommand {
@@ -554,6 +514,25 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
             .map(|n| (n.label(), n.instance_count()))
             .collect::<Vec<_>>()
     );
+
+    // Start in-process node services for health/ready so node_start can succeed.
+    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
+    let _node_ready_handle = listen_for_node_ready(
+        &node_messenger,
+        &master_node_name,
+        custom_instance_id,
+        node_name,
+    )
+    .await
+    .expect("node ready service should start");
+    let _node_health_handle = listen_for_node_health(
+        &node_messenger,
+        &master_node_name,
+        custom_instance_id,
+        node_name,
+    )
+    .await
+    .expect("node health service should start");
 
     // Now run the node with a custom instance_id
     NodeCommand {

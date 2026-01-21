@@ -8,7 +8,6 @@ use peppy::commands::Command;
 use peppy::commands::service::serve::CancellationToken;
 use peppy::commands::service::serve::ServeCommand;
 use peppy::context::AppContext;
-use peppy::daemon_state::DaemonState;
 
 #[test]
 fn serve_command() {
@@ -41,7 +40,9 @@ fn serve_command() {
         .join()
         .expect("shutdown thread should complete without panic");
 
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
+    let daemon_state = ctx
+        .read_daemon_state()
+        .expect("daemon state should be readable");
     assert_eq!(
         daemon_state.master_node_name, "master-node",
         "daemon state should use the configured master name"

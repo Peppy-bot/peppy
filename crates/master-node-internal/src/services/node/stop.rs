@@ -239,5 +239,8 @@ fn is_process_running(pid: u32) -> bool {
     let system = sysinfo::System::new_with_specifics(
         sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
     );
-    system.process(sysinfo::Pid::from_u32(pid)).is_some()
+    match system.process(sysinfo::Pid::from_u32(pid)) {
+        Some(process) => process.status() != sysinfo::ProcessStatus::Zombie,
+        None => false,
+    }
 }

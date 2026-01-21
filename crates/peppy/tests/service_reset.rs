@@ -1,11 +1,10 @@
 mod helpers;
 
-use pmi::{MessengerBackend, MockAdapter};
+use helpers::ServeCommandEmulation;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use master_node::encoding::NodeListRequest;
@@ -14,7 +13,6 @@ use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::service::{ServiceCommand, ServiceCommands};
 use peppy::context::AppContext;
-use peppy::daemon_state::DaemonState;
 
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
@@ -55,18 +53,11 @@ fn write_node_config(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_reset_command_resets_node_stack() {
-    let mut instance = MockAdapter::start_router()
+    let serve = ServeCommandEmulation::with_mock()
         .await
-        .expect("failed to start mock router");
-    instance
-        .messenger()
-        .start_session()
-        .await
-        .expect("failed to start mock session");
-    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
-
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
-    let master_node_name = daemon_state.master_node_name;
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let master_node_name = serve.daemon_state().master_node_name.clone();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -82,10 +73,10 @@ async fn service_reset_command_resets_node_stack() {
         &["sh", "-c", "exit 0"],
     );
 
-    let ctx = Arc::new(AppContext::with_messenger(
-        nodes_dir.path(),
-        shared_messenger.clone(),
-    ));
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), shared_messenger.clone())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
 
     NodeCommand {
         command: NodeCommands::Add {

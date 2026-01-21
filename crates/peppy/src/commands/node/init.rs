@@ -8,7 +8,6 @@ use tracing::info;
 
 use super::types::NodeName;
 use crate::context::AppContext;
-use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
@@ -43,13 +42,12 @@ impl NodeInitBuilder {
     }
 
     pub fn build(self) -> Result<()> {
-        let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(self.build_async())
+        crate::commands::block_on(self.build_async())
     }
 
     async fn build_async(self) -> Result<()> {
         // Read the daemon state to discover the master node name
-        let daemon_state = DaemonState::read().map_err(|e| {
+        let daemon_state = self.ctx.read_daemon_state().map_err(|e| {
             Error::ExecutionFailed(format!(
                 "Failed to read daemon state. Is the peppy daemon running? Error: {}",
                 e
