@@ -1,4 +1,4 @@
-use crate::helpers::{LogCapture, ServeCommandEmulation};
+use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 
 use peppy::commands::Command;
