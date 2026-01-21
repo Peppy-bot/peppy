@@ -1,18 +1,43 @@
 ---
 title: The Node stack
 description: Learn how to add, start, stop, and manage nodes in the PeppyOS stack
+sidebar:
+  order: 4
 ---
+import { Tabs, TabItem } from '@astrojs/starlight/components';
 
+The **node stack** is the central registry that manages all your nodes and their relationships in PeppyOS. Think of it as a directed graph where:
 
-## Adding your node to the stack
+- **Nodes** are registered configurations that can have multiple running instances
+- **Edges** represent dependencies between nodes (e.g., when one node subscribes to another's topics)
 
-Add your node to the PeppyOS stack:
+When you add a node to the stack, PeppyOS validates that all its dependencies are satisfied—ensuring that any topics, services, or actions your node relies on are provided by other nodes already in the stack. This dependency validation prevents runtime errors and helps you understand how your nodes interconnect.
+
+The stack always contains a **master node** and an instance of it at its root, which coordinates the lifecycle of all other nodes. You can query the stack to see which nodes depend on each other, visualize the dependency graph, and manage node instances.
+The **node stack** is started as a daemon on your system and the `peppy` binary communicates with it to execute user actions.
+
+## Adding `hello_world` to the stack
+
+Add your node to the PeppyOS stack by running:
 
 ```sh
 peppy add .
 ```
 
-This command registers your node with the master node and makes it available for execution.
+This command runs the `add_cmd` of the `peppy.json5` of our node and registers your node with the master node to makes it available for execution.
+The output of this command give you a few useful information:
+
+```
+Adding node from /private/tmp/hello_world...
+Running `add_cmd` for my_first_node:0.1.0 on master 'kind-moore-5294'...
+Log file: ~/.peppy/logs/add/my_first_node_0.1.0_20260121_224824_699.log
+Added node my_first_node:0.1.0 to the node stack
+Snapshot path: ~/.peppy/nodes/my_first_node_0.1.0_b19507
+```
+This gives you access to the log file for debugging in case the `add` command fails and also shows a "snapshot path".
+When a node is added to the node stack, a copy is made in the peppy cache to "snapshot" the node based on its name and tag.
+No two copies of the same node with the same name + tag can exist at the same time in the node stack.
+Readding a node with the same node+tag override the one that was previously in the node stack exepted if that node had dependencies, in which case erasing the existing node with a new snapshot fails.
 
 ## Starting your node
 
