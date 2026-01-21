@@ -1,6 +1,4 @@
-mod helpers;
-
-use helpers::{LogCapture, ServeCommandEmulation};
+use crate::helpers::{LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -68,7 +66,7 @@ async fn node_run_command_succeeds() {
         peppy_json5_path.display()
     );
 
-    helpers::override_start_cmd(&peppy_json5_path);
+    crate::helpers::override_start_cmd(&peppy_json5_path);
 
     // Add the node to the node stack (without running)
     NodeCommand {
@@ -277,7 +275,7 @@ async fn node_run_command_with_args_succeeds() {
 }
 "#;
     std::fs::write(&peppy_json5_path, peppy_config).expect("peppy.json5 should be writable");
-    helpers::override_start_cmd(&peppy_json5_path);
+    crate::helpers::override_start_cmd(&peppy_json5_path);
 
     // Add the node to the node stack (without running)
     NodeCommand {
@@ -462,7 +460,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         peppy_json5_path.display()
     );
 
-    helpers::override_start_cmd(&peppy_json5_path);
+    crate::helpers::override_start_cmd(&peppy_json5_path);
 
     // Add the node to the node stack (without running)
     NodeCommand {

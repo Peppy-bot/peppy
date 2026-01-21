@@ -1,6 +1,4 @@
-mod helpers;
-
-use helpers::ServeCommandEmulation;
+use crate::helpers::ServeCommandEmulation;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

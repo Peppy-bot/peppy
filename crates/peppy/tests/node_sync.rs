@@ -1,6 +1,4 @@
-mod helpers;
-
-use helpers::{LogCapture, ServeCommandEmulation};
+use crate::helpers::{LogCapture, ServeCommandEmulation};
 use std::path::Path;
 use std::sync::Arc;
 

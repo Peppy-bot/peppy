@@ -1,5 +1,3 @@
-mod helpers;
-
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -12,7 +10,7 @@ use peppy::context::AppContext;
 #[test]
 fn serve_command() {
     let ctx = Arc::new(AppContext::default());
-    let log_capture = helpers::LogCapture::new();
+    let log_capture = crate::helpers::LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()

@@ -1,6 +1,4 @@
-mod helpers;
-
-use helpers::{LogCapture, ServeCommandEmulation};
+use crate::helpers::{LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 
 use peppy::commands::Command;
@@ -53,7 +51,7 @@ async fn node_runtime_config_command_outputs_valid_config() {
         peppy_json5_path.display()
     );
 
-    helpers::disable_add_cmd(&peppy_json5_path);
+    crate::helpers::disable_add_cmd(&peppy_json5_path);
 
     NodeCommand {
         command: NodeCommands::Add {
@@ -161,7 +159,7 @@ async fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
         peppy_json5_path.display()
     );
 
-    helpers::disable_add_cmd(&peppy_json5_path);
+    crate::helpers::disable_add_cmd(&peppy_json5_path);
 
     NodeCommand {
         command: NodeCommands::Add {
