@@ -1,29 +1,19 @@
 mod helpers;
 
-use helpers::LogCapture;
-use pmi::{MessengerBackend, MockAdapter};
+use helpers::{LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::context::AppContext;
-use peppy::daemon_state::DaemonState;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_runtime_config_command_outputs_valid_config() {
-    let mut instance = MockAdapter::start_router()
+    let serve = ServeCommandEmulation::with_mock()
         .await
-        .expect("failed to start mock router");
-    instance
-        .messenger()
-        .start_session()
-        .await
-        .expect("failed to start mock session");
-    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
-
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
-    let master_node_name = daemon_state.master_node_name;
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let master_node_name = serve.daemon_state().master_node_name.clone();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -32,10 +22,10 @@ async fn node_runtime_config_command_outputs_valid_config() {
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_runtime_config_node";
 
-    let node_ctx = Arc::new(AppContext::with_messenger(
-        node_dir.path(),
-        shared_messenger.clone(),
-    ));
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
 
     let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
@@ -62,6 +52,8 @@ async fn node_runtime_config_command_outputs_valid_config() {
         "peppy.json5 should exist at {}",
         peppy_json5_path.display()
     );
+
+    helpers::disable_add_cmd(&peppy_json5_path);
 
     NodeCommand {
         command: NodeCommands::Add {
@@ -125,18 +117,11 @@ async fn node_runtime_config_command_outputs_valid_config() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
-    let mut instance = MockAdapter::start_router()
+    let serve = ServeCommandEmulation::with_mock()
         .await
-        .expect("failed to start mock router");
-    instance
-        .messenger()
-        .start_session()
-        .await
-        .expect("failed to start mock session");
-    let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
-
-    let daemon_state = DaemonState::read().expect("daemon state should be readable");
-    let master_node_name = daemon_state.master_node_name;
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let master_node_name = serve.daemon_state().master_node_name.clone();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -145,10 +130,10 @@ async fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_runtime_config_json5_node";
 
-    let node_ctx = Arc::new(AppContext::with_messenger(
-        node_dir.path(),
-        shared_messenger.clone(),
-    ));
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
 
     let log_capture = LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
@@ -175,6 +160,8 @@ async fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
         "peppy.json5 should exist at {}",
         peppy_json5_path.display()
     );
+
+    helpers::disable_add_cmd(&peppy_json5_path);
 
     NodeCommand {
         command: NodeCommands::Add {

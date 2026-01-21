@@ -1,11 +1,10 @@
 #![allow(dead_code)]
 
-use config::consts::{DAEMON_STATE_FILE_ENV, PEPPYGEN_OUTPUT_PATH};
+use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::NodeConfigParser;
 use master_node::{MasterNode, MasterNodeArguments};
 use peppy::daemon_state::DaemonState;
 use pmi::{Messenger, MessengerBackend, MockAdapter, MockInstance, ZenohAdapter, ZenohdInstance};
-use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -20,13 +19,25 @@ pub fn override_start_cmd(peppy_json5: &Path) {
     let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
     // Avoid spawning a real node binary in tests, but keep the process alive long enough for
     // `node_start` to complete its `node_ready` + health check phases.
-    cfg.manifest.start_cmd = vec!["sleep".to_string(), "5".to_string()];
+    cfg.manifest.start_cmd = vec!["sleep".to_string(), "4".to_string()];
+    // Avoid `add_cmd` build step (network access is not available in the test runner).
+    cfg.manifest.add_cmd = None;
 
     // Write JSON (valid JSON5) back to disk.
     let updated_content = serde_json::to_string_pretty(&cfg).expect("peppy.json5 should serialize");
     std::fs::write(peppy_json5, updated_content).expect("peppy.json5 should update");
 
     // `node_init` generates a fingerprint during peppygen generation; keep it in sync.
+    config::fingerprint::create_codegen_fingerprint(peppy_json5, Path::new(PEPPYGEN_OUTPUT_PATH));
+}
+
+pub fn disable_add_cmd(peppy_json5: &Path) {
+    let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
+    cfg.manifest.add_cmd = None;
+
+    let updated_content = serde_json::to_string_pretty(&cfg).expect("peppy.json5 should serialize");
+    std::fs::write(peppy_json5, updated_content).expect("peppy.json5 should update");
+
     config::fingerprint::create_codegen_fingerprint(peppy_json5, Path::new(PEPPYGEN_OUTPUT_PATH));
 }
 
@@ -87,23 +98,6 @@ pub fn wait_for_log(log_capture: &LogCapture, needle: &str, timeout: Duration) {
     );
 }
 
-pub struct EnvVarGuard {
-    key: &'static str,
-}
-
-impl EnvVarGuard {
-    pub fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-        unsafe { std::env::set_var(key, value) };
-        Self { key }
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        unsafe { std::env::remove_var(self.key) };
-    }
-}
-
 /// Holds either a MockInstance or ZenohdInstance for the test messenger setup.
 enum MessengerInstance {
     Mock(MockInstance),
@@ -114,7 +108,6 @@ enum MessengerInstance {
 ///
 /// This struct:
 /// - Creates a temporary directory for test isolation
-/// - Sets the `PEPPY_DAEMON_STATE_FILE` env var to isolate DaemonState
 /// - Starts either a MockAdapter or ZenohAdapter router
 /// - Starts a session and provides a shared messenger
 /// - Creates a DaemonState in the temp directory
@@ -128,7 +121,6 @@ enum MessengerInstance {
 /// ```
 pub struct ServeCommandEmulation {
     _temp_dir: TempDir,
-    _env_guard: EnvVarGuard,
     _instance: MessengerInstance,
     _master_node_task: JoinHandle<master_node::Result<()>>,
     shared_messenger: Arc<TokioMutex<Messenger>>,
@@ -144,16 +136,31 @@ impl ServeCommandEmulation {
     /// This is the recommended approach for most tests as it doesn't require
     /// any external processes.
     pub async fn with_mock() -> Result<Self, pmi::PeppyMessagingInterfaceError> {
-        let temp_dir = TempDir::new().expect("failed to create temp dir for test");
-        let daemon_state_path = DaemonState::state_file_in(temp_dir.path());
-
-        // Set env var to isolate DaemonState to this test's temp directory
-        let env_guard = EnvVarGuard::set(DAEMON_STATE_FILE_ENV, &daemon_state_path);
-
         let mut instance = MockAdapter::start_router().await?;
         instance.messenger().start_session().await?;
         let messenger = instance.take_messenger();
         let port = messenger.get_host().port();
+        Self::setup(messenger, port, MessengerInstance::Mock(instance)).await
+    }
+
+    /// Creates a test setup using ZenohAdapter with an ephemeral port.
+    ///
+    /// Use this when you need to test real zenoh messaging behavior.
+    pub async fn with_zenoh() -> Result<Self, pmi::PeppyMessagingInterfaceError> {
+        let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None).await?;
+        instance.messenger().start_session().await?;
+        let port = instance.port;
+        let messenger = instance.take_messenger();
+        Self::setup(messenger, port, MessengerInstance::Zenoh(instance)).await
+    }
+
+    async fn setup(
+        messenger: Messenger,
+        port: u16,
+        instance: MessengerInstance,
+    ) -> Result<Self, pmi::PeppyMessagingInterfaceError> {
+        let temp_dir = TempDir::new().expect("failed to create temp dir for test");
+        let daemon_state_path = DaemonState::state_file_in(temp_dir.path());
         let shared_messenger = Arc::new(TokioMutex::new(messenger));
 
         // Start the master node to provide services (node_init, node_add, etc.)
@@ -181,67 +188,7 @@ impl ServeCommandEmulation {
 
         Ok(Self {
             _temp_dir: temp_dir,
-            _env_guard: env_guard,
-            _instance: MessengerInstance::Mock(instance),
-            _master_node_task: master_node_task,
-            shared_messenger,
-            daemon_state,
-            daemon_state_path,
-        })
-    }
-
-    /// Creates a test setup using ZenohAdapter with an ephemeral port.
-    ///
-    /// Use this when you need to test real zenoh messaging behavior.
-    pub async fn with_zenoh() -> Result<Self, pmi::PeppyMessagingInterfaceError> {
-        Self::with_zenoh_port(None).await
-    }
-
-    /// Creates a test setup using ZenohAdapter with a specific port.
-    ///
-    /// Pass `None` for an ephemeral port, or `Some(port)` for a specific port.
-    pub async fn with_zenoh_port(
-        port: Option<u16>,
-    ) -> Result<Self, pmi::PeppyMessagingInterfaceError> {
-        let temp_dir = TempDir::new().expect("failed to create temp dir for test");
-        let daemon_state_path = DaemonState::state_file_in(temp_dir.path());
-
-        // Set env var to isolate DaemonState to this test's temp directory
-        let env_guard = EnvVarGuard::set(DAEMON_STATE_FILE_ENV, &daemon_state_path);
-
-        let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", port).await?;
-        instance.messenger().start_session().await?;
-        let actual_port = instance.port;
-        let messenger = instance.take_messenger();
-        let shared_messenger = Arc::new(TokioMutex::new(messenger));
-
-        // Start the master node to provide services (node_init, node_add, etc.)
-        let master_node = MasterNode::new(
-            Arc::clone(&shared_messenger),
-            Some("test-master"),
-            MasterNodeArguments {
-                node_startup_timeout: Duration::from_secs(10),
-                node_start_health_timeout: Duration::from_secs(30),
-            },
-            temp_dir.path().to_path_buf(),
-        );
-        let master_node_name = master_node.node_name().to_string();
-
-        // Start master node with ready signal to ensure services are registered
-        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-        let master_node_task =
-            tokio::spawn(async move { master_node.start_with_ready(Some(ready_tx)).await });
-        ready_rx.await.expect("master node ready signal failed");
-
-        // Create and write daemon state
-        let daemon_state = DaemonState::new(&master_node_name, actual_port, "test-git-hash");
-        DaemonState::write_to(&daemon_state_path, &daemon_state)
-            .expect("failed to write daemon state");
-
-        Ok(Self {
-            _temp_dir: temp_dir,
-            _env_guard: env_guard,
-            _instance: MessengerInstance::Zenoh(instance),
+            _instance: instance,
             _master_node_task: master_node_task,
             shared_messenger,
             daemon_state,

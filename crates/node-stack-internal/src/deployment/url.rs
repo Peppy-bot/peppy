@@ -24,7 +24,7 @@ pub fn resolve_remote_url(
 ) -> Result<ResolvedNode> {
     fs::create_dir_all(nodes_cache_dir)?;
 
-    let cache_dir = build_bundle_cache_path(nodes_cache_dir, &spec.bundle_url);
+    let cache_dir = build_bundle_cache_path(nodes_cache_dir, deployment, &spec.bundle_url);
     let expected_checksum = spec.checksum.as_deref();
     let needs_refresh = should_refresh(&cache_dir, expected_checksum);
 
@@ -261,8 +261,12 @@ fn decode_hex_digit(byte: u8) -> std::result::Result<u8, String> {
     }
 }
 
-fn build_bundle_cache_path(base: &Path, bundle_url: &str) -> PathBuf {
-    let hash = stable_hash(bundle_url);
+fn build_bundle_cache_path(base: &Path, deployment: &Deployment, bundle_url: &str) -> PathBuf {
+    let hash = stable_hash_parts(&[
+        bundle_url,
+        deployment.name.as_str(),
+        deployment.tag.as_str(),
+    ]);
     let dir_name = bundle_dir_name(bundle_url);
     base.join(format!("{dir_name}-{hash:016x}"))
 }
@@ -313,13 +317,24 @@ fn bundle_file_name(bundle_url: &str) -> String {
         .to_string()
 }
 
-fn stable_hash(value: &str) -> u64 {
+fn stable_hash_parts(parts: &[&str]) -> u64 {
     const OFFSET: u64 = 0xcbf29ce484222325;
     const PRIME: u64 = 0x100000001b3;
-    value.bytes().fold(OFFSET, |hash, byte| {
-        let hash = hash ^ u64::from(byte);
-        hash.wrapping_mul(PRIME)
-    })
+    let mut hash = OFFSET;
+
+    for (idx, part) in parts.iter().enumerate() {
+        if idx > 0 {
+            hash = hash ^ u64::from(b'|');
+            hash = hash.wrapping_mul(PRIME);
+        }
+
+        for byte in part.bytes() {
+            hash = hash ^ u64::from(byte);
+            hash = hash.wrapping_mul(PRIME);
+        }
+    }
+
+    hash
 }
 
 struct TempDirGuard {
@@ -359,4 +374,35 @@ struct ParsedChecksum {
 
 enum ChecksumAlgorithm {
     Sha256,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use config::peppy_config::Name;
+    use std::path::Path;
+
+    fn deployment(name: &str, tag: &str) -> Deployment {
+        Deployment {
+            name: Name::new(name).expect("valid name"),
+            source: None,
+            tag: tag.to_string(),
+            optional: false,
+            instances: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn http_cache_path_varies_by_deployment_tag() {
+        let base = Path::new("/tmp/nodes");
+        let url = "http://localhost:1234/bundles/uvc_camera.tar.zst";
+
+        let v1 = deployment("uvc_camera", "1.0.0");
+        let v2 = deployment("uvc_camera", "1.2.3");
+
+        assert_ne!(
+            build_bundle_cache_path(base, &v1, url),
+            build_bundle_cache_path(base, &v2, url),
+        );
+    }
 }

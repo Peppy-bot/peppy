@@ -12,7 +12,6 @@ use std::time::Duration;
 use tracing::info;
 
 use crate::context::AppContext;
-use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
 
@@ -122,12 +121,6 @@ pub async fn start_instance_async(
     args: &[(String, String)],
     instance_id: Option<String>,
 ) -> Result<String> {
-    let daemon_state = DaemonState::read().map_err(|e| {
-        Error::ExecutionFailed(format!(
-            "Failed to read daemon state. Is the peppy daemon running? Error: {}",
-            e
-        ))
-    })?;
     // Generate or use provided instance_id
     let instance_id = instance_id.unwrap_or_else(|| get_random(rng()));
 
@@ -142,15 +135,13 @@ pub async fn start_instance_async(
         arguments.len()
     );
 
-    let (messaging_host, messaging_port) = messenger_handle
-        .messaging_endpoint()
-        .await
-        .unwrap_or_else(|| {
-            (
-                config::consts::DEFAULT_MESSAGING_HOST.to_string(),
-                daemon_state.messaging_port,
-            )
-        });
+    let (messaging_host, messaging_port) = match messenger_handle.messaging_endpoint().await {
+        Some((host, port)) => (host, port),
+        None => (
+            config::consts::DEFAULT_MESSAGING_HOST.to_string(),
+            messenger_handle.messaging_port().await,
+        ),
+    };
 
     // Create the runtime config with the parsed arguments
     let runtime_config = RuntimeConfig::new(
@@ -298,8 +289,7 @@ pub fn run_node(
     args: Vec<(String, String)>,
     instance_id: Option<String>,
 ) -> Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_node_async(ctx, node_name, tag, args, instance_id))
+    crate::commands::block_on(run_node_async(ctx, node_name, tag, args, instance_id))
 }
 
 async fn run_node_async(
@@ -309,7 +299,7 @@ async fn run_node_async(
     args: Vec<(String, String)>,
     instance_id: Option<String>,
 ) -> Result<()> {
-    let daemon_state = DaemonState::read().map_err(|e| {
+    let daemon_state = ctx.read_daemon_state().map_err(|e| {
         Error::ExecutionFailed(format!(
             "Failed to read daemon state. Is the peppy daemon running? Error: {}",
             e

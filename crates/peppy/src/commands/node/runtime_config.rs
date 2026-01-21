@@ -12,7 +12,6 @@ use rand::rng;
 use tracing::info;
 
 use crate::context::AppContext;
-use crate::daemon_state::DaemonState;
 use crate::error::{Error, Result};
 
 use super::start::args_to_node_arguments;
@@ -28,8 +27,7 @@ pub fn print_runtime_config(
     args: Vec<(String, String)>,
 ) -> Result<()> {
     let node_name = resolve_node_name(node_name, node_dir)?;
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(print_runtime_config_async(ctx, node_name, args))
+    crate::commands::block_on(print_runtime_config_async(ctx, node_name, args))
 }
 
 /// Resolves the node name from either the direct name or by reading the peppy.json5 file in the directory.
@@ -53,7 +51,7 @@ async fn print_runtime_config_async(
     node_name: String,
     args: Vec<(String, String)>,
 ) -> Result<()> {
-    let daemon_state = DaemonState::read().map_err(|e| {
+    let daemon_state = ctx.read_daemon_state().map_err(|e| {
         Error::ExecutionFailed(format!(
             "Failed to read daemon state. Is the peppy daemon running? Error: {}",
             e
