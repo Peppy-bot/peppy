@@ -105,40 +105,6 @@ impl StandaloneConfig {
 /// The builder automatically detects execution mode:
 /// - If `PEPPY_RUNTIME_CONFIG` is set (by CLI), runs in daemon mode
 /// - Otherwise, runs in standalone mode with the provided config (or defaults)
-///
-/// # Examples
-///
-/// ## Default (auto-detect)
-/// ```ignore
-/// NodeBuilder::<MyParams>::new()
-///     .run(|params, node_runner| async move {
-///         // your code
-///         Ok(())
-///     })
-/// ```
-///
-/// ## Standalone with custom messaging
-/// ```ignore
-/// NodeBuilder::<MyParams>::new()
-///     .standalone(StandaloneConfig::new()
-///         .with_messaging("192.168.1.100", 7448))
-///     .run(|params, node_runner| async move {
-///         Ok(())
-///     })
-/// ```
-///
-/// ## Direct async for debugging
-/// ```ignore
-/// #[tokio::main]
-/// async fn main() -> Result<()> {
-///     let ctx = NodeBuilder::<MyParams>::new().init()?;
-///     let node_runner = ctx.create_node_runner().await?;
-///     let params = ctx.parameters()?;
-///
-///     // breakpoints work here
-///     my_function(node_runner, params).await
-/// }
-/// ```
 pub struct NodeBuilder<Params> {
     standalone_config: Option<StandaloneConfig>,
     peppy_config_path: PathBuf,

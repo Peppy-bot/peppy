@@ -62,16 +62,15 @@ pub fn convert_time_from_capnp(timestamp: CapnpTimestamp) -> SystemTime {
 /// Encode a Cap'n Proto message builder into bytes.
 ///
 /// # Example
-/// ```ignore
-/// use master_node::encoding::encode_message;
-/// use master_node::messages_capnp;
+/// ```
+/// use peppylib::encoding::encode_message;
+/// use peppylib::health_capnp;
 ///
 /// let mut message = capnp::message::Builder::new_default();
-/// let mut ping = message.init_root::<messages_capnp::ping_response::Builder>();
-/// ping.set_message("pong");
-/// ping.set_timestamp(12345);
+/// message.init_root::<health_capnp::node_health_request::Builder>();
 ///
-/// let bytes = encode_message(&message)?;
+/// let bytes = encode_message(&message).unwrap();
+/// assert!(!bytes.is_empty());
 /// ```
 pub fn encode_message(message: &Builder<HeapAllocator>) -> Result<Bytes> {
     let mut buffer = Vec::new();
@@ -84,13 +83,16 @@ pub fn encode_message(message: &Builder<HeapAllocator>) -> Result<Bytes> {
 /// Returns an owned segments reader that can be used to read the message.
 ///
 /// # Example
-/// ```ignore
-/// use master_node::encoding::decode_message;
-/// use master_node::messages_capnp;
+/// ```
+/// use peppylib::encoding::{decode_message, encode_message};
+/// use peppylib::health_capnp;
 ///
-/// let reader = decode_message(&bytes)?;
-/// let ping = reader.get_root::<messages_capnp::ping_request::Reader>()?;
-/// let timestamp = ping.get_timestamp();
+/// let mut message = capnp::message::Builder::new_default();
+/// message.init_root::<health_capnp::node_health_request::Builder>();
+/// let bytes = encode_message(&message).unwrap();
+///
+/// let reader = decode_message(&bytes).unwrap();
+/// let _request = reader.get_root::<health_capnp::node_health_request::Reader>().unwrap();
 /// ```
 pub fn decode_message(
     data: &[u8],
