@@ -136,13 +136,31 @@ impl ServeCommandEmulation {
     /// This is the recommended approach for most tests as it doesn't require
     /// any external processes.
     pub async fn with_mock() -> Result<Self, pmi::PeppyMessagingInterfaceError> {
-        let temp_dir = TempDir::new().expect("failed to create temp dir for test");
-        let daemon_state_path = DaemonState::state_file_in(temp_dir.path());
-
         let mut instance = MockAdapter::start_router().await?;
         instance.messenger().start_session().await?;
         let messenger = instance.take_messenger();
         let port = messenger.get_host().port();
+        Self::setup(messenger, port, MessengerInstance::Mock(instance)).await
+    }
+
+    /// Creates a test setup using ZenohAdapter with an ephemeral port.
+    ///
+    /// Use this when you need to test real zenoh messaging behavior.
+    pub async fn with_zenoh() -> Result<Self, pmi::PeppyMessagingInterfaceError> {
+        let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None).await?;
+        instance.messenger().start_session().await?;
+        let port = instance.port;
+        let messenger = instance.take_messenger();
+        Self::setup(messenger, port, MessengerInstance::Zenoh(instance)).await
+    }
+
+    async fn setup(
+        messenger: Messenger,
+        port: u16,
+        instance: MessengerInstance,
+    ) -> Result<Self, pmi::PeppyMessagingInterfaceError> {
+        let temp_dir = TempDir::new().expect("failed to create temp dir for test");
+        let daemon_state_path = DaemonState::state_file_in(temp_dir.path());
         let shared_messenger = Arc::new(TokioMutex::new(messenger));
 
         // Start the master node to provide services (node_init, node_add, etc.)
@@ -170,53 +188,7 @@ impl ServeCommandEmulation {
 
         Ok(Self {
             _temp_dir: temp_dir,
-            _instance: MessengerInstance::Mock(instance),
-            _master_node_task: master_node_task,
-            shared_messenger,
-            daemon_state,
-            daemon_state_path,
-        })
-    }
-
-    /// Creates a test setup using ZenohAdapter with an ephemeral port.
-    ///
-    /// Use this when you need to test real zenoh messaging behavior.
-    pub async fn with_zenoh() -> Result<Self, pmi::PeppyMessagingInterfaceError> {
-        let temp_dir = TempDir::new().expect("failed to create temp dir for test");
-        let daemon_state_path = DaemonState::state_file_in(temp_dir.path());
-
-        let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None).await?;
-        instance.messenger().start_session().await?;
-        let actual_port = instance.port;
-        let messenger = instance.take_messenger();
-        let shared_messenger = Arc::new(TokioMutex::new(messenger));
-
-        // Start the master node to provide services (node_init, node_add, etc.)
-        let master_node = MasterNode::new(
-            Arc::clone(&shared_messenger),
-            Some("test-master"),
-            MasterNodeArguments {
-                node_startup_timeout: Duration::from_secs(10),
-                node_start_health_timeout: Duration::from_secs(30),
-            },
-            temp_dir.path().to_path_buf(),
-        );
-        let master_node_name = master_node.node_name().to_string();
-
-        // Start master node with ready signal to ensure services are registered
-        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-        let master_node_task =
-            tokio::spawn(async move { master_node.start_with_ready(Some(ready_tx)).await });
-        ready_rx.await.expect("master node ready signal failed");
-
-        // Create and write daemon state
-        let daemon_state = DaemonState::new(&master_node_name, actual_port, "test-git-hash");
-        DaemonState::write_to(&daemon_state_path, &daemon_state)
-            .expect("failed to write daemon state");
-
-        Ok(Self {
-            _temp_dir: temp_dir,
-            _instance: MessengerInstance::Zenoh(instance),
+            _instance: instance,
             _master_node_task: master_node_task,
             shared_messenger,
             daemon_state,
