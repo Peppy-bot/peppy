@@ -1,6 +1,4 @@
-mod helpers;
-
-use helpers::{LogCapture, ServeCommandEmulation};
+use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,7 +20,7 @@ async fn node_run_command_succeeds() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.daemon_state().master_node_name.clone();
+    let master_node_name = serve.master_node_name().to_string();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -68,7 +66,7 @@ async fn node_run_command_succeeds() {
         peppy_json5_path.display()
     );
 
-    helpers::override_start_cmd(&peppy_json5_path);
+    peppy::test_support::override_start_cmd(&peppy_json5_path);
 
     // Add the node to the node stack (without running)
     NodeCommand {
@@ -197,7 +195,7 @@ async fn node_run_command_with_args_succeeds() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.daemon_state().master_node_name.clone();
+    let master_node_name = serve.master_node_name().to_string();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -277,7 +275,7 @@ async fn node_run_command_with_args_succeeds() {
 }
 "#;
     std::fs::write(&peppy_json5_path, peppy_config).expect("peppy.json5 should be writable");
-    helpers::override_start_cmd(&peppy_json5_path);
+    peppy::test_support::override_start_cmd(&peppy_json5_path);
 
     // Add the node to the node stack (without running)
     NodeCommand {
@@ -416,7 +414,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.daemon_state().master_node_name.clone();
+    let master_node_name = serve.master_node_name().to_string();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -462,7 +460,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         peppy_json5_path.display()
     );
 
-    helpers::override_start_cmd(&peppy_json5_path);
+    peppy::test_support::override_start_cmd(&peppy_json5_path);
 
     // Add the node to the node stack (without running)
     NodeCommand {

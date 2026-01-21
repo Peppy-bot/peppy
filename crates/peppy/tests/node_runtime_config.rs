@@ -1,6 +1,4 @@
-mod helpers;
-
-use helpers::{LogCapture, ServeCommandEmulation};
+use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 
 use peppy::commands::Command;
@@ -13,7 +11,7 @@ async fn node_runtime_config_command_outputs_valid_config() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.daemon_state().master_node_name.clone();
+    let master_node_name = serve.master_node_name().to_string();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -53,7 +51,7 @@ async fn node_runtime_config_command_outputs_valid_config() {
         peppy_json5_path.display()
     );
 
-    helpers::disable_add_cmd(&peppy_json5_path);
+    peppy::test_support::disable_add_cmd(&peppy_json5_path);
 
     NodeCommand {
         command: NodeCommands::Add {
@@ -121,7 +119,7 @@ async fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.daemon_state().master_node_name.clone();
+    let master_node_name = serve.master_node_name().to_string();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -161,7 +159,7 @@ async fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
         peppy_json5_path.display()
     );
 
-    helpers::disable_add_cmd(&peppy_json5_path);
+    peppy::test_support::disable_add_cmd(&peppy_json5_path);
 
     NodeCommand {
         command: NodeCommands::Add {

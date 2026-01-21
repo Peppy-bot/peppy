@@ -1,6 +1,4 @@
-mod helpers;
-
-use helpers::{LogCapture, ServeCommandEmulation};
+use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 
 use peppy::commands::Command;
@@ -16,9 +14,8 @@ fn node_rust_init_command_success() {
         .expect("failed to start mock serve emulation");
 
     // Verify the daemon state
-    let daemon_state = serve.daemon_state();
     assert!(
-        !daemon_state.master_node_name.is_empty(),
+        !serve.master_node_name().is_empty(),
         "master_node_name should not be empty"
     );
 

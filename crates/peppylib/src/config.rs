@@ -35,7 +35,7 @@ fn format_validation_error(error: &jsonschema::ValidationError) -> String {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
 /// use serde::Deserialize;
 /// use peppylib::config::{NodeArguments, deserialize_parameters, JsonSchema};
 ///
