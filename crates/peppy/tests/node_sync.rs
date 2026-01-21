@@ -37,7 +37,7 @@ async fn node_sync_rust_command_succeeds() {
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
     assert!(
-        !serve.daemon_state().master_node_name.is_empty(),
+        !serve.master_node_name().is_empty(),
         "master_node_name should not be empty"
     );
 

@@ -22,7 +22,7 @@ async fn node_run_command_succeeds() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.daemon_state().master_node_name.clone();
+    let master_node_name = serve.master_node_name().to_string();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -197,7 +197,7 @@ async fn node_run_command_with_args_succeeds() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.daemon_state().master_node_name.clone();
+    let master_node_name = serve.master_node_name().to_string();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -416,7 +416,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.daemon_state().master_node_name.clone();
+    let master_node_name = serve.master_node_name().to_string();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
