@@ -10,7 +10,7 @@ use peppy::context::AppContext;
 #[test]
 fn serve_command() {
     let ctx = Arc::new(AppContext::default());
-    let log_capture = crate::helpers::LogCapture::new();
+    let log_capture = peppy::test_support::LogCapture::new();
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
         .without_time()

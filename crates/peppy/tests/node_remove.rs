@@ -1,9 +1,9 @@
-use crate::helpers::{LogCapture, ServeCommandEmulation};
 use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::context::AppContext;
+use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use peppylib::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
@@ -62,7 +62,7 @@ fn node_remove_command_succeeds() {
         peppy_json5_path.display()
     );
 
-    crate::helpers::disable_add_cmd(&peppy_json5_path);
+    peppy::test_support::disable_add_cmd(&peppy_json5_path);
 
     NodeCommand {
         command: NodeCommands::Add {
@@ -194,7 +194,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
 
     // Override the launch command to avoid spawning a real node process.
     // Health/shutdown services are provided in-process via the mock messenger.
-    crate::helpers::override_start_cmd(&peppy_json5_path);
+    peppy::test_support::override_start_cmd(&peppy_json5_path);
 
     // Start in-process node services for health/shutdown so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
@@ -328,7 +328,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         peppy_json5_path.display()
     );
 
-    crate::helpers::override_start_cmd(&peppy_json5_path);
+    peppy::test_support::override_start_cmd(&peppy_json5_path);
 
     let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
 

@@ -1,4 +1,4 @@
-use crate::helpers::{LogCapture, ServeCommandEmulation};
+use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -112,7 +112,7 @@ async fn node_launch_command_succeed() {
 
     let node_b_path = nodes_dir.path().join(node_b_name);
     let node_b_peppy_json5_path = node_b_path.join(NODE_CONFIG_FILE);
-    crate::helpers::override_start_cmd(&node_b_peppy_json5_path);
+    peppy::test_support::override_start_cmd(&node_b_peppy_json5_path);
 
     let messenger_handle = ctx
         .messenger_handle()
