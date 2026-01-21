@@ -61,7 +61,7 @@ async fn node_launch_command_succeed() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.daemon_state().master_node_name.clone();
+    let master_node_name = serve.master_node_name().to_string();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -276,7 +276,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.daemon_state().master_node_name.clone();
+    let master_node_name = serve.master_node_name().to_string();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"

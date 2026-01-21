@@ -40,11 +40,11 @@ fn serve_command() {
         .join()
         .expect("shutdown thread should complete without panic");
 
-    let daemon_state = ctx
-        .read_daemon_state()
-        .expect("daemon state should be readable");
+    let master_node_name = ctx
+        .master_node_name()
+        .expect("daemon state master node name should be readable");
     assert_eq!(
-        daemon_state.master_node_name, "master-node",
+        master_node_name, "master-node",
         "daemon state should use the configured master name"
     );
 

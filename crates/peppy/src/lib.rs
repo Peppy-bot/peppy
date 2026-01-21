@@ -1,7 +1,10 @@
 pub mod commands;
 pub mod context;
-pub mod daemon_state;
+mod daemon_state;
 pub mod error;
 pub mod terminal;
+
+#[cfg(feature = "test-support")]
+pub mod test_support;
 
 pub use config::consts::*;

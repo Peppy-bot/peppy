@@ -23,7 +23,7 @@ fn node_remove_command_succeeds() {
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.daemon_state().master_node_name.clone();
+    let master_node_name = serve.master_node_name().to_string();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -152,7 +152,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.daemon_state().master_node_name.clone();
+    let master_node_name = serve.master_node_name().to_string();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -288,7 +288,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.daemon_state().master_node_name.clone();
+    let master_node_name = serve.master_node_name().to_string();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"

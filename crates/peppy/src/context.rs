@@ -29,11 +29,19 @@ impl AppContext {
         self
     }
 
-    pub fn read_daemon_state(&self) -> std::io::Result<DaemonState> {
+    pub(crate) fn read_daemon_state(&self) -> std::io::Result<DaemonState> {
         match &self.daemon_state_path {
             Some(path) => DaemonState::read_from(path),
             None => DaemonState::read(),
         }
+    }
+
+    pub fn master_node_name(&self) -> std::io::Result<String> {
+        Ok(self.read_daemon_state()?.master_node_name)
+    }
+
+    pub fn messaging_port(&self) -> std::io::Result<u16> {
+        Ok(self.read_daemon_state()?.messaging_port)
     }
 
     /// Creates an AppContext with a pre-initialized messenger handle.
@@ -49,7 +57,7 @@ impl AppContext {
     pub async fn connect(&self) -> crate::error::Result<()> {
         self.messenger_handle
             .get_or_try_init(|| async {
-                let messaging_port = self.read_daemon_state()?.messaging_port;
+                let messaging_port = self.messaging_port()?;
                 MessengerHandle::from_host_port(
                     config::consts::DEFAULT_MESSAGING_HOST,
                     messaging_port,
