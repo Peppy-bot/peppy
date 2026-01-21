@@ -444,7 +444,7 @@ fn spawning_multiple_instances_on_same_entity() {
 }
 
 #[test]
-fn adding_same_entity_with_different_interfaces_fails() {
+fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() {
     // First config: exposes a topic
     let config_with_topic: config::node::NodeConfig = serde_json5::from_str(
         r#"{
@@ -500,27 +500,41 @@ fn adding_same_entity_with_different_interfaces_fails() {
 
     // Add the first config
     stack
-        .push_config(config_with_topic, false, PathBuf::from("/tmp"))
+        .push_config(config_with_topic, false, PathBuf::from("/tmp/sensor_v1"))
         .expect("first config has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have master + sensor");
 
-    // Adding the same entity with different interfaces should fail
-    let result = stack.push_config(config_with_topic_and_service, false, PathBuf::from("/tmp"));
-    assert!(
-        result.is_err(),
-        "should fail to add same entity with different interfaces"
-    );
-    assert!(
-        matches!(result.unwrap_err(), NodeStackError::ConfigMismatch { .. }),
-        "error should be ConfigMismatch"
-    );
+    // Re-adding the same entity should overwrite the previous snapshot when there are no dependents
+    stack
+        .push_config(
+            config_with_topic_and_service,
+            false,
+            PathBuf::from("/tmp/sensor_v2"),
+        )
+        .expect("should overwrite existing entity without dependents");
+    assert_eq!(stack.len(), 2, "stack should still have master + sensor");
 
-    // Entity should still exist with original config (no instances since push_config doesn't create them)
+    // Entity should still exist (no instances since push_config doesn't create them)
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
         entity.instances().len(),
         0,
         "entity should have no instances (push_config doesn't create instances)"
+    );
+    assert_eq!(
+        entity.root_path(),
+        PathBuf::from("/tmp/sensor_v2").as_path(),
+        "entity should use the latest snapshot root path"
+    );
+    assert!(
+        entity
+            .config()
+            .interfaces
+            .exposes
+            .as_ref()
+            .and_then(|exposes| exposes.services.as_ref())
+            .is_some_and(|services| services.iter().any(|s| s.name == "calibrate")),
+        "entity should have updated interfaces from the overwritten config"
     );
 }
 
@@ -898,7 +912,109 @@ fn dependency_fails_when_node_tag_mismatches() {
 
 #[test]
 fn overwriting_existing_node_fails_if_node_has_dependencies() {
-    todo!(
-        "If node A is added to the stack, then node B and B depends on node A. Node A cannot be override with a new copy and the same name/tag since it might break the dependency with node B if the interfaces are changed"
+    let dependency_v1: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "lidar",
+              tag: "1.0.0",
+              start_cmd: ["lidar"]
+            },
+            interfaces: {
+                exposes: {
+                    services: [
+                        { name: "reset_sensor" }
+                    ]
+                }
+            }
+        }"#,
     )
+    .expect("valid dependency node config");
+
+    let dependent: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "brain",
+              tag: "1.0.0",
+              start_cmd: ["brain"]
+            },
+            interfaces: {
+                subscribes_to: {
+                    services: [
+                        {
+                          id: "reset_sensor_sub",
+                          node: "lidar",
+                          name: "reset_sensor",
+                          tag: "1.0.0"
+                        }
+                    ]
+                }
+            }
+        }"#,
+    )
+    .expect("valid dependent node config");
+
+    let dependency_v2: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "lidar",
+              tag: "1.0.0",
+              start_cmd: ["lidar"]
+            },
+            interfaces: {
+                exposes: {
+                    services: [
+                        { name: "new_service" }
+                    ]
+                }
+            }
+        }"#,
+    )
+    .expect("valid dependency node config");
+
+    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+
+    stack
+        .push_config(dependency_v1, false, PathBuf::from("/tmp/lidar_v1"))
+        .expect("dependency has no dependencies");
+    stack
+        .push_config(dependent, false, PathBuf::from("/tmp/brain"))
+        .expect("dependent dependency is present");
+
+    let result = stack.push_config(dependency_v2, false, PathBuf::from("/tmp/lidar_v2"));
+    let Err(NodeStackError::CannotOverwriteNodeWithDependents {
+        node_name,
+        node_tag,
+    }) = result
+    else {
+        panic!(
+            "expected CannotOverwriteNodeWithDependents error, got {:?}",
+            result
+        );
+    };
+    assert_eq!(node_name, "lidar");
+    assert_eq!(node_tag, "1.0.0");
+
+    assert_eq!(
+        stack.len(),
+        3,
+        "stack should still have master + lidar + brain"
+    );
+
+    let entity = stack.find("lidar", "1.0.0").expect("entity should exist");
+    assert_eq!(
+        entity.root_path(),
+        PathBuf::from("/tmp/lidar_v1").as_path(),
+        "entity should still point to the original snapshot root path"
+    );
+
+    let dependents = stack.dependents_of("lidar", "1.0.0");
+    assert!(
+        dependents
+            .iter()
+            .any(|entity| entity.config().manifest.name.as_str() == "brain"),
+        "lidar should still have brain as a dependent"
+    );
 }
