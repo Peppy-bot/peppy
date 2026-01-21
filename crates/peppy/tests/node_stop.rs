@@ -1,6 +1,4 @@
-mod helpers;
-
-use helpers::{LogCapture, ServeCommandEmulation};
+use crate::helpers::{LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -71,7 +69,7 @@ async fn node_stop_command_succeeds() {
 
     // Override the launch command to avoid spawning a real node process.
     // Health/shutdown services are provided in-process via the mock messenger.
-    helpers::override_start_cmd(&peppy_json5_path);
+    crate::helpers::override_start_cmd(&peppy_json5_path);
 
     // Add the node to the node stack (without running)
     NodeCommand {
