@@ -897,9 +897,8 @@ fn dependency_fails_when_node_tag_mismatches() {
 }
 
 #[test]
-#[ignore = "not yet implemented"]
-fn overwriting_existing_node_fails_if_interfaces_modified() {
+fn overwriting_existing_node_fails_if_node_has_dependencies() {
     todo!(
-        "If node A is added to the stack, then node B and B depends on node A. Node A cannot be added with the same name/tag since it might break the dependency with node B if the interfaces are changed"
+        "If node A is added to the stack, then node B and B depends on node A. Node A cannot be override with a new copy and the same name/tag since it might break the dependency with node B if the interfaces are changed"
     )
 }
