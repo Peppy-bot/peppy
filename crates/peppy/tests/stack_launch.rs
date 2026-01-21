@@ -1,6 +1,4 @@
-mod helpers;
-
-use helpers::{LogCapture, ServeCommandEmulation};
+use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -61,7 +59,7 @@ async fn node_launch_command_succeed() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.daemon_state().master_node_name.clone();
+    let master_node_name = serve.master_node_name().to_string();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
@@ -114,7 +112,7 @@ async fn node_launch_command_succeed() {
 
     let node_b_path = nodes_dir.path().join(node_b_name);
     let node_b_peppy_json5_path = node_b_path.join(NODE_CONFIG_FILE);
-    helpers::override_start_cmd(&node_b_peppy_json5_path);
+    peppy::test_support::override_start_cmd(&node_b_peppy_json5_path);
 
     let messenger_handle = ctx
         .messenger_handle()
@@ -276,7 +274,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.daemon_state().master_node_name.clone();
+    let master_node_name = serve.master_node_name().to_string();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"

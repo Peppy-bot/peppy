@@ -14,7 +14,7 @@ const DAEMON_STATE_FILENAME: &str = "daemon_state.json";
 /// environment variable, or defaults to `~/.peppy/$DAEMON_STATE_FILENAME` in production
 /// and a temp directory in development.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DaemonState {
+pub(crate) struct DaemonState {
     /// The name of the node currently acting as the master node.
     pub master_node_name: String,
     pub daemon_pid: Option<u32>,
@@ -31,7 +31,7 @@ fn default_messaging_port() -> u16 {
 }
 
 impl DaemonState {
-    pub fn new(
+    pub(crate) fn new(
         master_node_name: impl Into<String>,
         messaging_port: u16,
         git_hash: impl Into<String>,
@@ -48,22 +48,23 @@ impl DaemonState {
     ///
     /// If the `PEPPY_DAEMON_STATE_FILE` environment variable is set, returns that path.
     /// Otherwise, returns `peppy_data_dir()/daemon_state.json`.
-    pub fn state_file_path() -> PathBuf {
+    pub(crate) fn state_file_path() -> PathBuf {
         Self::env_state_file_path().unwrap_or_else(Self::default_state_file_path)
     }
 
     /// Returns the path where the daemon state file would be stored in the given directory.
-    pub fn state_file_in(dir: impl AsRef<Path>) -> PathBuf {
+    #[cfg(feature = "test-support")]
+    pub(crate) fn state_file_in(dir: impl AsRef<Path>) -> PathBuf {
         dir.as_ref().join(DAEMON_STATE_FILENAME)
     }
 
-    pub fn write(&self) -> Result<PathBuf, io::Error> {
+    pub(crate) fn write(&self) -> Result<PathBuf, io::Error> {
         let path = Self::state_file_path();
         Self::write_to(&path, self)?;
         Ok(path)
     }
 
-    pub fn write_to(path: &Path, state: &DaemonState) -> Result<(), io::Error> {
+    pub(crate) fn write_to(path: &Path, state: &DaemonState) -> Result<(), io::Error> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -72,7 +73,7 @@ impl DaemonState {
         fs::write(path, content)
     }
 
-    pub fn read() -> Result<Self, io::Error> {
+    pub(crate) fn read() -> Result<Self, io::Error> {
         if let Some(path) = Self::env_state_file_path() {
             return Self::read_from(&path);
         }
@@ -104,7 +105,7 @@ impl DaemonState {
         }
     }
 
-    pub fn read_from(path: &Path) -> Result<Self, io::Error> {
+    pub(crate) fn read_from(path: &Path) -> Result<Self, io::Error> {
         let content = fs::read_to_string(path)?;
         serde_json::from_str(&content).map_err(|e| io::Error::other(e.to_string()))
     }

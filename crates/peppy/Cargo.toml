@@ -2,6 +2,7 @@
 name = "peppy"
 version.workspace = true
 edition.workspace = true
+autotests = false
 
 [dependencies]
 pmi = { path = "../pmi-internal", features = ["zenoh"] }
@@ -28,6 +29,15 @@ libc = "0.2"
 names-generator2 = "0.2"
 rand = "0.9"
 crossterm = "0.29"
+tempfile = { version = "3.8", optional = true }
+
+[features]
+test-support = ["dep:tempfile"]
 
 [dev-dependencies]
 tempfile = "3.8"
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"
+required-features = ["test-support"]

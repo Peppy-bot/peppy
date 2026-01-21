@@ -1,6 +1,4 @@
-mod helpers;
-
-use helpers::ServeCommandEmulation;
+use peppy::test_support::ServeCommandEmulation;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -57,7 +55,7 @@ async fn service_reset_command_resets_node_stack() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.daemon_state().master_node_name.clone();
+    let master_node_name = serve.master_node_name().to_string();
     assert!(
         !master_node_name.is_empty(),
         "master_node_name should not be empty"
