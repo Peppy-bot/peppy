@@ -291,13 +291,16 @@ mod tests {
     #[test]
     fn test_zenohd_facade_creation_with_config() {
         use std::io::Write;
-        use tempfile::NamedTempFile;
+        use tempfile::Builder;
 
         let expected_host = "127.0.0.1";
         let expected_port = 7447u16;
 
-        // Create a minimal zenoh config file
-        let mut config_file = NamedTempFile::new().expect("Failed to create temp file");
+        // Create a minimal zenoh config file with .json5 extension
+        let mut config_file = Builder::new()
+            .suffix(".json5")
+            .tempfile()
+            .expect("Failed to create temp file");
         writeln!(
             config_file,
             r#"{{
@@ -322,9 +325,13 @@ mod tests {
     #[test]
     fn test_stop_router_multiple_times() {
         use std::io::Write;
-        use tempfile::NamedTempFile;
+        use tempfile::Builder;
 
-        let mut config_file = NamedTempFile::new().expect("Failed to create temp file");
+        // Create a config file with .json5 extension
+        let mut config_file = Builder::new()
+            .suffix(".json5")
+            .tempfile()
+            .expect("Failed to create temp file");
         writeln!(
             config_file,
             r#"{{
