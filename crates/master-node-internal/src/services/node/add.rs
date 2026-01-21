@@ -187,6 +187,17 @@ fn copy_node_to_storage(from_dir: &Path, node_name: &str, node_tag: &str) -> Res
     Ok(dest_path)
 }
 
+fn is_node_snapshot_path(path: &Path, node_name: &str, node_tag: &str) -> bool {
+    let storage_dir = peppy_data_dir().join("nodes");
+    if !path.starts_with(&storage_dir) {
+        return false;
+    }
+    let Some(folder_name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    folder_name.starts_with(&format!("{node_name}_{node_tag}_"))
+}
+
 /// State for tracking the current node add action.
 #[derive(Default)]
 enum NodeAddActionState {
@@ -456,6 +467,10 @@ async fn process_node_add(
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
 
+    let previous_snapshot_path = node_stack
+        .find(&node_name, &node_tag)
+        .map(|entity| entity.root_path().to_path_buf());
+
     // Copy the node folder to the peppy storage directory.
     let copied_path = match copy_node_to_storage(&goal.from_dir, &node_name, &node_tag) {
         Ok(path) => path,
@@ -496,6 +511,14 @@ async fn process_node_add(
         // Clean up the copied folder on failure
         let _ = std::fs::remove_dir_all(&copied_path);
         return NodeAddResult::failure(&log_path, format!("Failed to add node config: {}", e));
+    }
+
+    if let Some(previous_snapshot_path) = previous_snapshot_path {
+        if previous_snapshot_path != copied_path
+            && is_node_snapshot_path(&previous_snapshot_path, &node_name, &node_tag)
+        {
+            let _ = std::fs::remove_dir_all(&previous_snapshot_path);
+        }
     }
 
     debug!(
