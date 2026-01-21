@@ -298,8 +298,8 @@ async fn listen_for_node_add_dependency_not_resolved() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_same_node_same_tags_fails() {
-    const NODE_NAME: &str = "mismatch_node";
+async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents() {
+    const NODE_NAME: &str = "overwrite_node";
     const NODE_TAG: &str = "1.0.0";
 
     let started_master = start_master_node_with_mock_messenger().await;
@@ -344,9 +344,9 @@ async fn listen_for_node_add_same_node_same_tags_fails() {
         .find(NODE_NAME, NODE_TAG)
         .expect("node should exist after v1");
     assert_eq!(entity.instances().len(), 0);
-    let copied_path = entity.root_path().to_path_buf();
+    let copied_path_v1 = entity.root_path().to_path_buf();
 
-    // Second add: same name+tag but different interfaces -> should be rejected.
+    // Second add: same name+tag but different interfaces -> should overwrite.
     let peppy_json5_v2 = format!(
         r#"{{
             schema_version: 1,
@@ -376,27 +376,205 @@ async fn listen_for_node_add_same_node_same_tags_fails() {
     .expect("node_add v2 should complete");
 
     assert!(
-        !add_v2.success,
-        "node_add should fail when interfaces mismatch for same name+tag"
-    );
-    assert!(
-        add_v2
-            .error_message
-            .as_ref()
-            .map(|msg| msg.contains("Config mismatch"))
-            .unwrap_or(false),
-        "error message should indicate config mismatch, got: {:?}",
+        add_v2.success,
+        "node_add should overwrite when there are no dependents, got error: {:?}",
         add_v2.error_message
     );
 
     assert_eq!(node_stack.len(), 2, "stack should be unchanged");
     let entity = node_stack
         .find(NODE_NAME, NODE_TAG)
-        .expect("node should still exist after v2 failure");
+        .expect("node should exist after v2 overwrite");
     assert_eq!(entity.instances().len(), 0, "should not have any instances");
+    assert_eq!(
+        entity.root_path(),
+        add_v2.snapshot_path.as_path(),
+        "node stack should point to the new snapshot path"
+    );
+    assert_ne!(
+        entity.root_path(),
+        copied_path_v1.as_path(),
+        "node stack should not point to the previous snapshot path"
+    );
+    assert!(
+        !copied_path_v1.exists(),
+        "previous snapshot should be removed from storage: {}",
+        copied_path_v1.display()
+    );
+    assert!(
+        entity
+            .config()
+            .interfaces
+            .exposes
+            .as_ref()
+            .and_then(|exposes| exposes.topics.as_ref())
+            .is_some_and(|topics| topics.iter().any(|topic| topic.name == "/example")),
+        "node should have updated interfaces from the overwritten config"
+    );
 
     // Clean up
-    let _ = std::fs::remove_dir_all(&copied_path);
+    let _ = std::fs::remove_dir_all(entity.root_path());
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents() {
+    const DEPENDENCY_NODE_NAME: &str = "lidar";
+    const DEPENDENCY_NODE_TAG: &str = "1.0.0";
+    const DEPENDENT_NODE_NAME: &str = "brain";
+    const DEPENDENT_NODE_TAG: &str = "1.0.0";
+
+    let started_master = start_master_node_with_mock_messenger().await;
+    let node_stack = started_master.node_stack.clone();
+
+    let dependency_source_dir_v1 = tempfile::tempdir().expect("failed to create temp source dir");
+    let dependency_source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
+    let dependent_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+
+    let dependency_peppy_json5_v1 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{DEPENDENCY_NODE_NAME}",
+                tag: "{DEPENDENCY_NODE_TAG}",
+                start_cmd: ["sleep", "10"]
+            }},
+            interfaces: {{
+                exposes: {{
+                    services: [
+                        {{ name: "reset_sensor" }}
+                    ]
+                }}
+            }}
+        }}"#
+    );
+    write_peppy_json5(dependency_source_dir_v1.path(), &dependency_peppy_json5_v1);
+
+    let dependency_add_v1 = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        dependency_source_dir_v1.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("dependency node_add v1 should complete");
+    assert!(
+        dependency_add_v1.success,
+        "dependency node_add v1 should succeed, got error: {:?}",
+        dependency_add_v1.error_message
+    );
+
+    let dependent_peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{DEPENDENT_NODE_NAME}",
+                tag: "{DEPENDENT_NODE_TAG}",
+                start_cmd: ["sleep", "10"]
+            }},
+            interfaces: {{
+                subscribes_to: {{
+                    services: [
+                        {{
+                          id: "reset_sensor_sub",
+                          node: "{DEPENDENCY_NODE_NAME}",
+                          name: "reset_sensor",
+                          tag: "{DEPENDENCY_NODE_TAG}"
+                        }}
+                    ]
+                }}
+            }}
+        }}"#
+    );
+    write_peppy_json5(dependent_source_dir.path(), &dependent_peppy_json5);
+
+    let dependent_add = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        dependent_source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("dependent node_add should complete");
+    assert!(
+        dependent_add.success,
+        "dependent node_add should succeed, got error: {:?}",
+        dependent_add.error_message
+    );
+
+    assert_eq!(node_stack.len(), 3, "root + dependency + dependent");
+    let dependency_entity = node_stack
+        .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
+        .expect("dependency should exist");
+    let dependency_snapshot_path = dependency_entity.root_path().to_path_buf();
+
+    // Overwrite attempt: same name+tag but different interfaces should fail due to dependent nodes.
+    let dependency_peppy_json5_v2 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{DEPENDENCY_NODE_NAME}",
+                tag: "{DEPENDENCY_NODE_TAG}",
+                start_cmd: ["sleep", "10"]
+            }},
+            interfaces: {{
+                exposes: {{
+                    services: [
+                        {{ name: "new_service" }}
+                    ]
+                }}
+            }}
+        }}"#
+    );
+    write_peppy_json5(dependency_source_dir_v2.path(), &dependency_peppy_json5_v2);
+
+    let dependency_add_v2 = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        dependency_source_dir_v2.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("dependency node_add v2 should complete");
+
+    assert!(
+        !dependency_add_v2.success,
+        "overwriting an existing node should fail when it has dependents"
+    );
+    assert!(
+        dependency_add_v2
+            .error_message
+            .as_ref()
+            .map(|msg| msg.contains("Cannot overwrite node"))
+            .unwrap_or(false),
+        "error message should indicate overwrite is not allowed, got: {:?}",
+        dependency_add_v2.error_message
+    );
+
+    assert_eq!(node_stack.len(), 3, "stack should be unchanged");
+    let dependency_entity = node_stack
+        .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
+        .expect("dependency should still exist");
+    assert_eq!(
+        dependency_entity.root_path(),
+        dependency_snapshot_path.as_path(),
+        "dependency should still point to the original snapshot path"
+    );
+    assert!(
+        node_stack.contains(DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG),
+        "dependent node should still exist after failed overwrite"
+    );
+
+    // Clean up snapshots created by successful adds
+    let _ = std::fs::remove_dir_all(&dependency_snapshot_path);
+    let _ = std::fs::remove_dir_all(&dependent_add.snapshot_path);
 
     started_master.task.abort();
 }
