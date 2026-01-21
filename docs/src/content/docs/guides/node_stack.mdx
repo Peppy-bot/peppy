@@ -18,7 +18,7 @@ The **node stack** is started as a daemon on your system and the `peppy` binary 
 
 ## Adding `hello_world` to the stack
 
-Add your node to the PeppyOS stack by running:
+Inside your node directory, add it to the PeppyOS stack by running:
 
 ```sh
 peppy add .
@@ -44,25 +44,29 @@ Readding a node with the same node+tag override the one that was previously in t
 Start your node:
 
 ```sh
-peppy start my-first-node
+peppy start hello_world:0.1.0
 ```
-
-You should see output indicating your node is running.
+This will run the `start_cmd` command of the `peppy.json5` configuration.
+The format is `<node_name>:<tag>` for a node that is already part of the node stack.
+Again, you should see some useful output including the path to the log for the running node.
 
 ## Checking node status
 
-View all running nodes:
+View all added & running nodes:
 
 ```sh
-peppy list
+peppy stack list
 ```
+
+You should see our hello_world node with 1 instance running.
+The name of the instance is set randomly by default to a rememberable instance id.
 
 ## Stopping your node
 
-When you're done, stop your node:
+When you're done, you can stop your node:
 
 ```sh
-peppy stop my-first-node
+peppy stop <instance-id>
 ```
 
 ## Next steps

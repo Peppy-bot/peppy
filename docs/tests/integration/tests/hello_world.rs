@@ -80,7 +80,7 @@ fn setup_node_with_snippets(
 
 #[test]
 fn hello_world() {
-    const NODE_NAME: &str = "my_first_node";
+    const NODE_NAME: &str = "hello_world";
     let peppy = peppy_binary();
 
     let workspace = workspace_root();

@@ -1,4 +1,11 @@
 ---
 title: Standalone nodes
 description: Learn how to debug a node before it's added to the node stack
+sidebar:
+  order: 5
 ---
+
+# Debugging a node
+
+While debugging the nodes based on the logs can be quite helpful, nothing beats the ability to fire up the debugger to inspect the code that is supposed to run inside the peppy node stack.
+In order to do so, `peppy` comes with the ability to run a node in "standalone mode", meaning it's able to communicate with the other nodes of the node stack but runs as a regular program that is not part of the stack allowing the developer to run the node as a regular program.
