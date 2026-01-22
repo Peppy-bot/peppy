@@ -250,7 +250,7 @@ async fn standalone_runner_succeed() {
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
 
     let standalone_config = peppylib::runtime::StandaloneConfig::new()
-        .with_parameters(serde_json::json!({ "frequency_hz": TEST_FREQUENCY_HZ }))
+        .with_parameters_json(serde_json::json!({ "frequency_hz": TEST_FREQUENCY_HZ }))
         .with_messaging(&router_host, router_port)
         .with_instance_id(TEST_INSTANCE_ID);
 

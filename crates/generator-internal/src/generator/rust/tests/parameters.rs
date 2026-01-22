@@ -98,7 +98,7 @@ fn generate_parameters_struct() {
     // Verify derive attributes
     assert_contains_all(
         &generated,
-        &["#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]"],
+        &["#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]"],
     );
 }
 
@@ -122,7 +122,7 @@ fn generate_empty_parameters_struct() {
     assert_contains_all(
         &generated,
         &[
-            "#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]",
+            "#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]",
             "pub struct Parameters",
         ],
     );

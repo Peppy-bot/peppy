@@ -4605,7 +4605,7 @@ pub fn generate_parameters_struct(parameters: &config::NodeArguments) -> String 
 
     // Generate the main Parameters struct
     let main_struct = quote! {
-        #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
         pub struct Parameters {
             #( #main_fields ),*
         }
@@ -4669,7 +4669,7 @@ fn generate_parameter_struct(
 
         // Add this struct after its dependencies
         structs.push(quote! {
-            #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+            #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
             pub struct #struct_ident {
                 #( #field_tokens ),*
             }

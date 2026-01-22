@@ -52,8 +52,27 @@ impl StandaloneConfig {
         Self::default()
     }
 
-    /// Set runtime parameters
-    pub fn with_parameters(mut self, params: serde_json::Value) -> Self {
+    /// Set runtime parameters from any serializable type.
+    ///
+    /// # Example
+    /// ```ignore
+    /// #[derive(serde::Serialize)]
+    /// struct MyParams {
+    ///     threshold: f64,
+    ///     enabled: bool,
+    /// }
+    ///
+    /// let config = StandaloneConfig::new()
+    ///     .with_parameters(&MyParams { threshold: 0.5, enabled: true });
+    /// ```
+    pub fn with_parameters<T: serde::Serialize>(mut self, params: &T) -> Self {
+        self.parameters =
+            Some(serde_json::to_value(params).expect("parameters must be serializable"));
+        self
+    }
+
+    /// Set runtime parameters from a raw JSON value.
+    pub fn with_parameters_json(mut self, params: serde_json::Value) -> Self {
         self.parameters = Some(params);
         self
     }
