@@ -1,0 +1,33 @@
+{
+    schema_version: 1,
+    manifest: {
+        name: "hello_world",
+        tag: "0.1.0",
+        add_cmd: [
+            "cargo",
+            "build",
+            "--release"
+        ],
+        start_cmd: [
+            "cargo",
+            "run",
+            "--release"
+        ]
+    },
+    parameters: {
+        name: "string",
+    },
+    interfaces: {
+        exposes: {
+            topics: [
+                {
+                    name: "hello_world",
+                    qos_profile: "sensor_data",
+                    message_format: {
+                        message: "string"
+                    },
+                }
+            ],
+        }
+    }
+}

@@ -13,6 +13,13 @@ import helloWorldConfig from './snippets/hello_world/peppy.json5?raw';
 Now that you have PeppyOS installed, let's create your first node. A node is the fundamental unit of computation in PeppyOS - it represents a runnable application or service.
 In this guide we will try to understand how the concept of nodes work and how they communicate together.
 
+You can think of nodes as units of compute that are responsible for a single job. For example a given node can do the following:
+ - Emit frames of a USB camera
+ - Move a single actuator
+ - Act as the brain of a robot by receiving input from sensors (audio/video...) and emit actions
+
+The important bit here is that **a node is responsible of performing a single task**.
+
 ## Project structure
 
 Run:

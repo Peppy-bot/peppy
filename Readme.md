@@ -8,7 +8,7 @@ PeppyOS is a modern robotics middleware framework designed for robots. Similar t
 
 - **Real-time Communication**: Low-latency message passing between nodes thanks to [Zenoh](https://github.com/eclipse-zenoh/zenoh)
 - **Quality of Service**: Configurable reliability and performance settings
-- **Language Agnostic**: Support for Python and Rust (more languages will be supported in the future including [Mojo](https://www.modular.com/mojo))
+- **Language Agnostic**: Support for Python and Rust (more languages will be supported in the future with `C` being the next on the list)
 - **Cross-platform**: Linux and macOS support
 - **Explicit over implicit**: Every node communication or feature of the framework is controlled through explicit configuration. This allows things like output messages of one node to break the code of other nodes depending on it to avoid implicit crashes at runtime.
 - **Not opinionated on build tools**: PeppyOS doesn't force any tool upon it's developers. The `peppylib` library however, is available only in a few supported languages.
