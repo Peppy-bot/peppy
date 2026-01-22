@@ -3,7 +3,9 @@ use crate::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAdd
 use crate::names;
 use bytes::Bytes;
 use chrono::Local;
-use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, logs_dir_add, peppy_data_dir};
+use config::consts::{
+    NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, logs_dir_add, peppy_data_dir,
+};
 use config::node::{NodeConfig, NodeConfigParser};
 use node_stack::NodeStack;
 use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
@@ -17,6 +19,27 @@ use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::debug;
+
+pub async fn listen_for_node_add(
+    messenger: &MessengerHandle,
+    master_node_name: &str,
+    instance_id: &str,
+    node_name: &str,
+    node_stack: Arc<NodeStack>,
+) -> Result<JoinHandle<Result<()>>> {
+    let action = ActionMessenger::expose(
+        messenger,
+        master_node_name,
+        instance_id,
+        node_name,
+        names::NODE_ADD_ACTION,
+    )
+    .await?;
+
+    let handle = tokio::spawn(async move { run_node_add_action_loop(action, node_stack).await });
+
+    Ok(handle)
+}
 
 fn generate_random_id() -> String {
     let mut rng = rand::rng();
@@ -212,27 +235,6 @@ enum NodeAddActionState {
     ResultSent { result: NodeAddResult },
 }
 
-pub async fn listen_for_node_add(
-    messenger: &MessengerHandle,
-    master_node_name: &str,
-    instance_id: &str,
-    node_name: &str,
-    node_stack: Arc<NodeStack>,
-) -> Result<JoinHandle<Result<()>>> {
-    let action = ActionMessenger::expose(
-        messenger,
-        master_node_name,
-        instance_id,
-        node_name,
-        names::NODE_ADD_ACTION,
-    )
-    .await?;
-
-    let handle = tokio::spawn(async move { run_node_add_action_loop(action, node_stack).await });
-
-    Ok(handle)
-}
-
 async fn run_node_add_action_loop(
     mut action: ActionCreation,
     node_stack: Arc<NodeStack>,
@@ -251,6 +253,7 @@ async fn run_node_add_action_loop(
                     let feedback_publisher = feedback_publisher.clone();
                     let node_stack = Arc::clone(&node_stack);
                     let state = Arc::clone(&state);
+
                     async move {
                         handle_goal_request(context, feedback_publisher, node_stack, state).await
                     }
@@ -362,6 +365,69 @@ async fn handle_goal_request(
         "Received `node_add` goal from {sender_instance_id}, from_dir={}",
         goal.from_dir.display()
     );
+
+    // Verify that the node directory is in sync with the currently running daemon.
+    let git_hash_path = goal.from_dir.join(PEPPY_OUTPUT_DIR).join("git.hash");
+    let stored_git_hash = match std::fs::read_to_string(&git_hash_path) {
+        Ok(hash) => hash,
+        Err(e) => {
+            let error_msg = format!(
+                "Missing required git hash file at {}: {}. Run `peppy node sync` before `peppy node add`.",
+                git_hash_path.display(),
+                e
+            );
+            let result = NodeAddResult::failure(PathBuf::new(), &error_msg);
+            let mut state_guard = state.lock().await;
+            *state_guard = NodeAddActionState::Completed { result };
+            let response = NodeAddGoalResponse::rejected(&error_msg);
+            return response
+                .encode()
+                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                    identifier: "node_add_goal".to_string(),
+                    reason: format!("Failed to encode response: {}", e),
+                });
+        }
+    };
+
+    let expected_git_hash = goal.git_hash.trim();
+    let stored_git_hash = stored_git_hash.trim();
+
+    if stored_git_hash.is_empty() {
+        let error_msg = format!(
+            "Invalid git hash file at {}: file is empty. Run `peppy node sync` before `peppy node add`.",
+            git_hash_path.display(),
+        );
+        let result = NodeAddResult::failure(PathBuf::new(), &error_msg);
+        let mut state_guard = state.lock().await;
+        *state_guard = NodeAddActionState::Completed { result };
+        let response = NodeAddGoalResponse::rejected(&error_msg);
+        return response
+            .encode()
+            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                identifier: "node_add_goal".to_string(),
+                reason: format!("Failed to encode response: {}", e),
+            });
+    }
+
+    if stored_git_hash != expected_git_hash {
+        let error_msg = format!(
+            "git hash mismatch for node directory {} (expected '{}', found '{}' in {}). Run `peppy node sync` before retrying.",
+            goal.from_dir.display(),
+            expected_git_hash,
+            stored_git_hash,
+            git_hash_path.display(),
+        );
+        let result = NodeAddResult::failure(PathBuf::new(), &error_msg);
+        let mut state_guard = state.lock().await;
+        *state_guard = NodeAddActionState::Completed { result };
+        let response = NodeAddGoalResponse::rejected(&error_msg);
+        return response
+            .encode()
+            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                identifier: "node_add_goal".to_string(),
+                reason: format!("Failed to encode response: {}", e),
+            });
+    }
 
     // Parse node config to get node_name and tag for log file naming
     let config_path = goal.from_dir.join(NODE_CONFIG_FILE);
