@@ -19,12 +19,14 @@ use super::{decode_message, encode_message};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeAddGoal {
     pub from_dir: PathBuf,
+    pub git_hash: String,
 }
 
 impl NodeAddGoal {
-    pub fn new(from_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(from_dir: impl Into<PathBuf>, git_hash: impl Into<String>) -> Self {
         Self {
             from_dir: from_dir.into(),
+            git_hash: git_hash.into(),
         }
     }
 
@@ -33,6 +35,7 @@ impl NodeAddGoal {
         {
             let mut goal = builder.init_root::<node_capnp::node_add_goal::Builder>();
             goal.set_from_dir(self.from_dir.to_string_lossy().as_ref());
+            goal.set_git_hash(&self.git_hash);
         }
         encode_message(&builder)
     }
@@ -42,6 +45,7 @@ impl NodeAddGoal {
         let goal = reader.get_root::<node_capnp::node_add_goal::Reader>()?;
         Ok(Self {
             from_dir: PathBuf::from(goal.get_from_dir()?.to_str()?),
+            git_hash: goal.get_git_hash()?.to_str()?.to_owned(),
         })
     }
 

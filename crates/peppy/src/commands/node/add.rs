@@ -42,6 +42,7 @@ async fn add_node_async(
         ))
     })?;
     let master_node_name = daemon_state.master_node_name;
+    let git_hash = daemon_state.git_hash;
 
     // Canonicalize the path to ensure we have an absolute path.
     // This is important for relative paths like "peppy.json5" where parent() would be empty.
@@ -74,7 +75,7 @@ async fn add_node_async(
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
     // Send the goal to start the add action
-    let add_goal = NodeAddGoal::new(from_dir);
+    let add_goal = NodeAddGoal::new(from_dir, git_hash);
     let mut action_handle = add_goal
         .send_goal(
             messenger_handle,
