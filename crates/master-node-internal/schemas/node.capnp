@@ -19,6 +19,8 @@ struct NodeListResponse {
 struct NodeAddGoal {
     # Directory the configuration was loaded from
     fromDir @0 :Text;
+    # Git commit hash of the node being added
+    gitHash @1 :Text;
 }
 
 struct NodeAddGoalResponse {

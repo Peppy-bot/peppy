@@ -54,7 +54,7 @@ pub async fn send_node_add_and_wait(
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
 ) -> Result<NodeAddResult, String> {
-    let goal = NodeAddGoal::new(from_dir);
+    let goal = NodeAddGoal::new(from_dir, "test-hash");
     let (caller_master_node, caller_instance_id) = if feedback_tx.is_some() {
         ("*", "*")
     } else {
