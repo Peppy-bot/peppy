@@ -5,8 +5,8 @@ sidebar:
   order: 5
 ---
 import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
-import helloWorldParamRust from './snippets/hello_world_param/main.rs?raw';
-import helloWorldParamConfig from './snippets/hello_world_param/peppy.json5?raw';
+import helloWorldParamRust from './snippets/rust/hello_world_param/main.rs?raw';
+import helloWorldParamConfig from './snippets/rust/hello_world_param/peppy.json5?raw';
 
 From time to time you might want to run multiple instances of the same node started with different input parameters. For example, a camera node might point to `/dev/video0` on your system while another one points to `/dev/video1`.
 Parameters exists to allow you to to run multiple instances of the same node with different input settings.
@@ -41,10 +41,27 @@ Now try to add the node again:
 ```
 peppy node add .
 ```
-The command should work this time.
+The command should work this time, and you can see the node in the node stack by running:
+```sh
+peppy stack list
+```
 
 # Using the parameter
 
-Now that we've synchronized our project with the new parameter can be used 
+Now that we've synchronized our project, the new parameter can be used in the main file by modifying it like this:
 
-# Readding the node
+<Tabs>
+  <TabItem label="Rust">
+    <Code code={helloWorldParamRust} lang="rust" title="src/main.rs" />
+  </TabItem>
+  <TabItem label="Python">
+    :::caution
+    The Python build system is not yet available.
+    :::
+  </TabItem>
+</Tabs>
+
+As long as our node doesn't have any dependency, we can add it again in the node stack. Since it kept the same node name + node tag, it's simply going to override the one that we previously added:
+```sh
+node add .
+```
