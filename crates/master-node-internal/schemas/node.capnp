@@ -71,6 +71,8 @@ struct NodeGenerateRequest {
     nodeRootDir @0 :Text;
     # Generator language ("rust" or "python")
     language @1 :Text;
+    # Git commit hash of the node being synced
+    gitHash @2 :Text;
 }
 
 struct NodeSyncResponse {

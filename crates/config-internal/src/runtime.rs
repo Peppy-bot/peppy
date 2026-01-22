@@ -14,13 +14,20 @@ use crate::config::Name;
 pub struct LauncherRuntimeConfig {
     pub messaging_host: String,
     pub messaging_port: u16,
+    #[serde(default)]
+    pub git_hash: String,
 }
 
 impl LauncherRuntimeConfig {
-    pub fn new(messaging_host: impl Into<String>, messaging_port: u16) -> Self {
+    pub fn new(
+        messaging_host: impl Into<String>,
+        messaging_port: u16,
+        git_hash: impl Into<String>,
+    ) -> Self {
         Self {
             messaging_host: messaging_host.into(),
             messaging_port,
+            git_hash: git_hash.into(),
         }
     }
 }

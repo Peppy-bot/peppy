@@ -30,7 +30,7 @@ async fn listen_for_node_generate_success() {
         }"#,
     );
 
-    let response = NodeSyncRequest::new(node_dir.path())
+    let response = NodeSyncRequest::new(node_dir.path(), "")
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -85,7 +85,7 @@ async fn listen_for_node_generate_success() {
 async fn listen_for_node_generate_missing_node_root_dir_fails() {
     let started_master = start_master_node_with_mock_messenger().await;
 
-    let response = NodeSyncRequest::new("")
+    let response = NodeSyncRequest::new("", "")
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -118,7 +118,7 @@ async fn listen_for_node_generate_node_root_dir_does_not_exist_fails() {
         missing_dir.display()
     );
 
-    let response = NodeSyncRequest::new(missing_dir)
+    let response = NodeSyncRequest::new(missing_dir, "")
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -149,7 +149,7 @@ async fn listen_for_node_generate_node_root_dir_is_not_a_directory_fails() {
     let file_path = tmp.path().join("not_a_directory");
     fs::write(&file_path, "not a dir").expect("failed to write temp file");
 
-    let response = NodeSyncRequest::new(file_path)
+    let response = NodeSyncRequest::new(file_path, "")
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -180,7 +180,7 @@ async fn listen_for_node_generate_missing_peppy_json5_fails() {
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
     let cargo_toml_path = node_dir.path().join("Cargo.toml");
 
-    let response = NodeSyncRequest::new(node_dir.path())
+    let response = NodeSyncRequest::new(node_dir.path(), "")
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -228,7 +228,7 @@ async fn listen_for_node_generate_invalid_peppy_json5_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = NodeSyncRequest::new(node_dir.path())
+    let response = NodeSyncRequest::new(node_dir.path(), "")
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -299,7 +299,7 @@ async fn listen_for_node_generate_missing_dependency_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = NodeSyncRequest::new(node_dir.path())
+    let response = NodeSyncRequest::new(node_dir.path(), "")
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -389,7 +389,7 @@ async fn listen_for_node_generate_multiple_missing_dependencies_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = NodeSyncRequest::new(node_dir.path())
+    let response = NodeSyncRequest::new(node_dir.path(), "")
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -491,7 +491,7 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
     );
 
     // Generate peppygen for the uvc_camera node first
-    let uvc_camera_response = NodeSyncRequest::new(uvc_camera_node_dir.path())
+    let uvc_camera_response = NodeSyncRequest::new(uvc_camera_node_dir.path(), "")
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -568,7 +568,7 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
     );
 
     // Generate the brain node - this should succeed now that uvc_camera is in the stack
-    let brain_response = NodeSyncRequest::new(brain_node_dir.path())
+    let brain_response = NodeSyncRequest::new(brain_node_dir.path(), "")
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -681,7 +681,7 @@ async fn listen_for_node_generate_generates_rust_parameters() {
     );
 
     // Generate peppygen for the uvc_camera node first
-    let response = NodeSyncRequest::new(node_dir.path())
+    let response = NodeSyncRequest::new(node_dir.path(), "")
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -776,7 +776,7 @@ async fn listen_for_node_generate_deletes_previous_peppy_folder() {
     );
 
     // First generation - creates the .peppy folder
-    let response = NodeSyncRequest::new(node_dir.path())
+    let response = NodeSyncRequest::new(node_dir.path(), "")
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -810,7 +810,7 @@ async fn listen_for_node_generate_deletes_previous_peppy_folder() {
     );
 
     // Second generation - should delete the .peppy folder and recreate it
-    let response = NodeSyncRequest::new(node_dir.path())
+    let response = NodeSyncRequest::new(node_dir.path(), "")
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
