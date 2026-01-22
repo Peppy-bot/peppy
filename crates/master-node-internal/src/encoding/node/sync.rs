@@ -13,12 +13,12 @@ use crate::node_capnp;
 use super::{decode_message, encode_message};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeGenerateRequest {
+pub struct NodeSyncRequest {
     pub node_root_dir: PathBuf,
     pub build_system: BuildSystem,
 }
 
-impl NodeGenerateRequest {
+impl NodeSyncRequest {
     pub fn new(node_root_dir: impl Into<PathBuf>) -> Self {
         Self {
             node_root_dir: node_root_dir.into(),
@@ -59,31 +59,31 @@ impl NodeGenerateRequest {
         as_instance_id: &str,
         target_master_node: &str,
         response_timeout: Duration,
-    ) -> Result<NodeGenerateResponse> {
+    ) -> Result<NodeSyncResponse> {
         let request_payload = self.encode()?;
         let response = ServiceMessenger::poll(
             messenger,
             bound_master_node,
             as_instance_id,
             target_master_node,
-            names::NODE_GENERATE,
+            names::NODE_SYNC,
             Some(target_master_node),
             None,
             request_payload,
             response_timeout,
         )
         .await?;
-        NodeGenerateResponse::decode(&response.payload().to_bytes())
+        NodeSyncResponse::decode(&response.payload().to_bytes())
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeGenerateResponse {
+pub struct NodeSyncResponse {
     pub success: bool,
     pub error_message: String,
 }
 
-impl NodeGenerateResponse {
+impl NodeSyncResponse {
     pub fn new(success: bool, error_message: impl Into<String>) -> Self {
         Self {
             success,
@@ -102,7 +102,7 @@ impl NodeGenerateResponse {
     pub fn encode(&self) -> Result<Bytes> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::node_generate_response::Builder>();
+            let mut response = builder.init_root::<node_capnp::node_sync_response::Builder>();
             response.set_success(self.success);
             response.set_error_message(&self.error_message);
         }
@@ -111,7 +111,7 @@ impl NodeGenerateResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_generate_response::Reader>()?;
+        let response = reader.get_root::<node_capnp::node_sync_response::Reader>()?;
         Ok(Self {
             success: response.get_success(),
             error_message: response.get_error_message()?.to_str()?.to_owned(),

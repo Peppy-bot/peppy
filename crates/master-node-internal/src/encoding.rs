@@ -12,11 +12,10 @@ pub use info::{InfoRequest, InfoResponse};
 pub use launch::{LaunchRequest, LaunchResponse};
 pub use node::{
     add::NodeAddFeedback, add::NodeAddGoal, add::NodeAddGoalResponse, add::NodeAddResult,
-    generate::NodeGenerateRequest, generate::NodeGenerateResponse, init::NodeInitRequest,
-    init::NodeInitResponse, list::NodeListRequest, list::NodeListResponse,
+    init::NodeInitRequest, init::NodeInitResponse, list::NodeListRequest, list::NodeListResponse,
     remove::NodeRemoveRequest, remove::NodeRemoveResponse, start::NodeStartFeedback,
     start::NodeStartGoal, start::NodeStartGoalResponse, start::NodeStartResult,
-    stop::NodeStopRequest, stop::NodeStopResponse,
+    stop::NodeStopRequest, stop::NodeStopResponse, sync::NodeSyncRequest, sync::NodeSyncResponse,
 };
 pub use ping::{PingRequest, PingResponse};
 pub use reset::{NodeResetRequest, NodeResetResponse};

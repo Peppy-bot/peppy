@@ -212,7 +212,7 @@ impl MasterNode {
                 self.node_name(),
             )
             .await?,
-            node::listen_for_node_generate(
+            node::listen_for_node_sync(
                 &self.messenger,
                 master_node_name,
                 self.instance_id(),
