@@ -24,6 +24,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
+pub const TEST_GIT_HASH: &str = "test-hash";
 
 pub struct NodeStartTestTimeouts {
     pub goal: Duration,
@@ -56,8 +57,7 @@ pub async fn send_node_add_and_wait(
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
 ) -> Result<NodeAddResult, String> {
-    let git_hash = "test-hash";
-    let goal = NodeAddGoal::new(from_dir, git_hash);
+    let goal = NodeAddGoal::new(from_dir, TEST_GIT_HASH);
 
     let peppy_dir = from_dir.join(PEPPY_OUTPUT_DIR);
     std::fs::create_dir_all(&peppy_dir).map_err(|e| {
@@ -69,7 +69,7 @@ pub async fn send_node_add_and_wait(
     })?;
     let git_hash_path = peppy_dir.join("git.hash");
     if !git_hash_path.exists() {
-        std::fs::write(&git_hash_path, git_hash).map_err(|e| {
+        std::fs::write(&git_hash_path, TEST_GIT_HASH).map_err(|e| {
             format!(
                 "Failed to write git hash file {}: {}",
                 git_hash_path.display(),
