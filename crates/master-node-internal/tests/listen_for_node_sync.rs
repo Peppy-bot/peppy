@@ -30,7 +30,8 @@ async fn listen_for_node_generate_success() {
         }"#,
     );
 
-    let response = NodeSyncRequest::new(node_dir.path(), "")
+    let expected_git_hash = "deadbeef";
+    let response = NodeSyncRequest::new(node_dir.path(), expected_git_hash)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -52,6 +53,19 @@ async fn listen_for_node_generate_success() {
         peppygen_dir.exists(),
         "peppygen directory should exist at {}",
         peppygen_dir.display()
+    );
+
+    let git_hash_path = node_dir.path().join(PEPPY_OUTPUT_DIR).join("git.hash");
+    assert!(
+        git_hash_path.exists(),
+        "git.hash should exist at {}",
+        git_hash_path.display()
+    );
+    let stored_git_hash = fs::read_to_string(&git_hash_path).expect("failed to read git.hash file");
+    assert_eq!(
+        stored_git_hash.trim(),
+        expected_git_hash,
+        "git.hash should contain the sync request git_hash"
     );
 
     let config_path = node_dir.path().join(NODE_CONFIG_FILE);
