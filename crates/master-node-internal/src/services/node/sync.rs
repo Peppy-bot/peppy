@@ -230,23 +230,40 @@ async fn handle_node_sync_request_inner(
         }
     };
 
-    let build_system = request.build_system;
-    let node_root_dir = request.node_root_dir;
-    match tokio::task::spawn_blocking(move || {
+    let NodeSyncRequest {
+        node_root_dir,
+        build_system,
+        git_hash,
+    } = request;
+
+    match tokio::task::spawn_blocking(move || -> Result<()> {
         remove_previous_peppy_dir(&node_root_dir);
 
         generator::generate_lib_for_build_system(
             build_system,
             &node_root_dir,
             subscribed_interfaces,
-        )
+        )?;
+
+        let peppy_dir = node_root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
+        std::fs::create_dir_all(&peppy_dir)?;
+        std::fs::write(peppy_dir.join("git.hash"), git_hash)?;
+
+        Ok(())
     })
     .await
     {
         Ok(Ok(())) => {}
-        Ok(Err(e)) => {
+        Ok(Err(crate::Error::GeneratorError(e))) => {
             return NodeSyncResponse::failure(format!("Failed to generate peppygen: {}", e))
                 .encode();
+        }
+        Ok(Err(crate::Error::Io(e))) => {
+            return NodeSyncResponse::failure(format!("Failed to write git hash file: {}", e))
+                .encode();
+        }
+        Ok(Err(e)) => {
+            return NodeSyncResponse::failure(format!("Failed to sync node: {}", e)).encode();
         }
         Err(e) => {
             return NodeSyncResponse::failure(format!(
