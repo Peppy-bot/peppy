@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
-use config::consts::{DEFAULT_MESSAGING_HOST, NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::consts::{
+    DEFAULT_MESSAGING_HOST, NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH,
+};
 use config::node::QoSProfile;
 use config::peppy_config::BuildSystem;
 use master_node::encoding::{
@@ -54,7 +56,28 @@ pub async fn send_node_add_and_wait(
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
 ) -> Result<NodeAddResult, String> {
-    let goal = NodeAddGoal::new(from_dir, "test-hash");
+    let git_hash = "test-hash";
+    let goal = NodeAddGoal::new(from_dir, git_hash);
+
+    let peppy_dir = from_dir.join(PEPPY_OUTPUT_DIR);
+    std::fs::create_dir_all(&peppy_dir).map_err(|e| {
+        format!(
+            "Failed to create peppy output dir {}: {}",
+            peppy_dir.display(),
+            e
+        )
+    })?;
+    let git_hash_path = peppy_dir.join("git.hash");
+    if !git_hash_path.exists() {
+        std::fs::write(&git_hash_path, git_hash).map_err(|e| {
+            format!(
+                "Failed to write git hash file {}: {}",
+                git_hash_path.display(),
+                e
+            )
+        })?;
+    }
+
     let (caller_master_node, caller_instance_id) = if feedback_tx.is_some() {
         ("*", "*")
     } else {

@@ -144,6 +144,56 @@ async fn listen_for_node_add_no_config_found() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_git_hash_mismatch_fails() {
+    let started_master = start_master_node_with_mock_messenger().await;
+    let node_stack = started_master.node_stack.clone();
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "git_hash_mismatch_node",
+            tag: "0.1.0",
+            start_cmd: ["sleep", "10"]
+        }
+    }"#;
+    write_peppy_json5(source_dir.path(), peppy_json5);
+
+    let peppy_dir = source_dir.path().join(config::consts::PEPPY_OUTPUT_DIR);
+    std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
+    std::fs::write(peppy_dir.join("git.hash"), "wrong-hash\n")
+        .expect("failed to write wrong git hash file");
+
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should complete");
+
+    assert!(
+        !add_result.success,
+        "node_add should fail when git hash mismatches"
+    );
+    assert!(
+        add_result
+            .error_message
+            .as_ref()
+            .map(|msg| msg.contains("git hash mismatch"))
+            .unwrap_or(false),
+        "error message should indicate git hash mismatch, got: {:?}",
+        add_result.error_message
+    );
+    assert!(!node_stack.contains("git_hash_mismatch_node", "0.1.0"));
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_invalid_config_fails() {
     let started_master = start_master_node_with_mock_messenger().await;
     let node_stack = started_master.node_stack.clone();
