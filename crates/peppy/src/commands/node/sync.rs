@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use config::consts::NODE_CONFIG_FILE;
 use config::peppy_config::BuildSystem;
-use master_node::encoding::NodeGenerateRequest;
+use master_node::encoding::NodeSyncRequest;
 use tracing::info;
 
 use crate::context::AppContext;
@@ -47,7 +47,7 @@ async fn sync_node_async(ctx: &Arc<AppContext>, build_system: BuildSystem) -> Re
         .messenger_handle()
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
-    let request = NodeGenerateRequest::new(node_root_dir).with_build_system(build_system);
+    let request = NodeSyncRequest::new(node_root_dir).with_build_system(build_system);
     let response = request
         .poll(
             messenger_handle,

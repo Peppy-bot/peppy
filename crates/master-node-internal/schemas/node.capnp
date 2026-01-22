@@ -73,8 +73,8 @@ struct NodeGenerateRequest {
     language @1 :Text;
 }
 
-struct NodeGenerateResponse {
-    # Whether the generate was successful
+struct NodeSyncResponse {
+    # Whether the sync was successful
     success @0 :Bool;
     # Error message if failed
     errorMessage @1 :Text;
