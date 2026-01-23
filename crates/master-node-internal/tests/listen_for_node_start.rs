@@ -870,3 +870,235 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
     let _ = std::fs::remove_dir_all(&add_response.snapshot_path);
     started.task.abort();
 }
+
+/// Tests that a new goal can be processed after a previous action was abandoned
+/// (goal accepted but result never polled).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
+    use config::node::QoSProfile;
+    use master_node::encoding::NodeStartGoal;
+    use peppylib::ActionMessenger;
+
+    const FIRST_NODE_NAME: &str = "abandoned_start_node";
+    const FIRST_NODE_TAG: &str = "0.1.0";
+    const FIRST_INSTANCE_ID: &str = "abandoned_start_instance";
+    const SECOND_NODE_NAME: &str = "second_start_node";
+    const SECOND_NODE_TAG: &str = "0.1.0";
+    const SECOND_INSTANCE_ID: &str = "second_start_instance";
+
+    let started = start_master_node_with_mock_messenger().await;
+
+    // Create and add first node
+    let first_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let first_peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{FIRST_NODE_NAME}",
+                tag: "{FIRST_NODE_TAG}",
+                start_cmd: ["sleep", "30"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(first_source_dir.path(), &first_peppy_json5);
+
+    let first_add_response = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.master_node_name,
+        first_source_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        None,
+    )
+    .await
+    .expect("first node_add should succeed");
+
+    assert!(
+        first_add_response.success,
+        "first node_add should succeed, got error: {:?}",
+        first_add_response.error_message
+    );
+
+    // Create and add second node
+    let second_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let second_peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{SECOND_NODE_NAME}",
+                tag: "{SECOND_NODE_TAG}",
+                start_cmd: ["sleep", "30"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(second_source_dir.path(), &second_peppy_json5);
+
+    let second_add_response = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.master_node_name,
+        second_source_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        None,
+    )
+    .await
+    .expect("second node_add should succeed");
+
+    assert!(
+        second_add_response.success,
+        "second node_add should succeed, got error: {:?}",
+        second_add_response.error_message
+    );
+
+    // Set up ready/health services for both nodes
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+
+    let first_ready_task = listen_for_node_ready(
+        &node_messenger,
+        &started.master_node_name,
+        FIRST_INSTANCE_ID,
+        FIRST_NODE_NAME,
+    )
+    .await
+    .expect("first ready service should start");
+    let first_health_task = listen_for_node_health(
+        &node_messenger,
+        &started.master_node_name,
+        FIRST_INSTANCE_ID,
+        FIRST_NODE_NAME,
+    )
+    .await
+    .expect("first health service should start");
+
+    let second_ready_task = listen_for_node_ready(
+        &node_messenger,
+        &started.master_node_name,
+        SECOND_INSTANCE_ID,
+        SECOND_NODE_NAME,
+    )
+    .await
+    .expect("second ready service should start");
+    let second_health_task = listen_for_node_health(
+        &node_messenger,
+        &started.master_node_name,
+        SECOND_INSTANCE_ID,
+        SECOND_NODE_NAME,
+    )
+    .await
+    .expect("second health service should start");
+
+    // Allow ready/health services to establish listeners
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Create runtime config for first node
+    let first_runtime_config = RuntimeConfig::new(
+        "127.0.0.1",
+        config::consts::DEFAULT_MESSAGING_PORT,
+        DeploymentInstance {
+            instance_id: Name::new(FIRST_INSTANCE_ID).unwrap(),
+            arguments: Default::default(),
+        },
+        FIRST_NODE_NAME,
+        &started.master_node_name,
+    )
+    .expect("first runtime config should be valid");
+
+    let first_runtime_config_json5 = serde_json5::to_string(&first_runtime_config)
+        .expect("first runtime config should serialize");
+
+    // Send first goal but DON'T wait for result (simulating abandoned action)
+    let first_goal =
+        NodeStartGoal::new(&first_runtime_config_json5, FIRST_NODE_NAME, FIRST_NODE_TAG);
+    let first_goal_payload = first_goal.encode().expect("failed to encode first goal");
+
+    let first_action_handle = ActionMessenger::send_goal(
+        &started.caller_handle,
+        &started.master_node_name,
+        common::CALLER_INSTANCE_ID,
+        &started.master_node_name,
+        master_node::names::NODE_START_ACTION,
+        Some(&started.master_node_name),
+        None,
+        first_goal_payload,
+        QoSProfile::default(),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("first goal should be sent");
+
+    // Verify first goal was accepted
+    let first_goal_response_payload = first_action_handle.goal_response().payload().to_bytes();
+    let first_goal_response =
+        master_node::encoding::NodeStartGoalResponse::decode(&first_goal_response_payload)
+            .expect("failed to decode first goal response");
+    assert!(
+        first_goal_response.accepted,
+        "first goal should be accepted"
+    );
+
+    // Wait for the first action to complete (but don't poll for result)
+    // The start operation should complete after ready + health checks pass
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Now send second goal - this should succeed even though we never polled
+    // for the first action's result
+    let second_runtime_config = RuntimeConfig::new(
+        "127.0.0.1",
+        config::consts::DEFAULT_MESSAGING_PORT,
+        DeploymentInstance {
+            instance_id: Name::new(SECOND_INSTANCE_ID).unwrap(),
+            arguments: Default::default(),
+        },
+        SECOND_NODE_NAME,
+        &started.master_node_name,
+    )
+    .expect("second runtime config should be valid");
+
+    let second_runtime_config_json5 = serde_json5::to_string(&second_runtime_config)
+        .expect("second runtime config should serialize");
+
+    let second_start_response = send_node_start_and_wait(
+        &started.caller_handle,
+        &started.master_node_name,
+        &second_runtime_config_json5,
+        SECOND_NODE_NAME,
+        SECOND_NODE_TAG,
+        &NodeStartTestTimeouts {
+            goal: Duration::from_secs(5),
+            result: Duration::from_secs(10),
+        },
+        None,
+    )
+    .await
+    .expect("second node_start request should complete");
+
+    assert!(
+        second_start_response.result.success,
+        "second node_start should succeed even after first action was abandoned, got error: {:?}",
+        second_start_response.result.error_message
+    );
+
+    // Verify both instances are registered in the node stack
+    let first_instance_id = NodeName::new(FIRST_INSTANCE_ID).expect("valid instance id");
+    let first_found = started.node_stack.find_by_instance_id(&first_instance_id);
+    assert!(
+        first_found.is_some(),
+        "first instance should be registered after abandoned action completed"
+    );
+
+    let second_instance_id = NodeName::new(SECOND_INSTANCE_ID).expect("valid instance id");
+    let second_found = started.node_stack.find_by_instance_id(&second_instance_id);
+    assert!(
+        second_found.is_some(),
+        "second instance should be registered after successful start"
+    );
+
+    // Clean up
+    first_ready_task.abort();
+    first_health_task.abort();
+    second_ready_task.abort();
+    second_health_task.abort();
+    let _ = std::fs::remove_dir_all(&first_add_response.snapshot_path);
+    let _ = std::fs::remove_dir_all(&second_add_response.snapshot_path);
+    started.task.abort();
+}
