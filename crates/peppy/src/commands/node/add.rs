@@ -14,8 +14,6 @@ use crate::terminal::ScrollingOutput;
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 // Timeout for the goal to be accepted (should be fast)
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
-// Timeout for the result (the actual add operation can take a long time)
-const RESULT_TIMEOUT: Duration = Duration::from_secs(600); // 10min
 
 pub fn add_node(
     ctx: &Arc<AppContext>,
@@ -23,9 +21,17 @@ pub fn add_node(
     run: bool,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
+    timeout_secs: u64,
 ) -> Result<()> {
     let peppy_json5 = node_dir.join("peppy.json5");
-    crate::commands::block_on(add_node_async(ctx, peppy_json5, run, args, instance_id))
+    crate::commands::block_on(add_node_async(
+        ctx,
+        peppy_json5,
+        run,
+        args,
+        instance_id,
+        timeout_secs,
+    ))
 }
 
 async fn add_node_async(
@@ -34,6 +40,7 @@ async fn add_node_async(
     run: bool,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
+    timeout_secs: u64,
 ) -> Result<()> {
     let daemon_state = ctx.read_daemon_state().map_err(|e| {
         Error::ExecutionFailed(format!(
@@ -108,16 +115,19 @@ async fn add_node_async(
     const SCROLLING_OUTPUT_LINES: usize = 10;
     let mut scrolling_output = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
 
-    let deadline = tokio::time::Instant::now() + RESULT_TIMEOUT;
+    let result_timeout = Duration::from_secs(timeout_secs);
+    let deadline = tokio::time::Instant::now() + result_timeout;
     let add_result = loop {
         // Drain feedback so the publisher doesn't block on a full channel.
         loop {
             let now = tokio::time::Instant::now();
             if now >= deadline {
                 scrolling_output.clear();
-                return Err(Error::ExecutionFailed(
-                    "Timeout waiting for node_add result".to_string(),
-                ));
+                return Err(Error::ExecutionFailed(format!(
+                    "Timeout waiting for node_add result after {} seconds. \
+                     Use --timeout <seconds> to increase the timeout.",
+                    timeout_secs
+                )));
             }
             let remaining = deadline - now;
             let drain_timeout = Duration::from_millis(50).min(remaining);
@@ -136,9 +146,11 @@ async fn add_node_async(
         let now = tokio::time::Instant::now();
         if now >= deadline {
             scrolling_output.clear();
-            return Err(Error::ExecutionFailed(
-                "Timeout waiting for node_add result".to_string(),
-            ));
+            return Err(Error::ExecutionFailed(format!(
+                "Timeout waiting for node_add result after {} seconds. \
+                 Use --timeout <seconds> to increase the timeout.",
+                timeout_secs
+            )));
         }
         let remaining = deadline - now;
         let poll_timeout = Duration::from_millis(200).min(remaining);
@@ -203,6 +215,7 @@ async fn add_node_async(
         &node_tag,
         &args,
         instance_id,
+        timeout_secs,
     )
     .await?;
 

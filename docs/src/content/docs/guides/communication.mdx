@@ -41,11 +41,19 @@ Here we have `interfaces` with `exposes` and `subscribes_to` with topics/service
 
 PeppyOS provides three primary communication patterns for nodes to exchange data:
 
-- **Topics** are used for continuous, unidirectional data streams. A node *publishes* messages to a topic, and any number of nodes can *subscribe* to receive them. This is ideal for sensor data, state updates, or any information that flows continuously (e.g., camera images, odometry).
+- **Topics** are used for continuous, unidirectional data streams. 
+  A node *publishes* messages to a topic, and any number of nodes can *subscribe* to receive them. 
+  This is ideal for sensor data, state updates, or any information that flows continuously (e.g., camera images, odometry).
 
-- **Services** implement a request-response pattern. A node connects to another node and waits for a response. Use services for quick operations that need a result, like querying a node's state or triggering a one-time computation.
+- **Services** implement a request-response pattern. A node connects to another node and waits for a response. 
+  Use services for quick operations that need a result, like querying a node's state or triggering a one-time computation.
 
-- **Actions** are for long-running tasks that need feedback and cancellation support. A client sends a goal to an action node, which provides periodic feedback during execution and a final result upon completion. Actions are built on top of topics and services internally. Use them for tasks like navigation or arm movement.
+- **Actions** are for long-running tasks that need feedback and cancellation support.
+  A client sends a goal to an action node, which provides periodic feedback during execution and a final result upon completion.
+  Actions are built on top of topics and services internally.
+  Use them for tasks like navigation or arm movement.
+  Actions are processed serially by a node: two requests to the same action cannot run in parallel.
+  For example, a `move_arm` action that moves a robot's arm can only perform one movement at a time.
 
 ## Subscribed interfaces
 

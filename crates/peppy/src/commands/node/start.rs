@@ -17,8 +17,6 @@ use crate::terminal::ScrollingOutput;
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
-// Allow extra time for node startup (build verification, zenoh connection, health check)
-const RESULT_TIMEOUT: Duration = Duration::from_secs(600); // 10min
 const SCROLLING_OUTPUT_LINES: usize = 10;
 
 /// Converts a list of key=value string pairs into NodeArguments.
@@ -120,6 +118,7 @@ pub async fn start_instance_async(
     tag: &str,
     args: &[(String, String)],
     instance_id: Option<String>,
+    timeout_secs: u64,
 ) -> Result<String> {
     // Generate or use provided instance_id
     let instance_id = instance_id.unwrap_or_else(|| get_random(rng()));
@@ -197,16 +196,19 @@ pub async fn start_instance_async(
 
     let mut scrolling_output = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
 
-    let deadline = tokio::time::Instant::now() + RESULT_TIMEOUT;
+    let result_timeout = Duration::from_secs(timeout_secs);
+    let deadline = tokio::time::Instant::now() + result_timeout;
     let start_result = loop {
         // Drain feedback so the publisher doesn't block on a full channel.
         loop {
             let now = tokio::time::Instant::now();
             if now >= deadline {
                 scrolling_output.clear();
-                return Err(Error::ExecutionFailed(
-                    "Timeout waiting for node_start result".to_string(),
-                ));
+                return Err(Error::ExecutionFailed(format!(
+                    "Timeout waiting for node_start result after {} seconds. \
+                     Use --timeout <seconds> to increase the timeout.",
+                    timeout_secs
+                )));
             }
             let remaining = deadline - now;
             let drain_timeout = Duration::from_millis(50).min(remaining);
@@ -225,9 +227,11 @@ pub async fn start_instance_async(
         let now = tokio::time::Instant::now();
         if now >= deadline {
             scrolling_output.clear();
-            return Err(Error::ExecutionFailed(
-                "Timeout waiting for node_start result".to_string(),
-            ));
+            return Err(Error::ExecutionFailed(format!(
+                "Timeout waiting for node_start result after {} seconds. \
+                 Use --timeout <seconds> to increase the timeout.",
+                timeout_secs
+            )));
         }
         let remaining = deadline - now;
         let poll_timeout = Duration::from_millis(200).min(remaining);
@@ -288,8 +292,16 @@ pub fn run_node(
     tag: String,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
+    timeout_secs: u64,
 ) -> Result<()> {
-    crate::commands::block_on(run_node_async(ctx, node_name, tag, args, instance_id))
+    crate::commands::block_on(run_node_async(
+        ctx,
+        node_name,
+        tag,
+        args,
+        instance_id,
+        timeout_secs,
+    ))
 }
 
 async fn run_node_async(
@@ -298,6 +310,7 @@ async fn run_node_async(
     tag: String,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
+    timeout_secs: u64,
 ) -> Result<()> {
     let daemon_state = ctx.read_daemon_state().map_err(|e| {
         Error::ExecutionFailed(format!(
@@ -319,6 +332,7 @@ async fn run_node_async(
         &tag,
         &args,
         instance_id,
+        timeout_secs,
     )
     .await?;
 
