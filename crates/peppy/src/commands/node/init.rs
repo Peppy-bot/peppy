@@ -54,6 +54,7 @@ impl NodeInitBuilder {
             ))
         })?;
         let master_node_name = &daemon_state.master_node_name;
+        let git_hash = &daemon_state.git_hash;
 
         info!(
             "Creating node '{}' in {} and master node '{}'",
@@ -70,7 +71,7 @@ impl NodeInitBuilder {
             .messenger_handle()
             .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
-        let request = NodeInitRequest::new(&self.to_dir, self.node_name.as_str())
+        let request = NodeInitRequest::new(&self.to_dir, self.node_name.as_str(), git_hash)
             .with_build_system(self.build_system);
 
         let response = request

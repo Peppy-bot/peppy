@@ -48,7 +48,7 @@ fn run_generate_peppygen_lib_test(build_system: BuildSystem) -> (TempDir, std::p
     fs::write(&config_path, PEPPY_JSON5_CONFIG).expect("failed to write peppy.json5");
 
     // Generate the library
-    generate_lib_for_build_system(build_system, node_dir, Vec::new())
+    generate_lib_for_build_system(build_system, node_dir, Vec::new(), "test-hash")
         .expect("failed to generate library");
 
     // Verify the generated library structure exists
@@ -65,6 +65,17 @@ fn run_generate_peppygen_lib_test(build_system: BuildSystem) -> (TempDir, std::p
         config::fingerprint::read_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
             .expect("fingerprint file should exist in peppygen directory");
     assert!(!fingerprint.is_empty(), "fingerprint should not be empty");
+
+    // Check that the git.hash was created
+    let git_hash_path = node_dir
+        .join(config::consts::PEPPY_OUTPUT_DIR)
+        .join("git.hash");
+    let git_hash_content =
+        fs::read_to_string(&git_hash_path).expect("git.hash file should exist in .peppy directory");
+    assert_eq!(
+        git_hash_content, "test-hash",
+        "git.hash should contain the expected hash value"
+    );
 
     (temp_dir, peppygen_dir)
 }
@@ -88,7 +99,7 @@ fn generate_peppygen_lib_minimal_config() {
     fs::write(&config_path, minimal_config).expect("failed to write peppy.json5");
 
     // Generate should succeed even with no interfaces
-    generate_lib_for_build_system(BuildSystem::Cargo, node_dir, Vec::new())
+    generate_lib_for_build_system(BuildSystem::Cargo, node_dir, Vec::new(), "test-hash")
         .expect("failed to generate library for minimal config");
 
     // Verify the generated library exists
@@ -200,6 +211,7 @@ fn generate_peppygen_lib_missing_config() {
     let node_dir = temp_dir.path();
 
     // Try to generate without a peppy.json5 - should fail
-    let result = generate_lib_for_build_system(BuildSystem::Cargo, node_dir, Vec::new());
+    let result =
+        generate_lib_for_build_system(BuildSystem::Cargo, node_dir, Vec::new(), "test-hash");
     assert!(result.is_err(), "should fail when peppy.json5 is missing");
 }

@@ -58,6 +58,8 @@ struct NodeInitRequest {
     buildSystem @1 :Text;
     # Name of the node (used for directory and package name)
     nodeName @2 :Text;
+    # Git commit hash of the node being initialized
+    gitHash @3 :Text;
 }
 
 struct NodeInitResponse {
