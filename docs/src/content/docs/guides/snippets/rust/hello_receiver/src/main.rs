@@ -20,7 +20,7 @@ async fn receive_messages(node_runner: Arc<NodeRunner>) {
         .await;
 
         match result {
-            Ok((_instance_id, message)) => println!("Received: {}", message.message),
+            Ok((instance_id, message)) => println!("Received from {instance_id}: {}", message.message),
             Err(e) => {
                 eprintln!("Error receiving message: {e}");
                 break;
