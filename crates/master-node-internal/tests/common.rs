@@ -6,8 +6,8 @@ use config::consts::{
 use config::node::QoSProfile;
 use config::peppy_config::BuildSystem;
 use master_node::encoding::{
-    NodeAddFeedback, NodeAddGoal, NodeAddResult, NodeStartFeedback, NodeStartGoal,
-    NodeStartGoalResponse, NodeStartResult,
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeStartFeedback,
+    NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
 };
 use master_node::names;
 use master_node::{MasterNode, MasterNodeArguments};
@@ -101,6 +101,22 @@ pub async fn send_node_add_and_wait(
     )
     .await
     .map_err(|e| format!("Failed to send goal: {}", e))?;
+
+    // Check if the goal was rejected - if so, return a failure result immediately.
+    // This matches the behavior of the CLI client which doesn't poll for results
+    // when the goal is rejected.
+    let goal_response_payload = action_handle.goal_response().payload().to_bytes();
+    let goal_response = NodeAddGoalResponse::decode(&goal_response_payload)
+        .map_err(|e| format!("Failed to decode goal response: {}", e))?;
+
+    if !goal_response.accepted {
+        return Ok(NodeAddResult::failure(
+            PathBuf::new(),
+            goal_response
+                .rejection_reason
+                .unwrap_or_else(|| "Goal rejected without reason".to_string()),
+        ));
+    }
 
     let deadline = tokio::time::Instant::now() + result_timeout;
     let feedback_tx = feedback_tx.as_ref();
