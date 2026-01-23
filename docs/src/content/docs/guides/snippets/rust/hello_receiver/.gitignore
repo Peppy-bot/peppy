@@ -1,0 +1,20 @@
+
+# Peppy-specific files
+.peppy
+
+# Rust
+/target/
+*.swp
+*.bak
+*.orig
+
+# Editor-specific files
+.vscode/
+.idea/
+
+# Operating System files
+**/.DS_Store
+**/.Thumbs.db
+
+# Logs
+*.log

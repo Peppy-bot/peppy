@@ -1,0 +1,29 @@
+{
+  schema_version: 1,
+  manifest: {
+    name: "hello_receiver",
+    tag: "0.1.0",
+    add_cmd: [
+      "cargo",
+      "build",
+      "--release"
+    ],
+    start_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
+  interfaces: {
+    subscribes_to: {
+      topics: [
+        {
+          id: "hello_world_param_subscriber", // subscriber_id, up to you to decide
+          node: "hello_world_param", // Will look for that node name
+          tag: "0.1.0", // On that particular tag/version
+          name: "message_stream", // With this topic name
+        }
+      ],
+    }
+  }
+}

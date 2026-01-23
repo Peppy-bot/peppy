@@ -11,7 +11,7 @@ import helloWorldParamConfig from './snippets/rust/hello_world_param/peppy.json5
 From time to time you might want to run multiple instances of the same node started with different input parameters. For example, a camera node might point to `/dev/video0` on your system while another one points to `/dev/video1`.
 Parameters exists to allow you to to run multiple instances of the same node with different input settings.
 
-# Adding parameters to `hello_world`
+## Adding parameters to `hello_world`
 
 Modify the `peppy.json5` configuration of our hello_world node to look like this:
 
@@ -19,7 +19,7 @@ Modify the `peppy.json5` configuration of our hello_world node to look like this
 
 With the new `parameter` key.
 
-# Synchronizing the interfaces
+## Synchronizing the interfaces
 
 Now lets try to create a new snapshot of our node in the node stack:
 ```sh
@@ -32,8 +32,8 @@ Error: Fingerprint verification failed: Node config fingerprint mismatch: expect
 The config may have been modified after code generation. Run `node sync` to update the peppygen lib on your node.
 ```
 
-the reason for this error is that our changes in `peppy.json5` first need to be reflected in our interfaces.
-In order to do this, run the following command:
+the reason for this error is that our changes in `peppy.json5` first need to be reflected in our interfaces, this is a protection that ensures that the `peppy.json5` **always** matches the real behavior of the node.
+In order to sync the node, run the following command:
 ```sh
 peppy node sync
 ```
@@ -46,7 +46,7 @@ The command should work this time, and you can see the node in the node stack by
 peppy stack list
 ```
 
-# Using the parameter
+## Using the parameter
 
 Now that we've synchronized our project, the new parameter can be used in the main file by modifying it like this:
 

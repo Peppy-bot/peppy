@@ -53,9 +53,9 @@ const EXPOSED_TOPIC_EXAMPLE2: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE1: &str = r#"
 {
-    id: "stream",
+    id: "video_stream",
     node: "uvc_camera",
-    name: "stream",
+    name: "video_stream",
     tag: "0.1.0"
 }
 "#;
