@@ -1,8 +1,14 @@
 mod common;
 
-use common::{send_node_add_and_wait, start_master_node_with_mock_messenger, write_peppy_json5};
-use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, logs_dir_add};
-use master_node::encoding::NodeAddFeedback;
+use common::{
+    CALLER_INSTANCE_ID, TEST_GIT_HASH, send_node_add_and_wait,
+    start_master_node_with_mock_messenger, write_peppy_json5,
+};
+use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, logs_dir_add};
+use config::node::QoSProfile;
+use master_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse};
+use master_node::names;
+use peppylib::ActionMessenger;
 use std::path::Path;
 use std::time::Duration;
 
@@ -1217,6 +1223,122 @@ async fn listen_for_node_add_writes_log_file() {
 
     // Clean up snapshot directory
     let _ = std::fs::remove_dir_all(&add_result.snapshot_path);
+
+    started_master.task.abort();
+}
+
+/// Tests that a new goal can be processed after a previous action was abandoned
+/// (goal accepted but result never polled).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
+    const FIRST_NODE_NAME: &str = "abandoned_node";
+    const FIRST_NODE_TAG: &str = "0.1.0";
+    const SECOND_NODE_NAME: &str = "second_node";
+    const SECOND_NODE_TAG: &str = "0.1.0";
+
+    let started_master = start_master_node_with_mock_messenger().await;
+    let node_stack = started_master.node_stack.clone();
+
+    // Create first node source directory
+    let first_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let first_peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{FIRST_NODE_NAME}",
+                tag: "{FIRST_NODE_TAG}",
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(first_source_dir.path(), &first_peppy_json5);
+
+    // Write git hash file for first node
+    let first_peppy_dir = first_source_dir.path().join(PEPPY_OUTPUT_DIR);
+    std::fs::create_dir_all(&first_peppy_dir).expect("failed to create .peppy dir");
+    std::fs::write(first_peppy_dir.join("git.hash"), TEST_GIT_HASH)
+        .expect("failed to write git hash");
+
+    // Send first goal but DON'T wait for result (simulating abandoned action)
+    let first_goal = NodeAddGoal::new(first_source_dir.path(), TEST_GIT_HASH);
+    let first_goal_payload = first_goal.encode().expect("failed to encode goal");
+
+    let first_action_handle = ActionMessenger::send_goal(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        CALLER_INSTANCE_ID,
+        &started_master.master_node_name,
+        names::NODE_ADD_ACTION,
+        Some(&started_master.master_node_name),
+        None,
+        first_goal_payload,
+        QoSProfile::default(),
+        GOAL_TIMEOUT,
+    )
+    .await
+    .expect("first goal should be sent");
+
+    // Verify first goal was accepted
+    let first_goal_response_payload = first_action_handle.goal_response().payload().to_bytes();
+    let first_goal_response = NodeAddGoalResponse::decode(&first_goal_response_payload)
+        .expect("failed to decode first goal response");
+    assert!(
+        first_goal_response.accepted,
+        "first goal should be accepted"
+    );
+
+    // Wait for the first action to complete (but don't poll for result)
+    // The add operation should complete quickly since there's no add_cmd
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Now send second goal - this should succeed even though we never polled
+    // for the first action's result
+    let second_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let second_peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{SECOND_NODE_NAME}",
+                tag: "{SECOND_NODE_TAG}",
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(second_source_dir.path(), &second_peppy_json5);
+
+    let second_add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        second_source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("second node_add request should complete");
+
+    assert!(
+        second_add_result.success,
+        "second node_add should succeed even after first action was abandoned, got error: {:?}",
+        second_add_result.error_message
+    );
+
+    // Verify both nodes are in the stack
+    assert!(
+        node_stack.contains(FIRST_NODE_NAME, FIRST_NODE_TAG),
+        "first node should be in stack (action completed even though result wasn't polled)"
+    );
+    assert!(
+        node_stack.contains(SECOND_NODE_NAME, SECOND_NODE_TAG),
+        "second node should be in stack"
+    );
+    assert_eq!(node_stack.len(), 3, "root + first + second nodes");
+
+    // Clean up snapshot directories
+    if let Some(entity) = node_stack.find(FIRST_NODE_NAME, FIRST_NODE_TAG) {
+        let _ = std::fs::remove_dir_all(entity.root_path());
+    }
+    let _ = std::fs::remove_dir_all(&second_add_result.snapshot_path);
 
     started_master.task.abort();
 }

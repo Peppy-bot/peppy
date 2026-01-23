@@ -95,6 +95,10 @@ enum NodeStartActionState {
     /// No action is currently running.
     #[default]
     Idle,
+    /// The goal was rejected (invalid payload, missing parameters, etc.)
+    /// and no actual work was started. The server should reset to Idle
+    /// and be ready to accept the next goal.
+    Rejected,
     /// An action is currently running.
     Running,
     /// The action completed and the result is ready to be sent.
@@ -333,48 +337,110 @@ async fn run_node_start_action_loop(
             .await;
 
         match goal_result {
-            Ok(true) => loop {
-                tokio::select! {
-                    cancel_result = action.cancel_service.handle_next_request({
-                        let state = Arc::clone(&state);
-                        move |context| {
-                            let state = Arc::clone(&state);
-                            async move { handle_cancel_request(context, state).await }
-                        }
-                    }) => {
-                        match cancel_result {
-                            Ok(true) => {}
-                            Ok(false) => return Ok(()),
-                            Err(e) => {
-                                debug!("Cancel service error: {}", e);
-                                return Err(e.into());
-                            }
-                        }
+            Ok(true) => {
+                // If the goal was rejected (invalid payload, etc.), reset to Idle
+                // and continue waiting for the next goal without entering the inner loop.
+                {
+                    let mut state_guard = state.lock().await;
+                    if matches!(*state_guard, NodeStartActionState::Rejected) {
+                        *state_guard = NodeStartActionState::Idle;
+                        continue;
                     }
-                    result_result = action.result_service.handle_next_request({
-                        let state = Arc::clone(&state);
-                        move |context| {
+                }
+
+                loop {
+                    tokio::select! {
+                        cancel_result = action.cancel_service.handle_next_request({
                             let state = Arc::clone(&state);
-                            async move { handle_result_request(context, state).await }
-                        }
-                    }) => {
-                        match result_result {
-                            Ok(true) => {
-                                let mut state_guard = state.lock().await;
-                                if matches!(*state_guard, NodeStartActionState::ResultSent { .. }) {
-                                    *state_guard = NodeStartActionState::default();
-                                    break;
+                            move |context| {
+                                let state = Arc::clone(&state);
+                                async move { handle_cancel_request(context, state).await }
+                            }
+                        }) => {
+                            match cancel_result {
+                                Ok(true) => {}
+                                Ok(false) => return Ok(()),
+                                Err(e) => {
+                                    debug!("Cancel service error: {}", e);
+                                    return Err(e.into());
                                 }
                             }
-                            Ok(false) => return Ok(()),
-                            Err(e) => {
-                                debug!("Result service error: {}", e);
-                                return Err(e.into());
+                        }
+                        result_result = action.result_service.handle_next_request({
+                            let state = Arc::clone(&state);
+                            move |context| {
+                                let state = Arc::clone(&state);
+                                async move { handle_result_request(context, state).await }
+                            }
+                        }) => {
+                            match result_result {
+                                Ok(true) => {
+                                    let mut state_guard = state.lock().await;
+                                    if matches!(*state_guard, NodeStartActionState::ResultSent { .. }) {
+                                        *state_guard = NodeStartActionState::default();
+                                        break;
+                                    }
+                                }
+                                Ok(false) => return Ok(()),
+                                Err(e) => {
+                                    debug!("Result service error: {}", e);
+                                    return Err(e.into());
+                                }
+                            }
+                        }
+                        // Listen for new goals in case the client abandoned the current action
+                        // (e.g., accepted but never polled for result). This prevents one
+                        // abandoned action from blocking all subsequent requests.
+                        goal_result = action.goal_service.handle_next_request({
+                            let feedback_publisher = &action.feedback_publisher;
+                            let node_stack = Arc::clone(&node_stack);
+                            let messenger = messenger.clone();
+                            let master_node_name = master_node_name.clone();
+                            let caller_instance_id = caller_instance_id.clone();
+                            let state = Arc::clone(&state);
+                            move |context| {
+                                let feedback_publisher = feedback_publisher.clone();
+                                let node_stack = Arc::clone(&node_stack);
+                                let messenger = messenger.clone();
+                                let master_node_name = master_node_name.clone();
+                                let caller_instance_id = caller_instance_id.clone();
+                                let state = Arc::clone(&state);
+                                async move {
+                                    handle_goal_request(
+                                        context,
+                                        feedback_publisher,
+                                        node_stack,
+                                        messenger,
+                                        master_node_name,
+                                        caller_instance_id,
+                                        node_startup_timeout,
+                                        node_start_health_timeout,
+                                        state,
+                                    )
+                                    .await
+                                }
+                            }
+                        }) => {
+                            match goal_result {
+                                Ok(true) => {
+                                    // A new goal was received. If it was rejected, reset to Idle.
+                                    let mut state_guard = state.lock().await;
+                                    if matches!(*state_guard, NodeStartActionState::Rejected) {
+                                        *state_guard = NodeStartActionState::Idle;
+                                    }
+                                    // Continue in inner loop - the new goal will be processed
+                                    // and its result will be available for polling.
+                                }
+                                Ok(false) => return Ok(()),
+                                Err(e) => {
+                                    debug!("Goal service error in inner loop: {}", e);
+                                    return Err(e.into());
+                                }
                             }
                         }
                     }
                 }
-            },
+            }
             Ok(false) => {
                 debug!("Goal service closed");
                 return Ok(());
@@ -419,9 +485,8 @@ async fn handle_goal_request(
     let goal = match NodeStartGoal::decode(&payload.as_bytes()) {
         Ok(goal) => goal,
         Err(e) => {
-            let result = NodeStartResult::failure(format!("Failed to decode goal: {}", e));
             let mut state_guard = state.lock().await;
-            *state_guard = NodeStartActionState::Completed { result };
+            *state_guard = NodeStartActionState::Rejected;
             let response = NodeStartGoalResponse::rejected(format!("invalid payload: {}", e));
             return response
                 .encode()
@@ -437,9 +502,8 @@ async fn handle_goal_request(
         Ok(config) => config,
         Err(e) => {
             let error_msg = format!("Failed to parse PEPPY_RUNTIME_CONFIG: {}", e);
-            let result = NodeStartResult::failure(&error_msg);
             let mut state_guard = state.lock().await;
-            *state_guard = NodeStartActionState::Completed { result };
+            *state_guard = NodeStartActionState::Rejected;
             let response = NodeStartGoalResponse::rejected(&error_msg);
             return response
                 .encode()
@@ -465,9 +529,8 @@ async fn handle_goal_request(
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
         let error_msg = format!("Failed to create logs directory: {}", e);
         debug!("Failed to create logs directory {:?}: {}", log_dir, e);
-        let result = NodeStartResult::failure(&error_msg);
         let mut state_guard = state.lock().await;
-        *state_guard = NodeStartActionState::Completed { result };
+        *state_guard = NodeStartActionState::Rejected;
         let response = NodeStartGoalResponse::rejected(&error_msg);
         return response
             .encode()
@@ -483,9 +546,8 @@ async fn handle_goal_request(
         Err(e) => {
             let error_msg = format!("Failed to create log file: {}", e);
             debug!("Failed to create log file {:?}: {}", log_path, e);
-            let result = NodeStartResult::failure(&error_msg);
             let mut state_guard = state.lock().await;
-            *state_guard = NodeStartActionState::Completed { result };
+            *state_guard = NodeStartActionState::Rejected;
             let response = NodeStartGoalResponse::rejected(&error_msg);
             return response
                 .encode()
@@ -790,7 +852,9 @@ async fn handle_result_request(
             *state_guard = NodeStartActionState::ResultSent { result };
             Ok(payload)
         }
-        NodeStartActionState::Idle => {
+        NodeStartActionState::Idle | NodeStartActionState::Rejected => {
+            // Rejected state is normally reset to Idle before result polling,
+            // but handle it the same way for robustness.
             Ok(Bytes::from_static(b"result pending: no result available"))
         }
     }

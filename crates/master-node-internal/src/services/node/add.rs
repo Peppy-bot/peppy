@@ -275,7 +275,9 @@ async fn run_node_add_action_loop(
                     }
                 }
 
-                // Goal accepted, now wait for result or cancel requests
+                // Goal accepted, now wait for result, cancel, or new goal requests.
+                // We also listen for new goals here to handle the case where a client
+                // abandons an action without polling for the result.
                 loop {
                     tokio::select! {
                         cancel_result = action.cancel_service.handle_next_request({
@@ -313,6 +315,45 @@ async fn run_node_add_action_loop(
                                 Ok(false) => return Ok(()),
                                 Err(e) => {
                                     debug!("Result service error: {}", e);
+                                    return Err(e.into());
+                                }
+                            }
+                        }
+                        // Handle new goals while waiting for result/cancel.
+                        // This allows a new goal to be accepted if the previous action
+                        // completed but the client never polled for the result.
+                        // If an action is still running, the goal will be rejected
+                        // with "action already in progress".
+                        goal_result = action.goal_service.handle_next_request({
+                            let feedback_publisher = &action.feedback_publisher;
+                            let node_stack = Arc::clone(&node_stack);
+                            let state = Arc::clone(&state);
+                            move |context| {
+                                let feedback_publisher = feedback_publisher.clone();
+                                let node_stack = Arc::clone(&node_stack);
+                                let state = Arc::clone(&state);
+                                async move {
+                                    handle_goal_request(context, feedback_publisher, node_stack, state).await
+                                }
+                            }
+                        }) => {
+                            match goal_result {
+                                Ok(true) => {
+                                    // Goal was handled. Check if it was rejected.
+                                    let mut state_guard = state.lock().await;
+                                    if matches!(*state_guard, NodeAddActionState::Rejected) {
+                                        // Goal was rejected (for reasons other than "in progress"),
+                                        // reset to Idle and continue waiting.
+                                        *state_guard = NodeAddActionState::Idle;
+                                    }
+                                    // If state is Running: either old action is still running
+                                    // (new goal rejected for "in progress"), or new goal was
+                                    // accepted and a new action started. Either way, continue
+                                    // waiting in the inner loop.
+                                }
+                                Ok(false) => return Ok(()),
+                                Err(e) => {
+                                    debug!("Goal service error: {}", e);
                                     return Err(e.into());
                                 }
                             }
