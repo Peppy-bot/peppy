@@ -15,7 +15,7 @@ const CALLER_INSTANCE_ID: &str = "peppy-cli";
 // Timeout for the goal to be accepted (should be fast)
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 // Timeout for the result (the actual add operation can take a long time)
-const RESULT_TIMEOUT: Duration = Duration::from_secs(900); // 15min
+const RESULT_TIMEOUT: Duration = Duration::from_secs(600); // 10min
 
 pub fn add_node(
     ctx: &Arc<AppContext>,

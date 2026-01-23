@@ -18,7 +18,7 @@ use crate::terminal::ScrollingOutput;
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 // Allow extra time for node startup (build verification, zenoh connection, health check)
-const RESULT_TIMEOUT: Duration = Duration::from_secs(60);
+const RESULT_TIMEOUT: Duration = Duration::from_secs(600); // 10min
 const SCROLLING_OUTPUT_LINES: usize = 10;
 
 /// Converts a list of key=value string pairs into NodeArguments.
