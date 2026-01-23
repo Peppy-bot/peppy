@@ -28,10 +28,11 @@ struct EnvAndDirGuard {
     _lock: std::sync::MutexGuard<'static, ()>,
 }
 
+static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
 impl EnvAndDirGuard {
     fn new(temp_dir: &Path, runtime_config_path: &Path) -> Self {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let lock = LOCK
+        let lock = ENV_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
             .expect("lock poisoned");
@@ -47,6 +48,30 @@ impl EnvAndDirGuard {
             )
         };
         std::env::set_current_dir(temp_dir).expect("set_current_dir should succeed");
+
+        Self {
+            previous_runtime_config,
+            previous_dir,
+            _lock: lock,
+        }
+    }
+
+    /// Create a guard that ensures the runtime config env var is NOT set.
+    /// Used by standalone tests to prevent races with daemon tests.
+    fn new_standalone() -> Self {
+        let lock = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("lock poisoned");
+
+        let previous_runtime_config = std::env::var(peppylib::config::RUNTIME_CONFIG_VAR_NAME).ok();
+        let previous_dir = std::env::current_dir().expect("current dir should be readable");
+
+        // SAFETY: environment mutation is guarded by a global mutex to avoid races.
+        // Remove the env var to ensure standalone mode is used.
+        unsafe {
+            std::env::remove_var(peppylib::config::RUNTIME_CONFIG_VAR_NAME);
+        };
 
         Self {
             previous_runtime_config,
@@ -225,6 +250,10 @@ async fn daemon_runner_succeed() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn standalone_runner_succeed() {
     use tokio_util::sync::CancellationToken;
+
+    // Acquire the env guard to prevent races with daemon tests that set PEPPY_RUNTIME_CONFIG.
+    // This ensures we run in standalone mode.
+    let _env_guard = EnvAndDirGuard::new_standalone();
 
     let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
