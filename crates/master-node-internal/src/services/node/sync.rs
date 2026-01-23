@@ -243,11 +243,8 @@ async fn handle_node_sync_request_inner(
             build_system,
             &node_root_dir,
             subscribed_interfaces,
+            &git_hash,
         )?;
-
-        let peppy_dir = node_root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
-        std::fs::create_dir_all(&peppy_dir)?;
-        std::fs::write(peppy_dir.join("git.hash"), git_hash)?;
 
         Ok(())
     })

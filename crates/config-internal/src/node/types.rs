@@ -542,7 +542,7 @@ mod tests {
         let missing_field = r#"{ id: "camera_stream", node: "uvc_camera" }"#;
         assert!(serde_json5::from_str::<SubscribedTopic>(missing_field).is_err());
 
-        let trimmed = r#"{ id: "camera_stream", node: " uvc_camera ", name: " stream " }"#;
+        let trimmed = r#"{ id: "camera_stream", node: " uvc_camera ", name: " video_stream " }"#;
         let topic: SubscribedTopic =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
         assert_eq!(topic.node, "uvc_camera");
