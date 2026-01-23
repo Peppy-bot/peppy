@@ -518,25 +518,25 @@ mod tests {
 
     #[test]
     fn subscribed_topic_node_is_required() {
-        let valid = r#"{ id: "camera_stream", node: "uvc_camera", name: "stream" }"#;
+        let valid = r#"{ id: "camera_stream", node: "uvc_camera", name: "video_stream" }"#;
         let topic: SubscribedTopic =
             serde_json5::from_str(valid).expect("valid topic should parse");
         assert_eq!(topic.node, "uvc_camera");
-        assert_eq!(topic.name, "stream");
+        assert_eq!(topic.name, "video_stream");
 
-        let without_node = r#"{ id: "camera_stream", name: "stream" }"#;
+        let without_node = r#"{ id: "camera_stream", name: "video_stream" }"#;
         assert!(serde_json5::from_str::<SubscribedTopic>(without_node).is_err());
 
-        let missing_node = r#"{ id: "camera_stream", node: "", name: "stream" }"#;
+        let missing_node = r#"{ id: "camera_stream", node: "", name: "video_stream" }"#;
         assert!(serde_json5::from_str::<SubscribedTopic>(missing_node).is_err());
 
         let missing_name = r#"{ id: "camera_stream", node: "uvc_camera", name: "" }"#;
         assert!(serde_json5::from_str::<SubscribedTopic>(missing_name).is_err());
 
-        let whitespace_only = r#"{ id: "camera_stream", node: "   ", name: "stream" }"#;
+        let whitespace_only = r#"{ id: "camera_stream", node: "   ", name: "video_stream" }"#;
         assert!(serde_json5::from_str::<SubscribedTopic>(whitespace_only).is_err());
 
-        let punctuation_only = r#"{ id: "camera_stream", node: "--", name: "stream" }"#;
+        let punctuation_only = r#"{ id: "camera_stream", node: "--", name: "video_stream" }"#;
         assert!(serde_json5::from_str::<SubscribedTopic>(punctuation_only).is_err());
 
         let missing_field = r#"{ id: "camera_stream", node: "uvc_camera" }"#;
@@ -546,7 +546,7 @@ mod tests {
         let topic: SubscribedTopic =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
         assert_eq!(topic.node, "uvc_camera");
-        assert_eq!(topic.name, "stream");
+        assert_eq!(topic.name, "video_stream");
     }
 
     #[test]

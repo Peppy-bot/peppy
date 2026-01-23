@@ -1,9 +1,133 @@
 ---
 title: Node communication
-description: Learn how to make node communicate
+description: Learn how to make node send message to each other
 sidebar:
   order: 6
 ---
 
-# Topics, Services & Actions
+import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
+import helloReceiverdRust from './snippets/rust/hello_receiver/src/main.rs?raw';
+import helloReceiverNodeConfig from './snippets/rust/hello_receiver/peppy.json5?raw';
 
+A node by itself isn't really useful if not for its ability to communicate with other nodes in the node stack.
+Every single node is only aware of its interfaces it exposes and the ones it subscribes to, defined in its `peppy.json5` configuration. For example:
+
+```json5
+{
+  schema_version: 1,
+  manifest: {
+    name: "controller",
+    tag: "0.1.0",
+    add_cmd: ["cargo", "build", "--release"],
+    start_cmd: ["cargo", "run", "--release"]
+  },
+  interfaces: {
+    exposes: {
+      topics: [],
+      services: [],
+      actions: [],
+    subscribes_to: {
+      topics: [],
+      services: [],
+      actions: [],
+    },
+  }
+}
+```
+
+Here we have `interfaces` with `exposes` and `subscribes_to` with topics/services/actions. Those interfaces are what defines the dependencies between the nodes.
+
+## Topics, Services & Actions
+
+PeppyOS provides three primary communication patterns for nodes to exchange data:
+
+- **Topics** are used for continuous, unidirectional data streams. A node *publishes* messages to a topic, and any number of nodes can *subscribe* to receive them. This is ideal for sensor data, state updates, or any information that flows continuously (e.g., camera images, odometry).
+
+- **Services** implement a request-response pattern. A node connects to another node and waits for a response. Use services for quick operations that need a result, like querying a node's state or triggering a one-time computation.
+
+- **Actions** are for long-running tasks that need feedback and cancellation support. A client sends a goal to an action node, which provides periodic feedback during execution and a final result upon completion. Actions are built on top of topics and services internally. Use them for tasks like navigation or arm movement.
+
+## Subscribed interfaces
+
+In our `hello_world_param` node we've already exposed a topic, lets try to make this topic communicate with another node.
+
+We fist need to init the `hello_receiver` node in a new folder:
+```sh
+peppy node init hello_receiver
+```
+with the following `peppy.json5`:
+<Code code={helloReceiverNodeConfig} lang="json5" title="peppy.json5" />
+
+and the following source file:
+
+<Tabs>
+  <TabItem label="Rust">
+    <Code code={helloReceiverdRust} lang="rust" title="src/main.rs" />
+  </TabItem>
+  <TabItem label="Python">
+    :::caution
+    The Python build system is not yet available.
+    :::
+  </TabItem>
+</Tabs>
+
+:::note
+Make sure `hello_world_param` is already in the node stack otherwise you might get the following error:
+```sh
+Error: `hello_receiver:0.1.0 depends on `hello_world_param:0.1.0`, but it does not exist in the stack
+```
+The `node add` and `node sync` both require the subscribed nodes to be present in the node stack to 
+generate the proper interfaces.
+:::
+
+## Starting the nodes
+
+Now we need to make sure our nodes are started, if we take a look at our node stack:
+```sh
+❯ peppy stack list
+Listing nodes...
+Requesting node stack graph from master 'romantic-kepler-4326'...
+Node stack:
+  - romantic-kepler-4326:master-node (/Users/tuatini/workspace/infrastructure) (1 instance: ["confident-germain-2727"])
+  - hello_receiver:0.1.0 (/Users/tuatini/.peppy/nodes/hello_receiver_0.1.0_bd62ed) (0 instances: [])
+  - hello_world_param:0.1.0 (/Users/tuatini/.peppy/nodes/hello_world_param_0.1.0_2a74c0) (0 instances: [])
+Dependencies:
+  - hello_receiver:0.1.0 -> hello_world_param:0.1.0
+```
+
+We need to make sure that at least one instance is started for `hello_receiver:0.1.0` and another one for `hello_world_param:0.1.0`.
+The order in which the nodes are started does not affect the node communication.
+Lets start a `hello_world_param:0.1.0` instance:
+```sh
+peppy node start hello_world_param:0.1.0 name=planet
+```
+
+Since our node requires a `name`, we provide it with that argument on startup.
+Now lets start the `hello_receiver`:
+```sh
+❯ peppy node start hello_receiver:0.1.0
+Running node hello_receiver:0.1.0...
+Starting node hello_receiver:0.1.0 with instance_id 'cranky-thompson-8740' and 0 argument(s)...
+Calling node_start for hello_receiver:0.1.0 (instance_id=cranky-thompson-8740)...
+Log file: /Users/tuatini/.peppy/logs/start/cranky-thompson-8740.log
+Started node instance 'cranky-thompson-8740' (pid: 10659)
+```
+
+When you start the node you can see a path to the logs, in my case `/Users/tuatini/.peppy/logs/start/cranky-thompson-8740.log`.
+If we open it up:
+```
+[2026-01-23T13:08:03.954] [stderr] warning: pmi@0.0.1: Using cached zenohd binary from "/var/folders/kb/36lp35_92z5_jg6gfqhvkm600000gn/T/zenoh-peppy->
+[2026-01-23T13:08:03.956] [stderr]     Finished `release` profile [optimized] target(s) in 0.47s
+[2026-01-23T13:08:03.962] [stderr]      Running `target/release/hello_receiver`
+[2026-01-23T13:08:05.765] [stdout] Received: hello planet count 28
+[2026-01-23T13:08:08.764] [stdout] Received: hello planet count 29
+[2026-01-23T13:08:11.764] [stdout] Received: hello planet count 30
+```
+
+We can see the messages received from the `hello_world_param:0.1.0` instance!
+
+## Starting a second instance with different parameters
+
+---
+We'll explore the use of services & actions in a more advanced guide although they fundamentally work the same way. 
+Refer to nodes in [this repository](https://github.com/Peppy-bot/example_nodes) for more examples of topics/service/action usage.
