@@ -1,11 +1,13 @@
 #![allow(dead_code)]
 
-use config::consts::{DEFAULT_MESSAGING_HOST, NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::consts::{
+    DEFAULT_MESSAGING_HOST, NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH,
+};
 use config::node::QoSProfile;
 use config::peppy_config::BuildSystem;
 use master_node::encoding::{
-    NodeAddFeedback, NodeAddGoal, NodeAddResult, NodeStartFeedback, NodeStartGoal,
-    NodeStartGoalResponse, NodeStartResult,
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeStartFeedback,
+    NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
 };
 use master_node::names;
 use master_node::{MasterNode, MasterNodeArguments};
@@ -22,6 +24,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
+pub const TEST_GIT_HASH: &str = "test-hash";
 
 pub struct NodeStartTestTimeouts {
     pub goal: Duration,
@@ -54,7 +57,27 @@ pub async fn send_node_add_and_wait(
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
 ) -> Result<NodeAddResult, String> {
-    let goal = NodeAddGoal::new(from_dir);
+    let goal = NodeAddGoal::new(from_dir, TEST_GIT_HASH);
+
+    let peppy_dir = from_dir.join(PEPPY_OUTPUT_DIR);
+    std::fs::create_dir_all(&peppy_dir).map_err(|e| {
+        format!(
+            "Failed to create peppy output dir {}: {}",
+            peppy_dir.display(),
+            e
+        )
+    })?;
+    let git_hash_path = peppy_dir.join("git.hash");
+    if !git_hash_path.exists() {
+        std::fs::write(&git_hash_path, TEST_GIT_HASH).map_err(|e| {
+            format!(
+                "Failed to write git hash file {}: {}",
+                git_hash_path.display(),
+                e
+            )
+        })?;
+    }
+
     let (caller_master_node, caller_instance_id) = if feedback_tx.is_some() {
         ("*", "*")
     } else {
@@ -78,6 +101,22 @@ pub async fn send_node_add_and_wait(
     )
     .await
     .map_err(|e| format!("Failed to send goal: {}", e))?;
+
+    // Check if the goal was rejected - if so, return a failure result immediately.
+    // This matches the behavior of the CLI client which doesn't poll for results
+    // when the goal is rejected.
+    let goal_response_payload = action_handle.goal_response().payload().to_bytes();
+    let goal_response = NodeAddGoalResponse::decode(&goal_response_payload)
+        .map_err(|e| format!("Failed to decode goal response: {}", e))?;
+
+    if !goal_response.accepted {
+        return Ok(NodeAddResult::failure(
+            PathBuf::new(),
+            goal_response
+                .rejection_reason
+                .unwrap_or_else(|| "Goal rejected without reason".to_string()),
+        ));
+    }
 
     let deadline = tokio::time::Instant::now() + result_timeout;
     let feedback_tx = feedback_tx.as_ref();
@@ -266,7 +305,7 @@ fn init_test_node_project(node_name: &str, node_tag: &str) -> PathBuf {
     init_cargo_project(&node_dir, node_name);
     write_test_node_files(&node_dir, node_name, node_tag);
 
-    generator::generate_lib_for_build_system(BuildSystem::Rust, &node_dir, Vec::new())
+    generator::generate_lib_for_build_system(BuildSystem::Rust, &node_dir, Vec::new(), "test-hash")
         .expect("failed to generate peppygen for test node");
 
     build_cargo_project(&node_dir);

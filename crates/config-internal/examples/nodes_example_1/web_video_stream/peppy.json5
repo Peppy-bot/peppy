@@ -36,7 +36,7 @@
           id: "camera_stream", // subscriber_id
           node: "uvc_camera", // Will look for that node name
           tag: "0.1.0", // On that particular tag/version
-          name: "stream", // With this topic name
+          name: "video_stream", // With this topic name
         }
       ],
     },

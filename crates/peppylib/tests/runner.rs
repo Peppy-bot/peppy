@@ -28,10 +28,11 @@ struct EnvAndDirGuard {
     _lock: std::sync::MutexGuard<'static, ()>,
 }
 
+static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
 impl EnvAndDirGuard {
     fn new(temp_dir: &Path, runtime_config_path: &Path) -> Self {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let lock = LOCK
+        let lock = ENV_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
             .expect("lock poisoned");
@@ -47,6 +48,30 @@ impl EnvAndDirGuard {
             )
         };
         std::env::set_current_dir(temp_dir).expect("set_current_dir should succeed");
+
+        Self {
+            previous_runtime_config,
+            previous_dir,
+            _lock: lock,
+        }
+    }
+
+    /// Create a guard that ensures the runtime config env var is NOT set.
+    /// Used by standalone tests to prevent races with daemon tests.
+    fn new_standalone() -> Self {
+        let lock = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("lock poisoned");
+
+        let previous_runtime_config = std::env::var(peppylib::config::RUNTIME_CONFIG_VAR_NAME).ok();
+        let previous_dir = std::env::current_dir().expect("current dir should be readable");
+
+        // SAFETY: environment mutation is guarded by a global mutex to avoid races.
+        // Remove the env var to ensure standalone mode is used.
+        unsafe {
+            std::env::remove_var(peppylib::config::RUNTIME_CONFIG_VAR_NAME);
+        };
 
         Self {
             previous_runtime_config,
@@ -226,6 +251,10 @@ async fn daemon_runner_succeed() {
 async fn standalone_runner_succeed() {
     use tokio_util::sync::CancellationToken;
 
+    // Acquire the env guard to prevent races with daemon tests that set PEPPY_RUNTIME_CONFIG.
+    // This ensures we run in standalone mode.
+    let _env_guard = EnvAndDirGuard::new_standalone();
+
     let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
@@ -250,7 +279,7 @@ async fn standalone_runner_succeed() {
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
 
     let standalone_config = peppylib::runtime::StandaloneConfig::new()
-        .with_parameters(serde_json::json!({ "frequency_hz": TEST_FREQUENCY_HZ }))
+        .with_parameters_json(serde_json::json!({ "frequency_hz": TEST_FREQUENCY_HZ }))
         .with_messaging(&router_host, router_port)
         .with_instance_id(TEST_INSTANCE_ID);
 

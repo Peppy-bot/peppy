@@ -65,6 +65,8 @@ pub enum Error {
     EmptyNodeStack,
     #[error("Config mismatch for `{name}`:{tag}: existing entity has different interfaces")]
     ConfigMismatch { name: String, tag: String },
+    #[error("Cannot overwrite node `{node_name}`:{node_tag} because other nodes depend on it")]
+    CannotOverwriteNodeWithDependents { node_name: String, node_tag: String },
     #[error("Instance ID `{instance_id}` already exists for node `{node_name}`:{node_tag}")]
     DuplicateInstanceId {
         instance_id: String,

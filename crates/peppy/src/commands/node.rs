@@ -87,6 +87,9 @@ pub enum NodeCommands {
         /// Optional: specify a deterministic instance ID
         #[arg(long, hide = true)]
         instance_id: Option<String>,
+        /// Timeout in seconds for the add operation (default: 600 = 10 minutes)
+        #[arg(long, default_value = "600")]
+        timeout: u64,
     },
     /// Regenerate the node's interface code (peppygen) based on peppy.json5
     Sync {
@@ -115,6 +118,9 @@ pub enum NodeCommands {
         /// Optional: specify a deterministic instance ID
         #[arg(long)]
         instance_id: Option<String>,
+        /// Timeout in seconds for the start operation (default: 600 = 10 minutes)
+        #[arg(long, default_value = "600")]
+        timeout: u64,
     },
     /// Prints out the runtime config of a node instance
     #[command(group(ArgGroup::new("node_source").required(true).args(["node_name", "node_dir"])))]
@@ -174,10 +180,11 @@ impl Command for NodeCommand {
                 start: run,
                 args,
                 instance_id,
+                timeout,
             } => {
                 let display_path = node_dir.canonicalize().unwrap_or_else(|_| node_dir.clone());
                 info!("Adding node from {}...", display_path.display());
-                add::add_node(ctx, node_dir, run, args, instance_id)
+                add::add_node(ctx, node_dir, run, args, instance_id, timeout)
             }
             NodeCommands::Sync { build_system } => {
                 info!("Syncing node interfaces...");
@@ -189,12 +196,13 @@ impl Command for NodeCommand {
                 tag,
                 args,
                 instance_id,
+                timeout,
             } => {
                 let (node_name, tag) = node_ref
                     .or_else(|| node_name.zip(tag))
                     .expect("either node_ref or node_name+tag must be provided");
                 info!("Running node {}:{}...", node_name, tag);
-                start::run_node(ctx, node_name, tag, args, instance_id)
+                start::run_node(ctx, node_name, tag, args, instance_id, timeout)
             }
             NodeCommands::RuntimeConfig {
                 node_name,

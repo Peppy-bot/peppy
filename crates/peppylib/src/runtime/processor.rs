@@ -691,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn standalone_mode_with_parameters() {
+    fn standalone_mode_with_json5_parameters() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
 
         let peppy_config_path = temp_dir.path().join("peppy.json5");
@@ -703,12 +703,48 @@ mod tests {
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
 
-        let config = StandaloneConfig::new().with_parameters(serde_json::json!({ "value": 42 }));
+        let config =
+            StandaloneConfig::new().with_parameters_json(serde_json::json!({ "value": 42 }));
 
         let processor = Processor::new_standalone(&peppy_config_path, &config)
             .expect("should create processor");
 
         let args = processor.input_arguments();
         assert_eq!(args.get("value"), Some(&AnyType::Int(42)));
+    }
+
+    #[test]
+    fn standalone_mode_with_typed_parameters() {
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct TestParams {
+            threshold: f64,
+            enabled: bool,
+        }
+
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        let peppy_config_content = r#"{
+            schema_version: 1,
+            manifest: { name: "my_node", tag: "0.1.0", start_cmd: ["cargo", "run"] },
+            parameters: { threshold: "f64", enabled: "bool" }
+        }"#;
+        std::fs::write(&peppy_config_path, peppy_config_content)
+            .expect("peppy config should be written");
+
+        let params = TestParams {
+            threshold: 0.75,
+            enabled: true,
+        };
+        let config = StandaloneConfig::new().with_parameters(&params);
+
+        let processor = Processor::new_standalone(&peppy_config_path, &config)
+            .expect("should create processor");
+
+        let args = processor.input_arguments();
+        assert_eq!(args.get("threshold"), Some(&AnyType::Float(0.75)));
+        assert_eq!(args.get("enabled"), Some(&AnyType::Bool(true)));
     }
 }

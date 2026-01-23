@@ -19,6 +19,8 @@ struct NodeListResponse {
 struct NodeAddGoal {
     # Directory the configuration was loaded from
     fromDir @0 :Text;
+    # Git commit hash of the node being added
+    gitHash @1 :Text;
 }
 
 struct NodeAddGoalResponse {
@@ -56,6 +58,8 @@ struct NodeInitRequest {
     buildSystem @1 :Text;
     # Name of the node (used for directory and package name)
     nodeName @2 :Text;
+    # Git commit hash of the node being initialized
+    gitHash @3 :Text;
 }
 
 struct NodeInitResponse {
@@ -71,10 +75,12 @@ struct NodeGenerateRequest {
     nodeRootDir @0 :Text;
     # Generator language ("rust" or "python")
     language @1 :Text;
+    # Git commit hash of the node being synced
+    gitHash @2 :Text;
 }
 
-struct NodeGenerateResponse {
-    # Whether the generate was successful
+struct NodeSyncResponse {
+    # Whether the sync was successful
     success @0 :Bool;
     # Error message if failed
     errorMessage @1 :Text;

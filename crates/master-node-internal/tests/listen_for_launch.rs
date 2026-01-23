@@ -38,7 +38,7 @@ async fn listen_for_launch_configuration_succeed() {
         .messaging_endpoint()
         .await
         .expect("zenoh endpoint should be available for launcher test");
-    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port);
+    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port, "");
     let launcher_runtime_config_json =
         serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
 
@@ -117,7 +117,7 @@ async fn listen_for_launch_configuration_two_instances_succeed() {
         .messaging_endpoint()
         .await
         .expect("zenoh endpoint should be available for launcher test");
-    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port);
+    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port, "");
     let launcher_runtime_config_json =
         serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
 
@@ -181,7 +181,7 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
         .messaging_endpoint()
         .await
         .expect("zenoh endpoint should be available for launcher test");
-    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port);
+    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port, "");
     let launcher_runtime_config_json =
         serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
 
@@ -238,7 +238,7 @@ async fn listen_for_launch_configuration_launch_config_nodes_directory_must_be_a
         .messaging_endpoint()
         .await
         .expect("zenoh endpoint should be available for launcher test");
-    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port);
+    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port, "");
     let launcher_runtime_config_json =
         serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
 
@@ -307,7 +307,7 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
         .messaging_endpoint()
         .await
         .expect("zenoh endpoint should be available for launcher test");
-    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port);
+    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port, "");
     let launcher_runtime_config_json =
         serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
 
@@ -400,7 +400,7 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
         .messaging_endpoint()
         .await
         .expect("zenoh endpoint should be available for launcher test");
-    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port);
+    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port, "");
     let launcher_runtime_config_json =
         serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
 
@@ -458,7 +458,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
         .messaging_endpoint()
         .await
         .expect("zenoh endpoint should be available for launcher test");
-    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port);
+    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port, "");
     let launcher_runtime_config_json =
         serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
 
@@ -596,7 +596,7 @@ async fn listen_for_launch_configuration_runs_generate_on_node_before_start() {
         .messaging_endpoint()
         .await
         .expect("zenoh endpoint should be available for launcher test");
-    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port);
+    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port, "");
     let launcher_runtime_config_json =
         serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
 
@@ -714,7 +714,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
         .messaging_endpoint()
         .await
         .expect("zenoh endpoint should be available for launcher test");
-    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port);
+    let launcher_runtime_config = LauncherRuntimeConfig::new(messaging_host, messaging_port, "");
     let launcher_runtime_config_json =
         serde_json::to_string(&launcher_runtime_config).expect("serialize runtime config");
 

@@ -17,14 +17,20 @@ pub struct NodeInitRequest {
     pub node_root_dir: PathBuf,
     pub build_system: BuildSystem,
     pub node_name: String,
+    pub git_hash: String,
 }
 
 impl NodeInitRequest {
-    pub fn new(node_root_dir: impl Into<PathBuf>, node_name: impl Into<String>) -> Self {
+    pub fn new(
+        node_root_dir: impl Into<PathBuf>,
+        node_name: impl Into<String>,
+        git_hash: impl Into<String>,
+    ) -> Self {
         Self {
             node_root_dir: node_root_dir.into(),
             build_system: BuildSystem::Cargo,
             node_name: node_name.into(),
+            git_hash: git_hash.into(),
         }
     }
 
@@ -40,6 +46,7 @@ impl NodeInitRequest {
             request.set_node_root_dir(self.node_root_dir.to_string_lossy());
             request.set_build_system(self.build_system.to_string());
             request.set_node_name(&self.node_name);
+            request.set_git_hash(&self.git_hash);
         }
         encode_message(&builder)
     }
@@ -53,6 +60,7 @@ impl NodeInitRequest {
             node_root_dir: PathBuf::from(request.get_node_root_dir()?.to_str()?),
             build_system,
             node_name: request.get_node_name()?.to_str()?.to_owned(),
+            git_hash: request.get_git_hash()?.to_str()?.to_owned(),
         })
     }
 
