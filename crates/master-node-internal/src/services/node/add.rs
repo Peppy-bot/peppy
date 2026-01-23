@@ -227,6 +227,8 @@ enum NodeAddActionState {
     /// No action is currently running.
     #[default]
     Idle,
+    /// The goal was rejected (no result polling expected).
+    Rejected,
     /// An action is currently running.
     Running,
     /// The action completed and the result is ready to be sent.
@@ -263,6 +265,16 @@ async fn run_node_add_action_loop(
 
         match goal_result {
             Ok(true) => {
+                // Check if the goal was rejected (no result polling expected)
+                {
+                    let mut state_guard = state.lock().await;
+                    if matches!(*state_guard, NodeAddActionState::Rejected) {
+                        // Goal was rejected, reset to Idle and wait for next goal
+                        *state_guard = NodeAddActionState::Idle;
+                        continue;
+                    }
+                }
+
                 // Goal accepted, now wait for result or cancel requests
                 loop {
                     tokio::select! {
@@ -347,10 +359,8 @@ async fn handle_goal_request(
     let goal = match NodeAddGoal::decode(&payload.as_bytes()) {
         Ok(g) => g,
         Err(e) => {
-            let result =
-                NodeAddResult::failure(PathBuf::new(), format!("Failed to decode goal: {}", e));
             let mut state_guard = state.lock().await;
-            *state_guard = NodeAddActionState::Completed { result };
+            *state_guard = NodeAddActionState::Rejected;
             let response = NodeAddGoalResponse::rejected(format!("invalid payload: {}", e));
             return response
                 .encode()
@@ -376,9 +386,8 @@ async fn handle_goal_request(
                 git_hash_path.display(),
                 e
             );
-            let result = NodeAddResult::failure(PathBuf::new(), &error_msg);
             let mut state_guard = state.lock().await;
-            *state_guard = NodeAddActionState::Completed { result };
+            *state_guard = NodeAddActionState::Rejected;
             let response = NodeAddGoalResponse::rejected(&error_msg);
             return response
                 .encode()
@@ -397,9 +406,8 @@ async fn handle_goal_request(
             "Invalid git hash file at {}: file is empty. Run `peppy node sync` before `peppy node add`.",
             git_hash_path.display(),
         );
-        let result = NodeAddResult::failure(PathBuf::new(), &error_msg);
         let mut state_guard = state.lock().await;
-        *state_guard = NodeAddActionState::Completed { result };
+        *state_guard = NodeAddActionState::Rejected;
         let response = NodeAddGoalResponse::rejected(&error_msg);
         return response
             .encode()
@@ -417,9 +425,8 @@ async fn handle_goal_request(
             stored_git_hash,
             git_hash_path.display(),
         );
-        let result = NodeAddResult::failure(PathBuf::new(), &error_msg);
         let mut state_guard = state.lock().await;
-        *state_guard = NodeAddActionState::Completed { result };
+        *state_guard = NodeAddActionState::Rejected;
         let response = NodeAddGoalResponse::rejected(&error_msg);
         return response
             .encode()
@@ -439,9 +446,8 @@ async fn handle_goal_request(
                 config_path.display(),
                 e
             );
-            let result = NodeAddResult::failure(PathBuf::new(), &error_msg);
             let mut state_guard = state.lock().await;
-            *state_guard = NodeAddActionState::Completed { result };
+            *state_guard = NodeAddActionState::Rejected;
             let response = NodeAddGoalResponse::rejected(&error_msg);
             return response
                 .encode()
@@ -460,9 +466,8 @@ async fn handle_goal_request(
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
         let error_msg = format!("Failed to create logs directory: {}", e);
         debug!("Failed to create logs directory {:?}: {}", log_dir, e);
-        let result = NodeAddResult::failure(PathBuf::new(), &error_msg);
         let mut state_guard = state.lock().await;
-        *state_guard = NodeAddActionState::Completed { result };
+        *state_guard = NodeAddActionState::Rejected;
         let response = NodeAddGoalResponse::rejected(&error_msg);
         return response
             .encode()
@@ -480,9 +485,8 @@ async fn handle_goal_request(
         Err(e) => {
             let error_msg = format!("Failed to create log file: {}", e);
             debug!("Failed to create log file {:?}: {}", log_path, e);
-            let result = NodeAddResult::failure(PathBuf::new(), &error_msg);
             let mut state_guard = state.lock().await;
-            *state_guard = NodeAddActionState::Completed { result };
+            *state_guard = NodeAddActionState::Rejected;
             let response = NodeAddGoalResponse::rejected(&error_msg);
             return response
                 .encode()
@@ -652,6 +656,8 @@ async fn handle_result_request(
             *state_guard = NodeAddActionState::ResultSent { result };
             Ok(payload)
         }
-        NodeAddActionState::Idle => Ok(Bytes::from_static(b"result pending: no result available")),
+        NodeAddActionState::Idle | NodeAddActionState::Rejected => {
+            Ok(Bytes::from_static(b"result pending: no result available"))
+        }
     }
 }
