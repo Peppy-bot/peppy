@@ -3,7 +3,9 @@ use crate::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAdd
 use crate::names;
 use bytes::Bytes;
 use chrono::Local;
-use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, logs_dir_add, peppy_data_dir};
+use config::consts::{
+    NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, logs_dir_add, peppy_data_dir,
+};
 use config::node::{NodeConfig, NodeConfigParser};
 use node_stack::NodeStack;
 use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
@@ -17,6 +19,27 @@ use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::debug;
+
+pub async fn listen_for_node_add(
+    messenger: &MessengerHandle,
+    master_node_name: &str,
+    instance_id: &str,
+    node_name: &str,
+    node_stack: Arc<NodeStack>,
+) -> Result<JoinHandle<Result<()>>> {
+    let action = ActionMessenger::expose(
+        messenger,
+        master_node_name,
+        instance_id,
+        node_name,
+        names::NODE_ADD_ACTION,
+    )
+    .await?;
+
+    let handle = tokio::spawn(async move { run_node_add_action_loop(action, node_stack).await });
+
+    Ok(handle)
+}
 
 fn generate_random_id() -> String {
     let mut rng = rand::rng();
@@ -187,39 +210,31 @@ fn copy_node_to_storage(from_dir: &Path, node_name: &str, node_tag: &str) -> Res
     Ok(dest_path)
 }
 
+fn is_node_snapshot_path(path: &Path, node_name: &str, node_tag: &str) -> bool {
+    let storage_dir = peppy_data_dir().join("nodes");
+    if !path.starts_with(&storage_dir) {
+        return false;
+    }
+    let Some(folder_name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    folder_name.starts_with(&format!("{node_name}_{node_tag}_"))
+}
+
 /// State for tracking the current node add action.
 #[derive(Default)]
 enum NodeAddActionState {
     /// No action is currently running.
     #[default]
     Idle,
+    /// The goal was rejected (no result polling expected).
+    Rejected,
     /// An action is currently running.
     Running,
     /// The action completed and the result is ready to be sent.
     Completed { result: NodeAddResult },
     /// The result has been sent to the requester.
     ResultSent { result: NodeAddResult },
-}
-
-pub async fn listen_for_node_add(
-    messenger: &MessengerHandle,
-    master_node_name: &str,
-    instance_id: &str,
-    node_name: &str,
-    node_stack: Arc<NodeStack>,
-) -> Result<JoinHandle<Result<()>>> {
-    let action = ActionMessenger::expose(
-        messenger,
-        master_node_name,
-        instance_id,
-        node_name,
-        names::NODE_ADD_ACTION,
-    )
-    .await?;
-
-    let handle = tokio::spawn(async move { run_node_add_action_loop(action, node_stack).await });
-
-    Ok(handle)
 }
 
 async fn run_node_add_action_loop(
@@ -240,6 +255,7 @@ async fn run_node_add_action_loop(
                     let feedback_publisher = feedback_publisher.clone();
                     let node_stack = Arc::clone(&node_stack);
                     let state = Arc::clone(&state);
+
                     async move {
                         handle_goal_request(context, feedback_publisher, node_stack, state).await
                     }
@@ -249,7 +265,19 @@ async fn run_node_add_action_loop(
 
         match goal_result {
             Ok(true) => {
-                // Goal accepted, now wait for result or cancel requests
+                // Check if the goal was rejected (no result polling expected)
+                {
+                    let mut state_guard = state.lock().await;
+                    if matches!(*state_guard, NodeAddActionState::Rejected) {
+                        // Goal was rejected, reset to Idle and wait for next goal
+                        *state_guard = NodeAddActionState::Idle;
+                        continue;
+                    }
+                }
+
+                // Goal accepted, now wait for result, cancel, or new goal requests.
+                // We also listen for new goals here to handle the case where a client
+                // abandons an action without polling for the result.
                 loop {
                     tokio::select! {
                         cancel_result = action.cancel_service.handle_next_request({
@@ -287,6 +315,45 @@ async fn run_node_add_action_loop(
                                 Ok(false) => return Ok(()),
                                 Err(e) => {
                                     debug!("Result service error: {}", e);
+                                    return Err(e.into());
+                                }
+                            }
+                        }
+                        // Handle new goals while waiting for result/cancel.
+                        // This allows a new goal to be accepted if the previous action
+                        // completed but the client never polled for the result.
+                        // If an action is still running, the goal will be rejected
+                        // with "action already in progress".
+                        goal_result = action.goal_service.handle_next_request({
+                            let feedback_publisher = &action.feedback_publisher;
+                            let node_stack = Arc::clone(&node_stack);
+                            let state = Arc::clone(&state);
+                            move |context| {
+                                let feedback_publisher = feedback_publisher.clone();
+                                let node_stack = Arc::clone(&node_stack);
+                                let state = Arc::clone(&state);
+                                async move {
+                                    handle_goal_request(context, feedback_publisher, node_stack, state).await
+                                }
+                            }
+                        }) => {
+                            match goal_result {
+                                Ok(true) => {
+                                    // Goal was handled. Check if it was rejected.
+                                    let mut state_guard = state.lock().await;
+                                    if matches!(*state_guard, NodeAddActionState::Rejected) {
+                                        // Goal was rejected (for reasons other than "in progress"),
+                                        // reset to Idle and continue waiting.
+                                        *state_guard = NodeAddActionState::Idle;
+                                    }
+                                    // If state is Running: either old action is still running
+                                    // (new goal rejected for "in progress"), or new goal was
+                                    // accepted and a new action started. Either way, continue
+                                    // waiting in the inner loop.
+                                }
+                                Ok(false) => return Ok(()),
+                                Err(e) => {
+                                    debug!("Goal service error: {}", e);
                                     return Err(e.into());
                                 }
                             }
@@ -333,10 +400,8 @@ async fn handle_goal_request(
     let goal = match NodeAddGoal::decode(&payload.as_bytes()) {
         Ok(g) => g,
         Err(e) => {
-            let result =
-                NodeAddResult::failure(PathBuf::new(), format!("Failed to decode goal: {}", e));
             let mut state_guard = state.lock().await;
-            *state_guard = NodeAddActionState::Completed { result };
+            *state_guard = NodeAddActionState::Rejected;
             let response = NodeAddGoalResponse::rejected(format!("invalid payload: {}", e));
             return response
                 .encode()
@@ -352,6 +417,66 @@ async fn handle_goal_request(
         goal.from_dir.display()
     );
 
+    // Verify that the node directory is in sync with the currently running daemon.
+    let git_hash_path = goal.from_dir.join(PEPPY_OUTPUT_DIR).join("git.hash");
+    let stored_git_hash = match std::fs::read_to_string(&git_hash_path) {
+        Ok(hash) => hash,
+        Err(e) => {
+            let error_msg = format!(
+                "Missing required git hash file at {}: {}. Run `peppy node sync` before `peppy node add`.",
+                git_hash_path.display(),
+                e
+            );
+            let mut state_guard = state.lock().await;
+            *state_guard = NodeAddActionState::Rejected;
+            let response = NodeAddGoalResponse::rejected(&error_msg);
+            return response
+                .encode()
+                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                    identifier: "node_add_goal".to_string(),
+                    reason: format!("Failed to encode response: {}", e),
+                });
+        }
+    };
+
+    let expected_git_hash = goal.git_hash.trim();
+    let stored_git_hash = stored_git_hash.trim();
+
+    if stored_git_hash.is_empty() {
+        let error_msg = format!(
+            "Invalid git hash file at {}: file is empty. Run `peppy node sync` before `peppy node add`.",
+            git_hash_path.display(),
+        );
+        let mut state_guard = state.lock().await;
+        *state_guard = NodeAddActionState::Rejected;
+        let response = NodeAddGoalResponse::rejected(&error_msg);
+        return response
+            .encode()
+            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                identifier: "node_add_goal".to_string(),
+                reason: format!("Failed to encode response: {}", e),
+            });
+    }
+
+    if stored_git_hash != expected_git_hash {
+        let error_msg = format!(
+            "git hash mismatch for node directory {} (expected '{}', found '{}' in {}). Run `peppy node sync` before retrying.",
+            goal.from_dir.display(),
+            expected_git_hash,
+            stored_git_hash,
+            git_hash_path.display(),
+        );
+        let mut state_guard = state.lock().await;
+        *state_guard = NodeAddActionState::Rejected;
+        let response = NodeAddGoalResponse::rejected(&error_msg);
+        return response
+            .encode()
+            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                identifier: "node_add_goal".to_string(),
+                reason: format!("Failed to encode response: {}", e),
+            });
+    }
+
     // Parse node config to get node_name and tag for log file naming
     let config_path = goal.from_dir.join(NODE_CONFIG_FILE);
     let node_config = match NodeConfigParser::from_path(&config_path) {
@@ -362,9 +487,8 @@ async fn handle_goal_request(
                 config_path.display(),
                 e
             );
-            let result = NodeAddResult::failure(PathBuf::new(), &error_msg);
             let mut state_guard = state.lock().await;
-            *state_guard = NodeAddActionState::Completed { result };
+            *state_guard = NodeAddActionState::Rejected;
             let response = NodeAddGoalResponse::rejected(&error_msg);
             return response
                 .encode()
@@ -383,9 +507,8 @@ async fn handle_goal_request(
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
         let error_msg = format!("Failed to create logs directory: {}", e);
         debug!("Failed to create logs directory {:?}: {}", log_dir, e);
-        let result = NodeAddResult::failure(PathBuf::new(), &error_msg);
         let mut state_guard = state.lock().await;
-        *state_guard = NodeAddActionState::Completed { result };
+        *state_guard = NodeAddActionState::Rejected;
         let response = NodeAddGoalResponse::rejected(&error_msg);
         return response
             .encode()
@@ -403,9 +526,8 @@ async fn handle_goal_request(
         Err(e) => {
             let error_msg = format!("Failed to create log file: {}", e);
             debug!("Failed to create log file {:?}: {}", log_path, e);
-            let result = NodeAddResult::failure(PathBuf::new(), &error_msg);
             let mut state_guard = state.lock().await;
-            *state_guard = NodeAddActionState::Completed { result };
+            *state_guard = NodeAddActionState::Rejected;
             let response = NodeAddGoalResponse::rejected(&error_msg);
             return response
                 .encode()
@@ -456,6 +578,10 @@ async fn process_node_add(
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
 
+    let previous_snapshot_path = node_stack
+        .find(&node_name, &node_tag)
+        .map(|entity| entity.root_path().to_path_buf());
+
     // Copy the node folder to the peppy storage directory.
     let copied_path = match copy_node_to_storage(&goal.from_dir, &node_name, &node_tag) {
         Ok(path) => path,
@@ -496,6 +622,14 @@ async fn process_node_add(
         // Clean up the copied folder on failure
         let _ = std::fs::remove_dir_all(&copied_path);
         return NodeAddResult::failure(&log_path, format!("Failed to add node config: {}", e));
+    }
+
+    if let Some(previous_snapshot_path) = previous_snapshot_path {
+        if previous_snapshot_path != copied_path
+            && is_node_snapshot_path(&previous_snapshot_path, &node_name, &node_tag)
+        {
+            let _ = std::fs::remove_dir_all(&previous_snapshot_path);
+        }
     }
 
     debug!(
@@ -563,6 +697,8 @@ async fn handle_result_request(
             *state_guard = NodeAddActionState::ResultSent { result };
             Ok(payload)
         }
-        NodeAddActionState::Idle => Ok(Bytes::from_static(b"result pending: no result available")),
+        NodeAddActionState::Idle | NodeAddActionState::Rejected => {
+            Ok(Bytes::from_static(b"result pending: no result available"))
+        }
     }
 }

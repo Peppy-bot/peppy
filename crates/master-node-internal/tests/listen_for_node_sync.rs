@@ -2,7 +2,7 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, start_master_node_with_mock_messenger};
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
-use master_node::encoding::NodeGenerateRequest;
+use master_node::encoding::NodeSyncRequest;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -30,7 +30,8 @@ async fn listen_for_node_generate_success() {
         }"#,
     );
 
-    let response = NodeGenerateRequest::new(node_dir.path())
+    let expected_git_hash = "deadbeef";
+    let response = NodeSyncRequest::new(node_dir.path(), expected_git_hash)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -52,6 +53,19 @@ async fn listen_for_node_generate_success() {
         peppygen_dir.exists(),
         "peppygen directory should exist at {}",
         peppygen_dir.display()
+    );
+
+    let git_hash_path = node_dir.path().join(PEPPY_OUTPUT_DIR).join("git.hash");
+    assert!(
+        git_hash_path.exists(),
+        "git.hash should exist at {}",
+        git_hash_path.display()
+    );
+    let stored_git_hash = fs::read_to_string(&git_hash_path).expect("failed to read git.hash file");
+    assert_eq!(
+        stored_git_hash.trim(),
+        expected_git_hash,
+        "git.hash should contain the sync request git_hash"
     );
 
     let config_path = node_dir.path().join(NODE_CONFIG_FILE);
@@ -85,7 +99,7 @@ async fn listen_for_node_generate_success() {
 async fn listen_for_node_generate_missing_node_root_dir_fails() {
     let started_master = start_master_node_with_mock_messenger().await;
 
-    let response = NodeGenerateRequest::new("")
+    let response = NodeSyncRequest::new("", common::TEST_GIT_HASH)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -118,7 +132,7 @@ async fn listen_for_node_generate_node_root_dir_does_not_exist_fails() {
         missing_dir.display()
     );
 
-    let response = NodeGenerateRequest::new(missing_dir)
+    let response = NodeSyncRequest::new(missing_dir, common::TEST_GIT_HASH)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -149,7 +163,7 @@ async fn listen_for_node_generate_node_root_dir_is_not_a_directory_fails() {
     let file_path = tmp.path().join("not_a_directory");
     fs::write(&file_path, "not a dir").expect("failed to write temp file");
 
-    let response = NodeGenerateRequest::new(file_path)
+    let response = NodeSyncRequest::new(file_path, common::TEST_GIT_HASH)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -180,7 +194,7 @@ async fn listen_for_node_generate_missing_peppy_json5_fails() {
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
     let cargo_toml_path = node_dir.path().join("Cargo.toml");
 
-    let response = NodeGenerateRequest::new(node_dir.path())
+    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -228,7 +242,7 @@ async fn listen_for_node_generate_invalid_peppy_json5_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = NodeGenerateRequest::new(node_dir.path())
+    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -299,7 +313,7 @@ async fn listen_for_node_generate_missing_dependency_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = NodeGenerateRequest::new(node_dir.path())
+    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -389,7 +403,7 @@ async fn listen_for_node_generate_multiple_missing_dependencies_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = NodeGenerateRequest::new(node_dir.path())
+    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -491,16 +505,17 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
     );
 
     // Generate peppygen for the uvc_camera node first
-    let uvc_camera_response = NodeGenerateRequest::new(uvc_camera_node_dir.path())
-        .poll(
-            &started_master.caller_handle,
-            &started_master.master_node_name,
-            CALLER_INSTANCE_ID,
-            &started_master.master_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_generate request should complete");
+    let uvc_camera_response =
+        NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH)
+            .poll(
+                &started_master.caller_handle,
+                &started_master.master_node_name,
+                CALLER_INSTANCE_ID,
+                &started_master.master_node_name,
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("node_generate request should complete");
 
     assert!(
         uvc_camera_response.success,
@@ -568,7 +583,7 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
     );
 
     // Generate the brain node - this should succeed now that uvc_camera is in the stack
-    let brain_response = NodeGenerateRequest::new(brain_node_dir.path())
+    let brain_response = NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -681,7 +696,7 @@ async fn listen_for_node_generate_generates_rust_parameters() {
     );
 
     // Generate peppygen for the uvc_camera node first
-    let response = NodeGenerateRequest::new(node_dir.path())
+    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -776,7 +791,7 @@ async fn listen_for_node_generate_deletes_previous_peppy_folder() {
     );
 
     // First generation - creates the .peppy folder
-    let response = NodeGenerateRequest::new(node_dir.path())
+    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -810,7 +825,7 @@ async fn listen_for_node_generate_deletes_previous_peppy_folder() {
     );
 
     // Second generation - should delete the .peppy folder and recreate it
-    let response = NodeGenerateRequest::new(node_dir.path())
+    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,

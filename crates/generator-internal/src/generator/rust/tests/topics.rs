@@ -53,9 +53,9 @@ const EXPOSED_TOPIC_EXAMPLE2: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE1: &str = r#"
 {
-    id: "stream",
+    id: "video_stream",
     node: "uvc_camera",
-    name: "stream",
+    name: "video_stream",
     tag: "0.1.0"
 }
 "#;
@@ -282,7 +282,7 @@ fn subscribed_to_two_topics_same_node() {
     );
 
     // Verify each topic gets distinct artifact with correct topic name
-    assert_artifact_contains(&artifacts, "let topic_name = \"stream\";");
+    assert_artifact_contains(&artifacts, "let topic_name = \"video_stream\";");
     assert_artifact_contains(&artifacts, "let topic_name = \"sound\";");
 
     // Verify both reference the same source node
@@ -467,9 +467,9 @@ fn compile_lib_with_exposed_and_subscribed_topics() {
     );
     assert!(
         output_dir
-            .join("src/subscribed_topics/uvc_camera_stream.rs")
+            .join("src/subscribed_topics/uvc_camera_video_stream.rs")
             .exists(),
-        "Expected uvc_camera_stream subscriber module"
+        "Expected uvc_camera_video_stream subscriber module"
     );
     assert!(
         output_dir

@@ -1,5 +1,5 @@
 use crate::Result;
-use crate::encoding::{LaunchRequest, LaunchResponse, NodeGenerateRequest};
+use crate::encoding::{LaunchRequest, LaunchResponse, NodeSyncRequest};
 use crate::names;
 use crate::services::node::{perform_health_check, start_node, wait_for_ready_signal};
 use bytes::Bytes;
@@ -189,17 +189,20 @@ async fn start_launch_plan_instances(
             .ok_or_else(|| format!("deployment {node_name}:{tag} missing from planned stack"))?;
 
         // Call `node_generate` to generate the peppygen library (once per node, before starting instances)
-        let response = NodeGenerateRequest::new(entity.root_path().to_path_buf())
-            .with_build_system(BuildSystem::Cargo)
-            .poll(
-                messenger,
-                master_node_name,
-                master_instance_id,
-                master_node_name,
-                NODE_GENERATE_TIMEOUT,
-            )
-            .await
-            .map_err(|e| format!("node_generate request failed for {node_name}:{tag}: {e}"))?;
+        let response = NodeSyncRequest::new(
+            entity.root_path().to_path_buf(),
+            &launcher_runtime_config.git_hash,
+        )
+        .with_build_system(BuildSystem::Cargo)
+        .poll(
+            messenger,
+            master_node_name,
+            master_instance_id,
+            master_node_name,
+            NODE_GENERATE_TIMEOUT,
+        )
+        .await
+        .map_err(|e| format!("node_generate request failed for {node_name}:{tag}: {e}"))?;
 
         if !response.success {
             let msg = if response.error_message.trim().is_empty() {

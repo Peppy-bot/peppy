@@ -1,5 +1,5 @@
 use crate::Result;
-use crate::encoding::{NodeGenerateRequest, NodeGenerateResponse};
+use crate::encoding::{NodeSyncRequest, NodeSyncResponse};
 use crate::names;
 use bytes::Bytes;
 use config::node::NodeConfigParser;
@@ -75,7 +75,7 @@ fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
     }
 }
 
-pub async fn listen_for_node_generate(
+pub async fn listen_for_node_sync(
     messenger: &MessengerHandle,
     master_node_node: &str,
     instance_id: &str,
@@ -87,14 +87,14 @@ pub async fn listen_for_node_generate(
         master_node_node,
         instance_id,
         node_name,
-        names::NODE_GENERATE,
+        names::NODE_SYNC,
     )
     .await?;
 
     let handle = tokio::spawn(async move {
         endpoint
             .handle_requests(move |context| {
-                handle_node_generate_request(context, Arc::clone(&node_stack))
+                handle_node_sync_request(context, Arc::clone(&node_stack))
             })
             .await
             .map_err(Into::into)
@@ -103,12 +103,12 @@ pub async fn listen_for_node_generate(
     Ok(handle)
 }
 
-async fn handle_node_generate_request(
+async fn handle_node_sync_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
 ) -> PeppyResult<Bytes> {
     let sender_instance_id = context.message().instance_id();
-    handle_node_generate_request_inner(&context, &node_stack)
+    handle_node_sync_request_inner(&context, &node_stack)
         .await
         .map_err(|e| PeppyError::InvalidServiceRequest {
             identifier: sender_instance_id.to_string(),
@@ -116,24 +116,23 @@ async fn handle_node_generate_request(
         })
 }
 
-async fn handle_node_generate_request_inner(
+async fn handle_node_sync_request_inner(
     context: &ServiceRequestContext,
     node_stack: &NodeStack,
 ) -> Result<Bytes> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    let request = NodeGenerateRequest::decode(&payload.as_bytes())?;
+    let request = NodeSyncRequest::decode(&payload.as_bytes())?;
 
-    debug!("Received `node_generate` request from {sender_instance_id}");
+    debug!("Received `node_sync` request from {sender_instance_id}");
 
     if request.node_root_dir.as_os_str().is_empty() {
-        return NodeGenerateResponse::failure("Missing `node_root_dir` in node_generate request")
-            .encode();
+        return NodeSyncResponse::failure("Missing `node_root_dir` in node_sync request").encode();
     }
 
     if !request.node_root_dir.exists() {
-        return NodeGenerateResponse::failure(format!(
+        return NodeSyncResponse::failure(format!(
             "`node_root_dir` does not exist: {}",
             request.node_root_dir.display()
         ))
@@ -141,7 +140,7 @@ async fn handle_node_generate_request_inner(
     }
 
     if !request.node_root_dir.is_dir() {
-        return NodeGenerateResponse::failure(format!(
+        return NodeSyncResponse::failure(format!(
             "`node_root_dir` is not a directory: {}",
             request.node_root_dir.display()
         ))
@@ -212,7 +211,7 @@ async fn handle_node_generate_request_inner(
                         errors.push(iface_error);
                     }
 
-                    return NodeGenerateResponse::failure(format!(
+                    return NodeSyncResponse::failure(format!(
                         "`{}:{} {}",
                         node_config.manifest.name.as_str(),
                         node_config.manifest.tag,
@@ -231,26 +230,40 @@ async fn handle_node_generate_request_inner(
         }
     };
 
-    let build_system = request.build_system;
-    let node_root_dir = request.node_root_dir;
-    match tokio::task::spawn_blocking(move || {
+    let NodeSyncRequest {
+        node_root_dir,
+        build_system,
+        git_hash,
+    } = request;
+
+    match tokio::task::spawn_blocking(move || -> Result<()> {
         remove_previous_peppy_dir(&node_root_dir);
 
         generator::generate_lib_for_build_system(
             build_system,
             &node_root_dir,
             subscribed_interfaces,
-        )
+            &git_hash,
+        )?;
+
+        Ok(())
     })
     .await
     {
         Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            return NodeGenerateResponse::failure(format!("Failed to generate peppygen: {}", e))
+        Ok(Err(crate::Error::GeneratorError(e))) => {
+            return NodeSyncResponse::failure(format!("Failed to generate peppygen: {}", e))
                 .encode();
         }
+        Ok(Err(crate::Error::Io(e))) => {
+            return NodeSyncResponse::failure(format!("Failed to write git hash file: {}", e))
+                .encode();
+        }
+        Ok(Err(e)) => {
+            return NodeSyncResponse::failure(format!("Failed to sync node: {}", e)).encode();
+        }
         Err(e) => {
-            return NodeGenerateResponse::failure(format!(
+            return NodeSyncResponse::failure(format!(
                 "Failed to generate peppygen (generate task failed): {}",
                 e
             ))
@@ -258,7 +271,7 @@ async fn handle_node_generate_request_inner(
         }
     };
 
-    NodeGenerateResponse::success().encode()
+    NodeSyncResponse::success().encode()
 }
 
 /// Collects subscribed interfaces from a node config and resolves their message formats

@@ -1,7 +1,7 @@
 {
     schema_version: 1,
     manifest: {
-        name: "my_first_node",
+        name: "hello_world_param",
         tag: "0.1.0",
         add_cmd: [
             "cargo",
@@ -14,11 +14,14 @@
             "--release"
         ]
     },
+    parameters: {
+        name: "string",
+    },
     interfaces: {
         exposes: {
             topics: [
                 {
-                    name: "hello_world",
+                    name: "message_stream",
                     qos_profile: "sensor_data",
                     message_format: {
                         message: "string"

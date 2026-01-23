@@ -607,7 +607,7 @@ impl NodeStackInner {
             .unwrap_or_default()
     }
 
-    /// Adds a config to the stack or updates an existing one if interfaces match.
+    /// Adds a config to the stack or overwrites an existing one.
     /// Does not create any instances.
     /// Returns Err(CannotModifyRootNode) if trying to modify the root node config.
     fn push_config_impl<P: Into<PathBuf>>(
@@ -617,6 +617,7 @@ impl NodeStackInner {
         root_path: P,
     ) -> Result<()> {
         let key = NodeKey::new(config.manifest.name.as_str(), &config.manifest.tag);
+        let root_path = root_path.into();
 
         // The root node cannot be modified
         if self.is_root(&key) {
@@ -624,16 +625,42 @@ impl NodeStackInner {
         }
 
         if let Some(&index) = self.key_to_index.get(&key) {
-            // Entity exists, check interfaces match
-            if let Some(entity) = self.graph.node_weight(index)
-                && !interfaces_match(&entity.config().interfaces, &config.interfaces)
-            {
-                return Err(Error::ConfigMismatch {
-                    name: config.manifest.name.as_str().to_string(),
-                    tag: config.manifest.tag.clone(),
+            let should_overwrite = self.graph.node_weight(index).is_some_and(|entity| {
+                !interfaces_match(&entity.config().interfaces, &config.interfaces)
+                    || entity.root_path() != root_path.as_path()
+            });
+
+            if !should_overwrite {
+                return Ok(());
+            }
+
+            let has_dependents = self
+                .graph
+                .neighbors_directed(index, Direction::Incoming)
+                .next()
+                .is_some()
+                || self
+                    .pending_requirements
+                    .get(&key)
+                    .is_some_and(|requirements| !requirements.is_empty());
+
+            if has_dependents {
+                return Err(Error::CannotOverwriteNodeWithDependents {
+                    node_name: key.name,
+                    node_tag: key.tag,
                 });
             }
-            // Config already exists and matches, nothing to do
+
+            if !allow_missing_dependencies {
+                let candidate = NodeEntity::new(config.clone(), root_path.clone());
+                self.validate_dependencies(&candidate)?;
+            }
+
+            if let Some(entity) = self.graph.node_weight_mut(index) {
+                entity.config = config;
+                entity.fs_root_path = root_path;
+            }
+            self.rewire_dependencies(index);
         } else {
             // Entity doesn't exist, create new one without instances
             let entity = NodeEntity::new(config, root_path);

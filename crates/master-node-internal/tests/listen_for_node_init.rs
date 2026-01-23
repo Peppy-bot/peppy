@@ -1,7 +1,7 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, start_master_node_with_mock_messenger};
-use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use config::peppy_config::BuildSystem;
 use master_node::encoding::NodeInitRequest;
 use std::fs;
@@ -16,7 +16,7 @@ async fn listen_for_node_init_rust_success() {
 
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-    let response = NodeInitRequest::new(nodes_root.path(), NODE_NAME)
+    let response = NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123")
         .with_build_system(BuildSystem::Rust)
         .poll(
             &started_master.caller_handle,
@@ -39,6 +39,13 @@ async fn listen_for_node_init_rust_success() {
         node_dir.exists(),
         "node_dir should exist at {}",
         node_dir.display()
+    );
+
+    let git_hash_file = node_dir.join(PEPPY_OUTPUT_DIR).join("git.hash");
+    assert!(
+        git_hash_file.exists(),
+        "git.hash file should exist at {}",
+        git_hash_file.display()
     );
 
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
@@ -106,7 +113,7 @@ async fn listen_for_node_init_python_success() {
 
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-    let response = NodeInitRequest::new(nodes_root.path(), NODE_NAME)
+    let response = NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123")
         .with_build_system(BuildSystem::Python)
         .poll(
             &started_master.caller_handle,
@@ -201,7 +208,7 @@ async fn listen_for_node_init_fails_if_directory_exists() {
         "precondition: peppygen output should not exist"
     );
 
-    let response = NodeInitRequest::new(nodes_root.path(), NODE_NAME)
+    let response = NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123")
         .with_build_system(BuildSystem::Rust)
         .poll(
             &started_master.caller_handle,

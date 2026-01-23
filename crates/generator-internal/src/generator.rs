@@ -31,9 +31,14 @@ pub fn generate_lib_for_build_system(
     build_system: BuildSystem,
     node_dir: impl AsRef<Path>,
     subscribed_interfaces: Vec<DeploymentInterface>,
+    git_hash: &str,
 ) -> Result<()> {
     let node_dir = node_dir.as_ref();
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
+
+    let peppy_dir = node_dir.join(config::consts::PEPPY_OUTPUT_DIR);
+    std::fs::create_dir_all(&peppy_dir)?;
+    std::fs::write(peppy_dir.join("git.hash"), git_hash)?;
 
     if !node_config_path.exists() {
         return Err(Error::NodeNotFound(node_dir.display().to_string()));
