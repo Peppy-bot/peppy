@@ -242,15 +242,7 @@ async fn handle_node_sync_request_inner(
 
     match tokio::task::spawn_blocking(move || -> Result<()> {
         remove_previous_peppy_dir(&node_root_dir);
-
-        generator::generate_peppygen_lib(
-            language,
-            &node_root_dir,
-            subscribed_interfaces,
-            &git_hash,
-        )?;
-
-        Ok(())
+        generate_peppygen_for_node(language, &node_root_dir, subscribed_interfaces, &git_hash)
     })
     .await
     {
@@ -280,7 +272,7 @@ async fn handle_node_sync_request_inner(
 
 /// Collects subscribed interfaces from a node config and resolves their message formats
 /// by looking up the exposed interfaces from dependency nodes in the node stack.
-fn collect_subscribed_interfaces(
+pub fn collect_subscribed_interfaces(
     node_config: &config::node::NodeConfig,
     node_stack: &NodeStack,
 ) -> Vec<DeploymentInterface> {
@@ -400,4 +392,23 @@ fn collect_subscribed_interfaces(
     }
 
     interfaces
+}
+
+/// Generates the peppygen library for a node.
+///
+/// This function takes the pre-collected data and generates the peppygen
+/// library in the node directory. Use `collect_subscribed_interfaces` to
+/// gather the subscribed interfaces before calling this function.
+///
+/// This function is designed to be called from within `spawn_blocking` contexts
+/// where the data has already been extracted and can be moved into the closure.
+pub fn generate_peppygen_for_node(
+    language: config::node::PeppygenLanguage,
+    node_dir: impl AsRef<std::path::Path>,
+    subscribed_interfaces: Vec<DeploymentInterface>,
+    git_hash: &str,
+) -> crate::Result<()> {
+    generator::generate_peppygen_lib(language, node_dir, subscribed_interfaces, git_hash)?;
+
+    Ok(())
 }

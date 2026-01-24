@@ -1,3 +1,4 @@
+use super::sync::{collect_subscribed_interfaces, generate_peppygen_for_node};
 use crate::Result;
 use crate::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
@@ -627,7 +628,22 @@ async fn process_node_add(
         }
     };
 
-    // TODO: Call `generator::generate_peppygen_lib` on the copied_path (however we need to be able to determine if it needs to be in Python or Rust)
+    // Generate the peppygen library for the copied node
+    let language = node_config.manifest.language;
+    let subscribed_interfaces = collect_subscribed_interfaces(&node_config, &node_stack);
+    if let Err(e) = generate_peppygen_for_node(
+        language,
+        &copied_path,
+        subscribed_interfaces,
+        &goal.git_hash,
+    ) {
+        // Clean up the copied folder on failure
+        let _ = std::fs::remove_dir_all(&copied_path);
+        return NodeAddResult::failure(
+            &log_path,
+            format!("Failed to generate peppygen library: {}", e),
+        );
+    }
 
     // Run add_cmd on the copied folder with streaming output
     if let Err(e) = run_add_cmd_with_streaming(

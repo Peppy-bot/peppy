@@ -1122,7 +1122,7 @@ async fn listen_for_node_add_fingerprint_mismatch() {
         add_result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("Fingerprint verification failed"))
+            .map(|msg| msg.contains("Codegen fingerprint verification failed"))
             .unwrap_or(false),
         "error message should indicate fingerprint verification failure, got: {:?}",
         add_result.error_message
