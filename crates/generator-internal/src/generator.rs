@@ -4,7 +4,7 @@ pub mod rust;
 pub mod types;
 
 use crate::error::{Error, Result};
-use config::{consts::NODE_CONFIG_FILE, node::NodeConfigParser, peppy_config::BuildSystem};
+use config::{consts::NODE_CONFIG_FILE, node::NodeConfigParser, peppy_config::Toolchain};
 use python::PythonGenerator;
 use rust::RustGenerator;
 use std::{fs, path::Path};
@@ -28,7 +28,7 @@ use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 /// - The configuration file cannot be parsed
 /// - Code generation fails
 pub fn generate_lib_for_build_system(
-    build_system: BuildSystem,
+    build_system: Toolchain,
     node_dir: impl AsRef<Path>,
     subscribed_interfaces: Vec<DeploymentInterface>,
     git_hash: &str,
@@ -56,7 +56,7 @@ pub fn generate_lib_for_build_system(
     fs::create_dir_all(&output_dir)?;
 
     let result = match build_system {
-        BuildSystem::Rust | BuildSystem::Cargo => {
+        Toolchain::Rust | Toolchain::Cargo => {
             let mut rust_generator = RustGenerator::new();
             rust_generator.set_parameters(node_config.parameters);
             generate_with_backend(rust_generator, &interfaces, &output_dir)?;
@@ -64,7 +64,7 @@ pub fn generate_lib_for_build_system(
             ensure_node_cargo_toml(node_dir, node_config.manifest.name.as_str())?;
             Ok(())
         }
-        BuildSystem::Python | BuildSystem::Uv => {
+        Toolchain::Python | Toolchain::Uv => {
             let mut python_generator = PythonGenerator::new();
             python_generator.set_parameters(node_config.parameters);
             generate_with_backend(python_generator, &interfaces, &output_dir)

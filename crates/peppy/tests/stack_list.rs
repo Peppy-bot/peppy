@@ -110,7 +110,7 @@ async fn node_list_command_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(provider_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
+            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)
@@ -120,7 +120,7 @@ async fn node_list_command_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(consumer_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
+            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)
@@ -250,7 +250,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(provider_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
+            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)
@@ -260,7 +260,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(consumer_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
+            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)

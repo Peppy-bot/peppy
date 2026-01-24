@@ -51,7 +51,7 @@ fn node_add_command_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
+            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)
@@ -170,7 +170,7 @@ fn node_add_command_with_run_arg_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
+            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)
@@ -312,7 +312,7 @@ fn node_add_after_failed_sync_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
+            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)
@@ -367,7 +367,7 @@ fn node_add_after_failed_sync_succeeds() {
 
     NodeCommand {
         command: NodeCommands::Sync {
-            build_system: config::peppy_config::BuildSystem::Rust,
+            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&sync_ctx)

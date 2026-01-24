@@ -48,7 +48,7 @@ fn node_remove_command_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
+            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)
@@ -179,7 +179,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
+            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)
@@ -316,7 +316,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
+            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)

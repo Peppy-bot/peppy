@@ -105,7 +105,7 @@ async fn node_launch_command_succeed() {
         command: NodeCommands::Init {
             node_name: peppy::commands::node::NodeName::new(node_b_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
+            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&ctx)

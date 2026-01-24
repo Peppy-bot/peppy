@@ -63,7 +63,7 @@ async fn node_sync_rust_command_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
+            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)
@@ -106,7 +106,7 @@ async fn node_sync_rust_command_succeeds() {
     );
     NodeCommand {
         command: NodeCommands::Sync {
-            build_system: config::peppy_config::BuildSystem::Rust,
+            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&sync_ctx)

@@ -66,12 +66,10 @@ struct NodeAddResult {
 struct NodeInitRequest {
     # Root directory where the node will be created
     nodeRootDir @0 :Text;
-    # Build system ("rust", "cargo", "python", or "uv")
-    buildSystem @1 :Text;
     # Name of the node (used for directory and package name)
-    nodeName @2 :Text;
+    nodeName @1 :Text;
     # Git commit hash of the node being initialized
-    gitHash @3 :Text;
+    gitHash @2 :Text;
 }
 
 struct NodeInitResponse {
