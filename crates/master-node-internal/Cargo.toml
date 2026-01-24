@@ -33,6 +33,9 @@ askama = "0.15"
 gix-url = "0.35"
 git2 = "0.20"
 url = "2"
+ureq = "3.1"
+tar = "0.4"
+zstd = "0.13.3"
 
 [build-dependencies]
 capnpc = "0.25"
@@ -41,3 +44,4 @@ capnpc = "0.25"
 libc = "0.2"
 tempfile = "3.10"
 tokio = { version = "1.47", features = ["full"] }
+httptest = "0.16.3"
