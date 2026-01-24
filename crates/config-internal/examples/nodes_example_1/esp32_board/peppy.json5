@@ -7,7 +7,7 @@
     // Here we assume a XIAO ESP32-C3 board connected to a servo and responsible for controlling it 
     name: "esp32_board",
     tag: "0.1.0",
-    toolchain: "rust",
+    language: "rust",
     labels: [
       "no_std",
       "STS3XIAO",
