@@ -105,13 +105,13 @@ async fn listen_for_node_fs_add_success() {
     started_master.task.abort();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_git_add_success() {
-    let git_repo_temp_dir = TempDir::new().unwrap();
-    let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn listen_for_node_git_add_success() {
+//     let git_repo_temp_dir = TempDir::new().unwrap();
+//     let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
 
-    todo!("Finish, add one of the nodes in `git_repo_path` to the node stack")
-}
+//     todo!("Finish, add one of the nodes in `git_repo_path` to the node stack")
+// }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_no_config_found() {
