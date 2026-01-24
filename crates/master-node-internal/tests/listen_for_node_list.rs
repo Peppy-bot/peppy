@@ -23,6 +23,7 @@ async fn listen_for_node_list_returns_succeeds() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}
@@ -117,6 +118,7 @@ async fn listen_for_node_list_returns_dot_graph() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}

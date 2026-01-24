@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use capnp::message::Builder;
-use config::peppy_config::Toolchain;
 use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;

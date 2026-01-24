@@ -364,6 +364,7 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
             manifest: {{
                 name: "{DEPENDANT_NODE_NAME}",
                 tag: "{DEPENDANT_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -577,6 +578,7 @@ async fn listen_for_launch_configuration_runs_generate_on_node_before_start() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "60"]
             }}
         }}"#
@@ -682,6 +684,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
             manifest: {{
                 name: "{UNHEALTHY_NODE_NAME}",
                 tag: "{UNHEALTHY_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "60"]
             }}
         }}"#

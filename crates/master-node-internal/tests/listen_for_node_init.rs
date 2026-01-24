@@ -2,7 +2,6 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, start_master_node_with_mock_messenger};
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
-use config::peppy_config::Toolchain;
 use master_node::encoding::NodeInitRequest;
 use std::fs;
 use std::time::Duration;

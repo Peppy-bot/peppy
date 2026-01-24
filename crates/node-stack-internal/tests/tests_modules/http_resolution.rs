@@ -17,7 +17,7 @@ fn http_bundle_is_downloaded_and_resolved() {
 
     let manifest_content = r#"{
             schema_version: 1,
-            manifest: { name: "uvc_camera", tag: "1.2.3", start_cmd: ["uvc_camera"] }
+            manifest: { name: "uvc_camera", tag: "1.2.3", language: "rust", start_cmd: ["uvc_camera"] }
         }"#;
     let bundle_bytes = create_http_bundle(temp_dir.path(), "uvc_camera.tar.zst", manifest_content);
     server.expect(
@@ -71,14 +71,14 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
 
     let manifest_v1 = r#"{
             schema_version: 1,
-            manifest: { name: "uvc_camera", tag: "1.0.0", start_cmd: ["run_v1"] }
+            manifest: { name: "uvc_camera", tag: "1.0.0", language: "rust", start_cmd: ["run_v1"] }
         }"#;
     let bundle_bytes_v1 = create_http_bundle(temp_dir.path(), "uvc_camera.tar.zst", manifest_v1);
     let checksum_v1 = sha256_checksum(&bundle_bytes_v1);
 
     let manifest_v2 = r#"{
             schema_version: 1,
-            manifest: { name: "uvc_camera", tag: "1.0.0", start_cmd: ["run_v2"] }
+            manifest: { name: "uvc_camera", tag: "1.0.0", language: "rust", start_cmd: ["run_v2"] }
         }"#;
     let bundle_bytes_v2 = create_http_bundle(temp_dir.path(), "uvc_camera.tar.zst", manifest_v2);
     let checksum_v2 = sha256_checksum(&bundle_bytes_v2);

@@ -43,6 +43,7 @@ async fn listen_for_node_stop_success() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}

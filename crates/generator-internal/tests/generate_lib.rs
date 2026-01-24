@@ -9,6 +9,7 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
   manifest: {
     name: "test_node",
     tag: "0.1.0",
+    language: "rust",
     start_cmd: ["cargo", "run", "--release"]
   },
   interfaces: {
@@ -91,6 +92,7 @@ fn generate_peppygen_lib_minimal_config() {
       manifest: {
         name: "minimal_node",
         tag: "0.1.0",
+        language: "rust",
         start_cmd: ["cargo", "run"]
       }
     }"#;

@@ -378,6 +378,7 @@ fn main() -> Result<()> {
   manifest: {{
     name: "{crate_name}",
     tag: "{node_tag}",
+    language: "rust",
     // Avoid `add_cmd` build step here to make the `add` tests faster
     add_cmd: [
         "true"
