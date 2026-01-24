@@ -30,6 +30,19 @@ fn is_probably_remote_source(source: &str) -> bool {
     source.contains("://") || source.starts_with("git@")
 }
 
+fn split_repo_path_and_ref(repo_path: &str) -> (String, Option<String>) {
+    let repo_path = repo_path.trim();
+    let Some((path, repo_ref)) = repo_path.rsplit_once(':') else {
+        return (repo_path.to_string(), None);
+    };
+
+    if repo_ref.is_empty() || repo_ref.contains('/') || repo_ref.contains('\\') {
+        return (repo_path.to_string(), None);
+    }
+
+    (path.to_string(), Some(repo_ref.to_string()))
+}
+
 fn parse_git_repo_url_and_path(source: &str) -> Result<(GitUrl, String)> {
     if let Ok(mut parsed) = url::Url::parse(source) {
         parsed.set_query(None);
@@ -93,9 +106,9 @@ fn prepare_node_add_goal(root_dir: &Path, source: &str, git_hash: &str) -> Resul
         }
 
         let (repo_url, repo_path) = parse_git_repo_url_and_path(source)?;
+        let (repo_path, repo_ref) = split_repo_path_and_ref(&repo_path);
         return Ok(PreparedNodeAdd {
-            // TODO: In the case of git, allow the user to also do `node add https://github.com/Peppy-bot/example_nodes.git/uvc_camera:v0.1.0`, in that particular scenario, `v0.1.0` is a git tag/branch. Make sure it's covered by the tests
-            goal: NodeAddGoal::new_git(repo_url, repo_path, git_hash.to_string()),
+            goal: NodeAddGoal::new_git(repo_url, repo_path, repo_ref, git_hash.to_string()),
             pre_add_node_ref: None,
         });
     }
@@ -378,6 +391,33 @@ mod tests {
                 assert_eq!(url.as_str(), "https://example.com/fake_uvc_camera.tar.zst");
             }
             other => panic!("expected http source, got {other:?}"),
+        }
+        assert!(prepared.pre_add_node_ref.is_none());
+    }
+
+    #[test]
+    fn prepares_git_goal_for_repo_path_with_ref() {
+        let prepared = prepare_node_add_goal(
+            Path::new("/"),
+            "https://github.com/Peppy-bot/example_nodes.git/uvc_camera:v0.1.0",
+            "git-hash",
+        )
+        .expect("should prepare goal");
+
+        match &prepared.goal.source {
+            master_node::encoding::NodeSource::Git {
+                repo_url,
+                repo_path,
+                repo_ref,
+            } => {
+                assert_eq!(
+                    repo_url.to_bstring().to_string(),
+                    "https://github.com/Peppy-bot/example_nodes.git"
+                );
+                assert_eq!(repo_path, "uvc_camera");
+                assert_eq!(repo_ref.as_deref(), Some("v0.1.0"));
+            }
+            other => panic!("expected git source, got {other:?}"),
         }
         assert!(prepared.pre_add_node_ref.is_none());
     }
