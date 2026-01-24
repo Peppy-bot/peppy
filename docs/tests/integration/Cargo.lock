@@ -2078,6 +2078,7 @@ dependencies = [
  "serde_json5",
  "sysinfo",
  "tar",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2567,6 +2568,7 @@ dependencies = [
  "config",
  "crossterm",
  "derive_more",
+ "gix-url",
  "ipnet",
  "libc",
  "master-node",
@@ -2585,6 +2587,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
