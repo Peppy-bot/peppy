@@ -54,8 +54,15 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
 
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
+        let file_name = entry.file_name();
+
+        // Skip .peppy directory
+        if file_name == ".peppy" {
+            continue;
+        }
+
         let src_path = entry.path();
-        let dest_path = dest.join(entry.file_name());
+        let dest_path = dest.join(file_name);
 
         if src_path.is_dir() {
             copy_dir_recursive(&src_path, &dest_path)?;
@@ -210,6 +217,43 @@ fn copy_node_to_storage(from_dir: &Path, node_name: &str, node_tag: &str) -> Res
     copy_dir_recursive(from_dir, &dest_path)?;
 
     Ok(dest_path)
+}
+
+/// Verifies that the node directory is in sync with the currently running daemon
+/// by comparing the stored git hash with the expected one.
+///
+/// Returns `Ok(())` if verification passes, or `Err(error_message)` if it fails.
+fn verify_git_hash(source_path: &Path, expected_git_hash: &str) -> std::result::Result<(), String> {
+    let git_hash_path = source_path.join(PEPPY_OUTPUT_DIR).join("git.hash");
+    let stored_git_hash = std::fs::read_to_string(&git_hash_path).map_err(|e| {
+        format!(
+            "Missing required git hash file at {}: {}. Run `peppy node sync` before `peppy node add`.",
+            git_hash_path.display(),
+            e
+        )
+    })?;
+
+    let expected_git_hash = expected_git_hash.trim();
+    let stored_git_hash = stored_git_hash.trim();
+
+    if stored_git_hash.is_empty() {
+        return Err(format!(
+            "Invalid git hash file at {}: file is empty. Run `peppy node sync` before `peppy node add`.",
+            git_hash_path.display(),
+        ));
+    }
+
+    if stored_git_hash != expected_git_hash {
+        return Err(format!(
+            "git hash mismatch for node directory {} (expected '{}', found '{}' in {}). Run `peppy node sync` before retrying.",
+            source_path.display(),
+            expected_git_hash,
+            stored_git_hash,
+            git_hash_path.display(),
+        ));
+    }
+
+    Ok(())
 }
 
 fn is_node_snapshot_path(path: &Path, node_name: &str, node_tag: &str) -> bool {
@@ -437,15 +481,9 @@ async fn handle_goal_request(
     );
 
     // Verify that the node directory is in sync with the currently running daemon.
-    let git_hash_path = source_path.join(PEPPY_OUTPUT_DIR).join("git.hash");
-    let stored_git_hash = match std::fs::read_to_string(&git_hash_path) {
-        Ok(hash) => hash,
-        Err(e) => {
-            let error_msg = format!(
-                "Missing required git hash file at {}: {}. Run `peppy node sync` before `peppy node add`.",
-                git_hash_path.display(),
-                e
-            );
+    // This verification only applies to filesystem sources - git sources are validated differently.
+    if let NodeSource::Fs(_) = &goal.source {
+        if let Err(error_msg) = verify_git_hash(&source_path, &goal.git_hash) {
             let mut state_guard = state.lock().await;
             *state_guard = NodeAddActionState::Rejected;
             let response = NodeAddGoalResponse::rejected(&error_msg);
@@ -456,44 +494,6 @@ async fn handle_goal_request(
                     reason: format!("Failed to encode response: {}", e),
                 });
         }
-    };
-
-    let expected_git_hash = goal.git_hash.trim();
-    let stored_git_hash = stored_git_hash.trim();
-
-    if stored_git_hash.is_empty() {
-        let error_msg = format!(
-            "Invalid git hash file at {}: file is empty. Run `peppy node sync` before `peppy node add`.",
-            git_hash_path.display(),
-        );
-        let mut state_guard = state.lock().await;
-        *state_guard = NodeAddActionState::Rejected;
-        let response = NodeAddGoalResponse::rejected(&error_msg);
-        return response
-            .encode()
-            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                identifier: "node_add_goal".to_string(),
-                reason: format!("Failed to encode response: {}", e),
-            });
-    }
-
-    if stored_git_hash != expected_git_hash {
-        let error_msg = format!(
-            "git hash mismatch for node directory {} (expected '{}', found '{}' in {}). Run `peppy node sync` before retrying.",
-            source_path.display(),
-            expected_git_hash,
-            stored_git_hash,
-            git_hash_path.display(),
-        );
-        let mut state_guard = state.lock().await;
-        *state_guard = NodeAddActionState::Rejected;
-        let response = NodeAddGoalResponse::rejected(&error_msg);
-        return response
-            .encode()
-            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                identifier: "node_add_goal".to_string(),
-                reason: format!("Failed to encode response: {}", e),
-            });
     }
 
     // Parse node config to get node_name and tag for log file naming
@@ -606,6 +606,19 @@ async fn process_node_add(
         .find(&node_name, &node_tag)
         .map(|entity| entity.root_path().to_path_buf());
 
+    // Verify that the node config fingerprint matches the one in the generated folder
+    // Even if the `.peppy` content will be regenerated in the copy, we want to make sure the code that
+    // the user has written for his node matches the current interface version
+    let config_path = source_path.join(NODE_CONFIG_FILE);
+    if let Err(e) =
+        config::fingerprint::verify_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
+    {
+        return NodeAddResult::failure(
+            &log_path,
+            format!("Codegen fingerprint verification failed: {}", e),
+        );
+    }
+
     // Copy the node folder to the peppy storage directory.
     let copied_path = match copy_node_to_storage(source_path, &node_name, &node_tag) {
         Ok(path) => path,
@@ -614,18 +627,7 @@ async fn process_node_add(
         }
     };
 
-    // Verify that the node config fingerprint matches the one in the generated folder
-    let config_path = copied_path.join(NODE_CONFIG_FILE);
-    if let Err(e) =
-        config::fingerprint::verify_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
-    {
-        // Clean up the copied folder on failure
-        let _ = std::fs::remove_dir_all(&copied_path);
-        return NodeAddResult::failure(
-            &log_path,
-            format!("Fingerprint verification failed: {}", e),
-        );
-    }
+    // TODO: Call `generator::generate_lib_for_build_system` on the copied_path (however we need to be able to determine if it needs to be in Python or Rust)
 
     // Run add_cmd on the copied folder with streaming output
     if let Err(e) = run_add_cmd_with_streaming(
