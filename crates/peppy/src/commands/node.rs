@@ -76,9 +76,12 @@ pub enum NodeCommands {
         /// Supported formats:
         /// - Local path: `/path/to/node` or `./relative/path`
         /// - Git URL: `https://github.com/org/repo.git/subpath`
-        /// - Git URL with ref: `https://github.com/org/repo.git/subpath:tag-or-branch`
+        /// - Git URL with ref: `https://github.com/org/repo.git/subpath --ref tag-or-branch`
         /// - HTTP archive: `https://example.com/node.tar.zst`
         source: String,
+        /// Git ref (tag/branch/commit) to checkout before reading `subpath` (git sources only).
+        #[arg(long = "ref")]
+        git_ref: Option<String>,
         /// If set, will attempt to spawn an instance directly after adding the node to the node stack
         #[arg(long)]
         start: bool,
@@ -170,6 +173,7 @@ impl Command for NodeCommand {
             }
             NodeCommands::Add {
                 source,
+                git_ref,
                 start: run,
                 args,
                 instance_id,
@@ -183,7 +187,7 @@ impl Command for NodeCommand {
                     path.canonicalize().unwrap_or(path).display().to_string()
                 };
                 info!("Adding node from {}...", display_source);
-                add::add_node(ctx, source, run, args, instance_id, timeout)
+                add::add_node(ctx, source, git_ref, run, args, instance_id, timeout)
             }
             NodeCommands::Sync {} => {
                 info!("Syncing node interfaces...");
