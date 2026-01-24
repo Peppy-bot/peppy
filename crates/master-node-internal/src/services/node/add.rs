@@ -341,13 +341,9 @@ async fn resolve_git_source(
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     let repo_relative_path = sanitize_repo_path(repo_path)?;
 
-    let checkout_base_dir = peppy_data_dir().join("git_checkouts");
-    std::fs::create_dir_all(&checkout_base_dir)
-        .map_err(|e| format!("Failed to create git checkout directory: {}", e))?;
-
-    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
-    let checkout_dir =
-        checkout_base_dir.join(format!("node_add_{timestamp}_{}", generate_random_id()));
+    let checkout_dir = tempfile::tempdir()
+        .map_err(|e| format!("Failed to create temporary directory: {}", e))?
+        .keep();
 
     let repo_url_bstring = repo_url.to_bstring();
     let repo_url_str = std::str::from_utf8(repo_url_bstring.as_ref())

@@ -71,7 +71,7 @@ pub enum NodeCommands {
     },
     /// Add a node to the node stack based on its peppy.json5 file
     Add {
-        /// Path to a directory containing peppy.json5. Accepts a local filesystem path or a git repository URL (e.g., `https://github.com/Peppy-bot/example_nodes.git/uvc_camera`)
+        /// Path to a directory containing peppy.json5. Accepts a local filesystem path, a git repository URL (e.g., `https://github.com/Peppy-bot/example_nodes.git/uvc_camera`), or an HTTP tar.zst bundle URL.
         source: String,
         /// If set, will attempt to spawn an instance directly after adding the node to the node stack
         #[arg(long)]
@@ -169,7 +169,7 @@ impl Command for NodeCommand {
                 instance_id,
                 timeout,
             } => {
-                let is_url = source.starts_with("https://") || source.starts_with("git://");
+                let is_url = source.contains("://") || source.starts_with("git@");
                 let display_source = if is_url {
                     source.clone()
                 } else {
