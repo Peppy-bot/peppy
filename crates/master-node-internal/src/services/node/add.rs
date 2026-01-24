@@ -624,12 +624,11 @@ async fn process_node_add(
         return NodeAddResult::failure(&log_path, format!("Failed to add node config: {}", e));
     }
 
-    if let Some(previous_snapshot_path) = previous_snapshot_path {
-        if previous_snapshot_path != copied_path
-            && is_node_snapshot_path(&previous_snapshot_path, &node_name, &node_tag)
-        {
-            let _ = std::fs::remove_dir_all(&previous_snapshot_path);
-        }
+    if let Some(previous_snapshot_path) = previous_snapshot_path
+        && previous_snapshot_path != copied_path
+        && is_node_snapshot_path(&previous_snapshot_path, &node_name, &node_tag)
+    {
+        let _ = std::fs::remove_dir_all(&previous_snapshot_path);
     }
 
     debug!(
