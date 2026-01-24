@@ -3,8 +3,7 @@
 use config::consts::{
     DEFAULT_MESSAGING_HOST, NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH,
 };
-use config::node::QoSProfile;
-use config::peppy_config::Toolchain;
+use config::node::{PeppygenLanguage, QoSProfile};
 use master_node::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeStartFeedback,
     NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
@@ -305,7 +304,7 @@ fn init_test_node_project(node_name: &str, node_tag: &str) -> PathBuf {
     init_cargo_project(&node_dir, node_name);
     write_test_node_files(&node_dir, node_name, node_tag);
 
-    generator::generate_lib_for_build_system(Toolchain::Rust, &node_dir, Vec::new(), "test-hash")
+    generator::generate_peppygen_lib(PeppygenLanguage::Rust, &node_dir, Vec::new(), "test-hash")
         .expect("failed to generate peppygen for test node");
 
     build_cargo_project(&node_dir);

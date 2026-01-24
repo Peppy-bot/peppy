@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use config::node::Toolchain;
 use master_node::encoding::NodeInitRequest;
 use tracing::info;
 
@@ -63,7 +64,12 @@ impl NodeInitBuilder {
             .messenger_handle()
             .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
-        let request = NodeInitRequest::new(&self.to_dir, self.node_name.as_str(), git_hash);
+        let request = NodeInitRequest::new(
+            &self.to_dir,
+            self.node_name.as_str(),
+            git_hash,
+            Toolchain::Cargo,
+        );
 
         let response = request
             .poll(
