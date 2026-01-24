@@ -73,7 +73,7 @@ impl NodeAddGoal {
                     repo_path,
                 } => {
                     let mut git = source.init_git();
-                    git.set_repo_url(&repo_url.to_bstring().to_string());
+                    git.set_repo_url(repo_url.to_bstring().to_string());
                     git.set_repo_path(repo_path);
                 }
             }

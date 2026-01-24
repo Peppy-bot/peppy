@@ -482,18 +482,18 @@ async fn handle_goal_request(
 
     // Verify that the node directory is in sync with the currently running daemon.
     // This verification only applies to filesystem sources - git sources are validated differently.
-    if let NodeSource::Fs(_) = &goal.source {
-        if let Err(error_msg) = verify_git_hash(&source_path, &goal.git_hash) {
-            let mut state_guard = state.lock().await;
-            *state_guard = NodeAddActionState::Rejected;
-            let response = NodeAddGoalResponse::rejected(&error_msg);
-            return response
-                .encode()
-                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                    identifier: "node_add_goal".to_string(),
-                    reason: format!("Failed to encode response: {}", e),
-                });
-        }
+    if let NodeSource::Fs(_) = &goal.source
+        && let Err(error_msg) = verify_git_hash(&source_path, &goal.git_hash)
+    {
+        let mut state_guard = state.lock().await;
+        *state_guard = NodeAddActionState::Rejected;
+        let response = NodeAddGoalResponse::rejected(&error_msg);
+        return response
+            .encode()
+            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                identifier: "node_add_goal".to_string(),
+                reason: format!("Failed to encode response: {}", e),
+            });
     }
 
     // Parse node config to get node_name and tag for log file naming
