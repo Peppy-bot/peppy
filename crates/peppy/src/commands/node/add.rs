@@ -30,19 +30,6 @@ fn is_probably_remote_source(source: &str) -> bool {
     source.contains("://") || source.starts_with("git@")
 }
 
-fn split_repo_path_and_ref(repo_path: &str) -> (String, Option<String>) {
-    let repo_path = repo_path.trim();
-    let Some((path, repo_ref)) = repo_path.rsplit_once(':') else {
-        return (repo_path.to_string(), None);
-    };
-
-    if repo_ref.is_empty() || repo_ref.contains('/') || repo_ref.contains('\\') {
-        return (repo_path.to_string(), None);
-    }
-
-    (path.to_string(), Some(repo_ref.to_string()))
-}
-
 fn parse_git_repo_url_and_path(source: &str) -> Result<(GitUrl, String)> {
     if let Ok(mut parsed) = url::Url::parse(source) {
         parsed.set_query(None);
@@ -93,12 +80,31 @@ fn node_ref_from_peppy_json5(peppy_json5: &Path) -> Result<(String, String)> {
     ))
 }
 
-fn prepare_node_add_goal(root_dir: &Path, source: &str, git_hash: &str) -> Result<PreparedNodeAdd> {
+fn prepare_node_add_goal(
+    root_dir: &Path,
+    source: &str,
+    git_hash: &str,
+    git_ref: Option<&str>,
+) -> Result<PreparedNodeAdd> {
+    let git_ref = git_ref.map(str::trim);
+    if let Some(git_ref) = git_ref
+        && git_ref.is_empty()
+    {
+        return Err(Error::ExecutionFailed(
+            "`--ref` cannot be empty".to_string(),
+        ));
+    }
+
     if is_probably_remote_source(source) {
         if let Ok(url) = url::Url::parse(source)
             && matches!(url.scheme(), "http" | "https")
             && is_supported_http_archive(&url)
         {
+            if git_ref.is_some() {
+                return Err(Error::ExecutionFailed(
+                    "`--ref` is only supported for git sources".to_string(),
+                ));
+            }
             return Ok(PreparedNodeAdd {
                 goal: NodeAddGoal::new_http(url, git_hash.to_string()),
                 pre_add_node_ref: None,
@@ -106,11 +112,21 @@ fn prepare_node_add_goal(root_dir: &Path, source: &str, git_hash: &str) -> Resul
         }
 
         let (repo_url, repo_path) = parse_git_repo_url_and_path(source)?;
-        let (repo_path, repo_ref) = split_repo_path_and_ref(&repo_path);
         return Ok(PreparedNodeAdd {
-            goal: NodeAddGoal::new_git(repo_url, repo_path, repo_ref, git_hash.to_string()),
+            goal: NodeAddGoal::new_git(
+                repo_url,
+                repo_path,
+                git_ref.map(str::to_owned),
+                git_hash.to_string(),
+            ),
             pre_add_node_ref: None,
         });
+    }
+
+    if git_ref.is_some() {
+        return Err(Error::ExecutionFailed(
+            "`--ref` is only supported for git sources".to_string(),
+        ));
     }
 
     let source_path = PathBuf::from(source);
@@ -150,6 +166,7 @@ fn prepare_node_add_goal(root_dir: &Path, source: &str, git_hash: &str) -> Resul
 pub fn add_node(
     ctx: &Arc<AppContext>,
     source: String,
+    git_ref: Option<String>,
     run: bool,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
@@ -158,6 +175,7 @@ pub fn add_node(
     crate::commands::block_on(add_node_async(
         ctx,
         source,
+        git_ref,
         run,
         args,
         instance_id,
@@ -168,6 +186,7 @@ pub fn add_node(
 async fn add_node_async(
     ctx: &Arc<AppContext>,
     source: String,
+    git_ref: Option<String>,
     run: bool,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
@@ -185,7 +204,7 @@ async fn add_node_async(
     let PreparedNodeAdd {
         goal: add_goal,
         pre_add_node_ref,
-    } = prepare_node_add_goal(&ctx.root_dir, &source, &git_hash)?;
+    } = prepare_node_add_goal(&ctx.root_dir, &source, &git_hash, git_ref.as_deref())?;
 
     if let Some((node_name, node_tag)) = pre_add_node_ref.as_ref() {
         info!(
@@ -383,6 +402,7 @@ mod tests {
             Path::new("/"),
             "https://example.com/fake_uvc_camera.tar.zst",
             "git-hash",
+            None,
         )
         .expect("should prepare goal");
 
@@ -396,11 +416,12 @@ mod tests {
     }
 
     #[test]
-    fn prepares_git_goal_for_repo_path_with_ref() {
+    fn prepares_git_goal_with_ref_flag() {
         let prepared = prepare_node_add_goal(
             Path::new("/"),
-            "https://github.com/Peppy-bot/example_nodes.git/uvc_camera:v0.1.0",
+            "https://github.com/Peppy-bot/example_nodes.git/uvc_camera",
             "git-hash",
+            Some("v0.1.0"),
         )
         .expect("should prepare goal");
 
@@ -420,5 +441,54 @@ mod tests {
             other => panic!("expected git source, got {other:?}"),
         }
         assert!(prepared.pre_add_node_ref.is_none());
+    }
+
+    #[test]
+    fn prepares_git_goal_without_ref_flag() {
+        let prepared = prepare_node_add_goal(
+            Path::new("/"),
+            "https://github.com/Peppy-bot/example_nodes.git/uvc_camera",
+            "git-hash",
+            None,
+        )
+        .expect("should prepare goal");
+
+        match &prepared.goal.source {
+            master_node::encoding::NodeSource::Git { repo_ref, .. } => {
+                assert!(repo_ref.is_none());
+            }
+            other => panic!("expected git source, got {other:?}"),
+        }
+        assert!(prepared.pre_add_node_ref.is_none());
+    }
+
+    #[test]
+    fn rejects_ref_flag_for_http_archive() {
+        let err = match prepare_node_add_goal(
+            Path::new("/"),
+            "https://example.com/fake_uvc_camera.tar.zst",
+            "git-hash",
+            Some("v0.1.0"),
+        ) {
+            Ok(_) => panic!("should reject --ref for http archive"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("--ref"));
+    }
+
+    #[test]
+    fn rejects_ref_flag_for_local_source() {
+        let err = match prepare_node_add_goal(
+            Path::new("/"),
+            "some/local/path",
+            "git-hash",
+            Some("v0.1.0"),
+        ) {
+            Ok(_) => panic!("should reject --ref for local sources"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("--ref"));
     }
 }
