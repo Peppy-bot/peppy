@@ -1,16 +1,19 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, TEST_GIT_HASH, send_node_add_and_wait,
+    CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, send_node_add_and_wait,
     start_master_node_with_mock_messenger, write_peppy_json5,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, logs_dir_add};
 use config::node::QoSProfile;
+use config::test_helpers;
+use gix_url::Url as GitUrl;
 use master_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse};
 use master_node::names;
 use peppylib::ActionMessenger;
 use std::path::Path;
 use std::time::Duration;
+use tempfile::TempDir;
 
 const ADD_CMD_MARKER_FILE: &str = "add_cmd_executed.marker";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -104,13 +107,78 @@ async fn listen_for_node_fs_add_success() {
     started_master.task.abort();
 }
 
-// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-// async fn listen_for_node_git_add_success() {
-//     let git_repo_temp_dir = TempDir::new().unwrap();
-//     let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_git_add_success() {
+    let git_repo_temp_dir = TempDir::new().unwrap();
+    let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
 
-//     todo!("Finish, add one of the nodes in `git_repo_path` to the node stack")
-// }
+    const TARGET_NODE_NAME: &str = "uvc_camera";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_REPO_PATH: &str = "nodes/uvc_camera";
+
+    let started_master = start_master_node_with_mock_messenger().await;
+    let node_stack = started_master.node_stack.clone();
+
+    let repo_url = GitUrl::try_from(git_repo_path.as_path()).expect("git repo path should parse");
+
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        NodeAddSource::Git {
+            repo_url,
+            repo_path: TARGET_REPO_PATH,
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        add_result.success,
+        "node_add should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    assert_eq!(node_stack.len(), 2, "root + added node");
+
+    let entity = node_stack
+        .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
+        .expect("node should exist in stack");
+    assert_eq!(entity.instances().len(), 0);
+
+    let snapshot_path = add_result.snapshot_path.as_path();
+    let root_path = entity.root_path();
+    assert_eq!(snapshot_path, root_path);
+    assert!(root_path.exists(), "snapshot path should exist");
+    assert!(
+        root_path.join(NODE_CONFIG_FILE).exists(),
+        "config file should exist in snapshot"
+    );
+
+    // Verify the path follows the expected naming convention: <node_name>_<tag>_<uuid>
+    let folder_name = root_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("should have folder name");
+    assert!(
+        folder_name.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
+        "folder name should start with '<node_name>_<tag>_', got: {}",
+        folder_name
+    );
+
+    // Clean up the copied directory
+    let _ = std::fs::remove_dir_all(root_path);
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_http_add_success() {
+    todo!("Finish")
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_no_config_found() {

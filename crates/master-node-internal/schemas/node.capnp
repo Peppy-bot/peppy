@@ -25,6 +25,8 @@ struct NodeAddGoal {
         fs @1 :Text;
         # Git repository source
         git @2 :NodeAddGitSource;
+        # HTTP URL source
+        http @3 :Text;
     }
 }
 
