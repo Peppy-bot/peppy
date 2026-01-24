@@ -410,6 +410,17 @@ impl ActionGoalHandle {
             .await
             .ok_or(Error::ActionFeedbackChannelClosed)
     }
+
+    /// Attempts to receive the next feedback message without waiting.
+    pub fn try_next_feedback(&mut self) -> Result<Option<TopicMessage>> {
+        match self.feedback.rx.try_recv() {
+            Ok(message) => Ok(Some(message)),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                Err(Error::ActionFeedbackChannelClosed)
+            }
+        }
+    }
 }
 
 // https://docs.ros.org/en/foxy/_images/Action-SingleActionClient.gif

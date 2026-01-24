@@ -200,6 +200,19 @@ pub async fn send_node_add_and_wait<'a>(
                 let payload = msg.payload().to_bytes();
                 match NodeAddResult::decode(&payload) {
                     Ok(result) => {
+                        // Drain any remaining feedback that may have arrived while polling for the
+                        // result so callers can reliably assert on stdout/stderr markers.
+                        loop {
+                            let Ok(Some(msg)) = action_handle.try_next_feedback() else {
+                                break;
+                            };
+                            let payload = msg.payload();
+                            if let Ok(feedback) = NodeAddFeedback::decode(&payload.to_bytes())
+                                && let Some(tx) = feedback_tx
+                            {
+                                let _ = tx.send(feedback);
+                            }
+                        }
                         return Ok(result);
                     }
                     Err(err) => {
@@ -302,6 +315,19 @@ pub async fn send_node_start_and_wait(
                 let payload = msg.payload().to_bytes();
                 match NodeStartResult::decode(&payload) {
                     Ok(result) => {
+                        // Drain any remaining feedback that may have arrived while polling for the
+                        // result so callers can reliably assert on stdout/stderr markers.
+                        loop {
+                            let Ok(Some(msg)) = action_handle.try_next_feedback() else {
+                                break;
+                            };
+                            let payload = msg.payload();
+                            if let Ok(feedback) = NodeStartFeedback::decode(&payload.to_bytes())
+                                && let Some(tx) = feedback_tx
+                            {
+                                let _ = tx.send(feedback);
+                            }
+                        }
                         return Ok(NodeStartTestResponse {
                             goal_response,
                             result,
