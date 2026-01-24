@@ -78,7 +78,7 @@ async fn service_reset_command_resets_node_stack() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_path,
+            source_dir: node_path,
             start: false,
             args: Vec::new(),
             instance_id: None,

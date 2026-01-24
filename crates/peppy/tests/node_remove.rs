@@ -66,7 +66,7 @@ fn node_remove_command_succeeds() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_path,
+            source_dir: node_path,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -228,7 +228,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
     // (avoids cross-runtime issues when using separate Add and Start commands)
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_path,
+            source_dir: node_path,
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
@@ -365,7 +365,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
     // (avoids cross-runtime issues when using separate Add and Start commands)
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_path,
+            source_dir: node_path,
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),

@@ -75,8 +75,8 @@ pub enum NodeCommands {
     },
     /// Add a node to the node stack based on its peppy.json5 file
     Add {
-        /// Directory containing the peppy.json5 configuration file
-        node_dir: PathBuf,
+        /// Path to a directory containing peppy.json5. Accepts a local filesystem path or a git repository URL (e.g., `https://github.com/Peppy-bot/example_nodes.git/uvc_camera`)
+        source: String,
         /// If set, will attempt to spawn an instance directly after adding the node to the node stack
         #[arg(long)]
         start: bool,
@@ -176,15 +176,21 @@ impl Command for NodeCommand {
                 node_builder.build()
             }
             NodeCommands::Add {
-                node_dir,
+                source,
                 start: run,
                 args,
                 instance_id,
                 timeout,
             } => {
-                let display_path = node_dir.canonicalize().unwrap_or_else(|_| node_dir.clone());
-                info!("Adding node from {}...", display_path.display());
-                add::add_node(ctx, node_dir, run, args, instance_id, timeout)
+                let is_url = source.starts_with("https://") || source.starts_with("git://");
+                let display_source = if is_url {
+                    source.clone()
+                } else {
+                    let path = PathBuf::from(&source);
+                    path.canonicalize().unwrap_or(path).display().to_string()
+                };
+                info!("Adding node from {}...", display_source);
+                add::add_node(ctx, source, run, args, instance_id, timeout)
             }
             NodeCommands::Sync { build_system } => {
                 info!("Syncing node interfaces...");

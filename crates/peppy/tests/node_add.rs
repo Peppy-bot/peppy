@@ -71,7 +71,7 @@ fn node_add_command_succeeds() {
     // Now add the node to the node stack
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_path,
+            source_dir: node_path,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -209,7 +209,7 @@ fn node_add_command_with_run_arg_succeeds() {
     // Add the node to the node stack with run=true to also start an instance
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_path,
+            source_dir: node_path,
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
@@ -338,7 +338,7 @@ fn node_add_after_failed_sync_succeeds() {
     // 3. Run `node add .` on that node, it'll fail due to git hash mismatch
     let add_result = NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_path.clone(),
+            source_dir: node_path.clone(),
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -376,7 +376,7 @@ fn node_add_after_failed_sync_succeeds() {
     // 5. Run `node add .` again. This time it should succeed
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_path,
+            source_dir: node_path,
             start: false,
             args: Vec::new(),
             instance_id: None,
