@@ -78,6 +78,7 @@ async fn node_stop_command_succeeds() {
             start: false,
             args: Vec::new(),
             instance_id: None,
+            timeout: 60,
         },
     }
     .execute(&node_ctx)
@@ -146,6 +147,7 @@ async fn node_stop_command_succeeds() {
             tag: Some("0.1.0".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
+            timeout: 60,
         },
     }
     .execute(&node_ctx)
