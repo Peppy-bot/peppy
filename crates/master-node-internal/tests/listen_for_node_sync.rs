@@ -210,12 +210,7 @@ async fn listen_for_node_generate_missing_peppy_json5_fails() {
     assert!(
         response
             .error_message
-            .contains("Failed to generate peppygen"),
-        "error should mention generation failure, got: {}",
-        response.error_message
-    );
-    assert!(
-        response.error_message.contains("Cannot find the node"),
+            .contains("Node config file does not exist"),
         "error should mention missing node config, got: {}",
         response.error_message
     );
@@ -258,8 +253,8 @@ async fn listen_for_node_generate_invalid_peppy_json5_fails() {
     assert!(
         response
             .error_message
-            .contains("Failed to generate peppygen"),
-        "error should mention generation failure, got: {}",
+            .contains("Failed to parse node config"),
+        "error should mention parse failure, got: {}",
         response.error_message
     );
     assert!(
