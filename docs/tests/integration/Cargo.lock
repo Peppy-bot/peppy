@@ -2066,6 +2066,7 @@ dependencies = [
  "config",
  "futures",
  "generator",
+ "git2",
  "gix-url",
  "hostname",
  "names-generator2",
@@ -2079,6 +2080,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]

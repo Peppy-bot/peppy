@@ -10,6 +10,7 @@ use config::consts::{
     NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, logs_dir_add, peppy_data_dir,
 };
 use config::node::{NodeConfig, NodeConfigParser};
+use git2::Repository;
 use node_stack::NodeStack;
 use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
@@ -284,6 +285,145 @@ enum NodeAddActionState {
     ResultSent { result: NodeAddResult },
 }
 
+struct CleanupDir(Option<PathBuf>);
+
+impl CleanupDir {
+    fn new(dir: Option<PathBuf>) -> Self {
+        Self(dir)
+    }
+
+    fn take(&mut self) -> Option<PathBuf> {
+        self.0.take()
+    }
+}
+
+impl Drop for CleanupDir {
+    fn drop(&mut self) {
+        if let Some(dir) = self.0.take() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+struct ResolvedNodeAddSource {
+    source_path: PathBuf,
+    node_config: NodeConfig,
+    verify_codegen_fingerprint: bool,
+    cleanup_dir: Option<PathBuf>,
+}
+
+fn sanitize_repo_path(repo_path: &str) -> std::result::Result<PathBuf, String> {
+    use std::path::Component;
+
+    let trimmed = repo_path.trim_start_matches(['/', '\\']);
+    let path = PathBuf::from(trimmed);
+
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err("repo_path must not contain '..'".to_string());
+    }
+
+    Ok(path)
+}
+
+async fn resolve_git_source(
+    repo_url: &gix_url::Url,
+    repo_path: &str,
+) -> std::result::Result<ResolvedNodeAddSource, String> {
+    let repo_relative_path = sanitize_repo_path(repo_path)?;
+
+    let checkout_base_dir = peppy_data_dir().join("git_checkouts");
+    std::fs::create_dir_all(&checkout_base_dir)
+        .map_err(|e| format!("Failed to create git checkout directory: {}", e))?;
+
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
+    let checkout_dir =
+        checkout_base_dir.join(format!("node_add_{timestamp}_{}", generate_random_id()));
+
+    let repo_url_bstring = repo_url.to_bstring();
+    let repo_url_str = std::str::from_utf8(repo_url_bstring.as_ref())
+        .map_err(|_| "repo_url must be valid UTF-8".to_string())?
+        .to_owned();
+
+    let clone_checkout_dir = checkout_dir.clone();
+    let clone_repo_url = repo_url_str.clone();
+    if let Err(err) = tokio::task::spawn_blocking(move || {
+        Repository::clone(&clone_repo_url, &clone_checkout_dir)
+            .map(|_| ())
+            .map_err(|e| format!("Failed to clone repository: {}", e))
+    })
+    .await
+    .map_err(|e| format!("Failed to join git clone task: {}", e))?
+    {
+        let _ = std::fs::remove_dir_all(&checkout_dir);
+        return Err(err);
+    }
+
+    let candidate_path = checkout_dir.join(&repo_relative_path);
+
+    let config_path = if candidate_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json5"))
+    {
+        candidate_path
+    } else {
+        candidate_path.join(NODE_CONFIG_FILE)
+    };
+
+    let node_root_dir = config_path
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| "Invalid repo_path: node config has no parent directory".to_string())?;
+
+    let node_config = match NodeConfigParser::from_path(&config_path) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&checkout_dir);
+            return Err(format!(
+                "Failed to parse node config at {}: {}",
+                config_path.display(),
+                e
+            ));
+        }
+    };
+
+    Ok(ResolvedNodeAddSource {
+        source_path: node_root_dir,
+        node_config,
+        verify_codegen_fingerprint: false,
+        cleanup_dir: Some(checkout_dir),
+    })
+}
+
+async fn resolve_node_add_source(
+    goal: &NodeAddGoal,
+) -> std::result::Result<ResolvedNodeAddSource, String> {
+    match &goal.source {
+        NodeSource::Fs(path) => {
+            verify_git_hash(path, &goal.git_hash)?;
+            let config_path = path.join(NODE_CONFIG_FILE);
+            let node_config = NodeConfigParser::from_path(&config_path).map_err(|e| {
+                format!(
+                    "Failed to parse node config at {}: {}",
+                    config_path.display(),
+                    e
+                )
+            })?;
+            Ok(ResolvedNodeAddSource {
+                source_path: path.clone(),
+                node_config,
+                verify_codegen_fingerprint: true,
+                cleanup_dir: None,
+            })
+        }
+        NodeSource::Git {
+            repo_url,
+            repo_path,
+        } => resolve_git_source(repo_url, repo_path).await,
+        NodeSource::Http { url } => todo!("Finish"),
+    }
+}
+
 async fn run_node_add_action_loop(
     mut action: ActionCreation,
     node_stack: Arc<NodeStack>,
@@ -459,54 +599,9 @@ async fn handle_goal_request(
         }
     };
 
-    // Extract the filesystem path from the source
-    let source_path = match &goal.source {
-        NodeSource::Fs(path) => path.clone(),
-        NodeSource::Git { .. } => {
-            let error_msg = "Git source is not yet supported for node_add";
-            let mut state_guard = state.lock().await;
-            *state_guard = NodeAddActionState::Rejected;
-            let response = NodeAddGoalResponse::rejected(error_msg);
-            return response
-                .encode()
-                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                    identifier: "node_add_goal".to_string(),
-                    reason: format!("Failed to encode response: {}", e),
-                });
-        }
-    };
-
-    debug!(
-        "Received `node_add` goal from {sender_instance_id}, source={}",
-        source_path.display()
-    );
-
-    // Verify that the node directory is in sync with the currently running daemon.
-    // This verification only applies to filesystem sources - git sources are validated differently.
-    if let NodeSource::Fs(_) = &goal.source
-        && let Err(error_msg) = verify_git_hash(&source_path, &goal.git_hash)
-    {
-        let mut state_guard = state.lock().await;
-        *state_guard = NodeAddActionState::Rejected;
-        let response = NodeAddGoalResponse::rejected(&error_msg);
-        return response
-            .encode()
-            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                identifier: "node_add_goal".to_string(),
-                reason: format!("Failed to encode response: {}", e),
-            });
-    }
-
-    // Parse node config to get node_name and tag for log file naming
-    let config_path = source_path.join(NODE_CONFIG_FILE);
-    let node_config = match NodeConfigParser::from_path(&config_path) {
-        Ok(config) => config,
-        Err(e) => {
-            let error_msg = format!(
-                "Failed to parse node config at {}: {}",
-                config_path.display(),
-                e
-            );
+    let mut resolved = match resolve_node_add_source(&goal).await {
+        Ok(resolved) => resolved,
+        Err(error_msg) => {
             let mut state_guard = state.lock().await;
             *state_guard = NodeAddActionState::Rejected;
             let response = NodeAddGoalResponse::rejected(&error_msg);
@@ -519,8 +614,25 @@ async fn handle_goal_request(
         }
     };
 
-    let node_name = node_config.manifest.name.as_str().to_owned();
-    let node_tag = node_config.manifest.tag.clone();
+    let mut checkout_cleanup = CleanupDir::new(resolved.cleanup_dir.take());
+
+    match &goal.source {
+        NodeSource::Fs(_) => debug!(
+            "Received `node_add` goal from {sender_instance_id}, source={}",
+            resolved.source_path.display()
+        ),
+        NodeSource::Git {
+            repo_url,
+            repo_path,
+        } => debug!(
+            "Received `node_add` goal from {sender_instance_id}, source=git:{}::{}",
+            repo_url, repo_path
+        ),
+        NodeSource::Http { url } => todo!("Finish"),
+    }
+
+    let node_name = resolved.node_config.manifest.name.as_str().to_owned();
+    let node_tag = resolved.node_config.manifest.tag.clone();
 
     // Create log file with timestamp-based filename
     let log_dir = logs_dir_add();
@@ -564,10 +676,17 @@ async fn handle_goal_request(
     let state_clone = Arc::clone(&state);
     let feedback_publisher_clone = feedback_publisher.clone();
     let log_path_clone = log_path.clone();
+    let source_path = resolved.source_path.clone();
+    let verify_codegen_fingerprint = resolved.verify_codegen_fingerprint;
+    let cleanup_dir = checkout_cleanup.take();
+    let node_config = resolved.node_config;
     tokio::spawn(async move {
         let result = process_node_add(
             goal,
             node_config,
+            source_path,
+            verify_codegen_fingerprint,
+            cleanup_dir,
             node_stack,
             feedback_publisher_clone,
             log_file,
@@ -590,38 +709,40 @@ async fn handle_goal_request(
 async fn process_node_add(
     goal: NodeAddGoal,
     node_config: NodeConfig,
+    source_path: PathBuf,
+    verify_codegen_fingerprint: bool,
+    cleanup_dir: Option<PathBuf>,
     node_stack: Arc<NodeStack>,
     feedback_publisher: TopicPublisher,
     log_file: Arc<StdMutex<File>>,
     log_path: PathBuf,
 ) -> NodeAddResult {
+    let _cleanup_guard = CleanupDir::new(cleanup_dir);
+
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
-
-    // Extract the source path (already validated to be Fs in handle_goal_request)
-    let source_path = goal
-        .fs_path()
-        .expect("Git source should have been rejected earlier");
 
     let previous_snapshot_path = node_stack
         .find(&node_name, &node_tag)
         .map(|entity| entity.root_path().to_path_buf());
 
-    // Verify that the node config fingerprint matches the one in the generated folder
-    // Even if the `.peppy` content will be regenerated in the copy, we want to make sure the code that
-    // the user has written for his node matches the current interface version
-    let config_path = source_path.join(NODE_CONFIG_FILE);
-    if let Err(e) =
-        config::fingerprint::verify_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
-    {
-        return NodeAddResult::failure(
-            &log_path,
-            format!("Codegen fingerprint verification failed: {}", e),
-        );
+    if verify_codegen_fingerprint {
+        // Verify that the node config fingerprint matches the one in the generated folder.
+        // Even if the `.peppy` content will be regenerated in the copy, we want to make sure the code that
+        // the user has written for their node matches the current interface version.
+        let config_path = source_path.join(NODE_CONFIG_FILE);
+        if let Err(e) =
+            config::fingerprint::verify_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
+        {
+            return NodeAddResult::failure(
+                &log_path,
+                format!("Codegen fingerprint verification failed: {}", e),
+            );
+        }
     }
 
     // Copy the node folder to the peppy storage directory.
-    let copied_path = match copy_node_to_storage(source_path, &node_name, &node_tag) {
+    let copied_path = match copy_node_to_storage(&source_path, &node_name, &node_tag) {
         Ok(path) => path,
         Err(e) => {
             return NodeAddResult::failure(&log_path, format!("Failed to copy node folder: {}", e));

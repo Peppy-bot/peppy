@@ -4,6 +4,7 @@ use config::consts::{
     DEFAULT_MESSAGING_HOST, NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH,
 };
 use config::node::{PeppygenLanguage, QoSProfile};
+use gix_url::Url as GitUrl;
 use master_node::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeStartFeedback,
     NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
@@ -24,6 +25,32 @@ use tokio::task::JoinHandle;
 
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
 pub const TEST_GIT_HASH: &str = "test-hash";
+
+/// Source for a node to be added. Used by `send_node_add_and_wait` to support
+/// filesystem paths, git repositories, and HTTP URLs.
+pub enum NodeAddSource<'a> {
+    /// Add from a local filesystem path.
+    Path(&'a Path),
+    /// Add from a git repository.
+    Git {
+        repo_url: GitUrl,
+        repo_path: &'a str,
+    },
+    /// Add from an HTTP URL (for .tzst archives).
+    Http(url::Url),
+}
+
+impl<'a> From<&'a Path> for NodeAddSource<'a> {
+    fn from(path: &'a Path) -> Self {
+        NodeAddSource::Path(path)
+    }
+}
+
+impl<'a> From<&'a PathBuf> for NodeAddSource<'a> {
+    fn from(path: &'a PathBuf) -> Self {
+        NodeAddSource::Path(path.as_path())
+    }
+}
 
 pub struct NodeStartTestTimeouts {
     pub goal: Duration,
@@ -48,34 +75,45 @@ pub fn write_peppy_json5(dir: &Path, content: &str) {
 ///
 /// When `feedback_tx` is provided, wildcard caller IDs are used so mock pub/sub
 /// can match feedback topics with "*" segments.
-pub async fn send_node_add_and_wait(
+pub async fn send_node_add_and_wait<'a>(
     messenger: &MessengerHandle,
     master_node_name: &str,
-    from_dir: &Path,
+    source: impl Into<NodeAddSource<'a>>,
     goal_timeout: Duration,
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
 ) -> Result<NodeAddResult, String> {
-    let goal = NodeAddGoal::new(from_dir, TEST_GIT_HASH);
+    let source = source.into();
 
-    let peppy_dir = from_dir.join(PEPPY_OUTPUT_DIR);
-    std::fs::create_dir_all(&peppy_dir).map_err(|e| {
-        format!(
-            "Failed to create peppy output dir {}: {}",
-            peppy_dir.display(),
-            e
-        )
-    })?;
-    let git_hash_path = peppy_dir.join("git.hash");
-    if !git_hash_path.exists() {
-        std::fs::write(&git_hash_path, TEST_GIT_HASH).map_err(|e| {
-            format!(
-                "Failed to write git hash file {}: {}",
-                git_hash_path.display(),
-                e
-            )
-        })?;
-    }
+    let goal = match &source {
+        NodeAddSource::Path(path) => {
+            // For filesystem sources, ensure the git hash file exists
+            let peppy_dir = path.join(PEPPY_OUTPUT_DIR);
+            std::fs::create_dir_all(&peppy_dir).map_err(|e| {
+                format!(
+                    "Failed to create peppy output dir {}: {}",
+                    peppy_dir.display(),
+                    e
+                )
+            })?;
+            let git_hash_path = peppy_dir.join("git.hash");
+            if !git_hash_path.exists() {
+                std::fs::write(&git_hash_path, TEST_GIT_HASH).map_err(|e| {
+                    format!(
+                        "Failed to write git hash file {}: {}",
+                        git_hash_path.display(),
+                        e
+                    )
+                })?;
+            }
+            NodeAddGoal::new(path, TEST_GIT_HASH)
+        }
+        NodeAddSource::Git {
+            repo_url,
+            repo_path,
+        } => NodeAddGoal::new_git(repo_url.clone(), *repo_path, TEST_GIT_HASH),
+        NodeAddSource::Http(url) => NodeAddGoal::new_http(url.clone(), TEST_GIT_HASH),
+    };
 
     let (caller_master_node, caller_instance_id) = if feedback_tx.is_some() {
         ("*", "*")

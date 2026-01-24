@@ -18,6 +18,8 @@ use super::{decode_message, encode_message};
 pub enum NodeSource {
     Fs(PathBuf),
     Git { repo_url: GitUrl, repo_path: String },
+    // Only .tzst (.tar.zstd) archives are supported for the moment
+    Http { url: url::Url },
 }
 
 /// Goal message for the NodeAdd action.
@@ -50,11 +52,19 @@ impl NodeAddGoal {
         }
     }
 
+    /// Creates a new NodeAddGoal from an HTTP URL (for .tzst archives).
+    pub fn new_http(url: url::Url, git_hash: impl Into<String>) -> Self {
+        Self {
+            source: NodeSource::Http { url },
+            git_hash: git_hash.into(),
+        }
+    }
+
     /// Returns the filesystem path if the source is `Fs`, otherwise `None`.
     pub fn fs_path(&self) -> Option<&PathBuf> {
         match &self.source {
             NodeSource::Fs(path) => Some(path),
-            NodeSource::Git { .. } => None,
+            NodeSource::Git { .. } | NodeSource::Http { .. } => None,
         }
     }
 
@@ -75,6 +85,9 @@ impl NodeAddGoal {
                     let mut git = source.init_git();
                     git.set_repo_url(repo_url.to_bstring().to_string());
                     git.set_repo_path(repo_path);
+                }
+                NodeSource::Http { url } => {
+                    source.set_http(url.as_str());
                 }
             }
         }
@@ -97,6 +110,12 @@ impl NodeAddGoal {
                     repo_url,
                     repo_path,
                 }
+            }
+            Which::Http(http) => {
+                let url_str = http?.to_str()?;
+                let url = url::Url::parse(url_str)
+                    .map_err(|e| crate::Error::Decoding(format!("invalid HTTP URL: {}", e)))?;
+                NodeSource::Http { url }
             }
         };
         Ok(Self {
