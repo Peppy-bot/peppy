@@ -17,10 +17,22 @@ struct NodeListResponse {
 
 # Node Add Action (streaming version with feedback)
 struct NodeAddGoal {
-    # Directory the configuration was loaded from
-    fromDir @0 :Text;
     # Git commit hash of the node being added
-    gitHash @1 :Text;
+    gitHash @0 :Text;
+    # Source of the node (filesystem path or git repository)
+    source :union {
+        # Filesystem path to the node directory
+        fs @1 :Text;
+        # Git repository source
+        git @2 :NodeAddGitSource;
+    }
+}
+
+struct NodeAddGitSource {
+    # URL of the git repository
+    repoUrl @0 :Text;
+    # Path within the repository to the node
+    repoPath @1 :Text;
 }
 
 struct NodeAddGoalResponse {

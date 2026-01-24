@@ -74,7 +74,7 @@ async fn node_stop_command_succeeds() {
     // Add the node to the node stack (without running)
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_path,
+            source_dir: node_path,
             start: false,
             args: Vec::new(),
             instance_id: None,

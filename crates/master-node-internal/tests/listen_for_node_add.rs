@@ -6,18 +6,20 @@ use common::{
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, logs_dir_add};
 use config::node::QoSProfile;
+use config::test_helpers;
 use master_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse};
 use master_node::names;
 use peppylib::ActionMessenger;
 use std::path::Path;
 use std::time::Duration;
+use tempfile::TempDir;
 
 const ADD_CMD_MARKER_FILE: &str = "add_cmd_executed.marker";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_success() {
+async fn listen_for_node_fs_add_success() {
     const TARGET_NODE_NAME: &str = "runnable_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 
@@ -101,6 +103,14 @@ async fn listen_for_node_add_success() {
     let _ = std::fs::remove_dir_all(root_path);
 
     started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_git_add_success() {
+    let git_repo_temp_dir = TempDir::new().unwrap();
+    let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
+
+    todo!("Finish, add one of the nodes in `git_repo_path` to the node stack")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

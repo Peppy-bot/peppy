@@ -1,5 +1,7 @@
 use crate::Result;
-use crate::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult};
+use crate::encoding::{
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
+};
 use crate::names;
 use bytes::Bytes;
 use chrono::Local;
@@ -412,13 +414,30 @@ async fn handle_goal_request(
         }
     };
 
+    // Extract the filesystem path from the source
+    let source_path = match &goal.source {
+        NodeSource::Fs(path) => path.clone(),
+        NodeSource::Git { .. } => {
+            let error_msg = "Git source is not yet supported for node_add";
+            let mut state_guard = state.lock().await;
+            *state_guard = NodeAddActionState::Rejected;
+            let response = NodeAddGoalResponse::rejected(error_msg);
+            return response
+                .encode()
+                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                    identifier: "node_add_goal".to_string(),
+                    reason: format!("Failed to encode response: {}", e),
+                });
+        }
+    };
+
     debug!(
-        "Received `node_add` goal from {sender_instance_id}, from_dir={}",
-        goal.from_dir.display()
+        "Received `node_add` goal from {sender_instance_id}, source={}",
+        source_path.display()
     );
 
     // Verify that the node directory is in sync with the currently running daemon.
-    let git_hash_path = goal.from_dir.join(PEPPY_OUTPUT_DIR).join("git.hash");
+    let git_hash_path = source_path.join(PEPPY_OUTPUT_DIR).join("git.hash");
     let stored_git_hash = match std::fs::read_to_string(&git_hash_path) {
         Ok(hash) => hash,
         Err(e) => {
@@ -461,7 +480,7 @@ async fn handle_goal_request(
     if stored_git_hash != expected_git_hash {
         let error_msg = format!(
             "git hash mismatch for node directory {} (expected '{}', found '{}' in {}). Run `peppy node sync` before retrying.",
-            goal.from_dir.display(),
+            source_path.display(),
             expected_git_hash,
             stored_git_hash,
             git_hash_path.display(),
@@ -478,7 +497,7 @@ async fn handle_goal_request(
     }
 
     // Parse node config to get node_name and tag for log file naming
-    let config_path = goal.from_dir.join(NODE_CONFIG_FILE);
+    let config_path = source_path.join(NODE_CONFIG_FILE);
     let node_config = match NodeConfigParser::from_path(&config_path) {
         Ok(config) => config,
         Err(e) => {
@@ -578,12 +597,17 @@ async fn process_node_add(
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
 
+    // Extract the source path (already validated to be Fs in handle_goal_request)
+    let source_path = goal
+        .fs_path()
+        .expect("Git source should have been rejected earlier");
+
     let previous_snapshot_path = node_stack
         .find(&node_name, &node_tag)
         .map(|entity| entity.root_path().to_path_buf());
 
     // Copy the node folder to the peppy storage directory.
-    let copied_path = match copy_node_to_storage(&goal.from_dir, &node_name, &node_tag) {
+    let copied_path = match copy_node_to_storage(source_path, &node_name, &node_tag) {
         Ok(path) => path,
         Err(e) => {
             return NodeAddResult::failure(&log_path, format!("Failed to copy node folder: {}", e));

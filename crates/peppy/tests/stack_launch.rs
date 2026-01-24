@@ -91,7 +91,7 @@ async fn node_launch_command_succeed() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_a_path,
+            source_dir: node_a_path,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -313,7 +313,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_a_path,
+            source_dir: node_a_path,
             start: false,
             args: Vec::new(),
             instance_id: None,

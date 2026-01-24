@@ -153,7 +153,7 @@ async fn node_list_command_succeeds() {
     // Add the provider
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: provider_path,
+            source_dir: provider_path,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -166,7 +166,7 @@ async fn node_list_command_succeeds() {
     // Add the consumer, it depends on the provider
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: consumer_path,
+            source_dir: consumer_path,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -291,7 +291,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: provider_path,
+            source_dir: provider_path,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -303,7 +303,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: consumer_path,
+            source_dir: consumer_path,
             start: false,
             args: Vec::new(),
             instance_id: None,

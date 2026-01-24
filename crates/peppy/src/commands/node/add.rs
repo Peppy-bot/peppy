@@ -17,16 +17,15 @@ const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn add_node(
     ctx: &Arc<AppContext>,
-    node_dir: PathBuf,
+    source: String,
     run: bool,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
     timeout_secs: u64,
 ) -> Result<()> {
-    let peppy_json5 = node_dir.join("peppy.json5");
     crate::commands::block_on(add_node_async(
         ctx,
-        peppy_json5,
+        source,
         run,
         args,
         instance_id,
@@ -36,12 +35,15 @@ pub fn add_node(
 
 async fn add_node_async(
     ctx: &Arc<AppContext>,
-    peppy_json5: PathBuf,
+    source: String,
     run: bool,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
     timeout_secs: u64,
 ) -> Result<()> {
+    // TODO: Add git URL support (https://, git://)
+    let node_dir = PathBuf::from(&source);
+    let peppy_json5 = node_dir.join("peppy.json5");
     let daemon_state = ctx.read_daemon_state().map_err(|e| {
         Error::ExecutionFailed(format!(
             "Failed to read daemon state. Is the peppy daemon running? Error: {}",

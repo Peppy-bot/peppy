@@ -27,6 +27,9 @@ pub enum Error {
     #[error("invalid UTF-8 in message: {0}")]
     Utf8(#[from] std::str::Utf8Error),
 
+    #[error("decoding error: {0}")]
+    Decoding(String),
+
     // -- generator-internal
     #[error(transparent)]
     GeneratorError(#[from] generator::GeneratorError),
