@@ -2,6 +2,7 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, start_master_node_with_mock_messenger};
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
+use config::node::Toolchain;
 use master_node::encoding::NodeInitRequest;
 use std::fs;
 use std::time::Duration;
@@ -15,7 +16,7 @@ async fn listen_for_node_init_rust_success() {
 
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-    let response = NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123")
+    let response = NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123", Toolchain::Cargo)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -111,7 +112,7 @@ async fn listen_for_node_init_python_success() {
 
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-    let response = NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123")
+    let response = NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123", Toolchain::Cargo)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
@@ -205,7 +206,7 @@ async fn listen_for_node_init_fails_if_directory_exists() {
         "precondition: peppygen output should not exist"
     );
 
-    let response = NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123")
+    let response = NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123", Toolchain::Cargo)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,

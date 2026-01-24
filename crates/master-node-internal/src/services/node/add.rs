@@ -627,7 +627,7 @@ async fn process_node_add(
         }
     };
 
-    // TODO: Call `generator::generate_lib_for_build_system` on the copied_path (however we need to be able to determine if it needs to be in Python or Rust)
+    // TODO: Call `generator::generate_peppygen_lib` on the copied_path (however we need to be able to determine if it needs to be in Python or Rust)
 
     // Run add_cmd on the copied folder with streaming output
     if let Err(e) = run_add_cmd_with_streaming(

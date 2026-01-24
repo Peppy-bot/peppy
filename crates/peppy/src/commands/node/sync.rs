@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::consts::NODE_CONFIG_FILE;
-use config::peppy_config::Toolchain;
 use master_node::encoding::NodeSyncRequest;
 use tracing::info;
 
@@ -12,11 +11,11 @@ use crate::error::{Error, Result};
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn sync_node(ctx: &Arc<AppContext>, build_system: Toolchain) -> Result<()> {
-    crate::commands::block_on(sync_node_async(ctx, build_system))
+pub fn sync_node(ctx: &Arc<AppContext>) -> Result<()> {
+    crate::commands::block_on(sync_node_async(ctx))
 }
 
-async fn sync_node_async(ctx: &Arc<AppContext>, build_system: Toolchain) -> Result<()> {
+async fn sync_node_async(ctx: &Arc<AppContext>) -> Result<()> {
     let daemon_state = ctx.read_daemon_state().map_err(|e| {
         Error::ExecutionFailed(format!(
             "Failed to read daemon state. Is the peppy daemon running? Error: {}",
@@ -37,9 +36,8 @@ async fn sync_node_async(ctx: &Arc<AppContext>, build_system: Toolchain) -> Resu
     }
 
     info!(
-        "Syncing node at {} (build_system={}) via master '{}'...",
+        "Syncing node at {} via master '{}'...",
         node_root_dir.display(),
-        build_system,
         master_node_name
     );
 
@@ -48,7 +46,7 @@ async fn sync_node_async(ctx: &Arc<AppContext>, build_system: Toolchain) -> Resu
         .messenger_handle()
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
-    let request = NodeSyncRequest::new(node_root_dir, git_hash).with_build_system(build_system);
+    let request = NodeSyncRequest::new(node_root_dir, git_hash);
     let response = request
         .poll(
             messenger_handle,

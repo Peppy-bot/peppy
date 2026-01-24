@@ -3,7 +3,7 @@ use crate::Result;
 use crate::encoding::{NodeInitRequest, NodeInitResponse};
 use crate::names;
 use bytes::Bytes;
-use config::peppy_config::Toolchain;
+use config::node::Toolchain;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
@@ -47,6 +47,7 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Byt
     let payload = context.message().payload();
 
     let request = NodeInitRequest::decode(&payload.as_bytes())?;
+    let toolchain = request.toolchain;
 
     debug!(
         "Received `node_init` request from {sender_instance_id}, node_root_dir={}, node_name={}",
@@ -71,10 +72,9 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Byt
     }
 
     // Create language-specific configuration (must be done before peppygen generation
-    // since generate_lib_for_build_system requires peppy.json5 to exist)
-    let toolchain = Toolchain::Cargo; // FIXME: Use the toolchain in `peppy.json5`
+    // since generate_peppygen_lib requires peppy.json5 to exist)
     match toolchain {
-        config::peppy_config::Toolchain::Rust | config::peppy_config::Toolchain::Cargo => {
+        Toolchain::Cargo => {
             if let Err(e) = apply_rust_templates(&request.node_name, &node_dir) {
                 return NodeInitResponse::failure(format!(
                     "Failed to create Rust configuration: {}",
@@ -83,7 +83,7 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Byt
                 .encode();
             }
         }
-        config::peppy_config::Toolchain::Python | config::peppy_config::Toolchain::Uv => {
+        Toolchain::Uv => {
             if let Err(e) = apply_python_templates(&request.node_name, &node_dir) {
                 return NodeInitResponse::failure(format!(
                     "Failed to create Python configuration: {}",
@@ -94,13 +94,11 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Byt
         }
     }
 
+    let language = toolchain.map_to_language();
     // Generate peppygen library (requires peppy.json5 to exist)
-    if let Err(e) = generator::generate_lib_for_build_system(
-        toolchain,
-        &node_dir,
-        Vec::new(),
-        &request.git_hash,
-    ) {
+    if let Err(e) =
+        generator::generate_peppygen_lib(language, &node_dir, Vec::new(), &request.git_hash)
+    {
         return NodeInitResponse::failure(format!("Failed to generate peppygen: {}", e)).encode();
     }
 
@@ -112,12 +110,9 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Byt
     NodeInitResponse::success().encode()
 }
 
-fn create_gitignore(
-    node_dir: &std::path::Path,
-    build_system: config::peppy_config::Toolchain,
-) -> std::io::Result<()> {
+fn create_gitignore(node_dir: &std::path::Path, build_system: Toolchain) -> std::io::Result<()> {
     let content = match build_system {
-        config::peppy_config::Toolchain::Rust | config::peppy_config::Toolchain::Cargo => {
+        Toolchain::Cargo => {
             r#"
 # Peppy-specific files
 .peppy
@@ -140,7 +135,7 @@ fn create_gitignore(
 *.log
 "#
         }
-        config::peppy_config::Toolchain::Python | config::peppy_config::Toolchain::Uv => {
+        Toolchain::Uv => {
             r#"
 # Peppy-specific files
 .peppy

@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{ArgGroup, Subcommand};
-use config::peppy_config::Toolchain;
 use tracing::info;
 
 use super::Command;
@@ -89,11 +88,7 @@ pub enum NodeCommands {
         timeout: u64,
     },
     /// Regenerate the node's interface code (peppygen) based on peppy.json5
-    Sync {
-        /// Build system for the node: `rust`, `python`, `cargo`, or `uv`
-        #[arg(long, visible_alias = "lang", value_enum, default_value_t = Toolchain::Rust)]
-        build_system: Toolchain,
-    },
+    Sync {},
     /// Runs an instance from a node added to the node stack
     ///
     /// Usage: `peppy node start <node_name>:<tag>` or `peppy node start --node-name <name> --tag <tag>`
@@ -184,9 +179,9 @@ impl Command for NodeCommand {
                 info!("Adding node from {}...", display_source);
                 add::add_node(ctx, source, run, args, instance_id, timeout)
             }
-            NodeCommands::Sync { build_system } => {
+            NodeCommands::Sync {} => {
                 info!("Syncing node interfaces...");
-                sync::sync_node(ctx, build_system)
+                sync::sync_node(ctx)
             }
             NodeCommands::Start {
                 node_ref,

@@ -70,6 +70,8 @@ struct NodeInitRequest {
     nodeName @1 :Text;
     # Git commit hash of the node being initialized
     gitHash @2 :Text;
+    # Toolchain to use for the node ("cargo" or "uv")
+    toolchain @3 :Text;
 }
 
 struct NodeInitResponse {
@@ -83,10 +85,8 @@ struct NodeInitResponse {
 struct NodeGenerateRequest {
     # Root directory of the node/workspace
     nodeRootDir @0 :Text;
-    # Generator language ("rust" or "python")
-    language @1 :Text;
     # Git commit hash of the node being synced
-    gitHash @2 :Text;
+    gitHash @1 :Text;
 }
 
 struct NodeSyncResponse {

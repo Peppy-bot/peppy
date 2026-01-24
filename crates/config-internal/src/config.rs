@@ -6,5 +6,5 @@ mod types;
 pub use parse::PeppyLauncherParser;
 pub use types::{
     CURRENT_SCHEMA_VERSION, Deployment, DeploymentInstance, DeploymentNodeSource, GitRemoteSpec,
-    HttpRemoteSpec, Name, PeppyLauncher, SchemaVersion, Toolchain,
+    HttpRemoteSpec, Name, PeppyLauncher, SchemaVersion,
 };

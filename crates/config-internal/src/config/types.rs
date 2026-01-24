@@ -1,5 +1,4 @@
 use crate::{common::NodeArguments, error::ParsingError};
-use core::fmt;
 use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer},
@@ -11,36 +10,6 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
 };
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
-pub enum Toolchain {
-    #[default]
-    Rust, // Defaults to Cargo
-    Python, // Defaults to uv
-    Cargo,
-    Uv,
-}
-
-impl fmt::Display for Toolchain {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Toolchain::Python | Toolchain::Uv => write!(f, "uv"),
-            Toolchain::Rust | Toolchain::Cargo => write!(f, "cargo"),
-        }
-    }
-}
-
-impl FromStr for Toolchain {
-    type Err = ParsingError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "rust" | "cargo" => Ok(Toolchain::Cargo),
-            "python" | "uv" => Ok(Toolchain::Uv),
-            _ => Err(ParsingError::InvalidToolchain(s.to_owned())),
-        }
-    }
-}
 
 /// Version identifier embedded in node `peppy.json5` manifests.
 /// Using a simple alias keeps serialization straightforward while making the intent explicit.
