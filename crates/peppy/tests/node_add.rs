@@ -75,6 +75,7 @@ fn node_add_command_succeeds() {
             start: false,
             args: Vec::new(),
             instance_id: None,
+            timeout: 60,
         },
     }
     .execute(&node_ctx)
@@ -212,6 +213,7 @@ fn node_add_command_with_run_arg_succeeds() {
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
+            timeout: 60,
         },
     }
     .execute(&node_ctx)
@@ -340,6 +342,7 @@ fn node_add_after_failed_sync_succeeds() {
             start: false,
             args: Vec::new(),
             instance_id: None,
+            timeout: 60,
         },
     }
     .execute(&node_ctx);
@@ -377,6 +380,7 @@ fn node_add_after_failed_sync_succeeds() {
             start: false,
             args: Vec::new(),
             instance_id: None,
+            timeout: 60,
         },
     }
     .execute(&node_ctx)
