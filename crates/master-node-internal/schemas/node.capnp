@@ -35,6 +35,8 @@ struct NodeAddGitSource {
     repoUrl @0 :Text;
     # Path within the repository to the node
     repoPath @1 :Text;
+    # Optional git ref (tag/branch/commit) to checkout before reading repoPath
+    repoRef @2 :Text;
 }
 
 struct NodeAddGoalResponse {

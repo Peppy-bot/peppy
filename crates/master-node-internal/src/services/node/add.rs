@@ -10,7 +10,7 @@ use config::consts::{
     NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, logs_dir_add, peppy_data_dir,
 };
 use config::node::{NodeConfig, NodeConfigParser};
-use git2::Repository;
+use git2::{Repository, build::CheckoutBuilder};
 use node_stack::NodeStack;
 use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
@@ -335,9 +335,30 @@ fn sanitize_repo_path(repo_path: &str) -> std::result::Result<PathBuf, String> {
     Ok(path)
 }
 
+fn checkout_repo_ref(repo: &Repository, repo_ref: &str) -> std::result::Result<(), git2::Error> {
+    let repo_ref = repo_ref.trim();
+    if repo_ref.is_empty() {
+        return Ok(());
+    }
+
+    let object = repo
+        .revparse_single(repo_ref)
+        .or_else(|_| repo.revparse_single(&format!("refs/tags/{repo_ref}")))
+        .or_else(|_| repo.revparse_single(&format!("refs/heads/{repo_ref}")))
+        .or_else(|_| repo.revparse_single(&format!("refs/remotes/origin/{repo_ref}")))?;
+    let commit = object.peel_to_commit()?;
+
+    repo.set_head_detached(commit.id())?;
+    let mut checkout = CheckoutBuilder::new();
+    checkout.force();
+    repo.checkout_head(Some(&mut checkout))?;
+    Ok(())
+}
+
 async fn resolve_git_source(
     repo_url: &gix_url::Url,
     repo_path: &str,
+    repo_ref: Option<&str>,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     let repo_relative_path = sanitize_repo_path(repo_path)?;
 
@@ -352,10 +373,15 @@ async fn resolve_git_source(
 
     let clone_checkout_dir = checkout_dir.clone();
     let clone_repo_url = repo_url_str.clone();
+    let clone_repo_ref = repo_ref.map(str::to_owned);
     if let Err(err) = tokio::task::spawn_blocking(move || {
-        Repository::clone(&clone_repo_url, &clone_checkout_dir)
-            .map(|_| ())
-            .map_err(|e| format!("Failed to clone repository: {}", e))
+        let repo = Repository::clone(&clone_repo_url, &clone_checkout_dir)
+            .map_err(|e| format!("Failed to clone repository: {}", e))?;
+        if let Some(repo_ref) = clone_repo_ref.as_deref() {
+            checkout_repo_ref(&repo, repo_ref)
+                .map_err(|e| format!("Failed to checkout git ref '{}': {}", repo_ref, e))?;
+        }
+        Ok::<_, String>(())
     })
     .await
     .map_err(|e| format!("Failed to join git clone task: {}", e))?
@@ -635,7 +661,8 @@ async fn resolve_node_add_source(
         NodeSource::Git {
             repo_url,
             repo_path,
-        } => resolve_git_source(repo_url, repo_path).await,
+            repo_ref,
+        } => resolve_git_source(repo_url, repo_path, repo_ref.as_deref()).await,
         NodeSource::Http { url } => resolve_http_source(url).await,
     }
 }
@@ -840,9 +867,10 @@ async fn handle_goal_request(
         NodeSource::Git {
             repo_url,
             repo_path,
+            repo_ref,
         } => debug!(
-            "Received `node_add` goal from {sender_instance_id}, source=git:{}::{}",
-            repo_url, repo_path
+            "Received `node_add` goal from {sender_instance_id}, source=git:{}::{} ({:?})",
+            repo_url, repo_path, repo_ref
         ),
         NodeSource::Http { url } => debug!(
             "Received `node_add` goal from {sender_instance_id}, source=http:{}",

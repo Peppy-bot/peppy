@@ -17,9 +17,15 @@ use super::{decode_message, encode_message};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeSource {
     Fs(PathBuf),
-    Git { repo_url: GitUrl, repo_path: String },
+    Git {
+        repo_url: GitUrl,
+        repo_path: String,
+        repo_ref: Option<String>,
+    },
     // Only .tzst (.tar.zstd) archives are supported for the moment
-    Http { url: url::Url },
+    Http {
+        url: url::Url,
+    },
 }
 
 /// Goal message for the NodeAdd action.
@@ -37,16 +43,18 @@ impl NodeAddGoal {
         }
     }
 
-    /// Creates a new NodeAddGoal from a Git repository.
+    /// Creates a new NodeAddGoal from a Git repository with an optional ref (tag/branch/commit).
     pub fn new_git(
         repo_url: GitUrl,
         repo_path: impl Into<String>,
+        repo_ref: Option<String>,
         git_hash: impl Into<String>,
     ) -> Self {
         Self {
             source: NodeSource::Git {
                 repo_url,
                 repo_path: repo_path.into(),
+                repo_ref,
             },
             git_hash: git_hash.into(),
         }
@@ -81,10 +89,12 @@ impl NodeAddGoal {
                 NodeSource::Git {
                     repo_url,
                     repo_path,
+                    repo_ref,
                 } => {
                     let mut git = source.init_git();
                     git.set_repo_url(repo_url.to_bstring().to_string());
                     git.set_repo_path(repo_path);
+                    git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
                 }
                 NodeSource::Http { url } => {
                     source.set_http(url.as_str());
@@ -106,9 +116,16 @@ impl NodeAddGoal {
                 let repo_url = GitUrl::try_from(repo_url_str)
                     .map_err(|e| crate::Error::Decoding(format!("invalid git URL: {}", e)))?;
                 let repo_path = git.get_repo_path()?.to_str()?.to_owned();
+                let repo_ref = git.get_repo_ref()?.to_str()?.trim().to_owned();
+                let repo_ref = if repo_ref.is_empty() {
+                    None
+                } else {
+                    Some(repo_ref)
+                };
                 NodeSource::Git {
                     repo_url,
                     repo_path,
+                    repo_ref,
                 }
             }
             Which::Http(http) => {

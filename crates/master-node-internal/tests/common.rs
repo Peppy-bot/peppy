@@ -35,6 +35,7 @@ pub enum NodeAddSource<'a> {
     Git {
         repo_url: GitUrl,
         repo_path: &'a str,
+        repo_ref: Option<&'a str>,
     },
     /// Add from an HTTP URL (for .tzst archives).
     Http(url::Url),
@@ -111,7 +112,13 @@ pub async fn send_node_add_and_wait<'a>(
         NodeAddSource::Git {
             repo_url,
             repo_path,
-        } => NodeAddGoal::new_git(repo_url.clone(), *repo_path, TEST_GIT_HASH),
+            repo_ref,
+        } => NodeAddGoal::new_git(
+            repo_url.clone(),
+            *repo_path,
+            repo_ref.map(str::to_owned),
+            TEST_GIT_HASH,
+        ),
         NodeAddSource::Http(url) => NodeAddGoal::new_http(url.clone(), TEST_GIT_HASH),
     };
 
