@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::peppy_config::BuildSystem;
+use config::peppy_config::Toolchain;
 use master_node::encoding::NodeInitRequest;
 use tracing::info;
 
@@ -17,7 +17,6 @@ pub struct NodeInitBuilder {
     ctx: Arc<AppContext>,
     to_dir: PathBuf,
     node_name: NodeName,
-    build_system: BuildSystem,
 }
 
 impl NodeInitBuilder {
@@ -26,18 +25,12 @@ impl NodeInitBuilder {
             ctx: Arc::clone(ctx),
             to_dir: ctx.root_dir.clone(),
             node_name,
-            build_system: BuildSystem::Rust,
         }
     }
 
     #[allow(clippy::wrong_self_convention)]
     pub fn to_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.to_dir = dir.into();
-        self
-    }
-
-    pub fn build_system(mut self, build_system: BuildSystem) -> Self {
-        self.build_system = build_system;
         self
     }
 
@@ -71,8 +64,7 @@ impl NodeInitBuilder {
             .messenger_handle()
             .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
-        let request = NodeInitRequest::new(&self.to_dir, self.node_name.as_str(), git_hash)
-            .with_build_system(self.build_system);
+        let request = NodeInitRequest::new(&self.to_dir, self.node_name.as_str(), git_hash);
 
         let response = request
             .poll(

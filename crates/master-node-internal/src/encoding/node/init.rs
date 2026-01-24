@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use capnp::message::Builder;
-use config::peppy_config::BuildSystem;
+use config::peppy_config::Toolchain;
 use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
@@ -15,7 +15,6 @@ use super::{decode_message, encode_message};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeInitRequest {
     pub node_root_dir: PathBuf,
-    pub build_system: BuildSystem,
     pub node_name: String,
     pub git_hash: String,
 }
@@ -28,15 +27,9 @@ impl NodeInitRequest {
     ) -> Self {
         Self {
             node_root_dir: node_root_dir.into(),
-            build_system: BuildSystem::Cargo,
             node_name: node_name.into(),
             git_hash: git_hash.into(),
         }
-    }
-
-    pub fn with_build_system(mut self, build_system: BuildSystem) -> Self {
-        self.build_system = build_system;
-        self
     }
 
     pub fn encode(&self) -> Result<Bytes> {
@@ -44,7 +37,6 @@ impl NodeInitRequest {
         {
             let mut request = builder.init_root::<node_capnp::node_init_request::Builder>();
             request.set_node_root_dir(self.node_root_dir.to_string_lossy());
-            request.set_build_system(self.build_system.to_string());
             request.set_node_name(&self.node_name);
             request.set_git_hash(&self.git_hash);
         }
@@ -54,11 +46,8 @@ impl NodeInitRequest {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let request = reader.get_root::<node_capnp::node_init_request::Reader>()?;
-        let build_system_str = request.get_build_system()?.to_str()?;
-        let build_system = build_system_str.parse()?;
         Ok(Self {
             node_root_dir: PathBuf::from(request.get_node_root_dir()?.to_str()?),
-            build_system,
             node_name: request.get_node_name()?.to_str()?.to_owned(),
             git_hash: request.get_git_hash()?.to_str()?.to_owned(),
         })

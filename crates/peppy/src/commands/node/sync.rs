@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::consts::NODE_CONFIG_FILE;
-use config::peppy_config::BuildSystem;
+use config::peppy_config::Toolchain;
 use master_node::encoding::NodeSyncRequest;
 use tracing::info;
 
@@ -12,11 +12,11 @@ use crate::error::{Error, Result};
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn sync_node(ctx: &Arc<AppContext>, build_system: BuildSystem) -> Result<()> {
+pub fn sync_node(ctx: &Arc<AppContext>, build_system: Toolchain) -> Result<()> {
     crate::commands::block_on(sync_node_async(ctx, build_system))
 }
 
-async fn sync_node_async(ctx: &Arc<AppContext>, build_system: BuildSystem) -> Result<()> {
+async fn sync_node_async(ctx: &Arc<AppContext>, build_system: Toolchain) -> Result<()> {
     let daemon_state = ctx.read_daemon_state().map_err(|e| {
         Error::ExecutionFailed(format!(
             "Failed to read daemon state. Is the peppy daemon running? Error: {}",

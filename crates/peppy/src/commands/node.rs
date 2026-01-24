@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{ArgGroup, Subcommand};
-use config::peppy_config::BuildSystem;
+use config::peppy_config::Toolchain;
 use tracing::info;
 
 use super::Command;
@@ -69,9 +69,6 @@ pub enum NodeCommands {
         /// Optional: target directory (defaults to current directory)
         #[arg(long)]
         to_dir: Option<PathBuf>,
-        /// Build system for the node: `rust`, `python`, `cargo`, or `uv`
-        #[arg(long, visible_alias = "lang", value_enum, default_value_t = BuildSystem::Rust)]
-        build_system: BuildSystem,
     },
     /// Add a node to the node stack based on its peppy.json5 file
     Add {
@@ -94,8 +91,8 @@ pub enum NodeCommands {
     /// Regenerate the node's interface code (peppygen) based on peppy.json5
     Sync {
         /// Build system for the node: `rust`, `python`, `cargo`, or `uv`
-        #[arg(long, visible_alias = "lang", value_enum, default_value_t = BuildSystem::Rust)]
-        build_system: BuildSystem,
+        #[arg(long, visible_alias = "lang", value_enum, default_value_t = Toolchain::Rust)]
+        build_system: Toolchain,
     },
     /// Runs an instance from a node added to the node stack
     ///
@@ -161,13 +158,8 @@ pub struct NodeCommand {
 impl Command for NodeCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<(), CommandError> {
         match self.command {
-            NodeCommands::Init {
-                to_dir,
-                build_system,
-                node_name,
-            } => {
-                let mut node_builder =
-                    NodeInitBuilder::new(ctx, node_name).build_system(build_system);
+            NodeCommands::Init { to_dir, node_name } => {
+                let mut node_builder = NodeInitBuilder::new(ctx, node_name);
 
                 if let Some(dir) = to_dir {
                     node_builder = node_builder.to_dir(dir);

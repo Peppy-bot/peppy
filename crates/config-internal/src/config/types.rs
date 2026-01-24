@@ -13,7 +13,7 @@ use std::{
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
-pub enum BuildSystem {
+pub enum Toolchain {
     #[default]
     Rust, // Defaults to Cargo
     Python, // Defaults to uv
@@ -21,23 +21,23 @@ pub enum BuildSystem {
     Uv,
 }
 
-impl fmt::Display for BuildSystem {
+impl fmt::Display for Toolchain {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            BuildSystem::Python | BuildSystem::Uv => write!(f, "uv"),
-            BuildSystem::Rust | BuildSystem::Cargo => write!(f, "cargo"),
+            Toolchain::Python | Toolchain::Uv => write!(f, "uv"),
+            Toolchain::Rust | Toolchain::Cargo => write!(f, "cargo"),
         }
     }
 }
 
-impl FromStr for BuildSystem {
+impl FromStr for Toolchain {
     type Err = ParsingError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "rust" | "cargo" => Ok(BuildSystem::Cargo),
-            "python" | "uv" => Ok(BuildSystem::Uv),
-            _ => Err(ParsingError::InvalidBuildSystem(s.to_owned())),
+            "rust" | "cargo" => Ok(Toolchain::Cargo),
+            "python" | "uv" => Ok(Toolchain::Uv),
+            _ => Err(ParsingError::InvalidToolchain(s.to_owned())),
         }
     }
 }

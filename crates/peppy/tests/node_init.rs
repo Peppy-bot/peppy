@@ -43,7 +43,7 @@ fn node_rust_init_command_success() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
+            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)

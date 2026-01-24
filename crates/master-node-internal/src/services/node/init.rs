@@ -3,6 +3,7 @@ use crate::Result;
 use crate::encoding::{NodeInitRequest, NodeInitResponse};
 use crate::names;
 use bytes::Bytes;
+use config::peppy_config::Toolchain;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
@@ -71,8 +72,9 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Byt
 
     // Create language-specific configuration (must be done before peppygen generation
     // since generate_lib_for_build_system requires peppy.json5 to exist)
-    match request.build_system {
-        config::peppy_config::BuildSystem::Rust | config::peppy_config::BuildSystem::Cargo => {
+    let toolchain = Toolchain::Cargo; // FIXME: Use the toolchain in `peppy.json5`
+    match toolchain {
+        config::peppy_config::Toolchain::Rust | config::peppy_config::Toolchain::Cargo => {
             if let Err(e) = apply_rust_templates(&request.node_name, &node_dir) {
                 return NodeInitResponse::failure(format!(
                     "Failed to create Rust configuration: {}",
@@ -81,7 +83,7 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Byt
                 .encode();
             }
         }
-        config::peppy_config::BuildSystem::Python | config::peppy_config::BuildSystem::Uv => {
+        config::peppy_config::Toolchain::Python | config::peppy_config::Toolchain::Uv => {
             if let Err(e) = apply_python_templates(&request.node_name, &node_dir) {
                 return NodeInitResponse::failure(format!(
                     "Failed to create Python configuration: {}",
@@ -94,7 +96,7 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Byt
 
     // Generate peppygen library (requires peppy.json5 to exist)
     if let Err(e) = generator::generate_lib_for_build_system(
-        request.build_system,
+        toolchain,
         &node_dir,
         Vec::new(),
         &request.git_hash,
@@ -103,7 +105,7 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Byt
     }
 
     // Create .gitignore
-    if let Err(e) = create_gitignore(&node_dir, request.build_system) {
+    if let Err(e) = create_gitignore(&node_dir, toolchain) {
         return NodeInitResponse::failure(format!("Failed to create .gitignore: {}", e)).encode();
     }
 
@@ -112,10 +114,10 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Byt
 
 fn create_gitignore(
     node_dir: &std::path::Path,
-    build_system: config::peppy_config::BuildSystem,
+    build_system: config::peppy_config::Toolchain,
 ) -> std::io::Result<()> {
     let content = match build_system {
-        config::peppy_config::BuildSystem::Rust | config::peppy_config::BuildSystem::Cargo => {
+        config::peppy_config::Toolchain::Rust | config::peppy_config::Toolchain::Cargo => {
             r#"
 # Peppy-specific files
 .peppy
@@ -138,7 +140,7 @@ fn create_gitignore(
 *.log
 "#
         }
-        config::peppy_config::BuildSystem::Python | config::peppy_config::BuildSystem::Uv => {
+        config::peppy_config::Toolchain::Python | config::peppy_config::Toolchain::Uv => {
             r#"
 # Peppy-specific files
 .peppy
