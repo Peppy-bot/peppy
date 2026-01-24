@@ -2077,10 +2077,13 @@ dependencies = [
  "serde_json",
  "serde_json5",
  "sysinfo",
+ "tar",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "ureq",
  "url",
+ "zstd",
 ]
 
 [[package]]

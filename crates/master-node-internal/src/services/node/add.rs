@@ -20,9 +20,12 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex as StdMutex};
+use tar::Archive;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::debug;
+use ureq::Error as HttpError;
+use zstd::stream::read::Decoder;
 
 pub async fn listen_for_node_add(
     messenger: &MessengerHandle,
@@ -312,6 +315,13 @@ struct ResolvedNodeAddSource {
     cleanup_dir: Option<PathBuf>,
 }
 
+struct ProcessNodeAddContext {
+    node_stack: Arc<NodeStack>,
+    feedback_publisher: TopicPublisher,
+    log_file: Arc<StdMutex<File>>,
+    log_path: PathBuf,
+}
+
 fn sanitize_repo_path(repo_path: &str) -> std::result::Result<PathBuf, String> {
     use std::path::Component;
 
@@ -395,6 +405,216 @@ async fn resolve_git_source(
     })
 }
 
+fn is_supported_http_archive(url: &url::Url) -> bool {
+    let path = url.path().to_ascii_lowercase();
+    path.ends_with(".tar.zst") || path.ends_with(".tar.zstd") || path.ends_with(".tzst")
+}
+
+fn sanitize_http_filename(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => ch,
+            _ => '_',
+        })
+        .collect();
+    let sanitized = sanitized.trim_matches('_');
+    if sanitized.is_empty() {
+        "bundle.tar.zst".to_string()
+    } else {
+        sanitized.to_string()
+    }
+}
+
+fn bundle_file_name(url: &url::Url) -> String {
+    url.path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .filter(|segment| !segment.is_empty())
+        .map(sanitize_http_filename)
+        .unwrap_or_else(|| "bundle.tar.zst".to_string())
+}
+
+fn download_http_bundle(url: &url::Url, destination: &Path) -> std::result::Result<(), String> {
+    let response = ureq::get(url.as_str()).call().map_err(|err| {
+        let reason = match err {
+            HttpError::StatusCode(code) => format!("unexpected status code {code}"),
+            other => other.to_string(),
+        };
+        format!("Failed to download bundle from {}: {}", url, reason)
+    })?;
+
+    let mut reader = response.into_body().into_reader();
+    let mut file = File::create(destination).map_err(|e| {
+        format!(
+            "Failed to create bundle file {}: {}",
+            destination.display(),
+            e
+        )
+    })?;
+
+    let mut buffer = [0u8; 8 * 1024];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|e| format!("Failed to read response body from {}: {}", url, e))?;
+        if read == 0 {
+            break;
+        }
+        file.write_all(&buffer[..read]).map_err(|e| {
+            format!(
+                "Failed to write bundle file {}: {}",
+                destination.display(),
+                e
+            )
+        })?;
+    }
+    file.flush().map_err(|e| {
+        format!(
+            "Failed to flush bundle file {}: {}",
+            destination.display(),
+            e
+        )
+    })?;
+
+    Ok(())
+}
+
+fn extract_http_bundle(
+    bundle_path: &Path,
+    destination: &Path,
+    url: &url::Url,
+) -> std::result::Result<(), String> {
+    let file = File::open(bundle_path).map_err(|e| {
+        format!(
+            "Failed to open downloaded bundle {}: {}",
+            bundle_path.display(),
+            e
+        )
+    })?;
+
+    let decoder = Decoder::new(file)
+        .map_err(|e| format!("Failed to decode zstd bundle from {}: {}", url, e))?;
+    let mut archive = Archive::new(decoder);
+    archive
+        .unpack(destination)
+        .map_err(|e| format!("Failed to unpack tar bundle from {}: {}", url, e))?;
+    Ok(())
+}
+
+fn locate_node_root_dir(extracted_dir: &Path) -> std::result::Result<PathBuf, String> {
+    let direct = extracted_dir.join(NODE_CONFIG_FILE);
+    if direct.is_file() {
+        return Ok(extracted_dir.to_path_buf());
+    }
+
+    let mut candidate_dirs = Vec::new();
+    for entry in std::fs::read_dir(extracted_dir).map_err(|e| {
+        format!(
+            "Failed to list extracted bundle directory {}: {}",
+            extracted_dir.display(),
+            e
+        )
+    })? {
+        let entry = entry.map_err(|e| {
+            format!(
+                "Failed to read extracted bundle directory entry in {}: {}",
+                extracted_dir.display(),
+                e
+            )
+        })?;
+        let file_type = entry.file_type().map_err(|e| {
+            format!(
+                "Failed to read file type for extracted bundle entry {}: {}",
+                entry.path().display(),
+                e
+            )
+        })?;
+        if file_type.is_dir() {
+            candidate_dirs.push(entry.path());
+        }
+    }
+
+    if candidate_dirs.len() == 1 {
+        let candidate = candidate_dirs.pop().expect("candidate dir should exist");
+        if candidate.join(NODE_CONFIG_FILE).is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(format!(
+        "Bundle does not contain {} at the root (or single top-level folder)",
+        NODE_CONFIG_FILE
+    ))
+}
+
+async fn resolve_http_source(url: &url::Url) -> std::result::Result<ResolvedNodeAddSource, String> {
+    let url = url.clone();
+    tokio::task::spawn_blocking(move || resolve_http_source_blocking(url))
+        .await
+        .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
+}
+
+fn resolve_http_source_blocking(
+    url: url::Url,
+) -> std::result::Result<ResolvedNodeAddSource, String> {
+    match url.scheme() {
+        "http" | "https" => {}
+        other => {
+            return Err(format!(
+                "HTTP source URL must use http or https (got scheme '{}')",
+                other
+            ));
+        }
+    }
+
+    if !is_supported_http_archive(&url) {
+        return Err(
+            "Only tar.zst (.tar.zstd/.tar.zst/.tzst) archives are supported for HTTP sources"
+                .to_string(),
+        );
+    }
+
+    let http_base_dir = peppy_data_dir().join("http_downloads");
+    std::fs::create_dir_all(&http_base_dir)
+        .map_err(|e| format!("Failed to create HTTP download directory: {}", e))?;
+
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
+    let operation_dir =
+        http_base_dir.join(format!("node_add_{timestamp}_{}", generate_random_id()));
+    std::fs::create_dir_all(&operation_dir)
+        .map_err(|e| format!("Failed to create HTTP staging directory: {}", e))?;
+
+    let mut operation_cleanup = CleanupDir::new(Some(operation_dir.clone()));
+
+    let bundle_path = operation_dir.join(bundle_file_name(&url));
+    let extract_dir = operation_dir.join("extracted");
+    std::fs::create_dir_all(&extract_dir)
+        .map_err(|e| format!("Failed to create bundle extract directory: {}", e))?;
+
+    download_http_bundle(&url, &bundle_path)?;
+    extract_http_bundle(&bundle_path, &extract_dir, &url)?;
+    let _ = std::fs::remove_file(&bundle_path);
+
+    let node_root_dir = locate_node_root_dir(&extract_dir)?;
+    let config_path = node_root_dir.join(NODE_CONFIG_FILE);
+    let node_config = NodeConfigParser::from_path(&config_path).map_err(|e| {
+        format!(
+            "Failed to parse node config at {}: {}",
+            config_path.display(),
+            e
+        )
+    })?;
+
+    let operation_dir = operation_cleanup.take();
+
+    Ok(ResolvedNodeAddSource {
+        source_path: node_root_dir,
+        node_config,
+        verify_codegen_fingerprint: false,
+        cleanup_dir: operation_dir,
+    })
+}
+
 async fn resolve_node_add_source(
     goal: &NodeAddGoal,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
@@ -420,7 +640,7 @@ async fn resolve_node_add_source(
             repo_url,
             repo_path,
         } => resolve_git_source(repo_url, repo_path).await,
-        NodeSource::Http { url } => todo!("Finish"),
+        NodeSource::Http { url } => resolve_http_source(url).await,
     }
 }
 
@@ -628,7 +848,10 @@ async fn handle_goal_request(
             "Received `node_add` goal from {sender_instance_id}, source=git:{}::{}",
             repo_url, repo_path
         ),
-        NodeSource::Http { url } => todo!("Finish"),
+        NodeSource::Http { url } => debug!(
+            "Received `node_add` goal from {sender_instance_id}, source=http:{}",
+            url
+        ),
     }
 
     let node_name = resolved.node_config.manifest.name.as_str().to_owned();
@@ -681,16 +904,19 @@ async fn handle_goal_request(
     let cleanup_dir = checkout_cleanup.take();
     let node_config = resolved.node_config;
     tokio::spawn(async move {
+        let ctx = ProcessNodeAddContext {
+            node_stack,
+            feedback_publisher: feedback_publisher_clone,
+            log_file,
+            log_path: log_path_clone,
+        };
         let result = process_node_add(
             goal,
             node_config,
             source_path,
             verify_codegen_fingerprint,
             cleanup_dir,
-            node_stack,
-            feedback_publisher_clone,
-            log_file,
-            log_path_clone,
+            ctx,
         )
         .await;
         let mut state_guard = state_clone.lock().await;
@@ -712,17 +938,15 @@ async fn process_node_add(
     source_path: PathBuf,
     verify_codegen_fingerprint: bool,
     cleanup_dir: Option<PathBuf>,
-    node_stack: Arc<NodeStack>,
-    feedback_publisher: TopicPublisher,
-    log_file: Arc<StdMutex<File>>,
-    log_path: PathBuf,
+    ctx: ProcessNodeAddContext,
 ) -> NodeAddResult {
     let _cleanup_guard = CleanupDir::new(cleanup_dir);
 
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
 
-    let previous_snapshot_path = node_stack
+    let previous_snapshot_path = ctx
+        .node_stack
         .find(&node_name, &node_tag)
         .map(|entity| entity.root_path().to_path_buf());
 
@@ -735,7 +959,7 @@ async fn process_node_add(
             config::fingerprint::verify_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
         {
             return NodeAddResult::failure(
-                &log_path,
+                &ctx.log_path,
                 format!("Codegen fingerprint verification failed: {}", e),
             );
         }
@@ -745,13 +969,16 @@ async fn process_node_add(
     let copied_path = match copy_node_to_storage(&source_path, &node_name, &node_tag) {
         Ok(path) => path,
         Err(e) => {
-            return NodeAddResult::failure(&log_path, format!("Failed to copy node folder: {}", e));
+            return NodeAddResult::failure(
+                &ctx.log_path,
+                format!("Failed to copy node folder: {}", e),
+            );
         }
     };
 
     // Generate the peppygen library for the copied node
     let language = node_config.manifest.language;
-    let subscribed_interfaces = collect_subscribed_interfaces(&node_config, &node_stack);
+    let subscribed_interfaces = collect_subscribed_interfaces(&node_config, &ctx.node_stack);
     if let Err(e) = generate_peppygen_for_node(
         language,
         &copied_path,
@@ -761,7 +988,7 @@ async fn process_node_add(
         // Clean up the copied folder on failure
         let _ = std::fs::remove_dir_all(&copied_path);
         return NodeAddResult::failure(
-            &log_path,
+            &ctx.log_path,
             format!("Failed to generate peppygen library: {}", e),
         );
     }
@@ -770,21 +997,21 @@ async fn process_node_add(
     if let Err(e) = run_add_cmd_with_streaming(
         node_config.manifest.add_cmd.as_ref(),
         &copied_path,
-        &feedback_publisher,
-        log_file,
+        &ctx.feedback_publisher,
+        ctx.log_file,
     )
     .await
     {
         // Clean up the copied folder on failure
         let _ = std::fs::remove_dir_all(&copied_path);
-        return NodeAddResult::failure(&log_path, format!("add_cmd failed: {}", e));
+        return NodeAddResult::failure(&ctx.log_path, format!("add_cmd failed: {}", e));
     }
 
     // Add the node config to the stack
-    if let Err(e) = node_stack.push_config(node_config, false, &copied_path) {
+    if let Err(e) = ctx.node_stack.push_config(node_config, false, &copied_path) {
         // Clean up the copied folder on failure
         let _ = std::fs::remove_dir_all(&copied_path);
-        return NodeAddResult::failure(&log_path, format!("Failed to add node config: {}", e));
+        return NodeAddResult::failure(&ctx.log_path, format!("Failed to add node config: {}", e));
     }
 
     if let Some(previous_snapshot_path) = previous_snapshot_path
@@ -801,7 +1028,7 @@ async fn process_node_add(
         copied_path.display()
     );
 
-    NodeAddResult::success(copied_path, &log_path)
+    NodeAddResult::success(copied_path, &ctx.log_path)
 }
 
 async fn handle_cancel_request(

@@ -11,9 +11,14 @@ use gix_url::Url as GitUrl;
 use master_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse};
 use master_node::names;
 use peppylib::ActionMessenger;
+use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
+use {
+    httptest::Expectation, httptest::Server, httptest::matchers::request,
+    httptest::responders::status_code,
+};
 
 const ADD_CMD_MARKER_FILE: &str = "add_cmd_executed.marker";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -177,7 +182,118 @@ async fn listen_for_node_git_add_success() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_http_add_success() {
-    todo!("Finish")
+    const TARGET_NODE_NAME: &str = "http_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_master = start_master_node_with_mock_messenger().await;
+    let node_stack = started_master.node_stack.clone();
+
+    let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+
+    let manifest_path = bundle_dir.path().join(NODE_CONFIG_FILE);
+    std::fs::write(&manifest_path, &peppy_json5).expect("failed to write manifest");
+
+    let test_file_content = "hello from http";
+    let test_file_path = bundle_dir.path().join("test_file.txt");
+    std::fs::write(&test_file_path, test_file_content).expect("failed to write test file");
+
+    let mut tar_data = Vec::new();
+    {
+        let mut tar_builder = tar::Builder::new(&mut tar_data);
+        tar_builder
+            .append_path_with_name(&manifest_path, NODE_CONFIG_FILE)
+            .expect("failed to append manifest to tar");
+        tar_builder
+            .append_path_with_name(&test_file_path, "test_file.txt")
+            .expect("failed to append test file to tar");
+        tar_builder.finish().expect("failed to finish tar");
+    }
+
+    let bundle_path = bundle_dir.path().join("http_node.tar.zst");
+    let bundle_file = std::fs::File::create(&bundle_path).expect("failed to create bundle file");
+    let mut encoder = zstd::Encoder::new(bundle_file, 0).expect("failed to create zstd encoder");
+    encoder
+        .write_all(&tar_data)
+        .expect("failed to write compressed bundle");
+    encoder.finish().expect("failed to finish encoder");
+    let bundle_bytes = std::fs::read(&bundle_path).expect("failed to read bundle");
+
+    let server = Server::run();
+    server.expect(
+        Expectation::matching(request::method_path("GET", "/bundles/http_node.tar.zst"))
+            .respond_with(status_code(200).body(bundle_bytes)),
+    );
+    let url = url::Url::parse(&server.url("/bundles/http_node.tar.zst").to_string())
+        .expect("http bundle url should parse");
+
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        NodeAddSource::Http(url),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        add_result.success,
+        "node_add should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    assert_eq!(node_stack.len(), 2, "root + added node");
+
+    let entity = node_stack
+        .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
+        .expect("node should exist in stack");
+    assert_eq!(entity.instances().len(), 0);
+
+    let snapshot_path = add_result.snapshot_path.as_path();
+    let root_path = entity.root_path();
+    assert_eq!(snapshot_path, root_path);
+    assert!(root_path.exists(), "snapshot path should exist");
+    assert!(
+        root_path.join(NODE_CONFIG_FILE).exists(),
+        "config file should exist in snapshot"
+    );
+
+    let copied_file = root_path.join("test_file.txt");
+    assert!(copied_file.exists(), "test_file.txt should be copied");
+    let copied_content = std::fs::read_to_string(&copied_file).expect("should read copied file");
+    assert_eq!(
+        copied_content, test_file_content,
+        "file content should match"
+    );
+
+    // Verify the path follows the expected naming convention: <node_name>_<tag>_<uuid>
+    let folder_name = root_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("should have folder name");
+    assert!(
+        folder_name.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
+        "folder name should start with '<node_name>_<tag>_', got: {}",
+        folder_name
+    );
+
+    // Clean up the copied directory
+    let _ = std::fs::remove_dir_all(root_path);
+
+    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
