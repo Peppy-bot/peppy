@@ -39,6 +39,7 @@ mod tests {
             manifest: {
                 name: "test_node",
                 tag: "0.1.0",
+                language: "rust",
                 start_cmd: ["cargo", "run", "--release"],
             },
         }"#;
@@ -56,6 +57,7 @@ mod tests {
             manifest: {
                 name: "camera_driver",
                 tag: "2.1.0",
+                language: "rust",
                 start_cmd: ["cargo", "run", "--release"],
             },
             interfaces: {
@@ -69,6 +71,10 @@ mod tests {
         let config = NodeConfigParser::from_content(json5).unwrap();
         assert_eq!(config.manifest.name.as_str(), "camera_driver");
         assert_eq!(config.manifest.tag, "2.1.0");
+        assert_eq!(
+            config.manifest.language,
+            crate::node::PeppygenLanguage::Rust
+        );
         assert_eq!(config.manifest.start_cmd, vec!["cargo", "run", "--release"]);
         assert!(config.interfaces.exposes.is_some());
     }

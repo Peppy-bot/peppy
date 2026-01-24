@@ -6,13 +6,11 @@ use common::{
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, logs_dir_add};
 use config::node::QoSProfile;
-use config::test_helpers;
 use master_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse};
 use master_node::names;
 use peppylib::ActionMessenger;
 use std::path::Path;
 use std::time::Duration;
-use tempfile::TempDir;
 
 const ADD_CMD_MARKER_FILE: &str = "add_cmd_executed.marker";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -33,6 +31,7 @@ async fn listen_for_node_fs_add_success() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -128,6 +127,7 @@ async fn listen_for_node_add_no_config_found() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -170,6 +170,7 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
         manifest: {
             name: "git_hash_mismatch_node",
             tag: "0.1.0",
+            language: "rust",
             start_cmd: ["sleep", "10"]
         }
     }"#;
@@ -259,6 +260,7 @@ async fn listen_for_node_add_no_start_cmd_fails() {
         manifest: {
             name: "no_start_cmd_node",
             tag: "0.1.0",
+            language: "rust",
         },
         parameters: {}
     }"#;
@@ -307,6 +309,7 @@ async fn listen_for_node_add_dependency_not_resolved() {
         manifest: {
             name: "consumer_node",
             tag: "1.0.0",
+            language: "rust",
             start_cmd: ["sleep", "10"],
         },
         interfaces: {
@@ -381,6 +384,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}
@@ -419,6 +423,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -504,6 +509,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
             manifest: {{
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -539,6 +545,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
             manifest: {{
                 name: "{DEPENDENT_NODE_NAME}",
                 tag: "{DEPENDENT_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -586,6 +593,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
             manifest: {{
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -661,6 +669,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "1.0.0",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -690,6 +699,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "2.0.0",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -754,6 +764,7 @@ async fn listen_for_node_add_copies_files_to_storage() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -826,6 +837,7 @@ async fn listen_for_node_add_runs_add_cmd() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 add_cmd: ["touch", "{ADD_CMD_MARKER_FILE}"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -896,6 +908,7 @@ async fn listen_for_node_add_add_cmd_failure_fails_add() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 add_cmd: ["this_command_does_not_exist_12345"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -955,6 +968,7 @@ async fn listen_for_node_add_add_cmd_nonzero_exit_fails_add() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 add_cmd: ["sh", "-c", "exit 1"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -1012,6 +1026,7 @@ async fn listen_for_node_add_streams_stdout_and_stderr() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -1073,6 +1088,7 @@ async fn listen_for_node_add_fingerprint_mismatch() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -1147,6 +1163,7 @@ async fn listen_for_node_add_writes_log_file() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -1257,6 +1274,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
             manifest: {{
                 name: "{FIRST_NODE_NAME}",
                 tag: "{FIRST_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -1310,6 +1328,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
             manifest: {{
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }}
         }}"#

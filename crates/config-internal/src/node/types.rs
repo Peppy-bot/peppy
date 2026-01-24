@@ -9,7 +9,8 @@ use std::{
     fmt::{self, Display, Formatter},
 };
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PeppygenLanguage {
     #[default]
     Rust,
@@ -491,6 +492,7 @@ fn default_action_service_qos_profile() -> QoSProfile {
 pub struct Manifest {
     pub name: Name,
     pub tag: String,
+    pub language: PeppygenLanguage,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
     // Command to run when right before the node is added to the node stack

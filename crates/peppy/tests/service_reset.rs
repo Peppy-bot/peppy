@@ -36,6 +36,7 @@ fn write_node_config(
                 manifest: {{
                     name: "{node_name}",
                     tag: "{node_tag}",
+                    language: "rust",
                     start_cmd: [{start_cmd_json5}]
                 }}
             }}"#

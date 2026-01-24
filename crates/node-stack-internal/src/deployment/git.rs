@@ -190,6 +190,7 @@ mod tests {
                 manifest: {
                     name: "uvc_camera",
                     tag: "0.1.0",
+                    language: "rust",
                     start_cmd: ["cargo", "run", "--release"]
                 }
             }"#,

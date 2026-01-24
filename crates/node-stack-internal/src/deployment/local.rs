@@ -95,6 +95,7 @@ mod tests {
                 manifest: {
                     name: "master",
                     tag: "1.0.0",
+                    language: "rust",
                     start_cmd: ["cargo", "run"]
                 }
             }"#,
@@ -109,6 +110,7 @@ mod tests {
                 manifest: {
                     name: "uvc_camera",
                     tag: "0.1.0",
+                    language: "rust",
                     start_cmd: ["cargo", "run", "--release"]
                 }
             }"#,
@@ -123,6 +125,7 @@ mod tests {
                 manifest: {
                     name: "lidar",
                     tag: "0.1.0",
+                    language: "rust",
                     start_cmd: ["cargo", "run", "--release"]
                 }
             }"#,

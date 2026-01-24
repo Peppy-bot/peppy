@@ -142,6 +142,7 @@ async fn listen_for_node_start_timeout() {
             manifest: {{
                 name: "{}",
                 tag: "0.1.0",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}
@@ -339,6 +340,7 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
             }}
         }}"#
@@ -464,6 +466,7 @@ async fn listen_for_node_start_writes_log_file() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
             }}
         }}"#
@@ -606,6 +609,7 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["echo", "test"]
             }},
             parameters: {{
@@ -738,6 +742,7 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["echo", "test"]
             }},
             parameters: {{
@@ -896,6 +901,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
             manifest: {{
                 name: "{FIRST_NODE_NAME}",
                 tag: "{FIRST_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "30"]
             }}
         }}"#
@@ -927,6 +933,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
             manifest: {{
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "30"]
             }}
         }}"#
