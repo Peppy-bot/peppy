@@ -3,6 +3,7 @@
   manifest: {
     name: "hello_receiver",
     tag: "0.1.0",
+    language: "rust",
     add_cmd: [
       "cargo",
       "build",
