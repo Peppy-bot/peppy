@@ -9,6 +9,13 @@ use std::{
     fmt::{self, Display, Formatter},
 };
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PeppygenLanguage {
+    #[default]
+    Rust,
+    Python,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {

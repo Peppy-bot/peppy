@@ -4,7 +4,7 @@
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    toolchain: "rust",
+    language: "rust",
     // Labels are useful if the node is published with `peppy node publish`
     labels: [
       "uvc",

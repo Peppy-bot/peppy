@@ -7,7 +7,7 @@
   manifest: {
     name: "web_video_stream",
     tag: "0.1.0",
-    toolchain: "rust",
+    language: "rust",
     start_cmd: [
       "cargo",
       "run",

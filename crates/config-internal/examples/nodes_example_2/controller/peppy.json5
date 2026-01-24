@@ -4,7 +4,7 @@
   manifest: {
     name: "my_action_robot_controller",
     tag: "0.1.0",
-    toolchain: "rust",
+    language: "rust",
     labels: [
       "controller",
     ],
