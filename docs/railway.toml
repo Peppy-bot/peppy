@@ -1,9 +1,9 @@
 [build]
 builder = "nixpacks"
 nixpacksConfigPath = "nixpacks.toml"
-buildCommand = "npm install && npm install -g serve && npm run build"
+buildCommand = "npm run build"
 
 [deploy]
-startCommand = "serve dist -l tcp://0.0.0.0:${PORT:-3000}"
+startCommand = "npm run preview -- --host 0.0.0.0 --port ${PORT:-3000}"
 healthcheckPath = "/"
 healthcheckTimeout = 100
