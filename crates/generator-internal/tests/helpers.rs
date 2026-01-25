@@ -2,7 +2,6 @@ use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use generator::RustGenerator;
 use peppylib::messaging::{NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::{MessengerHandle, ServiceMessenger};
-use pmi::{Messenger, MessengerAdapter, MessengerBackend, ZenohAdapter, ZenohNetProtocol};
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -330,119 +329,6 @@ pub async fn wait_for_health_service_reachable_or_exit(
         timeout,
     )
     .await;
-}
-
-pub async fn wait_for_action_service_reachable_or_exit(
-    ctx: &WaitContext<'_>,
-    target_node_name: &str,
-    target_service_name: &str,
-    target_instance_id: Option<&str>,
-    child: &mut std::process::Child,
-    dir: &std::path::Path,
-    timeout: Duration,
-) {
-    const INSTANCE_ID_WILDCARD: &str = "**";
-    const BROADCAST_MARKER: &str = "_any_";
-
-    let (router_host, router_port) = ctx
-        .messenger
-        .messaging_endpoint()
-        .await
-        .expect("zenoh messaging endpoint should be available for reachability checks");
-
-    let adapter = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &router_host, router_port)
-        .expect("failed to create zenoh adapter for probe messenger");
-    let mut probe_messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
-    probe_messenger
-        .start_session()
-        .await
-        .expect("failed to start probe messenger session");
-
-    let start = Instant::now();
-    loop {
-        if let Some(status) = child
-            .try_wait()
-            .expect("failed to poll process status for generated project")
-        {
-            let output = wait_for_child(child, None, dir);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            panic!(
-                "process exited before action `{}` became reachable (status: {:?}) for project at {}\nstdout:\n{}\nstderr:\n{}",
-                target_service_name,
-                status.code(),
-                dir.display(),
-                stdout,
-                stderr
-            );
-        }
-
-        let caller_target_instance_segment = if ctx.caller_instance_id != INSTANCE_ID_WILDCARD {
-            ctx.caller_instance_id
-        } else {
-            INSTANCE_ID_WILDCARD
-        };
-
-        let (effective_target_master, effective_target_instance) =
-            match (ctx.target_master_node, target_instance_id) {
-                (Some(master), Some(instance)) => (master, instance),
-                (Some(master), None) => (master, BROADCAST_MARKER),
-                (None, Some(instance)) => (BROADCAST_MARKER, instance),
-                (None, None) => (BROADCAST_MARKER, BROADCAST_MARKER),
-            };
-
-        let target_bound_instance_segment = (effective_target_instance != INSTANCE_ID_WILDCARD)
-            .then_some(effective_target_instance);
-
-        let target_master = target_bound_instance_segment
-            .as_ref()
-            .map(|_| effective_target_master)
-            .unwrap_or(BROADCAST_MARKER);
-        let target_instance = target_bound_instance_segment.unwrap_or(BROADCAST_MARKER);
-
-        let service_root = format!("action/{target_node_name}/{target_service_name}");
-        let request_topic = format!(
-            "{}/{}/{}/{}/{}/request/reachability_probe",
-            target_master,
-            ctx.bound_master_node,
-            target_instance,
-            caller_target_instance_segment,
-            service_root
-        );
-
-        let reachable = probe_messenger
-            .has_matching_subscribers(&request_topic)
-            .await
-            .unwrap_or_else(|err| {
-                panic!(
-                    "failed to check reachability for action `{}` (node={}, instance={:?}) for project at {}: {}",
-                    target_service_name,
-                    target_node_name,
-                    target_instance_id,
-                    dir.display(),
-                    err
-                )
-            });
-
-        if reachable {
-            break;
-        }
-
-        if start.elapsed() > timeout {
-            panic!(
-                "timed out after {:?} waiting for action `{}` to become reachable (node={}, instance={:?}) for project at {}",
-                timeout,
-                target_service_name,
-                target_node_name,
-                target_instance_id,
-                dir.display()
-            );
-        }
-
-        sleep(Duration::from_millis(50)).await;
-    }
-
-    let _ = probe_messenger.stop_session().await;
 }
 
 pub async fn send_shutdown(
