@@ -31,11 +31,7 @@ pub enum InterfaceVariant {
     ExposedService(ExposedService),
     ExposedAction(ExposedAction),
     SubscribedTopic(SubscribedTopic, MessageFormat),
-    SubscribedService(
-        SubscribedService,
-        Option<MessageFormat>,
-        Option<MessageFormat>,
-    ),
+    SubscribedService(SubscribedService, MessageFormat, MessageFormat),
     SubscribedAction(SubscribedAction, SubscribedActionMessage),
 }
 
@@ -126,8 +122,8 @@ impl DeploymentInterface {
             InterfaceVariant::SubscribedService(service, request_arguments, response_arguments) => {
                 backend.add_subscribed_service(
                     service,
-                    request_arguments.as_ref(),
-                    response_arguments.as_ref(),
+                    Some(request_arguments),
+                    Some(response_arguments),
                 )
             }
             InterfaceVariant::SubscribedAction(action, messages) => {

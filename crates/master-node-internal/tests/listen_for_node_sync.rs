@@ -809,6 +809,317 @@ async fn listen_for_node_generate_generates_rust_subscribed_service_interfaces()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_generate_generates_rust_subscribed_topic_interfaces() {
+    let started_master = start_master_node_with_mock_messenger().await;
+
+    let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
+    write_node_config(
+        uvc_camera_node_dir.path(),
+        r#"
+        {
+            schema_version: 1,
+            manifest: {
+                name: "uvc_camera",
+                tag: "0.1.0",
+                language: "rust",
+                labels: ["camera"],
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
+            },
+            parameters: {},
+            interfaces: {
+                exposes: {
+                    topics: [
+                      {
+                        name: "video_stream",
+                        qos_profile: "sensor_data",
+                        message_format: {
+                          width: "u32",
+                          height: "u32",
+                        },
+                      }
+                    ],
+                    services: [],
+                    actions: [],
+                },
+            },
+        }
+        "#,
+    );
+
+    let uvc_camera_response =
+        NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH)
+            .poll(
+                &started_master.caller_handle,
+                &started_master.master_node_name,
+                CALLER_INSTANCE_ID,
+                &started_master.master_node_name,
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("node_generate request should complete");
+
+    assert!(
+        uvc_camera_response.success,
+        "uvc_camera node_generate should succeed, got error: {}",
+        uvc_camera_response.error_message
+    );
+
+    common::write_peppy_json5(
+        uvc_camera_node_dir.path(),
+        &fs::read_to_string(uvc_camera_node_dir.path().join(NODE_CONFIG_FILE))
+            .expect("failed to read uvc_camera config"),
+    );
+    let add_result = common::send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        uvc_camera_node_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(10),
+        None,
+    )
+    .await
+    .expect("node_add should succeed");
+
+    assert!(
+        add_result.success,
+        "uvc_camera node_add should succeed, got error: {}",
+        add_result.error_message.unwrap_or_default()
+    );
+
+    let brain_node_dir = tempdir().expect("failed to create temp node directory");
+    write_node_config(
+        brain_node_dir.path(),
+        r#"
+        {
+            schema_version: 1,
+            manifest: {
+                name: "my_robot_brain",
+                tag: "0.1.0",
+                language: "rust",
+                labels: ["brain"],
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
+            },
+            parameters: {},
+            interfaces: {
+                exposes: {
+                    topics: [],
+                    services: [],
+                    actions: [],
+                },
+                subscribes_to: {
+                    topics: [
+                        {
+                          id: "camera_front",
+                          node: "uvc_camera",
+                          name: "video_stream",
+                          tag: "0.1.0",
+                        }
+                    ],
+                },
+            },
+        }
+        "#,
+    );
+
+    let brain_response = NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH)
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_generate request should complete");
+
+    assert!(
+        brain_response.success,
+        "my_robot_brain node_generate should succeed, got error: {}",
+        brain_response.error_message
+    );
+
+    let brain_peppygen_dir = brain_node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        brain_peppygen_dir.exists(),
+        "peppygen directory should exist at {}",
+        brain_peppygen_dir.display()
+    );
+
+    let subscribed_topic_path = brain_peppygen_dir
+        .join("src")
+        .join("subscribed_topics")
+        .join("uvc_camera_video_stream.rs");
+    assert!(
+        subscribed_topic_path.exists(),
+        "peppygen uvc_camera_video_stream.rs should exist at {}",
+        subscribed_topic_path.display()
+    );
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_generate_generates_rust_subscribed_action_interfaces() {
+    let started_master = start_master_node_with_mock_messenger().await;
+
+    let action_server_node_dir = tempdir().expect("failed to create temp node directory");
+    write_node_config(
+        action_server_node_dir.path(),
+        r#"
+        {
+            schema_version: 1,
+            manifest: {
+                name: "brain",
+                tag: "0.1.0",
+                language: "rust",
+                labels: ["brain"],
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
+            },
+            parameters: {},
+            interfaces: {
+                exposes: {
+                    topics: [],
+                    services: [],
+                    actions: [
+                      {
+                        name: "move_arm",
+                        goal_service: {
+                          request_message_format: { value: "u32" },
+                          response_message_format: { accepted: "bool" },
+                        },
+                        feedback_topic: {
+                          qos_profile: "sensor_data",
+                          message_format: { progress: "u8" },
+                        },
+                        result_service: {
+                          response_message_format: { success: "bool" },
+                        },
+                      }
+                    ],
+                },
+            },
+        }
+        "#,
+    );
+
+    let action_server_response =
+        NodeSyncRequest::new(action_server_node_dir.path(), common::TEST_GIT_HASH)
+            .poll(
+                &started_master.caller_handle,
+                &started_master.master_node_name,
+                CALLER_INSTANCE_ID,
+                &started_master.master_node_name,
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("node_generate request should complete");
+
+    assert!(
+        action_server_response.success,
+        "brain node_generate should succeed, got error: {}",
+        action_server_response.error_message
+    );
+
+    common::write_peppy_json5(
+        action_server_node_dir.path(),
+        &fs::read_to_string(action_server_node_dir.path().join(NODE_CONFIG_FILE))
+            .expect("failed to read brain config"),
+    );
+    let add_result = common::send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        action_server_node_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(10),
+        None,
+    )
+    .await
+    .expect("node_add should succeed");
+
+    assert!(
+        add_result.success,
+        "brain node_add should succeed, got error: {}",
+        add_result.error_message.unwrap_or_default()
+    );
+
+    let controller_node_dir = tempdir().expect("failed to create temp node directory");
+    write_node_config(
+        controller_node_dir.path(),
+        r#"
+        {
+            schema_version: 1,
+            manifest: {
+                name: "controller",
+                tag: "0.1.0",
+                language: "rust",
+                labels: ["controller"],
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
+            },
+            parameters: {},
+            interfaces: {
+                exposes: {
+                    topics: [],
+                    services: [],
+                    actions: [],
+                },
+                subscribes_to: {
+                    actions: [
+                        {
+                          id: "brain_move_arm",
+                          node: "brain",
+                          name: "move_arm",
+                          tag: "0.1.0",
+                        }
+                    ],
+                },
+            },
+        }
+        "#,
+    );
+
+    let controller_response =
+        NodeSyncRequest::new(controller_node_dir.path(), common::TEST_GIT_HASH)
+            .poll(
+                &started_master.caller_handle,
+                &started_master.master_node_name,
+                CALLER_INSTANCE_ID,
+                &started_master.master_node_name,
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("node_generate request should complete");
+
+    assert!(
+        controller_response.success,
+        "controller node_generate should succeed, got error: {}",
+        controller_response.error_message
+    );
+
+    let controller_peppygen_dir = controller_node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        controller_peppygen_dir.exists(),
+        "peppygen directory should exist at {}",
+        controller_peppygen_dir.display()
+    );
+
+    let subscribed_action_path = controller_peppygen_dir
+        .join("src")
+        .join("subscribed_actions")
+        .join("brain_move_arm.rs");
+    assert!(
+        subscribed_action_path.exists(),
+        "peppygen brain_move_arm.rs should exist at {}",
+        subscribed_action_path.display()
+    );
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_generate_generates_rust_parameters() {
     let started_master = start_master_node_with_mock_messenger().await;
 

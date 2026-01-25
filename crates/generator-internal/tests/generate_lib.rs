@@ -422,11 +422,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_services() {
             .expect("failed to parse response format");
 
     let subscribed_interfaces = vec![DeploymentInterface::new(
-        InterfaceVariant::SubscribedService(
-            subscribed_service,
-            Some(request_format),
-            Some(response_format),
-        ),
+        InterfaceVariant::SubscribedService(subscribed_service, request_format, response_format),
     )];
 
     generate_peppygen_lib(
