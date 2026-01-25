@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{ArgGroup, Subcommand};
-use config::peppy_config::BuildSystem;
 use tracing::info;
 
 use super::Command;
@@ -69,14 +68,20 @@ pub enum NodeCommands {
         /// Optional: target directory (defaults to current directory)
         #[arg(long)]
         to_dir: Option<PathBuf>,
-        /// Build system for the node: `rust`, `python`, `cargo`, or `uv`
-        #[arg(long, visible_alias = "lang", value_enum, default_value_t = BuildSystem::Rust)]
-        build_system: BuildSystem,
     },
     /// Add a node to the node stack based on its peppy.json5 file
     Add {
-        /// Directory containing the peppy.json5 configuration file
-        node_dir: PathBuf,
+        /// Source location of a node (directory containing peppy.json5).
+        ///
+        /// Supported formats:
+        /// - Local path: `/path/to/node` or `./relative/path`
+        /// - Git URL: `https://github.com/org/repo.git/subpath`
+        /// - Git URL with ref: `https://github.com/org/repo.git/subpath --ref tag-or-branch`
+        /// - HTTP archive: `https://example.com/node.tar.zst`
+        source: String,
+        /// Git ref (tag/branch/commit) to checkout before reading `subpath` (git sources only).
+        #[arg(long = "ref")]
+        git_ref: Option<String>,
         /// If set, will attempt to spawn an instance directly after adding the node to the node stack
         #[arg(long)]
         start: bool,
@@ -92,11 +97,7 @@ pub enum NodeCommands {
         timeout: u64,
     },
     /// Regenerate the node's interface code (peppygen) based on peppy.json5
-    Sync {
-        /// Build system for the node: `rust`, `python`, `cargo`, or `uv`
-        #[arg(long, visible_alias = "lang", value_enum, default_value_t = BuildSystem::Rust)]
-        build_system: BuildSystem,
-    },
+    Sync {},
     /// Runs an instance from a node added to the node stack
     ///
     /// Usage: `peppy node start <node_name>:<tag>` or `peppy node start --node-name <name> --tag <tag>`
@@ -161,13 +162,8 @@ pub struct NodeCommand {
 impl Command for NodeCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<(), CommandError> {
         match self.command {
-            NodeCommands::Init {
-                to_dir,
-                build_system,
-                node_name,
-            } => {
-                let mut node_builder =
-                    NodeInitBuilder::new(ctx, node_name).build_system(build_system);
+            NodeCommands::Init { to_dir, node_name } => {
+                let mut node_builder = NodeInitBuilder::new(ctx, node_name);
 
                 if let Some(dir) = to_dir {
                     node_builder = node_builder.to_dir(dir);
@@ -176,19 +172,26 @@ impl Command for NodeCommand {
                 node_builder.build()
             }
             NodeCommands::Add {
-                node_dir,
+                source,
+                git_ref,
                 start: run,
                 args,
                 instance_id,
                 timeout,
             } => {
-                let display_path = node_dir.canonicalize().unwrap_or_else(|_| node_dir.clone());
-                info!("Adding node from {}...", display_path.display());
-                add::add_node(ctx, node_dir, run, args, instance_id, timeout)
+                let is_url = source.contains("://") || source.starts_with("git@");
+                let display_source = if is_url {
+                    source.clone()
+                } else {
+                    let path = PathBuf::from(&source);
+                    path.canonicalize().unwrap_or(path).display().to_string()
+                };
+                info!("Adding node from {}...", display_source);
+                add::add_node(ctx, source, git_ref, run, args, instance_id, timeout)
             }
-            NodeCommands::Sync { build_system } => {
+            NodeCommands::Sync {} => {
                 info!("Syncing node interfaces...");
-                sync::sync_node(ctx, build_system)
+                sync::sync_node(ctx)
             }
             NodeCommands::Start {
                 node_ref,

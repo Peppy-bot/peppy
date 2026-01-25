@@ -1,23 +1,125 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, TEST_GIT_HASH, send_node_add_and_wait,
+    CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, send_node_add_and_wait,
     start_master_node_with_mock_messenger, write_peppy_json5,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, logs_dir_add};
 use config::node::QoSProfile;
+use config::test_helpers;
+use git2::{Repository, Signature};
+use gix_url::Url as GitUrl;
 use master_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse};
 use master_node::names;
 use peppylib::ActionMessenger;
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tempfile::TempDir;
+use {
+    httptest::Expectation, httptest::Server, httptest::matchers::request,
+    httptest::responders::status_code,
+};
 
 const ADD_CMD_MARKER_FILE: &str = "add_cmd_executed.marker";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
 
+fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
+    let base_path = to_path.as_ref();
+    let repo_path = base_path.join("versioned_peppy_nodes_repo.git");
+    std::fs::create_dir_all(&repo_path).expect("failed to create repo directory");
+
+    let repo = Repository::init(&repo_path).expect("failed to init repository");
+    let signature =
+        Signature::now("Peppy", "peppy@example.com").expect("failed to create signature");
+
+    let uvc_dir = repo_path.join("nodes/uvc_camera");
+    std::fs::create_dir_all(&uvc_dir).expect("failed to create uvc directories");
+
+    let rel_config_path = Path::new("nodes/uvc_camera").join(NODE_CONFIG_FILE);
+
+    std::fs::write(
+        repo_path.join(&rel_config_path),
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "uvc_camera",
+                tag: "0.1.0",
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            }
+        }"#,
+    )
+    .expect("failed to write uvc node v0.1.0");
+
+    let mut index = repo.index().expect("failed to open index");
+    index
+        .add_path(&rel_config_path)
+        .expect("failed to add uvc node");
+    index.write().expect("failed to write index");
+
+    let tree_id = index.write_tree().expect("failed to write tree");
+    let tree = repo.find_tree(tree_id).expect("failed to find tree");
+    let commit_v1 = repo
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "uvc_camera v0.1.0",
+            &tree,
+            &[],
+        )
+        .expect("failed to commit v0.1.0");
+    let commit_v1 = repo
+        .find_commit(commit_v1)
+        .expect("failed to find v0.1.0 commit");
+    repo.tag("v0.1.0", commit_v1.as_object(), &signature, "v0.1.0", false)
+        .expect("failed to create v0.1.0 tag");
+
+    std::fs::write(
+        repo_path.join(&rel_config_path),
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "uvc_camera",
+                tag: "0.2.0",
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            }
+        }"#,
+    )
+    .expect("failed to write uvc node v0.2.0");
+
+    let mut index = repo.index().expect("failed to open index");
+    index
+        .add_path(&rel_config_path)
+        .expect("failed to add uvc node");
+    index.write().expect("failed to write index");
+
+    let tree_id = index.write_tree().expect("failed to write tree");
+    let tree = repo.find_tree(tree_id).expect("failed to find tree");
+    let commit_v2 = repo
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "uvc_camera v0.2.0",
+            &tree,
+            &[&commit_v1],
+        )
+        .expect("failed to commit v0.2.0");
+    let commit_v2 = repo
+        .find_commit(commit_v2)
+        .expect("failed to find v0.2.0 commit");
+    repo.tag("v0.2.0", commit_v2.as_object(), &signature, "v0.2.0", false)
+        .expect("failed to create v0.2.0 tag");
+
+    repo_path
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_success() {
+async fn listen_for_node_fs_add_success() {
     const TARGET_NODE_NAME: &str = "runnable_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 
@@ -31,6 +133,7 @@ async fn listen_for_node_add_success() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -104,6 +207,265 @@ async fn listen_for_node_add_success() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_git_add_success() {
+    let git_repo_temp_dir = TempDir::new().unwrap();
+    let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
+
+    const TARGET_NODE_NAME: &str = "uvc_camera";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_REPO_PATH: &str = "nodes/uvc_camera";
+
+    let started_master = start_master_node_with_mock_messenger().await;
+    let node_stack = started_master.node_stack.clone();
+
+    let repo_url = GitUrl::try_from(git_repo_path.as_path()).expect("git repo path should parse");
+
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        NodeAddSource::Git {
+            repo_url,
+            repo_path: TARGET_REPO_PATH,
+            repo_ref: None,
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        add_result.success,
+        "node_add should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    assert_eq!(node_stack.len(), 2, "root + added node");
+
+    let entity = node_stack
+        .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
+        .expect("node should exist in stack");
+    assert_eq!(entity.instances().len(), 0);
+
+    let snapshot_path = add_result.snapshot_path.as_path();
+    let root_path = entity.root_path();
+    assert_eq!(snapshot_path, root_path);
+    assert!(root_path.exists(), "snapshot path should exist");
+    assert!(
+        root_path.join(NODE_CONFIG_FILE).exists(),
+        "config file should exist in snapshot"
+    );
+
+    // Verify the path follows the expected naming convention: <node_name>_<tag>_<uuid>
+    let folder_name = root_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("should have folder name");
+    assert!(
+        folder_name.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
+        "folder name should start with '<node_name>_<tag>_', got: {}",
+        folder_name
+    );
+
+    // Clean up the copied directory
+    let _ = std::fs::remove_dir_all(root_path);
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_git_add_with_ref_success() {
+    let git_repo_temp_dir = TempDir::new().unwrap();
+    let git_repo_path = create_versioned_nodes_git_repo(&git_repo_temp_dir);
+
+    const TARGET_NODE_NAME: &str = "uvc_camera";
+    const TARGET_REPO_PATH: &str = "nodes/uvc_camera";
+
+    let started_master = start_master_node_with_mock_messenger().await;
+    let node_stack = started_master.node_stack.clone();
+
+    let repo_url = GitUrl::try_from(git_repo_path.as_path()).expect("git repo path should parse");
+
+    let add_result_head = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        NodeAddSource::Git {
+            repo_url: repo_url.clone(),
+            repo_path: TARGET_REPO_PATH,
+            repo_ref: None,
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        add_result_head.success,
+        "node_add should succeed, got error: {:?}",
+        add_result_head.error_message
+    );
+    assert!(node_stack.contains(TARGET_NODE_NAME, "0.2.0"));
+
+    let add_result_ref = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        NodeAddSource::Git {
+            repo_url,
+            repo_path: TARGET_REPO_PATH,
+            repo_ref: Some("v0.1.0"),
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        add_result_ref.success,
+        "node_add should succeed, got error: {:?}",
+        add_result_ref.error_message
+    );
+    assert!(node_stack.contains(TARGET_NODE_NAME, "0.1.0"));
+
+    let snapshot_path_head = node_stack
+        .find(TARGET_NODE_NAME, "0.2.0")
+        .expect("node should exist in stack")
+        .root_path()
+        .to_path_buf();
+    let _ = std::fs::remove_dir_all(&snapshot_path_head);
+
+    let snapshot_path_ref = node_stack
+        .find(TARGET_NODE_NAME, "0.1.0")
+        .expect("node should exist in stack")
+        .root_path()
+        .to_path_buf();
+    let _ = std::fs::remove_dir_all(&snapshot_path_ref);
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_http_add_success() {
+    const TARGET_NODE_NAME: &str = "http_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_master = start_master_node_with_mock_messenger().await;
+    let node_stack = started_master.node_stack.clone();
+
+    let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+
+    let manifest_path = bundle_dir.path().join(NODE_CONFIG_FILE);
+    std::fs::write(&manifest_path, &peppy_json5).expect("failed to write manifest");
+
+    let test_file_content = "hello from http";
+    let test_file_path = bundle_dir.path().join("test_file.txt");
+    std::fs::write(&test_file_path, test_file_content).expect("failed to write test file");
+
+    let mut tar_data = Vec::new();
+    {
+        let mut tar_builder = tar::Builder::new(&mut tar_data);
+        tar_builder
+            .append_path_with_name(&manifest_path, NODE_CONFIG_FILE)
+            .expect("failed to append manifest to tar");
+        tar_builder
+            .append_path_with_name(&test_file_path, "test_file.txt")
+            .expect("failed to append test file to tar");
+        tar_builder.finish().expect("failed to finish tar");
+    }
+
+    let bundle_path = bundle_dir.path().join("http_node.tar.zst");
+    let bundle_file = std::fs::File::create(&bundle_path).expect("failed to create bundle file");
+    let mut encoder = zstd::Encoder::new(bundle_file, 0).expect("failed to create zstd encoder");
+    encoder
+        .write_all(&tar_data)
+        .expect("failed to write compressed bundle");
+    encoder.finish().expect("failed to finish encoder");
+    let bundle_bytes = std::fs::read(&bundle_path).expect("failed to read bundle");
+
+    let server = Server::run();
+    server.expect(
+        Expectation::matching(request::method_path("GET", "/bundles/http_node.tar.zst"))
+            .respond_with(status_code(200).body(bundle_bytes)),
+    );
+    let url = url::Url::parse(&server.url("/bundles/http_node.tar.zst").to_string())
+        .expect("http bundle url should parse");
+
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        NodeAddSource::Http(url),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        add_result.success,
+        "node_add should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    assert_eq!(node_stack.len(), 2, "root + added node");
+
+    let entity = node_stack
+        .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
+        .expect("node should exist in stack");
+    assert_eq!(entity.instances().len(), 0);
+
+    let snapshot_path = add_result.snapshot_path.as_path();
+    let root_path = entity.root_path();
+    assert_eq!(snapshot_path, root_path);
+    assert!(root_path.exists(), "snapshot path should exist");
+    assert!(
+        root_path.join(NODE_CONFIG_FILE).exists(),
+        "config file should exist in snapshot"
+    );
+
+    let copied_file = root_path.join("test_file.txt");
+    assert!(copied_file.exists(), "test_file.txt should be copied");
+    let copied_content = std::fs::read_to_string(&copied_file).expect("should read copied file");
+    assert_eq!(
+        copied_content, test_file_content,
+        "file content should match"
+    );
+
+    // Verify the path follows the expected naming convention: <node_name>_<tag>_<uuid>
+    let folder_name = root_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("should have folder name");
+    assert!(
+        folder_name.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
+        "folder name should start with '<node_name>_<tag>_', got: {}",
+        folder_name
+    );
+
+    // Clean up the copied directory
+    let _ = std::fs::remove_dir_all(root_path);
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_no_config_found() {
     const TARGET_NODE_NAME: &str = "runnable_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
@@ -118,6 +480,7 @@ async fn listen_for_node_add_no_config_found() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -160,6 +523,7 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
         manifest: {
             name: "git_hash_mismatch_node",
             tag: "0.1.0",
+            language: "rust",
             start_cmd: ["sleep", "10"]
         }
     }"#;
@@ -249,6 +613,7 @@ async fn listen_for_node_add_no_start_cmd_fails() {
         manifest: {
             name: "no_start_cmd_node",
             tag: "0.1.0",
+            language: "rust",
         },
         parameters: {}
     }"#;
@@ -297,6 +662,7 @@ async fn listen_for_node_add_dependency_not_resolved() {
         manifest: {
             name: "consumer_node",
             tag: "1.0.0",
+            language: "rust",
             start_cmd: ["sleep", "10"],
         },
         interfaces: {
@@ -371,6 +737,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}
@@ -409,6 +776,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -494,6 +862,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
             manifest: {{
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -529,6 +898,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
             manifest: {{
                 name: "{DEPENDENT_NODE_NAME}",
                 tag: "{DEPENDENT_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -576,6 +946,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
             manifest: {{
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -651,6 +1022,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "1.0.0",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -680,6 +1052,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "2.0.0",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -744,6 +1117,7 @@ async fn listen_for_node_add_copies_files_to_storage() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -816,6 +1190,7 @@ async fn listen_for_node_add_runs_add_cmd() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 add_cmd: ["touch", "{ADD_CMD_MARKER_FILE}"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -886,6 +1261,7 @@ async fn listen_for_node_add_add_cmd_failure_fails_add() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 add_cmd: ["this_command_does_not_exist_12345"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -945,6 +1321,7 @@ async fn listen_for_node_add_add_cmd_nonzero_exit_fails_add() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 add_cmd: ["sh", "-c", "exit 1"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -1002,6 +1379,7 @@ async fn listen_for_node_add_streams_stdout_and_stderr() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -1063,6 +1441,7 @@ async fn listen_for_node_add_fingerprint_mismatch() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -1096,7 +1475,7 @@ async fn listen_for_node_add_fingerprint_mismatch() {
         add_result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("Fingerprint verification failed"))
+            .map(|msg| msg.contains("Codegen fingerprint verification failed"))
             .unwrap_or(false),
         "error message should indicate fingerprint verification failure, got: {:?}",
         add_result.error_message
@@ -1137,6 +1516,7 @@ async fn listen_for_node_add_writes_log_file() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+                language: "rust",
                 add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -1247,6 +1627,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
             manifest: {{
                 name: "{FIRST_NODE_NAME}",
                 tag: "{FIRST_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -1300,6 +1681,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
             manifest: {{
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }}
         }}"#

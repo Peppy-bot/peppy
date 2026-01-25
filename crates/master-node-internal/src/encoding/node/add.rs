@@ -1,32 +1,78 @@
 //! Encoding types for the NodeAdd action (streaming version with feedback).
 
-use std::path::PathBuf;
-use std::time::Duration;
-
-use bytes::Bytes;
-use capnp::message::Builder;
-use config::node::QoSProfile;
-use peppylib::messaging::ActionGoalHandle;
-use peppylib::{ActionMessenger, MessengerHandle};
-
 use crate::Result;
 use crate::names;
 use crate::node_capnp;
+use bytes::Bytes;
+use capnp::message::Builder;
+use config::node::QoSProfile;
+use gix_url::Url as GitUrl;
+use peppylib::messaging::ActionGoalHandle;
+use peppylib::{ActionMessenger, MessengerHandle};
+use std::path::PathBuf;
+use std::time::Duration;
 
 use super::{decode_message, encode_message};
 
-/// Goal message for the NodeAdd action.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeSource {
+    Fs(PathBuf),
+    Git {
+        repo_url: GitUrl,
+        repo_path: String,
+        repo_ref: Option<String>,
+    },
+    // Only .tzst (.tar.zstd) archives are supported for the moment
+    Http {
+        url: url::Url,
+    },
+}
+
+/// Goal message for the NodeAdd action.
 pub struct NodeAddGoal {
-    pub from_dir: PathBuf,
+    pub source: NodeSource,
     pub git_hash: String,
 }
 
 impl NodeAddGoal {
-    pub fn new(from_dir: impl Into<PathBuf>, git_hash: impl Into<String>) -> Self {
+    /// Creates a new NodeAddGoal from a filesystem path.
+    pub fn new(path: impl Into<PathBuf>, git_hash: impl Into<String>) -> Self {
         Self {
-            from_dir: from_dir.into(),
+            source: NodeSource::Fs(path.into()),
             git_hash: git_hash.into(),
+        }
+    }
+
+    /// Creates a new NodeAddGoal from a Git repository with an optional ref (tag/branch/commit).
+    pub fn new_git(
+        repo_url: GitUrl,
+        repo_path: impl Into<String>,
+        repo_ref: Option<String>,
+        git_hash: impl Into<String>,
+    ) -> Self {
+        Self {
+            source: NodeSource::Git {
+                repo_url,
+                repo_path: repo_path.into(),
+                repo_ref,
+            },
+            git_hash: git_hash.into(),
+        }
+    }
+
+    /// Creates a new NodeAddGoal from an HTTP URL (for .tzst archives).
+    pub fn new_http(url: url::Url, git_hash: impl Into<String>) -> Self {
+        Self {
+            source: NodeSource::Http { url },
+            git_hash: git_hash.into(),
+        }
+    }
+
+    /// Returns the filesystem path if the source is `Fs`, otherwise `None`.
+    pub fn fs_path(&self) -> Option<&PathBuf> {
+        match &self.source {
+            NodeSource::Fs(path) => Some(path),
+            NodeSource::Git { .. } | NodeSource::Http { .. } => None,
         }
     }
 
@@ -34,17 +80,63 @@ impl NodeAddGoal {
         let mut builder = Builder::new_default();
         {
             let mut goal = builder.init_root::<node_capnp::node_add_goal::Builder>();
-            goal.set_from_dir(self.from_dir.to_string_lossy().as_ref());
             goal.set_git_hash(&self.git_hash);
+            let mut source = goal.init_source();
+            match &self.source {
+                NodeSource::Fs(path) => {
+                    source.set_fs(path.to_string_lossy().as_ref());
+                }
+                NodeSource::Git {
+                    repo_url,
+                    repo_path,
+                    repo_ref,
+                } => {
+                    let mut git = source.init_git();
+                    git.set_repo_url(repo_url.to_bstring().to_string());
+                    git.set_repo_path(repo_path);
+                    git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
+                }
+                NodeSource::Http { url } => {
+                    source.set_http(url.as_str());
+                }
+            }
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
+        use crate::node_capnp::node_add_goal::source::Which;
         let reader = decode_message(data)?;
         let goal = reader.get_root::<node_capnp::node_add_goal::Reader>()?;
+        let source = match goal.get_source().which()? {
+            Which::Fs(fs) => NodeSource::Fs(PathBuf::from(fs?.to_str()?)),
+            Which::Git(git) => {
+                let git = git?;
+                let repo_url_str = git.get_repo_url()?.to_str()?;
+                let repo_url = GitUrl::try_from(repo_url_str)
+                    .map_err(|e| crate::Error::Decoding(format!("invalid git URL: {}", e)))?;
+                let repo_path = git.get_repo_path()?.to_str()?.to_owned();
+                let repo_ref = git.get_repo_ref()?.to_str()?.trim().to_owned();
+                let repo_ref = if repo_ref.is_empty() {
+                    None
+                } else {
+                    Some(repo_ref)
+                };
+                NodeSource::Git {
+                    repo_url,
+                    repo_path,
+                    repo_ref,
+                }
+            }
+            Which::Http(http) => {
+                let url_str = http?.to_str()?;
+                let url = url::Url::parse(url_str)
+                    .map_err(|e| crate::Error::Decoding(format!("invalid HTTP URL: {}", e)))?;
+                NodeSource::Http { url }
+            }
+        };
         Ok(Self {
-            from_dir: PathBuf::from(goal.get_from_dir()?.to_str()?),
+            source,
             git_hash: goal.get_git_hash()?.to_str()?.to_owned(),
         })
     }

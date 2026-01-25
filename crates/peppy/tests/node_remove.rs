@@ -48,7 +48,6 @@ fn node_remove_command_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
         },
     }
     .execute(&node_ctx)
@@ -66,10 +65,12 @@ fn node_remove_command_succeeds() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_path,
+            source: node_path.display().to_string(),
+            git_ref: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
+            timeout: 60,
         },
     }
     .execute(&node_ctx)
@@ -178,7 +179,6 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
         },
     }
     .execute(&node_ctx)
@@ -227,10 +227,12 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
     // (avoids cross-runtime issues when using separate Add and Start commands)
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_path,
+            source: node_path.display().to_string(),
+            git_ref: None,
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
+            timeout: 60,
         },
     }
     .execute(&node_ctx)
@@ -314,7 +316,6 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
         },
     }
     .execute(&node_ctx)
@@ -363,10 +364,12 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
     // (avoids cross-runtime issues when using separate Add and Start commands)
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_path,
+            source: node_path.display().to_string(),
+            git_ref: None,
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
+            timeout: 60,
         },
     }
     .execute(&node_ctx)

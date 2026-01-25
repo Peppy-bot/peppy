@@ -4,21 +4,24 @@ pub mod rust;
 pub mod types;
 
 use crate::error::{Error, Result};
-use config::{consts::NODE_CONFIG_FILE, node::NodeConfigParser, peppy_config::BuildSystem};
+use config::{
+    consts::NODE_CONFIG_FILE,
+    node::{NodeConfigParser, PeppygenLanguage},
+};
 use python::PythonGenerator;
 use rust::RustGenerator;
 use std::{fs, path::Path};
 use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 
-/// Generate an interface library for the given build system from a node directory.
+/// Generate an interface library for the given language from a node directory.
 ///
 /// This function reads the `peppy.json5` configuration file from the `node_dir`,
 /// extracts the exposed interfaces, combines them with the provided subscribed interfaces,
-/// and generates a library for the specified build system.
+/// and generates a library for the specified programming language.
 /// The library is generated at `node_dir/.peppy/libs/peppygen`.
 ///
 /// # Arguments
-/// * `build_system` - The build system to generate for (Rust/Cargo or Python/Uv)
+/// * `language` - The language to generate for (Rust or Python)
 /// * `node_dir` - Path to the node directory containing `peppy.json5`
 /// * `subscribed_interfaces` - Subscribed interfaces with resolved message formats from dependency nodes
 ///
@@ -27,8 +30,8 @@ use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 /// - The `peppy.json5` file is not found in `node_dir`
 /// - The configuration file cannot be parsed
 /// - Code generation fails
-pub fn generate_lib_for_build_system(
-    build_system: BuildSystem,
+pub fn generate_peppygen_lib(
+    language: PeppygenLanguage,
     node_dir: impl AsRef<Path>,
     subscribed_interfaces: Vec<DeploymentInterface>,
     git_hash: &str,
@@ -55,8 +58,8 @@ pub fn generate_lib_for_build_system(
     let output_dir = node_dir.join(config::consts::PEPPYGEN_OUTPUT_PATH);
     fs::create_dir_all(&output_dir)?;
 
-    let result = match build_system {
-        BuildSystem::Rust | BuildSystem::Cargo => {
+    let result = match language {
+        PeppygenLanguage::Rust => {
             let mut rust_generator = RustGenerator::new();
             rust_generator.set_parameters(node_config.parameters);
             generate_with_backend(rust_generator, &interfaces, &output_dir)?;
@@ -64,7 +67,7 @@ pub fn generate_lib_for_build_system(
             ensure_node_cargo_toml(node_dir, node_config.manifest.name.as_str())?;
             Ok(())
         }
-        BuildSystem::Python | BuildSystem::Uv => {
+        PeppygenLanguage::Python => {
             let mut python_generator = PythonGenerator::new();
             python_generator.set_parameters(node_config.parameters);
             generate_with_backend(python_generator, &interfaces, &output_dir)

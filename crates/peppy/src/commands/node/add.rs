@@ -1,7 +1,8 @@
 use config::node::NodeConfigParser;
+use gix_url::Url as GitUrl;
 use master_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult};
 use peppylib::{ActionMessenger, PeppyError};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
@@ -15,18 +16,166 @@ const CALLER_INSTANCE_ID: &str = "peppy-cli";
 // Timeout for the goal to be accepted (should be fast)
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 
+struct PreparedNodeAdd {
+    goal: NodeAddGoal,
+    pre_add_node_ref: Option<(String, String)>,
+}
+
+fn is_supported_http_archive(url: &url::Url) -> bool {
+    let path = url.path().to_ascii_lowercase();
+    path.ends_with(".tar.zst") || path.ends_with(".tar.zstd") || path.ends_with(".tzst")
+}
+
+fn is_probably_remote_source(source: &str) -> bool {
+    source.contains("://") || source.starts_with("git@")
+}
+
+fn parse_git_repo_url_and_path(source: &str) -> Result<(GitUrl, String)> {
+    if let Ok(mut parsed) = url::Url::parse(source) {
+        parsed.set_query(None);
+        parsed.set_fragment(None);
+
+        let segments: Vec<&str> = parsed
+            .path_segments()
+            .map(|segments| segments.collect())
+            .unwrap_or_default();
+        let repo_index = segments
+            .iter()
+            .rposition(|segment| segment.ends_with(".git"));
+
+        let (repo_url_str, repo_path) = if let Some(repo_index) = repo_index {
+            let repo_path_segments = segments[..=repo_index].join("/");
+            let repo_relative_path = segments[repo_index + 1..].join("/");
+
+            let mut repo_url = parsed.clone();
+            repo_url.set_path(&format!("/{}", repo_path_segments));
+            (repo_url.to_string(), repo_relative_path)
+        } else {
+            (parsed.to_string(), String::new())
+        };
+
+        let repo_url = GitUrl::try_from(repo_url_str.as_str()).map_err(|e| {
+            Error::ExecutionFailed(format!("Invalid git URL '{}': {}", repo_url_str, e))
+        })?;
+        return Ok((repo_url, repo_path));
+    }
+
+    let (repo_url_str, repo_path) = if let Some((before, after)) = source.split_once(".git/") {
+        (format!("{before}.git"), after.to_string())
+    } else {
+        (source.to_string(), String::new())
+    };
+
+    let repo_url = GitUrl::try_from(repo_url_str.as_str()).map_err(|e| {
+        Error::ExecutionFailed(format!("Invalid git URL '{}': {}", repo_url_str, e))
+    })?;
+    Ok((repo_url, repo_path))
+}
+
+fn node_ref_from_peppy_json5(peppy_json5: &Path) -> Result<(String, String)> {
+    let node_config = NodeConfigParser::from_path(peppy_json5).map_err(Error::PeppyConfig)?;
+    Ok((
+        node_config.manifest.name.as_str().to_string(),
+        node_config.manifest.tag.clone(),
+    ))
+}
+
+fn prepare_node_add_goal(
+    root_dir: &Path,
+    source: &str,
+    git_hash: &str,
+    git_ref: Option<&str>,
+) -> Result<PreparedNodeAdd> {
+    let git_ref = git_ref.map(str::trim);
+    if let Some(git_ref) = git_ref
+        && git_ref.is_empty()
+    {
+        return Err(Error::ExecutionFailed(
+            "`--ref` cannot be empty".to_string(),
+        ));
+    }
+
+    if is_probably_remote_source(source) {
+        if let Ok(url) = url::Url::parse(source)
+            && matches!(url.scheme(), "http" | "https")
+            && is_supported_http_archive(&url)
+        {
+            if git_ref.is_some() {
+                return Err(Error::ExecutionFailed(
+                    "`--ref` is only supported for git sources".to_string(),
+                ));
+            }
+            return Ok(PreparedNodeAdd {
+                goal: NodeAddGoal::new_http(url, git_hash.to_string()),
+                pre_add_node_ref: None,
+            });
+        }
+
+        let (repo_url, repo_path) = parse_git_repo_url_and_path(source)?;
+        return Ok(PreparedNodeAdd {
+            goal: NodeAddGoal::new_git(
+                repo_url,
+                repo_path,
+                git_ref.map(str::to_owned),
+                git_hash.to_string(),
+            ),
+            pre_add_node_ref: None,
+        });
+    }
+
+    if git_ref.is_some() {
+        return Err(Error::ExecutionFailed(
+            "`--ref` is only supported for git sources".to_string(),
+        ));
+    }
+
+    let source_path = PathBuf::from(source);
+    let peppy_json5 = if source_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json5"))
+    {
+        source_path
+    } else {
+        source_path.join("peppy.json5")
+    };
+
+    // Canonicalize the path to ensure we have an absolute path.
+    // This is important for relative paths like "peppy.json5" where parent() would be empty.
+    let peppy_json5 = peppy_json5.canonicalize().map_err(|e| {
+        Error::ExecutionFailed(format!(
+            "Failed to resolve path '{}': {}",
+            peppy_json5.display(),
+            e
+        ))
+    })?;
+
+    let (node_name, node_tag) = node_ref_from_peppy_json5(&peppy_json5)?;
+
+    let from_dir = peppy_json5
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root_dir.to_path_buf());
+
+    Ok(PreparedNodeAdd {
+        goal: NodeAddGoal::new(from_dir, git_hash.to_string()),
+        pre_add_node_ref: Some((node_name, node_tag)),
+    })
+}
+
 pub fn add_node(
     ctx: &Arc<AppContext>,
-    node_dir: PathBuf,
+    source: String,
+    git_ref: Option<String>,
     run: bool,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
     timeout_secs: u64,
 ) -> Result<()> {
-    let peppy_json5 = node_dir.join("peppy.json5");
     crate::commands::block_on(add_node_async(
         ctx,
-        peppy_json5,
+        source,
+        git_ref,
         run,
         args,
         instance_id,
@@ -36,7 +185,8 @@ pub fn add_node(
 
 async fn add_node_async(
     ctx: &Arc<AppContext>,
-    peppy_json5: PathBuf,
+    source: String,
+    git_ref: Option<String>,
     run: bool,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
@@ -51,30 +201,22 @@ async fn add_node_async(
     let master_node_name = daemon_state.master_node_name;
     let git_hash = daemon_state.git_hash;
 
-    // Canonicalize the path to ensure we have an absolute path.
-    // This is important for relative paths like "peppy.json5" where parent() would be empty.
-    let peppy_json5 = peppy_json5.canonicalize().map_err(|e| {
-        Error::ExecutionFailed(format!(
-            "Failed to resolve path '{}': {}",
-            peppy_json5.display(),
-            e
-        ))
-    })?;
+    let PreparedNodeAdd {
+        goal: add_goal,
+        pre_add_node_ref,
+    } = prepare_node_add_goal(&ctx.root_dir, &source, &git_hash, git_ref.as_deref())?;
 
-    // Parse node config to discover node name/tag and validate it.
-    let node_config = NodeConfigParser::from_path(&peppy_json5).map_err(Error::PeppyConfig)?;
-    let node_name = node_config.manifest.name.as_str().to_string();
-    let node_tag = node_config.manifest.tag.clone();
-
-    let from_dir = peppy_json5
-        .parent()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| ctx.root_dir.clone());
-
-    info!(
-        "Running `add_cmd` for {}:{} on master '{}'...",
-        node_name, node_tag, master_node_name
-    );
+    if let Some((node_name, node_tag)) = pre_add_node_ref.as_ref() {
+        info!(
+            "Running `add_cmd` for {}:{} on master '{}'...",
+            node_name, node_tag, master_node_name
+        );
+    } else {
+        info!(
+            "Running `add_cmd` for '{}' on master '{}'...",
+            source, master_node_name
+        );
+    }
 
     ctx.connect().await?;
     let messenger_handle = ctx
@@ -82,7 +224,6 @@ async fn add_node_async(
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
     // Send the goal to start the add action
-    let add_goal = NodeAddGoal::new(from_dir, git_hash);
     let mut action_handle = add_goal
         .send_goal(
             messenger_handle,
@@ -198,7 +339,15 @@ async fn add_node_async(
         ));
     }
 
-    info!("Added node {}:{} to the node stack", node_name, node_tag);
+    let snapshot_node_ref =
+        node_ref_from_peppy_json5(&add_result.snapshot_path.join("peppy.json5")).ok();
+    let node_ref = snapshot_node_ref.or(pre_add_node_ref);
+
+    if let Some((node_name, node_tag)) = node_ref.as_ref() {
+        info!("Added node {}:{} to the node stack", node_name, node_tag);
+    } else {
+        info!("Added node to the node stack");
+    }
     info!(
         "Snapshot path: {}",
         add_result.snapshot_path.to_string_lossy()
@@ -207,6 +356,13 @@ async fn add_node_async(
     if !run {
         return Ok(());
     }
+
+    let (node_name, node_tag) = node_ref.ok_or_else(|| {
+        Error::ExecutionFailed(
+            "Failed to determine node name/tag after adding. Try running `peppy node list`."
+                .to_string(),
+        )
+    })?;
 
     start_instance_async(
         messenger_handle,
@@ -220,4 +376,119 @@ async fn add_node_async(
     .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_git_repo_url_and_repo_path_from_https_url() {
+        let (repo_url, repo_path) = parse_git_repo_url_and_path(
+            "https://github.com/Peppy-bot/example_nodes.git/fake_uvc_camera",
+        )
+        .expect("should parse git source");
+
+        assert_eq!(
+            repo_url.to_bstring().to_string(),
+            "https://github.com/Peppy-bot/example_nodes.git"
+        );
+        assert_eq!(repo_path, "fake_uvc_camera");
+    }
+
+    #[test]
+    fn prepares_http_goal_for_tar_zst_url() {
+        let prepared = prepare_node_add_goal(
+            Path::new("/"),
+            "https://example.com/fake_uvc_camera.tar.zst",
+            "git-hash",
+            None,
+        )
+        .expect("should prepare goal");
+
+        match &prepared.goal.source {
+            master_node::encoding::NodeSource::Http { url } => {
+                assert_eq!(url.as_str(), "https://example.com/fake_uvc_camera.tar.zst");
+            }
+            other => panic!("expected http source, got {other:?}"),
+        }
+        assert!(prepared.pre_add_node_ref.is_none());
+    }
+
+    #[test]
+    fn prepares_git_goal_with_ref_flag() {
+        let prepared = prepare_node_add_goal(
+            Path::new("/"),
+            "https://github.com/Peppy-bot/example_nodes.git/uvc_camera",
+            "git-hash",
+            Some("v0.1.0"),
+        )
+        .expect("should prepare goal");
+
+        match &prepared.goal.source {
+            master_node::encoding::NodeSource::Git {
+                repo_url,
+                repo_path,
+                repo_ref,
+            } => {
+                assert_eq!(
+                    repo_url.to_bstring().to_string(),
+                    "https://github.com/Peppy-bot/example_nodes.git"
+                );
+                assert_eq!(repo_path, "uvc_camera");
+                assert_eq!(repo_ref.as_deref(), Some("v0.1.0"));
+            }
+            other => panic!("expected git source, got {other:?}"),
+        }
+        assert!(prepared.pre_add_node_ref.is_none());
+    }
+
+    #[test]
+    fn prepares_git_goal_without_ref_flag() {
+        let prepared = prepare_node_add_goal(
+            Path::new("/"),
+            "https://github.com/Peppy-bot/example_nodes.git/uvc_camera",
+            "git-hash",
+            None,
+        )
+        .expect("should prepare goal");
+
+        match &prepared.goal.source {
+            master_node::encoding::NodeSource::Git { repo_ref, .. } => {
+                assert!(repo_ref.is_none());
+            }
+            other => panic!("expected git source, got {other:?}"),
+        }
+        assert!(prepared.pre_add_node_ref.is_none());
+    }
+
+    #[test]
+    fn rejects_ref_flag_for_http_archive() {
+        let err = match prepare_node_add_goal(
+            Path::new("/"),
+            "https://example.com/fake_uvc_camera.tar.zst",
+            "git-hash",
+            Some("v0.1.0"),
+        ) {
+            Ok(_) => panic!("should reject --ref for http archive"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("--ref"));
+    }
+
+    #[test]
+    fn rejects_ref_flag_for_local_source() {
+        let err = match prepare_node_add_goal(
+            Path::new("/"),
+            "some/local/path",
+            "git-hash",
+            Some("v0.1.0"),
+        ) {
+            Ok(_) => panic!("should reject --ref for local sources"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("--ref"));
+    }
 }

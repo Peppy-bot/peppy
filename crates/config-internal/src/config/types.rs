@@ -1,5 +1,4 @@
 use crate::{common::NodeArguments, error::ParsingError};
-use core::fmt;
 use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer},
@@ -11,36 +10,6 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
 };
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
-pub enum BuildSystem {
-    #[default]
-    Rust, // Defaults to Cargo
-    Python, // Defaults to uv
-    Cargo,
-    Uv,
-}
-
-impl fmt::Display for BuildSystem {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            BuildSystem::Python | BuildSystem::Uv => write!(f, "uv"),
-            BuildSystem::Rust | BuildSystem::Cargo => write!(f, "cargo"),
-        }
-    }
-}
-
-impl FromStr for BuildSystem {
-    type Err = ParsingError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "rust" | "cargo" => Ok(BuildSystem::Cargo),
-            "python" | "uv" => Ok(BuildSystem::Uv),
-            _ => Err(ParsingError::InvalidBuildSystem(s.to_owned())),
-        }
-    }
-}
 
 /// Version identifier embedded in node `peppy.json5` manifests.
 /// Using a simple alias keeps serialization straightforward while making the intent explicit.

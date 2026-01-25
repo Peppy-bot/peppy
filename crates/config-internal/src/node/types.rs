@@ -7,7 +7,53 @@ use serde::{
 use std::{
     convert::TryFrom,
     fmt::{self, Display, Formatter},
+    str::FromStr,
 };
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PeppygenLanguage {
+    #[default]
+    Rust,
+    Python,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum Toolchain {
+    #[default]
+    Cargo,
+    Uv,
+}
+
+impl fmt::Display for Toolchain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Toolchain::Uv => write!(f, "uv"),
+            Toolchain::Cargo => write!(f, "cargo"),
+        }
+    }
+}
+
+impl FromStr for Toolchain {
+    type Err = ParsingError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "cargo" => Ok(Toolchain::Cargo),
+            "uv" => Ok(Toolchain::Uv),
+            _ => Err(ParsingError::InvalidToolchain(s.to_owned())),
+        }
+    }
+}
+
+impl Toolchain {
+    pub fn map_to_language(&self) -> PeppygenLanguage {
+        match self {
+            Toolchain::Cargo => PeppygenLanguage::Rust,
+            Toolchain::Uv => PeppygenLanguage::Python,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -484,6 +530,7 @@ fn default_action_service_qos_profile() -> QoSProfile {
 pub struct Manifest {
     pub name: Name,
     pub tag: String,
+    pub language: PeppygenLanguage,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
     // Command to run when right before the node is added to the node stack

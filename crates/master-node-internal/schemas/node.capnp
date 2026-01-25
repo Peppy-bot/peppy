@@ -17,10 +17,26 @@ struct NodeListResponse {
 
 # Node Add Action (streaming version with feedback)
 struct NodeAddGoal {
-    # Directory the configuration was loaded from
-    fromDir @0 :Text;
     # Git commit hash of the node being added
-    gitHash @1 :Text;
+    gitHash @0 :Text;
+    # Source of the node (filesystem path or git repository)
+    source :union {
+        # Filesystem path to the node directory
+        fs @1 :Text;
+        # Git repository source
+        git @2 :NodeAddGitSource;
+        # HTTP URL source
+        http @3 :Text;
+    }
+}
+
+struct NodeAddGitSource {
+    # URL of the git repository
+    repoUrl @0 :Text;
+    # Path within the repository to the node
+    repoPath @1 :Text;
+    # Optional git ref (tag/branch/commit) to checkout before reading repoPath
+    repoRef @2 :Text;
 }
 
 struct NodeAddGoalResponse {
@@ -54,12 +70,12 @@ struct NodeAddResult {
 struct NodeInitRequest {
     # Root directory where the node will be created
     nodeRootDir @0 :Text;
-    # Build system ("rust", "cargo", "python", or "uv")
-    buildSystem @1 :Text;
     # Name of the node (used for directory and package name)
-    nodeName @2 :Text;
+    nodeName @1 :Text;
     # Git commit hash of the node being initialized
-    gitHash @3 :Text;
+    gitHash @2 :Text;
+    # Toolchain to use for the node ("cargo" or "uv")
+    toolchain @3 :Text;
 }
 
 struct NodeInitResponse {
@@ -73,10 +89,8 @@ struct NodeInitResponse {
 struct NodeGenerateRequest {
     # Root directory of the node/workspace
     nodeRootDir @0 :Text;
-    # Generator language ("rust" or "python")
-    language @1 :Text;
     # Git commit hash of the node being synced
-    gitHash @2 :Text;
+    gitHash @1 :Text;
 }
 
 struct NodeSyncResponse {

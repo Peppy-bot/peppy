@@ -14,6 +14,8 @@ bytes = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 askama = "0.15"
+gix-url = "0.35"
+url = "2"
 # https://docs.rs/quote/latest/quote/
 clap = { version = "4.5.42", features = ["derive"] }
 tokio = { version = "1.47", features = ["signal"] }
@@ -32,6 +34,7 @@ crossterm = "0.29"
 tempfile = { version = "3.8", optional = true }
 
 [features]
+default = ["test-support"]
 test-support = ["dep:tempfile"]
 
 [dev-dependencies]
@@ -40,4 +43,3 @@ tempfile = "3.8"
 [[test]]
 name = "integration"
 path = "tests/main.rs"
-required-features = ["test-support"]

@@ -3,7 +3,7 @@ use std::fs;
 use peppy::commands::service::install;
 
 #[test]
-fn install_peppy_command() {
+fn install_peppy_service() {
     use tempfile::TempDir;
 
     let temp_dir = TempDir::new().unwrap();

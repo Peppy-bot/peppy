@@ -107,6 +107,7 @@ mod tests {
             manifest: {
                 name: "a_node",
                 tag: "0.1.0",
+                language: "rust",
                 start_cmd: ["cargo", "run", "--release"],
             }
         }"#;
@@ -136,6 +137,7 @@ mod tests {
             manifest: {
                 name: "a_node",
                 tag: "0.1.0",
+                language: "rust",
                 start_cmd: ["cargo", "run", "--release"]
             }
         }"#;

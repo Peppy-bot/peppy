@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
@@ -22,6 +22,7 @@ fn write_node_config(
     nodes_directory: &Path,
     node_name: &str,
     node_tag: &str,
+    git_hash: &str,
     start_cmd: &[&str],
 ) -> PathBuf {
     let node_dir = nodes_directory.join(node_name);
@@ -40,6 +41,7 @@ fn write_node_config(
                 manifest: {{
                     name: "{node_name}",
                     tag: "{node_tag}",
+                    language: "rust",
                     start_cmd: [{start_cmd_json5}]
                 }}
             }}"#
@@ -50,7 +52,24 @@ fn write_node_config(
         &node_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
+
+    let peppy_output_dir = node_dir.join(PEPPY_OUTPUT_DIR);
+    fs::create_dir_all(&peppy_output_dir).expect("failed to create peppy output directory");
+    fs::write(peppy_output_dir.join("git.hash"), git_hash).expect("failed to write node git hash");
     node_dir
+}
+
+fn read_daemon_git_hash(daemon_state_path: &Path) -> String {
+    let contents =
+        fs::read_to_string(daemon_state_path).expect("daemon state file should be readable");
+    let value: serde_json::Value =
+        serde_json::from_str(&contents).expect("daemon state should parse as JSON");
+    value
+        .get("git_hash")
+        .and_then(|v| v.as_str())
+        .filter(|git_hash| !git_hash.is_empty())
+        .expect("daemon state should include a non-empty git_hash")
+        .to_string()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -69,10 +88,12 @@ async fn node_launch_command_succeed() {
     let node_a_name = "launch_succeed_node_a";
     let node_b_name = "launch_succeed_node_b";
     let node_tag = "0.1.0";
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
     let node_a_path = write_node_config(
         nodes_dir.path(),
         node_a_name,
         node_tag,
+        &git_hash,
         &["sh", "-c", "exit 0"],
     );
 
@@ -91,10 +112,12 @@ async fn node_launch_command_succeed() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_a_path,
+            source: node_a_path.display().to_string(),
+            git_ref: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
+            timeout: 60,
         },
     }
     .execute(&ctx)
@@ -104,7 +127,6 @@ async fn node_launch_command_succeed() {
         command: NodeCommands::Init {
             node_name: peppy::commands::node::NodeName::new(node_b_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
         },
     }
     .execute(&ctx)
@@ -284,16 +306,19 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
     let node_a_name = "launch_node_a";
     let node_b_name = "launch_node_b";
     let node_tag = "0.1.0";
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
     let node_a_path = write_node_config(
         nodes_dir.path(),
         node_a_name,
         node_tag,
+        &git_hash,
         &["sh", "-c", "exit 0"],
     );
     let _node_b_path = write_node_config(
         nodes_dir.path(),
         node_b_name,
         node_tag,
+        &git_hash,
         &["sh", "-c", "exit 0"],
     );
 
@@ -312,10 +337,12 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_a_path,
+            source: node_a_path.display().to_string(),
+            git_ref: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
+            timeout: 60,
         },
     }
     .execute(&ctx)

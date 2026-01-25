@@ -25,6 +25,7 @@ async fn listen_for_node_generate_success() {
             manifest: {
                 name: "example_node",
                 tag: "0.1.0",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }
         }"#,
@@ -209,12 +210,7 @@ async fn listen_for_node_generate_missing_peppy_json5_fails() {
     assert!(
         response
             .error_message
-            .contains("Failed to generate peppygen"),
-        "error should mention generation failure, got: {}",
-        response.error_message
-    );
-    assert!(
-        response.error_message.contains("Cannot find the node"),
+            .contains("Node config file does not exist"),
         "error should mention missing node config, got: {}",
         response.error_message
     );
@@ -257,8 +253,8 @@ async fn listen_for_node_generate_invalid_peppy_json5_fails() {
     assert!(
         response
             .error_message
-            .contains("Failed to generate peppygen"),
-        "error should mention generation failure, got: {}",
+            .contains("Failed to parse node config"),
+        "error should mention parse failure, got: {}",
         response.error_message
     );
     assert!(
@@ -285,6 +281,7 @@ async fn listen_for_node_generate_missing_dependency_fails() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
+                language: "rust",
                 labels: ["brain"],
                 add_cmd: ["cargo", "build", "--release"],
                 start_cmd: ["cargo", "run", "--release"],
@@ -357,6 +354,7 @@ async fn listen_for_node_generate_multiple_missing_dependencies_fails() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
+                language: "rust",
                 labels: ["brain"],
                 add_cmd: ["cargo", "build", "--release"],
                 start_cmd: ["cargo", "run", "--release"],
@@ -466,6 +464,7 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
+                language: "rust",
                 labels: ["camera"],
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
@@ -556,6 +555,7 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
+                language: "rust",
                 labels: ["brain"],
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
@@ -671,6 +671,7 @@ async fn listen_for_node_generate_generates_rust_parameters() {
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
+                language: "rust",
                 labels: ["camera"],
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
@@ -785,6 +786,7 @@ async fn listen_for_node_generate_deletes_previous_peppy_folder() {
             manifest: {
                 name: "example_node",
                 tag: "0.1.0",
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }
         }"#,

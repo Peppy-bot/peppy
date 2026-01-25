@@ -51,7 +51,6 @@ fn node_add_command_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
         },
     }
     .execute(&node_ctx)
@@ -71,10 +70,12 @@ fn node_add_command_succeeds() {
     // Now add the node to the node stack
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_path,
+            source: node_path.display().to_string(),
+            git_ref: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
+            timeout: 60,
         },
     }
     .execute(&node_ctx)
@@ -169,7 +170,6 @@ fn node_add_command_with_run_arg_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
         },
     }
     .execute(&node_ctx)
@@ -208,10 +208,12 @@ fn node_add_command_with_run_arg_succeeds() {
     // Add the node to the node stack with run=true to also start an instance
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_path,
+            source: node_path.display().to_string(),
+            git_ref: None,
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
+            timeout: 60,
         },
     }
     .execute(&node_ctx)
@@ -310,7 +312,6 @@ fn node_add_after_failed_sync_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
         },
     }
     .execute(&node_ctx)
@@ -336,10 +337,12 @@ fn node_add_after_failed_sync_succeeds() {
     // 3. Run `node add .` on that node, it'll fail due to git hash mismatch
     let add_result = NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_path.clone(),
+            source: node_path.display().to_string(),
+            git_ref: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
+            timeout: 60,
         },
     }
     .execute(&node_ctx);
@@ -363,9 +366,7 @@ fn node_add_after_failed_sync_succeeds() {
     );
 
     NodeCommand {
-        command: NodeCommands::Sync {
-            build_system: config::peppy_config::BuildSystem::Rust,
-        },
+        command: NodeCommands::Sync {},
     }
     .execute(&sync_ctx)
     .expect("node sync command should succeed");
@@ -373,10 +374,12 @@ fn node_add_after_failed_sync_succeeds() {
     // 5. Run `node add .` again. This time it should succeed
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_path,
+            source: node_path.display().to_string(),
+            git_ref: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
+            timeout: 60,
         },
     }
     .execute(&node_ctx)
