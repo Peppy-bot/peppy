@@ -86,8 +86,8 @@ async fn services_communication_no_target_instance_id() {
     generator
         .add_subscribed_service(
             &subscribed_service,
-            Some(&subscribed_request_format),
-            Some(&subscribed_response_format),
+            &subscribed_request_format,
+            &subscribed_response_format,
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
@@ -358,8 +358,8 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
     generator
         .add_subscribed_service(
             &subscribed_service,
-            Some(&subscribed_request_format),
-            Some(&subscribed_response_format),
+            &subscribed_request_format,
+            &subscribed_response_format,
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);

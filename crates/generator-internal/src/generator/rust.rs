@@ -245,12 +245,20 @@ impl RustGenerator {
                     &request_ident,
                 );
 
+                let init_root_tokens = if assignments.is_empty() {
+                    quote!(let _ = capnp_msg.init_root::<#builder_type>();)
+                } else {
+                    quote! {
+                        let mut root = capnp_msg.init_root::<#builder_type>();
+                        #(#assignments)*
+                    }
+                };
+
                 quote! {
                     let goal_payload = {
                         let mut capnp_msg = capnp::message::Builder::new_default();
                         {
-                            let mut root = capnp_msg.init_root::<#builder_type>();
-                            #( #assignments )*
+                            #init_root_tokens
                         }
                         let mut buffer = Vec::new();
                         capnp::serialize::write_message(&mut buffer, &capnp_msg).map_err(|source| {
@@ -329,12 +337,20 @@ impl RustGenerator {
                     &request_ident,
                 );
 
+                let init_root_tokens = if assignments.is_empty() {
+                    quote!(let _ = capnp_msg.init_root::<#builder_type>();)
+                } else {
+                    quote! {
+                        let mut root = capnp_msg.init_root::<#builder_type>();
+                        #(#assignments)*
+                    }
+                };
+
                 quote! {
                     let goal_payload = {
                         let mut capnp_msg = capnp::message::Builder::new_default();
                         {
-                            let mut root = capnp_msg.init_root::<#builder_type>();
-                            #( #assignments )*
+                            #init_root_tokens
                         }
                         let mut buffer = Vec::new();
                         capnp::serialize::write_message(&mut buffer, &capnp_msg).map_err(|source| {
@@ -1419,11 +1435,12 @@ impl LanguageGenerator for RustGenerator {
     fn add_subscribed_service(
         &mut self,
         service: &SubscribedService,
-        request_arguments: Option<&MessageFormat>,
-        response_arguments: Option<&MessageFormat>,
+        request_arguments: &MessageFormat,
+        response_arguments: &MessageFormat,
     ) -> Result<()> {
+        let request_arguments = non_empty_message_format(Some(request_arguments));
+        let response_arguments = non_empty_message_format(Some(response_arguments));
         let request_artifacts = map_message_format(request_arguments)?;
-        let response_arguments = response_arguments.filter(|format| !format.0.is_empty());
         let response_artifacts = map_message_format(response_arguments)?;
 
         let service_ident = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
@@ -1509,18 +1526,29 @@ impl LanguageGenerator for RustGenerator {
             let builder_type = &spec.builder_type;
             let assignments = &spec.assignments;
 
-            let unpacking = request_struct_params.iter().map(|p| {
-                let ident = &p.ident;
-                quote!(let #ident = request.#ident;)
-            });
+            let unpacking: Vec<_> = request_struct_params
+                .iter()
+                .map(|p| {
+                    let ident = &p.ident;
+                    quote!(let #ident = request.#ident;)
+                })
+                .collect();
+
+            let init_root_tokens = if assignments.is_empty() {
+                quote!(let _ = capnp_msg.init_root::<#builder_type>();)
+            } else {
+                quote! {
+                    let mut root = capnp_msg.init_root::<#builder_type>();
+                    #(#assignments)*
+                }
+            };
 
             quote! {
                 let request_payload = {
                     let mut capnp_msg = capnp::message::Builder::new_default();
                     {
-                        let mut root = capnp_msg.init_root::<#builder_type>();
                         #( #unpacking )*
-                        #( #assignments )*
+                        #init_root_tokens
                     }
                     let mut buffer = Vec::new();
                     capnp::serialize::write_message(&mut buffer, &capnp_msg).map_err(|source| {
@@ -1719,11 +1747,8 @@ impl LanguageGenerator for RustGenerator {
     fn add_subscribed_action(
         &mut self,
         action: &SubscribedAction,
-        messages: Option<&SubscribedActionMessage>,
+        messages: &SubscribedActionMessage,
     ) -> Result<()> {
-        let messages = messages
-            .ok_or_else(|| Error::SubscriberActionMessageFormatMissing(action.name.clone()))?;
-
         let node_component = sanitize_component(action.node.as_str());
         let action_component = sanitize_component(action.name.as_str());
         let base_component = match (node_component.is_empty(), action_component.is_empty()) {

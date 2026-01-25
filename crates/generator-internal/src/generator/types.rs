@@ -98,13 +98,13 @@ pub trait LanguageGenerator {
     fn add_subscribed_service(
         &mut self,
         service: &SubscribedService,
-        request_arguments: Option<&MessageFormat>,
-        response_arguments: Option<&MessageFormat>,
+        request_arguments: &MessageFormat,
+        response_arguments: &MessageFormat,
     ) -> Result<()>;
     fn add_subscribed_action(
         &mut self,
         action: &SubscribedAction,
-        arguments: Option<&SubscribedActionMessage>,
+        messages: &SubscribedActionMessage,
     ) -> Result<()>;
     /// Finalizes the builder and return a path to the library
     fn build(self, to_path: impl AsRef<Path>) -> Result<()>;
@@ -120,14 +120,10 @@ impl DeploymentInterface {
                 backend.add_subscribed_topic(topic, format.clone())
             }
             InterfaceVariant::SubscribedService(service, request_arguments, response_arguments) => {
-                backend.add_subscribed_service(
-                    service,
-                    Some(request_arguments),
-                    Some(response_arguments),
-                )
+                backend.add_subscribed_service(service, request_arguments, response_arguments)
             }
             InterfaceVariant::SubscribedAction(action, messages) => {
-                backend.add_subscribed_action(action, Some(messages))
+                backend.add_subscribed_action(action, messages)
             }
         }
     }

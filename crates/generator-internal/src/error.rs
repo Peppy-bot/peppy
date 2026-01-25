@@ -22,8 +22,6 @@ pub enum Error {
     SubscriberTopicNodeMissing(String),
     #[error("missing service message format for subscriber `{0}`")]
     SubscriberServiceMessageFormatMissing(String),
-    #[error("missing action message format for subscriber `{0}`")]
-    SubscriberActionMessageFormatMissing(String),
 
     // -- nodes errors
     #[error("Cannot find the node in `{0}`")]

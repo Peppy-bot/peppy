@@ -83,6 +83,8 @@ const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2: &str = r#"
 }
 "#;
 
+const EMPTY_MESSAGE_FORMAT: &str = r#"{}"#;
+
 /// In the case of a service, an "exposed" service is an entity that accept incoming messages
 #[test]
 fn expose_service() {
@@ -215,7 +217,7 @@ fn subscribed_to_service() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_subscribed_service(&service, Some(&request_format), Some(&response_format))
+        .add_subscribed_service(&service, &request_format, &response_format)
         .unwrap();
     let artifacts = render_artifacts(generator);
     assert_eq!(
@@ -280,15 +282,16 @@ fn subscribed_to_two_services_same_node() {
 
     // Second service pointing to the same node
     let service2: SubscribedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE2).unwrap();
+    let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
     let response_format2: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2).unwrap();
 
     let mut generator = RustGenerator::new();
     generator
-        .add_subscribed_service(&service1, Some(&request_format1), Some(&response_format1))
+        .add_subscribed_service(&service1, &request_format1, &response_format1)
         .unwrap();
     generator
-        .add_subscribed_service(&service2, None, Some(&response_format2))
+        .add_subscribed_service(&service2, &empty_format, &response_format2)
         .unwrap();
     let artifacts = render_artifacts(generator);
     assert_eq!(
@@ -325,10 +328,11 @@ fn subscribed_service_without_response_payload() {
         }
         "#;
     let service: SubscribedService = serde_json5::from_str(service).unwrap();
+    let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
 
     let mut generator = RustGenerator::new();
     generator
-        .add_subscribed_service(&service, None, None)
+        .add_subscribed_service(&service, &empty_format, &empty_format)
         .expect("generator should allow services without response format");
 
     let artifacts = render_artifacts(generator);
@@ -383,10 +387,10 @@ fn clippy_single_exposed_service_without_request_body() {
     let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
     generator.add_exposed_service(&exposed_service).unwrap();
     generator
-        .add_subscribed_action(&subscribed_action1, Some(&action_messages))
+        .add_subscribed_action(&subscribed_action1, &action_messages)
         .unwrap();
     generator
-        .add_subscribed_action(&subscribed_action2, Some(&action_messages))
+        .add_subscribed_action(&subscribed_action2, &action_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator.build(&output_dir).unwrap();
@@ -450,21 +454,23 @@ fn compile_lib_with_exposed_and_subscribed_services() {
     let subscribed_service_response2: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2).unwrap();
 
+    let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
+
     let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
     generator.add_exposed_service(&exposed_service1).unwrap();
     generator.add_exposed_service(&exposed_service2).unwrap();
     generator
         .add_subscribed_service(
             &subscribed_service1,
-            Some(&subscribed_service_request1),
-            Some(&subscribed_service_response1),
+            &subscribed_service_request1,
+            &subscribed_service_response1,
         )
         .unwrap();
     generator
         .add_subscribed_service(
             &subscribed_service2,
-            None,
-            Some(&subscribed_service_response2),
+            &empty_format,
+            &subscribed_service_response2,
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -546,5 +552,101 @@ fn compile_lib_with_exposed_and_subscribed_services() {
             .join("src/subscribed_services/uvc_camera_get_camera_info.rs")
             .exists(),
         "Expected uvc_camera_get_camera_info subscriber module"
+    );
+}
+
+/// Checks for clippy warnings when there is a subscribed service with an empty request format.
+#[test]
+fn clippy_subscribed_service_empty_request_format() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let subscribed_service: SubscribedService = serde_json5::from_str(
+        r#"
+        {
+          id: "sensor_get_status",
+          node: "sensor",
+          name: "get_status",
+          tag: "0.1.0"
+        }
+        "#,
+    )
+    .unwrap();
+    let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
+    let response_format: MessageFormat = serde_json5::from_str(r#"{ status: "string" }"#).unwrap();
+
+    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    generator
+        .add_subscribed_service(&subscribed_service, &empty_format, &response_format)
+        .unwrap();
+    let output_config = copy_config_to_output(&user_node, &output_dir);
+    generator.build(&output_dir).unwrap();
+    fs::remove_file(output_config).unwrap();
+
+    let clippy_output = Command::new("cargo")
+        .arg("clippy")
+        .arg("--all-targets")
+        .arg("--color")
+        .arg("always")
+        .arg("--")
+        .arg("-D")
+        .arg("warnings")
+        .env("CARGO_NET_OFFLINE", "true")
+        .current_dir(&output_dir)
+        .output()
+        .expect("failed to run cargo clippy on generated crate");
+    assert!(
+        clippy_output.status.success(),
+        "cargo clippy failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        clippy_output.status.code(),
+        String::from_utf8_lossy(&clippy_output.stdout),
+        String::from_utf8_lossy(&clippy_output.stderr)
+    );
+}
+
+/// Checks for clippy warnings when there is a subscribed service with an empty response format.
+#[test]
+fn clippy_subscribed_service_empty_response_format() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let subscribed_service: SubscribedService = serde_json5::from_str(
+        r#"
+        {
+          id: "sensor_trigger_action",
+          node: "sensor",
+          name: "trigger_action",
+          tag: "0.1.0"
+        }
+        "#,
+    )
+    .unwrap();
+    let request_format: MessageFormat = serde_json5::from_str(r#"{ action_id: "u32" }"#).unwrap();
+    let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
+
+    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    generator
+        .add_subscribed_service(&subscribed_service, &request_format, &empty_format)
+        .unwrap();
+    let output_config = copy_config_to_output(&user_node, &output_dir);
+    generator.build(&output_dir).unwrap();
+    fs::remove_file(output_config).unwrap();
+
+    let clippy_output = Command::new("cargo")
+        .arg("clippy")
+        .arg("--all-targets")
+        .arg("--color")
+        .arg("always")
+        .arg("--")
+        .arg("-D")
+        .arg("warnings")
+        .env("CARGO_NET_OFFLINE", "true")
+        .current_dir(&output_dir)
+        .output()
+        .expect("failed to run cargo clippy on generated crate");
+    assert!(
+        clippy_output.status.success(),
+        "cargo clippy failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        clippy_output.status.code(),
+        String::from_utf8_lossy(&clippy_output.stdout),
+        String::from_utf8_lossy(&clippy_output.stderr)
     );
 }

@@ -445,9 +445,7 @@ fn subscribed_to_action() {
     };
 
     let mut generator = RustGenerator::new();
-    generator
-        .add_subscribed_action(&action, Some(&format))
-        .unwrap();
+    generator.add_subscribed_action(&action, &format).unwrap();
     let artifacts = render_artifacts(generator);
     assert_eq!(
         artifacts.len(),
@@ -611,10 +609,10 @@ fn subscribed_to_two_actions_same_node() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_subscribed_action(&move_arm_action, Some(&move_arm_messages))
+        .add_subscribed_action(&move_arm_action, &move_arm_messages)
         .unwrap();
     generator
-        .add_subscribed_action(&rotate_action, Some(&rotate_messages))
+        .add_subscribed_action(&rotate_action, &rotate_messages)
         .unwrap();
 
     let artifacts: Vec<_> = generator.into_artifacts();
@@ -737,7 +735,7 @@ fn subscribed_action_without_response_payload() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_subscribed_action(&action, Some(&format))
+        .add_subscribed_action(&action, &format)
         .expect("generator should allow subscribed actions with empty response payloads");
     let artifacts = render_artifacts(generator);
     assert_eq!(
@@ -775,7 +773,7 @@ fn subscribed_action_without_feedback() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_subscribed_action(&action, Some(&format))
+        .add_subscribed_action(&action, &format)
         .expect("generator should allow subscribed actions without feedback payloads");
     let artifacts = render_artifacts(generator);
     assert_eq!(artifacts.len(), 1, "expected single generated artifact");
@@ -851,10 +849,10 @@ fn clippy_single_exposed_action_empty_goal_request() {
     let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
     generator.add_exposed_action(&action).unwrap();
     generator
-        .add_subscribed_action(&subscribed_action1, Some(&subscribed_action1_messages))
+        .add_subscribed_action(&subscribed_action1, &subscribed_action1_messages)
         .unwrap();
     generator
-        .add_subscribed_action(&subscribed_action2, Some(&subscribed_action2_messages))
+        .add_subscribed_action(&subscribed_action2, &subscribed_action2_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator.build(&output_dir).unwrap();
@@ -950,10 +948,10 @@ fn compile_lib_with_exposed_and_subscribed_actions() {
     generator.add_exposed_action(&action1).unwrap();
     generator.add_exposed_action(&action2).unwrap();
     generator
-        .add_subscribed_action(&subscribed_action1, Some(&subscribed_action1_messages))
+        .add_subscribed_action(&subscribed_action1, &subscribed_action1_messages)
         .unwrap();
     generator
-        .add_subscribed_action(&subscribed_action2, Some(&subscribed_action2_messages))
+        .add_subscribed_action(&subscribed_action2, &subscribed_action2_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator.build(&output_dir).unwrap();
@@ -1055,5 +1053,60 @@ fn compile_lib_with_exposed_and_subscribed_actions() {
         subscribed_controller_path.exists(),
         "Expected controller_rotate_servo_clockwise subscribed action module at {:?}",
         subscribed_controller_path
+    );
+}
+
+/// Checks for clippy warnings when there is a subscribed action with an empty goal request.
+#[test]
+fn clippy_subscribed_action_empty_goal_request() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let subscribed_action: SubscribedAction = serde_json5::from_str(
+        r#"
+        {
+          id: "robot_calibrate",
+          node: "robot",
+          name: "calibrate",
+          tag: "0.1.0"
+        }
+        "#,
+    )
+    .unwrap();
+    let goal_response_format: MessageFormat =
+        serde_json5::from_str(r#"{ accepted: "bool" }"#).unwrap();
+    let action_messages = SubscribedActionMessage {
+        goal_request: None,
+        goal_response: Some(goal_response_format),
+        feedback: None,
+        result_request: None,
+        result_response: None,
+    };
+
+    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    generator
+        .add_subscribed_action(&subscribed_action, &action_messages)
+        .unwrap();
+    let output_config = copy_config_to_output(&user_node, &output_dir);
+    generator.build(&output_dir).unwrap();
+    fs::remove_file(output_config).unwrap();
+
+    let clippy_output = Command::new("cargo")
+        .arg("clippy")
+        .arg("--all-targets")
+        .arg("--color")
+        .arg("always")
+        .arg("--")
+        .arg("-D")
+        .arg("warnings")
+        .env("CARGO_NET_OFFLINE", "true")
+        .current_dir(&output_dir)
+        .output()
+        .expect("failed to run cargo clippy on generated crate");
+    assert!(
+        clippy_output.status.success(),
+        "cargo clippy failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        clippy_output.status.code(),
+        String::from_utf8_lossy(&clippy_output.stdout),
+        String::from_utf8_lossy(&clippy_output.stderr)
     );
 }
