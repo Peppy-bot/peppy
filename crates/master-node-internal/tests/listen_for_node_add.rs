@@ -1728,6 +1728,6 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
 #[test]
 fn node_add_same_node_shutdown_existing_instances() {
     todo!(
-        "If a request to add the same node+tag comes in a second time (and as long as the node doesn't have dependencies), ensure that all instances were previously killed before adding the new node with same name/tag as the previous one in this test. The previous PROCESSES NEED TO BE KILLED!"
+        "If a request to add the same node+tag comes in a second time (and as long as the node doesn't have dependencies), ensure that all instances were previously stopped before adding the new node with same name/tag as the previous one in this test (the instances are stopped by calling the `shutdown` request, NOT by killing their pid). The previous processed NEED TO BE stopped/shutdown before the node can be added!"
     )
 }
