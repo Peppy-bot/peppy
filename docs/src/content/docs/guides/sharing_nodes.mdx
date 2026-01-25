@@ -17,9 +17,9 @@ or
 peppy node add --ref "0.1.0" https://github.com/Peppy-bot/example_nodes.git/fake_uvc_camera
 ```
 
-::note
-The build may fail here if you don't have the required ffmpeg libraries installed on your system. Inspect the logs to understand what libraries need to be installed and attempt to add the node again
-::
+:::note
+The build may fail here if you don't have the required `ffmpeg` libraries installed on your system. Inspect the logs to understand what libraries need to be installed and attempt to add the node again.
+:::
 
 Now that this node is added, we can start it:
 ```
@@ -37,12 +37,12 @@ and inspect its logs:
 [2026-01-25T16:39:00.926] [stdout] [uvc_camera] Emitted frame 194
 ```
 
-We see that video frames are emitted from that node, we can write a new node that depends on `fake_uvc_camera` that will read those frames and reconstruct a 5s video from those frames.
+We see that video frames are emitted from that node, we can pull a new node that depends on `fake_uvc_camera` that will read those frames and reconstruct a short video from those frames.
 From the same github repository, we can do exactly that:
 ```sh
 peppy node add https://github.com/Peppy-bot/example_nodes.git/fake_video_reconstruction
 ```
 
-::note
-When `--ref` is using during `peppy node add`, it corresponds to the git tag/release or hash of the repo, on the other hand, the tag in `peppy node start fake_uvc_camera:0.1.0` corresponds to the tag found in `peppy.json5`
-::
+:::note
+When `--ref` is used during `peppy node add`, it corresponds to the git tag/release or hash of the repo. On the other hand, the tag in `peppy node start fake_uvc_camera:0.1.0` corresponds to the tag found in `peppy.json5`.
+:::
