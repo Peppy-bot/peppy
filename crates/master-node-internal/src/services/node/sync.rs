@@ -327,8 +327,14 @@ pub fn collect_subscribed_interfaces(
                     interfaces.push(DeploymentInterface::new(
                         InterfaceVariant::SubscribedService(
                             subscribed_service.clone(),
-                            exposed_service.request_message_format.clone(),
-                            exposed_service.response_message_format.clone(),
+                            exposed_service
+                                .request_message_format
+                                .clone()
+                                .unwrap_or_default(),
+                            exposed_service
+                                .response_message_format
+                                .clone()
+                                .unwrap_or_default(),
                         ),
                     ));
                 }

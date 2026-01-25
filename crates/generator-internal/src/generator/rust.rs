@@ -1423,6 +1423,7 @@ impl LanguageGenerator for RustGenerator {
         response_arguments: Option<&MessageFormat>,
     ) -> Result<()> {
         let request_artifacts = map_message_format(request_arguments)?;
+        let response_arguments = response_arguments.filter(|format| !format.0.is_empty());
         let response_artifacts = map_message_format(response_arguments)?;
 
         let service_ident = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
