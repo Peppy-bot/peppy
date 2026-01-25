@@ -9,6 +9,7 @@ const NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
+    language: "rust",
     labels: [
       "uvc",
       "camera",

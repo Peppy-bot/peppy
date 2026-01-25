@@ -149,9 +149,12 @@ async fn handle_node_sync_request_inner(
 
     // Validate dependencies before generation and collect subscribed interfaces
     let node_config_path = request.node_root_dir.join(config::consts::NODE_CONFIG_FILE);
-    let subscribed_interfaces = if !node_config_path.exists() {
-        // Let the generator handle this error
-        Vec::new()
+    let (subscribed_interfaces, language) = if !node_config_path.exists() {
+        return NodeSyncResponse::failure(format!(
+            "Node config file does not exist: {}",
+            node_config_path.display()
+        ))
+        .encode();
     } else {
         match NodeConfigParser::from_path(&node_config_path) {
             Ok(node_config) => {
@@ -221,32 +224,25 @@ async fn handle_node_sync_request_inner(
                 }
 
                 // Collect subscribed interfaces with resolved message formats
-                collect_subscribed_interfaces(&node_config, node_stack)
+                let interfaces = collect_subscribed_interfaces(&node_config, node_stack);
+                let language = node_config.manifest.language;
+                (interfaces, language)
             }
-            Err(_) => {
-                // Let the generator handle config parsing errors
-                Vec::new()
+            Err(e) => {
+                return NodeSyncResponse::failure(format!("Failed to parse node config: {}", e))
+                    .encode();
             }
         }
     };
 
     let NodeSyncRequest {
         node_root_dir,
-        build_system,
         git_hash,
     } = request;
 
     match tokio::task::spawn_blocking(move || -> Result<()> {
         remove_previous_peppy_dir(&node_root_dir);
-
-        generator::generate_lib_for_build_system(
-            build_system,
-            &node_root_dir,
-            subscribed_interfaces,
-            &git_hash,
-        )?;
-
-        Ok(())
+        generate_peppygen_for_node(language, &node_root_dir, subscribed_interfaces, &git_hash)
     })
     .await
     {
@@ -276,7 +272,7 @@ async fn handle_node_sync_request_inner(
 
 /// Collects subscribed interfaces from a node config and resolves their message formats
 /// by looking up the exposed interfaces from dependency nodes in the node stack.
-fn collect_subscribed_interfaces(
+pub fn collect_subscribed_interfaces(
     node_config: &config::node::NodeConfig,
     node_stack: &NodeStack,
 ) -> Vec<DeploymentInterface> {
@@ -396,4 +392,23 @@ fn collect_subscribed_interfaces(
     }
 
     interfaces
+}
+
+/// Generates the peppygen library for a node.
+///
+/// This function takes the pre-collected data and generates the peppygen
+/// library in the node directory. Use `collect_subscribed_interfaces` to
+/// gather the subscribed interfaces before calling this function.
+///
+/// This function is designed to be called from within `spawn_blocking` contexts
+/// where the data has already been extracted and can be moved into the closure.
+pub fn generate_peppygen_for_node(
+    language: config::node::PeppygenLanguage,
+    node_dir: impl AsRef<std::path::Path>,
+    subscribed_interfaces: Vec<DeploymentInterface>,
+    git_hash: &str,
+) -> crate::Result<()> {
+    generator::generate_peppygen_lib(language, node_dir, subscribed_interfaces, git_hash)?;
+
+    Ok(())
 }

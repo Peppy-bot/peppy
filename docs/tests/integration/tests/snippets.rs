@@ -1,5 +1,5 @@
-use docs_integration_tests::{peppy_binary, workspace_root};
 use config::node::NodeConfigParser;
+use docs_integration_tests::{peppy_binary, workspace_root};
 use peppy::test_support::ServeCommandEmulation;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -42,7 +42,9 @@ fn peppy_output(
         .unwrap_or_else(|e| panic!("failed to run peppy {}: {e}", args.join(" ")))
 }
 
-fn setup_node(peppy: &Path, node_dir: &Path) -> NodeSetup {
+/// Sets up the environment without syncing the main node.
+/// This allows dependencies to be added before syncing a node that depends on them.
+fn setup_env(peppy: &Path, node_dir: &Path) -> NodeSetup {
     let node_config = NodeConfigParser::from_path(&node_dir.join("peppy.json5"))
         .expect("failed to parse peppy.json5");
     let node_name = node_config.manifest.name.as_str().to_string();
@@ -66,15 +68,6 @@ fn setup_node(peppy: &Path, node_dir: &Path) -> NodeSetup {
     );
     assert_success(&init_output, "peppy node init");
 
-    // Run `peppy node sync` to regenerate peppygen after config change
-    let sync_output = peppy_output(
-        peppy,
-        &daemon_state_path,
-        node_dir,
-        &["node", "sync"],
-    );
-    assert_success(&sync_output, "peppy node sync");
-
     NodeSetup {
         daemon_state_path,
         node_ref,
@@ -84,29 +77,39 @@ fn setup_node(peppy: &Path, node_dir: &Path) -> NodeSetup {
     }
 }
 
+fn sync_and_add_node(peppy: &Path, daemon_state_path: &Path, node_dir: &Path, context: &str) {
+    let sync_output = peppy_output(peppy, daemon_state_path, node_dir, &["node", "sync"]);
+    assert_success(&sync_output, &format!("peppy node sync for {context}"));
+
+    let add_output = peppy_output(peppy, daemon_state_path, node_dir, &["node", "add", "."]);
+    assert_success(&add_output, &format!("peppy node add . for {context}"));
+}
+
 fn run_snippet(snippet_name: &str, start_args: &[&str]) {
+    run_snippet_with_deps(snippet_name, start_args, &[]);
+}
+
+/// Run a snippet that depends on other snippets being added first.
+/// Dependencies are added to the node stack but not started.
+fn run_snippet_with_deps(snippet_name: &str, start_args: &[&str], deps: &[&str]) {
     let peppy = peppy_binary();
     let node_dir = snippet_dir(snippet_name);
 
-    let setup = setup_node(peppy, &node_dir);
+    let setup = setup_env(peppy, &node_dir);
 
-    let add_output = peppy_output(
-        peppy,
-        &setup.daemon_state_path,
-        &node_dir,
-        &["node", "add", "."],
-    );
-    assert_success(&add_output, "peppy node add .");
+    // Add dependencies first (must happen before syncing the main node)
+    for dep in deps {
+        let dep_dir = snippet_dir(dep);
+        sync_and_add_node(peppy, &setup.daemon_state_path, &dep_dir, dep);
+    }
+
+    // Now sync and add the main node
+    sync_and_add_node(peppy, &setup.daemon_state_path, &node_dir, snippet_name);
 
     let mut start_cmd = vec!["node", "start", setup.node_ref.as_str()];
     start_cmd.extend_from_slice(start_args);
 
-    let start_output = peppy_output(
-        peppy,
-        &setup.daemon_state_path,
-        &node_dir,
-        &start_cmd,
-    );
+    let start_output = peppy_output(peppy, &setup.daemon_state_path, &node_dir, &start_cmd);
     assert_success(
         &start_output,
         &format!("peppy node start {}", setup.node_ref),
@@ -119,11 +122,12 @@ fn hello_world() {
 }
 
 #[test]
-fn hello_world_param() {
-    run_snippet("hello_world_param", &["name=planet"]);
-}
-
-#[test]
 fn first_node() {
     run_snippet("first_node", &[]);
+}
+
+// Combine both tests into one since they depend on each other and doing so avoids parallelism issues
+#[test]
+fn hello_world_param_and_hello_receiver() {
+    run_snippet_with_deps("hello_receiver", &[], &["hello_world_param"]);
 }

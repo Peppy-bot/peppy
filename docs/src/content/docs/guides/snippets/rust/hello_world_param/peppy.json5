@@ -1,33 +1,34 @@
 {
-    schema_version: 1,
-    manifest: {
-        name: "hello_world_param",
-        tag: "0.1.0",
-        add_cmd: [
-            "cargo",
-            "build",
-            "--release"
-        ],
-        start_cmd: [
-            "cargo",
-            "run",
-            "--release"
-        ]
-    },
-    parameters: {
-        name: "string",
-    },
-    interfaces: {
-        exposes: {
-            topics: [
-                {
-                    name: "message_stream",
-                    qos_profile: "sensor_data",
-                    message_format: {
-                        message: "string"
-                    },
-                }
-            ],
+  schema_version: 1,
+  manifest: {
+    name: "hello_world_param",
+    tag: "0.1.0",
+    language: "rust",
+    add_cmd: [
+      "cargo",
+      "build",
+      "--release"
+    ],
+    start_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
+  parameters: {
+    name: "string",
+  },
+  interfaces: {
+    exposes: {
+      topics: [
+        {
+          name: "message_stream",
+          qos_profile: "sensor_data",
+          message_format: {
+            message: "string"
+          },
         }
+      ],
     }
+  }
 }

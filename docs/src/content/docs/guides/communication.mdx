@@ -18,6 +18,7 @@ Every single node is only aware of its interfaces it exposes and the ones it sub
   manifest: {
     name: "controller",
     tag: "0.1.0",
+    language: "rust",
     add_cmd: ["cargo", "build", "--release"],
     start_cmd: ["cargo", "run", "--release"]
   },
@@ -85,7 +86,7 @@ Make sure `hello_world_param` is already in the node stack otherwise you might g
 Error: `hello_receiver:0.1.0 depends on `hello_world_param:0.1.0`, but it does not exist in the stack
 ```
 The `node add` and `node sync` both require the subscribed nodes to be present in the node stack to 
-generate the proper interfaces.
+generate the proper interfaces for the programming language they are written in.
 :::
 
 ## Starting the nodes
@@ -94,11 +95,11 @@ Now we need to make sure our nodes are started, if we take a look at our node st
 ```sh
 ❯ peppy stack list
 Listing nodes...
-Requesting node stack graph from master 'romantic-kepler-4326'...
+Requesting node stack graph from master 'sweet-germain-4388'...
 Node stack:
-  - romantic-kepler-4326:master-node (/Users/tuatini/workspace/infrastructure) (1 instance: ["confident-germain-2727"])
-  - hello_receiver:0.1.0 (/Users/tuatini/.peppy/nodes/hello_receiver_0.1.0_bd62ed) (0 instances: [])
-  - hello_world_param:0.1.0 (/Users/tuatini/.peppy/nodes/hello_world_param_0.1.0_2a74c0) (0 instances: [])
+  - sweet-germain-4388:master-node (/Users/tuatini/workspace/peppy) (1 instance: ["brave-zhukovsky-6918"])
+  - hello_receiver:0.1.0 (/Users/tuatini/.peppy/nodes/hello_receiver_0.1.0_d41475) (0 instances: [])
+  - hello_world_param:0.1.0 (/Users/tuatini/.peppy/nodes/hello_world_param_0.1.0_9d5fa0) (0 instances: [])
 Dependencies:
   - hello_receiver:0.1.0 -> hello_world_param:0.1.0
 ```
@@ -115,21 +116,20 @@ Now lets start the `hello_receiver`:
 ```sh
 ❯ peppy node start hello_receiver:0.1.0
 Running node hello_receiver:0.1.0...
-Starting node hello_receiver:0.1.0 with instance_id 'cranky-thompson-8740' and 0 argument(s)...
-Calling node_start for hello_receiver:0.1.0 (instance_id=cranky-thompson-8740)...
-Log file: /Users/tuatini/.peppy/logs/start/cranky-thompson-8740.log
-Started node instance 'cranky-thompson-8740' (pid: 10659)
+Starting node hello_receiver:0.1.0 with instance_id 'vigorous-buck-8117' and 0 argument(s)...
+Calling node_start for hello_receiver:0.1.0 (instance_id=vigorous-buck-8117)...
+Log file: /Users/tuatini/.peppy/logs/start/vigorous-buck-8117.log
+Started node instance 'vigorous-buck-8117' (pid: 77190)
 ```
 
-When you start the node you can see a path to the logs, in my case `/Users/tuatini/.peppy/logs/start/cranky-thompson-8740.log`.
+When you start the node you can see a path to the logs, in my case `/Users/tuatini/.peppy/logs/start/vigorous-buck-8117.log`.
 If we open it up:
 ```
-[2026-01-23T13:08:03.954] [stderr] warning: pmi@0.0.1: Using cached zenohd binary from "/var/folders/kb/36lp35_92z5_jg6gfqhvkm600000gn/T/zenoh-peppy->
-[2026-01-23T13:08:03.956] [stderr]     Finished `release` profile [optimized] target(s) in 0.47s
-[2026-01-23T13:08:03.962] [stderr]      Running `target/release/hello_receiver`
-[2026-01-23T13:08:05.765] [stdout] Received: hello planet count 28
-[2026-01-23T13:08:08.764] [stdout] Received: hello planet count 29
-[2026-01-23T13:08:11.764] [stdout] Received: hello planet count 30
+[2026-01-24T10:02:47.630] [stderr]     Finished `release` profile [optimized] target(s) in 0.21s
+[2026-01-24T10:02:47.635] [stderr]      Running `target/release/hello_receiver`
+[2026-01-24T10:02:51.243] [stdout] Received from gifted-moser-9365: hello planet count 7
+[2026-01-24T10:02:54.243] [stdout] Received from gifted-moser-9365: hello planet count 8
+[2026-01-24T10:02:57.244] [stdout] Received from gifted-moser-9365: hello planet count 9
 ```
 
 We can see the messages received from the `hello_world_param:0.1.0` instance!
@@ -137,10 +137,39 @@ We can see the messages received from the `hello_world_param:0.1.0` instance!
 ## Starting a second instance with different parameters
 
 Now lets push things a little further and imagine we need a second instance with a different set of parameters, we can now start a second instance:
+```sh
+❯ peppy node start hello_world_param:0.1.0 name=you
+Running node hello_world_param:0.1.0...
+Starting node hello_world_param:0.1.0 with instance_id 'admiring-black-0614' and 1 argument(s)...
+Calling node_start for hello_world_param:0.1.0 (instance_id=admiring-black-0614)...
+Log file: /Users/tuatini/.peppy/logs/start/admiring-black-0614.log
+Started node instance 'admiring-black-0614' (pid: 78063)
 ```
-peppy node start hello_world_param:0.1.0 name=you
+And we check the logs again:
+```sh
+❯ tail /Users/tuatini/.peppy/logs/start/vigorous-buck-8117.log
+[2026-01-24T10:04:36.242] [stdout] Received from gifted-moser-9365: hello planet count 42
+[2026-01-24T10:04:39.244] [stdout] Received from gifted-moser-9365: hello planet count 43
+[2026-01-24T10:04:42.244] [stdout] Received from gifted-moser-9365: hello planet count 44
+[2026-01-24T10:04:45.244] [stdout] Received from gifted-moser-9365: hello planet count 45
+[2026-01-24T10:04:47.085] [stdout] Received from admiring-black-0614: hello you count 1
+[2026-01-24T10:04:48.243] [stdout] Received from gifted-moser-9365: hello planet count 46
+[2026-01-24T10:04:50.085] [stdout] Received from admiring-black-0614: hello you count 2
+[2026-01-24T10:04:51.244] [stdout] Received from gifted-moser-9365: hello planet count 47
 ```
+We can see the messages from both instances!
 
+```sh
+❯ peppy stack list
+Listing nodes...
+Requesting node stack graph from master 'sweet-germain-4388'...
+Node stack:
+  - sweet-germain-4388:master-node (/Users/tuatini/workspace/peppy) (1 instance: ["brave-zhukovsky-6918"])
+  - hello_receiver:0.1.0 (/Users/tuatini/.peppy/nodes/hello_receiver_0.1.0_d41475) (1 instance: ["vigorous-buck-8117"])
+  - hello_world_param:0.1.0 (/Users/tuatini/.peppy/nodes/hello_world_param_0.1.0_9d5fa0) (2 instances: ["gifted-moser-9365", "admiring-black-0614"])
+Dependencies:
+  - hello_receiver:0.1.0 -> hello_world_param:0.1.0
+```
 
 ---
 We'll explore the use of services & actions in a more advanced guide although they fundamentally work the same way. 

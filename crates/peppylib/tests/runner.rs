@@ -123,6 +123,7 @@ async fn daemon_runner_succeed() {
       manifest: {
         name: "test_node",
         tag: "0.1.0",
+        language: "rust",
         start_cmd: ["cargo", "run"]
       },
       parameters: {
@@ -270,6 +271,7 @@ async fn standalone_runner_succeed() {
       manifest: {
         name: "test_node",
         tag: "0.1.0",
+        language: "rust",
         start_cmd: ["cargo", "run"]
       },
       parameters: {
@@ -331,6 +333,7 @@ async fn node_ready_but_not_healthy() {
       manifest: {
         name: "test_node",
         tag: "0.1.0",
+        language: "rust",
         start_cmd: ["cargo", "run"]
       },
       parameters: {
@@ -587,6 +590,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
       manifest: {
         name: "test_node",
         tag: "0.1.0",
+        language: "rust",
         start_cmd: ["cargo", "run"]
       },
       parameters: {

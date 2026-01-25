@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use peppygen::{NodeBuilder, NodeRunner, Parameters, Result, StandaloneConfig};
+use peppygen::{NodeBuilder, NodeRunner, Parameters, Result};
 use tokio_util::sync::CancellationToken;
 
 /// Emits a "hello world count X" message every 3 seconds, starting immediately.
@@ -25,14 +25,13 @@ async fn emit_hello_world_loop(runner: Arc<NodeRunner>, token: CancellationToken
 }
 
 fn main() -> Result<()> {
-    NodeBuilder::new()
-        .run(|args: Parameters, node_runner| async move {
-            let runner = node_runner.clone();
-            let token = node_runner.cancellation_token().clone();
+    NodeBuilder::new().run(|args: Parameters, node_runner| async move {
+        let runner = node_runner.clone();
+        let token = node_runner.cancellation_token().clone();
 
-            // We use tokio::spawn to avoid blocking the closure
-            tokio::spawn(emit_hello_world_loop(runner, token, args.name.clone()));
+        // We use tokio::spawn to avoid blocking the closure
+        tokio::spawn(emit_hello_world_loop(runner, token, args.name.clone()));
 
-            Ok(())
-        })
+        Ok(())
+    })
 }

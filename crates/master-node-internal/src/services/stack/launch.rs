@@ -3,7 +3,7 @@ use crate::encoding::{LaunchRequest, LaunchResponse, NodeSyncRequest};
 use crate::names;
 use crate::services::node::{perform_health_check, start_node, wait_for_ready_signal};
 use bytes::Bytes;
-use config::peppy_config::{BuildSystem, PeppyLauncherParser};
+use config::peppy_config::PeppyLauncherParser;
 use config::runtime::{LauncherRuntimeConfig, RuntimeConfig};
 use node_stack::{LaunchPlan, NodeEntity, NodeStack};
 use peppylib::messaging::ServiceRequestContext;
@@ -193,7 +193,6 @@ async fn start_launch_plan_instances(
             entity.root_path().to_path_buf(),
             &launcher_runtime_config.git_hash,
         )
-        .with_build_system(BuildSystem::Cargo)
         .poll(
             messenger,
             master_node_name,

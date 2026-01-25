@@ -52,7 +52,6 @@ async fn node_stop_command_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::BuildSystem::Rust,
         },
     }
     .execute(&node_ctx)
@@ -74,10 +73,12 @@ async fn node_stop_command_succeeds() {
     // Add the node to the node stack (without running)
     NodeCommand {
         command: NodeCommands::Add {
-            node_dir: node_path,
+            source: node_path.display().to_string(),
+            git_ref: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
+            timeout: 60,
         },
     }
     .execute(&node_ctx)
@@ -146,6 +147,7 @@ async fn node_stop_command_succeeds() {
             tag: Some("0.1.0".to_string()),
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
+            timeout: 60,
         },
     }
     .execute(&node_ctx)

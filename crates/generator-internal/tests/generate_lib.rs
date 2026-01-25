@@ -1,6 +1,8 @@
-use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use config::peppy_config::BuildSystem;
-use generator::generate_lib_for_build_system;
+use config::{
+    consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH},
+    node::PeppygenLanguage,
+};
+use generator::generate_peppygen_lib;
 use std::fs;
 use tempfile::TempDir;
 
@@ -9,6 +11,7 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
   manifest: {
     name: "test_node",
     tag: "0.1.0",
+    language: "rust",
     start_cmd: ["cargo", "run", "--release"]
   },
   interfaces: {
@@ -39,7 +42,7 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
   }
 }"#;
 
-fn run_generate_peppygen_lib_test(build_system: BuildSystem) -> (TempDir, std::path::PathBuf) {
+fn run_generate_peppygen_lib_test(language: PeppygenLanguage) -> (TempDir, std::path::PathBuf) {
     let temp_dir = TempDir::new().expect("failed to create temp directory");
     let node_dir = temp_dir.path();
 
@@ -48,7 +51,7 @@ fn run_generate_peppygen_lib_test(build_system: BuildSystem) -> (TempDir, std::p
     fs::write(&config_path, PEPPY_JSON5_CONFIG).expect("failed to write peppy.json5");
 
     // Generate the library
-    generate_lib_for_build_system(build_system, node_dir, Vec::new(), "test-hash")
+    generate_peppygen_lib(language, node_dir, Vec::new(), "test-hash")
         .expect("failed to generate library");
 
     // Verify the generated library structure exists
@@ -91,6 +94,7 @@ fn generate_peppygen_lib_minimal_config() {
       manifest: {
         name: "minimal_node",
         tag: "0.1.0",
+        language: "rust",
         start_cmd: ["cargo", "run"]
       }
     }"#;
@@ -99,7 +103,7 @@ fn generate_peppygen_lib_minimal_config() {
     fs::write(&config_path, minimal_config).expect("failed to write peppy.json5");
 
     // Generate should succeed even with no interfaces
-    generate_lib_for_build_system(BuildSystem::Cargo, node_dir, Vec::new(), "test-hash")
+    generate_peppygen_lib(PeppygenLanguage::Rust, node_dir, Vec::new(), "test-hash")
         .expect("failed to generate library for minimal config");
 
     // Verify the generated library exists
@@ -109,7 +113,7 @@ fn generate_peppygen_lib_minimal_config() {
 
 #[test]
 fn generate_peppygen_lib_cargo() {
-    let (temp_dir, peppygen_dir) = run_generate_peppygen_lib_test(BuildSystem::Cargo);
+    let (temp_dir, peppygen_dir) = run_generate_peppygen_lib_test(PeppygenLanguage::Rust);
     let node_dir = temp_dir.path();
 
     // Check that Cargo.toml was generated
@@ -186,7 +190,7 @@ fn generate_peppygen_lib_cargo() {
 #[test]
 #[ignore = "Python generator not yet implemented"]
 fn generate_peppygen_lib_uv() {
-    let (_temp_dir, peppygen_dir) = run_generate_peppygen_lib_test(BuildSystem::Uv);
+    let (_temp_dir, peppygen_dir) = run_generate_peppygen_lib_test(PeppygenLanguage::Python);
 
     // Check that pyproject.toml was generated
     let pyproject_toml = peppygen_dir.join("pyproject.toml");
@@ -211,7 +215,6 @@ fn generate_peppygen_lib_missing_config() {
     let node_dir = temp_dir.path();
 
     // Try to generate without a peppy.json5 - should fail
-    let result =
-        generate_lib_for_build_system(BuildSystem::Cargo, node_dir, Vec::new(), "test-hash");
+    let result = generate_peppygen_lib(PeppygenLanguage::Rust, node_dir, Vec::new(), "test-hash");
     assert!(result.is_err(), "should fail when peppy.json5 is missing");
 }

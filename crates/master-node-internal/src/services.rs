@@ -6,7 +6,7 @@ mod stack;
 use crate::Result;
 use config::{
     AnyType, NodeArguments,
-    node::{Manifest, Name, NodeConfig},
+    node::{Manifest, Name, NodeConfig, PeppygenLanguage},
     peppy_config::CURRENT_SCHEMA_VERSION,
 };
 use names_generator2::get_random;
@@ -73,6 +73,7 @@ impl MasterNode {
             manifest: Manifest {
                 name: manifest_name,
                 tag: MASTER_NODE_TAG.to_string(),
+                language: PeppygenLanguage::Rust,
                 labels: None,
                 add_cmd: None,
                 start_cmd: vec![],
