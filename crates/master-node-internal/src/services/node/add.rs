@@ -12,7 +12,9 @@ use config::consts::{
 use config::node::{NodeConfig, NodeConfigParser};
 use git2::{Repository, build::CheckoutBuilder};
 use node_stack::NodeStack;
-use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
+use peppylib::messaging::{
+    ActionCreation, SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext, TopicPublisher,
+};
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use rand::Rng;
 use std::fs::File;
@@ -20,12 +22,15 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
 use tar::Archive;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::debug;
 use ureq::Error as HttpError;
 use zstd::stream::read::Decoder;
+
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn listen_for_node_add(
     messenger: &MessengerHandle,
@@ -43,7 +48,21 @@ pub async fn listen_for_node_add(
     )
     .await?;
 
-    let handle = tokio::spawn(async move { run_node_add_action_loop(action, node_stack).await });
+    let handle = tokio::spawn({
+        let messenger = messenger.clone();
+        let bound_master_node = master_node_name.to_string();
+        let master_instance_id = instance_id.to_string();
+        async move {
+            run_node_add_action_loop(
+                action,
+                node_stack,
+                messenger,
+                bound_master_node,
+                master_instance_id,
+            )
+            .await
+        }
+    });
 
     Ok(handle)
 }
@@ -316,6 +335,9 @@ struct ResolvedNodeAddSource {
 }
 
 struct ProcessNodeAddContext {
+    messenger: MessengerHandle,
+    bound_master_node: String,
+    master_instance_id: String,
     node_stack: Arc<NodeStack>,
     feedback_publisher: TopicPublisher,
     log_file: Arc<StdMutex<File>>,
@@ -741,6 +763,9 @@ async fn resolve_node_add_source(
 async fn run_node_add_action_loop(
     mut action: ActionCreation,
     node_stack: Arc<NodeStack>,
+    messenger: MessengerHandle,
+    bound_master_node: String,
+    master_instance_id: String,
 ) -> Result<()> {
     let state = Arc::new(Mutex::new(NodeAddActionState::default()));
 
@@ -752,13 +777,28 @@ async fn run_node_add_action_loop(
                 let feedback_publisher = &action.feedback_publisher;
                 let node_stack = Arc::clone(&node_stack);
                 let state = Arc::clone(&state);
+                let messenger = messenger.clone();
+                let bound_master_node = bound_master_node.clone();
+                let master_instance_id = master_instance_id.clone();
                 move |context| {
                     let feedback_publisher = feedback_publisher.clone();
                     let node_stack = Arc::clone(&node_stack);
                     let state = Arc::clone(&state);
+                    let messenger = messenger.clone();
+                    let bound_master_node = bound_master_node.clone();
+                    let master_instance_id = master_instance_id.clone();
 
                     async move {
-                        handle_goal_request(context, feedback_publisher, node_stack, state).await
+                        handle_goal_request(
+                            context,
+                            feedback_publisher,
+                            node_stack,
+                            state,
+                            messenger,
+                            bound_master_node,
+                            master_instance_id,
+                        )
+                        .await
                     }
                 }
             })
@@ -829,12 +869,27 @@ async fn run_node_add_action_loop(
                             let feedback_publisher = &action.feedback_publisher;
                             let node_stack = Arc::clone(&node_stack);
                             let state = Arc::clone(&state);
+                            let messenger = messenger.clone();
+                            let bound_master_node = bound_master_node.clone();
+                            let master_instance_id = master_instance_id.clone();
                             move |context| {
                                 let feedback_publisher = feedback_publisher.clone();
                                 let node_stack = Arc::clone(&node_stack);
                                 let state = Arc::clone(&state);
+                                let messenger = messenger.clone();
+                                let bound_master_node = bound_master_node.clone();
+                                let master_instance_id = master_instance_id.clone();
                                 async move {
-                                    handle_goal_request(context, feedback_publisher, node_stack, state).await
+                                    handle_goal_request(
+                                        context,
+                                        feedback_publisher,
+                                        node_stack,
+                                        state,
+                                        messenger,
+                                        bound_master_node,
+                                        master_instance_id,
+                                    )
+                                    .await
                                 }
                             }
                         }) => {
@@ -879,6 +934,9 @@ async fn handle_goal_request(
     feedback_publisher: TopicPublisher,
     node_stack: Arc<NodeStack>,
     state: Arc<Mutex<NodeAddActionState>>,
+    messenger: MessengerHandle,
+    bound_master_node: String,
+    master_instance_id: String,
 ) -> PeppyResult<Bytes> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -1000,6 +1058,9 @@ async fn handle_goal_request(
     let node_config = resolved.node_config;
     tokio::spawn(async move {
         let ctx = ProcessNodeAddContext {
+            messenger,
+            bound_master_node,
+            master_instance_id,
             node_stack,
             feedback_publisher: feedback_publisher_clone,
             log_file,
@@ -1025,6 +1086,88 @@ async fn handle_goal_request(
             identifier: "node_add_goal".to_string(),
             reason: format!("Failed to encode response: {}", e),
         })
+}
+
+async fn shutdown_existing_instances(
+    node_name: &str,
+    node_tag: &str,
+    ctx: &ProcessNodeAddContext,
+) -> std::result::Result<(), String> {
+    let Some(entity) = ctx.node_stack.find(node_name, node_tag) else {
+        return Ok(());
+    };
+
+    if entity.instances().is_empty() {
+        return Ok(());
+    }
+
+    if !ctx.node_stack.dependents_of(node_name, node_tag).is_empty() {
+        let err = node_stack::NodeStackError::CannotOverwriteNodeWithDependents {
+            node_name: node_name.to_string(),
+            node_tag: node_tag.to_string(),
+        };
+        return Err(err.to_string());
+    }
+
+    let instances = entity
+        .instances()
+        .iter()
+        .map(|instance| instance.instance_id().clone())
+        .collect::<Vec<_>>();
+
+    for instance_id in instances {
+        let instance_id_str = instance_id.as_str().to_owned();
+        debug!(
+            "Shutting down existing node instance {}, node={}:{}",
+            instance_id_str, node_name, node_tag
+        );
+
+        ServiceMessenger::poll(
+            &ctx.messenger,
+            &ctx.bound_master_node,
+            &ctx.master_instance_id,
+            node_name,
+            SHUTDOWN_SERVICE,
+            Some(&ctx.bound_master_node),
+            Some(&instance_id_str),
+            Bytes::from_static(b"shutdown"),
+            SHUTDOWN_TIMEOUT,
+        )
+        .await
+        .map_err(|e| {
+            format!(
+                "Failed to shutdown node instance '{}': {}",
+                instance_id_str, e
+            )
+        })?;
+
+        match ctx
+            .node_stack
+            .remove_instance(node_name, node_tag, &instance_id)
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(format!(
+                    "Node instance '{}' not found in node stack",
+                    instance_id_str
+                ));
+            }
+            Err(e) => {
+                return Err(format!(
+                    "Failed to remove node instance '{}' from node stack: {}",
+                    instance_id_str, e
+                ));
+            }
+        }
+
+        if let Ok(payload) =
+            NodeAddFeedback::stdout(format!("{instance_id_str} has been stopped")).encode()
+        {
+            let _ = ctx.feedback_publisher.publish(payload).await;
+        }
+    }
+
+    Ok(())
 }
 
 async fn process_node_add(
@@ -1093,13 +1236,21 @@ async fn process_node_add(
         node_config.manifest.add_cmd.as_ref(),
         &copied_path,
         &ctx.feedback_publisher,
-        ctx.log_file,
+        Arc::clone(&ctx.log_file),
     )
     .await
     {
         // Clean up the copied folder on failure
         let _ = std::fs::remove_dir_all(&copied_path);
         return NodeAddResult::failure(&ctx.log_path, format!("add_cmd failed: {}", e));
+    }
+
+    if let Err(e) = shutdown_existing_instances(&node_name, &node_tag, &ctx).await {
+        let _ = std::fs::remove_dir_all(&copied_path);
+        return NodeAddResult::failure(
+            &ctx.log_path,
+            format!("Failed to shutdown existing node instances: {}", e),
+        );
     }
 
     // Add the node config to the stack
