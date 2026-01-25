@@ -5,4 +5,44 @@ sidebar:
   order: 7
 ---
 
-# TODO pull a node from git uvc_camera in example_nodes
+PeppyOS wouldn't be very useful if not for the fact that you can share your nodes with other people.
+As an example, we'll try to pull the `fake_uvc_camera` node in [this repo](https://github.com/Peppy-bot/example_nodes).
+
+
+```sh
+peppy node add https://github.com/Peppy-bot/example_nodes.git/fake_uvc_camera
+```
+or
+```
+peppy node add --ref "0.1.0" https://github.com/Peppy-bot/example_nodes.git/fake_uvc_camera
+```
+
+::note
+The build may fail here if you don't have the required ffmpeg libraries installed on your system. Inspect the logs to understand what libraries need to be installed and attempt to add the node again
+::
+
+Now that this node is added, we can start it:
+```
+peppy node start fake_uvc_camera:0.1.0
+```
+and inspect its logs:
+```sh
+❯ tail /Users/tuatini/.peppy/logs/start/angry-ride-4256.log
+[2026-01-25T16:38:51.860] [stdout] [uvc_camera] Video params: 720x1280 @ 30 fps, encoding: rgb
+[2026-01-25T16:38:51.860] [stdout] [uvc_camera] Starting video loop...
+[2026-01-25T16:38:51.860] [stdout] [uvc_camera] Video file found: /Users/tuatini/.peppy/nodes/fake_uvc_camera_0.1.0_093fa9/assets/robot.mp4
+[2026-01-25T16:38:51.860] [stdout] [uvc_camera] Opening video file for playback...
+[2026-01-25T16:38:54.892] [stdout] [uvc_camera] Emitted frame 65
+[2026-01-25T16:38:57.913] [stdout] [uvc_camera] Emitted frame 129
+[2026-01-25T16:39:00.926] [stdout] [uvc_camera] Emitted frame 194
+```
+
+We see that video frames are emitted from that node, we can write a new node that depends on `fake_uvc_camera` that will read those frames and reconstruct a 5s video from those frames.
+From the same github repository, we can do exactly that:
+```sh
+peppy node add https://github.com/Peppy-bot/example_nodes.git/fake_video_reconstruction
+```
+
+::note
+When `--ref` is using during `peppy node add`, it corresponds to the git tag/release or hash of the repo, on the other hand, the tag in `peppy node start fake_uvc_camera:0.1.0` corresponds to the tag found in `peppy.json5`
+::
