@@ -112,7 +112,7 @@ async fn listen_for_node_init_python_success() {
 
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-    let response = NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123", Toolchain::Cargo)
+    let response = NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123", Toolchain::Uv)
         .poll(
             &started_master.caller_handle,
             &started_master.master_node_name,
