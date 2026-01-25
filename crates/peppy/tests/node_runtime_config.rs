@@ -37,7 +37,6 @@ async fn node_runtime_config_command_outputs_valid_config() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)
@@ -55,7 +54,8 @@ async fn node_runtime_config_command_outputs_valid_config() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            source_dir: node_path,
+            source: node_path.display().to_string(),
+            git_ref: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -146,7 +146,6 @@ async fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)
@@ -164,7 +163,8 @@ async fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            source_dir: node_path.clone(),
+            source: node_path.display().to_string(),
+            git_ref: None,
             start: false,
             args: Vec::new(),
             instance_id: None,

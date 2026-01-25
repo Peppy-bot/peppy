@@ -51,7 +51,6 @@ async fn node_run_command_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)
@@ -71,7 +70,8 @@ async fn node_run_command_succeeds() {
     // Add the node to the node stack (without running)
     NodeCommand {
         command: NodeCommands::Add {
-            source_dir: node_path,
+            source: node_path.display().to_string(),
+            git_ref: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -228,7 +228,6 @@ async fn node_run_command_with_args_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)
@@ -283,7 +282,8 @@ async fn node_run_command_with_args_succeeds() {
     // Add the node to the node stack (without running)
     NodeCommand {
         command: NodeCommands::Add {
-            source_dir: node_path,
+            source: node_path.display().to_string(),
+            git_ref: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -450,7 +450,6 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)
@@ -470,7 +469,8 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
     // Add the node to the node stack (without running)
     NodeCommand {
         command: NodeCommands::Add {
-            source_dir: node_path,
+            source: node_path.display().to_string(),
+            git_ref: None,
             start: false,
             args: Vec::new(),
             instance_id: None,

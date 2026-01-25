@@ -34,6 +34,7 @@ crossterm = "0.29"
 tempfile = { version = "3.8", optional = true }
 
 [features]
+default = ["test-support"]
 test-support = ["dep:tempfile"]
 
 [dev-dependencies]
@@ -42,4 +43,3 @@ tempfile = "3.8"
 [[test]]
 name = "integration"
 path = "tests/main.rs"
-required-features = ["test-support"]
