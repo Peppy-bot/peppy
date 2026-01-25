@@ -65,6 +65,33 @@ const SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 }
 "#;
 
+const EMPTY_MESSAGE_FORMAT: &str = r#"{}"#;
+
+// --- Service without request body
+const EXPOSED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
+{
+  name: "get_system_status",
+  response_message_format: {
+    healthy: "bool"
+  }
+}
+"#;
+
+const SUBSCRIBED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
+{
+  id: "uvc_camera_get_system_status",
+  node: "uvc_camera",
+  name: "get_system_status",
+  tag: "0.1.0"
+}
+"#;
+
+const SUBSCRIBED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
+{
+  healthy: "bool"
+}
+"#;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn services_communication_no_target_instance_id() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
@@ -331,6 +358,265 @@ fn main() -> Result<()> {
         exposer_stdout.contains(&expected_request_log)
             && exposer_stdout.contains("enable_camera handler finished"),
         "exposer did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
+        exposer_stdout,
+        exposer_stderr
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn services_communication_exposed_service_without_request_body() {
+    let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
+
+    // --- Subscriber (client) project
+    let subscriber_instance_id = "the_subscriber";
+    let temp_dir_subscriber = TempDir::new().unwrap();
+    let subscribed_service: SubscribedService =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_NO_REQUEST_EXAMPLE).unwrap();
+    let subscribed_request_format: MessageFormat =
+        serde_json5::from_str(EMPTY_MESSAGE_FORMAT).expect("empty request format should parse");
+    let subscribed_response_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE).unwrap();
+    let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
+        init_test_env(&temp_dir_subscriber);
+    generator
+        .add_subscribed_service(
+            &subscribed_service,
+            &subscribed_request_format,
+            &subscribed_response_format,
+        )
+        .unwrap();
+    let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
+    generator.build(&output_dir_subscriber).unwrap();
+    fs::remove_file(output_config).unwrap();
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+
+    let subscriber_runtime_config = RuntimeConfig::new(
+        &router_host,
+        router_port,
+        DeploymentInstance {
+            instance_id: Name::new(subscriber_instance_id).unwrap(),
+            arguments: Default::default(),
+        },
+        SUBSCRIBER_NODE_NAME,
+        TEST_MASTER_NODE,
+    )
+    .unwrap();
+    let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
+    subscriber_runtime_config
+        .save_json5_launch_config(&subscriber_runtime_config_path)
+        .unwrap();
+
+    init_cargo_user_node(&user_node_subscriber);
+    let subscriber_main = r#"
+use peppygen::subscribed_services::uvc_camera_get_system_status;
+use peppygen::NodeBuilder;
+use peppygen::Result;
+use std::time::Duration;
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        let response =
+            uvc_camera_get_system_status::poll(&node_runner, Duration::from_secs(5), None, None).await?;
+        println!(
+            "get_system_status result: service_id={} healthy={}",
+            &response.instance_id,
+            response.data.healthy
+        );
+        Ok(())
+    })
+}
+"#;
+    let main_file = user_node_subscriber.join("src").join("main.rs");
+    fs::write(main_file, subscriber_main).expect("failed to write subscriber main");
+
+    // --- Exposer (server) project
+    let exposer_instance_id = "the_exposer";
+    let temp_dir_exposer = TempDir::new().unwrap();
+    let exposed_service: ExposedService =
+        serde_json5::from_str(EXPOSED_SERVICE_NO_REQUEST_EXAMPLE).unwrap();
+    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
+        init_test_env(&temp_dir_exposer);
+    generator.add_exposed_service(&exposed_service).unwrap();
+    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
+    generator.build(&output_dir_exposer).unwrap();
+    fs::remove_file(output_config).unwrap();
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+
+    let exposer_runtime_config = RuntimeConfig::new(
+        &router_host,
+        router_port,
+        DeploymentInstance {
+            instance_id: Name::new(exposer_instance_id).unwrap(),
+            arguments: Default::default(),
+        },
+        UVC_CAMERA_NODE_NAME,
+        TEST_MASTER_NODE,
+    )
+    .unwrap();
+    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
+    exposer_runtime_config
+        .save_json5_launch_config(&exposer_runtime_config_path)
+        .unwrap();
+
+    init_cargo_user_node(&user_node_exposer);
+    let exposer_main = r#"
+use peppygen::exposed_services::get_system_status;
+use peppygen::NodeBuilder;
+use peppygen::Result;
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        get_system_status::handle_next_request(&node_runner, |request| -> Result<get_system_status::Response> {
+            println!("received get_system_status request from {}", request.instance_id);
+            Ok(get_system_status::Response::new(true))
+        })
+        .await?;
+
+        println!("get_system_status handler finished");
+
+        Ok(())
+    })
+}
+"#;
+    let main_file = user_node_exposer.join("src").join("main.rs");
+    fs::write(main_file, exposer_main).expect("failed to write exposer main");
+
+    compile_project(&user_node_subscriber);
+    compile_project(&user_node_exposer);
+
+    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
+    let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
+
+    let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
+        .await
+        .expect("failed to create messenger for test control");
+    let ctx = WaitContext {
+        messenger: &messenger,
+        bound_master_node: TEST_MASTER_NODE,
+        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
+        target_master_node: Some(TEST_MASTER_NODE),
+    };
+
+    // Spawn exposer first so it's ready to handle requests
+    let mut exposer_child = spawn_cargo_run(
+        &user_node_exposer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
+    );
+
+    wait_for_service_reachable_or_exit(
+        &ctx,
+        UVC_CAMERA_NODE_NAME,
+        "get_system_status",
+        Some(exposer_instance_id),
+        &mut exposer_child,
+        &user_node_exposer,
+        Duration::from_secs(10),
+    )
+    .await;
+
+    let mut subscriber_child = spawn_cargo_run(
+        &user_node_subscriber,
+        &[(RUNTIME_CONFIG_VAR_NAME, &subscriber_runtime_config_str)],
+    );
+
+    wait_for_health_service_reachable_or_exit(
+        &ctx,
+        SUBSCRIBER_NODE_NAME,
+        subscriber_instance_id,
+        &mut subscriber_child,
+        &user_node_subscriber,
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_for_health_service_reachable_or_exit(
+        &ctx,
+        UVC_CAMERA_NODE_NAME,
+        exposer_instance_id,
+        &mut exposer_child,
+        &user_node_exposer,
+        Duration::from_secs(10),
+    )
+    .await;
+
+    send_shutdown(
+        &messenger,
+        TEST_MASTER_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        SUBSCRIBER_NODE_NAME,
+        Some(TEST_MASTER_NODE),
+        subscriber_instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
+    send_shutdown(
+        &messenger,
+        TEST_MASTER_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        UVC_CAMERA_NODE_NAME,
+        Some(TEST_MASTER_NODE),
+        exposer_instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
+
+    let subscriber_output = wait_for_child(
+        &mut subscriber_child,
+        Some(Duration::from_secs(10)),
+        &user_node_subscriber,
+    );
+    let exposer_output = wait_for_child(
+        &mut exposer_child,
+        Some(Duration::from_secs(10)),
+        &user_node_exposer,
+    );
+
+    let subscriber_stdout = String::from_utf8_lossy(&subscriber_output.stdout).into_owned();
+    let subscriber_stderr = String::from_utf8_lossy(&subscriber_output.stderr).into_owned();
+    assert!(
+        subscriber_output.status.success(),
+        "subscriber cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        subscriber_output.status.code(),
+        subscriber_stdout,
+        subscriber_stderr
+    );
+    let expected_subscriber_log = format!(
+        "get_system_status result: service_id={} healthy=true",
+        exposer_instance_id
+    );
+    assert!(
+        subscriber_stdout.contains(&expected_subscriber_log),
+        "subscriber did not receive expected service response (expected log: {}).\nstdout:\n{}\nstderr:\n{}",
+        expected_subscriber_log,
+        subscriber_stdout,
+        subscriber_stderr
+    );
+
+    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
+    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
+    assert!(
+        exposer_output.status.success(),
+        "exposer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        exposer_output.status.code(),
+        exposer_stdout,
+        exposer_stderr
+    );
+    let expected_request_log = format!(
+        "received get_system_status request from {}",
+        subscriber_instance_id
+    );
+    assert!(
+        exposer_stdout.contains(&expected_request_log)
+            && exposer_stdout.contains("get_system_status handler finished"),
+        "exposer did not process the get_system_status request.\nstdout:\n{}\nstderr:\n{}",
         exposer_stdout,
         exposer_stderr
     );
