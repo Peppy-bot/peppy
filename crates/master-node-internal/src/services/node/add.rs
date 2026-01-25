@@ -17,7 +17,7 @@ use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use rand::Rng;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex as StdMutex};
 use tar::Archive;
@@ -517,9 +517,80 @@ fn extract_http_bundle(
     let decoder = Decoder::new(file)
         .map_err(|e| format!("Failed to decode zstd bundle from {}: {}", url, e))?;
     let mut archive = Archive::new(decoder);
-    archive
-        .unpack(destination)
-        .map_err(|e| format!("Failed to unpack tar bundle from {}: {}", url, e))?;
+
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("Failed to read tar bundle entries from {}: {}", url, e))?;
+
+    let mut directories = Vec::new();
+    for entry in entries {
+        let mut entry =
+            entry.map_err(|e| format!("Failed to read tar bundle entry from {}: {}", url, e))?;
+
+        let entry_path = entry
+            .path()
+            .map_err(|e| format!("Failed to read tar bundle entry path from {}: {}", url, e))?
+            .into_owned();
+
+        if entry_path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(..)
+            )
+        }) {
+            return Err(format!(
+                "Bundle from {} contains unsafe path: {}",
+                url,
+                entry_path.display()
+            ));
+        }
+
+        if entry.header().entry_type().is_dir() {
+            directories.push(entry);
+        } else {
+            let unpacked = entry.unpack_in(destination).map_err(|e| {
+                format!(
+                    "Failed to unpack tar bundle entry {} from {}: {}",
+                    entry_path.display(),
+                    url,
+                    e
+                )
+            })?;
+            if !unpacked {
+                return Err(format!(
+                    "Bundle from {} contains unsafe path: {}",
+                    url,
+                    entry_path.display()
+                ));
+            }
+        }
+    }
+
+    // Apply directory entries at the end, matching tar::Archive::unpack behavior (avoids
+    // directory permissions interfering with descendant extraction).
+    directories.sort_by(|a, b| b.path_bytes().cmp(&a.path_bytes()));
+    for mut dir in directories {
+        let entry_path = dir
+            .path()
+            .map_err(|e| format!("Failed to read tar bundle entry path from {}: {}", url, e))?
+            .into_owned();
+        let unpacked = dir.unpack_in(destination).map_err(|e| {
+            format!(
+                "Failed to unpack tar bundle entry {} from {}: {}",
+                entry_path.display(),
+                url,
+                e
+            )
+        })?;
+        if !unpacked {
+            return Err(format!(
+                "Bundle from {} contains unsafe path: {}",
+                url,
+                entry_path.display()
+            ));
+        }
+    }
+
     Ok(())
 }
 

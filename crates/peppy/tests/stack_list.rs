@@ -110,7 +110,6 @@ async fn node_list_command_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(provider_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)
@@ -120,7 +119,6 @@ async fn node_list_command_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(consumer_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)
@@ -153,7 +151,8 @@ async fn node_list_command_succeeds() {
     // Add the provider
     NodeCommand {
         command: NodeCommands::Add {
-            source_dir: provider_path,
+            source: provider_path.display().to_string(),
+            git_ref: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -166,7 +165,8 @@ async fn node_list_command_succeeds() {
     // Add the consumer, it depends on the provider
     NodeCommand {
         command: NodeCommands::Add {
-            source_dir: consumer_path,
+            source: consumer_path.display().to_string(),
+            git_ref: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -250,7 +250,6 @@ async fn node_list_command_with_dot_representation_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(provider_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)
@@ -260,7 +259,6 @@ async fn node_list_command_with_dot_representation_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(consumer_name).expect("valid node name"),
             to_dir: None,
-            build_system: config::peppy_config::Toolchain::Rust,
         },
     }
     .execute(&node_ctx)
@@ -291,7 +289,8 @@ async fn node_list_command_with_dot_representation_succeeds() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            source_dir: provider_path,
+            source: provider_path.display().to_string(),
+            git_ref: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -303,7 +302,8 @@ async fn node_list_command_with_dot_representation_succeeds() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            source_dir: consumer_path,
+            source: consumer_path.display().to_string(),
+            git_ref: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
