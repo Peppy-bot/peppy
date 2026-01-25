@@ -332,10 +332,10 @@ fn clippy_single_exposed_topic_empty_format() {
     let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
     generator.add_exposed_topic(&exposed_topic).unwrap();
     generator
-        .add_subscribed_action(&subscribed_action1, Some(&action_messages))
+        .add_subscribed_action(&subscribed_action1, &action_messages)
         .unwrap();
     generator
-        .add_subscribed_action(&subscribed_action2, Some(&action_messages))
+        .add_subscribed_action(&subscribed_action2, &action_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator.build(&output_dir).unwrap();

@@ -263,7 +263,7 @@ async fn actions_communication() {
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env(&temp_dir_subscriber);
     generator
-        .add_subscribed_action(&subscribed_action, Some(&action_messages))
+        .add_subscribed_action(&subscribed_action, &action_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
@@ -572,7 +572,7 @@ async fn actions_communication_cancel_goal() {
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env(&temp_dir_subscriber);
     generator
-        .add_subscribed_action(&subscribed_action, Some(&action_messages))
+        .add_subscribed_action(&subscribed_action, &action_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();

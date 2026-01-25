@@ -93,8 +93,8 @@ impl LanguageGenerator for PythonGenerator {
     fn add_subscribed_service(
         &mut self,
         service: &SubscribedService,
-        _request_arguments: Option<&MessageFormat>,
-        _response_arguments: Option<&MessageFormat>,
+        _request_arguments: &MessageFormat,
+        _response_arguments: &MessageFormat,
     ) -> Result<()> {
         let fn_name = prefixed_name("on", non_empty_str(service.name.as_str()), "service");
         self.push_section(InterfaceArtifact::from_kind(
@@ -111,7 +111,7 @@ impl LanguageGenerator for PythonGenerator {
     fn add_subscribed_action(
         &mut self,
         action: &SubscribedAction,
-        _arguments: Option<&SubscribedActionMessage>,
+        _messages: &SubscribedActionMessage,
     ) -> Result<()> {
         let base_name = prefixed_name("on", non_empty_str(action.name.as_str()), "action");
         let mut sections = Vec::new();
