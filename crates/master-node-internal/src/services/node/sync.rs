@@ -324,19 +324,13 @@ pub fn collect_subscribed_interfaces(
                         .iter()
                         .find(|s| s.name.trim() == subscribed_service.name.trim())
                 {
-                    // Get the message formats from the exposed service
-                    if let (Some(request_format), Some(response_format)) = (
-                        &exposed_service.request_message_format,
-                        &exposed_service.response_message_format,
-                    ) {
-                        interfaces.push(DeploymentInterface::new(
-                            InterfaceVariant::SubscribedService(
-                                subscribed_service.clone(),
-                                request_format.clone(),
-                                response_format.clone(),
-                            ),
-                        ));
-                    }
+                    interfaces.push(DeploymentInterface::new(
+                        InterfaceVariant::SubscribedService(
+                            subscribed_service.clone(),
+                            exposed_service.request_message_format.clone(),
+                            exposed_service.response_message_format.clone(),
+                        ),
+                    ));
                 }
             }
         }

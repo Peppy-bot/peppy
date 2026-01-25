@@ -659,6 +659,156 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_generate_generates_rust_subscribed_service_interfaces() {
+    let started_master = start_master_node_with_mock_messenger().await;
+
+    let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
+    write_node_config(
+        uvc_camera_node_dir.path(),
+        r#"
+        {
+            schema_version: 1,
+            manifest: {
+                name: "uvc_camera",
+                tag: "0.1.0",
+                language: "rust",
+                labels: ["camera"],
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
+            },
+            parameters: {},
+            interfaces: {
+                exposes: {
+                    topics: [],
+                    services: [
+                      {
+                        name: "enable_camera",
+                        request_message_format: {
+                          enable: "bool",
+                        },
+                      }
+                    ],
+                    actions: [],
+                },
+            },
+        }
+        "#,
+    );
+
+    let uvc_camera_response =
+        NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH)
+            .poll(
+                &started_master.caller_handle,
+                &started_master.master_node_name,
+                CALLER_INSTANCE_ID,
+                &started_master.master_node_name,
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("node_generate request should complete");
+
+    assert!(
+        uvc_camera_response.success,
+        "uvc_camera node_generate should succeed, got error: {}",
+        uvc_camera_response.error_message
+    );
+
+    common::write_peppy_json5(
+        uvc_camera_node_dir.path(),
+        &fs::read_to_string(uvc_camera_node_dir.path().join(NODE_CONFIG_FILE))
+            .expect("failed to read uvc_camera config"),
+    );
+    let add_result = common::send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        uvc_camera_node_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(10),
+        None,
+    )
+    .await
+    .expect("node_add should succeed");
+
+    assert!(
+        add_result.success,
+        "uvc_camera node_add should succeed, got error: {}",
+        add_result.error_message.unwrap_or_default()
+    );
+
+    let brain_node_dir = tempdir().expect("failed to create temp node directory");
+    write_node_config(
+        brain_node_dir.path(),
+        r#"
+        {
+            schema_version: 1,
+            manifest: {
+                name: "my_robot_brain",
+                tag: "0.1.0",
+                language: "rust",
+                labels: ["brain"],
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
+            },
+            parameters: {},
+            interfaces: {
+                exposes: {
+                    topics: [],
+                    services: [],
+                    actions: [],
+                },
+                subscribes_to: {
+                    services: [
+                        {
+                          id: "uvc_camera_enable_camera",
+                          node: "uvc_camera",
+                          name: "enable_camera",
+                          tag: "0.1.0",
+                        }
+                    ],
+                },
+            },
+        }
+        "#,
+    );
+
+    let brain_response = NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH)
+        .poll(
+            &started_master.caller_handle,
+            &started_master.master_node_name,
+            CALLER_INSTANCE_ID,
+            &started_master.master_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_generate request should complete");
+
+    assert!(
+        brain_response.success,
+        "my_robot_brain node_generate should succeed, got error: {}",
+        brain_response.error_message
+    );
+
+    let brain_peppygen_dir = brain_node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        brain_peppygen_dir.exists(),
+        "peppygen directory should exist at {}",
+        brain_peppygen_dir.display()
+    );
+
+    let subscribed_service_path = brain_peppygen_dir
+        .join("src")
+        .join("subscribed_services")
+        .join("uvc_camera_enable_camera.rs");
+    assert!(
+        subscribed_service_path.exists(),
+        "peppygen uvc_camera_enable_camera.rs should exist at {}",
+        subscribed_service_path.display()
+    );
+
+    started_master.task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_generate_generates_rust_parameters() {
     let started_master = start_master_node_with_mock_messenger().await;
 
