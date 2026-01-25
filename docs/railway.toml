@@ -4,6 +4,6 @@ nixpacksConfigPath = "nixpacks.toml"
 buildCommand = "npm install && npm install -g serve && npm run build"
 
 [deploy]
-startCommand = "serve dist -l 3000"
+startCommand = "serve dist -l tcp://0.0.0.0:${PORT:-3000}"
 healthcheckPath = "/"
 healthcheckTimeout = 100
