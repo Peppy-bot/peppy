@@ -178,6 +178,18 @@ fn expose_service_without_request_body() {
         &rendered,
         "expected no RequestData struct when there is no request body"
     );
+
+    // And no request payload deserialization when there is no request body
+    assert_rendered!(
+        !rendered.contains("fn deserialize_request("),
+        &rendered,
+        "expected no request deserializer when there is no request body"
+    );
+    assert_rendered!(
+        !rendered.contains("capnp::serialize::read_message"),
+        &rendered,
+        "expected no Cap'n Proto parsing when there is no request body"
+    );
 }
 
 #[test]
