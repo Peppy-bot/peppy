@@ -218,3 +218,24 @@ fn generate_peppygen_lib_missing_config() {
     let result = generate_peppygen_lib(PeppygenLanguage::Rust, node_dir, Vec::new(), "test-hash");
     assert!(result.is_err(), "should fail when peppy.json5 is missing");
 }
+
+#[test]
+fn generate_peppygen_rust_lib_exposed_and_subscribed_topics() {
+    todo!(
+        "Create two nodes, one with an exposed topic and another one that subscribes to this topic and check that in both nodes the interfaces in the peppygen crate are present. No need to compile the nodes, only check for the presence of the interfaces."
+    )
+}
+
+#[test]
+fn generate_peppygen_rust_lib_exposed_and_subscribed_services() {
+    todo!(
+        "Create two nodes, one with an exposed service and another one that subscribes to this service and check that in both nodes the interfaces in the peppygen crate are present. No need to compile the nodes, only check for the presence of the interfaces. Currently the code has a bug where a subscribed service does not create the expected Rust interface"
+    )
+}
+
+#[test]
+fn generate_peppygen_rust_lib_exposed_and_subscribed_actions() {
+    todo!(
+        "Create two nodes, one with an exposed action and another one that subscribes to this action and check that in both nodes the interfaces in the peppygen crate are present. No need to compile the nodes, only check for the presence of the interfaces."
+    )
+}
