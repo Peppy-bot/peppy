@@ -7,7 +7,7 @@
         ]
     },
     "deploy": {
-        "startCommand": "npx serve dist -l tcp://0.0.0.0:3000",
+        "startCommand": "npx serve dist -l tcp://0.0.0.0:${PORT:-3000}",
         "healthcheckPath": "/",
         "healthcheckTimeout": 300,
         "restartPolicyType": "ALWAYS",
