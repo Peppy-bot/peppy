@@ -1724,3 +1724,10 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
 
     started_master.task.abort();
 }
+
+#[test]
+fn node_add_same_node_shutdown_existing_instances() {
+    todo!(
+        "If a request to add the same node+tag comes in a second time (and as long as the node doesn't have dependencies), ensure that all instances were previously killed before adding the new node with same name/tag as the previous one in this test. The previous PROCESSES NEED TO BE KILLED!"
+    )
+}
