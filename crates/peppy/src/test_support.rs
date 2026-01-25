@@ -2,6 +2,7 @@ use crate::daemon_state::DaemonState;
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::NodeConfigParser;
 use master_node::{MasterNode, MasterNodeArguments};
+use node_stack::NodeStack;
 use pmi::{Messenger, MessengerBackend, MockAdapter, MockInstance, ZenohAdapter, ZenohdInstance};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -104,6 +105,7 @@ pub struct ServeCommandEmulation {
     shared_messenger: Arc<TokioMutex<Messenger>>,
     daemon_state_path: PathBuf,
     master_node_name: String,
+    node_stack: NodeStack,
     messaging_port: u16,
 }
 
@@ -143,6 +145,7 @@ impl ServeCommandEmulation {
             temp_dir.path().to_path_buf(),
         );
         let master_node_name = master_node.node_name().to_string();
+        let node_stack = master_node.node_stack().clone();
 
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let master_node_task =
@@ -160,6 +163,7 @@ impl ServeCommandEmulation {
             shared_messenger,
             daemon_state_path,
             master_node_name,
+            node_stack,
             messaging_port: port,
         })
     }
@@ -178,6 +182,10 @@ impl ServeCommandEmulation {
 
     pub fn master_node_name(&self) -> &str {
         &self.master_node_name
+    }
+
+    pub fn node_stack(&self) -> &NodeStack {
+        &self.node_stack
     }
 
     pub fn messaging_port(&self) -> u16 {

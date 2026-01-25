@@ -1,7 +1,11 @@
 use config::node::NodeConfigParser;
 use gix_url::Url as GitUrl;
-use master_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult};
+use master_node::encoding::{
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeListRequest,
+};
+use node_stack::SerializedNodeGraph;
 use peppylib::{ActionMessenger, PeppyError};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,6 +19,7 @@ use crate::terminal::ScrollingOutput;
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 // Timeout for the goal to be accepted (should be fast)
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct PreparedNodeAdd {
     goal: NodeAddGoal,
@@ -223,6 +228,19 @@ async fn add_node_async(
         .messenger_handle()
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
+    if let Some((node_name, node_tag)) = pre_add_node_ref.as_ref() {
+        let instance_ids =
+            fetch_instance_ids(messenger_handle, &master_node_name, node_name, node_tag).await?;
+        if !instance_ids.is_empty() {
+            let confirm = confirm_overwrite_with_stop(node_name, node_tag, &instance_ids)?;
+            if !confirm {
+                return Err(Error::ExecutionFailed(
+                    "Node add aborted by user".to_string(),
+                ));
+            }
+        }
+    }
+
     // Send the goal to start the add action
     let mut action_handle = add_goal
         .send_goal(
@@ -376,6 +394,70 @@ async fn add_node_async(
     .await?;
 
     Ok(())
+}
+
+async fn fetch_instance_ids(
+    messenger: &peppylib::MessengerHandle,
+    master_node_name: &str,
+    node_name: &str,
+    tag: &str,
+) -> Result<Vec<String>> {
+    let response = NodeListRequest::new(false)
+        .poll(
+            messenger,
+            master_node_name,
+            CALLER_INSTANCE_ID,
+            master_node_name,
+            REQUEST_TIMEOUT,
+        )
+        .await
+        .map_err(|e| {
+            Error::ExecutionFailed(format!(
+                "Failed to check running instances before overwrite: {}",
+                e
+            ))
+        })?;
+
+    let graph: SerializedNodeGraph = serde_json::from_str(&response.graph_json)
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to parse graph JSON: {}", e)))?;
+
+    Ok(graph
+        .nodes
+        .into_iter()
+        .find(|node| node.name == node_name && node.tag == tag)
+        .map(|node| node.instance_ids)
+        .unwrap_or_default())
+}
+
+fn confirm_overwrite_with_stop(
+    node_name: &str,
+    tag: &str,
+    instance_ids: &[String],
+) -> Result<bool> {
+    let count = instance_ids.len();
+    let suffix = if count == 1 { "instance" } else { "instances" };
+    let verb = if count == 1 { "is" } else { "are" };
+    let ids = instance_ids
+        .iter()
+        .map(|id| format!("\"{}\"", id))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    print!(
+        "`{}:{}` already has {} running {} ({}) {} running. Stop {} and continue [y/n] ",
+        node_name, tag, count, suffix, ids, verb, suffix
+    );
+    io::stdout().flush().map_err(|e| {
+        Error::ExecutionFailed(format!("Failed to write confirmation prompt: {}", e))
+    })?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).map_err(|e| {
+        Error::ExecutionFailed(format!("Failed to read confirmation response: {}", e))
+    })?;
+
+    let response = input.trim().to_ascii_lowercase();
+    Ok(matches!(response.as_str(), "y" | "yes"))
 }
 
 #[cfg(test)]

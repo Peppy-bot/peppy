@@ -8,6 +8,7 @@ use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use peppylib::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
+use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -429,9 +430,237 @@ fn node_add_after_failed_sync_succeeds() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn node_add_same_node_shutdown_existing_instances() {
-    todo!(
-        "If a user adds the same node a second time, he should have a prompt that asks if he's okay killing the instances of the previous node. If yes, ensure that all instances were previously killed before adding the new node with same name/tag as the previous one in this test. THE PROCESSES NEED TO BE KILLED!"
-    )
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let master_node_name = serve.master_node_name().to_string();
+
+    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
+    let node_name = "test_add_overwrite_running_node";
+    let node_tag = "0.1.0";
+    let instance_id_1 = "test_add_overwrite_instance_1";
+    let instance_id_2 = "test_add_overwrite_instance_2";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    NodeCommand {
+        command: NodeCommands::Init {
+            node_name: NodeName::new(node_name).expect("valid node name"),
+            to_dir: None,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("node init command should succeed");
+
+    let node_path = node_dir.path().join(node_name);
+    let peppy_json5_path = node_path.join("peppy.json5");
+    assert!(
+        peppy_json5_path.exists(),
+        "peppy.json5 should exist at {}",
+        peppy_json5_path.display()
+    );
+
+    // Avoid build step during add.
+    peppy::test_support::disable_add_cmd(&peppy_json5_path);
+
+    NodeCommand {
+        command: NodeCommands::Add {
+            source: node_path.display().to_string(),
+            git_ref: None,
+            start: false,
+            args: Vec::new(),
+            instance_id: None,
+            timeout: 60,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("first node add should succeed");
+
+    // Simulate two running instances without launching real processes.
+    let instance_name_1 = config::node::Name::new(instance_id_1).expect("valid instance id 1");
+    let instance_name_2 = config::node::Name::new(instance_id_2).expect("valid instance id 2");
+    serve
+        .node_stack()
+        .add_instance(node_name, node_tag, Some(&instance_name_1), None)
+        .expect("add_instance for instance 1 should succeed");
+    serve
+        .node_stack()
+        .add_instance(node_name, node_tag, Some(&instance_name_2), None)
+        .expect("add_instance for instance 2 should succeed");
+
+    // Expose shutdown services so master node can stop the existing instances on overwrite.
+    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
+    let (_shutdown_handle_1, shutdown_rx_1) = rt
+        .block_on(listen_for_shutdown(
+            &node_messenger,
+            &master_node_name,
+            instance_id_1,
+            node_name,
+        ))
+        .expect("node shutdown service for instance 1 should start");
+    let (_shutdown_handle_2, shutdown_rx_2) = rt
+        .block_on(listen_for_shutdown(
+            &node_messenger,
+            &master_node_name,
+            instance_id_2,
+            node_name,
+        ))
+        .expect("node shutdown service for instance 2 should start");
+
+    // Decline the overwrite prompt: add should be aborted and instances should remain.
+    let denied = with_test_stdin("n\n", || {
+        NodeCommand {
+            command: NodeCommands::Add {
+                source: node_path.display().to_string(),
+                git_ref: None,
+                start: false,
+                args: Vec::new(),
+                instance_id: None,
+                timeout: 60,
+            },
+        }
+        .execute(&node_ctx)
+    });
+
+    assert!(
+        denied.is_err(),
+        "second node add should be aborted when user declines"
+    );
+    let denied_msg = denied.unwrap_err().to_string();
+    assert!(
+        denied_msg.contains("Node add aborted by user"),
+        "error should mention user abort, got: {}",
+        denied_msg
+    );
+
+    let messenger_handle = node_ctx
+        .messenger_handle()
+        .expect("messenger handle should be available");
+
+    let response = rt
+        .block_on(NodeListRequest::new(false).poll(
+            messenger_handle,
+            &master_node_name,
+            CALLER_INSTANCE_ID,
+            &master_node_name,
+            Duration::from_secs(5),
+        ))
+        .expect("node_list request should complete");
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let node = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == node_name && n.tag == node_tag)
+        .expect("node should exist in stack");
+    assert_eq!(node.instance_count(), 2, "instances should not be stopped");
+
+    // Accept the prompt: overwrite should stop both instances via shutdown.
+    with_test_stdin("y\n", || {
+        NodeCommand {
+            command: NodeCommands::Add {
+                source: node_path.display().to_string(),
+                git_ref: None,
+                start: false,
+                args: Vec::new(),
+                instance_id: None,
+                timeout: 60,
+            },
+        }
+        .execute(&node_ctx)
+    })
+    .expect("overwrite add should succeed when user accepts");
+
+    rt.block_on(async { tokio::time::timeout(Duration::from_secs(2), shutdown_rx_1).await })
+        .expect("shutdown request for instance 1 should arrive")
+        .expect("shutdown signal for instance 1 should be delivered");
+    rt.block_on(async { tokio::time::timeout(Duration::from_secs(2), shutdown_rx_2).await })
+        .expect("shutdown request for instance 2 should arrive")
+        .expect("shutdown signal for instance 2 should be delivered");
+
+    let response = rt
+        .block_on(NodeListRequest::new(false).poll(
+            messenger_handle,
+            &master_node_name,
+            CALLER_INSTANCE_ID,
+            &master_node_name,
+            Duration::from_secs(5),
+        ))
+        .expect("node_list request should complete");
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let node = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == node_name && n.tag == node_tag)
+        .expect("node should exist in stack after overwrite");
+    assert_eq!(
+        node.instance_count(),
+        0,
+        "instances should be stopped before overwrite completes"
+    );
+
+    // Best-effort cleanup of the snapshot directory in the peppy data dir.
+    let _ = std::fs::remove_dir_all(std::path::Path::new(&node.fs_root_path));
+}
+
+#[cfg(not(unix))]
+#[test]
+fn node_add_same_node_shutdown_existing_instances() {
+    eprintln!("skipped: prompt input redirection requires unix");
+}
+
+#[cfg(unix)]
+fn with_test_stdin<T>(input: &str, f: impl FnOnce() -> T) -> T {
+    use std::io::Write;
+    use std::os::unix::io::AsRawFd;
+
+    static STDIN_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    let _guard = STDIN_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .expect("stdin lock poisoned");
+
+    struct StdinRedirect {
+        saved_fd: i32,
+    }
+
+    impl Drop for StdinRedirect {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = libc::dup2(self.saved_fd, libc::STDIN_FILENO);
+                let _ = libc::close(self.saved_fd);
+            }
+        }
+    }
+
+    let mut tmp = tempfile::NamedTempFile::new().expect("failed to create temp stdin file");
+    tmp.write_all(input.as_bytes())
+        .expect("failed to write temp stdin file");
+    tmp.flush().expect("failed to flush temp stdin file");
+    let file = tmp.reopen().expect("failed to reopen temp stdin file");
+
+    let saved_fd = unsafe { libc::dup(libc::STDIN_FILENO) };
+    assert!(saved_fd >= 0, "failed to dup stdin");
+    let _redirect = StdinRedirect { saved_fd };
+    let result = unsafe { libc::dup2(file.as_raw_fd(), libc::STDIN_FILENO) };
+    assert!(result >= 0, "failed to redirect stdin");
+
+    f()
 }
