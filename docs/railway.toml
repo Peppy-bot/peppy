@@ -1,0 +1,12 @@
+[build]
+builder = "nixpacks"
+buildCommand = "npm install && npm run build"
+
+[deploy]
+startCommand = "npx serve dist -l 3000"
+healthcheckPath = "/"
+healthcheckTimeout = 100
+
+[[services]]
+name = "docs"
+domain = "docs.peppy.bot"
