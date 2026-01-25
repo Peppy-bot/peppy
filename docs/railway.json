@@ -11,11 +11,6 @@
         "healthcheckPath": "/",
         "healthcheckTimeout": 300,
         "restartPolicyType": "ALWAYS",
-        "restartPolicyMaxRetries": 5,
-        "multiRegionConfig": {
-            "us-west2": {
-                "numReplicas": 1
-            }
-        }
+        "restartPolicyMaxRetries": 5
     }
 }
