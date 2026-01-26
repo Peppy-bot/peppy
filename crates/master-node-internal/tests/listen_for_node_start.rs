@@ -1112,8 +1112,10 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Implement later"]
-async fn listen_for_node_start_remove_node_on_non_healthy_node() {
+async fn listen_for_node_start_remove_node_on_unhealthy_node() {
     todo!(
-        "After adding a node and the node is ready + healthy, remove it if it doesn't responds to subsequent health checks (maybe because the process was killed or something)"
+        "After starting a node and the it is ready + healthy, send a `shutdown` signal if it doesn't responds to subsequent health checks (maybe because the process was killed or something).
+        In order to implement this test, we should also have a `stack log` in `~/.peppy/stack_log.log` so that the user can check all the operations that were performed by the node stack, 
+        including this one that can silently remove instances from the stack."
     )
 }
