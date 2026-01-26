@@ -167,6 +167,7 @@ fn prepare_node_add_goal(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn add_node(
     ctx: &Arc<AppContext>,
     source: String,
@@ -191,6 +192,7 @@ pub fn add_node(
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+#[allow(clippy::too_many_arguments)]
 async fn add_node_async(
     ctx: &Arc<AppContext>,
     source: String,
@@ -233,19 +235,18 @@ async fn add_node_async(
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
     // If we know the node name/tag from a local source, check for existing instances
-    if let Some((node_name, node_tag)) = pre_add_node_ref.as_ref() {
-        if !force {
-            let instance_ids =
-                fetch_instance_ids(messenger_handle, &master_node_name, node_name, node_tag)
-                    .await?;
+    if let Some((node_name, node_tag)) = pre_add_node_ref.as_ref()
+        && !force
+    {
+        let instance_ids =
+            fetch_instance_ids(messenger_handle, &master_node_name, node_name, node_tag).await?;
 
-            if !instance_ids.is_empty() {
-                let confirm = confirm_overwrite(node_name, node_tag, &instance_ids)?;
-                if !confirm {
-                    return Err(Error::ExecutionFailed(
-                        "Node add aborted by user".to_string(),
-                    ));
-                }
+        if !instance_ids.is_empty() {
+            let confirm = confirm_overwrite(node_name, node_tag, &instance_ids)?;
+            if !confirm {
+                return Err(Error::ExecutionFailed(
+                    "Node add aborted by user".to_string(),
+                ));
             }
         }
     }
