@@ -630,8 +630,16 @@ fn node_add_same_node_shutdown_existing_instances() {
     );
 }
 
+/// When a node is added from a local filesystem and started, and then the same node is added
+/// from a git source, the system should properly handle the existing instances.
+///
+/// NOTE: For git-sourced nodes, we cannot check for existing instances BEFORE the add operation
+/// because we don't know the node name/tag until after cloning. By the time we check (after add),
+/// the master node has already stopped the existing instances. This is different from local
+/// filesystem sources where we can check and prompt before adding.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_add_same_node_different_sources_show_prompt() {
+#[ignore = "Requires an architectural change where node_start turns into a service first that returns existing nodes and then turns into an action that performs the `add` operation"]
+async fn node_add_same_node_different_sources_show_ovewrite_prompt() {
     todo!(
         "If the first node is added from the local filesystem and then started, and then the same node is added to the node stack but this time it's added from git, we should still get the prompt `Adding this node will stop...`"
     )
