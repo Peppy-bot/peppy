@@ -209,8 +209,8 @@ async fn add_node_async(
             e
         ))
     })?;
-    let master_node_name = daemon_state.master_node_name;
-    let git_hash = daemon_state.git_hash;
+    let master_node_name = daemon_state.master_node_name.clone();
+    let git_hash = daemon_state.git_hash.clone();
 
     let PreparedNodeAdd {
         goal: add_goal,
@@ -234,14 +234,16 @@ async fn add_node_async(
         .messenger_handle()
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
-    // If we know the node name/tag from a local source, check for existing instances
+    // If we know the node name/tag from a local source, check for existing instances.
+    // Use a separate connection to avoid interfering with the action messenger.
     if let Some((node_name, node_tag)) = pre_add_node_ref.as_ref()
         && !force
     {
-        let instance_ids =
-            fetch_instance_ids(messenger_handle, &master_node_name, node_name, node_tag).await?;
-
-        if !instance_ids.is_empty() {
+        // Try to fetch instance IDs using a fresh connection
+        if let Ok(instance_ids) =
+            fetch_instance_ids(&daemon_state, &master_node_name, node_name, node_tag).await
+            && !instance_ids.is_empty()
+        {
             let confirm = confirm_overwrite(node_name, node_tag, &instance_ids)?;
             if !confirm {
                 return Err(Error::ExecutionFailed(
@@ -406,15 +408,30 @@ async fn add_node_async(
     Ok(())
 }
 
+/// Fetches instance IDs
 async fn fetch_instance_ids(
-    messenger: &MessengerHandle,
+    daemon_state: &crate::daemon_state::DaemonState,
     master_node_name: &str,
     node_name: &str,
     tag: &str,
 ) -> Result<Vec<String>> {
+    // Create a completely fresh connection for this check to avoid
+    // interfering with the main connection used for send_goal
+    let messenger = MessengerHandle::from_host_port(
+        config::consts::DEFAULT_MESSAGING_HOST,
+        daemon_state.messaging_port,
+    )
+    .await
+    .map_err(|e| {
+        Error::ExecutionFailed(format!(
+            "Failed to create messenger for instance check: {}",
+            e
+        ))
+    })?;
+
     let response = NodeListRequest::new(false)
         .poll(
-            messenger,
+            &messenger,
             master_node_name,
             CALLER_INSTANCE_ID,
             master_node_name,
