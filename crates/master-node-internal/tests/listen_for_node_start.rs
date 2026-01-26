@@ -1109,3 +1109,11 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
     let _ = std::fs::remove_dir_all(&second_add_response.snapshot_path);
     started.task.abort();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Implement later"]
+async fn listen_for_node_start_remove_node_on_non_healthy_node() {
+    todo!(
+        "After adding a node and the node is ready + healthy, remove it if it doesn't responds to subsequent health checks (maybe because the process was killed or something)"
+    )
+}
