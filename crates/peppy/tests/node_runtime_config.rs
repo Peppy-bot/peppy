@@ -60,6 +60,7 @@ async fn node_runtime_config_command_outputs_valid_config() {
             args: Vec::new(),
             instance_id: None,
             timeout: 60,
+            force: false,
         },
     }
     .execute(&node_ctx)
@@ -169,6 +170,7 @@ async fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
             args: Vec::new(),
             instance_id: None,
             timeout: 60,
+            force: false,
         },
     }
     .execute(&node_ctx)

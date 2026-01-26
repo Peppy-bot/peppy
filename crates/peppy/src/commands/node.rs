@@ -95,6 +95,9 @@ pub enum NodeCommands {
         /// Timeout in seconds for the add operation (default: 600 = 10 minutes)
         #[arg(long, default_value = "600")]
         timeout: u64,
+        /// When set, bypass the confirmation prompt and stop running instances before overwriting
+        #[arg(long)]
+        force: bool,
     },
     /// Regenerate the node's interface code (peppygen) based on peppy.json5
     Sync {},
@@ -178,6 +181,7 @@ impl Command for NodeCommand {
                 args,
                 instance_id,
                 timeout,
+                force,
             } => {
                 let is_url = source.contains("://") || source.starts_with("git@");
                 let display_source = if is_url {
@@ -187,7 +191,7 @@ impl Command for NodeCommand {
                     path.canonicalize().unwrap_or(path).display().to_string()
                 };
                 info!("Adding node from {}...", display_source);
-                add::add_node(ctx, source, git_ref, run, args, instance_id, timeout)
+                add::add_node(ctx, source, git_ref, run, args, instance_id, timeout, force)
             }
             NodeCommands::Sync {} => {
                 info!("Syncing node interfaces...");

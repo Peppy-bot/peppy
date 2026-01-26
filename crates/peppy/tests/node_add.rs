@@ -8,6 +8,7 @@ use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use peppylib::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
+use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -76,6 +77,7 @@ fn node_add_command_succeeds() {
             args: Vec::new(),
             instance_id: None,
             timeout: 60,
+            force: false,
         },
     }
     .execute(&node_ctx)
@@ -214,6 +216,7 @@ fn node_add_command_with_run_arg_succeeds() {
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             timeout: 60,
+            force: false,
         },
     }
     .execute(&node_ctx)
@@ -343,6 +346,7 @@ fn node_add_after_failed_sync_succeeds() {
             args: Vec::new(),
             instance_id: None,
             timeout: 60,
+            force: false,
         },
     }
     .execute(&node_ctx);
@@ -380,6 +384,7 @@ fn node_add_after_failed_sync_succeeds() {
             args: Vec::new(),
             instance_id: None,
             timeout: 60,
+            force: false,
         },
     }
     .execute(&node_ctx)
@@ -429,10 +434,198 @@ fn node_add_after_failed_sync_succeeds() {
     );
 }
 
+/// When adding a node that already exists with running instances:
+/// - With `force: true`: instances are automatically stopped by the master node and the node is overwritten
+/// - Without `force`: user is prompted for confirmation (tested manually, not in this automated test)
+///
+/// This test verifies the `force: true` path where existing instances are shut down automatically.
 #[test]
 fn node_add_same_node_shutdown_existing_instances() {
-    todo!(
-        "If a user adds the same node a second time, he should have a prompt that asks if he's okay killing the instances of the previous node. 
-        If he accepts the previous instances will be automatically killed by the master node when the NodeAddGoal request is launched. If he refuses, abort the operation"
-    )
+    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    // Mock messaging is sufficient: we run in-process node services for health/ready.
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let master_node_name = serve.master_node_name().to_string();
+    assert!(
+        !master_node_name.is_empty(),
+        "master_node_name should not be empty"
+    );
+
+    // Create a temp directory for the node
+    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
+    let node_name = "test_shutdown_node";
+    let instance_id = "test_shutdown_instance";
+
+    // Create AppContext pointing to the temp directory
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    // Set up logging
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // First, create a node using the init command
+    NodeCommand {
+        command: NodeCommands::Init {
+            node_name: NodeName::new(node_name).expect("valid node name"),
+            to_dir: None,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("node init command should succeed");
+
+    // Get the path to the node directory
+    let node_path = node_dir.path().join(node_name);
+    let peppy_json5_path = node_path.join("peppy.json5");
+    assert!(
+        peppy_json5_path.exists(),
+        "peppy.json5 should exist at {}",
+        peppy_json5_path.display()
+    );
+
+    // Avoid spawning a real node binary; provide `node_ready` + `node_health` in-process.
+    peppy::test_support::override_start_cmd(&peppy_json5_path);
+
+    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
+    let _node_ready_handle = rt
+        .block_on(listen_for_node_ready(
+            &node_messenger,
+            &master_node_name,
+            instance_id,
+            node_name,
+        ))
+        .expect("node ready service should start");
+    let _node_health_handle = rt
+        .block_on(listen_for_node_health(
+            &node_messenger,
+            &master_node_name,
+            instance_id,
+            node_name,
+        ))
+        .expect("node health service should start");
+    let (_node_shutdown_handle, _shutdown_rx) = rt
+        .block_on(listen_for_shutdown(
+            &node_messenger,
+            &master_node_name,
+            instance_id,
+            node_name,
+        ))
+        .expect("node shutdown service should start");
+
+    // Step 1: Add the node with start=true to create an instance
+    NodeCommand {
+        command: NodeCommands::Add {
+            source: node_path.display().to_string(),
+            git_ref: None,
+            start: true,
+            args: Vec::new(),
+            instance_id: Some(instance_id.to_string()),
+            timeout: 60,
+            force: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("first node add command should succeed");
+
+    // Verify we have 1 instance running
+    let messenger_handle = node_ctx
+        .messenger_handle()
+        .expect("messenger handle should be available");
+
+    let response = rt
+        .block_on(NodeListRequest::new(false).poll(
+            messenger_handle,
+            &master_node_name,
+            CALLER_INSTANCE_ID,
+            &master_node_name,
+            Duration::from_secs(5),
+        ))
+        .expect("node_list request should complete");
+
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+
+    let node_before = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .unwrap_or_else(|| {
+            panic!(
+                "graph should contain the node after first add. Got: {:?}",
+                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        node_before.instance_count(),
+        1,
+        "should have 1 instance running after first add"
+    );
+    assert!(
+        node_before.instance_ids.contains(&instance_id.to_string()),
+        "instance ID should match"
+    );
+
+    // Step 2: Add the same node again with force=true
+    // This should shut down the existing instance and overwrite the node
+    NodeCommand {
+        command: NodeCommands::Add {
+            source: node_path.display().to_string(),
+            git_ref: None,
+            start: false, // Don't start a new instance this time
+            args: Vec::new(),
+            instance_id: None,
+            timeout: 60,
+            force: true, // Bypass confirmation prompt
+        },
+    }
+    .execute(&node_ctx)
+    .expect("second node add command with force should succeed");
+
+    // Verify the instance was stopped and node was re-added with 0 instances
+    let response = rt
+        .block_on(NodeListRequest::new(false).poll(
+            messenger_handle,
+            &master_node_name,
+            CALLER_INSTANCE_ID,
+            &master_node_name,
+            Duration::from_secs(5),
+        ))
+        .expect("node_list request should complete after re-add");
+
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+
+    let node_after = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .unwrap_or_else(|| {
+            panic!(
+                "graph should contain the node after re-add. Got: {:?}",
+                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        node_after.instance_count(),
+        0,
+        "should have 0 instances after re-add with force (instance should be stopped)"
+    );
+
+    // Verify the logs show the node was added successfully
+    let logs = log_capture.logs();
+    assert!(
+        logs.contains(&format!("Added node {}:", node_name)),
+        "logs should contain success message for adding node. Logs:\n{}",
+        logs
+    );
 }

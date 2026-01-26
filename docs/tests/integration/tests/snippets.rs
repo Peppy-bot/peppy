@@ -45,7 +45,7 @@ fn peppy_output(
 /// Sets up the environment without syncing the main node.
 /// This allows dependencies to be added before syncing a node that depends on them.
 fn setup_env(peppy: &Path, node_dir: &Path) -> NodeSetup {
-    let node_config = NodeConfigParser::from_path(&node_dir.join("peppy.json5"))
+    let node_config = NodeConfigParser::from_path(node_dir.join("peppy.json5"))
         .expect("failed to parse peppy.json5");
     let node_name = node_config.manifest.name.as_str().to_string();
     let node_ref = format!("{}:{}", node_name, node_config.manifest.tag);
@@ -81,7 +81,12 @@ fn sync_and_add_node(peppy: &Path, daemon_state_path: &Path, node_dir: &Path, co
     let sync_output = peppy_output(peppy, daemon_state_path, node_dir, &["node", "sync"]);
     assert_success(&sync_output, &format!("peppy node sync for {context}"));
 
-    let add_output = peppy_output(peppy, daemon_state_path, node_dir, &["node", "add", "."]);
+    let add_output = peppy_output(
+        peppy,
+        daemon_state_path,
+        node_dir,
+        &["node", "add", ".", "--force"],
+    );
     assert_success(&add_output, &format!("peppy node add . for {context}"));
 }
 

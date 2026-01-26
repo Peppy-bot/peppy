@@ -105,6 +105,7 @@ async fn service_reset_command_resets_node_stack() {
             args: Vec::new(),
             instance_id: None,
             timeout: 60,
+            force: false,
         },
     }
     .execute(&ctx)
