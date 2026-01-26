@@ -4,11 +4,46 @@ description: Learn how to debug a node before it's added to the node stack
 sidebar:
   order: 8
 ---
+import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
+import standalonedRust from './snippets/rust/standalone/src/main.rs?raw';
+import standaloneConfig from './snippets/rust/standalone/peppy.json5?raw';
 
-Constantly adding and running node through the node stack is highly inneficient during development.
+Constantly adding and running node through the node stack is highly inneficient during development. 
+In that scenario, you want to be able to run your node as a regular Rust/Python program and use your favorite IDE to debug it.
 
 # Debugging a node
 
 While debugging the nodes based on the logs can be quite helpful, nothing beats the ability to fire up the debugger to inspect the code that is supposed to run inside the peppy node stack.
-In order to do so, `peppy` comes with the ability to run a node in "standalone mode", meaning it's able to communicate with the other nodes of the node stack but runs as a regular program that is not part of the stack allowing the developer to run the node as a regular program.
+In order to do this, `peppy` comes with the ability to run a node in "standalone mode", meaning it's able to communicate with the other nodes of the node stack but runs as a regular program that is not part of the stack allowing the developer to run the node as a regular program.
+Lets create a new node:
+```sh
+peppy node init standalone
+```
+with the following configuration:
+<Code code={standaloneConfig} lang="json5" title="peppy.json5" />
+
+now `sync` the node:
+```sh
+peppy node sync
+```
+
+Now if you try to run the node:
+
+<Tabs>
+  <TabItem label="Rust">
+    ```rust
+    cargo run
+    ```
+  </TabItem>
+  <TabItem label="Python">
+    :::caution
+    Python is not yet available
+    :::
+  </TabItem>
+</Tabs>
+
+you're going to run into the following error:
+```
+
+```
 
