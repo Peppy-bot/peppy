@@ -18,8 +18,13 @@ peppy node add --ref "0.1.0" https://github.com/Peppy-bot/example_nodes.git/fake
 ```
 
 :::note
+When `--ref` is used during `peppy node add`, it corresponds to the git tag/release or hash of the repo. On the other hand, the tag in `peppy node start fake_uvc_camera:0.1.0` corresponds to the tag found in `peppy.json5`.
+:::
+
+:::caution
 The build may fail here if you don't have the required `ffmpeg` libraries installed on your system. Inspect the logs to understand what libraries need to be installed and attempt to add the node again.
 :::
+
 
 Now that this node is added, we can start it:
 ```
@@ -43,6 +48,28 @@ From the same github repository, we can do exactly that:
 peppy node add https://github.com/Peppy-bot/example_nodes.git/fake_video_reconstruction
 ```
 
-:::note
-When `--ref` is used during `peppy node add`, it corresponds to the git tag/release or hash of the repo. On the other hand, the tag in `peppy node start fake_uvc_camera:0.1.0` corresponds to the tag found in `peppy.json5`.
-:::
+Then we start the nodes:
+```sh
+peppy node start fake_uvc_camera:0.1.0 device.physical="/dev/device1" device.sim="the_camera" device.priority="physical" video.encoding="rgb" video.frame_rate=30 video.resolution.width=1280 video.resolution.height=720
+```
+
+and
+```sh
+peppy node start fake_video_reconstruction:0.1.0 video_duration_seconds=5
+```
+
+And if we look at the logs of the started `fake_video_reconstruction` node:
+```text
+[2026-01-26T15:35:25.170] [stdout] Recording 250 frames (5 seconds at 50 fps)...
+[2026-01-26T15:35:27.408] [stdout] Recorded 50/250 frames (1 seconds)
+[2026-01-26T15:35:29.526] [stdout] Recorded 100/250 frames (2 seconds)
+[2026-01-26T15:35:31.811] [stdout] Recorded 150/250 frames (3 seconds)
+[2026-01-26T15:35:34.106] [stdout] Recorded 200/250 frames (4 seconds)
+[2026-01-26T15:35:36.423] [stdout] Recorded 250/250 frames (5 seconds)
+[2026-01-26T15:35:36.423] [stdout] Recording complete. Encoding video...
+[2026-01-26T15:35:37.222] [stdout] Video saved to: /var/folders/kb/36lp35_92z5_jg6gfqhvkm600000gn/T/.tmpCJoXVL/reconstructed_video.mp4
+```
+
+We can see the video has been saved to a temporary folder. Go ahead and open it, you'll find the reconstructed video of the robot.
+In the same way you can share your own nodes by hosting them in a git repository.
+
