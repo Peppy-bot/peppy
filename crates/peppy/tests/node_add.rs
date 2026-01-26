@@ -432,6 +432,7 @@ fn node_add_after_failed_sync_succeeds() {
 #[test]
 fn node_add_same_node_shutdown_existing_instances() {
     todo!(
-        "If a user adds the same node a second time, he should have a prompt that asks if he's okay killing the instances of the previous node. If yes, ensure that all instances were previously killed before adding the new node with same name/tag as the previous one in this test. THE PROCESSES NEED TO BE KILLED!"
+        "If a user adds the same node a second time, he should have a prompt that asks if he's okay killing the instances of the previous node. 
+        If he accepts the previous instances will be automatically killed by the master node when the NodeAddGoal request is launched. If he refuses, abort the operation"
     )
 }
