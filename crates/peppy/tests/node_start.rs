@@ -76,6 +76,7 @@ async fn node_run_command_succeeds() {
             args: Vec::new(),
             instance_id: None,
             timeout: 60,
+            force: false,
         },
     }
     .execute(&node_ctx)
@@ -288,6 +289,7 @@ async fn node_run_command_with_args_succeeds() {
             args: Vec::new(),
             instance_id: None,
             timeout: 60,
+            force: false,
         },
     }
     .execute(&node_ctx)
@@ -475,6 +477,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
             args: Vec::new(),
             instance_id: None,
             timeout: 60,
+            force: false,
         },
     }
     .execute(&node_ctx)

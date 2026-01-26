@@ -118,6 +118,7 @@ async fn node_launch_command_succeed() {
             args: Vec::new(),
             instance_id: None,
             timeout: 60,
+            force: false,
         },
     }
     .execute(&ctx)
@@ -343,6 +344,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
             args: Vec::new(),
             instance_id: None,
             timeout: 60,
+            force: false,
         },
     }
     .execute(&ctx)

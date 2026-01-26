@@ -1,7 +1,11 @@
 use config::node::NodeConfigParser;
 use gix_url::Url as GitUrl;
-use master_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult};
-use peppylib::{ActionMessenger, PeppyError};
+use master_node::encoding::{
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeListRequest,
+};
+use node_stack::SerializedNodeGraph;
+use peppylib::{ActionMessenger, MessengerHandle, PeppyError};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -163,6 +167,7 @@ fn prepare_node_add_goal(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn add_node(
     ctx: &Arc<AppContext>,
     source: String,
@@ -171,6 +176,7 @@ pub fn add_node(
     args: Vec<(String, String)>,
     instance_id: Option<String>,
     timeout_secs: u64,
+    force: bool,
 ) -> Result<()> {
     crate::commands::block_on(add_node_async(
         ctx,
@@ -180,9 +186,13 @@ pub fn add_node(
         args,
         instance_id,
         timeout_secs,
+        force,
     ))
 }
 
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[allow(clippy::too_many_arguments)]
 async fn add_node_async(
     ctx: &Arc<AppContext>,
     source: String,
@@ -191,6 +201,7 @@ async fn add_node_async(
     args: Vec<(String, String)>,
     instance_id: Option<String>,
     timeout_secs: u64,
+    force: bool,
 ) -> Result<()> {
     let daemon_state = ctx.read_daemon_state().map_err(|e| {
         Error::ExecutionFailed(format!(
@@ -222,6 +233,23 @@ async fn add_node_async(
     let messenger_handle = ctx
         .messenger_handle()
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
+
+    // If we know the node name/tag from a local source, check for existing instances
+    if let Some((node_name, node_tag)) = pre_add_node_ref.as_ref()
+        && !force
+    {
+        let instance_ids =
+            fetch_instance_ids(messenger_handle, &master_node_name, node_name, node_tag).await?;
+
+        if !instance_ids.is_empty() {
+            let confirm = confirm_overwrite(node_name, node_tag, &instance_ids)?;
+            if !confirm {
+                return Err(Error::ExecutionFailed(
+                    "Node add aborted by user".to_string(),
+                ));
+            }
+        }
+    }
 
     // Send the goal to start the add action
     let mut action_handle = add_goal
@@ -376,6 +404,71 @@ async fn add_node_async(
     .await?;
 
     Ok(())
+}
+
+async fn fetch_instance_ids(
+    messenger: &MessengerHandle,
+    master_node_name: &str,
+    node_name: &str,
+    tag: &str,
+) -> Result<Vec<String>> {
+    let response = NodeListRequest::new(false)
+        .poll(
+            messenger,
+            master_node_name,
+            CALLER_INSTANCE_ID,
+            master_node_name,
+            REQUEST_TIMEOUT,
+        )
+        .await
+        .map_err(|e| {
+            Error::ExecutionFailed(format!(
+                "Failed to check running instances before adding: {}",
+                e
+            ))
+        })?;
+
+    let graph: SerializedNodeGraph = serde_json::from_str(&response.graph_json)
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to parse graph JSON: {}", e)))?;
+
+    Ok(graph
+        .nodes
+        .into_iter()
+        .find(|node| node.name == node_name && node.tag == tag)
+        .map(|node| node.instance_ids)
+        .unwrap_or_default())
+}
+
+fn confirm_overwrite(node_name: &str, tag: &str, instance_ids: &[String]) -> Result<bool> {
+    let count = instance_ids.len();
+    let suffix = if count == 1 { "instance" } else { "instances" };
+    let ids = instance_ids
+        .iter()
+        .map(|id| format!("\"{}\"", id))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    print!(
+        "Node `{}:{}` already exists with {} running {} ({}). \
+         Adding this node will stop {} and overwrite the existing node. Continue? [y/n] ",
+        node_name,
+        tag,
+        count,
+        suffix,
+        ids,
+        if count == 1 { "it" } else { "them" }
+    );
+    io::stdout().flush().map_err(|e| {
+        Error::ExecutionFailed(format!("Failed to write confirmation prompt: {}", e))
+    })?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).map_err(|e| {
+        Error::ExecutionFailed(format!("Failed to read confirmation response: {}", e))
+    })?;
+
+    let response = input.trim().to_ascii_lowercase();
+    Ok(matches!(response.as_str(), "y" | "yes"))
 }
 
 #[cfg(test)]
