@@ -5,7 +5,7 @@ sidebar:
   order: 7
 ---
 
-PeppyOS wouldn't be very useful if not for the fact that you can share your nodes with other people.
+One of PeppyOS's key features is the ability to share nodes with other people.
 As an example, we'll try to pull the `fake_uvc_camera` node from [this repo](https://github.com/Peppy-bot/example_nodes).
 
 
@@ -42,8 +42,8 @@ and inspect its logs:
 [2026-01-25T16:39:00.926] [stdout] [uvc_camera] Emitted frame 194
 ```
 
-We see that video frames are emitted from that node, we can pull a new node that depends on `fake_uvc_camera` that will read those frames and reconstruct a short video from those frames.
-From the same github repository, we can do exactly that:
+We see that video frames are emitted from that node. We can pull a new node that depends on `fake_uvc_camera` to read those frames and reconstruct a short video.
+From the same GitHub repository, we can do exactly that:
 ```sh
 peppy node add https://github.com/Peppy-bot/example_nodes.git/fake_video_reconstruction
 ```
@@ -70,7 +70,7 @@ And if we look at the logs of the started `fake_video_reconstruction` node:
 [2026-01-26T15:35:37.222] [stdout] Video saved to: /var/folders/kb/36lp35_92z5_jg6gfqhvkm600000gn/T/.tmpCJoXVL/reconstructed_video.mp4
 ```
 
-We can see the video has been saved to a temporary folder. Go ahead and open it, you'll find the reconstructed video of the robot.
-In the same way you can share your own nodes by hosting them in a git repository and/or plug them with remote nodes.
+We can see the video has been saved to a temporary folder. Go ahead and open it—you'll find the reconstructed video of the robot.
+In the same way, you can share your own nodes by hosting them in a Git repository and connect them to remote nodes.
 A node can also be pulled in the same way if it's in a `.tar.zst` archive.
 

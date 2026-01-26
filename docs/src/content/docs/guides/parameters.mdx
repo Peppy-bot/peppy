@@ -8,8 +8,8 @@ import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
 import helloWorldParamRust from './snippets/rust/hello_world_param/src/main.rs?raw';
 import helloWorldParamConfig from './snippets/rust/hello_world_param/peppy.json5?raw';
 
-From time to time you might want to run multiple instances of the same node started with different input parameters. For example, a camera node might point to `/dev/video0` on your system while another one points to `/dev/video1`.
-Parameters exists to allow you to to run multiple instances of the same node with different input settings.
+Sometimes you may want to run multiple instances of the same node with different input parameters. For example, a camera node might point to `/dev/video0` on your system while another one points to `/dev/video1`.
+Parameters allow you to run multiple instances of the same node with different input settings.
 
 ## Adding parameters to `hello_world`
 
@@ -21,7 +21,7 @@ With the new `parameter` key.
 
 ## Synchronizing the interfaces
 
-Now lets try to create a new snapshot of our node in the node stack:
+Now let's try to create a new snapshot of our node in the node stack:
 ```sh
 peppy node add .
 ```
@@ -32,8 +32,8 @@ Error: Fingerprint verification failed: Node config fingerprint mismatch: expect
 The config may have been modified after code generation. Run `node sync` to update the peppygen lib on your node.
 ```
 
-the reason for this error is that our changes in `peppy.json5` first need to be reflected in our interfaces, this is a protection that ensures that the `peppy.json5` **always** matches the real behavior of the node.
-In order to sync the node, run the following command:
+The reason for this error is that changes in `peppy.json5` must first be reflected in the interfaces. This protection ensures that the `peppy.json5` **always** matches the actual behavior of the node.
+To sync the node, run:
 ```sh
 peppy node sync
 ```
@@ -61,7 +61,7 @@ Now that we've synchronized our project, the new parameter can be used in the ma
   </TabItem>
 </Tabs>
 
-As long as our node doesn't have any dependency, we can add it again in the node stack. Since it kept the same node name + node tag, it's simply going to override the one that we previously added:
+As long as our node doesn't have any dependencies, we can add it again to the node stack. Since it has the same node name and tag, it will simply override the one we previously added:
 ```sh
-node add .
+peppy node add .
 ```
