@@ -11,7 +11,7 @@ import standaloneConfig from './snippets/rust/standalone/peppy.json5?raw';
 Constantly adding and running node through the node stack is highly inneficient during development. 
 In that scenario, you want to be able to run your node as a regular Rust/Python program and use your favorite IDE to debug it.
 
-# Debugging a node
+## Debugging a node
 
 While debugging the nodes based on the logs can be quite helpful, nothing beats the ability to fire up the debugger to inspect the code that is supposed to run inside the peppy node stack.
 In order to do this, `peppy` comes with the ability to run a node in "standalone mode", meaning it's able to communicate with the other nodes of the node stack but runs as a regular program that is not part of the stack allowing the developer to run the node as a regular program.
@@ -44,6 +44,21 @@ Now if you try to run the node:
 
 you're going to run into the following error:
 ```
-
+Error: ParameterDeserialization(ParameterDeserializationError(["device", "video"]))
 ```
+Those parameters are usually provided during `peppy node start` but since we want this node to run as a standalone program, we need to find a way to pass those parameters to the program outside of the peppy daemon environment.
+We can modify our source file like this:
 
+<Tabs>
+  <TabItem label="Rust">
+    <Code code={standalonedRust} lang="rust" title="src/main.rs" />
+  </TabItem>
+  <TabItem label="Python">
+    :::caution
+    Python is not yet available
+    :::
+  </TabItem>
+</Tabs>
+
+The standalone object allows us to define parameters directly within the code which, in turn, allows us to run our node as a regular Rust/Python program.
+One important thing to note is that the standalone config provided this way is completely ignored when a node is run with `peppy node add`, all the parameters provided during this operation take precedence over the ones in the standalone config.
