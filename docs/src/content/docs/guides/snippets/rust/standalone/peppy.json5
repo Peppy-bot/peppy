@@ -18,16 +18,13 @@
   // A bunch of fake parameters required to start our node
   parameters: {
     device: {
-      $type: "object",
       physical: "string",
       sim: "string",
       priority: "string"
     },
     video: {
-      $type: "object",
       frame_rate: "u16",
       resolution: {
-        $type: "object",
         width: "u16",
         height: "u16",
       },

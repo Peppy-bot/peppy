@@ -40,6 +40,46 @@ const NODE_EXAMPLE: &str = r#"
 }
 "#;
 
+const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
+{
+  schema_version: 1,
+  manifest: {
+    name: "uvc_camera",
+    tag: "0.1.0",
+    language: "rust",
+    labels: [
+      "uvc",
+      "camera",
+      "usb",
+    ],
+    start_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
+  parameters: {
+    device: {
+      $type: "object",
+      physical: "string",
+      sim: "string",
+      priority: "string"
+    },
+    video: {
+      $type: "object",
+      frame_rate: "u16",
+      resolution: {
+        $type: "object",
+        width: "u16",
+        height: "u16",
+      },
+      encoding: "string",
+    },
+  },
+  interfaces: {}
+}
+"#;
+
 #[test]
 fn generate_parameters_struct() {
     let temp_dir = TempDir::new().unwrap();
@@ -127,4 +167,11 @@ fn generate_empty_parameters_struct() {
             "pub struct Parameters",
         ],
     );
+}
+
+#[test]
+fn reject_invalid_parameters_struct() {
+    todo!(
+        "Use INVALID_PARAMETERS_NODE_EXAMPLE to make sure any $<var> is rejected in `parameters`, for example $type"
+    )
 }
