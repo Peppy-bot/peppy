@@ -4,11 +4,61 @@ description: Learn how to debug a node before it's added to the node stack
 sidebar:
   order: 8
 ---
+import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
+import standalonedRust from './snippets/rust/standalone/src/main.rs?raw';
+import standaloneConfig from './snippets/rust/standalone/peppy.json5?raw';
 
-Constantly adding and running node through the node stack is highly inneficient during development.
+Constantly adding and running nodes through the node stack is highly inefficient during development. 
+In that scenario, you want to be able to run your node as a regular Rust/Python program and use your favorite IDE to debug it.
 
-# Debugging a node
+## Debugging a node
 
 While debugging the nodes based on the logs can be quite helpful, nothing beats the ability to fire up the debugger to inspect the code that is supposed to run inside the peppy node stack.
-In order to do so, `peppy` comes with the ability to run a node in "standalone mode", meaning it's able to communicate with the other nodes of the node stack but runs as a regular program that is not part of the stack allowing the developer to run the node as a regular program.
+To support this, `peppy` can run a node in "standalone mode"—it communicates with other nodes in the stack but runs as a regular program outside of it, allowing you to use standard debugging tools.
+Let's create a new node:
+```sh
+peppy node init standalone
+```
+with the following configuration:
+<Code code={standaloneConfig} lang="json5" title="peppy.json5" />
 
+Now sync the node:
+```sh
+peppy node sync
+```
+
+Now if you try to run the node:
+
+<Tabs>
+  <TabItem label="Rust">
+    ```rust
+    cargo run
+    ```
+  </TabItem>
+  <TabItem label="Python">
+    :::caution
+    Python is not yet available
+    :::
+  </TabItem>
+</Tabs>
+
+You'll run into the following error:
+```
+Error: ParameterDeserialization(ParameterDeserializationError(["device", "video"]))
+```
+These parameters are usually provided during `peppy node start`, but since we want this node to run as a standalone program, we need to pass them outside of the peppy daemon environment.
+We can modify our source file like this:
+
+<Tabs>
+  <TabItem label="Rust">
+    <Code code={standalonedRust} lang="rust" title="src/main.rs" />
+  </TabItem>
+  <TabItem label="Python">
+    :::caution
+    Python is not yet available
+    :::
+  </TabItem>
+</Tabs>
+
+The standalone object allows us to define parameters directly within the code, which in turn allows us to run our node as a regular Rust/Python program.
+Note that the standalone config is completely ignored when a node is run with `peppy node start`—all parameters provided during that operation take precedence.

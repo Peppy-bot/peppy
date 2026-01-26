@@ -4,8 +4,8 @@ set -eu
 # Install peppy from GitHub Releases.
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Peppy-bot/peppy/main/scripts/install.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/Peppy-bot/peppy/main/scripts/install.sh | sh -s -- ./peppy-x86_64-unknown-linux-gnu.tar.gz
-#   ./scripts/install.sh ./peppy-x86_64-unknown-linux-gnu.tar.gz
+#   curl -fsSL https://raw.githubusercontent.com/Peppy-bot/peppy/main/scripts/install.sh | sh -s -- ./peppy-x86_64-unknown-linux-gnu.tgz
+#   ./scripts/install.sh ./peppy-x86_64-unknown-linux-gnu.tgz
 #
 # Environment variables:
 #   PEPPY_VERSION           Version to install (default: latest)
@@ -32,8 +32,8 @@ __wrap__() {
         case "$ARCHIVE_PATH" in
         -h | --help)
             echo "Usage:"
-            echo "  ./scripts/install.sh [path/to/peppy-<arch>-<platform>.tar.gz]"
-            echo "  curl -fsSL https://raw.githubusercontent.com/Peppy-bot/peppy/main/scripts/install.sh | sh -s -- [path/to/archive.tar.gz]"
+            echo "  ./scripts/install.sh [path/to/peppy-<arch>-<platform>.tgz]"
+            echo "  curl -fsSL https://raw.githubusercontent.com/Peppy-bot/peppy/main/scripts/install.sh | sh -s -- [path/to/archive.tgz]"
             exit 0
             ;;
         '~' | '~'/*) ARCHIVE_PATH="${HOME-}${ARCHIVE_PATH#\~}" ;; # expand tilde
@@ -96,7 +96,7 @@ __wrap__() {
     fi
 
     BINARY="peppy-${ARCH}-${PLATFORM}"
-    EXTENSION=".tar.gz"
+    EXTENSION=".tgz"
 
     if [ "$VERSION" = "latest" ]; then
         DOWNLOAD_URL="${PEPPY_DOWNLOAD_URL:-${REPOURL%/}/releases/latest/download/${BINARY}${EXTENSION-}}"

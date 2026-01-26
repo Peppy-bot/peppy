@@ -4581,6 +4581,49 @@ fn to_camel_case(raw: &str) -> String {
     out
 }
 
+/// Validates that all parameter field names contain only allowed characters.
+/// Returns an error with the first invalid field name found.
+fn validate_parameter_field_names(parameters: &config::NodeArguments) -> Result<()> {
+    use config::consts::ALLOWED_CONFIG_CHARS;
+    use config::AnyType;
+
+    fn is_valid_field_name(name: &str, allowed: &str) -> bool {
+        !name.is_empty() && name.chars().all(|c| allowed.contains(c))
+    }
+
+    fn validate_fields(
+        fields: &std::collections::BTreeMap<String, AnyType>,
+        allowed: &'static str,
+    ) -> Result<()> {
+        for (field_name, field_spec) in fields {
+            if !is_valid_field_name(field_name, allowed) {
+                return Err(Error::InvalidParameterFieldName {
+                    name: field_name.clone(),
+                    allowed,
+                });
+            }
+            if let AnyType::Object(nested_fields) = field_spec {
+                validate_fields(nested_fields, allowed)?;
+            }
+        }
+        Ok(())
+    }
+
+    for (field_name, type_spec) in parameters {
+        if !is_valid_field_name(field_name, ALLOWED_CONFIG_CHARS) {
+            return Err(Error::InvalidParameterFieldName {
+                name: field_name.clone(),
+                allowed: ALLOWED_CONFIG_CHARS,
+            });
+        }
+        if let AnyType::Object(fields) = type_spec {
+            validate_fields(fields, ALLOWED_CONFIG_CHARS)?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Generates Rust struct code from node parameters configuration.
 ///
 /// This function takes a `NodeArguments` map (where values are type specifications like "string", "u16", etc.
@@ -4588,8 +4631,13 @@ fn to_camel_case(raw: &str) -> String {
 ///
 /// Each top-level parameter field gets its own module to namespace nested types.
 /// Always generates a `Parameters` struct, even if empty.
-pub fn generate_parameters_struct(parameters: &config::NodeArguments) -> String {
+///
+/// Returns an error if any field name contains invalid characters.
+pub fn generate_parameters_struct(parameters: &config::NodeArguments) -> Result<String> {
     use config::AnyType;
+
+    // Validate field names before generating code
+    validate_parameter_field_names(parameters)?;
 
     let mut main_fields = Vec::new();
     let mut modules = Vec::new();
@@ -4639,7 +4687,7 @@ pub fn generate_parameters_struct(parameters: &config::NodeArguments) -> String 
         all_tokens = quote! { #all_tokens #module };
     }
 
-    render_tokens(all_tokens)
+    Ok(render_tokens(all_tokens))
 }
 
 /// Generates the contents of a parameter module (structs for the type and any nested types).

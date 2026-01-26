@@ -36,4 +36,6 @@ pub enum Error {
     },
     #[error("Failed encoding `{0}`")]
     MessageEncoding(ConfigError),
+    #[error("Invalid parameter field name `{name}`: contains invalid characters. Allowed: {allowed}")]
+    InvalidParameterFieldName { name: String, allowed: &'static str },
 }
