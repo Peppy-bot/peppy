@@ -157,6 +157,7 @@ async fn node_list_command_succeeds() {
             args: Vec::new(),
             instance_id: None,
             timeout: 60,
+            force: false,
         },
     }
     .execute(&node_ctx)
@@ -171,6 +172,7 @@ async fn node_list_command_succeeds() {
             args: Vec::new(),
             instance_id: None,
             timeout: 60,
+            force: false,
         },
     }
     .execute(&node_ctx)
@@ -295,6 +297,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
             args: Vec::new(),
             instance_id: None,
             timeout: 60,
+            force: false,
         },
     }
     .execute(&node_ctx)
@@ -308,6 +311,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
             args: Vec::new(),
             instance_id: None,
             timeout: 60,
+            force: false,
         },
     }
     .execute(&node_ctx)

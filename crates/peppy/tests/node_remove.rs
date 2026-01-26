@@ -71,6 +71,7 @@ fn node_remove_command_succeeds() {
             args: Vec::new(),
             instance_id: None,
             timeout: 60,
+            force: false,
         },
     }
     .execute(&node_ctx)
@@ -233,6 +234,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             timeout: 60,
+            force: false,
         },
     }
     .execute(&node_ctx)
@@ -370,6 +372,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             timeout: 60,
+            force: false,
         },
     }
     .execute(&node_ctx)
