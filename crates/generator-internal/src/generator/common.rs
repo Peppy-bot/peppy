@@ -92,7 +92,7 @@ pub fn add_parameters_to_lib(
     fs::create_dir_all(&src_dir)?;
 
     let parameters_file = src_dir.join("parameters.rs");
-    let code = super::rust::generate_parameters_struct(parameters);
+    let code = super::rust::generate_parameters_struct(parameters)?;
     fs::write(&parameters_file, code)?;
 
     Ok(())

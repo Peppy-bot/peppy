@@ -66,10 +66,10 @@ const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
       priority: "string"
     },
     video: {
-      $type: "object",
+      "*type": "object",
       frame_rate: "u16",
       resolution: {
-        $type: "object",
+        "%type": "object",
         width: "u16",
         height: "u16",
       },
@@ -170,8 +170,31 @@ fn generate_empty_parameters_struct() {
 }
 
 #[test]
-fn reject_invalid_parameters_struct() {
-    todo!(
-        "Use INVALID_PARAMETERS_NODE_EXAMPLE to make sure any $<var> is rejected in `parameters`, for example $type"
-    )
+fn reject_parameters_with_invalid_field_names() {
+    use crate::error::Error;
+    use crate::generator::rust::generate_parameters_struct;
+    use config::consts::ALLOWED_CONFIG_CHARS;
+
+    let node_config: NodeConfig = serde_json5::from_str(INVALID_PARAMETERS_NODE_EXAMPLE)
+        .expect("failed to parse INVALID_PARAMETERS_NODE_EXAMPLE into NodeConfig");
+
+    let result = generate_parameters_struct(&node_config.parameters);
+
+    assert!(
+        result.is_err(),
+        "Expected error for field names with invalid characters"
+    );
+
+    let err = result.unwrap_err();
+    match err {
+        Error::InvalidParameterFieldName { name, allowed } => {
+            assert!(
+                name.chars().any(|c| !ALLOWED_CONFIG_CHARS.contains(c)),
+                "Expected field name with invalid characters, got: {}",
+                name
+            );
+            assert_eq!(allowed, ALLOWED_CONFIG_CHARS);
+        }
+        _ => panic!("Expected InvalidParameterFieldName error, got: {:?}", err),
+    }
 }
