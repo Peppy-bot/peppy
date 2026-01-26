@@ -894,17 +894,13 @@ impl LanguageGenerator for RustGenerator {
         let generic_deserializer_ident = Ident::new("deserialize_request", Span::call_site());
 
         let mut context = GenerationContext::default();
-        let base_request_format = service
-            .request_message_format
-            .clone()
-            .unwrap_or_else(|| MessageFormat(IndexMap::new()));
-        let request_wire_artifacts = map_message_format(Some(&base_request_format))?
-            .expect("request format should produce schema artifacts");
+        let request_format = non_empty_message_format(service.request_message_format.as_ref());
+        let request_wire_artifacts = map_message_format(request_format)?;
         let response_format = service.response_message_format.clone();
         let response_struct_artifacts = map_message_format(response_format.as_ref())?;
         let response_wire_artifacts = map_message_format(response_format.as_ref())?;
         let wire_params = collect_function_params(
-            Some(&request_wire_artifacts),
+            request_wire_artifacts.as_ref(),
             response_struct_artifacts.as_ref(),
             &struct_prefix,
             &mut context,
@@ -913,7 +909,7 @@ impl LanguageGenerator for RustGenerator {
         let encoding = self.prepare_message_encoding(
             &fn_name_str,
             &struct_prefix,
-            Some(&request_wire_artifacts),
+            request_wire_artifacts.as_ref(),
             &wire_params,
         )?;
 
@@ -980,7 +976,7 @@ impl LanguageGenerator for RustGenerator {
             &handler_params,
             Some(&instance_id_param),
             encoding.as_ref(),
-            Some(request_wire_artifacts.message_format()),
+            request_format,
             &fn_name_str,
             &service_name_literal,
             request_struct_ident.as_ref(),

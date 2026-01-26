@@ -1724,3 +1724,258 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
 
     started_master.task.abort();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_add_same_node_shutdown_existing_instances() {
+    use peppylib::messaging::{MessengerHandle, SHUTDOWN_SERVICE, ServiceMessenger};
+    use std::sync::Arc;
+    use tokio::sync::{Mutex, Notify, oneshot};
+
+    const NODE_NAME: &str = "readd_node";
+    const NODE_TAG: &str = "0.1.0";
+    const INSTANCE_1: &str = "readd_instance_1";
+    const INSTANCE_2: &str = "readd_instance_2";
+
+    let started_master = start_master_node_with_mock_messenger().await;
+    let node_stack = started_master.node_stack.clone();
+
+    let source_dir_v1 = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5_v1 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{NODE_NAME}",
+                tag: "{NODE_TAG}",
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir_v1.path(), &peppy_json5_v1);
+
+    let add_v1 = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir_v1.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add v1 should complete");
+    assert!(
+        add_v1.success,
+        "node_add v1 should succeed, got error: {:?}",
+        add_v1.error_message
+    );
+
+    let entity_v1 = node_stack
+        .find(NODE_NAME, NODE_TAG)
+        .expect("node should exist after v1");
+    let snapshot_v1 = entity_v1.root_path().to_path_buf();
+
+    let instance_id_1 = config::node::Name::new(INSTANCE_1).expect("valid instance id 1");
+    let instance_id_2 = config::node::Name::new(INSTANCE_2).expect("valid instance id 2");
+    node_stack
+        .add_instance(NODE_NAME, NODE_TAG, Some(&instance_id_1), None)
+        .expect("add_instance for instance 1 should succeed");
+    node_stack
+        .add_instance(NODE_NAME, NODE_TAG, Some(&instance_id_2), None)
+        .expect("add_instance for instance 2 should succeed");
+
+    let instance_messenger =
+        MessengerHandle::from_shared(Arc::clone(&started_master.shared_messenger));
+
+    let (called_tx_1, called_rx_1) = oneshot::channel::<()>();
+    let called_tx_1 = Arc::new(Mutex::new(Some(called_tx_1)));
+    let allow_shutdown_1 = Arc::new(Notify::new());
+    let allow_shutdown_1_clone = Arc::clone(&allow_shutdown_1);
+    let mut shutdown_endpoint_1 = ServiceMessenger::listen(
+        &instance_messenger,
+        &started_master.master_node_name,
+        INSTANCE_1,
+        NODE_NAME,
+        SHUTDOWN_SERVICE,
+    )
+    .await
+    .expect("failed to expose shutdown service for instance 1");
+    let shutdown_task_1 = tokio::spawn({
+        let called_tx_1 = Arc::clone(&called_tx_1);
+        async move {
+            shutdown_endpoint_1
+                .handle_requests(move |context| {
+                    let called_tx_1 = Arc::clone(&called_tx_1);
+                    let allow_shutdown_1_clone = Arc::clone(&allow_shutdown_1_clone);
+                    async move {
+                        let payload = context.message().payload();
+                        if let Some(tx) = called_tx_1.lock().await.take() {
+                            let _ = tx.send(());
+                        }
+                        allow_shutdown_1_clone.notified().await;
+                        Ok(payload.to_bytes())
+                    }
+                })
+                .await
+        }
+    });
+
+    let (called_tx_2, called_rx_2) = oneshot::channel::<()>();
+    let called_tx_2 = Arc::new(Mutex::new(Some(called_tx_2)));
+    let allow_shutdown_2 = Arc::new(Notify::new());
+    let allow_shutdown_2_clone = Arc::clone(&allow_shutdown_2);
+    let mut shutdown_endpoint_2 = ServiceMessenger::listen(
+        &instance_messenger,
+        &started_master.master_node_name,
+        INSTANCE_2,
+        NODE_NAME,
+        SHUTDOWN_SERVICE,
+    )
+    .await
+    .expect("failed to expose shutdown service for instance 2");
+    let shutdown_task_2 = tokio::spawn({
+        let called_tx_2 = Arc::clone(&called_tx_2);
+        async move {
+            shutdown_endpoint_2
+                .handle_requests(move |context| {
+                    let called_tx_2 = Arc::clone(&called_tx_2);
+                    let allow_shutdown_2_clone = Arc::clone(&allow_shutdown_2_clone);
+                    async move {
+                        let payload = context.message().payload();
+                        if let Some(tx) = called_tx_2.lock().await.take() {
+                            let _ = tx.send(());
+                        }
+                        allow_shutdown_2_clone.notified().await;
+                        Ok(payload.to_bytes())
+                    }
+                })
+                .await
+        }
+    });
+
+    // Ensure shutdown services are fully registered before starting the overwrite.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5_v2 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{NODE_NAME}",
+                tag: "{NODE_TAG}",
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            }},
+            interfaces: {{
+                exposes: {{
+                    topics: [{{ name: "/example" }}]
+                }}
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir_v2.path(), &peppy_json5_v2);
+
+    // Use wildcard caller IDs so mock pub/sub can match feedback topics with "*" segments.
+    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
+
+    let caller_handle = started_master.caller_handle.clone();
+    let master_node_name = started_master.master_node_name.clone();
+    let source_path_v2 = source_dir_v2.path().to_path_buf();
+    let add_task = tokio::spawn(async move {
+        send_node_add_and_wait(
+            &caller_handle,
+            &master_node_name,
+            &source_path_v2,
+            GOAL_TIMEOUT,
+            RESULT_TIMEOUT,
+            Some(feedback_tx),
+        )
+        .await
+    });
+
+    // Wait for the first shutdown request and ensure the stack is not overwritten yet.
+    tokio::time::timeout(Duration::from_secs(5), called_rx_1)
+        .await
+        .expect("shutdown request for instance 1 should arrive within timeout")
+        .expect("shutdown channel for instance 1 should not be dropped");
+    let entity_mid = node_stack
+        .find(NODE_NAME, NODE_TAG)
+        .expect("node should still exist while waiting for shutdown 1 to complete");
+    assert_eq!(
+        entity_mid.root_path(),
+        snapshot_v1.as_path(),
+        "node should not be overwritten before instance 1 is shutdown"
+    );
+
+    // Allow instance 1 shutdown response, then wait for instance 2 shutdown request.
+    allow_shutdown_1.notify_one();
+
+    tokio::time::timeout(Duration::from_secs(5), called_rx_2)
+        .await
+        .expect("shutdown request for instance 2 should arrive within timeout")
+        .expect("shutdown channel for instance 2 should not be dropped");
+    let entity_mid = node_stack
+        .find(NODE_NAME, NODE_TAG)
+        .expect("node should still exist while waiting for shutdown 2 to complete");
+    assert_eq!(
+        entity_mid.root_path(),
+        snapshot_v1.as_path(),
+        "node should not be overwritten before instance 2 is shutdown"
+    );
+
+    // Allow instance 2 shutdown response so the overwrite can proceed.
+    allow_shutdown_2.notify_one();
+
+    let add_v2 = add_task
+        .await
+        .expect("node_add overwrite task should join")
+        .expect("node_add overwrite request should complete");
+
+    assert!(
+        add_v2.success,
+        "node_add overwrite should succeed, got error: {:?}",
+        add_v2.error_message
+    );
+
+    let entity_v2 = node_stack
+        .find(NODE_NAME, NODE_TAG)
+        .expect("node should exist after overwrite");
+    assert_eq!(
+        entity_v2.root_path(),
+        add_v2.snapshot_path.as_path(),
+        "node stack should point to the new snapshot path"
+    );
+    assert_eq!(
+        entity_v2.instances().len(),
+        0,
+        "instances should be stopped before overwrite completes"
+    );
+    assert!(
+        !snapshot_v1.exists(),
+        "previous snapshot should be removed from storage: {}",
+        snapshot_v1.display()
+    );
+
+    let mut feedback = Vec::new();
+    while let Ok(entry) = feedback_rx.try_recv() {
+        feedback.push(entry);
+    }
+    let expected_instance_1 = format!("{INSTANCE_1} has been stopped");
+    let expected_instance_2 = format!("{INSTANCE_2} has been stopped");
+    let saw_instance_1 = feedback
+        .iter()
+        .any(|entry| entry.is_stdout() && entry.line.trim() == expected_instance_1.as_str());
+    let saw_instance_2 = feedback
+        .iter()
+        .any(|entry| entry.is_stdout() && entry.line.trim() == expected_instance_2.as_str());
+    assert!(saw_instance_1, "should emit stop feedback for instance 1");
+    assert!(saw_instance_2, "should emit stop feedback for instance 2");
+
+    // Clean up log files and snapshot directory created by successful adds.
+    let _ = std::fs::remove_file(&add_v1.log_path);
+    let _ = std::fs::remove_file(&add_v2.log_path);
+    let _ = std::fs::remove_dir_all(&add_v2.snapshot_path);
+
+    shutdown_task_1.abort();
+    shutdown_task_2.abort();
+    started_master.task.abort();
+}
