@@ -131,6 +131,22 @@ fn first_node() {
     run_snippet("first_node", &[]);
 }
 
+#[test]
+fn standalone_node() {
+    run_snippet(
+        "standalone",
+        &[
+            "device.physical=/dev/device1",
+            "device.sim=the_camera",
+            "device.priority=physical",
+            "video.encoding=rgb",
+            "video.frame_rate=30",
+            "video.resolution.width=1280",
+            "video.resolution.height=720",
+        ],
+    );
+}
+
 // Combine both tests into one since they depend on each other and doing so avoids parallelism issues
 #[test]
 fn hello_world_param_and_hello_receiver() {
