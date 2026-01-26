@@ -25,14 +25,17 @@
   // Expected parameter types to start the node
   parameters: {
     device: {
+      $type: "object",
       // Can be USB IDs/serial or udev rule
       physical: "string", // values like `/dev/video4` or `/dev/video_front`
       sim: "string", // values like `mujoco:camera_front` or `isaac_sim:camera_rear`
       priority: "string" // "physical" or "sim". If the physical path is not accessible, the sim path is attempted
     },
     video: {
+      $type: "object",
       frame_rate: "u16",
       resolution: {
+        $type: "object",
         width: "u16",
         height: "u16",
       },
