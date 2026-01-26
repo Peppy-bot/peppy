@@ -1,6 +1,6 @@
 ---
 title: Node communication
-description: Learn how to make node send message to each other
+description: Learn how to make nodes send messages to each other
 sidebar:
   order: 6
 ---
@@ -9,8 +9,8 @@ import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
 import helloReceiverdRust from './snippets/rust/hello_receiver/src/main.rs?raw';
 import helloReceiverNodeConfig from './snippets/rust/hello_receiver/peppy.json5?raw';
 
-A node by itself isn't really useful if not for its ability to communicate with other nodes in the node stack.
-Every single node is only aware of its interfaces it exposes and the ones it subscribes to, defined in its `peppy.json5` configuration. For example:
+A node by itself isn't very useful without the ability to communicate with other nodes in the node stack.
+Each node is only aware of the interfaces it exposes and the ones it subscribes to, as defined in its `peppy.json5` configuration. For example:
 
 ```json5
 {
@@ -36,7 +36,7 @@ Every single node is only aware of its interfaces it exposes and the ones it sub
 }
 ```
 
-Here we have `interfaces` with `exposes` and `subscribes_to` with topics/services/actions. Those interfaces are what defines the dependencies between the nodes.
+Here we have `interfaces` with `exposes` and `subscribes_to` containing topics, services, and actions. These interfaces define the dependencies between nodes.
 
 ## Topics, Services & Actions
 
@@ -58,9 +58,9 @@ PeppyOS provides three primary communication patterns for nodes to exchange data
 
 ## Subscribed interfaces
 
-In our `hello_world_param` node we've already exposed a topic, lets try to make this topic communicate with another node.
+In our `hello_world_param` node, we've already exposed a topic. Let's try to make this topic communicate with another node.
 
-We fist need to init the `hello_receiver` node in a new folder:
+We first need to initialize the `hello_receiver` node in a new folder:
 ```sh
 peppy node init hello_receiver
 ```
@@ -81,7 +81,7 @@ and the following source file:
 </Tabs>
 
 :::note
-Make sure `hello_world_param` is already in the node stack otherwise you might get the following error:
+Make sure `hello_world_param` is already in the node stack, otherwise you might get the following error:
 ```sh
 Error: `hello_receiver:0.1.0 depends on `hello_world_param:0.1.0`, but it does not exist in the stack
 ```
@@ -91,7 +91,7 @@ generate the proper interfaces for the programming language they are written in.
 
 ## Starting the nodes
 
-Now we need to make sure our nodes are started, if we take a look at our node stack:
+Now we need to make sure our nodes are started. If we take a look at our node stack:
 ```sh
 ❯ peppy stack list
 Listing nodes...
@@ -106,13 +106,13 @@ Dependencies:
 
 We need to make sure that at least one instance is started for `hello_receiver:0.1.0` and another one for `hello_world_param:0.1.0`.
 The order in which the nodes are started does not affect the node communication.
-Lets start a `hello_world_param:0.1.0` instance:
+Let's start a `hello_world_param:0.1.0` instance:
 ```sh
 peppy node start hello_world_param:0.1.0 name=planet
 ```
 
 Since our node requires a `name`, we provide it with that argument on startup.
-Now lets start the `hello_receiver`:
+Now let's start the `hello_receiver`:
 ```sh
 ❯ peppy node start hello_receiver:0.1.0
 Running node hello_receiver:0.1.0...
@@ -122,7 +122,7 @@ Log file: /Users/tuatini/.peppy/logs/start/vigorous-buck-8117.log
 Started node instance 'vigorous-buck-8117' (pid: 77190)
 ```
 
-When you start the node you can see a path to the logs, in my case `/Users/tuatini/.peppy/logs/start/vigorous-buck-8117.log`.
+When you start the node, you can see a path to the logs. In my case: `/Users/tuatini/.peppy/logs/start/vigorous-buck-8117.log`.
 If we open it up:
 ```
 [2026-01-24T10:02:47.630] [stderr]     Finished `release` profile [optimized] target(s) in 0.21s
@@ -136,7 +136,7 @@ We can see the messages received from the `hello_world_param:0.1.0` instance!
 
 ## Starting a second instance with different parameters
 
-Now lets push things a little further and imagine we need a second instance with a different set of parameters, we can now start a second instance:
+Now let's push things a little further. Imagine we need a second instance with different parameters—we can start one like this:
 ```sh
 ❯ peppy node start hello_world_param:0.1.0 name=you
 Running node hello_world_param:0.1.0...
@@ -172,5 +172,5 @@ Dependencies:
 ```
 
 ---
-We'll explore the use of services & actions in a more advanced guide although they fundamentally work the same way. 
+We'll explore services and actions in a more advanced guide, although they fundamentally work the same way. 
 Refer to nodes in [this repository](https://github.com/Peppy-bot/example_nodes) for more examples of topics/service/action usage.

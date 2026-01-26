@@ -404,7 +404,7 @@ PY
         ;;
     esac
 
-    ASSET_NAME="peppy-${HOST_TRIPLE}.tar.gz"
+    ASSET_NAME="peppy-${HOST_TRIPLE}.tgz"
     DIST_DIR="${PEPPY_DIST_DIR:-$REPO_ROOT/dist}"
     mkdir -p "$DIST_DIR"
     ASSET_PATH="${DIST_DIR%/}/${ASSET_NAME}"
@@ -429,7 +429,7 @@ PY
     cp "$ZENOHD_PATH" "$PKG_DIR/zenohd"
     chmod +x "$PKG_DIR/zenohd"
 
-    tar -czf "$ASSET_PATH" -C "$PKG_DIR" .
+    tar -czf "$ASSET_PATH" -C "$PKG_DIR" $(ls "$PKG_DIR")
     echo "Built artifact: $ASSET_PATH"
 
     SLUG="$(github_repo_slug)"

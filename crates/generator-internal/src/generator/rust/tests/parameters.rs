@@ -40,6 +40,46 @@ const NODE_EXAMPLE: &str = r#"
 }
 "#;
 
+const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
+{
+  schema_version: 1,
+  manifest: {
+    name: "uvc_camera",
+    tag: "0.1.0",
+    language: "rust",
+    labels: [
+      "uvc",
+      "camera",
+      "usb",
+    ],
+    start_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
+  parameters: {
+    device: {
+      $type: "object",
+      physical: "string",
+      sim: "string",
+      priority: "string"
+    },
+    video: {
+      "*type": "object",
+      frame_rate: "u16",
+      resolution: {
+        "%type": "object",
+        width: "u16",
+        height: "u16",
+      },
+      encoding: "string",
+    },
+  },
+  interfaces: {}
+}
+"#;
+
 #[test]
 fn generate_parameters_struct() {
     let temp_dir = TempDir::new().unwrap();
@@ -127,4 +167,34 @@ fn generate_empty_parameters_struct() {
             "pub struct Parameters",
         ],
     );
+}
+
+#[test]
+fn reject_parameters_with_invalid_field_names() {
+    use crate::error::Error;
+    use crate::generator::rust::generate_parameters_struct;
+    use config::consts::ALLOWED_CONFIG_CHARS;
+
+    let node_config: NodeConfig = serde_json5::from_str(INVALID_PARAMETERS_NODE_EXAMPLE)
+        .expect("failed to parse INVALID_PARAMETERS_NODE_EXAMPLE into NodeConfig");
+
+    let result = generate_parameters_struct(&node_config.parameters);
+
+    assert!(
+        result.is_err(),
+        "Expected error for field names with invalid characters"
+    );
+
+    let err = result.unwrap_err();
+    match err {
+        Error::InvalidParameterFieldName { name, allowed } => {
+            assert!(
+                name.chars().any(|c| !ALLOWED_CONFIG_CHARS.contains(c)),
+                "Expected field name with invalid characters, got: {}",
+                name
+            );
+            assert_eq!(allowed, ALLOWED_CONFIG_CHARS);
+        }
+        _ => panic!("Expected InvalidParameterFieldName error, got: {:?}", err),
+    }
 }
