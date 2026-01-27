@@ -244,7 +244,14 @@ impl Command for NodeCommand {
                 remove::remove_node(ctx, node_name, tag, stop_instances, force)
             }
             NodeCommands::Info { source, git_ref } => {
-                info!("Getting node info for {}...", source);
+                let is_url = source.contains("://") || source.starts_with("git@");
+                let display_source = if is_url {
+                    source.clone()
+                } else {
+                    let path = PathBuf::from(&source);
+                    path.canonicalize().unwrap_or(path).display().to_string()
+                };
+                info!("Getting node info for {}...", display_source);
                 info::node_info(ctx, source, git_ref)
             }
         }
