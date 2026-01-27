@@ -127,10 +127,10 @@ fn print_node_info(response: &NodeInfoResponse) {
     println!("Language:  {:?}", manifest.language);
 
     // Labels
-    if let Some(labels) = &manifest.labels {
-        if !labels.is_empty() {
-            println!("Labels:    {}", labels.join(", "));
-        }
+    if let Some(labels) = &manifest.labels
+        && !labels.is_empty()
+    {
+        println!("Labels:    {}", labels.join(", "));
     }
 
     // Commands
@@ -200,30 +200,30 @@ fn print_node_info(response: &NodeInfoResponse) {
             println!("Exposed Interfaces");
             println!("{}", "-".repeat(50));
 
-            if let Some(topics) = &interfaces.topics {
-                if !topics.is_empty() {
-                    println!("Topics:");
-                    for topic in topics {
-                        println!("  - {} (qos: {:?})", topic.name, topic.qos_profile);
-                    }
+            if let Some(topics) = &interfaces.topics
+                && !topics.is_empty()
+            {
+                println!("Topics:");
+                for topic in topics {
+                    println!("  - {} (qos: {:?})", topic.name, topic.qos_profile);
                 }
             }
 
-            if let Some(services) = &interfaces.services {
-                if !services.is_empty() {
-                    println!("Services:");
-                    for service in services {
-                        println!("  - {}", service.name);
-                    }
+            if let Some(services) = &interfaces.services
+                && !services.is_empty()
+            {
+                println!("Services:");
+                for service in services {
+                    println!("  - {}", service.name);
                 }
             }
 
-            if let Some(actions) = &interfaces.actions {
-                if !actions.is_empty() {
-                    println!("Actions:");
-                    for action in actions {
-                        println!("  - {}", action.name);
-                    }
+            if let Some(actions) = &interfaces.actions
+                && !actions.is_empty()
+            {
+                println!("Actions:");
+                for action in actions {
+                    println!("  - {}", action.name);
                 }
             }
         }
@@ -239,45 +239,45 @@ fn print_node_info(response: &NodeInfoResponse) {
             println!("Subscribed Interfaces");
             println!("{}", "-".repeat(50));
 
-            if let Some(topics) = &subscribes.topics {
-                if !topics.is_empty() {
-                    println!("Topics:");
-                    for topic in topics {
-                        println!(
-                            "  - {} (from {}:{})",
-                            topic.id.as_str(),
-                            topic.node,
-                            topic.name
-                        );
-                    }
+            if let Some(topics) = &subscribes.topics
+                && !topics.is_empty()
+            {
+                println!("Topics:");
+                for topic in topics {
+                    println!(
+                        "  - {} (from {}:{})",
+                        topic.id.as_str(),
+                        topic.node,
+                        topic.name
+                    );
                 }
             }
 
-            if let Some(services) = &subscribes.services {
-                if !services.is_empty() {
-                    println!("Services:");
-                    for service in services {
-                        println!(
-                            "  - {} (from {}:{})",
-                            service.id.as_str(),
-                            service.node,
-                            service.name
-                        );
-                    }
+            if let Some(services) = &subscribes.services
+                && !services.is_empty()
+            {
+                println!("Services:");
+                for service in services {
+                    println!(
+                        "  - {} (from {}:{})",
+                        service.id.as_str(),
+                        service.node,
+                        service.name
+                    );
                 }
             }
 
-            if let Some(actions) = &subscribes.actions {
-                if !actions.is_empty() {
-                    println!("Actions:");
-                    for action in actions {
-                        println!(
-                            "  - {} (from {}:{})",
-                            action.id.as_str(),
-                            action.node,
-                            action.name
-                        );
-                    }
+            if let Some(actions) = &subscribes.actions
+                && !actions.is_empty()
+            {
+                println!("Actions:");
+                for action in actions {
+                    println!(
+                        "  - {} (from {}:{})",
+                        action.id.as_str(),
+                        action.node,
+                        action.name
+                    );
                 }
             }
         }
