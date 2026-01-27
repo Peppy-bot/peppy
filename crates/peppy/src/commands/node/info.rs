@@ -2,6 +2,7 @@ use config::AnyType;
 use gix_url::Url as GitUrl;
 use master_node::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
 use peppylib::MessengerHandle;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -203,6 +204,38 @@ fn print_node_info(response: &NodeInfoResponse) {
         }
     } else {
         println!("Status:    Not in node stack");
+    }
+
+    // Dependencies (extracted from subscribes_to interfaces)
+    if let Some(subscribes) = config.interfaces.subscribes_to.as_ref() {
+        let mut dependencies: BTreeSet<&str> = BTreeSet::new();
+
+        if let Some(topics) = &subscribes.topics {
+            for topic in topics {
+                dependencies.insert(&topic.node);
+            }
+        }
+        if let Some(services) = &subscribes.services {
+            for service in services {
+                dependencies.insert(&service.node);
+            }
+        }
+        if let Some(actions) = &subscribes.actions {
+            for action in actions {
+                if !action.node.is_empty() {
+                    dependencies.insert(&action.node);
+                }
+            }
+        }
+
+        if !dependencies.is_empty() {
+            println!();
+            println!("Dependencies");
+            println!("{}", "-".repeat(50));
+            for dep in &dependencies {
+                println!("  - {}", dep);
+            }
+        }
     }
 
     // Interfaces
