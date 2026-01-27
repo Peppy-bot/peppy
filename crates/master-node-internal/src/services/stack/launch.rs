@@ -344,17 +344,16 @@ async fn handle_goal_request(
 
 async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchResult {
     // TODO: Implement the launch logic
-    // Step 1: goal.launch_runtime_config_json5 should turn into a PeppyLauncher object
+    // Step 1: goal.peppy_launch_json5 should turn into a PeppyLauncher object
     // Step 2: Clear up the node stack, all nodes and instances in the node stack should be removed
     // Step 3: Call the code in `crates/master-node-internal/src/services/node/info.rs` to retrieve
     //         the info of every node in the `deployments` (reuse the code, don't duplicate)
     // Step 4: Solve the dependencies between the nodes, if they match, continue, if not, raise an error
     // Step 5: Add every node to the node stack using functions from
-    //         `crates/master-node-internal/src/services/node/add.rs` (reuse the code, don't duplicate)
+    //         `crates/master-node-internal/src/services/node/add.rs` (reuse the code, don't duplicate). Add them one by one in the order of dependencies. Stream the console output to the feedback
     // Step 6: Start the instance of all the nodes using functions from
-    //         `crates/master-node-internal/src/services/node/start.rs` (reuse the code, don't duplicate).
-    //         The list of instances and their instance-id can be obtained from
-    //         PeppyLauncher::deployments::instances
+    //         `crates/master-node-internal/src/services/node/start.rs` (reuse the code, don't duplicate). Start them one by one in the order of dependencies. Stream the console output to the feedback
+    //         The list of instances and their instance-id can be obtained from PeppyLauncher::deployments::instances
     // Step 7: Done, return a success to the user
 
     let _ = (&goal, &ctx);

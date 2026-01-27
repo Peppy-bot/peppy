@@ -7,8 +7,6 @@ struct LaunchGoal {
     peppyLaunchJson5 @0 :Text;
     # Directory to search for node configurations
     nodesDirectory @1 :Text;
-    # JSON5-encoded LaunchRuntimeConfig with messaging endpoint
-    launchRuntimeConfigJson5 @2 :Text;
 }
 
 struct LaunchGoalResponse {
