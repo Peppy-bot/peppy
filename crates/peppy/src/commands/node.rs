@@ -1,7 +1,9 @@
 mod add;
+mod info;
 mod init;
 mod remove;
 mod runtime_config;
+mod source;
 mod start;
 mod stop;
 mod sync;
@@ -156,6 +158,20 @@ pub enum NodeCommands {
         #[arg(long)]
         force: bool,
     },
+    /// Return the information about a node configuration and its presence in the node stack
+    Info {
+        /// Source location of a node (directory containing peppy.json5).
+        ///
+        /// Supported formats:
+        /// - Local path: `/path/to/node` or `./relative/path`
+        /// - Git URL: `https://github.com/org/repo.git/subpath`
+        /// - Git URL with ref: `https://github.com/org/repo.git/subpath --ref tag-or-branch`
+        /// - HTTP archive: `https://example.com/node.tar.zst`
+        source: String,
+        /// Git ref (tag/branch/commit) to checkout before reading `subpath` (git sources only).
+        #[arg(long = "ref")]
+        git_ref: Option<String>,
+    },
 }
 
 pub struct NodeCommand {
@@ -183,8 +199,7 @@ impl Command for NodeCommand {
                 timeout,
                 force,
             } => {
-                let is_url = source.contains("://") || source.starts_with("git@");
-                let display_source = if is_url {
+                let display_source = if source::is_probably_remote_source(&source) {
                     source.clone()
                 } else {
                     let path = PathBuf::from(&source);
@@ -227,6 +242,16 @@ impl Command for NodeCommand {
             } => {
                 info!("Remove node {}:{}...", node_name, tag);
                 remove::remove_node(ctx, node_name, tag, stop_instances, force)
+            }
+            NodeCommands::Info { source, git_ref } => {
+                let display_source = if source::is_probably_remote_source(&source) {
+                    source.clone()
+                } else {
+                    let path = PathBuf::from(&source);
+                    path.canonicalize().unwrap_or(path).display().to_string()
+                };
+                info!("Getting node info for {}...", display_source);
+                info::node_info(ctx, source, git_ref)
             }
         }
     }

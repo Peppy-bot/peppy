@@ -174,3 +174,25 @@ struct NodeResetResponse {
     # Error message if failed (optional)
     errorMessage @1 :Text;
 }
+
+# Node Info service
+struct NodeInfoRequest {
+    # Source of the node to get info for
+    source :union {
+        # Filesystem path to the node directory
+        fs @0 :Text;
+        # Git repository source
+        git @1 :NodeAddGitSource;
+        # HTTP URL source
+        http @2 :Text;
+    }
+}
+
+struct NodeInfoResponse {
+    # JSON5-serialized NodeConfig
+    configJson5 @0 :Text;
+    # Whether the node is already in the node stack
+    isInNodeStack @1 :Bool;
+    # Names of running instances of this node
+    instancesNames @2 :List(Text);
+}

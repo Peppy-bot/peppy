@@ -45,7 +45,4 @@ async fn listen_for_info_success() {
         info_response.node_count, 1,
         "node_count should be 1 (just the master node itself)"
     );
-
-    // Clean up
-    started.task.abort();
 }

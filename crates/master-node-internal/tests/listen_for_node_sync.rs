@@ -92,8 +92,6 @@ async fn listen_for_node_generate_success() {
         "Cargo.toml should reference generated peppygen path, got:\n{}",
         cargo_toml
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -117,8 +115,6 @@ async fn listen_for_node_generate_missing_node_root_dir_fails() {
         "error should mention missing node_root_dir, got: {}",
         response.error_message
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -152,8 +148,6 @@ async fn listen_for_node_generate_node_root_dir_does_not_exist_fails() {
         "error should mention missing directory, got: {}",
         response.error_message
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -183,8 +177,6 @@ async fn listen_for_node_generate_node_root_dir_is_not_a_directory_fails() {
         "error should mention not a directory, got: {}",
         response.error_message
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -225,8 +217,6 @@ async fn listen_for_node_generate_missing_peppy_json5_fails() {
         "node Cargo.toml should not be created at {}",
         cargo_toml_path.display()
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -262,8 +252,6 @@ async fn listen_for_node_generate_invalid_peppy_json5_fails() {
         "peppygen directory should not exist at {}",
         peppygen_dir.display()
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -335,8 +323,6 @@ async fn listen_for_node_generate_missing_dependency_fails() {
         "peppygen directory should not exist at {}",
         peppygen_dir.display()
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -447,8 +433,6 @@ async fn listen_for_node_generate_multiple_missing_dependencies_fails() {
         "peppygen directory should not exist at {}",
         peppygen_dir.display()
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -654,8 +638,6 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
         "peppygen uvc_camera_video_stream.rs should exist at {}",
         subscribed_topic_path.display()
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -804,8 +786,6 @@ async fn listen_for_node_generate_generates_rust_subscribed_service_interfaces()
         "peppygen uvc_camera_enable_camera.rs should exist at {}",
         subscribed_service_path.display()
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -956,8 +936,6 @@ async fn listen_for_node_generate_generates_rust_subscribed_topic_interfaces() {
         "peppygen uvc_camera_video_stream.rs should exist at {}",
         subscribed_topic_path.display()
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1115,8 +1093,6 @@ async fn listen_for_node_generate_generates_rust_subscribed_action_interfaces() 
         "peppygen brain_move_arm.rs should exist at {}",
         subscribed_action_path.display()
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1231,8 +1207,6 @@ async fn listen_for_node_generate_generates_rust_parameters() {
         "parameters.rs should contain `frame_rate`, got:\n{}",
         parameters_rs_content
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1326,6 +1300,4 @@ async fn listen_for_node_generate_deletes_previous_peppy_folder() {
         "peppygen directory should exist at {}",
         peppygen_dir.display()
     );
-
-    started_master.task.abort();
 }

@@ -4584,8 +4584,8 @@ fn to_camel_case(raw: &str) -> String {
 /// Validates that all parameter field names contain only allowed characters.
 /// Returns an error with the first invalid field name found.
 fn validate_parameter_field_names(parameters: &config::NodeArguments) -> Result<()> {
-    use config::consts::ALLOWED_CONFIG_CHARS;
     use config::AnyType;
+    use config::consts::ALLOWED_CONFIG_CHARS;
 
     fn is_valid_field_name(name: &str, allowed: &str) -> bool {
         !name.is_empty() && name.chars().all(|c| allowed.contains(c))

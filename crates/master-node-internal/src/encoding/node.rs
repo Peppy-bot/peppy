@@ -1,5 +1,6 @@
 //! Cap'n Proto encoding utilities for node messages.
 pub mod add;
+pub mod info;
 pub mod init;
 pub mod list;
 pub mod remove;
