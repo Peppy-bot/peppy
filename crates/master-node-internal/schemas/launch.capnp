@@ -18,11 +18,19 @@ struct LaunchGoalResponse {
     rejectionReason @2 :Text;
 }
 
+enum LaunchFeedbackStep {
+    launcherStep @0;
+    addingNode @1;
+    startingNode @2;
+}
+
 struct LaunchFeedback {
     # The stream type: "stdout" or "stderr"
     stream @0 :Text;
     # The line of output
     line @1 :Text;
+    # The step in the launch process this feedback is from
+    step @2 :LaunchFeedbackStep;
 }
 
 struct LaunchResult {

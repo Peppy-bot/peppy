@@ -23,10 +23,7 @@ pub struct LaunchGoal {
 }
 
 impl LaunchGoal {
-    pub fn new(
-        peppy_launch_json5: impl Into<String>,
-        nodes_directory: impl Into<PathBuf>,
-    ) -> Self {
+    pub fn new(peppy_launch_json5: impl Into<String>, nodes_directory: impl Into<PathBuf>) -> Self {
         Self {
             peppy_launch_json5: peppy_launch_json5.into(),
             nodes_directory: nodes_directory.into(),
@@ -135,6 +132,12 @@ impl LaunchGoalResponse {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchFeedbackStep {
+    LauncherStep,
+    AddingNode,
+    StartingNode,
+}
 /// Feedback message for the Launch action.
 /// Represents a single line of output from the launch process.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,20 +146,24 @@ pub struct LaunchFeedback {
     pub stream: String,
     /// The line of output
     pub line: String,
+    /// The step in the launch process this feedback is from
+    pub step: LaunchFeedbackStep,
 }
 
 impl LaunchFeedback {
-    pub fn stdout(line: impl Into<String>) -> Self {
+    pub fn stdout(line: impl Into<String>, step: LaunchFeedbackStep) -> Self {
         Self {
             stream: "stdout".to_string(),
             line: line.into(),
+            step,
         }
     }
 
-    pub fn stderr(line: impl Into<String>) -> Self {
+    pub fn stderr(line: impl Into<String>, step: LaunchFeedbackStep) -> Self {
         Self {
             stream: "stderr".to_string(),
             line: line.into(),
+            step,
         }
     }
 
@@ -174,6 +181,11 @@ impl LaunchFeedback {
             let mut feedback = builder.init_root::<launch_capnp::launch_feedback::Builder>();
             feedback.set_stream(&self.stream);
             feedback.set_line(&self.line);
+            feedback.set_step(match self.step {
+                LaunchFeedbackStep::LauncherStep => launch_capnp::LaunchFeedbackStep::LauncherStep,
+                LaunchFeedbackStep::AddingNode => launch_capnp::LaunchFeedbackStep::AddingNode,
+                LaunchFeedbackStep::StartingNode => launch_capnp::LaunchFeedbackStep::StartingNode,
+            });
         }
         encode_message(&builder)
     }
@@ -181,9 +193,15 @@ impl LaunchFeedback {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let feedback = reader.get_root::<launch_capnp::launch_feedback::Reader>()?;
+        let step = match feedback.get_step()? {
+            launch_capnp::LaunchFeedbackStep::LauncherStep => LaunchFeedbackStep::LauncherStep,
+            launch_capnp::LaunchFeedbackStep::AddingNode => LaunchFeedbackStep::AddingNode,
+            launch_capnp::LaunchFeedbackStep::StartingNode => LaunchFeedbackStep::StartingNode,
+        };
         Ok(Self {
             stream: feedback.get_stream()?.to_str()?.to_owned(),
             line: feedback.get_line()?.to_str()?.to_owned(),
+            step,
         })
     }
 }

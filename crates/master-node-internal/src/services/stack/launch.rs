@@ -355,6 +355,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
     //         `crates/master-node-internal/src/services/node/start.rs` (reuse the code, don't duplicate). Start them one by one in the order of dependencies. Stream the console output to the feedback
     //         The list of instances and their instance-id can be obtained from PeppyLauncher::deployments::instances
     // Step 7: Done, return a success to the user
+    // Notes: Every step returns a feedback with LaunchFeedbackStep::LauncherStep when it's the launcher, LaunchFeedbackStep::AddingNode when a node is being added and LaunchFeedbackStep::StartingNode when a node is starting
 
     let _ = (&goal, &ctx);
 
