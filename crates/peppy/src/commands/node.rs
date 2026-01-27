@@ -1,4 +1,5 @@
 mod add;
+mod info;
 mod init;
 mod remove;
 mod runtime_config;
@@ -156,6 +157,20 @@ pub enum NodeCommands {
         #[arg(long)]
         force: bool,
     },
+    /// Return the information about a node configuration and its presence in the node stack
+    Info {
+        /// Source location of a node (directory containing peppy.json5).
+        ///
+        /// Supported formats:
+        /// - Local path: `/path/to/node` or `./relative/path`
+        /// - Git URL: `https://github.com/org/repo.git/subpath`
+        /// - Git URL with ref: `https://github.com/org/repo.git/subpath --ref tag-or-branch`
+        /// - HTTP archive: `https://example.com/node.tar.zst`
+        source: String,
+        /// Git ref (tag/branch/commit) to checkout before reading `subpath` (git sources only).
+        #[arg(long = "ref")]
+        git_ref: Option<String>,
+    },
 }
 
 pub struct NodeCommand {
@@ -227,6 +242,10 @@ impl Command for NodeCommand {
             } => {
                 info!("Remove node {}:{}...", node_name, tag);
                 remove::remove_node(ctx, node_name, tag, stop_instances, force)
+            }
+            NodeCommands::Info { source, git_ref } => {
+                info!("Getting node info for {}...", source);
+                info::node_info(ctx, source, git_ref)
             }
         }
     }
