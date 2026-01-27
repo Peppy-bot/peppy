@@ -4,14 +4,15 @@ use std::time::Duration;
 
 use config::peppy_config::PeppyLauncherParser;
 use config::runtime::LauncherRuntimeConfig;
-use master_node::encoding::LaunchRequest;
+use master_node::encoding::{LaunchGoal, LaunchGoalResponse, LaunchResult};
 use tracing::info;
 
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
+const RESULT_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub fn launch(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> Result<()> {
     crate::commands::block_on(launch_async(ctx, launcher_config_path))
@@ -62,25 +63,59 @@ async fn launch_async(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> R
             Error::ExecutionFailed(format!("Failed to serialize runtime config: {}", e))
         })?;
 
-    let request = LaunchRequest::new(
+    let goal = LaunchGoal::new(
         peppy_launcher_json5,
         nodes_directory,
         launcher_runtime_config_json,
     );
-    let response = request
-        .poll(
+
+    let action_handle = goal
+        .send_goal(
             messenger_handle,
             &master_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
             None,
-            REQUEST_TIMEOUT,
+            None,
+            GOAL_TIMEOUT,
         )
         .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to call launcher service: {}", e)))?;
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to send launch goal: {}", e)))?;
 
-    if !response.success {
-        return Err(Error::ExecutionFailed(response.error_message));
+    let goal_response = LaunchGoalResponse::decode(
+        &action_handle.goal_response().payload().to_bytes(),
+    )
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
+
+    if !goal_response.accepted {
+        let reason = goal_response
+            .rejection_reason
+            .unwrap_or_else(|| "unknown reason".to_string());
+        return Err(Error::ExecutionFailed(format!(
+            "Launch goal rejected: {}",
+            reason
+        )));
+    }
+
+    info!(
+        "Launch goal accepted, log file: {}",
+        goal_response.log_path.display()
+    );
+
+    // TODO: Subscribe to feedback and stream output to console
+
+    let result = LaunchResult::request_result(messenger_handle, &action_handle, RESULT_TIMEOUT)
+        .await
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to get launch result: {}", e)))?;
+
+    if !result.success {
+        let error_msg = result
+            .error_message
+            .unwrap_or_else(|| "unknown error".to_string());
+        return Err(Error::ExecutionFailed(format!(
+            "Launch failed: {}. Log file: {}",
+            error_msg,
+            result.log_path.display()
+        )));
     }
 
     info!("Launch configuration applied successfully");

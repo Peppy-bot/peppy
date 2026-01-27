@@ -3,7 +3,7 @@ mod common;
 use common::CALLER_INSTANCE_ID;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::runtime::LauncherRuntimeConfig;
-use master_node::encoding::LaunchRequest;
+use master_node::encoding::LaunchGoal;
 use std::fs;
 use std::time::Duration;
 use tempfile::tempdir;
