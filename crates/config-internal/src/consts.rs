@@ -90,6 +90,13 @@ pub fn logs_dir_start() -> std::path::PathBuf {
     peppy_data_dir().join("logs").join("start")
 }
 
+/// Returns the launch logs cache directory.
+/// In production: ~/.peppy/logs/launch
+/// In development: /tmp/.peppy/logs/launch
+pub fn logs_dir_launch() -> std::path::PathBuf {
+    peppy_data_dir().join("logs").join("launch")
+}
+
 /// Returns the runtime config directory path.
 pub fn runtime_config_dir() -> std::path::PathBuf {
     peppy_data_dir().join("runtime")

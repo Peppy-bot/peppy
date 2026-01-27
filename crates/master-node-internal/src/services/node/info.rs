@@ -105,7 +105,7 @@ async fn handle_node_info_request_inner(
         .map_err(|e| format!("{}", e))
 }
 
-async fn resolve_node_config(source: NodeSource) -> std::result::Result<NodeConfig, String> {
+pub async fn resolve_node_config(source: NodeSource) -> std::result::Result<NodeConfig, String> {
     match source {
         NodeSource::Fs(path) => parse_node_config_from_fs(&path),
         NodeSource::Git {
@@ -300,12 +300,11 @@ fn parse_node_config_from_http_blocking(url: url::Url) -> std::result::Result<No
             if let Some(name) = entry_path.to_str() {
                 top_level_dirs.insert(name.to_owned());
             }
-        } else if depth >= 2 {
-            if let Some(Component::Normal(first)) = entry_path.components().next() {
-                if let Some(name) = first.to_str() {
-                    top_level_dirs.insert(name.to_owned());
-                }
-            }
+        } else if depth >= 2
+            && let Some(Component::Normal(first)) = entry_path.components().next()
+            && let Some(name) = first.to_str()
+        {
+            top_level_dirs.insert(name.to_owned());
         }
 
         if entry.header().entry_type().is_dir() {
