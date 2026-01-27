@@ -1,9 +1,13 @@
+//! Encoding types for the Launch action (streaming version with feedback).
+
 use std::path::PathBuf;
 use std::time::Duration;
 
 use bytes::Bytes;
 use capnp::message::Builder;
-use peppylib::{MessengerHandle, ServiceMessenger};
+use config::node::QoSProfile;
+use peppylib::messaging::ActionGoalHandle;
+use peppylib::{ActionMessenger, MessengerHandle};
 
 use crate::Result;
 use crate::launch_capnp;
@@ -11,14 +15,15 @@ use crate::names;
 
 use super::{decode_message, encode_message};
 
+/// Goal message for the Launch action.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LaunchRequest {
+pub struct LaunchGoal {
     pub peppy_launch_json5: String,
     pub nodes_directory: PathBuf,
     pub launch_runtime_config_json5: String,
 }
 
-impl LaunchRequest {
+impl LaunchGoal {
     pub fn new(
         peppy_launch_json5: impl Into<String>,
         nodes_directory: impl Into<PathBuf>,
@@ -34,96 +39,226 @@ impl LaunchRequest {
     pub fn encode(&self) -> Result<Bytes> {
         let mut builder = Builder::new_default();
         {
-            let mut request = builder.init_root::<launch_capnp::launch_request::Builder>();
-            request.set_peppy_launch_json5(&self.peppy_launch_json5);
-            request.set_nodes_directory(self.nodes_directory.to_string_lossy());
-            request.set_launch_runtime_config_json5(&self.launch_runtime_config_json5);
+            let mut goal = builder.init_root::<launch_capnp::launch_goal::Builder>();
+            goal.set_peppy_launch_json5(&self.peppy_launch_json5);
+            goal.set_nodes_directory(self.nodes_directory.to_string_lossy());
+            goal.set_launch_runtime_config_json5(&self.launch_runtime_config_json5);
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<launch_capnp::launch_request::Reader>()?;
+        let goal = reader.get_root::<launch_capnp::launch_goal::Reader>()?;
         Ok(Self {
-            peppy_launch_json5: request.get_peppy_launch_json5()?.to_str()?.to_owned(),
-            nodes_directory: PathBuf::from(request.get_nodes_directory()?.to_str()?),
-            launch_runtime_config_json5: request
+            peppy_launch_json5: goal.get_peppy_launch_json5()?.to_str()?.to_owned(),
+            nodes_directory: PathBuf::from(goal.get_nodes_directory()?.to_str()?),
+            launch_runtime_config_json5: goal
                 .get_launch_runtime_config_json5()?
                 .to_str()?
                 .to_owned(),
         })
     }
 
-    pub async fn poll(
+    /// Sends the goal to start the Launch action and returns a handle for receiving feedback.
+    pub async fn send_goal(
         &self,
         messenger: &MessengerHandle,
-        bound_master_node: &str,
+        as_master_node: &str,
         as_instance_id: &str,
-        target_node_name: &str,
+        target_master_node: Option<&str>,
         target_instance_id: Option<&str>,
-        response_timeout: Duration,
-    ) -> Result<LaunchResponse> {
-        let request_payload = self.encode()?;
-        let response = ServiceMessenger::poll(
+        goal_timeout: Duration,
+    ) -> Result<ActionGoalHandle> {
+        let goal_payload = self.encode()?;
+        let handle = ActionMessenger::send_goal(
             messenger,
-            bound_master_node,
+            as_master_node,
             as_instance_id,
-            target_node_name,
-            names::STACK_LAUNCH,
-            None,
+            as_master_node, // node_name is the master node for this action
+            names::STACK_LAUNCH_ACTION,
+            target_master_node,
             target_instance_id,
-            request_payload,
-            response_timeout,
+            goal_payload,
+            QoSProfile::default(),
+            goal_timeout,
         )
         .await?;
-        LaunchResponse::decode(&response.payload().to_bytes())
+        Ok(handle)
     }
 }
 
+/// Response to the Launch goal request.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LaunchResponse {
-    pub success: bool,
-    pub error_message: String,
+pub struct LaunchGoalResponse {
+    pub accepted: bool,
+    pub log_path: PathBuf,
+    pub rejection_reason: Option<String>,
 }
 
-impl LaunchResponse {
-    pub fn new() -> Self {
+impl LaunchGoalResponse {
+    pub fn accepted(log_path: impl Into<PathBuf>) -> Self {
         Self {
-            success: true,
-            error_message: String::new(),
+            accepted: true,
+            log_path: log_path.into(),
+            rejection_reason: None,
         }
     }
 
-    pub fn error(message: impl Into<String>) -> Self {
+    pub fn rejected(reason: impl Into<String>) -> Self {
         Self {
-            success: false,
-            error_message: message.into(),
+            accepted: false,
+            log_path: PathBuf::new(),
+            rejection_reason: Some(reason.into()),
         }
     }
 
     pub fn encode(&self) -> Result<Bytes> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<launch_capnp::launch_response::Builder>();
-            response.set_success(self.success);
-            response.set_error_message(&self.error_message);
+            let mut response = builder.init_root::<launch_capnp::launch_goal_response::Builder>();
+            response.set_accepted(self.accepted);
+            response.set_log_path(self.log_path.to_string_lossy().as_ref());
+            if let Some(ref reason) = self.rejection_reason {
+                response.set_rejection_reason(reason);
+            }
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<launch_capnp::launch_response::Reader>()?;
+        let response = reader.get_root::<launch_capnp::launch_goal_response::Reader>()?;
+        let rejection_reason_str = response.get_rejection_reason()?.to_str()?;
+        let rejection_reason = if rejection_reason_str.is_empty() {
+            None
+        } else {
+            Some(rejection_reason_str.to_owned())
+        };
         Ok(Self {
-            success: response.get_success(),
-            error_message: response.get_error_message()?.to_str()?.to_owned(),
+            accepted: response.get_accepted(),
+            log_path: PathBuf::from(response.get_log_path()?.to_str()?),
+            rejection_reason,
         })
     }
 }
 
-impl Default for LaunchResponse {
-    fn default() -> Self {
-        Self::new()
+/// Feedback message for the Launch action.
+/// Represents a single line of output from the launch process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchFeedback {
+    /// The stream type: "stdout" or "stderr"
+    pub stream: String,
+    /// The line of output
+    pub line: String,
+}
+
+impl LaunchFeedback {
+    pub fn stdout(line: impl Into<String>) -> Self {
+        Self {
+            stream: "stdout".to_string(),
+            line: line.into(),
+        }
+    }
+
+    pub fn stderr(line: impl Into<String>) -> Self {
+        Self {
+            stream: "stderr".to_string(),
+            line: line.into(),
+        }
+    }
+
+    pub fn is_stdout(&self) -> bool {
+        self.stream == "stdout"
+    }
+
+    pub fn is_stderr(&self) -> bool {
+        self.stream == "stderr"
+    }
+
+    pub fn encode(&self) -> Result<Bytes> {
+        let mut builder = Builder::new_default();
+        {
+            let mut feedback = builder.init_root::<launch_capnp::launch_feedback::Builder>();
+            feedback.set_stream(&self.stream);
+            feedback.set_line(&self.line);
+        }
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let feedback = reader.get_root::<launch_capnp::launch_feedback::Reader>()?;
+        Ok(Self {
+            stream: feedback.get_stream()?.to_str()?.to_owned(),
+            line: feedback.get_line()?.to_str()?.to_owned(),
+        })
+    }
+}
+
+/// Result message for the Launch action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchResult {
+    pub success: bool,
+    pub log_path: PathBuf,
+    pub error_message: Option<String>,
+}
+
+impl LaunchResult {
+    pub fn new(success: bool, log_path: impl Into<PathBuf>, error_message: Option<String>) -> Self {
+        Self {
+            success,
+            log_path: log_path.into(),
+            error_message,
+        }
+    }
+
+    pub fn success(log_path: impl Into<PathBuf>) -> Self {
+        Self::new(true, log_path, None)
+    }
+
+    pub fn failure(log_path: impl Into<PathBuf>, error_message: impl Into<String>) -> Self {
+        Self::new(false, log_path, Some(error_message.into()))
+    }
+
+    pub fn encode(&self) -> Result<Bytes> {
+        let mut builder = Builder::new_default();
+        {
+            let mut result = builder.init_root::<launch_capnp::launch_result::Builder>();
+            result.set_success(self.success);
+            result.set_log_path(self.log_path.to_string_lossy().as_ref());
+            if let Some(ref error_message) = self.error_message {
+                result.set_error_message(error_message);
+            }
+        }
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let result = reader.get_root::<launch_capnp::launch_result::Reader>()?;
+        let error_message_str = result.get_error_message()?.to_str()?;
+        let error_message = if error_message_str.is_empty() {
+            None
+        } else {
+            Some(error_message_str.to_owned())
+        };
+        let log_path = PathBuf::from(result.get_log_path()?.to_str()?);
+        Ok(Self {
+            success: result.get_success(),
+            log_path,
+            error_message,
+        })
+    }
+
+    /// Request the result from a completed action.
+    pub async fn request_result(
+        messenger: &MessengerHandle,
+        action_handle: &ActionGoalHandle,
+        result_timeout: Duration,
+    ) -> Result<Self> {
+        let response =
+            ActionMessenger::request_result(messenger, action_handle, result_timeout).await?;
+        Self::decode(&response.payload().to_bytes())
     }
 }
