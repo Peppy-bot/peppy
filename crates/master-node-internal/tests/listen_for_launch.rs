@@ -515,17 +515,16 @@ async fn listen_for_launch_configuration_launch_config_nodes_directory_must_be_a
     let bad_nodes_dir = nodes_dir.path().join("not_a_dir.txt");
     fs::write(&bad_nodes_dir, "hello").expect("failed to write file");
 
-    let launcher_json5 = format!(
-        r#"{{
+    let launcher_json5 = r#"{
             deployments: [
-                {{
+                {
                     name: "some_node",
                     tag: "0.1.0",
-                    instances: [{{ instance_id: "x" }}]
-                }}
+                    instances: [{ instance_id: "x" }]
+                }
             ]
-        }}"#
-    );
+        }"#
+    .to_string();
 
     let (_goal_response, result) = send_launch_and_wait(
         &started_master.caller_handle,

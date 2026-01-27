@@ -228,9 +228,9 @@ async fn node_info_no_dependencies_when_no_subscribes() {
                 .subscribes_to
                 .as_ref()
                 .is_some_and(|s| {
-                    s.topics.as_ref().map_or(true, |t| t.is_empty())
-                        && s.services.as_ref().map_or(true, |sv| sv.is_empty())
-                        && s.actions.as_ref().map_or(true, |a| a.is_empty())
+                    s.topics.as_ref().is_none_or(|t| t.is_empty())
+                        && s.services.as_ref().is_none_or(|sv| sv.is_empty())
+                        && s.actions.as_ref().is_none_or(|a| a.is_empty())
                 }),
         "standalone node should have no dependencies"
     );

@@ -300,12 +300,11 @@ fn parse_node_config_from_http_blocking(url: url::Url) -> std::result::Result<No
             if let Some(name) = entry_path.to_str() {
                 top_level_dirs.insert(name.to_owned());
             }
-        } else if depth >= 2 {
-            if let Some(Component::Normal(first)) = entry_path.components().next() {
-                if let Some(name) = first.to_str() {
-                    top_level_dirs.insert(name.to_owned());
-                }
-            }
+        } else if depth >= 2
+            && let Some(Component::Normal(first)) = entry_path.components().next()
+            && let Some(name) = first.to_str()
+        {
+            top_level_dirs.insert(name.to_owned());
         }
 
         if entry.header().entry_type().is_dir() {
