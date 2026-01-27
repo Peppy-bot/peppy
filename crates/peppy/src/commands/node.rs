@@ -3,6 +3,7 @@ mod info;
 mod init;
 mod remove;
 mod runtime_config;
+mod source;
 mod start;
 mod stop;
 mod sync;
@@ -198,8 +199,7 @@ impl Command for NodeCommand {
                 timeout,
                 force,
             } => {
-                let is_url = source.contains("://") || source.starts_with("git@");
-                let display_source = if is_url {
+                let display_source = if source::is_probably_remote_source(&source) {
                     source.clone()
                 } else {
                     let path = PathBuf::from(&source);
@@ -244,8 +244,7 @@ impl Command for NodeCommand {
                 remove::remove_node(ctx, node_name, tag, stop_instances, force)
             }
             NodeCommands::Info { source, git_ref } => {
-                let is_url = source.contains("://") || source.starts_with("git@");
-                let display_source = if is_url {
+                let display_source = if source::is_probably_remote_source(&source) {
                     source.clone()
                 } else {
                     let path = PathBuf::from(&source);
