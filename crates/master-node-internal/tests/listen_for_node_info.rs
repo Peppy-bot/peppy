@@ -1,6 +1,8 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, start_master_node_with_mock_messenger, write_peppy_json5};
+use common::{
+    AbortOnDrop, CALLER_INSTANCE_ID, start_master_node_with_mock_messenger, write_peppy_json5,
+};
 use common::{NodeStartTestTimeouts, send_node_add_and_wait, send_node_start_and_wait};
 use config::consts::NODE_CONFIG_FILE;
 use config::node::Name;
@@ -113,8 +115,6 @@ async fn listen_for_node_info_on_fs_node_success() {
         info_response.instances_names,
         vec![TARGET_INSTANCE_ID.to_string()]
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -210,8 +210,6 @@ async fn listen_for_node_info_on_git_node_success() {
         info_response.instances_names,
         vec![TARGET_INSTANCE_ID.to_string()]
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -333,8 +331,6 @@ async fn listen_for_node_info_on_http_node_success() {
         info_response.instances_names,
         vec![TARGET_INSTANCE_ID.to_string()]
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -381,39 +377,47 @@ async fn listen_for_node_info_has_instance_ids() {
     // Simulate the node exposing ready/health services for each instance so the node_start action
     // can proceed when using the mock messenger (we start `sleep` rather than an actual node).
     let node_handle = MessengerHandle::from_shared(Arc::clone(&started_master.shared_messenger));
-    let ready_task_1 = listen_for_node_ready(
-        &node_handle,
-        &started_master.master_node_name,
-        TARGET_INSTANCE_ID_1,
-        TARGET_NODE_NAME,
-    )
-    .await
-    .expect("failed to start node_ready service (instance 1)");
-    let health_task_1 = listen_for_node_health(
-        &node_handle,
-        &started_master.master_node_name,
-        TARGET_INSTANCE_ID_1,
-        TARGET_NODE_NAME,
-    )
-    .await
-    .expect("failed to start node_health service (instance 1)");
+    let _ready_task_1 = AbortOnDrop(
+        listen_for_node_ready(
+            &node_handle,
+            &started_master.master_node_name,
+            TARGET_INSTANCE_ID_1,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("failed to start node_ready service (instance 1)"),
+    );
+    let _health_task_1 = AbortOnDrop(
+        listen_for_node_health(
+            &node_handle,
+            &started_master.master_node_name,
+            TARGET_INSTANCE_ID_1,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("failed to start node_health service (instance 1)"),
+    );
 
-    let ready_task_2 = listen_for_node_ready(
-        &node_handle,
-        &started_master.master_node_name,
-        TARGET_INSTANCE_ID_2,
-        TARGET_NODE_NAME,
-    )
-    .await
-    .expect("failed to start node_ready service (instance 2)");
-    let health_task_2 = listen_for_node_health(
-        &node_handle,
-        &started_master.master_node_name,
-        TARGET_INSTANCE_ID_2,
-        TARGET_NODE_NAME,
-    )
-    .await
-    .expect("failed to start node_health service (instance 2)");
+    let _ready_task_2 = AbortOnDrop(
+        listen_for_node_ready(
+            &node_handle,
+            &started_master.master_node_name,
+            TARGET_INSTANCE_ID_2,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("failed to start node_ready service (instance 2)"),
+    );
+    let _health_task_2 = AbortOnDrop(
+        listen_for_node_health(
+            &node_handle,
+            &started_master.master_node_name,
+            TARGET_INSTANCE_ID_2,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("failed to start node_health service (instance 2)"),
+    );
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -518,10 +522,4 @@ async fn listen_for_node_info_has_instance_ids() {
             TARGET_INSTANCE_ID_2.to_string()
         ]
     );
-
-    ready_task_1.abort();
-    health_task_1.abort();
-    ready_task_2.abort();
-    health_task_2.abort();
-    started_master.task.abort();
 }

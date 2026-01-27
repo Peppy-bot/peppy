@@ -168,8 +168,6 @@ async fn listen_for_node_reset_clears_node_stack() {
         root_instance_id_after, root_instance_id_before,
         "root instance id should be preserved"
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -212,6 +210,4 @@ async fn listen_for_node_reset_is_idempotent() {
         root_instance_id_after, root_instance_id_before,
         "root instance id should be preserved"
     );
-
-    started_master.task.abort();
 }

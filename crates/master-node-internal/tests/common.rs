@@ -23,6 +23,15 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
+/// A wrapper around `JoinHandle` that aborts the task when dropped.
+pub struct AbortOnDrop<T>(pub JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
 pub const TEST_GIT_HASH: &str = "test-hash";
 
@@ -513,7 +522,7 @@ pub struct StartedMasterNode {
     pub caller_handle: MessengerHandle,
     pub master_node_name: String,
     pub node_stack: NodeStack,
-    pub task: JoinHandle<master_node::Result<()>>,
+    pub task: AbortOnDrop<master_node::Result<()>>,
 }
 
 pub async fn start_master_node_with_mock_messenger() -> StartedMasterNode {
@@ -593,6 +602,6 @@ async fn start_master_node_with_messenger(
         caller_handle,
         master_node_name,
         node_stack,
-        task,
+        task: AbortOnDrop(task),
     }
 }
