@@ -1049,8 +1049,6 @@ async fn start_node_instances(
     Ok(())
 }
 
-// --- Main Action Loop ---
-
 async fn run_launch_action_loop(
     mut action: ActionCreation,
     node_stack: Arc<NodeStack>,
@@ -1315,8 +1313,6 @@ async fn handle_goal_request(
         })
 }
 
-// --- Main Orchestrator ---
-
 /// Process a stack launch request.
 ///
 /// This function orchestrates the complete launch sequence:
@@ -1346,7 +1342,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
         Err(launch_result) => return launch_result,
     };
 
-    // Step 4: Snapshot and clear stack
+    // Step 4: Snapshot and clear stack (the snapshot helps in case an `add_cmd` or `start_cmd` fails on one of the nodes)
     let backup_stack = match snapshot_and_clear_stack(&ctx).await {
         Ok(result) => result,
         Err(launch_result) => return launch_result,

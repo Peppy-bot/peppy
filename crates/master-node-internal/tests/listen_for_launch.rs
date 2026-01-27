@@ -17,6 +17,24 @@ use tempfile::tempdir;
 
 use crate::common::start_master_node_with_mock_messenger;
 
+struct NodeConfigOptions<'a> {
+    add_cmd: &'a [&'a str],
+    start_cmd: &'a [&'a str],
+    subscribes_to_uvc_camera: bool,
+    exposes_camera_stream: bool,
+}
+
+impl Default for NodeConfigOptions<'_> {
+    fn default() -> Self {
+        Self {
+            add_cmd: &["true"],
+            start_cmd: &[],
+            subscribes_to_uvc_camera: false,
+            exposes_camera_stream: false,
+        }
+    }
+}
+
 const LAUNCHER_EXAMPLE1: &str = r#"
 {
   deployments: [
@@ -92,8 +110,41 @@ fn write_node_config(
     subscribes_to_uvc_camera: bool,
     exposes_camera_stream: bool,
 ) -> PathBuf {
+    write_node_config_with_options(
+        nodes_directory,
+        node_name,
+        node_tag,
+        git_hash,
+        NodeConfigOptions {
+            start_cmd,
+            subscribes_to_uvc_camera,
+            exposes_camera_stream,
+            ..Default::default()
+        },
+    )
+}
+
+fn write_node_config_with_options(
+    nodes_directory: &Path,
+    node_name: &str,
+    node_tag: &str,
+    git_hash: &str,
+    options: NodeConfigOptions<'_>,
+) -> PathBuf {
+    let NodeConfigOptions {
+        add_cmd,
+        start_cmd,
+        subscribes_to_uvc_camera,
+        exposes_camera_stream,
+    } = options;
     let node_dir = nodes_directory.join(node_name);
     fs::create_dir_all(&node_dir).expect("failed to create node directory");
+
+    let add_cmd_json5 = add_cmd
+        .iter()
+        .map(|arg| serde_json::to_string(arg).expect("add_cmd arg should serialize"))
+        .collect::<Vec<_>>()
+        .join(", ");
 
     let start_cmd_json5 = start_cmd
         .iter()
@@ -139,7 +190,7 @@ fn write_node_config(
                 name: "{node_name}",
                 tag: "{node_tag}",
                 language: "rust",
-                add_cmd: ["true"],
+                add_cmd: [{add_cmd_json5}],
                 start_cmd: [{start_cmd_json5}]
               }},
               {exposes}
@@ -867,5 +918,70 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     assert!(
         !node_stack.contains("node_b", NODE_TAG),
         "node_b should not be present after failed launch"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_launch_configuration_fails_when_add_cmd_fails_and_restores_stack() {
+    const NODE_TAG: &str = "0.1.0";
+
+    let started_master = start_master_node_with_mock_messenger().await;
+    let node_stack = started_master.node_stack.clone();
+
+    let nodes_dir = tempdir().expect("failed to create nodes dir");
+
+    // Seed stack with an existing node so we can verify rollback.
+    let existing_path = write_node_config(
+        nodes_dir.path(),
+        "existing_node",
+        NODE_TAG,
+        "test-hash",
+        &["sleep", "60"],
+        false,
+        false,
+    );
+    let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
+        .expect("existing node config should parse");
+    node_stack
+        .push_config(existing_config, false, &existing_path)
+        .expect("should seed stack");
+
+    // Node with a failing add_cmd.
+    let _failing_node_path = write_node_config_with_options(
+        nodes_dir.path(),
+        "failing_node",
+        NODE_TAG,
+        "test-hash",
+        NodeConfigOptions {
+            add_cmd: &["false"], // This command always fails with exit code 1
+            start_cmd: &["sleep", "60"],
+            ..Default::default()
+        },
+    );
+
+    let launcher_json5 = r#"
+    { deployments: [ { name: "failing_node", tag: "0.1.0", instances: [ { instance_id: "f1" } ] } ] }
+    "#;
+
+    let (_goal_response, result) = send_launch_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        launcher_json5,
+        nodes_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+    )
+    .await
+    .expect("launch should complete");
+
+    assert!(!result.success, "launch should fail because add_cmd fails");
+
+    assert!(
+        node_stack.contains("existing_node", NODE_TAG),
+        "stack should be restored on add_cmd failure"
+    );
+    assert!(
+        !node_stack.contains("failing_node", NODE_TAG),
+        "failing_node should not be present after failed launch"
     );
 }
