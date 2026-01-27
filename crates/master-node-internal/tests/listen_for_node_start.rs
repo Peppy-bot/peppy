@@ -1,7 +1,7 @@
 mod common;
 
 use common::{
-    NodeStartTestTimeouts, create_test_node_with_name, send_node_add_and_wait,
+    AbortOnDrop, NodeStartTestTimeouts, create_test_node_with_name, send_node_add_and_wait,
     send_node_start_and_wait, start_master_node_with_health_timeout,
     start_master_node_with_mock_messenger, start_master_node_with_real_messenger,
     write_peppy_json5,
@@ -122,8 +122,6 @@ async fn listen_for_node_start_success() {
         found_instance.is_some(),
         "instance should be registered in the node stack after successful start"
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -174,14 +172,16 @@ async fn listen_for_node_start_timeout() {
     // Set up a ready listener so node_start can proceed to the health-check phase.
     // We intentionally do NOT set up a health listener to force the health check to time out.
     let ready_handle = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let ready_task = listen_for_node_ready(
-        &ready_handle,
-        &started.master_node_name,
-        TARGET_INSTANCE_ID,
-        TARGET_NODE_NAME,
-    )
-    .await
-    .expect("failed to start ready service");
+    let _ready_task = AbortOnDrop(
+        listen_for_node_ready(
+            &ready_handle,
+            &started.master_node_name,
+            TARGET_INSTANCE_ID,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("failed to start ready service"),
+    );
 
     // Allow the ready service to fully establish its listener
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -247,12 +247,6 @@ async fn listen_for_node_start_timeout() {
         found_instance.is_none(),
         "instance should NOT be registered in the node stack after failed start"
     );
-
-    // Clean up
-    ready_task.abort();
-
-    // Abort the master node task
-    started.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -318,9 +312,6 @@ async fn listen_for_node_start_not_found() {
         start_response.result.pid.is_none(),
         "node_start should not return a PID on failure"
     );
-
-    // Abort the master node task
-    started.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -365,22 +356,26 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
     );
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let ready_task = listen_for_node_ready(
-        &node_messenger,
-        &started.master_node_name,
-        TARGET_INSTANCE_ID,
-        TARGET_NODE_NAME,
-    )
-    .await
-    .expect("node ready service should start");
-    let health_task = listen_for_node_health(
-        &node_messenger,
-        &started.master_node_name,
-        TARGET_INSTANCE_ID,
-        TARGET_NODE_NAME,
-    )
-    .await
-    .expect("node health service should start");
+    let _ready_task = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started.master_node_name,
+            TARGET_INSTANCE_ID,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("node ready service should start"),
+    );
+    let _health_task = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started.master_node_name,
+            TARGET_INSTANCE_ID,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("node health service should start"),
+    );
 
     // Allow ready/health services to establish listeners.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -443,10 +438,7 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
     assert!(saw_stdout, "stdout feedback should include marker");
     assert!(saw_stderr, "stderr feedback should include marker");
 
-    ready_task.abort();
-    health_task.abort();
     let _ = std::fs::remove_dir_all(&add_response.snapshot_path);
-    started.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -491,22 +483,26 @@ async fn listen_for_node_start_writes_log_file() {
     );
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let ready_task = listen_for_node_ready(
-        &node_messenger,
-        &started.master_node_name,
-        TARGET_INSTANCE_ID,
-        TARGET_NODE_NAME,
-    )
-    .await
-    .expect("node ready service should start");
-    let health_task = listen_for_node_health(
-        &node_messenger,
-        &started.master_node_name,
-        TARGET_INSTANCE_ID,
-        TARGET_NODE_NAME,
-    )
-    .await
-    .expect("node health service should start");
+    let _ready_task = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started.master_node_name,
+            TARGET_INSTANCE_ID,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("node ready service should start"),
+    );
+    let _health_task = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started.master_node_name,
+            TARGET_INSTANCE_ID,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("node health service should start"),
+    );
 
     // Allow ready/health services to establish listeners.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -587,10 +583,7 @@ async fn listen_for_node_start_writes_log_file() {
     // Clean up log file
     let _ = std::fs::remove_file(log_path);
 
-    ready_task.abort();
-    health_task.abort();
     let _ = std::fs::remove_dir_all(&add_response.snapshot_path);
-    started.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -723,7 +716,6 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
     );
 
     let _ = std::fs::remove_dir_all(&add_response.snapshot_path);
-    started.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -873,7 +865,6 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
     );
 
     let _ = std::fs::remove_dir_all(&add_response.snapshot_path);
-    started.task.abort();
 }
 
 /// Tests that a new goal can be processed after a previous action was abandoned
@@ -960,39 +951,47 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
     // Set up ready/health services for both nodes
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
 
-    let first_ready_task = listen_for_node_ready(
-        &node_messenger,
-        &started.master_node_name,
-        FIRST_INSTANCE_ID,
-        FIRST_NODE_NAME,
-    )
-    .await
-    .expect("first ready service should start");
-    let first_health_task = listen_for_node_health(
-        &node_messenger,
-        &started.master_node_name,
-        FIRST_INSTANCE_ID,
-        FIRST_NODE_NAME,
-    )
-    .await
-    .expect("first health service should start");
+    let _first_ready_task = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started.master_node_name,
+            FIRST_INSTANCE_ID,
+            FIRST_NODE_NAME,
+        )
+        .await
+        .expect("first ready service should start"),
+    );
+    let _first_health_task = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started.master_node_name,
+            FIRST_INSTANCE_ID,
+            FIRST_NODE_NAME,
+        )
+        .await
+        .expect("first health service should start"),
+    );
 
-    let second_ready_task = listen_for_node_ready(
-        &node_messenger,
-        &started.master_node_name,
-        SECOND_INSTANCE_ID,
-        SECOND_NODE_NAME,
-    )
-    .await
-    .expect("second ready service should start");
-    let second_health_task = listen_for_node_health(
-        &node_messenger,
-        &started.master_node_name,
-        SECOND_INSTANCE_ID,
-        SECOND_NODE_NAME,
-    )
-    .await
-    .expect("second health service should start");
+    let _second_ready_task = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started.master_node_name,
+            SECOND_INSTANCE_ID,
+            SECOND_NODE_NAME,
+        )
+        .await
+        .expect("second ready service should start"),
+    );
+    let _second_health_task = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started.master_node_name,
+            SECOND_INSTANCE_ID,
+            SECOND_NODE_NAME,
+        )
+        .await
+        .expect("second health service should start"),
+    );
 
     // Allow ready/health services to establish listeners
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1100,14 +1099,8 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
         "second instance should be registered after successful start"
     );
 
-    // Clean up
-    first_ready_task.abort();
-    first_health_task.abort();
-    second_ready_task.abort();
-    second_health_task.abort();
     let _ = std::fs::remove_dir_all(&first_add_response.snapshot_path);
     let _ = std::fs::remove_dir_all(&second_add_response.snapshot_path);
-    started.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

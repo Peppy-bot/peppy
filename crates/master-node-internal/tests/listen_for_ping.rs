@@ -41,7 +41,4 @@ async fn listen_for_ping_roundtrip_succeed() {
         !ping_response.message.is_empty(),
         "message should not be empty"
     );
-
-    // Clean up
-    started.task.abort();
 }

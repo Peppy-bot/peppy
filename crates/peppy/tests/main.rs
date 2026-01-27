@@ -1,4 +1,5 @@
 mod node_add;
+mod node_info;
 mod node_init;
 mod node_remove;
 mod node_runtime_config;

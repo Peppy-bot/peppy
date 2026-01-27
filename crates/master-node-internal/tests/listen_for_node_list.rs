@@ -98,8 +98,6 @@ async fn listen_for_node_list_returns_succeeds() {
     if let Some(entity) = node_stack.find(TARGET_NODE_NAME, TARGET_NODE_TAG) {
         let _ = std::fs::remove_dir_all(entity.root_path());
     }
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -193,6 +191,4 @@ async fn listen_for_node_list_returns_dot_graph() {
     if let Some(entity) = node_stack.find(TARGET_NODE_NAME, TARGET_NODE_TAG) {
         let _ = std::fs::remove_dir_all(entity.root_path());
     }
-
-    started_master.task.abort();
 }

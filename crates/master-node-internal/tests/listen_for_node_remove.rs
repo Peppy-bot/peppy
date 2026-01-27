@@ -1,7 +1,7 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, send_node_add_and_wait, start_master_node_with_mock_messenger,
+    AbortOnDrop, CALLER_INSTANCE_ID, send_node_add_and_wait, start_master_node_with_mock_messenger,
     write_peppy_json5,
 };
 use config::node::Name;
@@ -86,8 +86,6 @@ async fn listen_for_node_remove_success() {
         "node should be removed from node stack"
     );
     assert_eq!(node_stack.len(), 1, "only root should remain");
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -127,8 +125,6 @@ async fn listen_for_node_remove_node_name_not_found_fails() {
     );
 
     assert_eq!(node_stack.len(), before_len, "stack should be unchanged");
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -189,6 +185,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     )
     .await
     .expect("failed to start shutdown service");
+    let _shutdown_task = AbortOnDrop(shutdown_task);
 
     // Allow the shutdown service to fully establish its listener
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -221,9 +218,6 @@ async fn listen_for_node_remove_stop_running_instances_first() {
         "node should be removed from node stack"
     );
     assert_eq!(node_stack.len(), 1, "only root should remain");
-
-    shutdown_task.abort();
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -284,6 +278,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
     )
     .await
     .expect("failed to start shutdown service");
+    let _shutdown_task = AbortOnDrop(shutdown_task);
 
     // Allow the shutdown service to fully establish its listener
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -349,7 +344,4 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
             .is_err(),
         "shutdown service should not be invoked when stop_instances=false"
     );
-
-    shutdown_task.abort();
-    started_master.task.abort();
 }
