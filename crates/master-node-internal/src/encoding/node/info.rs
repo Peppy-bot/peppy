@@ -24,7 +24,7 @@ impl NodeInfoRequest {
     pub fn encode(&self) -> Result<Bytes> {
         let mut builder = Builder::new_default();
         {
-            let mut request = builder.init_root::<node_capnp::node_info_request::Builder>();
+            let request = builder.init_root::<node_capnp::node_info_request::Builder>();
             let mut source = request.init_source();
             match &self.source {
                 NodeSource::Fs(path) => {
