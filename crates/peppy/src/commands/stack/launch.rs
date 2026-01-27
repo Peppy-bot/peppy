@@ -11,18 +11,48 @@ use tracing::info;
 
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+use crate::terminal::ScrollingOutput;
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(300);
 const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 const RESULT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
+const SCROLLING_OUTPUT_LINES: usize = 10;
 
-fn feedback_step_label(step: &LaunchFeedbackStep) -> &'static str {
-    match step {
-        LaunchFeedbackStep::LauncherStep => "launcher",
-        LaunchFeedbackStep::AddingNode => "add",
-        LaunchFeedbackStep::StartingNode => "start",
+fn handle_feedback(
+    feedback: &LaunchFeedback,
+    scrolling_output: &mut Option<ScrollingOutput>,
+    current_scrolling_step: &mut Option<LaunchFeedbackStep>,
+) {
+    // Check if we're switching between steps
+    let step_changed = current_scrolling_step
+        .as_ref()
+        .map(|s| std::mem::discriminant(s) != std::mem::discriminant(&feedback.step))
+        .unwrap_or(true);
+
+    if step_changed {
+        // Clear existing scrolling output if we were in a scrolling step
+        if let Some(output) = scrolling_output.as_mut() {
+            output.clear();
+            *scrolling_output = None;
+        }
+        *current_scrolling_step = Some(feedback.step.clone());
+    }
+
+    match &feedback.step {
+        LaunchFeedbackStep::LauncherStep => {
+            if feedback.is_stdout() {
+                println!("{}", feedback.line);
+            } else {
+                eprintln!("{}", feedback.line);
+            }
+        }
+        LaunchFeedbackStep::AddingNode | LaunchFeedbackStep::StartingNode => {
+            let output = scrolling_output
+                .get_or_insert_with(|| ScrollingOutput::new(SCROLLING_OUTPUT_LINES));
+            output.add_line(&feedback.line, feedback.is_stderr());
+        }
     }
 }
 
@@ -92,12 +122,17 @@ async fn launch_async(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> R
     );
 
     let deadline = tokio::time::Instant::now() + RESULT_TIMEOUT;
+    let mut scrolling_output: Option<ScrollingOutput> = None;
+    let mut current_scrolling_step: Option<LaunchFeedbackStep> = None;
 
     loop {
         // Drain feedback so the subscriber channel doesn't fill up and block publication.
         loop {
             let now = tokio::time::Instant::now();
             if now >= deadline {
+                if let Some(output) = scrolling_output.as_mut() {
+                    output.clear();
+                }
                 return Err(Error::ExecutionFailed(format!(
                     "Launch timed out waiting for result. Log file: {}",
                     goal_response.log_path.display()
@@ -110,12 +145,11 @@ async fn launch_async(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> R
                 Ok(Ok(msg)) => {
                     let payload = msg.payload().to_bytes();
                     if let Ok(feedback) = LaunchFeedback::decode(&payload) {
-                        let step = feedback_step_label(&feedback.step);
-                        if feedback.is_stdout() {
-                            println!("[{step}] {}", feedback.line);
-                        } else {
-                            eprintln!("[{step}] {}", feedback.line);
-                        }
+                        handle_feedback(
+                            &feedback,
+                            &mut scrolling_output,
+                            &mut current_scrolling_step,
+                        );
                     }
                 }
                 Ok(Err(_)) => break,
@@ -146,13 +180,17 @@ async fn launch_async(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> R
                             };
                             let payload = msg.payload().to_bytes();
                             if let Ok(feedback) = LaunchFeedback::decode(&payload) {
-                                let step = feedback_step_label(&feedback.step);
-                                if feedback.is_stdout() {
-                                    println!("[{step}] {}", feedback.line);
-                                } else {
-                                    eprintln!("[{step}] {}", feedback.line);
-                                }
+                                handle_feedback(
+                                    &feedback,
+                                    &mut scrolling_output,
+                                    &mut current_scrolling_step,
+                                );
                             }
+                        }
+
+                        // Clear the scrolling output now that we're done
+                        if let Some(output) = scrolling_output.as_mut() {
+                            output.clear();
                         }
 
                         if !result.success {
