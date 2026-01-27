@@ -9,7 +9,9 @@ mod ping;
 mod reset;
 
 pub use info::{InfoRequest, InfoResponse};
-pub use launch::{LaunchFeedback, LaunchGoal, LaunchGoalResponse, LaunchResult};
+pub use launch::{
+    LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
+};
 pub use node::{
     add::NodeAddFeedback, add::NodeAddGoal, add::NodeAddGoalResponse, add::NodeAddResult,
     add::NodeSource, info::NodeInfoRequest, info::NodeInfoResponse, init::NodeInitRequest,

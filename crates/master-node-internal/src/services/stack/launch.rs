@@ -1,13 +1,24 @@
 use crate::Result;
-use crate::encoding::{LaunchGoal, LaunchGoalResponse, LaunchResult};
+use crate::encoding::{
+    LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
+    NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
+};
 use crate::names;
+use crate::services::node::resolve_node_config;
 use bytes::Bytes;
 use chrono::Local;
-use config::consts::logs_dir_launch;
+use config::consts::{
+    DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PEPPY_OUTPUT_DIR, logs_dir_launch,
+};
+use config::peppy_config::{Deployment, DeploymentNodeSource, PeppyLauncher, PeppyLauncherParser};
+use config::runtime::RuntimeConfig;
 use node_stack::NodeStack;
 use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
@@ -343,23 +354,942 @@ async fn handle_goal_request(
 }
 
 async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchResult {
-    // TODO: Implement the launch logic
-    // Step 1: goal.peppy_launch_json5 should turn into a PeppyLauncher object
-    // Step 2: Clear up the node stack, all nodes and instances in the node stack should be removed
-    // Step 3: Call the code in `crates/master-node-internal/src/services/node/info.rs` to retrieve
-    //         the info of every node in the `deployments` (reuse the code, don't duplicate)
-    // Step 4: Solve the dependencies between the nodes, if they match, continue, if not, raise an error
-    // Step 5: Add every node to the node stack using functions from
-    //         `crates/master-node-internal/src/services/node/add.rs` (reuse the code, don't duplicate). Add them one by one in the order of dependencies. Stream the console output to the feedback
-    // Step 6: Start the instance of all the nodes using functions from
-    //         `crates/master-node-internal/src/services/node/start.rs` (reuse the code, don't duplicate). Start them one by one in the order of dependencies. Stream the console output to the feedback
-    //         The list of instances and their instance-id can be obtained from PeppyLauncher::deployments::instances
-    // Step 7: Done, return a success to the user
-    // Notes: Every step returns a feedback with LaunchFeedbackStep::LauncherStep when it's the launcher, LaunchFeedbackStep::AddingNode when a node is being added and LaunchFeedbackStep::StartingNode when a node is starting
+    async fn publish_feedback(ctx: &ProcessLaunchContext, feedback: LaunchFeedback) {
+        if let Ok(mut file) = ctx.log_file.lock() {
+            let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+            let _ = writeln!(
+                file,
+                "[{}] [{}] {}",
+                timestamp, feedback.stream, feedback.line
+            );
+        }
 
-    let _ = (&goal, &ctx);
+        if let Ok(payload) = feedback.encode() {
+            let _ = ctx.feedback_publisher.publish(payload).await;
+        }
+    }
 
-    LaunchResult::failure(&ctx.log_path, "stack_launch action not yet implemented")
+    // Feedback routing:
+    // - `LaunchFeedbackStep::LauncherStep`: launcher parsing/planning/validation.
+    // - `LaunchFeedbackStep::AddingNode`: while adding nodes to the stack.
+    // - `LaunchFeedbackStep::StartingNode`: while starting node instances.
+
+    async fn publish_stdout(
+        ctx: &ProcessLaunchContext,
+        line: impl Into<String>,
+        step: LaunchFeedbackStep,
+    ) {
+        publish_feedback(ctx, LaunchFeedback::stdout(line, step)).await;
+    }
+
+    async fn publish_stderr(
+        ctx: &ProcessLaunchContext,
+        line: impl Into<String>,
+        step: LaunchFeedbackStep,
+    ) {
+        publish_feedback(ctx, LaunchFeedback::stderr(line, step)).await;
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    struct NodeKey {
+        name: String,
+        tag: String,
+    }
+
+    impl NodeKey {
+        fn new(name: impl Into<String>, tag: impl Into<String>) -> Self {
+            Self {
+                name: name.into(),
+                tag: tag.into(),
+            }
+        }
+
+        fn label(&self) -> String {
+            format!("{}:{}", self.name, self.tag)
+        }
+    }
+
+    fn deployment_label(deployment: &Deployment) -> String {
+        format!("{}:{}", deployment.name.as_str(), deployment.tag.as_str())
+    }
+
+    fn git_url_from_repo(repo: &str) -> std::result::Result<gix_url::Url, String> {
+        gix_url::Url::try_from(repo)
+            .or_else(|_| gix_url::Url::try_from(std::path::Path::new(repo)))
+            .map_err(|e| format!("invalid git repo URL `{repo}`: {e}"))
+    }
+
+    fn node_source_from_deployment_source(
+        deployment: &Deployment,
+        nodes_directory: &std::path::Path,
+    ) -> std::result::Result<NodeSource, String> {
+        match deployment.source.as_ref() {
+            Some(DeploymentNodeSource::Local(path)) => {
+                let resolved = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    nodes_directory.join(path)
+                };
+                Ok(NodeSource::Fs(resolved))
+            }
+            Some(DeploymentNodeSource::Git(spec)) => {
+                let repo_url = git_url_from_repo(spec.repo.as_str())?;
+                let repo_path = spec.path.clone().unwrap_or_default();
+                let repo_ref = deployment.tag.trim().to_owned();
+                let repo_ref = if repo_ref.is_empty() {
+                    None
+                } else {
+                    Some(repo_ref)
+                };
+                Ok(NodeSource::Git {
+                    repo_url,
+                    repo_path,
+                    repo_ref,
+                })
+            }
+            Some(DeploymentNodeSource::Http(spec)) => {
+                let url = url::Url::parse(spec.bundle_url.as_str())
+                    .map_err(|e| format!("invalid HTTP URL `{}`: {e}", spec.bundle_url))?;
+                Ok(NodeSource::Http { url })
+            }
+            None => Err("deployment has no explicit source".to_string()),
+        }
+    }
+
+    fn resolve_implicit_node_source(
+        deployment: &Deployment,
+        nodes_directory: &std::path::Path,
+        node_stack: &NodeStack,
+    ) -> std::result::Result<NodeSource, String> {
+        let name = deployment.name.as_str();
+        let tag = deployment.tag.as_str();
+
+        if let Some(entity) = node_stack.find(name, tag) {
+            return Ok(NodeSource::Fs(entity.root_path().to_path_buf()));
+        }
+
+        Ok(NodeSource::Fs(nodes_directory.join(name)))
+    }
+
+    fn git_hash_from_node_dir(node_dir: &std::path::Path) -> std::result::Result<String, String> {
+        let git_hash_path = node_dir.join(PEPPY_OUTPUT_DIR).join("git.hash");
+        let stored_git_hash = std::fs::read_to_string(&git_hash_path).map_err(|e| {
+            format!(
+                "Missing required git hash file at {}: {}",
+                git_hash_path.display(),
+                e
+            )
+        })?;
+        let stored_git_hash = stored_git_hash.trim();
+        if stored_git_hash.is_empty() {
+            return Err(format!(
+                "Invalid git hash file at {}: file is empty",
+                git_hash_path.display()
+            ));
+        }
+        Ok(stored_git_hash.to_owned())
+    }
+
+    async fn run_node_add_and_forward_feedback(
+        ctx: &ProcessLaunchContext,
+        node_add_goal: &NodeAddGoal,
+        goal_timeout: Duration,
+        result_timeout: Duration,
+    ) -> std::result::Result<NodeAddResult, String> {
+        let goal_payload = node_add_goal
+            .encode()
+            .map_err(|e| format!("failed to encode node_add goal: {e}"))?;
+
+        let mut action_handle = ActionMessenger::send_goal(
+            &ctx.messenger,
+            &ctx.bound_master_node,
+            &ctx.master_instance_id,
+            &ctx.bound_master_node,
+            names::NODE_ADD_ACTION,
+            None,
+            None,
+            goal_payload,
+            config::node::QoSProfile::default(),
+            goal_timeout,
+        )
+        .await
+        .map_err(|e| format!("failed to send node_add goal: {e}"))?;
+
+        let goal_response_payload = action_handle.goal_response().payload().to_bytes();
+        let goal_response = NodeAddGoalResponse::decode(&goal_response_payload)
+            .map_err(|e| format!("failed to decode node_add goal response: {e}"))?;
+
+        if !goal_response.accepted {
+            return Err(goal_response
+                .rejection_reason
+                .unwrap_or_else(|| "node_add goal rejected".to_string()));
+        }
+
+        let deadline = tokio::time::Instant::now() + result_timeout;
+
+        loop {
+            // Drain feedback so the publisher doesn't block on a full channel.
+            loop {
+                let now = tokio::time::Instant::now();
+                if now >= deadline {
+                    return Err("timeout waiting for node_add result".to_string());
+                }
+                let remaining = deadline - now;
+                let drain_timeout = Duration::from_millis(50).min(remaining);
+                match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+                    Ok(Ok(msg)) => {
+                        let payload = msg.payload().to_bytes();
+                        if let Ok(feedback) = NodeAddFeedback::decode(&payload) {
+                            let launch_feedback = if feedback.is_stdout() {
+                                LaunchFeedback::stdout(
+                                    feedback.line,
+                                    LaunchFeedbackStep::AddingNode,
+                                )
+                            } else {
+                                LaunchFeedback::stderr(
+                                    feedback.line,
+                                    LaunchFeedbackStep::AddingNode,
+                                )
+                            };
+                            publish_feedback(ctx, launch_feedback).await;
+                        }
+                    }
+                    Ok(Err(_)) => break,
+                    Err(_) => break,
+                }
+            }
+
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Err("timeout waiting for node_add result".to_string());
+            }
+            let remaining = deadline - now;
+            let poll_timeout = Duration::from_millis(200).min(remaining);
+
+            match ActionMessenger::request_result(&ctx.messenger, &action_handle, poll_timeout)
+                .await
+            {
+                Ok(msg) => {
+                    let payload = msg.payload().to_bytes();
+                    match NodeAddResult::decode(&payload) {
+                        Ok(result) => {
+                            // Drain any remaining feedback that may have arrived while polling.
+                            loop {
+                                let Ok(Some(msg)) = action_handle.try_next_feedback() else {
+                                    break;
+                                };
+                                let payload = msg.payload().to_bytes();
+                                if let Ok(feedback) = NodeAddFeedback::decode(&payload) {
+                                    let launch_feedback = if feedback.is_stdout() {
+                                        LaunchFeedback::stdout(
+                                            feedback.line,
+                                            LaunchFeedbackStep::AddingNode,
+                                        )
+                                    } else {
+                                        LaunchFeedback::stderr(
+                                            feedback.line,
+                                            LaunchFeedbackStep::AddingNode,
+                                        )
+                                    };
+                                    publish_feedback(ctx, launch_feedback).await;
+                                }
+                            }
+                            return Ok(result);
+                        }
+                        Err(err) => {
+                            let pending = std::str::from_utf8(payload.as_ref())
+                                .map(|text| text.starts_with("result pending"))
+                                .unwrap_or(false);
+                            if !pending {
+                                return Err(format!("failed to decode node_add result: {err}"));
+                            }
+                        }
+                    }
+                }
+                Err(peppylib::PeppyError::ActionResultTimeout { .. }) => {}
+                Err(err) => return Err(format!("failed to get node_add result: {err}")),
+            }
+
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    async fn run_node_start_and_forward_feedback(
+        ctx: &ProcessLaunchContext,
+        node_start_goal: &NodeStartGoal,
+        goal_timeout: Duration,
+        result_timeout: Duration,
+    ) -> std::result::Result<NodeStartResult, String> {
+        let goal_payload = node_start_goal
+            .encode()
+            .map_err(|e| format!("failed to encode node_start goal: {e}"))?;
+
+        let mut action_handle = ActionMessenger::send_goal(
+            &ctx.messenger,
+            &ctx.bound_master_node,
+            &ctx.master_instance_id,
+            &ctx.bound_master_node,
+            names::NODE_START_ACTION,
+            None,
+            None,
+            goal_payload,
+            config::node::QoSProfile::default(),
+            goal_timeout,
+        )
+        .await
+        .map_err(|e| format!("failed to send node_start goal: {e}"))?;
+
+        let goal_response_payload = action_handle.goal_response().payload().to_bytes();
+        let goal_response = NodeStartGoalResponse::decode(&goal_response_payload)
+            .map_err(|e| format!("failed to decode node_start goal response: {e}"))?;
+
+        if !goal_response.accepted {
+            return Err(goal_response
+                .rejection_reason
+                .unwrap_or_else(|| "node_start goal rejected".to_string()));
+        }
+
+        let deadline = tokio::time::Instant::now() + result_timeout;
+
+        loop {
+            // Drain feedback so the publisher doesn't block on a full channel.
+            loop {
+                let now = tokio::time::Instant::now();
+                if now >= deadline {
+                    return Err("timeout waiting for node_start result".to_string());
+                }
+                let remaining = deadline - now;
+                let drain_timeout = Duration::from_millis(50).min(remaining);
+                match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+                    Ok(Ok(msg)) => {
+                        let payload = msg.payload().to_bytes();
+                        if let Ok(feedback) = NodeStartFeedback::decode(&payload) {
+                            let launch_feedback = if feedback.is_stdout() {
+                                LaunchFeedback::stdout(
+                                    feedback.line,
+                                    LaunchFeedbackStep::StartingNode,
+                                )
+                            } else {
+                                LaunchFeedback::stderr(
+                                    feedback.line,
+                                    LaunchFeedbackStep::StartingNode,
+                                )
+                            };
+                            publish_feedback(ctx, launch_feedback).await;
+                        }
+                    }
+                    Ok(Err(_)) => break,
+                    Err(_) => break,
+                }
+            }
+
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Err("timeout waiting for node_start result".to_string());
+            }
+            let remaining = deadline - now;
+            let poll_timeout = Duration::from_millis(200).min(remaining);
+
+            match ActionMessenger::request_result(&ctx.messenger, &action_handle, poll_timeout)
+                .await
+            {
+                Ok(msg) => {
+                    let payload = msg.payload().to_bytes();
+                    match NodeStartResult::decode(&payload) {
+                        Ok(result) => {
+                            // Drain any remaining feedback that may have arrived while polling.
+                            loop {
+                                let Ok(Some(msg)) = action_handle.try_next_feedback() else {
+                                    break;
+                                };
+                                let payload = msg.payload().to_bytes();
+                                if let Ok(feedback) = NodeStartFeedback::decode(&payload) {
+                                    let launch_feedback = if feedback.is_stdout() {
+                                        LaunchFeedback::stdout(
+                                            feedback.line,
+                                            LaunchFeedbackStep::StartingNode,
+                                        )
+                                    } else {
+                                        LaunchFeedback::stderr(
+                                            feedback.line,
+                                            LaunchFeedbackStep::StartingNode,
+                                        )
+                                    };
+                                    publish_feedback(ctx, launch_feedback).await;
+                                }
+                            }
+                            return Ok(result);
+                        }
+                        Err(err) => {
+                            let pending = std::str::from_utf8(payload.as_ref())
+                                .map(|text| text.starts_with("result pending"))
+                                .unwrap_or(false);
+                            if !pending {
+                                return Err(format!("failed to decode node_start result: {err}"));
+                            }
+                        }
+                    }
+                }
+                Err(peppylib::PeppyError::ActionResultTimeout { .. }) => {}
+                Err(err) => return Err(format!("failed to get node_start result: {err}")),
+            }
+
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    // Step 1: `goal.peppy_launch_json5` -> `PeppyLauncher`.
+    publish_stdout(
+        &ctx,
+        "Parsing launcher configuration",
+        LaunchFeedbackStep::LauncherStep,
+    )
+    .await;
+
+    let peppy_launcher: PeppyLauncher =
+        match PeppyLauncherParser::from_content(&goal.peppy_launch_json5) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                publish_stderr(
+                    &ctx,
+                    format!("Invalid launcher config: {e}"),
+                    LaunchFeedbackStep::LauncherStep,
+                )
+                .await;
+                return LaunchResult::failure(
+                    &ctx.log_path,
+                    format!("Invalid launcher config: {e}"),
+                );
+            }
+        };
+
+    if goal.nodes_directory.as_os_str().is_empty() {
+        let msg = "nodes_directory is missing".to_string();
+        publish_stderr(&ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
+        return LaunchResult::failure(&ctx.log_path, msg);
+    }
+
+    if !goal.nodes_directory.exists() {
+        let msg = format!(
+            "nodes_directory does not exist: {}",
+            goal.nodes_directory.display()
+        );
+        publish_stderr(&ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
+        return LaunchResult::failure(&ctx.log_path, msg);
+    }
+
+    if !goal.nodes_directory.is_dir() {
+        let msg = format!(
+            "nodes_directory must be a directory: {}",
+            goal.nodes_directory.display()
+        );
+        publish_stderr(&ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
+        return LaunchResult::failure(&ctx.log_path, msg);
+    }
+
+    let deployments = peppy_launcher.deployments.unwrap_or_default();
+
+    // Step 2: Retrieve node configs for each deployment using the resolver
+    publish_stdout(
+        &ctx,
+        format!("Resolving {} deployment(s)", deployments.len()),
+        LaunchFeedbackStep::LauncherStep,
+    )
+    .await;
+
+    #[derive(Clone)]
+    struct PlannedDeployment {
+        deployment: Deployment,
+        source: NodeSource,
+        node_name: String,
+        node_tag: String,
+        config: config::node::NodeConfig,
+    }
+
+    let root_config = ctx.node_stack.root().config().clone();
+    let root_key = NodeKey::new(
+        root_config.manifest.name.as_str(),
+        root_config.manifest.tag.as_str(),
+    );
+
+    let mut planned: Vec<PlannedDeployment> = Vec::new();
+    let mut planning_errors: Vec<String> = Vec::new();
+
+    for deployment in deployments.into_iter() {
+        if deployment.instances.is_empty() {
+            planning_errors.push(format!(
+                "deployment {} must have at least one instance",
+                deployment_label(&deployment)
+            ));
+            continue;
+        }
+
+        let source = match deployment.source.as_ref() {
+            Some(_) => match node_source_from_deployment_source(&deployment, &goal.nodes_directory)
+            {
+                Ok(source) => source,
+                Err(err) => {
+                    if deployment.optional {
+                        publish_stdout(
+                            &ctx,
+                            format!(
+                                "Skipping optional deployment {}: {err}",
+                                deployment_label(&deployment)
+                            ),
+                            LaunchFeedbackStep::LauncherStep,
+                        )
+                        .await;
+                        continue;
+                    }
+                    planning_errors.push(format!(
+                        "failed to resolve source for deployment {}: {err}",
+                        deployment_label(&deployment)
+                    ));
+                    continue;
+                }
+            },
+            None => match resolve_implicit_node_source(
+                &deployment,
+                &goal.nodes_directory,
+                &ctx.node_stack,
+            ) {
+                Ok(source) => source,
+                Err(err) => {
+                    if deployment.optional {
+                        publish_stdout(
+                            &ctx,
+                            format!(
+                                "Skipping optional deployment {}: {err}",
+                                deployment_label(&deployment)
+                            ),
+                            LaunchFeedbackStep::LauncherStep,
+                        )
+                        .await;
+                        continue;
+                    }
+                    planning_errors.push(format!(
+                        "failed to resolve source for deployment {}: {err}",
+                        deployment_label(&deployment)
+                    ));
+                    continue;
+                }
+            },
+        };
+
+        publish_stdout(
+            &ctx,
+            format!("Retrieving node info for {}", deployment_label(&deployment)),
+            LaunchFeedbackStep::LauncherStep,
+        )
+        .await;
+
+        let config = match resolve_node_config(source.clone()).await {
+            Ok(config) => config,
+            Err(err) => {
+                if deployment.optional {
+                    publish_stdout(
+                        &ctx,
+                        format!(
+                            "Skipping optional deployment {}: {err}",
+                            deployment_label(&deployment)
+                        ),
+                        LaunchFeedbackStep::LauncherStep,
+                    )
+                    .await;
+                    continue;
+                }
+                planning_errors.push(format!(
+                    "failed to retrieve node config for deployment {}: {err}",
+                    deployment_label(&deployment)
+                ));
+                continue;
+            }
+        };
+
+        let node_name = config.manifest.name.as_str().to_owned();
+        let node_tag = config.manifest.tag.clone();
+
+        if node_name != deployment.name.as_str() || node_tag != deployment.tag {
+            let err = format!(
+                "deployment {} resolved to {}:{}",
+                deployment_label(&deployment),
+                node_name,
+                node_tag
+            );
+            if deployment.optional {
+                publish_stdout(
+                    &ctx,
+                    format!(
+                        "Skipping optional deployment {}: {err}",
+                        deployment_label(&deployment)
+                    ),
+                    LaunchFeedbackStep::LauncherStep,
+                )
+                .await;
+                continue;
+            }
+            planning_errors.push(err);
+            continue;
+        }
+
+        planned.push(PlannedDeployment {
+            deployment,
+            source,
+            node_name,
+            node_tag,
+            config,
+        });
+    }
+
+    if !planning_errors.is_empty() {
+        let msg = planning_errors.join("\n");
+        publish_stderr(&ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
+        return LaunchResult::failure(&ctx.log_path, msg);
+    }
+
+    // Step 3: Solve/validate the dependency graph and compute a stable topological order.
+    publish_stdout(
+        &ctx,
+        "Validating dependencies",
+        LaunchFeedbackStep::LauncherStep,
+    )
+    .await;
+
+    let mut configs_by_key: HashMap<NodeKey, config::node::NodeConfig> = HashMap::new();
+    configs_by_key.insert(root_key.clone(), root_config);
+    for item in &planned {
+        configs_by_key.insert(
+            NodeKey::new(&item.node_name, &item.node_tag),
+            item.config.clone(),
+        );
+    }
+
+    let planned_keys: HashSet<NodeKey> = planned
+        .iter()
+        .map(|p| NodeKey::new(&p.node_name, &p.node_tag))
+        .collect();
+
+    let mut dependency_errors: Vec<String> = Vec::new();
+    let mut deps_for: HashMap<NodeKey, HashSet<NodeKey>> = HashMap::new();
+
+    for item in &planned {
+        let dependant_key = NodeKey::new(&item.node_name, &item.node_tag);
+        let specs = node_stack::collect_dependency_specs(&item.config);
+        let mut deps = HashSet::new();
+
+        for spec in specs {
+            let dep_key = NodeKey::new(&spec.node_name, &spec.node_tag);
+            let Some(dependency_config) = configs_by_key.get(&dep_key) else {
+                dependency_errors.push(
+                    node_stack::NodeStackError::MissingDependency {
+                        dependant: item.node_name.clone(),
+                        dependant_tag: item.node_tag.clone(),
+                        dependency: spec.node_name.clone(),
+                        dependency_tag: spec.node_tag.clone(),
+                    }
+                    .to_string(),
+                );
+                continue;
+            };
+
+            if !node_stack::exposes_interface(dependency_config, &spec.interface) {
+                dependency_errors.push(
+                    node_stack::NodeStackError::MissingInterface {
+                        dependant: item.node_name.clone(),
+                        dependant_tag: item.node_tag.clone(),
+                        dependency: spec.node_name.clone(),
+                        dependency_tag: spec.node_tag.clone(),
+                        interface_kind: format!("{:?}", spec.interface.kind()),
+                        interface_name: spec.interface.name().to_owned(),
+                    }
+                    .to_string(),
+                );
+                continue;
+            }
+
+            if dep_key != root_key && planned_keys.contains(&dep_key) {
+                deps.insert(dep_key);
+            }
+        }
+
+        deps_for.insert(dependant_key, deps);
+    }
+
+    if !dependency_errors.is_empty() {
+        let msg = dependency_errors.join("\n");
+        publish_stderr(&ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
+        return LaunchResult::failure(&ctx.log_path, msg);
+    }
+
+    // Stable topological sort using original plan order as tie-breaker.
+    let mut in_degree: HashMap<NodeKey, usize> = HashMap::new();
+    let mut dependents: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
+
+    for key in planned
+        .iter()
+        .map(|p| NodeKey::new(&p.node_name, &p.node_tag))
+    {
+        in_degree.entry(key.clone()).or_insert(0);
+        dependents.entry(key).or_default();
+    }
+
+    for (dependant, deps) in &deps_for {
+        in_degree.insert(dependant.clone(), deps.len());
+        for dep in deps {
+            dependents
+                .entry(dep.clone())
+                .or_default()
+                .push(dependant.clone());
+        }
+    }
+
+    let order_index: HashMap<NodeKey, usize> = planned
+        .iter()
+        .enumerate()
+        .map(|(idx, p)| (NodeKey::new(&p.node_name, &p.node_tag), idx))
+        .collect();
+
+    let mut ready: Vec<NodeKey> = in_degree
+        .iter()
+        .filter(|(_, deg)| **deg == 0)
+        .map(|(k, _)| k.clone())
+        .collect();
+    ready.sort_by_key(|k| order_index.get(k).copied().unwrap_or(usize::MAX));
+
+    let mut queue: VecDeque<NodeKey> = ready.into();
+    let mut ordered: Vec<NodeKey> = Vec::new();
+
+    while let Some(node) = queue.pop_front() {
+        ordered.push(node.clone());
+        let Some(children) = dependents.get(&node) else {
+            continue;
+        };
+        for child in children {
+            if let Some(deg) = in_degree.get_mut(child) {
+                *deg = deg.saturating_sub(1);
+                if *deg == 0 {
+                    queue.push_back(child.clone());
+                }
+            }
+        }
+        // Keep stable ordering when multiple nodes become ready at once.
+        let mut drained: Vec<NodeKey> = queue.drain(..).collect();
+        drained.sort_by_key(|k| order_index.get(k).copied().unwrap_or(usize::MAX));
+        queue = drained.into();
+    }
+
+    if ordered.len() != planned.len() {
+        let mut remaining: Vec<String> = in_degree
+            .into_iter()
+            .filter(|(_, deg)| *deg > 0)
+            .map(|(k, _)| k.label())
+            .collect();
+        remaining.sort();
+        let msg = format!(
+            "unable to resolve dependency order (cycle suspected). Remaining nodes: {}",
+            remaining.join(", ")
+        );
+        publish_stderr(&ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
+        return LaunchResult::failure(&ctx.log_path, msg);
+    }
+
+    publish_stdout(
+        &ctx,
+        format!(
+            "Dependency order: {}",
+            ordered
+                .iter()
+                .map(|k| k.label())
+                .collect::<Vec<_>>()
+                .join(" -> ")
+        ),
+        LaunchFeedbackStep::LauncherStep,
+    )
+    .await;
+
+    // Snapshot current stack so we can restore it if anything fails.
+    let backup_stack = {
+        let root = ctx.node_stack.root();
+        let backup = NodeStack::new(root.config().clone(), None, root.root_path());
+        if let Err(err) = backup.apply_from(&ctx.node_stack) {
+            let msg = format!("failed to snapshot current stack: {err}");
+            publish_stderr(&ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
+            return LaunchResult::failure(&ctx.log_path, msg);
+        }
+        backup
+    };
+
+    // Step 4: Clear the node stack (after validation so failures don't mutate the current stack).
+    publish_stdout(
+        &ctx,
+        "Clearing current node stack",
+        LaunchFeedbackStep::LauncherStep,
+    )
+    .await;
+    ctx.node_stack.reset();
+
+    let goal_timeout = Duration::from_secs(30);
+    let node_add_result_timeout = Duration::from_secs(300);
+    let node_start_result_timeout = Duration::from_secs(300);
+
+    let mut planned_by_key: HashMap<NodeKey, PlannedDeployment> = HashMap::new();
+    for item in planned.clone() {
+        planned_by_key.insert(NodeKey::new(&item.node_name, &item.node_tag), item);
+    }
+
+    async fn restore_stack(
+        ctx: &ProcessLaunchContext,
+        backup: &NodeStack,
+        reason: String,
+    ) -> LaunchResult {
+        publish_stderr(
+            ctx,
+            format!("Launch failed: {reason}"),
+            LaunchFeedbackStep::LauncherStep,
+        )
+        .await;
+
+        if let Err(err) = ctx.node_stack.apply_from(backup) {
+            let msg = format!("{reason}\n(also failed to restore previous stack: {err})");
+            return LaunchResult::failure(&ctx.log_path, msg);
+        }
+
+        LaunchResult::failure(&ctx.log_path, reason)
+    }
+
+    // Step 5: Add every node to the node stack in dependency order
+    for key in &ordered {
+        let Some(item) = planned_by_key.get(key) else {
+            continue;
+        };
+
+        publish_stdout(
+            &ctx,
+            format!("Adding {}", key.label()),
+            LaunchFeedbackStep::AddingNode,
+        )
+        .await;
+
+        let node_add_goal = match &item.source {
+            NodeSource::Fs(path) => match git_hash_from_node_dir(path.as_path()) {
+                Ok(git_hash) => NodeAddGoal::new(path.clone(), git_hash),
+                Err(err) => {
+                    return restore_stack(&ctx, &backup_stack, err).await;
+                }
+            },
+            NodeSource::Git {
+                repo_url,
+                repo_path,
+                repo_ref,
+            } => NodeAddGoal::new_git(
+                repo_url.clone(),
+                repo_path.clone(),
+                repo_ref.clone(),
+                "stack-launch",
+            ),
+            NodeSource::Http { url } => NodeAddGoal::new_http(url.clone(), "stack-launch"),
+        };
+
+        match run_node_add_and_forward_feedback(
+            &ctx,
+            &node_add_goal,
+            goal_timeout,
+            node_add_result_timeout,
+        )
+        .await
+        {
+            Ok(result) => {
+                if !result.success {
+                    let reason = result
+                        .error_message
+                        .unwrap_or_else(|| "node_add failed".to_string());
+                    return restore_stack(&ctx, &backup_stack, reason).await;
+                }
+            }
+            Err(err) => {
+                return restore_stack(&ctx, &backup_stack, err).await;
+            }
+        }
+    }
+
+    // Compute runtime config host/port.
+    let (messaging_host, messaging_port) = ctx
+        .messenger
+        .messaging_endpoint()
+        .await
+        .unwrap_or((DEFAULT_MESSAGING_HOST.to_string(), DEFAULT_MESSAGING_PORT));
+
+    // Step 6: Start every instance in dependency order
+    for key in &ordered {
+        let Some(item) = planned_by_key.get(key) else {
+            continue;
+        };
+
+        for instance in &item.deployment.instances {
+            let instance_id = instance.instance_id.as_str();
+            publish_stdout(
+                &ctx,
+                format!("Starting {} instance {}", key.label(), instance_id),
+                LaunchFeedbackStep::StartingNode,
+            )
+            .await;
+
+            let runtime_config = match RuntimeConfig::new(
+                messaging_host.as_str(),
+                messaging_port,
+                instance.clone(),
+                item.deployment.name.as_str(),
+                ctx.bound_master_node.as_str(),
+            ) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    return restore_stack(&ctx, &backup_stack, e.to_string()).await;
+                }
+            };
+
+            let runtime_config_json5 = match serde_json5::to_string(&runtime_config) {
+                Ok(json) => json,
+                Err(e) => {
+                    return restore_stack(
+                        &ctx,
+                        &backup_stack,
+                        format!("failed to serialize runtime config: {e}"),
+                    )
+                    .await;
+                }
+            };
+
+            let node_start_goal = NodeStartGoal::new(
+                &runtime_config_json5,
+                item.node_name.as_str(),
+                item.node_tag.as_str(),
+            );
+
+            match run_node_start_and_forward_feedback(
+                &ctx,
+                &node_start_goal,
+                goal_timeout,
+                node_start_result_timeout,
+            )
+            .await
+            {
+                Ok(result) => {
+                    if !result.success {
+                        let reason = result
+                            .error_message
+                            .unwrap_or_else(|| "node_start failed".to_string());
+                        return restore_stack(&ctx, &backup_stack, reason).await;
+                    }
+                }
+                Err(err) => {
+                    return restore_stack(&ctx, &backup_stack, err).await;
+                }
+            }
+        }
+    }
+
+    publish_stdout(&ctx, "Launch complete", LaunchFeedbackStep::LauncherStep).await;
+    LaunchResult::success(&ctx.log_path)
 }
 
 async fn handle_cancel_request(

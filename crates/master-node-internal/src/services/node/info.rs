@@ -105,7 +105,7 @@ async fn handle_node_info_request_inner(
         .map_err(|e| format!("{}", e))
 }
 
-async fn resolve_node_config(source: NodeSource) -> std::result::Result<NodeConfig, String> {
+pub async fn resolve_node_config(source: NodeSource) -> std::result::Result<NodeConfig, String> {
     match source {
         NodeSource::Fs(path) => parse_node_config_from_fs(&path),
         NodeSource::Git {
