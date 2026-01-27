@@ -1,11 +1,15 @@
 //! Cap'n Proto encoding utilities for node info messages.
 
+use std::path::PathBuf;
+use std::time::Duration;
+
 use bytes::Bytes;
 use capnp::message::Builder;
 use config::node::NodeConfig;
-use std::path::PathBuf;
+use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
+use crate::names;
 use crate::node_capnp;
 
 use super::add::NodeSource;
@@ -82,6 +86,30 @@ impl NodeInfoRequest {
             }
         };
         Ok(Self { source })
+    }
+
+    pub async fn poll(
+        &self,
+        messenger: &MessengerHandle,
+        bound_master_node: &str,
+        as_instance_id: &str,
+        target_master_node: &str,
+        response_timeout: Duration,
+    ) -> Result<NodeInfoResponse> {
+        let request_payload = self.encode()?;
+        let response = ServiceMessenger::poll(
+            messenger,
+            bound_master_node,
+            as_instance_id,
+            target_master_node,
+            names::NODE_INFO,
+            Some(target_master_node),
+            None,
+            request_payload,
+            response_timeout,
+        )
+        .await?;
+        NodeInfoResponse::decode(&response.payload().to_bytes())
     }
 }
 
