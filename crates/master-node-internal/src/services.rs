@@ -180,6 +180,15 @@ impl MasterNode {
                 Arc::clone(&self.node_stack),
             )
             .await?,
+            node::listen_for_node_info(
+                &self.messenger,
+                master_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&self.node_stack),
+                self.node_startup_timeout,
+            )
+            .await?,
             node::listen_for_node_remove(
                 &self.messenger,
                 master_node_name,
