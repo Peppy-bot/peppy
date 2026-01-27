@@ -355,17 +355,17 @@ pub async fn send_node_start_and_wait(
 /// Each call creates a completely new node with its own peppygen generation
 /// and cargo build, ensuring isolation between tests.
 pub fn create_test_node() -> PathBuf {
-    init_test_node_project("example_node", "0.1.0")
+    init_test_node_project("example_node", "0.1.0", true)
 }
 
 /// Creates a fresh test node in a new temp directory.
 /// Each call creates a completely new node with its own peppygen generation
 /// and cargo build, ensuring isolation between tests.
 pub fn create_test_node_with_name(node_name: &str, node_tag: &str) -> PathBuf {
-    init_test_node_project(node_name, node_tag)
+    init_test_node_project(node_name, node_tag, true)
 }
 
-fn init_test_node_project(node_name: &str, node_tag: &str) -> PathBuf {
+pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bool) -> PathBuf {
     let node_dir = tempfile::Builder::new()
         .prefix("peppy_test_node_")
         .tempdir()
@@ -378,7 +378,9 @@ fn init_test_node_project(node_name: &str, node_tag: &str) -> PathBuf {
     generator::generate_peppygen_lib(PeppygenLanguage::Rust, &node_dir, Vec::new(), "test-hash")
         .expect("failed to generate peppygen for test node");
 
-    build_cargo_project(&node_dir);
+    if build_project {
+        build_cargo_project(&node_dir);
+    }
 
     node_dir
 }

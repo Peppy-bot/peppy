@@ -30,6 +30,9 @@ pub enum Error {
     #[error("decoding error: {0}")]
     Decoding(String),
 
+    #[error("encoding error: {0}")]
+    Encoding(String),
+
     // -- generator-internal
     #[error(transparent)]
     GeneratorError(#[from] generator::GeneratorError),
