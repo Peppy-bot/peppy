@@ -51,9 +51,15 @@ fn handle_stack_launch_request_inner(context: &ServiceRequestContext) -> Result<
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    let _request = LaunchRequest::decode(&payload.as_bytes())?;
+    let request = LaunchRequest::decode(&payload.as_bytes())?;
 
     debug!("Received `stack_launch` request from {sender_instance_id}");
 
-    LaunchResponse::error("stack_launch is not implemented yet").encode()
+    // Step 1: request.launch_runtime_config_json5 should turn into a PeppyLauncher object
+    // Step 2: Clear up the node stack, all nodes and instances in the node stack should be removed
+    // Step 3: Call the code in `crates/master-node-internal/src/services/node/info.rs` to retrieve the info of every node in the `deployments` (reuse the code, don't duplicate)
+    // Step 4: Solve the dependencies between the nodes, if they match, continue, if not, raise an error
+    // Step 5: Add every node to the node stack using functions from `crates/master-node-internal/src/services/node/add.rs` (reuse the code, don't duplicate)
+    // Step 6: Start the instance of all the nodes using functions from `crates/master-node-internal/src/services/node/start.rs` (reuse the code, don't duplicate). The list of instances and their instance-id can be obtained from the PeppyLauncher::deployments::instances
+    // Step 7: Done, return a success to the user
 }
