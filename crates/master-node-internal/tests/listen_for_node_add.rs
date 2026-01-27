@@ -1,7 +1,7 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, send_node_add_and_wait,
+    AbortOnDrop, CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, send_node_add_and_wait,
     start_master_node_with_mock_messenger, write_peppy_json5,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, logs_dir_add};
@@ -202,8 +202,6 @@ async fn listen_for_node_fs_add_success() {
 
     // Clean up the copied directory
     let _ = std::fs::remove_dir_all(root_path);
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -271,8 +269,6 @@ async fn listen_for_node_git_add_success() {
 
     // Clean up the copied directory
     let _ = std::fs::remove_dir_all(root_path);
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -345,8 +341,6 @@ async fn listen_for_node_git_add_with_ref_success() {
         .root_path()
         .to_path_buf();
     let _ = std::fs::remove_dir_all(&snapshot_path_ref);
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -461,8 +455,6 @@ async fn listen_for_node_http_add_success() {
 
     // Clean up the copied directory
     let _ = std::fs::remove_dir_all(root_path);
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -508,8 +500,6 @@ async fn listen_for_node_add_no_config_found() {
 
     assert!(!node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 1, "root");
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -559,8 +549,6 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
         add_result.error_message
     );
     assert!(!node_stack.contains("git_hash_mismatch_node", "0.1.0"));
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -598,8 +586,6 @@ async fn listen_for_node_add_invalid_config_fails() {
     );
 
     assert_eq!(node_stack.len(), 1, "only root should exist");
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -645,8 +631,6 @@ async fn listen_for_node_add_no_start_cmd_fails() {
     );
 
     assert_eq!(node_stack.len(), 1, "only root should exist");
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -715,8 +699,6 @@ async fn listen_for_node_add_dependency_not_resolved() {
     );
 
     assert_eq!(node_stack.len(), 1, "only root should exist");
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -838,8 +820,6 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
 
     // Clean up
     let _ = std::fs::remove_dir_all(entity.root_path());
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1002,8 +982,6 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
     // Clean up snapshots created by successful adds
     let _ = std::fs::remove_dir_all(&dependency_snapshot_path);
     let _ = std::fs::remove_dir_all(&dependent_add.snapshot_path);
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1087,8 +1065,6 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
     if let Some(entity) = node_stack.find(NODE_NAME, "2.0.0") {
         let _ = std::fs::remove_dir_all(entity.root_path());
     }
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1169,8 +1145,6 @@ async fn listen_for_node_add_copies_files_to_storage() {
 
     // Clean up
     let _ = std::fs::remove_dir_all(copied_path);
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1240,8 +1214,6 @@ async fn listen_for_node_add_runs_add_cmd() {
 
     // Clean up
     let _ = std::fs::remove_dir_all(copied_path);
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1300,8 +1272,6 @@ async fn listen_for_node_add_add_cmd_failure_fails_add() {
         "node should not be added when add_cmd fails"
     );
     assert_eq!(node_stack.len(), 1, "only root should exist");
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1359,8 +1329,6 @@ async fn listen_for_node_add_add_cmd_nonzero_exit_fails_add() {
         !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
         "node should not be added when add_cmd fails"
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1421,8 +1389,6 @@ async fn listen_for_node_add_streams_stdout_and_stderr() {
     assert!(saw_stderr, "stderr feedback should include marker");
 
     let _ = std::fs::remove_dir_all(&add_result.snapshot_path);
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1496,8 +1462,6 @@ async fn listen_for_node_add_fingerprint_mismatch() {
         "node should not be added when fingerprint mismatches"
     );
     assert_eq!(node_stack.len(), 1, "only root should exist");
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1603,8 +1567,6 @@ async fn listen_for_node_add_writes_log_file() {
 
     // Clean up snapshot directory
     let _ = std::fs::remove_dir_all(&add_result.snapshot_path);
-
-    started_master.task.abort();
 }
 
 /// Tests that a new goal can be processed after a previous action was abandoned
@@ -1721,8 +1683,6 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         let _ = std::fs::remove_dir_all(entity.root_path());
     }
     let _ = std::fs::remove_dir_all(&second_add_result.snapshot_path);
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1799,7 +1759,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
     )
     .await
     .expect("failed to expose shutdown service for instance 1");
-    let shutdown_task_1 = tokio::spawn({
+    let _shutdown_task_1 = AbortOnDrop(tokio::spawn({
         let called_tx_1 = Arc::clone(&called_tx_1);
         async move {
             shutdown_endpoint_1
@@ -1817,7 +1777,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
                 })
                 .await
         }
-    });
+    }));
 
     let (called_tx_2, called_rx_2) = oneshot::channel::<()>();
     let called_tx_2 = Arc::new(Mutex::new(Some(called_tx_2)));
@@ -1832,7 +1792,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
     )
     .await
     .expect("failed to expose shutdown service for instance 2");
-    let shutdown_task_2 = tokio::spawn({
+    let _shutdown_task_2 = AbortOnDrop(tokio::spawn({
         let called_tx_2 = Arc::clone(&called_tx_2);
         async move {
             shutdown_endpoint_2
@@ -1850,7 +1810,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
                 })
                 .await
         }
-    });
+    }));
 
     // Ensure shutdown services are fully registered before starting the overwrite.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1974,8 +1934,4 @@ async fn node_add_same_node_shutdown_existing_instances() {
     let _ = std::fs::remove_file(&add_v1.log_path);
     let _ = std::fs::remove_file(&add_v2.log_path);
     let _ = std::fs::remove_dir_all(&add_v2.snapshot_path);
-
-    shutdown_task_1.abort();
-    shutdown_task_2.abort();
-    started_master.task.abort();
 }

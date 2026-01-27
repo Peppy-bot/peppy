@@ -99,8 +99,6 @@ async fn listen_for_node_init_rust_success() {
         ".gitignore should exist at {}",
         gitignore_path.display()
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -176,8 +174,6 @@ async fn listen_for_node_init_python_success() {
         ".gitignore should exist at {}",
         gitignore_path.display()
     );
-
-    started_master.task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -243,6 +239,4 @@ async fn listen_for_node_init_fails_if_directory_exists() {
         !node_dir.join(PEPPYGEN_OUTPUT_PATH).exists(),
         "peppygen output should not be created when node_dir already exists"
     );
-
-    started_master.task.abort();
 }
