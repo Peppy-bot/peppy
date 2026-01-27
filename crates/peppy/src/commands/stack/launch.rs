@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::peppy_config::PeppyLauncherParser;
-use config::runtime::LauncherRuntimeConfig;
 use master_node::encoding::{LaunchGoal, LaunchGoalResponse, LaunchResult};
 use tracing::info;
 
@@ -26,7 +25,6 @@ async fn launch_async(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> R
         ))
     })?;
     let master_node_name = daemon_state.master_node_name;
-    let git_hash = daemon_state.git_hash;
 
     PeppyLauncherParser::from_path(&launcher_config_path).map_err(Error::PeppyConfig)?;
     let peppy_launcher_json5 = std::fs::read_to_string(&launcher_config_path)?;
@@ -46,28 +44,7 @@ async fn launch_async(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> R
         .messenger_handle()
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
-    let (messaging_host, messaging_port) = messenger_handle
-        .messaging_endpoint()
-        .await
-        .unwrap_or_else(|| {
-            (
-                config::consts::DEFAULT_MESSAGING_HOST.to_string(),
-                daemon_state.messaging_port,
-            )
-        });
-
-    let launcher_runtime_config =
-        LauncherRuntimeConfig::new(messaging_host, messaging_port, git_hash);
-    let launcher_runtime_config_json =
-        serde_json::to_string(&launcher_runtime_config).map_err(|e| {
-            Error::ExecutionFailed(format!("Failed to serialize runtime config: {}", e))
-        })?;
-
-    let goal = LaunchGoal::new(
-        peppy_launcher_json5,
-        nodes_directory,
-        launcher_runtime_config_json,
-    );
+    let goal = LaunchGoal::new(peppy_launcher_json5, nodes_directory);
 
     let action_handle = goal
         .send_goal(
