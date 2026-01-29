@@ -8,9 +8,7 @@ use std::{
 
 #[derive(Template)]
 #[template(path = "peppy_launcher.json5.j2")]
-struct PeppyConfigTemplate<'a> {
-    log_file_name: &'a str,
-}
+struct PeppyConfigTemplate;
 
 #[derive(Template)]
 #[template(path = "simple_node.json5.j2")]
@@ -55,12 +53,8 @@ impl NodeConfigCreator {
         Ok(Self { redered_template })
     }
 
-    pub fn launcher_config(log_file_name: &str) -> Result<Self> {
-        let log_file_name = format!("{}.log", log_file_name);
-        // Default command can be parameterized later
-        let tpl = PeppyConfigTemplate {
-            log_file_name: &log_file_name,
-        };
+    pub fn launcher_config() -> Result<Self> {
+        let tpl = PeppyConfigTemplate;
         let redered_template = tpl.render().map_err(|e| Error::Serialize(e.to_string()))?;
 
         Ok(Self { redered_template })
@@ -152,8 +146,7 @@ mod tests {
 
     #[test]
     fn test_peppy_config_content_validation() {
-        let log_file_name = "root_log";
-        let template = NodeConfigCreator::launcher_config(log_file_name).unwrap();
+        let template = NodeConfigCreator::launcher_config().unwrap();
 
         // Write to a temporary file and read back the content
         let temp_file = NamedTempFile::new().unwrap();
@@ -163,13 +156,7 @@ mod tests {
 
         // JSON5 ground truth with human-friendly syntax
         let expected_json5 = r#"{
-            deployments: [],
-            logging: {
-                min_level: "info",
-                file_name: "root_log.log",
-                max_file_size_mb: 20,
-                format: "text"
-            }
+            deployments: []
         }"#;
 
         // Normalize and compare canonical JSON5
