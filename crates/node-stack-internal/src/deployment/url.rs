@@ -3,7 +3,7 @@ use crate::error::{Error, Result};
 use config::consts::NODE_CONFIG_FILE;
 use config::{
     node::{NodeConfig, NodeConfigParser},
-    peppy_config::{Deployment, HttpRemoteSpec},
+    peppy_config::DeploymentUrlSource,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -19,19 +19,18 @@ const CHECKSUM_FILE: &str = ".checksum";
 
 pub fn resolve_remote_url(
     nodes_cache_dir: &Path,
-    deployment: &Deployment,
-    spec: HttpRemoteSpec,
+    spec: &DeploymentUrlSource,
 ) -> Result<ResolvedNode> {
     fs::create_dir_all(nodes_cache_dir)?;
 
-    let cache_dir = build_bundle_cache_path(nodes_cache_dir, deployment, &spec.bundle_url);
-    let expected_checksum = spec.checksum.as_deref();
+    let cache_dir = build_bundle_cache_path(nodes_cache_dir, &spec.url, &spec.sha256);
+    let expected_checksum = spec.sha256.as_str();
     let needs_refresh = should_refresh(&cache_dir, expected_checksum);
 
     let node = if needs_refresh {
-        refresh_bundle(&cache_dir, &spec, deployment, expected_checksum)?
+        refresh_bundle(&cache_dir, spec, expected_checksum)?
     } else {
-        load_manifest(&cache_dir, deployment)?
+        load_manifest(&cache_dir)?
     };
 
     Ok(ResolvedNode {
@@ -42,9 +41,8 @@ pub fn resolve_remote_url(
 
 fn refresh_bundle(
     cache_dir: &Path,
-    spec: &HttpRemoteSpec,
-    deployment: &Deployment,
-    expected_checksum: Option<&str>,
+    spec: &DeploymentUrlSource,
+    expected_checksum: &str,
 ) -> Result<NodeConfig> {
     let temp_dir_path = cache_dir.with_extension("tmp");
     if temp_dir_path.exists() {
@@ -53,18 +51,16 @@ fn refresh_bundle(
     fs::create_dir_all(&temp_dir_path)?;
     let mut temp_dir = TempDirGuard::new(temp_dir_path);
 
-    let bundle_filename = bundle_file_name(&spec.bundle_url);
+    let bundle_filename = bundle_file_name(&spec.url);
     let bundle_path = temp_dir.path().join(bundle_filename);
 
-    download_bundle(&spec.bundle_url, &bundle_path, expected_checksum)?;
-    extract_bundle(&bundle_path, temp_dir.path(), &spec.bundle_url)?;
+    download_bundle(&spec.url, &bundle_path, expected_checksum)?;
+    extract_bundle(&bundle_path, temp_dir.path(), &spec.url)?;
     let _ = fs::remove_file(&bundle_path);
 
-    if let Some(checksum) = expected_checksum {
-        fs::write(temp_dir.path().join(CHECKSUM_FILE), checksum)?;
-    }
+    fs::write(temp_dir.path().join(CHECKSUM_FILE), expected_checksum)?;
 
-    let node = load_manifest_inner(temp_dir.path(), deployment)?;
+    let node = load_manifest_inner(temp_dir.path())?;
 
     if cache_dir.exists() {
         fs::remove_dir_all(cache_dir)?;
@@ -78,11 +74,11 @@ fn refresh_bundle(
     Ok(node)
 }
 
-fn load_manifest(cache_dir: &Path, deployment: &Deployment) -> Result<NodeConfig> {
-    load_manifest_inner(cache_dir, deployment)
+fn load_manifest(cache_dir: &Path) -> Result<NodeConfig> {
+    load_manifest_inner(cache_dir)
 }
 
-fn load_manifest_inner(dir: &Path, deployment: &Deployment) -> Result<NodeConfig> {
+fn load_manifest_inner(dir: &Path) -> Result<NodeConfig> {
     let manifest_path = dir.join(NODE_CONFIG_FILE);
     if !manifest_path.is_file() {
         return Err(Error::BundleExtraction {
@@ -93,38 +89,24 @@ fn load_manifest_inner(dir: &Path, deployment: &Deployment) -> Result<NodeConfig
 
     let node = NodeConfigParser::from_path(&manifest_path)?;
 
-    if node.manifest.name.as_str() != deployment.name.as_str()
-        || node.manifest.tag != deployment.tag
-    {
-        return Err(Error::NoMatchingNode(
-            deployment.name.to_string(),
-            deployment.tag.clone(),
-        ));
-    }
-
     Ok(node)
 }
 
-fn should_refresh(cache_dir: &Path, expected_checksum: Option<&str>) -> bool {
+fn should_refresh(cache_dir: &Path, expected_checksum: &str) -> bool {
     let manifest_path = cache_dir.join(NODE_CONFIG_FILE);
     if !manifest_path.is_file() {
         return true;
     }
 
-    match expected_checksum {
-        Some(expected) => {
-            let checksum_path = cache_dir.join(CHECKSUM_FILE);
-            match fs::read_to_string(checksum_path) {
-                Ok(stored) => stored.trim() != expected.trim(),
-                Err(_) => true,
-            }
-        }
-        None => false,
+    let checksum_path = cache_dir.join(CHECKSUM_FILE);
+    match fs::read_to_string(checksum_path) {
+        Ok(stored) => stored.trim() != expected_checksum.trim(),
+        Err(_) => true,
     }
 }
 
-fn download_bundle(url: &str, destination: &Path, checksum: Option<&str>) -> Result<()> {
-    let parsed_checksum = checksum.map(parse_checksum).transpose()?;
+fn download_bundle(url: &str, destination: &Path, checksum: &str) -> Result<()> {
+    let parsed_checksum = parse_checksum(checksum)?;
 
     let response = ureq::get(url).call().map_err(|err| {
         let reason = match err {
@@ -140,11 +122,7 @@ fn download_bundle(url: &str, destination: &Path, checksum: Option<&str>) -> Res
     let mut reader = response.into_body().into_reader();
     let mut file = fs::File::create(destination)?;
     let mut buffer = [0u8; 8 * 1024];
-    let mut sha256 = parsed_checksum
-        .as_ref()
-        .map(|checksum| match checksum.algorithm {
-            ChecksumAlgorithm::Sha256 => Sha256::new(),
-        });
+    let mut sha256 = Sha256::new();
 
     loop {
         let read = reader
@@ -157,21 +135,15 @@ fn download_bundle(url: &str, destination: &Path, checksum: Option<&str>) -> Res
             break;
         }
         file.write_all(&buffer[..read])?;
-        if let Some(hasher) = sha256.as_mut() {
-            hasher.update(&buffer[..read]);
-        }
+        sha256.update(&buffer[..read]);
     }
     file.flush()?;
 
-    if let Some(checksum) = parsed_checksum {
-        match checksum.algorithm {
-            ChecksumAlgorithm::Sha256 => {
-                let computed = sha256
-                    .expect("sha256 checksum state should exist")
-                    .finalize();
-                if AsRef::<[u8]>::as_ref(&computed) != checksum.expected.as_slice() {
-                    return Err(Error::ChecksumMismatch(url.to_string()));
-                }
+    match parsed_checksum.algorithm {
+        ChecksumAlgorithm::Sha256 => {
+            let computed = sha256.finalize();
+            if AsRef::<[u8]>::as_ref(&computed) != parsed_checksum.expected.as_slice() {
+                return Err(Error::ChecksumMismatch(url.to_string()));
             }
         }
     }
@@ -261,12 +233,8 @@ fn decode_hex_digit(byte: u8) -> std::result::Result<u8, String> {
     }
 }
 
-fn build_bundle_cache_path(base: &Path, deployment: &Deployment, bundle_url: &str) -> PathBuf {
-    let hash = stable_hash_parts(&[
-        bundle_url,
-        deployment.name.as_str(),
-        deployment.tag.as_str(),
-    ]);
+fn build_bundle_cache_path(base: &Path, bundle_url: &str, sha256: &str) -> PathBuf {
+    let hash = stable_hash_parts(&[bundle_url, sha256]);
     let dir_name = bundle_dir_name(bundle_url);
     base.join(format!("{dir_name}-{hash:016x}"))
 }
@@ -379,30 +347,16 @@ enum ChecksumAlgorithm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::peppy_config::Name;
     use std::path::Path;
 
-    fn deployment(name: &str, tag: &str) -> Deployment {
-        Deployment {
-            name: Name::new(name).expect("valid name"),
-            source: None,
-            tag: tag.to_string(),
-            optional: false,
-            instances: Vec::new(),
-        }
-    }
-
     #[test]
-    fn http_cache_path_varies_by_deployment_tag() {
+    fn http_cache_path_varies_by_sha256() {
         let base = Path::new("/tmp/nodes");
         let url = "http://localhost:1234/bundles/uvc_camera.tar.zst";
 
-        let v1 = deployment("uvc_camera", "1.0.0");
-        let v2 = deployment("uvc_camera", "1.2.3");
-
         assert_ne!(
-            build_bundle_cache_path(base, &v1, url),
-            build_bundle_cache_path(base, &v2, url),
+            build_bundle_cache_path(base, url, "a"),
+            build_bundle_cache_path(base, url, "b"),
         );
     }
 }

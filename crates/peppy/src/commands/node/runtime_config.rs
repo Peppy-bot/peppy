@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::node::NodeConfigParser;
-use config::peppy_config::{DeploymentInstance, Name};
-use config::runtime::RuntimeConfig;
+use config::peppy_config::Name;
+use config::runtime::{NodeInstance, RuntimeConfig};
 use master_node::encoding::NodeListRequest;
 use names_generator2::get_random;
 use node_stack::SerializedNodeGraph;
@@ -114,7 +114,7 @@ async fn print_runtime_config_async(
     let runtime_config = RuntimeConfig::new(
         messaging_host.as_str(),
         messaging_port,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(instance_id).map_err(|e| Error::PeppyConfig(e.into()))?,
             arguments: args_to_node_arguments(&args),
         },

@@ -70,16 +70,11 @@ async fn launch_async(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> R
     let master_node_name = daemon_state.master_node_name;
 
     PeppyLauncherParser::from_path(&launcher_config_path).map_err(Error::PeppyConfig)?;
-    let peppy_launcher_json5 = std::fs::read_to_string(&launcher_config_path)?;
-    let nodes_directory = launcher_config_path
-        .parent()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| ctx.root_dir.clone());
 
     info!(
-        "Calling launcher on master '{}' with nodes_directory={}",
+        "Calling launcher on master '{}' with config={}",
         master_node_name,
-        nodes_directory.display()
+        launcher_config_path.display()
     );
 
     ctx.connect().await?;
@@ -87,7 +82,7 @@ async fn launch_async(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> R
         .messenger_handle()
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
-    let goal = LaunchGoal::new(peppy_launcher_json5, nodes_directory);
+    let goal = LaunchGoal::new(&launcher_config_path);
 
     let mut action_handle = goal
         .send_goal(

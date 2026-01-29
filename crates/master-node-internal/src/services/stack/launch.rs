@@ -11,7 +11,7 @@ use chrono::Local;
 use config::consts::{
     DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PEPPY_OUTPUT_DIR, logs_dir_launch,
 };
-use config::peppy_config::{Deployment, DeploymentNodeSource, PeppyLauncher, PeppyLauncherParser};
+use config::peppy_config::{Deployment, DeploymentSource, PeppyLauncherParser};
 use config::runtime::RuntimeConfig;
 use node_stack::NodeStack;
 use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
@@ -118,7 +118,11 @@ struct PlannedDeployment {
 }
 
 fn deployment_label(deployment: &Deployment) -> String {
-    format!("{}:{}", deployment.name.as_str(), deployment.tag.as_str())
+    match &deployment.source {
+        DeploymentSource::Local(spec) => format!("local:{}", spec.local.display()),
+        DeploymentSource::Git(spec) => format!("git:{}@{}:{}", spec.repo, spec.ref_, spec.path),
+        DeploymentSource::Url(spec) => format!("url:{}", spec.url),
+    }
 }
 
 fn git_url_from_repo(repo: &str) -> std::result::Result<gix_url::Url, String> {
@@ -131,52 +135,29 @@ fn node_source_from_deployment_source(
     deployment: &Deployment,
     nodes_directory: &std::path::Path,
 ) -> std::result::Result<NodeSource, String> {
-    match deployment.source.as_ref() {
-        Some(DeploymentNodeSource::Local(path)) => {
-            let resolved = if path.is_absolute() {
-                path.clone()
+    match &deployment.source {
+        DeploymentSource::Local(spec) => {
+            let resolved = if spec.local.is_absolute() {
+                spec.local.clone()
             } else {
-                nodes_directory.join(path)
+                nodes_directory.join(&spec.local)
             };
             Ok(NodeSource::Fs(resolved))
         }
-        Some(DeploymentNodeSource::Git(spec)) => {
-            let repo_url = git_url_from_repo(spec.repo.as_str())?;
-            let repo_path = spec.path.clone().unwrap_or_default();
-            let repo_ref = deployment.tag.trim().to_owned();
-            let repo_ref = if repo_ref.is_empty() {
-                None
-            } else {
-                Some(repo_ref)
-            };
+        DeploymentSource::Git(spec) => {
+            let repo_url = git_url_from_repo(&spec.repo)?;
             Ok(NodeSource::Git {
                 repo_url,
-                repo_path,
-                repo_ref,
+                repo_path: spec.path.clone(),
+                repo_ref: Some(spec.ref_.clone()),
             })
         }
-        Some(DeploymentNodeSource::Http(spec)) => {
-            let url = url::Url::parse(spec.bundle_url.as_str())
-                .map_err(|e| format!("invalid HTTP URL `{}`: {e}", spec.bundle_url))?;
+        DeploymentSource::Url(spec) => {
+            let url = url::Url::parse(&spec.url)
+                .map_err(|e| format!("invalid HTTP URL `{}`: {e}", spec.url))?;
             Ok(NodeSource::Http { url })
         }
-        None => Err("deployment has no explicit source".to_string()),
     }
-}
-
-fn resolve_implicit_node_source(
-    deployment: &Deployment,
-    nodes_directory: &std::path::Path,
-    node_stack: &NodeStack,
-) -> std::result::Result<NodeSource, String> {
-    let name = deployment.name.as_str();
-    let tag = deployment.tag.as_str();
-
-    if let Some(entity) = node_stack.find(name, tag) {
-        return Ok(NodeSource::Fs(entity.root_path().to_path_buf()));
-    }
-
-    Ok(NodeSource::Fs(nodes_directory.join(name)))
 }
 
 fn git_hash_from_node_dir(node_dir: &std::path::Path) -> std::result::Result<String, String> {
@@ -481,11 +462,11 @@ async fn restore_stack(
     LaunchResult::failure(&ctx.log_path, reason)
 }
 
-/// Step 1: Parse launcher configuration and validate nodes_directory.
+/// Step 1: Parse launcher configuration from file path.
 async fn parse_launcher_config(
     ctx: &ProcessLaunchContext,
     goal: &LaunchGoal,
-) -> std::result::Result<(PeppyLauncher, Vec<Deployment>), LaunchResult> {
+) -> std::result::Result<(Vec<Deployment>, PathBuf), LaunchResult> {
     publish_stdout(
         ctx,
         "Parsing launcher configuration",
@@ -493,49 +474,49 @@ async fn parse_launcher_config(
     )
     .await;
 
-    let peppy_launcher: PeppyLauncher =
-        match PeppyLauncherParser::from_content(&goal.peppy_launch_json5) {
-            Ok(cfg) => cfg,
-            Err(e) => {
-                publish_stderr(
-                    ctx,
-                    format!("Invalid launcher config: {e}"),
-                    LaunchFeedbackStep::LauncherStep,
-                )
-                .await;
-                return Err(LaunchResult::failure(
-                    &ctx.log_path,
-                    format!("Invalid launcher config: {e}"),
-                ));
-            }
-        };
-
-    if goal.nodes_directory.as_os_str().is_empty() {
-        let msg = "nodes_directory is missing".to_string();
-        publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
-    }
-
-    if !goal.nodes_directory.exists() {
+    if !goal.peppy_launch_file_path.exists() {
         let msg = format!(
-            "nodes_directory does not exist: {}",
-            goal.nodes_directory.display()
+            "launch file does not exist: {}",
+            goal.peppy_launch_file_path.display()
         );
         publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
 
-    if !goal.nodes_directory.is_dir() {
+    if !goal.peppy_launch_file_path.is_file() {
         let msg = format!(
-            "nodes_directory must be a directory: {}",
-            goal.nodes_directory.display()
+            "launch file path must be a file: {}",
+            goal.peppy_launch_file_path.display()
         );
         publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
 
-    let deployments = peppy_launcher.deployments.clone().unwrap_or_default();
-    Ok((peppy_launcher, deployments))
+    let peppy_launcher = match PeppyLauncherParser::from_path(&goal.peppy_launch_file_path) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            publish_stderr(
+                ctx,
+                format!("Invalid launcher config: {e}"),
+                LaunchFeedbackStep::LauncherStep,
+            )
+            .await;
+            return Err(LaunchResult::failure(
+                &ctx.log_path,
+                format!("Invalid launcher config: {e}"),
+            ));
+        }
+    };
+
+    // Use the parent directory of the launch file as the nodes_directory.
+    let nodes_directory = goal
+        .peppy_launch_file_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let deployments = peppy_launcher.deployments.clone();
+    Ok((deployments, nodes_directory))
 }
 
 /// Step 2: Resolve deployments - retrieve node configs for each deployment.
@@ -553,6 +534,7 @@ async fn resolve_deployments(
 
     let mut planned: Vec<PlannedDeployment> = Vec::new();
     let mut planning_errors: Vec<String> = Vec::new();
+    let mut planned_keys: HashSet<NodeKey> = HashSet::new();
 
     for deployment in deployments.into_iter() {
         if deployment.instances.is_empty() {
@@ -563,58 +545,23 @@ async fn resolve_deployments(
             continue;
         }
 
-        let source = match deployment.source.as_ref() {
-            Some(_) => match node_source_from_deployment_source(&deployment, nodes_directory) {
-                Ok(source) => source,
-                Err(err) => {
-                    if deployment.optional {
-                        publish_stdout(
-                            ctx,
-                            format!(
-                                "Skipping optional deployment {}: {err}",
-                                deployment_label(&deployment)
-                            ),
-                            LaunchFeedbackStep::LauncherStep,
-                        )
-                        .await;
-                        continue;
-                    }
-                    planning_errors.push(format!(
-                        "failed to resolve source for deployment {}: {err}",
-                        deployment_label(&deployment)
-                    ));
-                    continue;
-                }
-            },
-            None => {
-                match resolve_implicit_node_source(&deployment, nodes_directory, &ctx.node_stack) {
-                    Ok(source) => source,
-                    Err(err) => {
-                        if deployment.optional {
-                            publish_stdout(
-                                ctx,
-                                format!(
-                                    "Skipping optional deployment {}: {err}",
-                                    deployment_label(&deployment)
-                                ),
-                                LaunchFeedbackStep::LauncherStep,
-                            )
-                            .await;
-                            continue;
-                        }
-                        planning_errors.push(format!(
-                            "failed to resolve source for deployment {}: {err}",
-                            deployment_label(&deployment)
-                        ));
-                        continue;
-                    }
-                }
+        let source = match node_source_from_deployment_source(&deployment, nodes_directory) {
+            Ok(source) => source,
+            Err(err) => {
+                planning_errors.push(format!(
+                    "failed to resolve source for deployment {}: {err}",
+                    deployment_label(&deployment)
+                ));
+                continue;
             }
         };
 
         publish_stdout(
             ctx,
-            format!("Retrieving node info for {}", deployment_label(&deployment)),
+            format!(
+                "Retrieving node config for {}",
+                deployment_label(&deployment)
+            ),
             LaunchFeedbackStep::LauncherStep,
         )
         .await;
@@ -622,18 +569,6 @@ async fn resolve_deployments(
         let config = match resolve_node_config(source.clone()).await {
             Ok(config) => config,
             Err(err) => {
-                if deployment.optional {
-                    publish_stdout(
-                        ctx,
-                        format!(
-                            "Skipping optional deployment {}: {err}",
-                            deployment_label(&deployment)
-                        ),
-                        LaunchFeedbackStep::LauncherStep,
-                    )
-                    .await;
-                    continue;
-                }
                 planning_errors.push(format!(
                     "failed to retrieve node config for deployment {}: {err}",
                     deployment_label(&deployment)
@@ -645,28 +580,27 @@ async fn resolve_deployments(
         let node_name = config.manifest.name.as_str().to_owned();
         let node_tag = config.manifest.tag.clone();
 
-        if node_name != deployment.name.as_str() || node_tag != deployment.tag {
-            let err = format!(
-                "deployment {} resolved to {}:{}",
+        let key = NodeKey::new(&node_name, &node_tag);
+        if !planned_keys.insert(key.clone()) {
+            planning_errors.push(format!(
+                "duplicate deployment for node {} (resolved from {})",
+                key.label(),
+                deployment_label(&deployment)
+            ));
+            continue;
+        }
+
+        publish_stdout(
+            ctx,
+            format!(
+                "Deployment {} resolved to {}:{}",
                 deployment_label(&deployment),
                 node_name,
                 node_tag
-            );
-            if deployment.optional {
-                publish_stdout(
-                    ctx,
-                    format!(
-                        "Skipping optional deployment {}: {err}",
-                        deployment_label(&deployment)
-                    ),
-                    LaunchFeedbackStep::LauncherStep,
-                )
-                .await;
-                continue;
-            }
-            planning_errors.push(err);
-            continue;
-        }
+            ),
+            LaunchFeedbackStep::LauncherStep,
+        )
+        .await;
 
         planned.push(PlannedDeployment {
             deployment,
@@ -992,11 +926,15 @@ async fn start_node_instances(
             )
             .await;
 
+            let node_instance = config::runtime::NodeInstance {
+                instance_id: instance.instance_id.clone(),
+                arguments: instance.arguments.clone(),
+            };
             let runtime_config = match RuntimeConfig::new(
                 messaging_host.as_str(),
                 messaging_port,
-                instance.clone(),
-                item.deployment.name.as_str(),
+                node_instance,
+                item.node_name.as_str(),
                 ctx.bound_master_node.as_str(),
             ) {
                 Ok(cfg) => cfg,
@@ -1324,13 +1262,13 @@ async fn handle_goal_request(
 /// 6. Start instances in dependency order
 async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchResult {
     // Step 1: Parse launcher configuration
-    let (_peppy_launcher, deployments) = match parse_launcher_config(&ctx, &goal).await {
+    let (deployments, nodes_directory) = match parse_launcher_config(&ctx, &goal).await {
         Ok(result) => result,
         Err(launch_result) => return launch_result,
     };
 
     // Step 2: Resolve deployments
-    let planned = match resolve_deployments(&ctx, deployments, &goal.nodes_directory).await {
+    let planned = match resolve_deployments(&ctx, deployments, &nodes_directory).await {
         Ok(result) => result,
         Err(launch_result) => return launch_result,
     };

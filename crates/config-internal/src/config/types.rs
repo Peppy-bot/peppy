@@ -2,13 +2,11 @@ use crate::{common::NodeArguments, error::ParsingError};
 use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer},
-    ser::{self, Serializer},
 };
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     convert::TryFrom,
-    path::{Path, PathBuf},
-    str::FromStr,
+    path::PathBuf,
 };
 
 /// Version identifier embedded in node `peppy.json5` manifests.
@@ -18,68 +16,15 @@ pub const CURRENT_SCHEMA_VERSION: SchemaVersion = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Logging {
-    #[serde(default = "default_log_level")]
-    pub min_level: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub file_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_file_size_mb: Option<u32>,
-    #[serde(default)]
-    pub format: LogFormat,
-}
-
-impl Default for Logging {
-    fn default() -> Self {
-        Self {
-            min_level: default_log_level(),
-            file_name: None,
-            max_file_size_mb: None,
-            format: LogFormat::default(),
-        }
-    }
-}
-
-// Default value functions
-fn default_log_level() -> String {
-    "info".to_string()
-}
-
-#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum LogFormat {
-    #[default]
-    Text,
-    Json,
-}
-
-impl From<String> for LogFormat {
-    fn from(s: String) -> Self {
-        match s.as_str() {
-            "json" => LogFormat::Json,
-            _ => LogFormat::Text, // Default to Text for any other value
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct PeppyLauncher {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deployments: Option<Vec<Deployment>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub logging: Option<Logging>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deployments: Vec<Deployment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Deployment {
-    pub name: Name,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<DeploymentNodeSource>,
-    pub tag: String,
-    #[serde(default)]
-    pub optional: bool,
+    pub source: DeploymentSource,
     #[serde(deserialize_with = "deserialize_instances")]
     pub instances: Vec<DeploymentInstance>,
 }
@@ -88,9 +33,10 @@ pub struct Deployment {
 #[serde(deny_unknown_fields)]
 pub struct DeploymentInstance {
     pub instance_id: Name,
-    // TODO: Rename `parameters` to `arguments` when it's given in a NodeConfig, the `parameters` name is only used in DeploymentInstance
-    #[serde(default, alias = "parameters")]
+    #[serde(default)]
     pub arguments: NodeArguments,
+    #[serde(default)]
+    pub env_vars: BTreeMap<String, String>,
 }
 
 fn deserialize_instances<'de, D>(deserializer: D) -> Result<Vec<DeploymentInstance>, D::Error>
@@ -111,282 +57,164 @@ where
     Ok(instances)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeploymentNodeSource {
-    Local(PathBuf),
-    Git(GitRemoteSpec),
-    Http(HttpRemoteSpec),
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum DeploymentSource {
+    Local(DeploymentLocalSource),
+    Git(DeploymentGitSource),
+    Url(DeploymentUrlSource),
 }
 
-impl DeploymentNodeSource {
-    const FILE_SCHEME: &'static str = "file://";
-
-    pub fn is_local(&self) -> bool {
-        matches!(self, DeploymentNodeSource::Local(_))
-    }
-
-    pub fn as_local_path(&self) -> Option<&Path> {
-        match self {
-            DeploymentNodeSource::Local(path) => Some(path.as_path()),
-            _ => None,
-        }
-    }
-
-    pub fn git(&self) -> Option<&GitRemoteSpec> {
-        match self {
-            DeploymentNodeSource::Git(spec) => Some(spec),
-            _ => None,
-        }
-    }
-
-    pub fn http(&self) -> Option<&HttpRemoteSpec> {
-        match self {
-            DeploymentNodeSource::Http(spec) => Some(spec),
-            _ => None,
-        }
-    }
-
-    fn from_string(value: String) -> Result<Self, ParsingError> {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            let err = crate::error::StructuredError::InvalidDeploymentSource(
-                "source cannot be empty".to_string(),
-            );
-            let msg =
-                serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
-            return Err(ParsingError::Structured(msg));
-        }
-
-        if let Some(rest) = trimmed.strip_prefix(Self::FILE_SCHEME) {
-            if rest.is_empty() {
-                let err = crate::error::StructuredError::InvalidDeploymentSource(
-                    "file path cannot be empty".to_string(),
-                );
-                let msg = serde_json5::to_string(&err)
-                    .unwrap_or_else(|_| "serialization error".to_string());
-                return Err(ParsingError::Structured(msg));
-            }
-            return Ok(DeploymentNodeSource::Local(PathBuf::from(rest)));
-        }
-
-        if Self::is_http_url(trimmed) && !Self::looks_like_git(trimmed) {
-            let spec = HttpRemoteSpec::new(trimmed.to_owned(), None)?;
-            return Ok(DeploymentNodeSource::Http(spec));
-        }
-
-        let spec = Self::parse_git_spec(trimmed)?;
-        Ok(DeploymentNodeSource::Git(spec))
-    }
-
-    fn from_git_fields(repo: String, path: Option<String>) -> Result<Self, ParsingError> {
-        if repo.trim().is_empty() {
-            let err = crate::error::StructuredError::InvalidDeploymentSource(
-                "git repo cannot be empty".to_string(),
-            );
-            let msg =
-                serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
-            return Err(ParsingError::Structured(msg));
-        }
-
-        Ok(DeploymentNodeSource::Git(GitRemoteSpec {
-            repo,
-            path: Self::normalize_git_path(path),
-        }))
-    }
-
-    fn normalize_git_path(path: Option<String>) -> Option<String> {
-        path.and_then(|segment| {
-            let trimmed = segment.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.trim_start_matches('/').to_owned())
-            }
-        })
-    }
-
-    fn parse_git_spec(value: &str) -> Result<GitRemoteSpec, ParsingError> {
-        let (repo_raw, path_raw) = value
-            .split_once("::")
-            .map(|(repo, path)| (repo.trim(), Some(path.trim())))
-            .unwrap_or_else(|| (value.trim(), None));
-
-        if repo_raw.is_empty() {
-            let err = crate::error::StructuredError::InvalidDeploymentSource(
-                "git repo cannot be empty".to_string(),
-            );
-            let msg =
-                serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
-            return Err(ParsingError::Structured(msg));
-        }
-
-        let path = Self::normalize_git_path(path_raw.map(|segment| segment.to_owned()));
-
-        Ok(GitRemoteSpec {
-            repo: repo_raw.to_owned(),
-            path,
-        })
-    }
-
-    fn is_http_url(value: &str) -> bool {
-        value.starts_with("http://") || value.starts_with("https://")
-    }
-
-    fn looks_like_git(value: &str) -> bool {
-        value.ends_with(".git")
-            || value.contains(".git/")
-            || value.contains(".git?")
-            || value.starts_with("git@")
-            || value.starts_with("ssh://")
-            || value.starts_with("git://")
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeploymentLocalSource {
+    pub local: PathBuf,
 }
 
-impl FromStr for DeploymentNodeSource {
-    type Err = ParsingError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::from_string(value.to_owned())
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeploymentGitSource {
+    pub repo: String,
+    pub path: String,
+    #[serde(rename = "ref")]
+    pub ref_: String,
 }
 
-impl Serialize for DeploymentNodeSource {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            DeploymentNodeSource::Local(path) => {
-                let path_str = path
-                    .to_str()
-                    .ok_or_else(|| ser::Error::custom("local path is not valid UTF-8"))?;
-                serializer.serialize_str(&format!("{}{}", Self::FILE_SCHEME, path_str))
-            }
-            DeploymentNodeSource::Git(spec) => {
-                if let Some(path) = spec.path.as_deref() {
-                    #[derive(Serialize)]
-                    struct GitSource<'a> {
-                        repo: &'a str,
-                        #[serde(skip_serializing_if = "Option::is_none")]
-                        path: Option<&'a str>,
-                    }
-
-                    let helper = GitSource {
-                        repo: &spec.repo,
-                        path: Some(path),
-                    };
-                    helper.serialize(serializer)
-                } else {
-                    serializer.serialize_str(&spec.repo)
-                }
-            }
-            DeploymentNodeSource::Http(spec) => {
-                if spec.checksum.is_none() {
-                    serializer.serialize_str(&spec.bundle_url)
-                } else {
-                    spec.serialize(serializer)
-                }
-            }
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeploymentUrlSource {
+    pub url: String,
+    pub sha256: String,
 }
 
-impl<'de> Deserialize<'de> for DeploymentNodeSource {
+fn invalid_deployment_source<E>(detail: impl Into<String>) -> E
+where
+    E: de::Error,
+{
+    let err = crate::error::StructuredError::InvalidDeploymentSource(detail.into());
+    let msg = serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
+    de::Error::custom(msg)
+}
+
+fn trim_non_empty<E>(value: String, empty_error: &'static str) -> Result<String, E>
+where
+    E: de::Error,
+{
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(invalid_deployment_source::<E>(empty_error));
+    }
+    Ok(trimmed.to_owned())
+}
+
+fn normalize_git_path<E>(value: String) -> Result<String, E>
+where
+    E: de::Error,
+{
+    let trimmed = value.trim().trim_start_matches('/');
+    if trimmed.is_empty() {
+        return Err(invalid_deployment_source::<E>("git path cannot be empty"));
+    }
+    Ok(trimmed.to_owned())
+}
+
+fn normalize_http_url<E>(value: String) -> Result<String, E>
+where
+    E: de::Error,
+{
+    let trimmed = trim_non_empty::<E>(value, "url cannot be empty")?;
+    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+        return Err(invalid_deployment_source::<E>(
+            "url must start with http:// or https://",
+        ));
+    }
+    Ok(trimmed)
+}
+
+fn normalize_sha256_hex<E>(value: String) -> Result<String, E>
+where
+    E: de::Error,
+{
+    let trimmed = trim_non_empty::<E>(value, "sha256 cannot be empty")?;
+    if trimmed.len() != 64 || !trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(invalid_deployment_source::<E>(
+            "sha256 must be a 64-character hexadecimal string",
+        ));
+    }
+    Ok(trimmed.to_ascii_lowercase())
+}
+
+impl<'de> Deserialize<'de> for DeploymentSource {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum RawNodeSource {
-            String(String),
-            InlineGit(RawGitSpec),
-            Git { git: RawGitSpec },
-            Http(RawHttpSpec),
-        }
-
-        #[derive(Deserialize)]
+        #[derive(Debug, Deserialize)]
         #[serde(deny_unknown_fields)]
-        struct RawGitSpec {
-            repo: String,
-            #[serde(default, skip_serializing_if = "Option::is_none")]
+        struct RawDeploymentSource {
+            #[serde(default)]
+            local: Option<String>,
+            #[serde(default)]
+            repo: Option<String>,
+            #[serde(default)]
             path: Option<String>,
+            #[serde(rename = "ref", default)]
+            ref_: Option<String>,
+            #[serde(default)]
+            url: Option<String>,
+            #[serde(default)]
+            sha256: Option<String>,
         }
 
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct RawHttpSpec {
-            bundle_url: String,
-            #[serde(default, skip_serializing_if = "Option::is_none")]
-            checksum: Option<String>,
-        }
+        let raw = RawDeploymentSource::deserialize(deserializer)?;
+        let has_local = raw.local.is_some();
+        let has_git = raw.repo.is_some() || raw.path.is_some() || raw.ref_.is_some();
+        let has_url = raw.url.is_some() || raw.sha256.is_some();
 
-        match RawNodeSource::deserialize(deserializer)? {
-            RawNodeSource::String(value) => {
-                DeploymentNodeSource::from_string(value).map_err(de::Error::custom)
+        match (has_local, has_git, has_url) {
+            (true, false, false) => {
+                let local = trim_non_empty::<D::Error>(
+                    raw.local.expect("local is present"),
+                    "local path cannot be empty",
+                )?;
+                Ok(DeploymentSource::Local(DeploymentLocalSource {
+                    local: PathBuf::from(local),
+                }))
             }
-            RawNodeSource::InlineGit(git) => {
-                DeploymentNodeSource::from_git_fields(git.repo, git.path).map_err(de::Error::custom)
+            (false, true, false) => {
+                let repo = raw.repo.ok_or_else(|| {
+                    invalid_deployment_source::<D::Error>("git source requires `repo`")
+                })?;
+                let path = raw.path.ok_or_else(|| {
+                    invalid_deployment_source::<D::Error>("git source requires `path`")
+                })?;
+                let ref_ = raw.ref_.ok_or_else(|| {
+                    invalid_deployment_source::<D::Error>("git source requires `ref`")
+                })?;
+
+                let repo = trim_non_empty::<D::Error>(repo, "git repo cannot be empty")?;
+                let path = normalize_git_path::<D::Error>(path)?;
+                let ref_ = trim_non_empty::<D::Error>(ref_, "git ref cannot be empty")?;
+
+                Ok(DeploymentSource::Git(DeploymentGitSource {
+                    repo,
+                    path,
+                    ref_,
+                }))
             }
-            RawNodeSource::Git { git } => {
-                DeploymentNodeSource::from_git_fields(git.repo, git.path).map_err(de::Error::custom)
+            (false, false, true) => {
+                let url = raw.url.ok_or_else(|| {
+                    invalid_deployment_source::<D::Error>("url source requires `url`")
+                })?;
+                let sha256 = raw.sha256.ok_or_else(|| {
+                    invalid_deployment_source::<D::Error>("url source requires `sha256`")
+                })?;
+
+                let url = normalize_http_url::<D::Error>(url)?;
+                let sha256 = normalize_sha256_hex::<D::Error>(sha256)?;
+
+                Ok(DeploymentSource::Url(DeploymentUrlSource { url, sha256 }))
             }
-            RawNodeSource::Http(http) => HttpRemoteSpec::new(http.bundle_url, http.checksum)
-                .map(DeploymentNodeSource::Http)
-                .map_err(de::Error::custom),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HttpRemoteSpec {
-    pub bundle_url: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checksum: Option<String>,
-}
-
-impl HttpRemoteSpec {
-    pub fn new(bundle_url: String, checksum: Option<String>) -> Result<Self, ParsingError> {
-        let trimmed = bundle_url.trim();
-        if trimmed.is_empty() {
-            let err = crate::error::StructuredError::InvalidDeploymentSource(
-                "http bundle url cannot be empty".to_string(),
-            );
-            let msg =
-                serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
-            return Err(ParsingError::Structured(msg));
-        }
-
-        if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
-            let err = crate::error::StructuredError::InvalidDeploymentSource(
-                "http bundle url must start with http:// or https://".to_string(),
-            );
-            let msg =
-                serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
-            return Err(ParsingError::Structured(msg));
-        }
-
-        Ok(Self {
-            bundle_url: trimmed.to_owned(),
-            checksum,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GitRemoteSpec {
-    pub repo: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-}
-
-impl GitRemoteSpec {
-    pub fn as_remote(&self) -> String {
-        match &self.path {
-            Some(path) if !path.is_empty() => format!("{}::{}", self.repo, path),
-            _ => self.repo.clone(),
+            _ => Err(invalid_deployment_source::<D::Error>(
+                "source must be one of: { local }, { repo, path, ref }, { url, sha256 }",
+            )),
         }
     }
 }
@@ -530,117 +358,70 @@ mod tests {
     }
 
     #[test]
-    fn node_source_validation() {
-        let local: DeploymentNodeSource = serde_json5::from_str("\"file:///tmp/node\"").unwrap();
-        let DeploymentNodeSource::Local(local_path) = local else {
-            panic!("expected local node source");
+    fn deployment_source_parses_all_variants() {
+        let local: DeploymentSource = serde_json5::from_str("{ local: \"./uvc_camera\" }").unwrap();
+        let DeploymentSource::Local(local) = local else {
+            panic!("expected local source");
         };
-        assert_eq!(local_path.as_path(), Path::new("/tmp/node"));
+        assert_eq!(local.local, PathBuf::from("./uvc_camera"));
 
-        let http: DeploymentNodeSource =
-            serde_json5::from_str("\"https://nodes.peppy.bot/nodes/camera.tar.zst\"").unwrap();
-        let DeploymentNodeSource::Http(http_spec) = http else {
-            panic!("expected http node source");
+        let git: DeploymentSource = serde_json5::from_str(
+            "{ repo: \"https://github.com/Peppy-bot/example_nodes.git\", path: \"fake_openarm01_controller\", ref: \"0.1.0\" }",
+        )
+        .unwrap();
+        let DeploymentSource::Git(git) = git else {
+            panic!("expected git source");
         };
+        assert_eq!(git.repo, "https://github.com/Peppy-bot/example_nodes.git");
+        assert_eq!(git.path, "fake_openarm01_controller");
+        assert_eq!(git.ref_, "0.1.0");
+
+        let url: DeploymentSource = serde_json5::from_str(
+            "{ url: \"https://example.com/fake_robot_brain.tar.zst\", sha256: \"33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a\" }",
+        )
+        .unwrap();
+        let DeploymentSource::Url(url) = url else {
+            panic!("expected url source");
+        };
+        assert_eq!(url.url, "https://example.com/fake_robot_brain.tar.zst");
         assert_eq!(
-            http_spec.bundle_url,
-            "https://nodes.peppy.bot/nodes/camera.tar.zst"
+            url.sha256,
+            "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a"
         );
-        assert!(http_spec.checksum.is_none());
-
-        let http_with_checksum: DeploymentNodeSource = serde_json5::from_str(
-            "{ bundle_url: \"https://nodes.peppy.bot/nodes/camera.tar.zst\", checksum: \"sha256:deadbeef\" }",
-        )
-        .unwrap();
-        let DeploymentNodeSource::Http(http_spec) = http_with_checksum else {
-            panic!("expected http node source with checksum");
-        };
-        assert_eq!(
-            http_spec.bundle_url,
-            "https://nodes.peppy.bot/nodes/camera.tar.zst"
-        );
-        assert_eq!(http_spec.checksum.as_deref(), Some("sha256:deadbeef"));
-
-        let git_inline: DeploymentNodeSource = serde_json5::from_str(
-            "{ repo: \"https://github.com/Peppy/nodes.git\", path: \"uvc_camera\" }",
-        )
-        .unwrap();
-        let DeploymentNodeSource::Git(GitRemoteSpec {
-            repo: inline_repo,
-            path: inline_path,
-        }) = git_inline
-        else {
-            panic!("expected git node source for inline format");
-        };
-        assert_eq!(inline_repo, "https://github.com/Peppy/nodes.git");
-        assert_eq!(inline_path.as_deref(), Some("uvc_camera"));
-
-        let git_full: DeploymentNodeSource = serde_json5::from_str(
-            "{ git: { repo: \"https://github.com/Peppy/uvc_camera.git\", path: \"configs/camera\" } }",
-        )
-        .unwrap();
-        let DeploymentNodeSource::Git(GitRemoteSpec { repo, path }) = git_full else {
-            panic!("expected git node source for full format");
-        };
-        assert_eq!(repo, "https://github.com/Peppy/uvc_camera.git");
-        assert_eq!(path.as_deref(), Some("configs/camera"));
-
-        let git_string: DeploymentNodeSource =
-            serde_json5::from_str("\"https://github.com/Peppy/uvc_camera.git\"").unwrap();
-        let DeploymentNodeSource::Git(GitRemoteSpec {
-            repo: string_repo,
-            path: string_path,
-        }) = git_string
-        else {
-            panic!("expected git node source for string format");
-        };
-        assert_eq!(string_repo, "https://github.com/Peppy/uvc_camera.git");
-        assert!(string_path.is_none());
-
-        let defaulted: Deployment = serde_json5::from_str(
-            r#"{
-                name: "controller",
-                tag: "0.1.0",
-                instances: []
-            }"#,
-        )
-        .unwrap();
-        assert!(defaulted.source.is_none());
-
-        let empty: Result<DeploymentNodeSource, _> = serde_json5::from_str("\"\"");
-        let err = empty.expect_err("deserializing an empty node source should fail");
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected invalid deployment source error");
-        };
-        assert_eq!(msg, "source cannot be empty");
     }
 
     #[test]
-    fn http_source_with_checksum_round_trip() {
-        let json = "{ bundle_url: \"https://example.com/nodes/uvc_camera.tar.zst\", checksum: \"sha256:0011aa\" }";
-        let source: DeploymentNodeSource =
-            serde_json5::from_str(json).expect("parse http source with checksum");
-
-        let DeploymentNodeSource::Http(spec) = &source else {
-            panic!("expected http deployment source");
+    fn deployment_source_validation_errors_are_structured() {
+        let empty_local: Result<DeploymentSource, _> = serde_json5::from_str("{ local: \"\" }");
+        let err = empty_local.expect_err("empty local should fail");
+        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+            panic!("expected invalid deployment source error");
         };
-        assert_eq!(
-            spec.bundle_url,
-            "https://example.com/nodes/uvc_camera.tar.zst"
-        );
-        assert_eq!(spec.checksum.as_deref(), Some("sha256:0011aa"));
+        assert_eq!(msg, "local path cannot be empty");
 
-        let serialized = serde_json5::to_string(&source).expect("serialize http deployment source");
-        let round_trip: DeploymentNodeSource =
-            serde_json5::from_str(&serialized).expect("re-parse serialized http deployment source");
-        assert_eq!(round_trip, source);
+        let bad_url: Result<DeploymentSource, _> = serde_json5::from_str(
+            "{ url: \"ftp://example.com/node.tar.zst\", sha256: \"33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a\" }",
+        );
+        let err = bad_url.expect_err("non-http url should fail");
+        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+            panic!("expected invalid deployment source error");
+        };
+        assert_eq!(msg, "url must start with http:// or https://");
+
+        let bad_sha: Result<DeploymentSource, _> = serde_json5::from_str(
+            "{ url: \"https://example.com/node.tar.zst\", sha256: \"not-a-sha\" }",
+        );
+        let err = bad_sha.expect_err("bad sha256 should fail");
+        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+            panic!("expected invalid deployment source error");
+        };
+        assert_eq!(msg, "sha256 must be a 64-character hexadecimal string");
     }
 
     #[test]
     fn duplicate_instance_ids_are_rejected() {
         let duplicate_instances = r#"{
-            name: "uvc_camera",
-            tag: "0.1.0",
+            source: { local: "./uvc_camera" },
             instances: [
                 { instance_id: "camera_front" },
                 { instance_id: "camera_front" }
@@ -656,34 +437,21 @@ mod tests {
     }
 
     #[test]
-    fn deployment_name_validation() {
-        let valid = r#"{
-            name: "valid_name-1",
-            tag: "0.1.0",
-            instances: []
-        }"#;
-        assert!(serde_json5::from_str::<Deployment>(valid).is_ok());
+    fn deployment_instance_defaults() {
+        let instance: DeploymentInstance =
+            serde_json5::from_str("{ instance_id: \"camera_front\" }").unwrap();
+        assert_eq!(instance.instance_id, "camera_front");
+        assert!(instance.arguments.is_empty());
+        assert!(instance.env_vars.is_empty());
 
-        let invalid_char = r#"{
-            name: "invalid!",
-            tag: "0.1.0",
-            instances: []
-        }"#;
-        let err = serde_json5::from_str::<Deployment>(invalid_char).expect_err("should fail");
-        println!("Error: {:?}", err);
-        let ParsingError::InvalidName(_, msg) = ParsingError::from(err) else {
-            panic!("expected InvalidName error");
-        };
-        assert_eq!(msg, crate::consts::ALLOWED_CONFIG_CHARS);
-
-        let empty = r#"{
-            name: "",
-            tag: "0.1.0",
-            instances: []
-        }"#;
-        let err = serde_json5::from_str::<Deployment>(empty).expect_err("should fail");
-        let ParsingError::EmptyName = ParsingError::from(err) else {
-            panic!("expected EmptyName error");
-        };
+        let with_env: DeploymentInstance = serde_json5::from_str(
+            "{ instance_id: \"esp32_1\", env_vars: { ESP32_DEVICE: \"/dev/ttyUSB0\" } }",
+        )
+        .unwrap();
+        assert_eq!(with_env.instance_id, "esp32_1");
+        assert_eq!(
+            with_env.env_vars.get("ESP32_DEVICE").map(String::as_str),
+            Some("/dev/ttyUSB0")
+        );
     }
 }
