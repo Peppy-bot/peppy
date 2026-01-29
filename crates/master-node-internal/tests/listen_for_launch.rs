@@ -39,16 +39,15 @@ const LAUNCHER_EXAMPLE1: &str = r#"
 {
   deployments: [
     {
-      name: "uvc_camera",
-      tag: "0.1.0",
       source: {
         repo: "${UVC_CAMERA_REPO}",
-        path: "uvc_camera"
+        path: "uvc_camera",
+        ref: "0.1.0"
       },
       instances: [
         {
           instance_id: "camera_front",
-          parameters: {
+          arguments: {
             device: {
               physical: "/dev/video_right",
               sim: "mujoco:camera_right",
@@ -66,7 +65,7 @@ const LAUNCHER_EXAMPLE1: &str = r#"
         },
         {
           instance_id: "camera_rear",
-          parameters: {
+          arguments: {
             device: {
               physical: "/dev/video_left",
               sim: "mujoco:camera_left",
@@ -85,12 +84,11 @@ const LAUNCHER_EXAMPLE1: &str = r#"
       ]
     },
     {
-      name: "robot_brain",
-      tag: "0.1.0",
+      source: { local: "./robot_brain" },
       instances: [
         {
           instance_id: "main_robot_brain",
-          parameters: {}
+          arguments: {}
         }
       ]
     },
@@ -452,7 +450,7 @@ async fn listen_for_launch_configuration_succeed() {
 
     let launcher_json5 =
         LAUNCHER_EXAMPLE1.replace("${UVC_CAMERA_REPO}", &uvc_repo_path.display().to_string());
-    let launch_file_path = nodes_dir.path().join("peppy_launch.json5");
+    let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, &launcher_json5).expect("failed to write launch file");
 
     let (_goal_response, result) = send_launch_and_wait(
@@ -520,7 +518,7 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
         .expect("should seed stack");
 
     let bad_launcher_json5 = "{ deployments: [ }";
-    let launch_file_path = nodes_dir.path().join("peppy_launch.json5");
+    let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, bad_launcher_json5).expect("failed to write launch file");
 
     let (_goal_response, result) = send_launch_and_wait(
@@ -616,12 +614,12 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
     let launcher_json5 = r#"
     {
       deployments: [
-        { name: "existing_node", tag: "0.1.0", instances: [ { instance_id: "ok" } ] },
-        { name: "missing_node", tag: "0.1.0", instances: [ { instance_id: "nope" } ] }
+        { source: { local: "./existing_node" }, instances: [ { instance_id: "ok" } ] },
+        { source: { local: "./missing_node" }, instances: [ { instance_id: "nope" } ] }
       ]
     }
     "#;
-    let launch_file_path = nodes_dir.path().join("peppy_launch.json5");
+    let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, launcher_json5).expect("failed to write launch file");
 
     let (_goal_response, result) = send_launch_and_wait(
@@ -693,12 +691,12 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
     let launcher_json5 = r#"
     {
       deployments: [
-        { name: "uvc_camera", tag: "0.1.0", instances: [ { instance_id: "camera_front" } ] },
-        { name: "robot_brain", tag: "0.1.0", instances: [ { instance_id: "main_robot_brain" } ] }
+        { source: { local: "./uvc_camera" }, instances: [ { instance_id: "camera_front" } ] },
+        { source: { local: "./robot_brain" }, instances: [ { instance_id: "main_robot_brain" } ] }
       ]
     }
     "#;
-    let launch_file_path = nodes_dir.path().join("peppy_launch.json5");
+    let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, launcher_json5).expect("failed to write launch file");
 
     let (_goal_response, result) = send_launch_and_wait(
@@ -792,9 +790,9 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let launch_a = r#"
-    { deployments: [ { name: "node_a", tag: "0.1.0", instances: [ { instance_id: "a1" } ] } ] }
+    { deployments: [ { source: { local: "./node_a" }, instances: [ { instance_id: "a1" } ] } ] }
     "#;
-    let launch_file_path_a = nodes_dir.path().join("peppy_launch.json5");
+    let launch_file_path_a = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path_a, launch_a).expect("failed to write launch file");
     let (_goal_a, result_a) = send_launch_and_wait(
         &started_master.caller_handle,
@@ -809,9 +807,9 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     assert!(node_stack.contains("node_a", NODE_TAG));
 
     let launch_b = r#"
-    { deployments: [ { name: "node_b", tag: "0.1.0", instances: [ { instance_id: "b1" } ] } ] }
+    { deployments: [ { source: { local: "./node_b" }, instances: [ { instance_id: "b1" } ] } ] }
     "#;
-    let launch_file_path_b = nodes_dir.path().join("peppy_launch.json5");
+    let launch_file_path_b = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path_b, launch_b).expect("failed to write launch file");
     let (_goal_b, result_b) = send_launch_and_wait(
         &started_master.caller_handle,
@@ -886,9 +884,9 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let launch_b = r#"
-    { deployments: [ { name: "node_b", tag: "0.1.0", instances: [ { instance_id: "b1" } ] } ] }
+    { deployments: [ { source: { local: "./node_b" }, instances: [ { instance_id: "b1" } ] } ] }
     "#;
-    let launch_file_path = nodes_dir.path().join("peppy_launch.json5");
+    let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, launch_b).expect("failed to write launch file");
 
     let (_goal_response, result) = send_launch_and_wait(
@@ -955,9 +953,9 @@ async fn listen_for_launch_configuration_fails_when_add_cmd_fails_and_restores_s
     );
 
     let launcher_json5 = r#"
-    { deployments: [ { name: "failing_node", tag: "0.1.0", instances: [ { instance_id: "f1" } ] } ] }
+    { deployments: [ { source: { local: "./failing_node" }, instances: [ { instance_id: "f1" } ] } ] }
     "#;
-    let launch_file_path = nodes_dir.path().join("peppy_launch.json5");
+    let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, launcher_json5).expect("failed to write launch file");
 
     let (_goal_response, result) = send_launch_and_wait(
