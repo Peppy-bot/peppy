@@ -372,7 +372,8 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
     let node_stack = started_master.node_stack.clone();
     let node_messenger = MessengerHandle::from_shared(started_master.shared_messenger.clone());
 
-    // Copy launch assets to a temp directory and create required .peppy/git.hash files.
+    // Copy launch assets to a temp directory. The stack_launch process will generate
+    // peppygen files (including git.hash) automatically using the "stack-launch" marker.
     let temp_dir = tempdir().expect("failed to create temp directory");
     let source_assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/launch_assets");
     for node_name in [FAKE_UVC_CAMERA, FAKE_ROBOT_BRAIN, FAKE_OPENARM01_CONTROLLER] {
@@ -382,14 +383,6 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
         let dest_config_path = dest_node_dir.join(NODE_CONFIG_FILE);
         fs::copy(source_node_dir.join(NODE_CONFIG_FILE), &dest_config_path)
             .expect("failed to copy node config");
-        config::fingerprint::create_codegen_fingerprint(
-            &dest_config_path,
-            Path::new(PEPPYGEN_OUTPUT_PATH),
-        );
-        let peppy_output_dir = dest_node_dir.join(PEPPY_OUTPUT_DIR);
-        fs::create_dir_all(&peppy_output_dir).expect("failed to create peppy output directory");
-        fs::write(peppy_output_dir.join("git.hash"), "test-hash")
-            .expect("failed to write node git hash");
     }
     let launch_file_path = temp_dir.path().join("peppy_launcher.json5");
     fs::copy(

@@ -8,9 +8,7 @@ use crate::names;
 use crate::services::node::resolve_node_config;
 use bytes::Bytes;
 use chrono::Local;
-use config::consts::{
-    DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PEPPY_OUTPUT_DIR, logs_dir_launch,
-};
+use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, logs_dir_launch};
 use config::peppy_config::{Deployment, DeploymentSource, PeppyLauncherParser};
 use config::runtime::RuntimeConfig;
 use node_stack::NodeStack;
@@ -160,24 +158,11 @@ fn node_source_from_deployment_source(
     }
 }
 
-fn git_hash_from_node_dir(node_dir: &std::path::Path) -> std::result::Result<String, String> {
-    let git_hash_path = node_dir.join(PEPPY_OUTPUT_DIR).join("git.hash");
-    let stored_git_hash = std::fs::read_to_string(&git_hash_path).map_err(|e| {
-        format!(
-            "Missing required git hash file at {}: {}",
-            git_hash_path.display(),
-            e
-        )
-    })?;
-    let stored_git_hash = stored_git_hash.trim();
-    if stored_git_hash.is_empty() {
-        return Err(format!(
-            "Invalid git hash file at {}: file is empty",
-            git_hash_path.display()
-        ));
-    }
-    Ok(stored_git_hash.to_owned())
-}
+/// Marker git_hash used for stack-launch operations.
+/// When this marker is used, the node_add service skips git hash verification
+/// and generates fresh peppygen files. This allows stack_launch to work with
+/// local filesystem sources without requiring `peppy node sync` beforehand.
+pub const STACK_LAUNCH_GIT_HASH: &str = "stack-launch";
 
 async fn publish_feedback(ctx: &ProcessLaunchContext, feedback: LaunchFeedback) {
     if let Ok(mut file) = ctx.log_file.lock() {
@@ -851,12 +836,7 @@ async fn add_nodes_to_stack(
         .await;
 
         let node_add_goal = match &item.source {
-            NodeSource::Fs(path) => match git_hash_from_node_dir(path.as_path()) {
-                Ok(git_hash) => NodeAddGoal::new(path.clone(), git_hash),
-                Err(err) => {
-                    return Err(restore_stack(ctx, backup_stack, err).await);
-                }
-            },
+            NodeSource::Fs(path) => NodeAddGoal::new(path.clone(), STACK_LAUNCH_GIT_HASH),
             NodeSource::Git {
                 repo_url,
                 repo_path,
@@ -865,9 +845,9 @@ async fn add_nodes_to_stack(
                 repo_url.clone(),
                 repo_path.clone(),
                 repo_ref.clone(),
-                "stack-launch",
+                STACK_LAUNCH_GIT_HASH,
             ),
-            NodeSource::Http { url } => NodeAddGoal::new_http(url.clone(), "stack-launch"),
+            NodeSource::Http { url } => NodeAddGoal::new_http(url.clone(), STACK_LAUNCH_GIT_HASH),
         };
 
         match run_node_add_and_forward_feedback(
