@@ -42,119 +42,94 @@ impl PeppyLauncherParser {
 #[cfg(test)]
 mod tests {
     use crate::{
-        config::{
-            DeploymentNodeSource,
-            types::{LogFormat, Name},
-        },
+        config::DeploymentSource,
         error::{Error, ParsingError},
     };
     use tempfile::tempdir;
 
-    use super::*;
+    use super::{PEPPY_LAUNCHER_FILE_NAME, PeppyLauncherParser};
 
     #[test]
     fn test_parse_peppy_config() {
         let json5 = r#"{
             deployments: [
                 {
-                    name: "uvc_camera",
-                    tag: "0.1.0",
-                    source: "file://tmp/peppy.json5",
+                    source: {
+                        url: "https://example.com/fake_robot_brain.tar.zst",
+                        sha256: "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a"
+                    },
                     instances: [
                         {
-                            instance_id: "camera_front",
-                            parameters: {
-                                device: { physical: "/dev/video_front", sim: "mujoco:camera_front", priority: "physical" },
-                                video: {
-                                    frame_rate: 30,
-                                    resolution: { width: 1280, height: 720 },
-                                    encoding: "mjpeg"
-                                }
-                            }
-                        },
-                        {
-                            instance_id: "camera_rear",
-                            parameters: {
-                                device: { 
-                                  physical: "/dev/video_rear", 
-                                  sim: "mujoco:camera_rear", 
-                                  priority: "sim" 
-                                },
-                                video: {
-                                  frame_rate: 30,
-                                  resolution: { width: 1280, height: 720 },
-                                  encoding: "mjpeg"
-                                }
-                            }
+                            instance_id: "the_brain",
+                            arguments: {}
                         }
                     ]
                 },
                 {
-                    name: "web_video_stream",
-                    tag: "0.1.0",
-                    source: "https://github.com/Peppy/web_video_stream.git",
+                    source: {
+                        repo: "https://github.com/Peppy-bot/example_nodes.git",
+                        path: "fake_openarm01_controller",
+                        ref: "0.1.0"
+                    },
                     instances: [
                         {
-                            instance_id: "web_video1",
-                            parameters: {
-                                http: { host: "localhost", port: 8081, max_connections: 1000, request_timeout_ms: 5000 },
-                                video_stream: { format: "mjpeg", quality: 75, max_fps: 30 }
-                            }
+                            instance_id: "the_nervous_system",
+                            arguments: {}
                         }
                     ]
                 },
                 {
-                    name: "peppy_web",
-                    source: "https://github.com/Peppy/peppy_web.git",
-                    tag: "0.1.0",
+                    source: { local: "./esp32_board" },
                     instances: [
                         {
-                            instance_id: "web_server_1",
-                            parameters: {
-                                http: { host: "0.0.0.0", port: 8080, max_connections: 500, request_timeout_ms: 5000 }
+                            instance_id: "esp32_1",
+                            env_vars: {
+                                ESP32_DEVICE: "/dev/ttyUSB0"
                             }
                         }
                     ]
                 }
-            ],
-            logging: { min_level: "info" }
+            ]
         }"#;
 
         let cfg = PeppyLauncherParser::from_content(json5).unwrap();
-        assert!(cfg.deployments.is_some());
-        let deployments = cfg.deployments.unwrap();
+        let deployments = cfg.deployments;
         assert_eq!(deployments.len(), 3);
 
         // Check first deployment
-        assert_eq!(deployments[0].name, Name::new("uvc_camera").unwrap());
-        assert_eq!(deployments[0].tag, "0.1.0");
-        assert!(matches!(
-            deployments[0].source,
-            Some(DeploymentNodeSource::Local(_))
-        ));
-        assert_eq!(deployments[0].instances.len(), 2);
+        let DeploymentSource::Url(url) = &deployments[0].source else {
+            panic!("expected url source");
+        };
+        assert_eq!(url.url, "https://example.com/fake_robot_brain.tar.zst");
+        assert_eq!(deployments[0].instances[0].instance_id, "the_brain");
+        assert!(deployments[0].instances[0].arguments.is_empty());
 
         // Check second deployment
-        assert_eq!(deployments[1].name, Name::new("web_video_stream").unwrap());
-        assert!(matches!(
-            deployments[1].source,
-            Some(DeploymentNodeSource::Git(_))
-        ));
-        assert_eq!(deployments[1].instances.len(), 1);
+        let DeploymentSource::Git(git) = &deployments[1].source else {
+            panic!("expected git source");
+        };
+        assert_eq!(git.ref_, "0.1.0");
+        assert_eq!(
+            deployments[1].instances[0].instance_id,
+            "the_nervous_system"
+        );
+        assert!(deployments[1].instances[0].arguments.is_empty());
 
         // Check third deployment
-        assert_eq!(deployments[2].name, Name::new("peppy_web").unwrap());
-        assert!(matches!(
-            deployments[2].source,
-            Some(DeploymentNodeSource::Git(_))
-        ));
+        let DeploymentSource::Local(local) = &deployments[2].source else {
+            panic!("expected local source");
+        };
+        assert_eq!(local.local, std::path::PathBuf::from("./esp32_board"));
         assert_eq!(deployments[2].instances.len(), 1);
-
-        let logging = cfg.logging.expect("expected logging section");
-        assert_eq!(logging.min_level, "info");
-        assert!(logging.file_name.is_none());
-        assert!(logging.max_file_size_mb.is_none());
-        assert_eq!(logging.format, LogFormat::Text);
+        assert_eq!(deployments[2].instances[0].instance_id, "esp32_1");
+        assert!(deployments[2].instances[0].arguments.is_empty());
+        assert_eq!(
+            deployments[2].instances[0]
+                .env_vars
+                .get("ESP32_DEVICE")
+                .map(String::as_str),
+            Some("/dev/ttyUSB0")
+        );
     }
 
     #[test]
@@ -176,17 +151,24 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join(PEPPY_LAUNCHER_FILE_NAME);
         let json5 = r#"{
-            deployments: [
-                {
-                    name: "uvc_camera",
-                    tag: "0.1.0",
-                    instances: []
-                }
-            ]
+            deployments: []
         }"#;
         std::fs::write(&path, json5).unwrap();
 
         let cfg = PeppyLauncherParser::from_path(&path).unwrap();
-        assert!(cfg.deployments.is_some());
+        assert!(cfg.deployments.is_empty());
+    }
+
+    #[test]
+    fn test_examples_peppy_launcher_parses() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("examples")
+            .join("nodes_example_1")
+            .join(PEPPY_LAUNCHER_FILE_NAME);
+        let cfg = PeppyLauncherParser::from_path(&path).expect("example launcher should parse");
+        assert!(
+            !cfg.deployments.is_empty(),
+            "example launcher should contain deployments"
+        );
     }
 }

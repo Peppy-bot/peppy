@@ -1,16 +1,15 @@
 {
   deployments: [
     {
-      name: "{{ lidar_sensor_node_name }}",
       source: {
         repo: "{{ lidar_sensor_github_repo }}",
-        path: "{{ lidar_sensor_github_repo_path }}"
+        path: "{{ lidar_sensor_github_repo_path }}",
+        ref: "{{ lidar_sensor_github_ref }}"
       },
-      tag: "{{ lidar_sensor_github_tag }}",
       instances: [
         {
           instance_id: "lidar_1",
-          parameters: {
+          arguments: {
             device: {
               physical: "/dev/lidar1",
               sim: "mujoco:lidar1",
@@ -30,16 +29,15 @@
       ]
     },
     {
-      name: "{{ uvc_camera_node_name }}",
       source: {
         repo: "{{ uvc_camera_github_repo }}",
-        path: "{{ uvc_camera_github_repo_path }}"
+        path: "{{ uvc_camera_github_repo_path }}",
+        ref: "0.1.0"
       },
-      tag: "0.1.0",
       instances: [
         {
           instance_id: "camera_right",
-          parameters: {
+          arguments: {
             device: {
               physical: "/dev/video_right",
               sim: "mujoco:camera_right",
@@ -57,7 +55,7 @@
         },
         {
           instance_id: "camera_left",
-          parameters: {
+          arguments: {
             device: {
               physical: "/dev/video_left",
               sim: "mujoco:camera_left",
@@ -77,15 +75,11 @@
     },
     // `web_video_stream` depends on `uvc_camera`
     {
-      // The test will add the web_video_stream to the local stack
-      name: "{{ web_video_stream_node_name }}",
-      tag: "0.1.0",
-      // Since it's optional, if the node cannot be found, it will be ignored
-      optional: {{ web_video_stream_optional }},
+      source: { local: "./{{ web_video_stream_node_name }}" },
       instances: [
         {
           instance_id: "stream_1",
-          parameters: {
+          arguments: {
             http: {
               host: "0.0.0.0",
               port: 8083,
@@ -104,30 +98,22 @@
       ]
     },
     {
-      name: "{{ brain_node_name }}",
-      // The test will add the brain_node to the local stack
-      tag: "0.1.0",
+      source: { local: "./{{ brain_node_name }}" },
       instances: [
         {
           instance_id: "the_brain",
-          parameters: {}
+          arguments: {}
         }
       ],
     },
     {
-      name: "{{ controller_node_name }}",
-      // The test will add the controller_node to the local stack
-      tag: "0.1.0",
+      source: { local: "./{{ controller_node_name }}" },
       instances: [
         {
           instance_id: "the_nervous_system",
-          parameters: {}
+          arguments: {}
         }
       ]
     },
-  ],
-  logging: {
-    min_level: "info",
-    format: "text"
-  }
+  ]
 }

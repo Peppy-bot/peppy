@@ -1,17 +1,16 @@
-// In this example, the lidar sensor requests tag v2.0 while the repository only contains v1.0
+// In this example, the lidar sensor requests ref v2.0 while the repository only contains v1.0
 {
   deployments: [
     {
-      name: "{{ lidar_sensor_node_name }}",
       source: {
         repo: "{{ lidar_sensor_github_repo }}",
-        path: "{{ lidar_sensor_github_repo_path }}"
+        path: "{{ lidar_sensor_github_repo_path }}",
+        ref: "v2.0"
       },
-      tag: "v2.0",
       instances: [
         {
           instance_id: "lidar_1",
-          parameters: {
+          arguments: {
             device: {
               physical: "/dev/lidar1",
               sim: "mujoco:lidar1",
@@ -31,8 +30,4 @@
       ]
     },
   ],
-  logging: {
-    min_level: "info",
-    format: "text"
-  }
 }
