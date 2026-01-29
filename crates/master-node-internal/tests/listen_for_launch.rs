@@ -362,6 +362,177 @@ async fn send_launch_and_wait(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
+    const FAKE_UVC_CAMERA: &str = "fake_uvc_camera";
+    const FAKE_ROBOT_BRAIN: &str = "fake_robot_brain";
+    const FAKE_OPENARM01_CONTROLLER: &str = "fake_openarm01_controller";
+    const NODE_TAG: &str = "0.1.0";
+
+    let started_master = start_master_node_with_mock_messenger().await;
+    let node_stack = started_master.node_stack.clone();
+    let node_messenger = MessengerHandle::from_shared(started_master.shared_messenger.clone());
+
+    // Copy launch assets to a temp directory and create required .peppy/git.hash files.
+    let temp_dir = tempdir().expect("failed to create temp directory");
+    let source_assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/launch_assets");
+    for node_name in [FAKE_UVC_CAMERA, FAKE_ROBOT_BRAIN, FAKE_OPENARM01_CONTROLLER] {
+        let source_node_dir = source_assets_dir.join(node_name);
+        let dest_node_dir = temp_dir.path().join(node_name);
+        fs::create_dir_all(&dest_node_dir).expect("failed to create node directory");
+        let dest_config_path = dest_node_dir.join(NODE_CONFIG_FILE);
+        fs::copy(source_node_dir.join(NODE_CONFIG_FILE), &dest_config_path)
+            .expect("failed to copy node config");
+        config::fingerprint::create_codegen_fingerprint(
+            &dest_config_path,
+            Path::new(PEPPYGEN_OUTPUT_PATH),
+        );
+        let peppy_output_dir = dest_node_dir.join(PEPPY_OUTPUT_DIR);
+        fs::create_dir_all(&peppy_output_dir).expect("failed to create peppy output directory");
+        fs::write(peppy_output_dir.join("git.hash"), "test-hash")
+            .expect("failed to write node git hash");
+    }
+    let launch_file_path = temp_dir.path().join("peppy_launcher.json5");
+    fs::copy(
+        source_assets_dir.join("peppy_launcher.json5"),
+        &launch_file_path,
+    )
+    .expect("failed to copy launcher file");
+
+    // Set up ready/health responders for all instances in the launcher config.
+    let _ready_camera_front = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started_master.master_node_name,
+            "camera_front",
+            FAKE_UVC_CAMERA,
+        )
+        .await
+        .expect("ready service should start"),
+    );
+    let _health_camera_front = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started_master.master_node_name,
+            "camera_front",
+            FAKE_UVC_CAMERA,
+        )
+        .await
+        .expect("health service should start"),
+    );
+    let _ready_camera_rear = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started_master.master_node_name,
+            "camera_rear",
+            FAKE_UVC_CAMERA,
+        )
+        .await
+        .expect("ready service should start"),
+    );
+    let _health_camera_rear = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started_master.master_node_name,
+            "camera_rear",
+            FAKE_UVC_CAMERA,
+        )
+        .await
+        .expect("health service should start"),
+    );
+    let _ready_brain = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started_master.master_node_name,
+            "the_brain",
+            FAKE_ROBOT_BRAIN,
+        )
+        .await
+        .expect("ready service should start"),
+    );
+    let _health_brain = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started_master.master_node_name,
+            "the_brain",
+            FAKE_ROBOT_BRAIN,
+        )
+        .await
+        .expect("health service should start"),
+    );
+    let _ready_controller = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started_master.master_node_name,
+            "the_nervous_system",
+            FAKE_OPENARM01_CONTROLLER,
+        )
+        .await
+        .expect("ready service should start"),
+    );
+    let _health_controller = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started_master.master_node_name,
+            "the_nervous_system",
+            FAKE_OPENARM01_CONTROLLER,
+        )
+        .await
+        .expect("health service should start"),
+    );
+
+    // Allow listeners to establish.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let (_goal_response, result) = send_launch_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        &launch_file_path,
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+    )
+    .await
+    .expect("launch should complete");
+
+    assert!(
+        result.success,
+        "launch should succeed, got error: {:?}",
+        result.error_message
+    );
+
+    assert!(node_stack.contains(FAKE_UVC_CAMERA, NODE_TAG));
+    assert!(node_stack.contains(FAKE_ROBOT_BRAIN, NODE_TAG));
+    assert!(node_stack.contains(FAKE_OPENARM01_CONTROLLER, NODE_TAG));
+    assert_eq!(node_stack.len(), 4, "root + 3 deployed nodes");
+
+    let uvc_camera = node_stack
+        .find(FAKE_UVC_CAMERA, NODE_TAG)
+        .expect("fake_uvc_camera should be in stack");
+    assert_eq!(
+        uvc_camera.instances().len(),
+        2,
+        "fake_uvc_camera should have 2 instances"
+    );
+
+    let robot_brain = node_stack
+        .find(FAKE_ROBOT_BRAIN, NODE_TAG)
+        .expect("fake_robot_brain should be in stack");
+    assert_eq!(
+        robot_brain.instances().len(),
+        1,
+        "fake_robot_brain should have 1 instance"
+    );
+
+    let controller = node_stack
+        .find(FAKE_OPENARM01_CONTROLLER, NODE_TAG)
+        .expect("fake_openarm01_controller should be in stack");
+    assert_eq!(
+        controller.instances().len(),
+        1,
+        "fake_openarm01_controller should have 1 instance"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_configuration_succeed() {
     const UVC_NODE_NAME: &str = "uvc_camera";
     const ROBOT_NODE_NAME: &str = "robot_brain";
