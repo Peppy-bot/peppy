@@ -35,6 +35,14 @@ pub struct NodeAddGoal {
 }
 
 impl NodeAddGoal {
+    /// Creates a new NodeAddGoal from a NodeSource.
+    pub fn from_source(source: NodeSource, git_hash: impl Into<String>) -> Self {
+        Self {
+            source,
+            git_hash: git_hash.into(),
+        }
+    }
+
     /// Creates a new NodeAddGoal from a filesystem path.
     pub fn new(path: impl Into<PathBuf>, git_hash: impl Into<String>) -> Self {
         Self {

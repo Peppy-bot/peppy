@@ -1,74 +1,16 @@
 use config::AnyType;
-use master_node::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
+use master_node::encoding::{NodeInfoRequest, NodeInfoResponse};
 use peppylib::MessengerHandle;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::source::{
-    is_probably_remote_source, is_supported_http_archive, parse_git_repo_url_and_path,
-};
+use super::source::parse_node_source;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-
-fn parse_node_source(source: &str, git_ref: Option<String>) -> Result<NodeSource> {
-    if is_probably_remote_source(source) {
-        if let Ok(url) = url::Url::parse(source)
-            && matches!(url.scheme(), "http" | "https")
-            && is_supported_http_archive(&url)
-        {
-            if git_ref.is_some() {
-                return Err(Error::ExecutionFailed(
-                    "`--ref` is only supported for git sources".to_string(),
-                ));
-            }
-            return Ok(NodeSource::Http { url });
-        }
-
-        let (repo_url, repo_path) = parse_git_repo_url_and_path(source)?;
-        return Ok(NodeSource::Git {
-            repo_url,
-            repo_path,
-            repo_ref: git_ref,
-        });
-    }
-
-    if git_ref.is_some() {
-        return Err(Error::ExecutionFailed(
-            "`--ref` is only supported for git sources".to_string(),
-        ));
-    }
-
-    let source_path = PathBuf::from(source);
-    let peppy_json5 = if source_path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("json5"))
-    {
-        source_path
-    } else {
-        source_path.join("peppy.json5")
-    };
-
-    let peppy_json5 = peppy_json5.canonicalize().map_err(|e| {
-        Error::ExecutionFailed(format!(
-            "Failed to resolve path '{}': {}",
-            peppy_json5.display(),
-            e
-        ))
-    })?;
-
-    let from_dir = peppy_json5
-        .parent()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    Ok(NodeSource::Fs(from_dir))
-}
 
 pub fn node_info(ctx: &Arc<AppContext>, source: String, git_ref: Option<String>) -> Result<()> {
     crate::commands::block_on(node_info_async(ctx, source, git_ref))
