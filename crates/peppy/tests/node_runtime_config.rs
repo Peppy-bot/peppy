@@ -102,16 +102,12 @@ async fn node_runtime_config_command_outputs_valid_config() {
     assert_eq!(runtime_config.node_name, node_name);
     assert_eq!(runtime_config.bound_master_node, master_node_name.as_str());
     assert!(
-        runtime_config.deployment_instance.arguments.is_empty(),
-        "deployment_instance.arguments should be empty"
+        runtime_config.node_instance.arguments.is_empty(),
+        "node_instance.arguments should be empty"
     );
     assert!(
-        !runtime_config
-            .deployment_instance
-            .instance_id
-            .as_str()
-            .is_empty(),
-        "deployment_instance.instance_id should not be empty"
+        !runtime_config.node_instance.instance_id.as_str().is_empty(),
+        "node_instance.instance_id should not be empty"
     );
 }
 

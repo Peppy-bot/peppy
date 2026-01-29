@@ -5,8 +5,8 @@ use config::{
     NodeArguments,
     consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
     node::NodeConfig,
-    peppy_config::{DeploymentInstance, Name},
-    runtime::RuntimeConfig,
+    peppy_config::Name,
+    runtime::{NodeInstance, RuntimeConfig},
 };
 
 use super::builder::StandaloneConfig;
@@ -45,7 +45,7 @@ impl Processor {
         let node_config: NodeConfig =
             serde_json5::from_str(&std::fs::read_to_string(peppy_config.as_ref())?)?;
         Self::validate_parameter_types(
-            &runtime_config.deployment_instance.arguments,
+            &runtime_config.node_instance.arguments,
             &node_config.parameters,
         )?;
 
@@ -88,16 +88,17 @@ impl Processor {
         let messaging_host = config.messaging_host_or_default();
         let messaging_port = config.messaging_port_or_default();
 
-        let instance_name = Name::new(instance_id.clone()).map_err(|e| Error::InvalidNodeName {
-            node_name: instance_id,
-            reason: e.to_string(),
-        })?;
+        let instance_id_name =
+            Name::new(instance_id.clone()).map_err(|e| Error::InvalidNodeName {
+                node_name: instance_id,
+                reason: e.to_string(),
+            })?;
 
         let runtime_config = RuntimeConfig::new(
             &messaging_host,
             messaging_port,
-            DeploymentInstance {
-                instance_id: instance_name,
+            NodeInstance {
+                instance_id: instance_id_name,
                 arguments,
             },
             &node_name,
@@ -145,7 +146,7 @@ impl Processor {
     }
 
     pub fn bound_instance_id(&self) -> &str {
-        self.runtime_config.deployment_instance.instance_id.as_str()
+        self.runtime_config.node_instance.instance_id.as_str()
     }
 
     pub fn bound_master_node(&self) -> &str {
@@ -153,7 +154,7 @@ impl Processor {
     }
 
     pub fn input_arguments(&self) -> &NodeArguments {
-        &self.runtime_config.deployment_instance.arguments
+        &self.runtime_config.node_instance.arguments
     }
 
     pub fn node_name(&self) -> &str {
@@ -253,9 +254,9 @@ mod tests {
         let json5_config = r#"{
             messaging_host: "127.0.0.1",
             messaging_port: 7448,
-            deployment_instance: {
+            node_instance: {
                 instance_id: "$INSTANCE_ID",
-                parameters: {
+                arguments: {
                     exposure: 0.25,
                     flags: ["hdr", "stabilized"],
                     nested: { enabled: true, gain: 10 },
@@ -333,9 +334,9 @@ mod tests {
         let json5_config = r#"{
             messaging_host: "127.0.0.1",
             messaging_port: 7448,
-            deployment_instance: {
+            node_instance: {
                 instance_id: "test_instance",
-                parameters: { value: 42 }
+                arguments: { value: 42 }
             },
             node_name: "test_node",
             bound_master_node: "master-1234"
@@ -386,9 +387,9 @@ mod tests {
         let json5_config = r#"{
             messaging_host: "127.0.0.1",
             messaging_port: 7448,
-            deployment_instance: {
+            node_instance: {
                 instance_id: "test_instance",
-                parameters: { value: 42, extra_param: "unexpected" }
+                arguments: { value: 42, extra_param: "unexpected" }
             },
             node_name: "test_node",
             bound_master_node: "master-1234"
@@ -440,9 +441,9 @@ mod tests {
         let json5_config = r#"{
             messaging_host: "127.0.0.1",
             messaging_port: 7448,
-            deployment_instance: {
+            node_instance: {
                 instance_id: "test_instance",
-                parameters: { value: "not_an_integer" }
+                arguments: { value: "not_an_integer" }
             },
             node_name: "test_node",
             bound_master_node: "master-1234"
@@ -500,9 +501,9 @@ mod tests {
         let json5_config = r#"{
             messaging_host: "127.0.0.1",
             messaging_port: 7448,
-            deployment_instance: {
+            node_instance: {
                 instance_id: "test_instance",
-                parameters: { config: { enabled: "yes", threshold: 0.5 } }
+                arguments: { config: { enabled: "yes", threshold: 0.5 } }
             },
             node_name: "test_node",
             bound_master_node: "master-1234"
@@ -559,9 +560,9 @@ mod tests {
         let json5_config = r#"{
             messaging_host: "127.0.0.1",
             messaging_port: 7448,
-            deployment_instance: {
+            node_instance: {
                 instance_id: "test_instance",
-                parameters: { tags: ["valid", 123, "also_valid"] }
+                arguments: { tags: ["valid", 123, "also_valid"] }
             },
             node_name: "test_node",
             bound_master_node: "master-1234"
@@ -610,9 +611,9 @@ mod tests {
         let json5_config = r#"{
             messaging_host: "127.0.0.1",
             messaging_port: 7448,
-            deployment_instance: {
+            node_instance: {
                 instance_id: "test_instance",
-                parameters: { value: 42 }
+                arguments: { value: 42 }
             },
             node_name: "test_node",
             bound_master_node: "master-1234"

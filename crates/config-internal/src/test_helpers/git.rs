@@ -20,9 +20,7 @@ pub fn create_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     let uvc_content = UvcCameraNodeTemplate::new("uvc_camera")
         .render()
         .expect("failed to render uvc template");
-    // Keep the node manifest tags aligned with the git tag used for resolution.
-    // `node_stack::deployment::git::resolve_remote_git` checks out `deployment.tag` and then
-    // validates `deployment.tag == node.manifest.tag`.
+    // Keep the node manifest tags aligned with the git ref used for resolution.
     let lidar_content = LidarSensorNodeTemplate::new(LIDAR_SENSOR_NODE_NAME, "0.1.0")
         .render()
         .expect("failed to render lidar template");
@@ -108,10 +106,10 @@ pub fn create_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
         )
         .expect("failed to commit");
     let commit = repo.find_commit(commit_id).expect("failed to find commit");
-    // The "correct" tag for nodes in this test repo is `0.1.0` (it matches the nodes' manifest tags).
+    // The "correct" ref for nodes in this test repo is `0.1.0` (it matches the nodes' manifest tags).
     repo.tag("0.1.0", commit.as_object(), &signature, "0.1.0", false)
         .expect("failed to create tag");
-    // Some config templates use `v*` tags (e.g. config example 2 references `v2.0`); include `v1.0`
+    // Some config templates use `v*` refs (e.g. config example 2 references `v2.0`); include `v1.0`
     // so the repo has a `v*` tag too, but note that the node manifest tag remains `0.1.0`.
     repo.tag("v1.0", commit.as_object(), &signature, "v1.0", false)
         .expect("failed to create v1.0 tag");

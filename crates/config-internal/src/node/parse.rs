@@ -118,9 +118,7 @@ mod tests {
         let json5 = r#"{
             deployments: [
                 {
-                    name: "bad_deployment",
-                    tag: "0.1.0",
-                    source: "",
+                    source: { local: "" },
                     instances: []
                 }
             ]
@@ -130,6 +128,6 @@ mod tests {
         let Error::Parsing(ParsingError::InvalidDeploymentSource(msg)) = result.unwrap_err() else {
             panic!("expected InvalidDeploymentSource error");
         };
-        assert_eq!(msg, "source cannot be empty");
+        assert_eq!(msg, "local path cannot be empty");
     }
 }

@@ -514,7 +514,7 @@ async fn handle_goal_request(
         }
     };
 
-    let instance_id_str = runtime_config.deployment_instance.instance_id.as_str();
+    let instance_id_str = runtime_config.node_instance.instance_id.as_str();
 
     debug!(
         "Received `node_start` goal from {sender_instance_id}, node={}:{}, instance_id={}, runtime_config_len={}",
@@ -609,7 +609,7 @@ async fn process_node_start(
         tag,
     } = goal;
 
-    let instance_id_str = runtime_config.deployment_instance.instance_id.as_str();
+    let instance_id_str = runtime_config.node_instance.instance_id.as_str();
     let instance_id = match Name::new(instance_id_str) {
         Ok(name) => name,
         Err(e) => {
@@ -635,7 +635,7 @@ async fn process_node_start(
     // Validate that all required parameters are provided before starting the node
     let missing_params = validate_parameters(
         &entity.config().parameters,
-        &runtime_config.deployment_instance.arguments,
+        &runtime_config.node_instance.arguments,
         "",
     );
     if !missing_params.is_empty() {

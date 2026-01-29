@@ -1,4 +1,4 @@
-use config::peppy_config::{DeploymentNodeSource, GitRemoteSpec, PeppyLauncher};
+use config::peppy_config::{DeploymentGitSource, DeploymentSource, PeppyLauncher};
 use config::test_helpers;
 use git2::{ObjectType, Repository, Signature};
 use node_stack::{LaunchPlan, NodeStackError};
@@ -18,22 +18,14 @@ fn git_repo_is_cloned_and_resolved() {
         }"#;
     let remote = create_simple_git_repo(manifest_content, "1.2.3");
 
-    let spec = GitRemoteSpec {
+    let source = DeploymentSource::Git(DeploymentGitSource {
         repo: remote.path().to_string_lossy().to_string(),
-        path: None,
-    };
+        path: ".".to_string(),
+        ref_: "1.2.3".to_string(),
+    });
+    let deployments = vec![deployment(source)];
 
-    let deployments = vec![deployment(
-        "uvc_camera",
-        "1.2.3",
-        Some(DeploymentNodeSource::Git(spec)),
-        false,
-    )];
-
-    let launcher_config = PeppyLauncher {
-        deployments: Some(deployments),
-        logging: None,
-    };
+    let launcher_config = PeppyLauncher { deployments };
     let launch_file = write_config(
         temp_dir.path().join("peppy_launcher.json5"),
         launcher_config,
@@ -71,20 +63,17 @@ fn git_repo_missing_tag_is_unresolvable() {
     let launcher_content = r#"{
       deployments: [
         {
-          name: "$LIDAR_NODE_NAME",
           source: {
             repo: "$GIT_REPO",
-            path: "$LIDAR_REPO_PATH"
+            path: "$LIDAR_REPO_PATH",
+            ref: "v2.0"
           },
-          // The test repo is tagged `0.1.0` (and also `v1.0`); request `v2.0` to exercise the missing-tag path.
-          tag: "v2.0",
           instances: [
-            { instance_id: "lidar_1", parameters: {} }
+            { instance_id: "lidar_1", arguments: {} }
           ]
         },
       ],
     }"#
-    .replace("$LIDAR_NODE_NAME", test_helpers::LIDAR_SENSOR_NODE_NAME)
     .replace("$GIT_REPO", git_repo_path)
     .replace("$LIDAR_REPO_PATH", &lidar_repo_path);
 
@@ -102,7 +91,9 @@ fn git_repo_missing_tag_is_unresolvable() {
     );
 
     let lidar_deployment = report
-        .find_deployment_by_name(test_helpers::LIDAR_SENSOR_NODE_NAME)
+        .deployments()
+        .iter()
+        .find(|deployment| !deployment.is_resolved())
         .expect("lidar planned");
 
     assert!(
@@ -118,11 +109,7 @@ fn git_repo_missing_tag_is_unresolvable() {
         panic!("unexpected error type: {error:?}");
     };
 
-    let expected = format!(
-        "{}:{}",
-        test_helpers::LIDAR_SENSOR_NODE_NAME,
-        lidar_deployment.deployment().tag
-    );
+    let expected = format!("git:{}::{}@v2.0", git_repo_path, lidar_repo_path);
     assert_eq!(deployment, &expected);
     assert!(
         reason.contains("Cannot find the node"),
@@ -147,22 +134,14 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
         }"#;
     let remote = create_simple_git_repo(manifest_v1, "1.0.0");
 
-    let spec = GitRemoteSpec {
+    let source = DeploymentSource::Git(DeploymentGitSource {
         repo: remote.path().to_string_lossy().to_string(),
-        path: None,
-    };
+        path: ".".to_string(),
+        ref_: "1.0.0".to_string(),
+    });
+    let deployments = vec![deployment(source)];
 
-    let deployments = vec![deployment(
-        "uvc_camera",
-        "1.0.0",
-        Some(DeploymentNodeSource::Git(spec.clone())),
-        false,
-    )];
-
-    let launcher_config = PeppyLauncher {
-        deployments: Some(deployments),
-        logging: None,
-    };
+    let launcher_config = PeppyLauncher { deployments };
     let launch_file = write_config(
         temp_dir.path().join("peppy_launcher.json5"),
         launcher_config,

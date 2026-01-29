@@ -1,32 +1,27 @@
-// In this example, the lidar sensor that defines wrong input parameters to the node
+// In this example, the lidar sensor defines wrong input arguments.
 {
   deployments: [
     {
-      name: "{{ lidar_sensor_node_name }}",
       source: {
         repo: "{{ lidar_sensor_github_repo }}",
-        path: "{{ lidar_sensor_github_repo_path }}"
+        path: "{{ lidar_sensor_github_repo_path }}",
+        ref: "0.1.0"
       },
-      tag: "0.1.0",
       instances: [
         {
           instance_id: "lidar_1",
-          parameters: {
+          arguments: {
             device: {
               physical: "/dev/lidar1",
               sim: "mujoco:lidar1",
               priority: "sim"
             },
             lidar_point: {
-              fps: 30 // Wrong input parameters
+              fps: 30 // Wrong input argument
             }
           }
         }
       ]
     },
   ],
-  logging: {
-    min_level: "info",
-    format: "text"
-  }
 }

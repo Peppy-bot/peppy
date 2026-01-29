@@ -7,7 +7,7 @@ use super::{
 };
 use crate::error::{Error, Result};
 use config::node::NodeConfig;
-use config::peppy_config::{Deployment, DeploymentNodeSource, PeppyLauncher, PeppyLauncherParser};
+use config::peppy_config::{Deployment, DeploymentSource, PeppyLauncher, PeppyLauncherParser};
 use config::{AnyType, FSNodeConfigIndex, TypeMismatch};
 
 #[derive(Debug)]
@@ -68,9 +68,10 @@ impl PlanReport {
     }
 
     pub fn find_deployment_by_name(&self, name: &str) -> Option<&PlannedDeployment> {
-        self.deployments
-            .iter()
-            .find(|d| d.deployment().name.as_str() == name)
+        self.deployments.iter().find(|d| {
+            d.node()
+                .is_some_and(|node| node.manifest.name.as_str() == name)
+        })
     }
 
     pub fn dependency_errors(&self) -> &[Error] {
@@ -85,20 +86,16 @@ impl PlanReport {
     pub fn validate(&self) -> std::result::Result<(), String> {
         let mut errors = Vec::new();
 
-        for deployment in self
-            .deployments
-            .iter()
-            .filter(|d| !d.is_resolved() && !d.deployment().optional)
-        {
-            let deployment_name = deployment.deployment().name.as_str();
-            let deployment_tag = deployment.deployment().tag.as_str();
+        for deployment in self.deployments.iter().filter(|d| !d.is_resolved()) {
+            let deployment_id = deployment
+                .node()
+                .map(|node| format!("{}:{}", node.manifest.name.as_str(), node.manifest.tag))
+                .unwrap_or_else(|| deployment_source_id(&deployment.deployment().source));
             let reason = deployment
                 .error()
                 .map(ToString::to_string)
                 .unwrap_or_else(|| "unknown error".to_string());
-            errors.push(format!(
-                "deployment {deployment_name}:{deployment_tag} failed: {reason}"
-            ));
+            errors.push(format!("deployment {deployment_id} failed: {reason}"));
         }
 
         for dependency_error in &self.dependency_errors {
@@ -315,51 +312,42 @@ fn topological_sort_local_nodes(configs: Vec<(PathBuf, NodeConfig)>) -> Vec<(Pat
 
 fn resolve_deployment(
     nodes_cache_dir: &Path,
+    base_dir: &Path,
     deployment: &Deployment,
-    node_stack: &NodeStack,
 ) -> Result<ResolvedNode> {
-    match deployment.source.as_ref() {
-        Some(DeploymentNodeSource::Local(_)) | None => {
-            resolve_local_deployment(deployment, node_stack)
-        }
-        Some(DeploymentNodeSource::Git(spec)) => {
-            resolve_remote_git(nodes_cache_dir, deployment, spec.clone())
-        }
-        Some(DeploymentNodeSource::Http(spec)) => {
-            resolve_remote_url(nodes_cache_dir, deployment, spec.clone())
-        }
+    match &deployment.source {
+        DeploymentSource::Local(spec) => resolve_local_deployment(base_dir, spec),
+        DeploymentSource::Git(spec) => resolve_remote_git(nodes_cache_dir, spec),
+        DeploymentSource::Url(spec) => resolve_remote_url(nodes_cache_dir, spec),
     }
 }
 
-fn build_launch_plan(mut peppy_launcher: PeppyLauncher, source_stack: NodeStack) -> LaunchPlan {
-    let deployments = peppy_launcher.deployments.take().unwrap_or_default();
+fn build_launch_plan(peppy_launcher: PeppyLauncher, source_stack: NodeStack) -> LaunchPlan {
+    let deployments = peppy_launcher.deployments;
     let nodes_cache_dir = config::consts::nodes_cache_dir();
+    let base_dir = source_stack.root().root_path().to_path_buf();
 
     let master_config = source_stack.root().config().clone();
     let stack = NodeStack::new(master_config, None, &nodes_cache_dir);
 
     let mut planned = Vec::with_capacity(deployments.len());
-    let mut deployment_optional: HashMap<(String, String), bool> = HashMap::new();
 
     for deployment in deployments {
-        let key = (deployment.name.to_string(), deployment.tag.clone());
-        deployment_optional.insert(key.clone(), deployment.optional);
-
         if deployment.instances.is_empty() {
             let error = Error::DeploymentNotResolvable(
-                format!("{}:{}", deployment.name, deployment.tag),
+                deployment_source_id(&deployment.source),
                 "deployment must have at least one instance".to_string(),
             );
             planned.push(PlannedDeployment::unresolved(deployment, error));
             continue;
         }
 
-        let resolved = match resolve_deployment(&nodes_cache_dir, &deployment, &source_stack) {
+        let resolved = match resolve_deployment(&nodes_cache_dir, &base_dir, &deployment) {
             Ok(resolved) => resolved,
             Err(err) => {
                 let reason = err.to_string();
                 let unresolved_error = Error::DeploymentNotResolvable(
-                    format!("{}:{}", deployment.name, deployment.tag),
+                    deployment_source_id(&deployment.source),
                     reason,
                 );
                 planned.push(PlannedDeployment::unresolved(deployment, unresolved_error));
@@ -368,8 +356,9 @@ fn build_launch_plan(mut peppy_launcher: PeppyLauncher, source_stack: NodeStack)
         };
         let node = resolved.config;
         let root_path = resolved.root_path;
+        let deployment_label = format!("{}:{}", node.manifest.name.as_str(), node.manifest.tag);
 
-        if let Err(err) = validate_instance_parameters(&deployment, &node) {
+        if let Err(err) = validate_instance_parameters(&deployment_label, &deployment, &node) {
             planned.push(PlannedDeployment::unresolved(deployment, err));
             continue;
         }
@@ -385,7 +374,7 @@ fn build_launch_plan(mut peppy_launcher: PeppyLauncher, source_stack: NodeStack)
         for instance in &deployment.instances {
             let Ok(instance_id) = config::node::Name::new(instance.instance_id.as_str()) else {
                 add_failed = Some(Error::DeploymentNotResolvable(
-                    format!("{}:{}", deployment.name, deployment.tag),
+                    deployment_label.clone(),
                     format!("invalid instance id `{}`", instance.instance_id),
                 ));
                 break;
@@ -411,7 +400,7 @@ fn build_launch_plan(mut peppy_launcher: PeppyLauncher, source_stack: NodeStack)
         planned.push(PlannedDeployment::resolved(deployment, node));
     }
 
-    let dependency_errors = validate_stack_dependencies(&stack, &deployment_optional);
+    let dependency_errors = validate_stack_dependencies(&stack);
 
     LaunchPlan {
         node_stack: stack,
@@ -423,6 +412,7 @@ fn build_launch_plan(mut peppy_launcher: PeppyLauncher, source_stack: NodeStack)
 }
 
 fn validate_instance_parameters(
+    deployment_label: &str,
     deployment: &Deployment,
     node: &NodeConfig,
 ) -> std::result::Result<(), Error> {
@@ -445,7 +435,7 @@ fn validate_instance_parameters(
             validate_parameter_types(&instance.arguments, &node.parameters, "")
         {
             return Err(Error::WrongParameterType {
-                deployment: format!("{}:{}", deployment.name, deployment.tag),
+                deployment: deployment_label.to_string(),
                 path: type_mismatch.path,
                 expected: type_mismatch.expected,
                 actual: type_mismatch.actual,
@@ -457,7 +447,7 @@ fn validate_instance_parameters(
         Ok(())
     } else {
         Err(Error::WrongInputParameters {
-            deployment: format!("{}:{}", deployment.name, deployment.tag),
+            deployment: deployment_label.to_string(),
             expected: expected.into_iter().collect(),
             unexpected: unexpected.into_iter().collect(),
         })
@@ -588,10 +578,7 @@ fn validate_parameter_types(
     Ok(())
 }
 
-fn validate_stack_dependencies(
-    stack: &NodeStack,
-    deployment_optional: &HashMap<(String, String), bool>,
-) -> Vec<Error> {
+fn validate_stack_dependencies(stack: &NodeStack) -> Vec<Error> {
     let mut errors = Vec::new();
 
     let snapshot = stack.snapshot();
@@ -606,35 +593,16 @@ fn validate_stack_dependencies(
         })
         .collect();
 
-    let deployment_optional_index: HashMap<(&str, &str), bool> = deployment_optional
-        .iter()
-        .map(|((name, tag), optional)| ((name.as_str(), tag.as_str()), *optional))
-        .collect();
-
     for entity in &snapshot {
         let dependant_name = entity.config().manifest.name.as_str().to_owned();
         let dependant_tag = entity.config().manifest.tag.clone();
-        let dependant_key = (dependant_name.as_str(), dependant_tag.as_str());
-        let dependant_optional = deployment_optional_index
-            .get(&dependant_key)
-            .copied()
-            .unwrap_or(false);
 
         for spec in collect_dependency_specs(entity.config()) {
             let dependency_name = spec.node_name;
             let dependency_tag = spec.node_tag;
             let dependency_key = (dependency_name.as_str(), dependency_tag.as_str());
 
-            let dependency_optional = deployment_optional_index
-                .get(&dependency_key)
-                .copied()
-                .unwrap_or(false);
-
             let Some(dependency_config) = node_index.get(&dependency_key).copied() else {
-                if dependant_optional && dependency_optional {
-                    continue;
-                }
-
                 errors.push(Error::MissingDependency {
                     dependant: dependant_name.clone(),
                     dependant_tag: dependant_tag.clone(),
@@ -658,4 +626,12 @@ fn validate_stack_dependencies(
     }
 
     errors
+}
+
+fn deployment_source_id(source: &DeploymentSource) -> String {
+    match source {
+        DeploymentSource::Local(spec) => format!("local:{}", spec.local.display()),
+        DeploymentSource::Git(spec) => format!("git:{}::{}@{}", spec.repo, spec.path, spec.ref_),
+        DeploymentSource::Url(spec) => format!("url:{}#sha256:{}", spec.url, spec.sha256),
+    }
 }

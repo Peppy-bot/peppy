@@ -1,110 +1,53 @@
-use super::{NodeStack, ResolvedNode};
-use config::peppy_config::Deployment;
-
+use super::ResolvedNode;
 use crate::error::{Error, Result};
+use config::consts::NODE_CONFIG_FILE;
+use config::node::NodeConfigParser;
+use config::peppy_config::DeploymentLocalSource;
+use std::path::{Path, PathBuf};
 
 pub fn resolve_local_deployment(
-    deployment: &Deployment,
-    node_stack: &NodeStack,
+    base_dir: &Path,
+    spec: &DeploymentLocalSource,
 ) -> Result<ResolvedNode> {
-    let entity = node_stack
-        .find(deployment.name.as_str(), &deployment.tag)
-        .ok_or_else(|| Error::NodeNotFound(deployment.name.to_string()))?;
+    let target = if spec.local.is_absolute() {
+        spec.local.clone()
+    } else {
+        base_dir.join(&spec.local)
+    };
+
+    let (root_path, config_path) = if target.is_dir() {
+        (target.clone(), target.join(NODE_CONFIG_FILE))
+    } else {
+        let parent = target
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        (parent, target.clone())
+    };
+
+    if !config_path.is_file() {
+        return Err(Error::FileNotFound(config_path));
+    }
+
+    let node = NodeConfigParser::from_path(&config_path)?;
 
     Ok(ResolvedNode {
-        config: entity.config().clone(),
-        root_path: entity.root_path().to_path_buf(),
+        config: node,
+        root_path,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use config::node::Name;
-
     use super::*;
-    use crate::deployment::NodeStack;
-    use crate::error::Error;
 
     #[test]
-    fn resolve_local_deployment_success() {
-        let config = sample_config_camera();
-        let config_manifest = config.manifest.clone();
-        let deployment = sample_deployment();
-        let root_path = PathBuf::from("/tmp");
-        let stack = NodeStack::new(master_node_config(), None, root_path.clone());
-        stack
-            .push_config(config, false, root_path.clone())
-            .expect("config has no dependencies");
-        stack
-            .add_instance(
-                config_manifest.name.as_str(),
-                &config_manifest.tag,
-                Some(&Name::new("test-instance").unwrap()),
-                None, // Test instance without actual process
-            )
-            .expect("should spawn instance");
-
-        let resolved =
-            resolve_local_deployment(&deployment, &stack).expect("local deployment resolves");
-
-        assert_eq!(
-            resolved.config.manifest.name.as_str(),
-            deployment.name.as_str()
-        );
-        assert_eq!(resolved.config.manifest.tag, deployment.tag);
-        assert_eq!(
-            resolved.config.manifest.name.as_str(),
-            config_manifest.name.as_str()
-        );
-        assert_eq!(resolved.root_path, root_path);
-    }
-
-    #[test]
-    fn resolve_local_deployment_missing_node() {
-        let root_path = PathBuf::from("/tmp");
-        let stack = NodeStack::new(master_node_config(), None, root_path.clone());
-        let err = resolve_local_deployment(&sample_deployment(), &stack)
-            .expect_err("should report missing local node");
-
-        let Error::NodeNotFound(name) = err else {
-            panic!("unexpected error");
-        };
-        assert_eq!(name, "uvc_camera");
-
-        let config = sample_config_lidar();
-        let stack = NodeStack::new(master_node_config(), None, root_path.clone());
-        stack
-            .push_config(config, false, root_path)
-            .expect("config has no dependencies");
-
-        let err = resolve_local_deployment(&sample_deployment(), &stack)
-            .expect_err("should report missing local node");
-
-        let Error::NodeNotFound(name) = err else {
-            panic!("unexpected error");
-        };
-        assert_eq!(name, "uvc_camera");
-    }
-
-    fn master_node_config() -> config::node::NodeConfig {
-        serde_json5::from_str(
-            r#"{
-                schema_version: 1,
-                manifest: {
-                    name: "master",
-                    tag: "1.0.0",
-                    language: "rust",
-                    start_cmd: ["cargo", "run"]
-                }
-            }"#,
-        )
-        .expect("valid master node json5")
-    }
-
-    fn sample_config_camera() -> config::node::NodeConfig {
-        serde_json5::from_str(
+    fn resolve_local_deployment_dir_success() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let node_dir = dir.path().join("uvc_camera");
+        std::fs::create_dir_all(&node_dir).expect("create node dir");
+        std::fs::write(
+            node_dir.join(NODE_CONFIG_FILE),
             r#"{
                 schema_version: 1,
                 manifest: {
@@ -115,33 +58,16 @@ mod tests {
                 }
             }"#,
         )
-        .expect("valid node json5")
-    }
+        .expect("write node config");
 
-    fn sample_config_lidar() -> config::node::NodeConfig {
-        serde_json5::from_str(
-            r#"{
-                schema_version: 1,
-                manifest: {
-                    name: "lidar",
-                    tag: "0.1.0",
-                    language: "rust",
-                    start_cmd: ["cargo", "run", "--release"]
-                }
-            }"#,
-        )
-        .expect("valid node json5")
-    }
+        let spec = DeploymentLocalSource {
+            local: PathBuf::from("./uvc_camera"),
+        };
+        let resolved =
+            resolve_local_deployment(dir.path(), &spec).expect("local deployment resolves");
 
-    fn sample_deployment() -> Deployment {
-        serde_json5::from_str(
-            r#"{
-                name: "uvc_camera",
-                source: "file:///tmp/peppy_node",
-                tag: "0.1.0",
-                instances: []
-            }"#,
-        )
-        .expect("valid deployment json5")
+        assert_eq!(resolved.config.manifest.name.as_str(), "uvc_camera");
+        assert_eq!(resolved.config.manifest.tag, "0.1.0");
+        assert_eq!(resolved.root_path, node_dir);
     }
 }

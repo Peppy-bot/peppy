@@ -14,19 +14,16 @@ pub const LIDAR_SENSOR_NODE_NAME: &str = "lidar_sensor";
 #[derive(Template)]
 #[template(path = "config_example_1/peppy_launcher.json5.j2")]
 pub struct PeppyConfigTemplateExample1<'a> {
-    pub lidar_sensor_node_name: &'a str,
     pub lidar_sensor_github_repo: &'a str,
     // The path to the node inside the repository
     pub lidar_sensor_github_repo_path: &'a str,
-    // The github tag
-    pub lidar_sensor_github_tag: &'a str,
+    // The git ref (tag/commit/branch)
+    pub lidar_sensor_github_ref: &'a str,
 
-    pub uvc_camera_node_name: &'a str,
     pub uvc_camera_github_repo: &'a str,
     pub uvc_camera_github_repo_path: &'a str,
 
     pub web_video_stream_node_name: &'a str,
-    pub web_video_stream_optional: bool,
 
     pub brain_node_name: &'a str,
 
@@ -36,7 +33,6 @@ pub struct PeppyConfigTemplateExample1<'a> {
 #[derive(Template)]
 #[template(path = "config_example_2/peppy_launcher.json5.j2")]
 pub struct PeppyConfigTemplateExample2<'a> {
-    pub lidar_sensor_node_name: &'a str,
     pub lidar_sensor_github_repo: &'a str,
     // The path to the node inside the repository
     pub lidar_sensor_github_repo_path: &'a str,
@@ -45,7 +41,6 @@ pub struct PeppyConfigTemplateExample2<'a> {
 #[derive(Template)]
 #[template(path = "config_example_3/peppy_launcher.json5.j2")]
 pub struct PeppyConfigTemplateExample3<'a> {
-    pub lidar_sensor_node_name: &'a str,
     pub lidar_sensor_url: &'a str,
     pub lidar_sensor_sha256: &'a str,
 }
@@ -53,7 +48,6 @@ pub struct PeppyConfigTemplateExample3<'a> {
 #[derive(Template)]
 #[template(path = "config_example_4/peppy_launcher.json5.j2")]
 pub struct PeppyConfigTemplateExample4<'a> {
-    pub lidar_sensor_node_name: &'a str,
     pub lidar_sensor_github_repo: &'a str,
     pub lidar_sensor_github_repo_path: &'a str,
 }

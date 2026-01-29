@@ -8,8 +8,8 @@ use common::{
 };
 use config::consts::logs_dir_start;
 use config::node::Name as NodeName;
-use config::peppy_config::{DeploymentInstance, Name};
-use config::runtime::RuntimeConfig;
+use config::peppy_config::Name;
+use config::runtime::{NodeInstance, RuntimeConfig};
 use master_node::encoding::NodeStartFeedback;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
@@ -71,7 +71,7 @@ async fn listen_for_node_start_success() {
     let runtime_config = RuntimeConfig::new(
         messaging_host.as_str(),
         messaging_port,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
             arguments: Default::default(),
         },
@@ -190,7 +190,7 @@ async fn listen_for_node_start_timeout() {
     let runtime_config = RuntimeConfig::new(
         "127.0.0.1",
         config::consts::DEFAULT_MESSAGING_PORT,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
             arguments: Default::default(),
         },
@@ -263,7 +263,7 @@ async fn listen_for_node_start_not_found() {
     let runtime_config = RuntimeConfig::new(
         "127.0.0.1",
         config::consts::DEFAULT_MESSAGING_PORT,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
             arguments: Default::default(),
         },
@@ -383,7 +383,7 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
     let runtime_config = RuntimeConfig::new(
         "127.0.0.1",
         config::consts::DEFAULT_MESSAGING_PORT,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
             arguments: Default::default(),
         },
@@ -510,7 +510,7 @@ async fn listen_for_node_start_writes_log_file() {
     let runtime_config = RuntimeConfig::new(
         "127.0.0.1",
         config::consts::DEFAULT_MESSAGING_PORT,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
             arguments: Default::default(),
         },
@@ -640,7 +640,7 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
     let runtime_config = RuntimeConfig::new(
         "127.0.0.1",
         config::consts::DEFAULT_MESSAGING_PORT,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
             arguments: Default::default(), // No parameters provided
         },
@@ -789,7 +789,7 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
     let runtime_config = RuntimeConfig::new(
         "127.0.0.1",
         config::consts::DEFAULT_MESSAGING_PORT,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
             arguments,
         },
@@ -1000,7 +1000,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
     let first_runtime_config = RuntimeConfig::new(
         "127.0.0.1",
         config::consts::DEFAULT_MESSAGING_PORT,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(FIRST_INSTANCE_ID).unwrap(),
             arguments: Default::default(),
         },
@@ -1051,7 +1051,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
     let second_runtime_config = RuntimeConfig::new(
         "127.0.0.1",
         config::consts::DEFAULT_MESSAGING_PORT,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(SECOND_INSTANCE_ID).unwrap(),
             arguments: Default::default(),
         },

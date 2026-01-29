@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use config::consts::PEPPYGEN_OUTPUT_PATH;
-use config::peppy_config::{DeploymentInstance, Name};
-use config::runtime::RuntimeConfig;
+use config::peppy_config::Name;
+use config::runtime::{NodeInstance, RuntimeConfig};
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
 use peppylib::messaging::{NODE_HEALTH_SERVICE, NODE_READY_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::runtime::NodeBuilder;
@@ -139,7 +139,7 @@ async fn daemon_runner_succeed() {
     let runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
             arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
                 .expect("runtime args should parse"),
@@ -349,7 +349,7 @@ async fn node_ready_but_not_healthy() {
     let runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
             arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
                 .expect("runtime args should parse"),
@@ -606,7 +606,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
     let runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
             arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
                 .expect("runtime args should parse"),
