@@ -69,6 +69,15 @@ async fn launch_async(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> R
     })?;
     let master_node_name = daemon_state.master_node_name;
 
+    // Canonicalize the path so the master node can find the file regardless of its working directory
+    let launcher_config_path = launcher_config_path.canonicalize().map_err(|e| {
+        Error::ExecutionFailed(format!(
+            "Failed to resolve launcher config path '{}': {}",
+            launcher_config_path.display(),
+            e
+        ))
+    })?;
+
     PeppyLauncherParser::from_path(&launcher_config_path).map_err(Error::PeppyConfig)?;
 
     info!(
