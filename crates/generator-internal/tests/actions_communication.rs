@@ -1,9 +1,10 @@
 mod helpers;
 
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
+use config::runtime::NodeInstance;
 use config::{
     node::{ExposedAction, MessageFormat, SubscribedAction},
-    peppy_config::{DeploymentInstance, Name},
+    peppy_config::Name,
     runtime::RuntimeConfig,
 };
 use generator::{LanguageGenerator, SubscribedActionMessage};
@@ -276,7 +277,7 @@ async fn actions_communication() {
     let subscriber_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
         },
@@ -349,7 +350,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
         },
@@ -585,7 +586,7 @@ async fn actions_communication_cancel_goal() {
     let subscriber_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
         },
@@ -654,7 +655,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
         },

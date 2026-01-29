@@ -67,7 +67,7 @@ pub struct SerializedNodeGraph {
 #[derive(Clone, Debug)]
 pub struct NodeEntity {
     config: NodeConfig,
-    instances: Vec<NodeInstance>,
+    instances: Vec<TrackedNodeInstance>,
     // TODO: In the future, for total isolation of the snapshot node we could use a solution like rootless Podman
     // Every node has a root path, it's the directory where the configuration resides
     fs_root_path: PathBuf,
@@ -95,12 +95,12 @@ impl NodeEntity {
         self.config
     }
 
-    pub fn instances(&self) -> &[NodeInstance] {
+    pub fn instances(&self) -> &[TrackedNodeInstance] {
         &self.instances
     }
 
     /// Adds an instance to this entity
-    fn add_instance(&mut self, instance: NodeInstance) {
+    fn add_instance(&mut self, instance: TrackedNodeInstance) {
         self.instances.push(instance);
     }
 
@@ -125,14 +125,14 @@ impl NodeEntity {
 }
 
 #[derive(Debug, Clone)]
-pub struct NodeInstance {
+pub struct TrackedNodeInstance {
     instance_id: Name,
     /// Process ID of the running instance. This is `None` for instances running on remote
     /// locations (e.g., embedded systems) where a local PID is not available.
     pid: Option<u32>,
 }
 
-impl NodeInstance {
+impl TrackedNodeInstance {
     pub fn new(instance_id: Name, pid: Option<u32>) -> Self {
         Self { instance_id, pid }
     }
@@ -548,7 +548,7 @@ impl NodeStackInner {
             .cloned()
     }
 
-    fn find_by_instance_id(&self, instance_id: &Name) -> Option<NodeInstance> {
+    fn find_by_instance_id(&self, instance_id: &Name) -> Option<TrackedNodeInstance> {
         self.graph
             .node_weights()
             .flat_map(|entity| entity.instances())
@@ -716,7 +716,7 @@ impl NodeStackInner {
                     node_tag: tag.to_owned(),
                 });
             }
-            let instance = NodeInstance::new(instance_id.clone(), pid);
+            let instance = TrackedNodeInstance::new(instance_id.clone(), pid);
             entity.add_instance(instance);
         }
 
@@ -904,7 +904,7 @@ impl NodeStack {
         let instance_id = instance_id.unwrap_or_else(|| {
             Name::new(get_random(rng())).expect("random name generation failed")
         });
-        let instance = NodeInstance::new(instance_id, Some(std::process::id()));
+        let instance = TrackedNodeInstance::new(instance_id, Some(std::process::id()));
         let mut root_entity = NodeEntity::new(root_config, root_path);
         root_entity.add_instance(instance);
         Self {
@@ -939,7 +939,7 @@ impl NodeStack {
 
     /// Finds a node instance by its instance_id across all entities in the stack.
     /// Returns the NodeInstance if found, None otherwise.
-    pub fn find_by_instance_id(&self, instance_id: &Name) -> Option<NodeInstance> {
+    pub fn find_by_instance_id(&self, instance_id: &Name) -> Option<TrackedNodeInstance> {
         let guard = self.shared.read().expect("node stack poisoned");
         guard.find_by_instance_id(instance_id)
     }

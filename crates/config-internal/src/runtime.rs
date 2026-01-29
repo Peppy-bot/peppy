@@ -7,9 +7,7 @@ use std::{
 
 use crate::config::Name;
 
-/// Represents a node instance at runtime. Used by RuntimeConfig to identify
-/// the running node and its configuration. This is distinct from DeploymentInstance
-/// which is specifically for launcher deployment configurations.
+/// Represents a node instance at runtime. Used by RuntimeConfig to identify the running node and its configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeInstance {

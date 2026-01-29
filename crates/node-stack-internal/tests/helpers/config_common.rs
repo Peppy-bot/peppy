@@ -31,52 +31,6 @@ pub fn master_node_config() -> NodeConfig {
     .expect("parse master node config")
 }
 
-pub fn node_config(name: &str, tag: &str, deps: &[(&str, &str)]) -> NodeConfig {
-    init_test_data_dir();
-    let topics = deps
-        .iter()
-        .map(|(dep_name, dep_tag)| {
-            format!(
-                "{{ id: \"{dep_name}_topic\", node: \"{dep_name}\", name: \"{dep_name}_topic\", tag: \"{dep_tag}\" }}",
-                dep_name = dep_name,
-                dep_tag = dep_tag
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    let subscribes_block = if deps.is_empty() {
-        String::new()
-    } else {
-        format!(
-            ",
-                        subscribes_to: {{
-                            topics: [ {topics} ]
-                        }}",
-            topics = topics
-        )
-    };
-
-    let content = format!(
-        r#"{{
-                schema_version: 1,
-                manifest: {{ name: "{name}", tag: "{tag}", language: "rust", start_cmd: ["{name}"] }},
-                interfaces: {{
-                    exposes: {{
-                        topics: [
-                            {{ name: "{name}_topic", qos_profile: "standard" }}
-                        ]
-                    }}{subscribes}
-                }}
-            }}"#,
-        name = name,
-        tag = tag,
-        subscribes = subscribes_block
-    );
-
-    NodeConfigParser::from_content(&content).expect("parse node config")
-}
-
 pub fn deployment(source: DeploymentSource) -> Deployment {
     init_test_data_dir();
     let instance = DeploymentInstance {
