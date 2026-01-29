@@ -1,5 +1,5 @@
-use config::peppy_config::{DeploymentInstance, Name};
-use config::runtime::RuntimeConfig;
+use config::peppy_config::Name;
+use config::runtime::{NodeInstance, RuntimeConfig};
 use config::{AnyType, NodeArguments};
 use master_node::encoding::{
     NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
@@ -146,7 +146,7 @@ pub async fn start_instance_async(
     let runtime_config = RuntimeConfig::new(
         messaging_host.as_str(),
         messaging_port,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(instance_id.clone())
                 .map_err(|e| Error::PeppyConfig(e.into()))?,
             arguments,

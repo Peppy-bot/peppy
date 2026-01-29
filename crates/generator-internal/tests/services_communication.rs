@@ -1,9 +1,10 @@
 mod helpers;
 
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
+use config::runtime::NodeInstance;
 use config::{
     node::{ExposedService, MessageFormat, SubscribedService},
-    peppy_config::{DeploymentInstance, Name},
+    peppy_config::Name,
     runtime::RuntimeConfig,
 };
 use generator::LanguageGenerator;
@@ -128,7 +129,7 @@ async fn services_communication_no_target_instance_id() {
     let subscriber_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
         },
@@ -186,7 +187,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
         },
@@ -399,7 +400,7 @@ async fn services_communication_exposed_service_without_request_body() {
     let subscriber_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
         },
@@ -454,7 +455,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
         },
@@ -659,7 +660,7 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
     let subscriber_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(subscriber_instance_id).unwrap(),
             arguments: Default::default(),
         },
@@ -716,7 +717,7 @@ fn main() -> Result<()> {
     let exposer1_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(exposer1_instance_id).unwrap(),
             arguments: Default::default(),
         },
@@ -773,7 +774,7 @@ fn main() -> Result<()> {
     let exposer2_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: Name::new(exposer2_instance_id).unwrap(),
             arguments: Default::default(),
         },

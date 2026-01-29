@@ -6,8 +6,8 @@ use common::{
 use common::{NodeStartTestTimeouts, send_node_add_and_wait, send_node_start_and_wait};
 use config::consts::NODE_CONFIG_FILE;
 use config::node::Name;
-use config::peppy_config::{DeploymentInstance, Name as InstanceName};
-use config::runtime::RuntimeConfig;
+use config::peppy_config::Name as InstanceName;
+use config::runtime::{NodeInstance, RuntimeConfig};
 use config::test_helpers;
 use gix_url::Url as GitUrl;
 use master_node::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
@@ -424,7 +424,7 @@ async fn listen_for_node_info_has_instance_ids() {
     let runtime_config_1 = RuntimeConfig::new(
         "127.0.0.1",
         config::consts::DEFAULT_MESSAGING_PORT,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: InstanceName::new(TARGET_INSTANCE_ID_1).expect("valid instance id"),
             arguments: Default::default(),
         },
@@ -459,7 +459,7 @@ async fn listen_for_node_info_has_instance_ids() {
     let runtime_config_2 = RuntimeConfig::new(
         "127.0.0.1",
         config::consts::DEFAULT_MESSAGING_PORT,
-        DeploymentInstance {
+        NodeInstance {
             instance_id: InstanceName::new(TARGET_INSTANCE_ID_2).expect("valid instance id"),
             arguments: Default::default(),
         },
