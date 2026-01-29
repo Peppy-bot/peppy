@@ -1,0 +1,69 @@
+{
+  deployments: [
+    {
+      source: {
+        local: "./fake_robot_brain"
+      },
+      instances: [
+        {
+          instance_id: "the_brain",
+          arguments: {}
+        }
+      ],
+    },
+    {
+      source: {
+        local: "./fake_openarm01_controller",
+      },
+      instances: [
+        {
+          instance_id: "the_nervous_system",
+          arguments: {}
+        }
+      ]
+    },
+    {
+      source: {
+        local: "./fake_uvc_camera",
+      },
+      instances: [
+        {
+          instance_id: "camera_front",
+          arguments: {
+            device: {
+              physical: "/dev/video_right",
+              sim: "mujoco:camera_right",
+              priority: "physical"
+            },
+            video: {
+              frame_rate: 30,
+              resolution: {
+                width: 1920,
+                height: 1080,
+              },
+              encoding: "yuyv",
+            },
+          }
+        },
+        {
+          instance_id: "camera_rear",
+          arguments: {
+            device: {
+              physical: "/dev/video_left",
+              sim: "mujoco:camera_left",
+              priority: "physical"
+            },
+            video: {
+              frame_rate: 30,
+              resolution: {
+                width: 1920,
+                height: 1080,
+              },
+              encoding: "yuyv",
+            },
+          }
+        }
+      ]
+    }
+  ]
+}
