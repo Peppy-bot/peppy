@@ -1,31 +1,42 @@
 // PeppyOS Configuration
 // This is the main configuration file that defines the deployments on the current machine.
-// It's run using the `peppy serve set-config` command. It will automatically look into children folders for `peppy.json5` configuration files belonging to nodes.
-// Any new node that is created should be added to the node stack by running the command `peppy node add <node_dir>`
 {
-  // TODO: Allow the use of plugins. Compared to forks, plugins run in a separate thread, removing IPC overhead. Plugins are useful for things like a ROS2 bridge.
-  // TODO: Zenohd pseudo-configuration could also live here
-  // - `deployments` pulls those nodes from nodes.peppy.bot and store/use them in/from the .peppy directory if they are not present in the children directory relative to this configuration file.
-  // - `deployments` adopts a "value specification syntax" in opposition to the "declarative syntax" present in the other config files
-  // - `deployments` in the future can eventually start nodes on MCUs 
   deployments: [
-    // In this example, 2 intances of uvc_camera will be deployed, both instances will emit to a single `web_video_stream` instance
     {
-      // This is an example of pulling the `uvc_camera` node from github and instanciating it with user defined parameters. In the future we might be able to pull them from nodes.peppy.bot
-      name: "uvc_camera",
-      // Can be a github repo, an http url like `https://nodes.peppy.bot/uvc_camera` or a filesystem uri
-      // Can also be a simple string "https://github.com/Peppy/uvc_camera.git". If that's the case, the root path of the repo will be used as the node
+      // Example of a node being pulled from an url
       source: {
-        repo: "https://github.com/Peppy/nodes.git",
-        path: "uvc_camera"
+        url: "https://example.com/fake_robot_brain.tar.zst",
+        sha256: "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a"
       },
-      // TODO: Add `integrity` to make sure that sha256 integrity has not been tampered with
-      tag: "0.1.0", // In that example the tag is a git tag
-      // One instance is going to emit on ns /camera/front/stream and another on /camera/rear/stream
+      instances: [
+        {
+          instance_id: "the_brain",
+          arguments: {}
+        }
+      ],
+    },
+    {
+      // the source property is mandatory
+      source: {
+        repo: "https://github.com/Peppy-bot/example_nodes.git",
+        path: "fake_openarm01_controller",
+        ref: "0.1.0"
+      },
+      instances: [
+        {
+          instance_id: "the_nervous_system",
+          arguments: {}
+        }
+      ]
+    },
+    {
+      source: {
+        local: "./uvc_camera"
+      },
       instances: [
         {
           instance_id: "camera_front",
-          parameters: {
+          arguments: {
             device: {
               physical: "/dev/video_right",
               sim: "mujoco:camera_right",
@@ -43,7 +54,7 @@
         },
         {
           instance_id: "camera_rear",
-          parameters: {
+          arguments: {
             device: {
               physical: "/dev/video_left",
               sim: "mujoco:camera_left",
@@ -62,14 +73,13 @@
       ]
     },
     {
-      name: "web_video_stream",
-      // If `source` is not specified, the node will be searched inside the node stack of the running `peppy` daemon
-      tag: "0.1.0",
-      optional: true, // false by default. If set to `false`, do not prevent `peppy serve` from starting if the node cannot be found in the node stack
+      source: {
+        local: "./web_video_stream"
+      },
       instances: [
         {
           instance_id: "video_stream1",
-          parameters: {
+          arguments: {
             // It's up to the user to filter on these instances ids. Those ids can be extracted from Messenger::runtime()
             camera_instances_ids: [
               "camera_front",
@@ -93,25 +103,19 @@
       ]
     },
     {
-      name: "esp32_board",
-      tag: "0.1.0",
+      source: {
+        local: "./esp32_board"
+      },
       instances: [
         {
           instance_id: "esp32_1",
-          // Some vars such as `PEPPY_DEVICE` are automatically passed onto the instance
+          // This env var becomes available during the execution of `add_cmd` and `start_cmd`
           env_vars: {
             ESP32_DEVICE: "/dev/tty.usbmodem585A0076841"
           },
-          // No parameters given for this node, no_std env cannot accept dynamic parameters after compilation
+          // No arguments given for this node, no_std env cannot accept dynamic parameters after compilation
         }
       ]
     },
-  ],
-  logging: {
-    min_level: "info",
-    // Will be stored in `.peppy/logs/peppy_root.log` relative to where the `peppy_launcher.json5` is stored
-    file_name: "peppy_root.log",
-    max_file_size_mb: 100,
-    format: "text"
-  }
+  ]
 }

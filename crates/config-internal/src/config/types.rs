@@ -18,68 +18,16 @@ pub const CURRENT_SCHEMA_VERSION: SchemaVersion = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Logging {
-    #[serde(default = "default_log_level")]
-    pub min_level: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub file_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_file_size_mb: Option<u32>,
-    #[serde(default)]
-    pub format: LogFormat,
-}
-
-impl Default for Logging {
-    fn default() -> Self {
-        Self {
-            min_level: default_log_level(),
-            file_name: None,
-            max_file_size_mb: None,
-            format: LogFormat::default(),
-        }
-    }
-}
-
-// Default value functions
-fn default_log_level() -> String {
-    "info".to_string()
-}
-
-#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum LogFormat {
-    #[default]
-    Text,
-    Json,
-}
-
-impl From<String> for LogFormat {
-    fn from(s: String) -> Self {
-        match s.as_str() {
-            "json" => LogFormat::Json,
-            _ => LogFormat::Text, // Default to Text for any other value
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct PeppyLauncher {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployments: Option<Vec<Deployment>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub logging: Option<Logging>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Deployment {
-    pub name: Name,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<DeploymentNodeSource>,
-    pub tag: String,
     #[serde(default)]
-    pub optional: bool,
+    pub source: DeploymentNodeSource,
     #[serde(deserialize_with = "deserialize_instances")]
     pub instances: Vec<DeploymentInstance>,
 }
@@ -88,8 +36,7 @@ pub struct Deployment {
 #[serde(deny_unknown_fields)]
 pub struct DeploymentInstance {
     pub instance_id: Name,
-    // TODO: Rename `parameters` to `arguments` when it's given in a NodeConfig, the `parameters` name is only used in DeploymentInstance
-    #[serde(default, alias = "parameters")]
+    #[serde(default)]
     pub arguments: NodeArguments,
 }
 
