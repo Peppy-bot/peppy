@@ -481,11 +481,11 @@ async fn restore_stack(
     LaunchResult::failure(&ctx.log_path, reason)
 }
 
-/// Step 1: Parse launcher configuration and validate nodes_directory.
+/// Step 1: Parse launcher configuration from file path.
 async fn parse_launcher_config(
     ctx: &ProcessLaunchContext,
     goal: &LaunchGoal,
-) -> std::result::Result<(PeppyLauncher, Vec<Deployment>), LaunchResult> {
+) -> std::result::Result<(PeppyLauncher, Vec<Deployment>, PathBuf), LaunchResult> {
     publish_stdout(
         ctx,
         "Parsing launcher configuration",
@@ -493,8 +493,26 @@ async fn parse_launcher_config(
     )
     .await;
 
+    if !goal.peppy_launch_file_path.exists() {
+        let msg = format!(
+            "launch file does not exist: {}",
+            goal.peppy_launch_file_path.display()
+        );
+        publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
+        return Err(LaunchResult::failure(&ctx.log_path, msg));
+    }
+
+    if !goal.peppy_launch_file_path.is_file() {
+        let msg = format!(
+            "launch file path must be a file: {}",
+            goal.peppy_launch_file_path.display()
+        );
+        publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
+        return Err(LaunchResult::failure(&ctx.log_path, msg));
+    }
+
     let peppy_launcher: PeppyLauncher =
-        match PeppyLauncherParser::from_content(&goal.peppy_launch_json5) {
+        match PeppyLauncherParser::from_path(&goal.peppy_launch_file_path) {
             Ok(cfg) => cfg,
             Err(e) => {
                 publish_stderr(
@@ -510,32 +528,15 @@ async fn parse_launcher_config(
             }
         };
 
-    if goal.nodes_directory.as_os_str().is_empty() {
-        let msg = "nodes_directory is missing".to_string();
-        publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
-    }
-
-    if !goal.nodes_directory.exists() {
-        let msg = format!(
-            "nodes_directory does not exist: {}",
-            goal.nodes_directory.display()
-        );
-        publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
-    }
-
-    if !goal.nodes_directory.is_dir() {
-        let msg = format!(
-            "nodes_directory must be a directory: {}",
-            goal.nodes_directory.display()
-        );
-        publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
-    }
+    // Use the parent directory of the launch file as the nodes_directory
+    let nodes_directory = goal
+        .peppy_launch_file_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
 
     let deployments = peppy_launcher.deployments.clone().unwrap_or_default();
-    Ok((peppy_launcher, deployments))
+    Ok((peppy_launcher, deployments, nodes_directory))
 }
 
 /// Step 2: Resolve deployments - retrieve node configs for each deployment.
@@ -1324,13 +1325,14 @@ async fn handle_goal_request(
 /// 6. Start instances in dependency order
 async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchResult {
     // Step 1: Parse launcher configuration
-    let (_peppy_launcher, deployments) = match parse_launcher_config(&ctx, &goal).await {
-        Ok(result) => result,
-        Err(launch_result) => return launch_result,
-    };
+    let (_peppy_launcher, deployments, nodes_directory) =
+        match parse_launcher_config(&ctx, &goal).await {
+            Ok(result) => result,
+            Err(launch_result) => return launch_result,
+        };
 
     // Step 2: Resolve deployments
-    let planned = match resolve_deployments(&ctx, deployments, &goal.nodes_directory).await {
+    let planned = match resolve_deployments(&ctx, deployments, &nodes_directory).await {
         Ok(result) => result,
         Err(launch_result) => return launch_result,
     };

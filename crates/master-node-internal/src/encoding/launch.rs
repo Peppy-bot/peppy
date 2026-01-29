@@ -18,15 +18,13 @@ use super::{decode_message, encode_message};
 /// Goal message for the Launch action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchGoal {
-    pub peppy_launch_json5: String,
-    pub nodes_directory: PathBuf,
+    pub peppy_launch_file_path: PathBuf,
 }
 
 impl LaunchGoal {
-    pub fn new(peppy_launch_json5: impl Into<String>, nodes_directory: impl Into<PathBuf>) -> Self {
+    pub fn new(peppy_launch_file_path: impl Into<PathBuf>) -> Self {
         Self {
-            peppy_launch_json5: peppy_launch_json5.into(),
-            nodes_directory: nodes_directory.into(),
+            peppy_launch_file_path: peppy_launch_file_path.into(),
         }
     }
 
@@ -34,8 +32,7 @@ impl LaunchGoal {
         let mut builder = Builder::new_default();
         {
             let mut goal = builder.init_root::<launch_capnp::launch_goal::Builder>();
-            goal.set_peppy_launch_json5(&self.peppy_launch_json5);
-            goal.set_nodes_directory(self.nodes_directory.to_string_lossy());
+            goal.set_peppy_launch_file_path(self.peppy_launch_file_path.to_string_lossy());
         }
         encode_message(&builder)
     }
@@ -44,8 +41,7 @@ impl LaunchGoal {
         let reader = decode_message(data)?;
         let goal = reader.get_root::<launch_capnp::launch_goal::Reader>()?;
         Ok(Self {
-            peppy_launch_json5: goal.get_peppy_launch_json5()?.to_str()?.to_owned(),
-            nodes_directory: PathBuf::from(goal.get_nodes_directory()?.to_str()?),
+            peppy_launch_file_path: PathBuf::from(goal.get_peppy_launch_file_path()?.to_str()?),
         })
     }
 
