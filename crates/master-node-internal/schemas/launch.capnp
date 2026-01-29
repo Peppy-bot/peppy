@@ -3,10 +3,8 @@
 # Launch action message structures for master-node services
 
 struct LaunchGoal {
-    # JSON5-encoded PeppyLaunch configuration
-    peppyLaunchJson5 @0 :Text;
-    # Directory to search for node configurations
-    nodesDirectory @1 :Text;
+    # Path to the peppy launch file
+    peppyLaunchFilePath @0 :Text;
 }
 
 struct LaunchGoalResponse {
