@@ -15,7 +15,8 @@ use crate::terminal::ScrollingOutput;
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
-const RESULT_TIMEOUT: Duration = Duration::from_secs(300);
+// Some launches can take a REALLY long time
+const RESULT_TIMEOUT: Duration = Duration::from_secs(3600);
 const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 const RESULT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 const SCROLLING_OUTPUT_LINES: usize = 10;
