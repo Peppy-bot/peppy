@@ -1,3 +1,4 @@
+use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::sync::{collect_subscribed_interfaces, generate_peppygen_for_node};
 use crate::Result;
 use crate::encoding::{
@@ -735,7 +736,13 @@ async fn resolve_node_add_source(
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     match &goal.source {
         NodeSource::Fs(path) => {
-            verify_git_hash(path, &goal.git_hash)?;
+            // When using the stack-launch marker, skip git hash verification and fingerprint
+            // checks. This allows stack_launch to work with local filesystem sources without
+            // requiring `peppy node sync` beforehand - fresh peppygen will be generated.
+            let is_stack_launch = goal.git_hash == STACK_LAUNCH_GIT_HASH;
+            if !is_stack_launch {
+                verify_git_hash(path, &goal.git_hash)?;
+            }
             let config_path = path.join(NODE_CONFIG_FILE);
             let node_config = NodeConfigParser::from_path(&config_path).map_err(|e| {
                 format!(
@@ -747,7 +754,7 @@ async fn resolve_node_add_source(
             Ok(ResolvedNodeAddSource {
                 source_path: path.clone(),
                 node_config,
-                verify_codegen_fingerprint: true,
+                verify_codegen_fingerprint: !is_stack_launch,
                 cleanup_dir: None,
             })
         }
