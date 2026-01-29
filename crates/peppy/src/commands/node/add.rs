@@ -1,18 +1,16 @@
 use config::node::NodeConfigParser;
 use master_node::encoding::{
-    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeListRequest,
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
+    NodeInfoResponse, NodeSource,
 };
-use node_stack::SerializedNodeGraph;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError};
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
 
-use super::source::{
-    is_probably_remote_source, is_supported_http_archive, parse_git_repo_url_and_path,
-};
+use super::source::parse_node_source;
 use super::start::start_instance_async;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
@@ -21,11 +19,8 @@ use crate::terminal::ScrollingOutput;
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 // Timeout for the goal to be accepted (should be fast)
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
-
-struct PreparedNodeAdd {
-    goal: NodeAddGoal,
-    pre_add_node_ref: Option<(String, String)>,
-}
+// Timeout for the node info request
+const INFO_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn node_ref_from_peppy_json5(peppy_json5: &Path) -> Result<(String, String)> {
     let node_config = NodeConfigParser::from_path(peppy_json5).map_err(Error::PeppyConfig)?;
@@ -35,12 +30,7 @@ fn node_ref_from_peppy_json5(peppy_json5: &Path) -> Result<(String, String)> {
     ))
 }
 
-fn prepare_node_add_goal(
-    root_dir: &Path,
-    source: &str,
-    git_hash: &str,
-    git_ref: Option<&str>,
-) -> Result<PreparedNodeAdd> {
+fn validate_git_ref(git_ref: Option<&str>) -> Result<Option<String>> {
     let git_ref = git_ref.map(str::trim);
     if let Some(git_ref) = git_ref
         && git_ref.is_empty()
@@ -49,73 +39,7 @@ fn prepare_node_add_goal(
             "`--ref` cannot be empty".to_string(),
         ));
     }
-
-    if is_probably_remote_source(source) {
-        if let Ok(url) = url::Url::parse(source)
-            && matches!(url.scheme(), "http" | "https")
-            && is_supported_http_archive(&url)
-        {
-            if git_ref.is_some() {
-                return Err(Error::ExecutionFailed(
-                    "`--ref` is only supported for git sources".to_string(),
-                ));
-            }
-            return Ok(PreparedNodeAdd {
-                goal: NodeAddGoal::new_http(url, git_hash.to_string()),
-                pre_add_node_ref: None,
-            });
-        }
-
-        let (repo_url, repo_path) = parse_git_repo_url_and_path(source)?;
-        return Ok(PreparedNodeAdd {
-            goal: NodeAddGoal::new_git(
-                repo_url,
-                repo_path,
-                git_ref.map(str::to_owned),
-                git_hash.to_string(),
-            ),
-            pre_add_node_ref: None,
-        });
-    }
-
-    if git_ref.is_some() {
-        return Err(Error::ExecutionFailed(
-            "`--ref` is only supported for git sources".to_string(),
-        ));
-    }
-
-    let source_path = PathBuf::from(source);
-    let peppy_json5 = if source_path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("json5"))
-    {
-        source_path
-    } else {
-        source_path.join("peppy.json5")
-    };
-
-    // Canonicalize the path to ensure we have an absolute path.
-    // This is important for relative paths like "peppy.json5" where parent() would be empty.
-    let peppy_json5 = peppy_json5.canonicalize().map_err(|e| {
-        Error::ExecutionFailed(format!(
-            "Failed to resolve path '{}': {}",
-            peppy_json5.display(),
-            e
-        ))
-    })?;
-
-    let (node_name, node_tag) = node_ref_from_peppy_json5(&peppy_json5)?;
-
-    let from_dir = peppy_json5
-        .parent()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root_dir.to_path_buf());
-
-    Ok(PreparedNodeAdd {
-        goal: NodeAddGoal::new(from_dir, git_hash.to_string()),
-        pre_add_node_ref: Some((node_name, node_tag)),
-    })
+    Ok(git_ref.map(str::to_owned))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -141,8 +65,6 @@ pub fn add_node(
     ))
 }
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
 #[allow(clippy::too_many_arguments)]
 async fn add_node_async(
     ctx: &Arc<AppContext>,
@@ -163,21 +85,37 @@ async fn add_node_async(
     let master_node_name = daemon_state.master_node_name.clone();
     let git_hash = daemon_state.git_hash.clone();
 
-    let PreparedNodeAdd {
-        goal: add_goal,
-        pre_add_node_ref,
-    } = prepare_node_add_goal(&ctx.root_dir, &source, &git_hash, git_ref.as_deref())?;
+    // Validate git_ref and parse the source into a NodeSource
+    let git_ref = validate_git_ref(git_ref.as_deref())?;
+    let node_source = parse_node_source(&source, git_ref)?;
 
-    if let Some((node_name, node_tag)) = pre_add_node_ref.as_ref() {
-        info!(
-            "Running `add_cmd` for {}:{} on master '{}'...",
-            node_name, node_tag, master_node_name
-        );
+    info!(
+        "Running `add_cmd` for '{}' on master '{}'...",
+        source, master_node_name
+    );
+
+    // Use a separate connection to check for existing instances before connecting with the main handle.
+    // This avoids interfering with the action messenger used for send_goal.
+    let pre_add_node_info = if !force {
+        fetch_node_info(&daemon_state, &master_node_name, node_source.clone())
+            .await
+            .ok()
     } else {
-        info!(
-            "Running `add_cmd` for '{}' on master '{}'...",
-            source, master_node_name
-        );
+        None
+    };
+
+    // Check for existing instances and prompt for confirmation if needed
+    if let Some(ref info) = pre_add_node_info
+        && !info.instances_names.is_empty()
+    {
+        let node_name = info.config.manifest.name.as_str();
+        let node_tag = &info.config.manifest.tag;
+        let confirm = confirm_overwrite(node_name, node_tag, &info.instances_names)?;
+        if !confirm {
+            return Err(Error::ExecutionFailed(
+                "Node add aborted by user".to_string(),
+            ));
+        }
     }
 
     ctx.connect().await?;
@@ -185,26 +123,8 @@ async fn add_node_async(
         .messenger_handle()
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
-    // If we know the node name/tag from a local source, check for existing instances.
-    // Use a separate connection to avoid interfering with the action messenger.
-    if let Some((node_name, node_tag)) = pre_add_node_ref.as_ref()
-        && !force
-    {
-        // Try to fetch instance IDs using a fresh connection
-        if let Ok(instance_ids) =
-            fetch_instance_ids(&daemon_state, &master_node_name, node_name, node_tag).await
-            && !instance_ids.is_empty()
-        {
-            let confirm = confirm_overwrite(node_name, node_tag, &instance_ids)?;
-            if !confirm {
-                return Err(Error::ExecutionFailed(
-                    "Node add aborted by user".to_string(),
-                ));
-            }
-        }
-    }
-
-    // Send the goal to start the add action
+    // Create and send the goal to start the add action
+    let add_goal = NodeAddGoal::from_source(node_source, git_hash);
     let mut action_handle = add_goal
         .send_goal(
             messenger_handle,
@@ -320,8 +240,15 @@ async fn add_node_async(
         ));
     }
 
+    // Get node reference from the snapshot result or from pre-add info
     let snapshot_node_ref =
         node_ref_from_peppy_json5(&add_result.snapshot_path.join("peppy.json5")).ok();
+    let pre_add_node_ref = pre_add_node_info.map(|info| {
+        (
+            info.config.manifest.name.as_str().to_string(),
+            info.config.manifest.tag,
+        )
+    });
     let node_ref = snapshot_node_ref.or(pre_add_node_ref);
 
     if let Some((node_name, node_tag)) = node_ref.as_ref() {
@@ -359,13 +286,13 @@ async fn add_node_async(
     Ok(())
 }
 
-/// Fetches instance IDs
-async fn fetch_instance_ids(
+/// Fetches node info for a given source using NodeInfoRequest.
+/// This includes the node config, whether it's in the node stack, and running instance names.
+async fn fetch_node_info(
     daemon_state: &crate::daemon_state::DaemonState,
     master_node_name: &str,
-    node_name: &str,
-    tag: &str,
-) -> Result<Vec<String>> {
+    node_source: NodeSource,
+) -> Result<NodeInfoResponse> {
     // Create a completely fresh connection for this check to avoid
     // interfering with the main connection used for send_goal
     let messenger = MessengerHandle::from_host_port(
@@ -375,36 +302,24 @@ async fn fetch_instance_ids(
     .await
     .map_err(|e| {
         Error::ExecutionFailed(format!(
-            "Failed to create messenger for instance check: {}",
+            "Failed to create messenger for node info check: {}",
             e
         ))
     })?;
 
-    let response = NodeListRequest::new(false)
+    let request = NodeInfoRequest::new(node_source);
+    request
         .poll(
             &messenger,
             master_node_name,
             CALLER_INSTANCE_ID,
             master_node_name,
-            REQUEST_TIMEOUT,
+            INFO_REQUEST_TIMEOUT,
         )
         .await
         .map_err(|e| {
-            Error::ExecutionFailed(format!(
-                "Failed to check running instances before adding: {}",
-                e
-            ))
-        })?;
-
-    let graph: SerializedNodeGraph = serde_json::from_str(&response.graph_json)
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to parse graph JSON: {}", e)))?;
-
-    Ok(graph
-        .nodes
-        .into_iter()
-        .find(|node| node.name == node_name && node.tag == tag)
-        .map(|node| node.instance_ids)
-        .unwrap_or_default())
+            Error::ExecutionFailed(format!("Failed to check node info before adding: {}", e))
+        })
 }
 
 fn confirm_overwrite(node_name: &str, tag: &str, instance_ids: &[String]) -> Result<bool> {
@@ -441,6 +356,7 @@ fn confirm_overwrite(node_name: &str, tag: &str, instance_ids: &[String]) -> Res
 
 #[cfg(test)]
 mod tests {
+    use super::super::source::parse_git_repo_url_and_path;
     use super::*;
 
     #[test]
@@ -458,36 +374,28 @@ mod tests {
     }
 
     #[test]
-    fn prepares_http_goal_for_tar_zst_url() {
-        let prepared = prepare_node_add_goal(
-            Path::new("/"),
-            "https://example.com/fake_uvc_camera.tar.zst",
-            "git-hash",
-            None,
-        )
-        .expect("should prepare goal");
+    fn parses_http_source_for_tar_zst_url() {
+        let source = parse_node_source("https://example.com/fake_uvc_camera.tar.zst", None)
+            .expect("should parse http source");
 
-        match &prepared.goal.source {
-            master_node::encoding::NodeSource::Http { url } => {
+        match &source {
+            NodeSource::Http { url } => {
                 assert_eq!(url.as_str(), "https://example.com/fake_uvc_camera.tar.zst");
             }
             other => panic!("expected http source, got {other:?}"),
         }
-        assert!(prepared.pre_add_node_ref.is_none());
     }
 
     #[test]
-    fn prepares_git_goal_with_ref_flag() {
-        let prepared = prepare_node_add_goal(
-            Path::new("/"),
+    fn parses_git_source_with_ref() {
+        let source = parse_node_source(
             "https://github.com/Peppy-bot/example_nodes.git/uvc_camera",
-            "git-hash",
-            Some("v0.1.0"),
+            Some("v0.1.0".to_string()),
         )
-        .expect("should prepare goal");
+        .expect("should parse git source");
 
-        match &prepared.goal.source {
-            master_node::encoding::NodeSource::Git {
+        match &source {
+            NodeSource::Git {
                 repo_url,
                 repo_path,
                 repo_ref,
@@ -501,55 +409,64 @@ mod tests {
             }
             other => panic!("expected git source, got {other:?}"),
         }
-        assert!(prepared.pre_add_node_ref.is_none());
     }
 
     #[test]
-    fn prepares_git_goal_without_ref_flag() {
-        let prepared = prepare_node_add_goal(
-            Path::new("/"),
+    fn parses_git_source_without_ref() {
+        let source = parse_node_source(
             "https://github.com/Peppy-bot/example_nodes.git/uvc_camera",
-            "git-hash",
             None,
         )
-        .expect("should prepare goal");
+        .expect("should parse git source");
 
-        match &prepared.goal.source {
-            master_node::encoding::NodeSource::Git { repo_ref, .. } => {
+        match &source {
+            NodeSource::Git { repo_ref, .. } => {
                 assert!(repo_ref.is_none());
             }
             other => panic!("expected git source, got {other:?}"),
         }
-        assert!(prepared.pre_add_node_ref.is_none());
     }
 
     #[test]
-    fn rejects_ref_flag_for_http_archive() {
-        let err = match prepare_node_add_goal(
-            Path::new("/"),
+    fn rejects_ref_for_http_archive() {
+        let err = parse_node_source(
             "https://example.com/fake_uvc_camera.tar.zst",
-            "git-hash",
-            Some("v0.1.0"),
-        ) {
-            Ok(_) => panic!("should reject --ref for http archive"),
-            Err(err) => err,
-        };
+            Some("v0.1.0".to_string()),
+        )
+        .expect_err("should reject --ref for http archive");
 
         assert!(err.to_string().contains("--ref"));
     }
 
     #[test]
-    fn rejects_ref_flag_for_local_source() {
-        let err = match prepare_node_add_goal(
-            Path::new("/"),
-            "some/local/path",
-            "git-hash",
-            Some("v0.1.0"),
-        ) {
-            Ok(_) => panic!("should reject --ref for local sources"),
-            Err(err) => err,
-        };
+    fn rejects_ref_for_local_source() {
+        // Note: This test will fail to canonicalize the path since it doesn't exist,
+        // but it still validates that --ref is rejected for local sources
+        let err = parse_node_source("some/local/path", Some("v0.1.0".to_string()))
+            .expect_err("should reject --ref for local sources");
 
         assert!(err.to_string().contains("--ref"));
+    }
+
+    #[test]
+    fn validate_git_ref_rejects_empty() {
+        let err = validate_git_ref(Some("")).expect_err("should reject empty --ref");
+
+        assert!(err.to_string().contains("--ref"));
+    }
+
+    #[test]
+    fn validate_git_ref_trims_whitespace() {
+        let result =
+            validate_git_ref(Some("  v0.1.0  ")).expect("should accept whitespace-padded ref");
+
+        assert_eq!(result, Some("v0.1.0".to_string()));
+    }
+
+    #[test]
+    fn validate_git_ref_accepts_none() {
+        let result = validate_git_ref(None).expect("should accept None");
+
+        assert!(result.is_none());
     }
 }
