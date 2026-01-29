@@ -1,4 +1,4 @@
-use crate::{config::DeploymentInstance, error::Result};
+use crate::{common::NodeArguments, error::Result};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -6,6 +6,17 @@ use std::{
 };
 
 use crate::config::Name;
+
+/// Represents a node instance at runtime. Used by RuntimeConfig to identify
+/// the running node and its configuration. This is distinct from DeploymentInstance
+/// which is specifically for launcher deployment configurations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeInstance {
+    pub instance_id: Name,
+    #[serde(default)]
+    pub arguments: NodeArguments,
+}
 
 /// Configuration for the launcher to know how to configure spawned nodes' messaging.
 /// This is passed as part of a LauncherRequest.
@@ -42,21 +53,21 @@ pub struct RuntimeConfig {
     pub messaging_port: u16,
     pub node_name: Name,
     pub bound_master_node: Name,
-    pub deployment_instance: DeploymentInstance,
+    pub node_instance: NodeInstance,
 }
 
 impl RuntimeConfig {
     pub fn new(
         messaging_host: &str,
         messaging_port: u16,
-        deployment_instance: DeploymentInstance,
+        node_instance: NodeInstance,
         node_name: impl Into<String>,
         bound_master_node: impl Into<String>,
     ) -> Result<Self> {
         Ok(Self {
             messaging_host: messaging_host.to_owned(),
             messaging_port,
-            deployment_instance,
+            node_instance,
             node_name: Name::new(node_name.into())?,
             bound_master_node: Name::new(bound_master_node.into())?,
         })
@@ -95,7 +106,7 @@ mod tests {
         let json = r#"{
             messaging_host: "$MESSAGING_HOST",
             messaging_port: $MESSAGING_PORT,
-            deployment_instance: {
+            node_instance: {
                 instance_id: "$INSTANCE_ID"
             },
             node_name: "camera",
@@ -125,13 +136,13 @@ mod tests {
 
         assert_eq!(returned, path);
         assert_eq!(parsed.node_name, "camera");
-        assert_eq!(parsed.deployment_instance.instance_id, "camera_front");
+        assert_eq!(parsed.node_instance.instance_id, "camera_front");
         assert_eq!(parsed.bound_master_node, "master_node");
         assert_eq!(
-            parsed.deployment_instance.instance_id,
-            config.deployment_instance.instance_id
+            parsed.node_instance.instance_id,
+            config.node_instance.instance_id
         );
-        assert!(parsed.deployment_instance.arguments.is_empty());
+        assert!(parsed.node_instance.arguments.is_empty());
     }
 
     #[test]
