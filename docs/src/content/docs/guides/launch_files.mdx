@@ -5,6 +5,52 @@ sidebar:
   order: 9
 ---
 
-:::caution[Work in Progress]
-This page is currently under construction. Content may be incomplete or subject to change.
+Launch files let you start multiple nodes simultaneously, including those with dependencies on each other. 
+With a single launch file, you or your team can recreate an entire node environment using just one command.
+
+## Running the Example
+
+Start by cloning [this repository](https://github.com/Peppy-bot/launch_example):
+```sh
+git clone https://github.com/Peppy-bot/launch_example
+cd launch_example
+```
+
+In the root directory, you'll find a [`peppy_launcher.json5`](https://github.com/Peppy-bot/launch_example/blob/main/peppy_launcher.json5) file. Opening it reveals the following structure:
+ 1. All deployments are defined in the `deployment` array
+ 2. Each deployment requires a `source` and `instances` attribute
+
+The `source` attribute supports three formats:
+ - **URL**: A link to a `.tar.zst` archive, requiring both `url` and `sha256` attributes
+ - **Git repository**: Requires `repo`, `path` (location within the repo), and `ref` attributes
+ - **Local path**: Specified via the `local` key, pointing to a directory on your filesystem. The path can be either absolute or relative to the `peppy_launcher.json5` file
+
+From within the cloned repository, execute the launcher:
+```sh
+peppy stack launch ./peppy_launcher.json5
+```
+
+PeppyOS automatically inspects the `name` and `tag` of each node, verifies that all dependencies are met, and constructs the node stack in the correct order.
+
+:::caution
+Running the `peppy stack launch` command clears the existing node stack and stops all running instances
 :::
+
+Verify that the node stack was configured correctly:
+```sh
+❯ peppy stack list
+Listing nodes...
+Requesting node stack graph from master 'adoring-wiles-7286'...
+Node stack:
+  - adoring-wiles-7286:master-node (/Users/tuatini/workspace/peppy) (1 instance: ["happy-tu-8997"])
+  - fake_openarm01_controller:0.1.0 (/Users/tuatini/.peppy/nodes/fake_openarm01_controller_0.1.0_d7dd45) (1 instance: ["the_nervous_system"])
+  - fake_robot_brain:0.1.0 (/Users/tuatini/.peppy/nodes/fake_robot_brain_0.1.0_4eb897) (1 instance: ["the_brain"])
+  - fake_uvc_camera:0.1.0 (/Users/tuatini/.peppy/nodes/fake_uvc_camera_0.1.0_89ce12) (2 instances: ["camera_front", "camera_rear"])
+  - fake_video_reconstruction:0.1.0 (/Users/tuatini/.peppy/nodes/fake_video_reconstruction_0.1.0_08320a) (1 instance: ["video_reconstruction_1"])
+Dependencies:
+  - fake_robot_brain:0.1.0 -> fake_openarm01_controller:0.1.0
+  - fake_robot_brain:0.1.0 -> fake_uvc_camera:0.1.0
+  - fake_video_reconstruction:0.1.0 -> fake_uvc_camera:0.1.0
+```
+
+The output confirms that all nodes have been added to the stack along with their dependency relationships.
