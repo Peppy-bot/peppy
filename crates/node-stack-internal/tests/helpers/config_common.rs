@@ -1,6 +1,6 @@
 use config::{
     node::{NodeConfig, NodeConfigParser},
-    peppy_config::{Deployment, DeploymentInstance, DeploymentNodeSource, Name, PeppyLauncher},
+    peppy_config::{Deployment, DeploymentInstance, DeploymentSource, Name, PeppyLauncher},
 };
 use std::sync::OnceLock;
 use std::{fs, path::PathBuf};
@@ -77,23 +77,16 @@ pub fn node_config(name: &str, tag: &str, deps: &[(&str, &str)]) -> NodeConfig {
     NodeConfigParser::from_content(&content).expect("parse node config")
 }
 
-pub fn deployment(
-    name: &str,
-    tag: &str,
-    source: Option<DeploymentNodeSource>,
-    optional: bool,
-) -> Deployment {
+pub fn deployment(source: DeploymentSource) -> Deployment {
     init_test_data_dir();
     let instance = DeploymentInstance {
         instance_id: Name::new("default").unwrap(),
         arguments: Default::default(),
+        env_vars: Default::default(),
     };
 
     Deployment {
-        name: config::peppy_config::Name::new(name).unwrap(),
         source,
-        tag: tag.to_string(),
-        optional,
         instances: vec![instance],
     }
 }

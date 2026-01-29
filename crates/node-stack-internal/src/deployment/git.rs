@@ -5,18 +5,21 @@ use std::{
 
 use super::ResolvedNode;
 use crate::error::{Error, Result};
-use config::peppy_config::Deployment;
-use config::{node::NodeConfigParser, peppy_config::GitRemoteSpec};
+use config::node::NodeConfigParser;
+use config::peppy_config::DeploymentGitSource;
 use git2::{AutotagOption, FetchOptions, ObjectType, Repository};
 
-fn node_config_path(spec: &GitRemoteSpec) -> PathBuf {
-    let path = spec.path.as_deref().map(Path::new);
-    match path {
-        Some(path) if path.extension().and_then(|ext| ext.to_str()) == Some("json5") => {
-            PathBuf::from(path)
-        }
-        Some(path) => path.join(config::consts::NODE_CONFIG_FILE),
-        None => PathBuf::from(config::consts::NODE_CONFIG_FILE),
+fn node_config_path(path: &str) -> PathBuf {
+    let trimmed = path.trim().trim_start_matches("./");
+    if trimmed.is_empty() || trimmed == "." {
+        return PathBuf::from(config::consts::NODE_CONFIG_FILE);
+    }
+
+    let path = Path::new(trimmed);
+    if path.extension().and_then(|ext| ext.to_str()) == Some("json5") {
+        PathBuf::from(trimmed)
+    } else {
+        path.join(config::consts::NODE_CONFIG_FILE)
     }
 }
 
@@ -97,35 +100,27 @@ fn ensure_repository(
 
 pub fn resolve_remote_git(
     nodes_cache_dir: &Path,
-    deployment: &Deployment,
-    spec: GitRemoteSpec,
+    spec: &DeploymentGitSource,
 ) -> Result<ResolvedNode> {
     fs::create_dir_all(nodes_cache_dir)?;
 
     let repo_dir = build_repo_cache_path(nodes_cache_dir, &spec.repo);
     let repo = ensure_repository(&repo_dir, &spec.repo)
-        .map_err(|_| Error::NodeNotFound(deployment.name.to_string()))?;
+        .map_err(|_| Error::NodeNotFound(spec.repo.to_string()))?;
 
-    fetch_repository(&repo).map_err(|_| Error::NodeNotFound(deployment.name.to_string()))?;
+    fetch_repository(&repo).map_err(|_| Error::NodeNotFound(spec.repo.to_string()))?;
 
-    let commit = find_commit_for_tag(&repo, &deployment.tag)
-        .map_err(|_| Error::NodeNotFound(deployment.name.to_string()))?;
+    let commit = find_commit_for_tag(&repo, &spec.ref_)
+        .map_err(|_| Error::NodeNotFound(format!("{}@{}", spec.repo, spec.ref_)))?;
     let tree = commit
         .tree()
-        .map_err(|_| Error::NodeNotFound(deployment.name.to_string()))?;
+        .map_err(|_| Error::NodeNotFound(spec.repo.to_string()))?;
 
-    let config_path = node_config_path(&spec);
+    let config_path = node_config_path(&spec.path);
     let content = read_blob_from_tree(&repo, &tree, &config_path)
-        .map_err(|_| Error::NodeNotFound(deployment.name.to_string()))?;
+        .map_err(|_| Error::NodeNotFound(spec.repo.to_string()))?;
 
     let node = NodeConfigParser::from_content(&content)?;
-
-    if deployment.name != node.manifest.name.as_str() || deployment.tag != node.manifest.tag {
-        return Err(Error::NoMatchingNode(
-            deployment.name.to_string(),
-            deployment.name.to_string(),
-        ));
-    }
 
     let root_path = repo_dir.join(config_path.parent().unwrap_or_else(|| Path::new("")));
 
@@ -138,8 +133,7 @@ pub fn resolve_remote_git(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::Error;
-    use config::peppy_config::{DeploymentNodeSource, HttpRemoteSpec, Name};
+    use config::peppy_config::DeploymentGitSource;
     use git2::{ObjectType, Repository, Signature};
     use tempfile::TempDir;
 
@@ -159,16 +153,6 @@ mod tests {
         let hash = stable_hash(remote);
         let expected = base.join(format!("example-{hash:016x}"));
         assert_eq!(build_repo_cache_path(base, remote), expected);
-    }
-
-    fn sample_remote_deployment(source: DeploymentNodeSource) -> Deployment {
-        Deployment {
-            name: Name::new("uvc_camera").unwrap(),
-            source: Some(source),
-            tag: "0.1.0".to_string(),
-            optional: false,
-            instances: vec![],
-        }
     }
 
     fn init_local_git_repo(path_within_repo: Option<&str>) -> TempDir {
@@ -225,83 +209,32 @@ mod tests {
     fn map_deployment_nodes_remote_git_root() {
         let remote_repo = init_local_git_repo(None);
         let source = remote_repo.path().to_string_lossy().to_string();
-        let spec = GitRemoteSpec {
+        let spec = DeploymentGitSource {
             repo: source.clone(),
-            path: None,
+            path: ".".to_string(),
+            ref_: "0.1.0".to_string(),
         };
-        let deployment = sample_remote_deployment(DeploymentNodeSource::Git(spec.clone()));
         let cache_dir = tempfile::tempdir().expect("cache dir");
 
-        let resolved = resolve_remote_git(cache_dir.path(), &deployment, spec)
-            .expect("remote deployment resolves");
-        assert_eq!(resolved.config.manifest.name.as_str(), deployment.name);
-        assert_eq!(resolved.config.manifest.tag, deployment.tag);
+        let resolved =
+            resolve_remote_git(cache_dir.path(), &spec).expect("remote deployment resolves");
+        assert_eq!(resolved.config.manifest.name.as_str(), "uvc_camera");
+        assert_eq!(resolved.config.manifest.tag, "0.1.0");
     }
 
     #[test]
     fn map_deployment_nodes_remote_git_with_path() {
         let remote_repo = init_local_git_repo(Some("nodes/uvc_camera"));
-        let spec = GitRemoteSpec {
+        let spec = DeploymentGitSource {
             repo: remote_repo.path().to_string_lossy().to_string(),
-            path: Some("nodes/uvc_camera".to_string()),
+            path: "nodes/uvc_camera".to_string(),
+            ref_: "0.1.0".to_string(),
         };
-        let deployment = sample_remote_deployment(DeploymentNodeSource::Git(spec.clone()));
         let cache_dir = tempfile::tempdir().expect("cache dir");
 
-        let resolved = resolve_remote_git(cache_dir.path(), &deployment, spec)
-            .expect("remote deployment resolves");
-        assert_eq!(resolved.config.manifest.name.as_str(), deployment.name);
-        assert_eq!(resolved.config.manifest.tag, deployment.tag);
-    }
-
-    #[test]
-    fn map_deployment_nodes_remote_git_with_repo_folder() {
-        let remote_repo = init_local_git_repo(Some("nodes/uvc_camera"));
-        let repo_url = remote_repo.path().to_string_lossy().to_string();
-        let spec = GitRemoteSpec {
-            repo: repo_url.clone(),
-            path: Some("nodes/uvc_camera".to_string()),
-        };
-        let full_git_source = spec.as_remote();
-        let deployment_source = full_git_source
-            .parse::<DeploymentNodeSource>()
-            .expect("parses <repo>::<path> git deployment source");
-        let deployment = sample_remote_deployment(deployment_source);
-        match deployment.source.as_ref() {
-            Some(DeploymentNodeSource::Git(git_source)) => {
-                assert_eq!(git_source.repo, repo_url);
-                assert_eq!(git_source.path.as_deref(), Some("nodes/uvc_camera"));
-            }
-            _ => panic!("deployment must use git source"),
-        }
-        let cache_dir = tempfile::tempdir().expect("cache dir");
-
-        let resolved = resolve_remote_git(cache_dir.path(), &deployment, spec)
-            .expect("remote deployment resolves");
-        assert_eq!(resolved.config.manifest.name.as_str(), deployment.name);
-        assert_eq!(resolved.config.manifest.tag, deployment.tag);
-    }
-
-    #[test]
-    fn map_deployment_nodes_remote_http_returns_node_not_found() {
-        let remote = "https://nodes.peppy.bot/uvc_camera.tar.zst";
-        let http_spec =
-            HttpRemoteSpec::new(remote.to_string(), None).expect("valid http deployment spec");
-        let deployment = sample_remote_deployment(DeploymentNodeSource::Http(http_spec));
-
-        let cache_dir = tempfile::tempdir().expect("cache dir");
-
-        let spec = GitRemoteSpec {
-            repo: remote.to_string(),
-            path: None,
-        };
-
-        let err = resolve_remote_git(cache_dir.path(), &deployment, spec)
-            .expect_err("http remote should fail");
-
-        match err {
-            Error::NodeNotFound(name) => assert_eq!(name, deployment.name.to_string()),
-            other => panic!("unexpected error: {other:?}"),
-        }
+        let resolved =
+            resolve_remote_git(cache_dir.path(), &spec).expect("remote deployment resolves");
+        assert_eq!(resolved.config.manifest.name.as_str(), "uvc_camera");
+        assert_eq!(resolved.config.manifest.tag, "0.1.0");
     }
 }
