@@ -256,7 +256,7 @@ mod tests {
             messaging_port: 7448,
             node_instance: {
                 instance_id: "$INSTANCE_ID",
-                parameters: {
+                arguments: {
                     exposure: 0.25,
                     flags: ["hdr", "stabilized"],
                     nested: { enabled: true, gain: 10 },
@@ -336,7 +336,7 @@ mod tests {
             messaging_port: 7448,
             node_instance: {
                 instance_id: "test_instance",
-                parameters: { value: 42 }
+                arguments: { value: 42 }
             },
             node_name: "test_node",
             bound_master_node: "master-1234"
@@ -389,7 +389,7 @@ mod tests {
             messaging_port: 7448,
             node_instance: {
                 instance_id: "test_instance",
-                parameters: { value: 42, extra_param: "unexpected" }
+                arguments: { value: 42, extra_param: "unexpected" }
             },
             node_name: "test_node",
             bound_master_node: "master-1234"
@@ -443,7 +443,7 @@ mod tests {
             messaging_port: 7448,
             node_instance: {
                 instance_id: "test_instance",
-                parameters: { value: "not_an_integer" }
+                arguments: { value: "not_an_integer" }
             },
             node_name: "test_node",
             bound_master_node: "master-1234"
@@ -503,7 +503,7 @@ mod tests {
             messaging_port: 7448,
             node_instance: {
                 instance_id: "test_instance",
-                parameters: { config: { enabled: "yes", threshold: 0.5 } }
+                arguments: { config: { enabled: "yes", threshold: 0.5 } }
             },
             node_name: "test_node",
             bound_master_node: "master-1234"
@@ -562,7 +562,7 @@ mod tests {
             messaging_port: 7448,
             node_instance: {
                 instance_id: "test_instance",
-                parameters: { tags: ["valid", 123, "also_valid"] }
+                arguments: { tags: ["valid", 123, "also_valid"] }
             },
             node_name: "test_node",
             bound_master_node: "master-1234"
@@ -613,7 +613,7 @@ mod tests {
             messaging_port: 7448,
             node_instance: {
                 instance_id: "test_instance",
-                parameters: { value: 42 }
+                arguments: { value: 42 }
             },
             node_name: "test_node",
             bound_master_node: "master-1234"

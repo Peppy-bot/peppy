@@ -180,17 +180,17 @@ async fn node_launch_command_succeed() {
             .expect("node shutdown service should start");
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let node_b_path = nodes_dir.path().join(node_b_name);
     let launcher_json5 = format!(
         r#"{{
             deployments: [
                 {{
-                    name: "{node_b_name}",
-                    tag: "{node_tag}",
+                    source: {{ local: "{}" }},
                     instances: [{{ instance_id: "{instance_id}" }}]
                 }}
-            ],
-            logging: {{ min_level: "info", format: "text" }}
-        }}"#
+            ]
+        }}"#,
+        node_b_path.display()
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
 
@@ -315,7 +315,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
         &git_hash,
         &["sh", "-c", "exit 0"],
     );
-    let _node_b_path = write_node_config(
+    let node_b_path = write_node_config(
         nodes_dir.path(),
         node_b_name,
         node_tag,
@@ -382,13 +382,12 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
         r#"{{
             deployments: [
                 {{
-                    name: "{node_b_name}",
-                    tag: "{node_tag}",
+                    source: {{ local: "{}" }},
                     instances: [{{ instance_id: "node_b_instance" }}]
                 }}
-            ],
-            logging: {{ min_level: "info", format: "text" }}
-        }}"#
+            ]
+        }}"#,
+        node_b_path.display()
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
 
