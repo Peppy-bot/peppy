@@ -1,3 +1,4 @@
+mod info;
 mod node_add;
 mod node_info;
 mod node_init;

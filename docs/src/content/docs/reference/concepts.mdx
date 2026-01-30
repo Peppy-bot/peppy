@@ -20,7 +20,7 @@ The manifest defines a node's identity:
 | Field | Description |
 |-------|-------------|
 | `name` | A validated identifier (lowercase letters, digits, `_`, `-`) |
-| `tag` | A version or variant identifier (e.g., `latest`, `v1.0.0`) |
+| `tag` | A version or variant identifier (e.g., `donut`, `v1.0.0`) |
 | `labels` | Optional metadata labels |
 | `add_cmd` | Command to run before adding to the stack |
 | `start_cmd` | Command to launch the node |
@@ -46,7 +46,7 @@ A **Node Instance** represents a single running execution of a node. Each instan
 - **Instance ID**: A unique identifier for this running process
 - **PID**: The process ID (when running locally)
 
-A node can have multiple instances running simultaneously. For example, you might run multiple instances of a worker node to handle increased load.
+A node can have multiple instances running simultaneously. For example, you might run multiple instances of a camera node, each connected to separate physical devices.
 
 :::note
 For nodes running on remote systems (e.g., embedded devices), the PID may not be available.
@@ -57,7 +57,7 @@ For nodes running on remote systems (e.g., embedded devices), the PID may not be
 The **Node Stack** is the central data structure that manages all active nodes in the system. It maintains a directed acyclic graph (DAG) where:
 
 - **Vertices** are node entities
-- **Edges** represent dependency relationships (pointing from dependent to dependency)
+- **Edges** represent dependency relationships, pointing from a dependent node to its dependency. These edges are derived from interface connections between nodes (exposers and subscribers).
 
 ### Key Responsibilities
 
@@ -80,7 +80,7 @@ The node stack can be visualized in multiple formats:
 - **DOT format**: For Graphviz visualization of the dependency graph
 - **Serialized graph**: JSON representation for programmatic access
 
-## Master Node
+## The Master Node
 
 The **Master Node** is a special node that serves as the root of the node stack and is always present. It is responsible for:
 
@@ -88,32 +88,19 @@ The **Master Node** is a special node that serves as the root of the node stack 
 - **Stack Management**: Managing the lifecycle of all other nodes in the system
 - **System Coordination**: Acting as the central coordinator for the entire PeppyOS runtime
 
-## Node Entity
-
-A **Node Entity** combines a node's configuration with its running instances. It represents:
-
-- The static configuration (what the node is)
-- All running instances (the node's active processes)
-- The filesystem path where the node's data resides
-
-When all instances of a node entity are removed, the entity itself is automatically removed from the stack.
-
 ## Summary
 
 ```
 Node Stack
-├── Root Node Entity (master node - always present)
-│   ├── Configuration
-│   │   ├── Manifest (name, tag, commands)
-│   │   └── Interfaces (exposes/subscribes)
-│   └── Instances (running processes)
+├── Master Node (always present)
+│   └── Instance (always a single instance)
 │
-└── Other Node Entities
-    ├── Node Entity A
+└── Other Nodes
+    ├── Node A
     │   ├── Configuration
     │   └── Instances (1 or more)
     │
-    └── Node Entity B
+    └── Node B
         ├── Configuration
         └── Instances (1 or more)
 ```

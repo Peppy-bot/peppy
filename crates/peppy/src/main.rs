@@ -5,7 +5,7 @@ use tracing::error;
 
 use config::consts::AppEnv;
 use peppy::{
-    commands::{Command, node, service, stack},
+    commands::{Command, info, node, service, stack},
     context::AppContext,
 };
 
@@ -38,6 +38,8 @@ enum Commands {
         #[command(subcommand)]
         command: stack::StackCommands,
     },
+    /// Display peppy version information
+    Info {},
 }
 
 fn main() {
@@ -69,6 +71,7 @@ fn main() {
         Commands::Service { command } => service::ServiceCommand { command }.execute(&app_ctx),
         Commands::Node { command } => node::NodeCommand { command }.execute(&app_ctx),
         Commands::Stack { command } => stack::StackCommand { command }.execute(&app_ctx),
+        Commands::Info {} => info::InfoCommand.execute(&app_ctx),
     };
 
     if let Err(e) = result {

@@ -1,10 +1,14 @@
 //! Cap'n Proto encoding utilities for info messages.
 
+use std::time::Duration;
+
 use bytes::Bytes;
 use capnp::message::Builder;
+use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
 use crate::info_capnp;
+use crate::names;
 
 use super::{decode_message, encode_message};
 
@@ -29,6 +33,30 @@ impl InfoRequest {
         reader.get_root::<info_capnp::info_request::Reader>()?;
         Ok(Self)
     }
+
+    pub async fn poll(
+        &self,
+        messenger: &MessengerHandle,
+        bound_master_node: &str,
+        as_instance_id: &str,
+        target_master_node: &str,
+        response_timeout: Duration,
+    ) -> Result<InfoResponse> {
+        let request_payload = self.encode()?;
+        let response = ServiceMessenger::poll(
+            messenger,
+            bound_master_node,
+            as_instance_id,
+            target_master_node,
+            names::INFO,
+            Some(target_master_node),
+            None,
+            request_payload,
+            response_timeout,
+        )
+        .await?;
+        InfoResponse::decode(&response.payload().to_bytes())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +66,7 @@ pub struct InfoResponse {
     pub master_node_instance_id: String,
     pub host_name: String,
     pub node_count: u32,
+    pub git_version: String,
 }
 
 impl InfoResponse {
@@ -47,6 +76,7 @@ impl InfoResponse {
         master_node_instance_id: impl Into<String>,
         host_name: impl Into<String>,
         node_count: u32,
+        git_version: impl Into<String>,
     ) -> Self {
         Self {
             uptime_secs,
@@ -54,6 +84,7 @@ impl InfoResponse {
             master_node_instance_id: master_node_instance_id.into(),
             host_name: host_name.into(),
             node_count,
+            git_version: git_version.into(),
         }
     }
 
@@ -66,6 +97,7 @@ impl InfoResponse {
             response.set_master_node_instance_id(&self.master_node_instance_id);
             response.set_host_name(&self.host_name);
             response.set_node_count(self.node_count);
+            response.set_git_version(&self.git_version);
         }
         encode_message(&builder)
     }
@@ -79,6 +111,7 @@ impl InfoResponse {
             master_node_instance_id: response.get_master_node_instance_id()?.to_str()?.to_owned(),
             host_name: response.get_host_name()?.to_str()?.to_owned(),
             node_count: response.get_node_count(),
+            git_version: response.get_git_version()?.to_str()?.to_owned(),
         })
     }
 }
