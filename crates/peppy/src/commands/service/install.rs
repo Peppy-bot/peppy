@@ -12,7 +12,7 @@ use super::Command;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-const PEPPY_SERVICE_LABEL: &str = "bot.peppy.daemon";
+const PEPPY_SERVICE_LABEL: &str = "bot.peppy";
 
 pub struct InstallCommand {}
 
@@ -104,7 +104,7 @@ fn write_service_definition(
 }
 
 fn write_systemd_service(target_dir: &Path, ctx: &ServiceInstallCtx) -> Result<PathBuf> {
-    let service_name = format!("{}.service", ctx.label.to_script_name());
+    let service_name = format!("{}.service", ctx.label.to_qualified_name());
     let service_path = target_dir.join(service_name);
     if let Some(parent) = service_path.parent() {
         fs::create_dir_all(parent)?;
@@ -138,7 +138,7 @@ fn default_service_path_with_level(
 ) -> Result<PathBuf> {
     match kind {
         ServiceManagerKind::Systemd => {
-            let service_name = format!("{}.service", label.to_script_name());
+            let service_name = format!("{}.service", label.to_qualified_name());
             match level {
                 ServiceLevel::System => Ok(systemd_unit_dir().join(service_name)),
                 ServiceLevel::User => Ok(systemd_user_unit_dir()?.join(service_name)),
