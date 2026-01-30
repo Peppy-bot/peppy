@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use master_node::encoding::InfoRequest;
-use peppylib::MessengerHandle;
 
 use super::Command;
 use crate::context::AppContext;
@@ -36,12 +35,12 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
     })?;
     let master_node_name = daemon_state.master_node_name.clone();
 
-    let messenger = MessengerHandle::from_host_port(
-        config::consts::DEFAULT_MESSAGING_HOST,
-        daemon_state.messaging_port,
-    )
-    .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to connect to daemon: {}", e)))?;
+    ctx.connect()
+        .await
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to connect to daemon: {}", e)))?;
+    let messenger = ctx
+        .messenger_handle()
+        .expect("messenger should be initialized after connect");
 
     let request = InfoRequest::new();
     match request
