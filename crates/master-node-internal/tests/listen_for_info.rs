@@ -45,4 +45,8 @@ async fn listen_for_info_success() {
         info_response.node_count, 1,
         "node_count should be 1 (just the master node itself)"
     );
+    assert!(
+        !info_response.git_version.is_empty(),
+        "git_version should not be empty"
+    );
 }

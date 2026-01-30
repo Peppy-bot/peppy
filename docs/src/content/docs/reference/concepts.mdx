@@ -20,7 +20,7 @@ The manifest defines a node's identity:
 | Field | Description |
 |-------|-------------|
 | `name` | A validated identifier (lowercase letters, digits, `_`, `-`) |
-| `tag` | A version or variant identifier (e.g., `latest`, `v1.0.0`) |
+| `tag` | A version or variant identifier (e.g., `donut`, `v1.0.0`) |
 | `labels` | Optional metadata labels |
 | `add_cmd` | Command to run before adding to the stack |
 | `start_cmd` | Command to launch the node |
@@ -46,7 +46,7 @@ A **Node Instance** represents a single running execution of a node. Each instan
 - **Instance ID**: A unique identifier for this running process
 - **PID**: The process ID (when running locally)
 
-A node can have multiple instances running simultaneously. For example, you might run multiple instances of a worker node to handle increased load.
+A node can have multiple instances running simultaneously. For example, you might run multiple instances of a camera node, each connected to separate physical devices.
 
 :::note
 For nodes running on remote systems (e.g., embedded devices), the PID may not be available.
@@ -57,7 +57,7 @@ For nodes running on remote systems (e.g., embedded devices), the PID may not be
 The **Node Stack** is the central data structure that manages all active nodes in the system. It maintains a directed acyclic graph (DAG) where:
 
 - **Vertices** are node entities
-- **Edges** represent dependency relationships (pointing from dependent to dependency)
+- **Edges** represent dependency relationships, pointing from a dependent node to its dependency. These edges are derived from interface connections between nodes (exposers and subscribers).
 
 ### Key Responsibilities
 
