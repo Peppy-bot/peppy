@@ -42,7 +42,18 @@ fn get_capnp_binary() -> Option<PathBuf> {
     }
 }
 
+fn embed_git_tag() {
+    // Only set PEPPY_GIT_TAG if it's provided in the environment (by build_release.sh)
+    if let Ok(git_tag) = env::var("PEPPY_GIT_TAG") {
+        if !git_tag.is_empty() {
+            println!("cargo:rustc-env=PEPPY_GIT_TAG={}", git_tag);
+        }
+    }
+}
+
 fn main() {
+    embed_git_tag();
+
     println!("cargo:rerun-if-changed=schemas/");
 
     let capnp_path = get_capnp_binary().expect(

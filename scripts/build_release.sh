@@ -410,7 +410,7 @@ PY
     ASSET_PATH="${DIST_DIR%/}/${ASSET_NAME}"
 
     echo "Building peppy for ${HOST_TRIPLE}..."
-    cargo build -p peppy --bin peppy --release --locked --target "$HOST_TRIPLE"
+    PEPPY_GIT_TAG="$TAG" cargo build -p peppy --bin peppy --release --locked --target "$HOST_TRIPLE"
 
     TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
     BIN_PATH="${TARGET_DIR%/}/${HOST_TRIPLE}/release/peppy"
