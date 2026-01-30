@@ -13,10 +13,10 @@
         "restartPolicyType": "ALWAYS",
         "restartPolicyMaxRetries": 5,
         "multiRegionConfig": {
-            "us-west1": {
+            "us-west2": {
                 "numReplicas": 1
             },
-            "asia-southeast1": {
+            "asia-southeast1-eqsg3a": {
                 "numReplicas": 1
             }
         }
