@@ -364,6 +364,15 @@ PY
     RELEASE_ID="$(printf "%s\n" "$RELEASE_INFO" | sed -n '1p')"
     RELEASE_URL="$(printf "%s\n" "$RELEASE_INFO" | sed -n '2p')"
 
+    # Verify current HEAD matches the tag's commit to prevent building from the wrong branch/commit
+    TAG_COMMIT="$(git rev-parse "${TAG}^{commit}" 2>/dev/null)" || die "tag '${TAG}' not found locally (run 'git fetch --tags')"
+    HEAD_COMMIT="$(git rev-parse HEAD)"
+    if [ "$TAG_COMMIT" != "$HEAD_COMMIT" ]; then
+        echo "error: current HEAD ($HEAD_COMMIT) does not match tag '${TAG}' ($TAG_COMMIT)" >&2
+        echo "hint: checkout the tag first with 'git checkout ${TAG}'" >&2
+        exit 1
+    fi
+
     HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
     [ -n "${HOST_TRIPLE-}" ] || die "could not determine Rust host target triple"
     case "$HOST_TRIPLE" in
