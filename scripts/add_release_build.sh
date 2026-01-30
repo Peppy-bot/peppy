@@ -368,9 +368,12 @@ PY
     TAG_COMMIT="$(git rev-parse "${TAG}^{commit}" 2>/dev/null)" || die "tag '${TAG}' not found locally (run 'git fetch --tags')"
     HEAD_COMMIT="$(git rev-parse HEAD)"
     if [ "$TAG_COMMIT" != "$HEAD_COMMIT" ]; then
-        echo "error: current HEAD ($HEAD_COMMIT) does not match tag '${TAG}' ($TAG_COMMIT)" >&2
-        echo "hint: checkout the tag first with 'git checkout ${TAG}'" >&2
-        exit 1
+        echo "Current HEAD (${HEAD_COMMIT}) does not match tag '${TAG}' (${TAG_COMMIT})." >&2
+        if prompt_yn "Checkout '${TAG}' before building?" Y; then
+            git checkout "$TAG" || die "failed to checkout '${TAG}'"
+        else
+            exit 1
+        fi
     fi
 
     HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
