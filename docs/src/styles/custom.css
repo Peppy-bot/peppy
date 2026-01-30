@@ -1,7 +1,16 @@
 :root {
 	--sl-color-bg: #070810;
+	--sl-color-bg-nav: rgba(7, 8, 16, 0.72);
+	--sl-color-bg-sidebar: rgba(7, 8, 16, 0.72);
 }
 
 :root[data-theme='light'] {
 	--sl-color-bg: #f8f9fc;
+	--sl-color-bg-nav: rgba(248, 249, 252, 0.85);
+	--sl-color-bg-sidebar: rgba(248, 249, 252, 0.85);
+}
+
+/* Add backdrop blur to header like landing page */
+header.header {
+	backdrop-filter: blur(18px);
 }
