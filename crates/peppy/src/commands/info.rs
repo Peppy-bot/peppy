@@ -45,7 +45,7 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
     let request = InfoRequest::new();
     match request
         .poll(
-            &messenger,
+            messenger,
             &master_node_name,
             CALLER_INSTANCE_ID,
             &master_node_name,
