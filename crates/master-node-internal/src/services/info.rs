@@ -95,6 +95,7 @@ fn handle_info_request_inner(
         .and_then(|h| h.into_string().ok())
         .unwrap_or_else(|| "unknown".to_string());
     let node_count = node_stack.len() as u32;
+    let git_version = option_env!("PEPPY_GIT_TAG").unwrap_or("unknown");
 
     InfoResponse::new(
         uptime_secs,
@@ -102,6 +103,7 @@ fn handle_info_request_inner(
         instance_id,
         host_name,
         node_count,
+        git_version,
     )
     .encode()
 }
