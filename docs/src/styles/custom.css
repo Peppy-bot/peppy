@@ -1,0 +1,7 @@
+:root {
+	--sl-color-bg: #070810;
+}
+
+:root[data-theme='light'] {
+	--sl-color-bg: #f8f9fc;
+}
