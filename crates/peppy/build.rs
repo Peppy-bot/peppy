@@ -5,6 +5,18 @@ fn main() {
     // Embed the git hash into the binary at compile time.
     // The serve command will write this to ~/.peppy/daemon_state.json at runtime.
     embed_git_hash();
+
+    // Embed the git tag if provided (set by build_release.sh)
+    embed_git_tag();
+}
+
+fn embed_git_tag() {
+    // Only set PEPPY_GIT_TAG if it's provided in the environment (by build_release.sh)
+    if let Ok(git_tag) = std::env::var("PEPPY_GIT_TAG") {
+        if !git_tag.is_empty() {
+            println!("cargo:rustc-env=PEPPY_GIT_TAG={}", git_tag);
+        }
+    }
 }
 
 fn embed_git_hash() {
