@@ -9,7 +9,6 @@ export default defineConfig({
 		starlight({
 			title: 'PeppyOS',
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/Peppy-bot/peppy' }],
-			customCss: ['./src/styles/custom-theme.css'],
 			sidebar: [
 				{
 					label: 'Guides',
