@@ -11,4 +11,5 @@ struct InfoResponse {
     masterNodeInstanceId @2 :Text;
     hostName @3 :Text;
     nodeCount @4 :UInt32;
+    gitVersion @5 :Text;
 }
