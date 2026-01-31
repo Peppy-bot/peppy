@@ -643,7 +643,7 @@ fn node_add_same_node_shutdown_existing_instances() {
 /// the master node has already stopped the existing instances. This is different from local
 /// filesystem sources where we can check and prompt before adding.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires an additional service in the master node (`node info`) that reads the `peppy.json5` configuration and return information about the node in the node stack"]
+#[ignore = "Requires a call to `node info` on the existing node first"]
 async fn node_add_same_node_different_sources_show_ovewrite_prompt() {
     todo!(
         "If the first node is added from the local filesystem and then started, and then the same node is added to the node stack but this time it's added from git, we should still get the prompt `Adding this node will stop...`"
