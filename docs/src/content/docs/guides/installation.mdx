@@ -27,12 +27,7 @@ You can verify the service is running with:
   </TabItem>
   <TabItem label="macOS">
     ```sh
-    launchctl list | grep peppy
-    ```
-
-    To view detailed service info:
-    ```sh
-    launchctl print gui/$(id -u)/bot.peppy
+    launchctl list bot.peppy
     ```
   </TabItem>
 </Tabs>
@@ -59,17 +54,18 @@ You can verify the service is running with:
   <TabItem label="macOS">
     Start the service:
     ```sh
-    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/bot.peppy.plist
+    launchctl load ~/Library/LaunchAgents/bot.peppy.plist
     ```
 
     Stop the service:
     ```sh
-    launchctl bootout gui/$(id -u)/bot.peppy
+    launchctl unload ~/Library/LaunchAgents/bot.peppy.plist
     ```
 
     Restart the service:
     ```sh
-    launchctl kickstart -k gui/$(id -u)/bot.peppy
+    launchctl unload ~/Library/LaunchAgents/bot.peppy.plist
+    launchctl load ~/Library/LaunchAgents/bot.peppy.plist
     ```
   </TabItem>
 </Tabs>
