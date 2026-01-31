@@ -10,8 +10,8 @@ use config::{
 use generator::LanguageGenerator;
 use helpers::{
     WaitContext, compile_project, copy_config_to_output, init_cargo_user_node, init_test_env,
-    send_shutdown, spawn_cargo_run, wait_for_child, wait_for_health_service_reachable_or_exit,
-    wait_for_service_reachable_or_exit,
+    send_shutdown, spawn_cargo_run, try_send_shutdown, wait_for_child,
+    wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use std::path::Path;
 use std::{fs, time::Duration};
@@ -288,7 +288,9 @@ fn main() -> Result<()> {
     )
     .await;
 
-    send_shutdown(
+    // Use try_send_shutdown for subscriber since it may have already exited
+    // after completing its service call
+    try_send_shutdown(
         &messenger,
         TEST_MASTER_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,

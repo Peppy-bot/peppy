@@ -360,3 +360,30 @@ pub async fn send_shutdown(
         )
     });
 }
+
+/// Like `send_shutdown` but doesn't panic if the service is unreachable
+/// (e.g., the process has already exited).
+#[allow(dead_code)]
+pub async fn try_send_shutdown(
+    messenger: &MessengerHandle,
+    bound_master_node: &str,
+    sender_instance_id: &str,
+    target_node_name: &str,
+    target_master_node: Option<&str>,
+    target_instance_id: &str,
+    timeout: Duration,
+) {
+    let payload = bytes::Bytes::from_static(b"shutdown");
+    let _ = ServiceMessenger::poll(
+        messenger,
+        bound_master_node,
+        sender_instance_id,
+        target_node_name,
+        SHUTDOWN_SERVICE,
+        target_master_node,
+        Some(target_instance_id),
+        payload,
+        timeout,
+    )
+    .await;
+}
