@@ -1,11 +1,11 @@
 #!/bin/sh
 set -eu
 
-# Install peppy from GitHub Releases.
+# Install peppy from peppy.bot releases.
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/Peppy-bot/peppy/main/scripts/install.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/Peppy-bot/peppy/main/scripts/install.sh | sh -s -- ./peppy-x86_64-unknown-linux-gnu.tgz
-#   ./scripts/install.sh ./peppy-x86_64-unknown-linux-gnu.tgz
+#   curl -fsSL https://peppy.bot/install.sh | sh
+#   curl -fsSL https://peppy.bot/install.sh | sh -s -- ./peppy-x86_64-unknown-linux-gnu.tgz
+#   ./install.sh ./peppy-x86_64-unknown-linux-gnu.tgz
 #
 # Environment variables:
 #   PEPPY_VERSION           Version to install (default: latest)
@@ -13,7 +13,7 @@ set -eu
 #   PEPPY_BIN_DIR           Binary install directory (default: $PEPPY_HOME/bin)
 #   PEPPY_PLATFORM          Linux target suffix (default: auto-detected)
 #   PEPPY_ARCH              Override detected architecture (e.g. aarch64, x86_64)
-#   PEPPY_REPOURL           GitHub repo URL (default: https://github.com/Peppy-bot/peppy)
+#   PEPPY_REPOURL           Base URL for downloads (default: https://peppy.bot)
 #   PEPPY_DOWNLOAD_URL      Override full download URL
 #   PEPPY_NO_PATH_UPDATE    If set, do not update shell PATH config
 
@@ -32,8 +32,8 @@ __wrap__() {
         case "$ARCHIVE_PATH" in
         -h | --help)
             echo "Usage:"
-            echo "  ./scripts/install.sh [path/to/peppy-<arch>-<platform>.tgz]"
-            echo "  curl -fsSL https://raw.githubusercontent.com/Peppy-bot/peppy/main/scripts/install.sh | sh -s -- [path/to/archive.tgz]"
+            echo "  ./install.sh [https://peppy.bot/v0.1.0/peppy-<arch>-<platform>.tgz]"
+            echo "  curl -fsSL https://peppy.bot/install.sh | sh -s -- [path/to/archive.tgz]"
             exit 0
             ;;
         '~' | '~'/*) ARCHIVE_PATH="${HOME-}${ARCHIVE_PATH#\~}" ;; # expand tilde
@@ -55,7 +55,7 @@ __wrap__() {
     esac
     PEPPY_BIN_DIR="${PEPPY_BIN_DIR:-$PEPPY_HOME/bin}"
 
-    REPOURL="${PEPPY_REPOURL:-https://github.com/Peppy-bot/peppy}"
+    REPOURL="${PEPPY_REPOURL:-https://peppy.bot}"
     PLATFORM="$(uname -s)"
     ARCH="${PEPPY_ARCH:-$(uname -m)}"
 
@@ -99,15 +99,15 @@ __wrap__() {
     EXTENSION=".tgz"
 
     if [ "$VERSION" = "latest" ]; then
-        DOWNLOAD_URL="${PEPPY_DOWNLOAD_URL:-${REPOURL%/}/releases/latest/download/${BINARY}${EXTENSION-}}"
+        DOWNLOAD_URL="${PEPPY_DOWNLOAD_URL:-${REPOURL%/}/latest/${BINARY}${EXTENSION-}}"
     else
-        DOWNLOAD_URL="${PEPPY_DOWNLOAD_URL:-${REPOURL%/}/releases/download/v${VERSION#v}/${BINARY}${EXTENSION-}}"
+        DOWNLOAD_URL="${PEPPY_DOWNLOAD_URL:-${REPOURL%/}/v${VERSION#v}/${BINARY}${EXTENSION-}}"
     fi
 
     if [ -n "${ARCHIVE_PATH-}" ]; then
         printf "This script will install peppy for you.\nUsing local archive: %s\n" "$ARCHIVE_PATH"
     else
-        printf "Downloading and installing peppy %s from:\n%s\n" "$VERSION" "$(mask_credentials "$DOWNLOAD_URL")"
+        printf "This script will automatically download and install peppy (%s) for you.\nGetting it from this url: %s\n" "$VERSION" "$(mask_credentials "$DOWNLOAD_URL")"
     fi
 
     TEMP_FILE="$(mktemp "${TMPDIR:-/tmp}/.peppy_install.XXXXXXXX")"
