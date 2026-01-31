@@ -143,13 +143,7 @@ impl CapnpFacade {
             return Self::validate_path(PathBuf::from(path));
         }
 
-        if let Some(path) = Self::bundled_capnp_binary() {
-            return Self::validate_path(path);
-        }
-
-        Err(Error::Encoding(
-            "capnp binary not found; install capnp or enable the build-capnp feature".into(),
-        ))
+        Self::validate_path(Self::bundled_capnp_binary()?)
     }
 
     fn validate_path(path: PathBuf) -> Result<PathBuf> {
@@ -195,19 +189,30 @@ impl CapnpFacade {
         Ok(())
     }
 
-    fn bundled_capnp_binary() -> Option<PathBuf> {
+    fn bundled_capnp_binary() -> Result<PathBuf> {
         let binary_name = match (env::consts::OS, env::consts::ARCH) {
             ("linux", "x86_64") => "capnp_linux_x86_64",
             ("linux", "aarch64") => "capnp_linux_aarch64",
             ("macos", "aarch64") => "capnp_macos_aarch64",
-            _ => return None,
+            (os, arch) => {
+                return Err(Error::Encoding(format!(
+                    "no bundled capnp binary available for {os}/{arch}"
+                )));
+            }
         };
 
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tools")
             .join(binary_name);
 
-        if path.exists() { Some(path) } else { None }
+        if path.exists() {
+            Ok(path)
+        } else {
+            Err(Error::Encoding(format!(
+                "bundled capnp binary not found at {}",
+                path.display()
+            )))
+        }
     }
 }
 
@@ -216,13 +221,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundled_capnp_exists_when_available() {
-        if let Some(path) = CapnpFacade::bundled_capnp_binary() {
-            assert!(
-                path.exists(),
-                "expected bundled capnp binary at {}",
-                path.display()
-            );
-        }
+    fn bundled_capnp_exists() {
+        let path = CapnpFacade::bundled_capnp_binary().expect("bundled capnp binary should exist");
+        assert!(
+            path.exists(),
+            "expected bundled capnp binary at {}",
+            path.display()
+        );
     }
 }
