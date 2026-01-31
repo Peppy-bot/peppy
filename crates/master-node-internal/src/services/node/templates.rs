@@ -1,10 +1,15 @@
 use askama::Template;
+use rust_embed::Embed;
 use std::path::Path;
 
 use crate::Result;
 
-/// Path to the templates directory
-const TEMPLATES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/templates");
+#[derive(Embed)]
+#[folder = "templates/"]
+#[include = "*.rs"]
+#[include = "*.py"]
+#[exclude = "*.j2"]
+struct EmbeddedTemplates;
 
 /// Template for Rust Cargo.toml file
 #[derive(Template)]
@@ -36,31 +41,41 @@ pub struct PythonPeppyJson5<'a> {
     pub node_name: &'a str,
 }
 
-/// Recursively copies all non-template files (files without .j2 extension) from
-/// the source directory to the destination directory, preserving the directory structure.
-fn copy_static_files(src_dir: &Path, dest_dir: &Path) -> Result<()> {
-    for entry in std::fs::read_dir(src_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let file_name = path.file_name().unwrap();
-        let dest_path = dest_dir.join(file_name);
+/// Copies all embedded static files under the given prefix
+/// to the destination directory, preserving the directory structure.
+fn copy_embedded_static_files(prefix: &str, dest_dir: &Path) -> Result<()> {
+    let prefix_with_slash = if prefix.ends_with('/') {
+        prefix.to_string()
+    } else {
+        format!("{prefix}/")
+    };
 
-        if path.is_dir() {
-            std::fs::create_dir_all(&dest_path)?;
-            copy_static_files(&path, &dest_path)?;
-        } else if path.extension().and_then(|e| e.to_str()) != Some("j2") {
-            std::fs::copy(&path, &dest_path)?;
+    for file_path in EmbeddedTemplates::iter() {
+        let file_path_str = file_path.as_ref();
+
+        let Some(relative_path) = file_path_str.strip_prefix(&prefix_with_slash) else {
+            continue;
+        };
+
+        let dest_path = dest_dir.join(relative_path);
+
+        if let Some(parent) = dest_path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
+
+        let content = EmbeddedTemplates::get(file_path_str).ok_or_else(|| {
+            std::io::Error::other(format!("embedded file not found: {file_path_str}"))
+        })?;
+        std::fs::write(&dest_path, content.data.as_ref())?;
     }
+
     Ok(())
 }
 
 /// Applies templates and copies static files for Rust node initialization
 pub fn apply_rust_templates(node_name: &str, node_dir: &Path) -> Result<()> {
-    let template_dir = Path::new(TEMPLATES_DIR).join("node_init/rust");
-
     // Copy all static files (non-.j2 files) recursively
-    copy_static_files(&template_dir, node_dir)?;
+    copy_embedded_static_files("node_init/rust", node_dir)?;
 
     // Apply Cargo.toml template
     let cargo_toml = RustCargoToml {
@@ -82,10 +97,8 @@ pub fn apply_rust_templates(node_name: &str, node_dir: &Path) -> Result<()> {
 
 /// Applies templates and copies static files for Python node initialization
 pub fn apply_python_templates(node_name: &str, node_dir: &Path) -> Result<()> {
-    let template_dir = Path::new(TEMPLATES_DIR).join("node_init/python");
-
     // Copy all static files (non-.j2 files) recursively
-    copy_static_files(&template_dir, node_dir)?;
+    copy_embedded_static_files("node_init/python", node_dir)?;
 
     // Apply pyproject.toml template
     let pyproject_toml = PythonPyprojectToml { node_name };

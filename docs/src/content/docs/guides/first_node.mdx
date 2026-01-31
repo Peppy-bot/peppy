@@ -45,7 +45,11 @@ Run:
 In the node folder, you'll find the following:
  - A `peppy.json5` file
  - A `.peppy` folder local to your machine
- - Your project scaffolding based on the selected build system
+ - Your project scaffolding based on the selected toolchain
+
+:::note
+PeppyOS doesn't force you into a specific toolchain. While project initialization is currently limited to tools like `cargo` or `uv`, you're free to use any toolchain as long as your project can consume the `peppygen` library generated in the `.peppy` directory.
+:::
 
 ## Exploring the `peppy.json5` file
 This is the entry point and the single source of truth for every node. All node interfaces and communication are defined in the `peppy.json5` configuration file, regardless of the programming language used.
