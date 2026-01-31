@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::{
-    ExposedTopic, Name as ConfigName, NodeConfigParser, SubscribedTopic, SubscribesTo,
+    ExposedTopic, Name as ConfigName, NodeConfigParser, SubscribedTopic, SubscribesTo, Toolchain,
 };
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
@@ -110,6 +110,7 @@ async fn node_list_command_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(provider_name).expect("valid node name"),
             to_dir: None,
+            toolchain: Toolchain::Cargo,
         },
     }
     .execute(&node_ctx)
@@ -119,6 +120,7 @@ async fn node_list_command_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(consumer_name).expect("valid node name"),
             to_dir: None,
+            toolchain: Toolchain::Cargo,
         },
     }
     .execute(&node_ctx)
@@ -252,6 +254,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(provider_name).expect("valid node name"),
             to_dir: None,
+            toolchain: Toolchain::Cargo,
         },
     }
     .execute(&node_ctx)
@@ -261,6 +264,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(consumer_name).expect("valid node name"),
             to_dir: None,
+            toolchain: Toolchain::Cargo,
         },
     }
     .execute(&node_ctx)

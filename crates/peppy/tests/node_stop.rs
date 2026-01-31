@@ -1,3 +1,4 @@
+use config::node::Toolchain;
 use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,6 +53,7 @@ async fn node_stop_command_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
+            toolchain: Toolchain::Cargo,
         },
     }
     .execute(&node_ctx)
