@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{ArgGroup, Subcommand};
+use config::node::Toolchain;
 use tracing::info;
 
 use super::Command;
@@ -67,6 +68,8 @@ pub enum NodeCommands {
     Init {
         /// Name of the node directory to create
         node_name: NodeName,
+        /// Build toolchain to use: cargo for Rust (default) or uv for Python
+        toolchain: Toolchain,
         /// Optional: target directory (defaults to current directory)
         #[arg(long)]
         to_dir: Option<PathBuf>,
@@ -181,8 +184,12 @@ pub struct NodeCommand {
 impl Command for NodeCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<(), CommandError> {
         match self.command {
-            NodeCommands::Init { to_dir, node_name } => {
-                let mut node_builder = NodeInitBuilder::new(ctx, node_name);
+            NodeCommands::Init {
+                to_dir,
+                node_name,
+                toolchain,
+            } => {
+                let mut node_builder = NodeInitBuilder::new(ctx, node_name, toolchain);
 
                 if let Some(dir) = to_dir {
                     node_builder = node_builder.to_dir(dir);

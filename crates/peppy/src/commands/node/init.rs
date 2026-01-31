@@ -17,14 +17,16 @@ pub struct NodeInitBuilder {
     ctx: Arc<AppContext>,
     to_dir: PathBuf,
     node_name: NodeName,
+    toolchain: Toolchain,
 }
 
 impl NodeInitBuilder {
-    pub fn new(ctx: &Arc<AppContext>, node_name: NodeName) -> Self {
+    pub fn new(ctx: &Arc<AppContext>, node_name: NodeName, toolchain: Toolchain) -> Self {
         Self {
             ctx: Arc::clone(ctx),
             to_dir: ctx.root_dir.clone(),
             node_name,
+            toolchain,
         }
     }
 
@@ -68,7 +70,7 @@ impl NodeInitBuilder {
             &self.to_dir,
             self.node_name.as_str(),
             git_hash,
-            Toolchain::Cargo,
+            self.toolchain,
         );
 
         let response = request

@@ -1,6 +1,7 @@
 use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 
+use config::node::Toolchain;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::context::AppContext;
@@ -42,6 +43,7 @@ fn node_rust_init_command_success() {
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
+            toolchain: Toolchain::Cargo,
             to_dir: None,
         },
     }
