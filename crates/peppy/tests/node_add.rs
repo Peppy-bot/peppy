@@ -1,4 +1,5 @@
 use config::consts::PEPPY_OUTPUT_DIR;
+use config::node::Toolchain;
 use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
@@ -52,6 +53,7 @@ fn node_add_command_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
+            toolchain: Toolchain::Cargo,
         },
     }
     .execute(&node_ctx)
@@ -172,6 +174,7 @@ fn node_add_command_with_run_arg_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
+            toolchain: Toolchain::Cargo,
         },
     }
     .execute(&node_ctx)
@@ -315,6 +318,7 @@ fn node_add_after_failed_sync_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
+            toolchain: Toolchain::Cargo,
         },
     }
     .execute(&node_ctx)
@@ -479,6 +483,7 @@ fn node_add_same_node_shutdown_existing_instances() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
+            toolchain: Toolchain::Cargo,
         },
     }
     .execute(&node_ctx)

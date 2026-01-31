@@ -1,3 +1,4 @@
+use config::node::Toolchain;
 use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 
@@ -37,6 +38,7 @@ async fn node_runtime_config_command_outputs_valid_config() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
+            toolchain: Toolchain::Cargo,
         },
     }
     .execute(&node_ctx)
@@ -143,6 +145,7 @@ async fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
+            toolchain: Toolchain::Cargo,
         },
     }
     .execute(&node_ctx)

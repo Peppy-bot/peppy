@@ -1,3 +1,4 @@
+use config::node::Toolchain;
 use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -128,6 +129,7 @@ async fn node_launch_command_succeed() {
         command: NodeCommands::Init {
             node_name: peppy::commands::node::NodeName::new(node_b_name).expect("valid node name"),
             to_dir: None,
+            toolchain: Toolchain::Cargo,
         },
     }
     .execute(&ctx)

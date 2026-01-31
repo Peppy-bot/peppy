@@ -1,3 +1,4 @@
+use config::node::Toolchain;
 use master_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
@@ -48,6 +49,7 @@ fn node_remove_command_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
+            toolchain: Toolchain::Cargo,
         },
     }
     .execute(&node_ctx)
@@ -180,6 +182,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
+            toolchain: Toolchain::Cargo,
         },
     }
     .execute(&node_ctx)
@@ -318,6 +321,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
+            toolchain: Toolchain::Cargo,
         },
     }
     .execute(&node_ctx)
