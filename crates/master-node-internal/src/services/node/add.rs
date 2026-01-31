@@ -158,6 +158,22 @@ async fn run_add_cmd_with_streaming(
         program, args, working_dir
     );
 
+    // Log the command being executed to the log file before attempting to spawn
+    {
+        let full_cmd = cmd.join(" ");
+        if let Ok(mut file) = log_file.lock() {
+            let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+            let _ = writeln!(
+                file,
+                "[{}] Executing add_cmd: {} (working_dir: {})",
+                timestamp,
+                full_cmd,
+                working_dir.display()
+            );
+            let _ = file.flush();
+        }
+    }
+
     let mut child = Command::new(program)
         .args(args)
         .current_dir(working_dir)
