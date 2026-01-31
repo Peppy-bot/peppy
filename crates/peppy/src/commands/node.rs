@@ -68,7 +68,7 @@ pub enum NodeCommands {
     Init {
         /// Name of the node directory to create
         node_name: NodeName,
-        /// Build toolchain to use: cargo for Rust (default) or uv for Python
+        /// Build toolchain to use
         #[arg(long, default_value_t)]
         toolchain: Toolchain,
         /// Optional: target directory (defaults to current directory)
