@@ -160,6 +160,9 @@ mod tests {
             perms.set_mode(0o000);
             fs::set_permissions(&restricted_dir, perms).unwrap();
 
+            // Check if permission restriction actually works (root bypasses permission checks)
+            let permissions_work = fs::read_dir(&restricted_dir).is_err();
+
             let result = find_peppy_nodes_from_dir(temp_dir.path());
 
             // Restore permissions for cleanup
@@ -167,9 +170,16 @@ mod tests {
             perms.set_mode(0o755);
             fs::set_permissions(&restricted_dir, perms).unwrap();
 
-            // Should only find the accessible one
-            assert!(result.len() == 1);
-            assert!(result.contains(&accessible_peppy));
+            if permissions_work {
+                // Should only find the accessible one when permissions are enforced
+                assert!(result.len() == 1);
+                assert!(result.contains(&accessible_peppy));
+            } else {
+                // When running as root (or similar), both files are accessible
+                assert!(result.len() == 2);
+                assert!(result.contains(&accessible_peppy));
+                assert!(result.contains(&restricted_peppy));
+            }
         }
     }
 }
