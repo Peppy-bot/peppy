@@ -645,7 +645,7 @@ async fn process_node_start(
         ));
     }
 
-    let mut child = match start_node(&entity, &runtime_config_json5) {
+    let mut child = match start_node(&entity, &runtime_config_json5, &log_file) {
         Ok(child) => child,
         Err(e) => {
             debug!("Failed to start node instance '{}': {}", instance_id_str, e);
@@ -906,7 +906,11 @@ async fn kill_and_report_error(
 
 /// Runs a node using its manifest's start_cmd and passes the PEPPY_RUNTIME_CONFIG as an env var.
 /// Returns the spawned child process handle on success.
-pub fn start_node(entity: &NodeEntity, runtime_config_json5: &str) -> std::io::Result<Child> {
+pub fn start_node(
+    entity: &NodeEntity,
+    runtime_config_json5: &str,
+    log_file: &Arc<StdMutex<File>>,
+) -> std::io::Result<Child> {
     let manifest = &entity.config().manifest;
 
     let Some((program, args)) = manifest.start_cmd.split_first() else {
@@ -921,6 +925,22 @@ pub fn start_node(entity: &NodeEntity, runtime_config_json5: &str) -> std::io::R
         args,
         entity.root_path()
     );
+
+    // Log the command being executed to the log file before attempting to spawn
+    {
+        let full_cmd = manifest.start_cmd.join(" ");
+        if let Ok(mut file) = log_file.lock() {
+            let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+            let _ = writeln!(
+                file,
+                "[{}] Executing start_cmd: {} (working_dir: {})",
+                timestamp,
+                full_cmd,
+                entity.root_path().display()
+            );
+            let _ = file.flush();
+        }
+    }
 
     // Write runtime config to a unique file per spawned process.
     // Using a shared path can cause cross-test and cross-instance races where a node reads the
