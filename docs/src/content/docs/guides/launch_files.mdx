@@ -25,6 +25,12 @@ The `source` attribute supports three formats:
  - **Git repository**: Requires `repo`, `path` (location within the repo), and `ref` attributes
  - **Local path**: Specified via the `local` key, pointing to a directory on your filesystem. The path can be either absolute or relative to the `peppy_launcher.json5` file
 
+:::caution
+The git `ref` and `deployment.source` tag share the same format but are independent values.
+This means you could have a git `ref` of `v0.1.0` while `peppy.json5` specifies `v0.1.1`.
+Ensure your git tags match the version in `peppy.json5` to avoid confusion!
+:::
+
 From within the cloned repository, execute the launcher:
 ```sh
 peppy stack launch ./peppy_launcher.json5
