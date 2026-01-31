@@ -37,7 +37,7 @@ fn install_peppy_service() {
     );
 
     #[cfg(target_os = "linux")]
-    assert_eq!(service_path.file_name().unwrap(), "bot.peppy.service");
+    assert_eq!(service_path.file_name().unwrap(), "peppy.service");
 
     #[cfg(target_os = "macos")]
     assert_eq!(service_path.file_name().unwrap(), "bot.peppy.plist");

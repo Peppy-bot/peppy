@@ -12,7 +12,12 @@ use super::Command;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-const PEPPY_SERVICE_LABEL: &str = "bot.peppy";
+fn service_label(kind: ServiceManagerKind) -> &'static str {
+    match kind {
+        ServiceManagerKind::Launchd => "bot.peppy",
+        _ => "peppy",
+    }
+}
 
 pub struct InstallCommand {}
 
@@ -23,7 +28,8 @@ impl Command for InstallCommand {
 }
 
 pub fn install_peppy_daemon(service_dir_override: Option<PathBuf>) -> Result<PathBuf> {
-    let label: ServiceLabel = PEPPY_SERVICE_LABEL.parse()?;
+    let kind = ServiceManagerKind::native()?;
+    let label: ServiceLabel = service_label(kind).parse()?;
     let program_path = std::env::current_exe()?;
     let working_dir = program_path
         .parent()
@@ -35,7 +41,6 @@ pub fn install_peppy_daemon(service_dir_override: Option<PathBuf>) -> Result<Pat
         working_dir,
         service_dir_override.is_none(),
     )?;
-    let kind = ServiceManagerKind::native()?;
 
     if let Some(dir) = service_dir_override {
         return write_service_definition(kind, &dir, &ctx);
