@@ -59,12 +59,9 @@ pub fn peppy_data_dir() -> std::path::PathBuf {
     }
 
     match app_env() {
-        AppEnv::Prod => {
-            let home = std::env::var_os("HOME")
-                .or_else(|| std::env::var_os("USERPROFILE"))
-                .map(std::path::PathBuf::from);
-            home.unwrap_or_else(std::env::temp_dir).join(".peppy")
-        }
+        AppEnv::Prod => dirs::home_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join(".peppy"),
         AppEnv::Dev => std::env::temp_dir().join(".peppy"),
     }
 }

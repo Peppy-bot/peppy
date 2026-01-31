@@ -531,6 +531,7 @@ dependencies = [
  "capnp",
  "capnpc",
  "clap",
+ "dirs 6.0.0",
  "git2",
  "indexmap 2.13.0",
  "proc-macro2",
