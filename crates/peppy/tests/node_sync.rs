@@ -2,7 +2,7 @@ use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::path::Path;
 use std::sync::Arc;
 
-use config::node::{ExposedTopic, MessageFormat, NodeConfigParser, QoSProfile};
+use config::node::{ExposedTopic, MessageFormat, NodeConfigParser, QoSProfile, Toolchain};
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::context::AppContext;
@@ -63,6 +63,7 @@ async fn node_sync_rust_command_succeeds() {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
+            toolchain: Toolchain::Cargo,
         },
     }
     .execute(&node_ctx)
