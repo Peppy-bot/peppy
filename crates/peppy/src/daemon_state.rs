@@ -70,7 +70,9 @@ impl DaemonState {
         }
         let content =
             serde_json::to_string_pretty(state).map_err(|e| io::Error::other(e.to_string()))?;
-        fs::write(path, content)
+        fs::write(path, &content)?;
+        println!("Daemon state written to: {}", path.display());
+        Ok(())
     }
 
     pub(crate) fn read() -> Result<Self, io::Error> {
