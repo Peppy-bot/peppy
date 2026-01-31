@@ -3,8 +3,11 @@ use std::path::Path;
 
 use crate::Result;
 
-/// Path to the templates directory
-const TEMPLATES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/templates");
+/// Embedded static file for Rust main.rs
+const RUST_MAIN_RS: &str = include_str!("../../../templates/node_init/rust/src/main.rs");
+
+/// Embedded static file for Python main.py
+const PYTHON_MAIN_PY: &str = include_str!("../../../templates/node_init/python/src/main.py");
 
 /// Template for Rust Cargo.toml file
 #[derive(Template)]
@@ -36,31 +39,12 @@ pub struct PythonPeppyJson5<'a> {
     pub node_name: &'a str,
 }
 
-/// Recursively copies all non-template files (files without .j2 extension) from
-/// the source directory to the destination directory, preserving the directory structure.
-fn copy_static_files(src_dir: &Path, dest_dir: &Path) -> Result<()> {
-    for entry in std::fs::read_dir(src_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let file_name = path.file_name().unwrap();
-        let dest_path = dest_dir.join(file_name);
-
-        if path.is_dir() {
-            std::fs::create_dir_all(&dest_path)?;
-            copy_static_files(&path, &dest_path)?;
-        } else if path.extension().and_then(|e| e.to_str()) != Some("j2") {
-            std::fs::copy(&path, &dest_path)?;
-        }
-    }
-    Ok(())
-}
-
 /// Applies templates and copies static files for Rust node initialization
 pub fn apply_rust_templates(node_name: &str, node_dir: &Path) -> Result<()> {
-    let template_dir = Path::new(TEMPLATES_DIR).join("node_init/rust");
-
-    // Copy all static files (non-.j2 files) recursively
-    copy_static_files(&template_dir, node_dir)?;
+    // Create src directory and write embedded main.rs
+    let src_dir = node_dir.join("src");
+    std::fs::create_dir_all(&src_dir)?;
+    std::fs::write(src_dir.join("main.rs"), RUST_MAIN_RS)?;
 
     // Apply Cargo.toml template
     let cargo_toml = RustCargoToml {
@@ -82,10 +66,10 @@ pub fn apply_rust_templates(node_name: &str, node_dir: &Path) -> Result<()> {
 
 /// Applies templates and copies static files for Python node initialization
 pub fn apply_python_templates(node_name: &str, node_dir: &Path) -> Result<()> {
-    let template_dir = Path::new(TEMPLATES_DIR).join("node_init/python");
-
-    // Copy all static files (non-.j2 files) recursively
-    copy_static_files(&template_dir, node_dir)?;
+    // Create src directory and write embedded main.py
+    let src_dir = node_dir.join("src");
+    std::fs::create_dir_all(&src_dir)?;
+    std::fs::write(src_dir.join("main.py"), PYTHON_MAIN_PY)?;
 
     // Apply pyproject.toml template
     let pyproject_toml = PythonPyprojectToml { node_name };
