@@ -109,7 +109,7 @@ impl ServeCommandBuilder {
                     Error::ExecutionFailed(format!("Failed to write daemon state: {}", e))
                 })?;
                 info!(
-                    "Wrote daemon state to {} with master_node_name={}",
+                    "Daemon state written to {} with master_node_name={}",
                     state_path.display(),
                     master_node_name
                 );

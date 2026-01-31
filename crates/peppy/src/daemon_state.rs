@@ -4,7 +4,6 @@ use config::consts::peppy_data_dir;
 use serde::{Deserialize, Serialize};
 use std::fs::{self};
 use std::io;
-use tracing::info;
 
 const DAEMON_STATE_FILENAME: &str = "daemon_state.json";
 
@@ -71,9 +70,7 @@ impl DaemonState {
         }
         let content =
             serde_json::to_string_pretty(state).map_err(|e| io::Error::other(e.to_string()))?;
-        fs::write(path, &content)?;
-        info!("Daemon state written to: {}", path.display());
-        Ok(())
+        fs::write(path, content)
     }
 
     pub(crate) fn read() -> Result<Self, io::Error> {
