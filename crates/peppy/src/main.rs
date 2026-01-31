@@ -45,10 +45,8 @@ enum Commands {
 fn main() {
     // Set app env based on build profile (release = Prod, debug = Dev)
     let env = if cfg!(debug_assertions) {
-        println!("DEV MODE SET!!!");
         AppEnv::Dev
     } else {
-        println!("PROD MODE SET!!!");
         AppEnv::Prod
     };
     config::consts::set_app_env(env);
