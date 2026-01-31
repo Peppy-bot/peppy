@@ -1630,9 +1630,15 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         "first goal should be accepted"
     );
 
-    // Wait for the first action to complete (but don't poll for result)
-    // The add operation should complete quickly since there's no add_cmd
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Wait for the first action to complete by checking if the node was added to the stack.
+    // This detects completion without polling for the result (which would defeat the purpose
+    // of testing abandoned actions).
+    loop {
+        if node_stack.contains(FIRST_NODE_NAME, FIRST_NODE_TAG) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
 
     // Now send second goal - this should succeed even though we never polled
     // for the first action's result

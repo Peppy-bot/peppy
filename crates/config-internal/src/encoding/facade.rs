@@ -143,13 +143,7 @@ impl CapnpFacade {
             return Self::validate_path(PathBuf::from(path));
         }
 
-        if let Some(path) = Self::bundled_capnp_binary() {
-            return Self::validate_path(path);
-        }
-
-        Err(Error::Encoding(
-            "capnp binary not found; install capnp or enable the build-capnp feature".into(),
-        ))
+        Self::validate_path(Self::bundled_capnp_binary()?)
     }
 
     fn validate_path(path: PathBuf) -> Result<PathBuf> {
@@ -195,19 +189,29 @@ impl CapnpFacade {
         Ok(())
     }
 
-    fn bundled_capnp_binary() -> Option<PathBuf> {
-        let binary_name = match (env::consts::OS, env::consts::ARCH) {
-            ("linux", "x86_64") => "capnp_linux_x86_64",
-            ("linux", "aarch64") => "capnp_linux_aarch64",
-            ("macos", "aarch64") => "capnp_macos_aarch64",
-            _ => return None,
-        };
+    fn bundled_capnp_binary() -> Result<PathBuf> {
+        mod embedded {
+            include!(concat!(env!("OUT_DIR"), "/embedded_capnp.rs"));
+        }
 
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tools")
-            .join(binary_name);
+        let binary_bytes = embedded::CAPNP_BINARY.ok_or_else(|| {
+            Error::Encoding(format!(
+                "no bundled capnp binary available for {}/{}",
+                env::consts::OS,
+                env::consts::ARCH
+            ))
+        })?;
 
-        if path.exists() { Some(path) } else { None }
+        let temp_dir = std::env::temp_dir();
+        let binary_path = temp_dir.join("peppy_capnp_binary");
+
+        if !binary_path.exists() {
+            std::fs::write(&binary_path, binary_bytes).map_err(|err| {
+                Error::Encoding(format!("failed to write embedded capnp binary: {err}"))
+            })?;
+        }
+
+        Ok(binary_path)
     }
 }
 
@@ -216,13 +220,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundled_capnp_exists_when_available() {
-        if let Some(path) = CapnpFacade::bundled_capnp_binary() {
-            assert!(
-                path.exists(),
-                "expected bundled capnp binary at {}",
-                path.display()
-            );
-        }
+    fn bundled_capnp_exists() {
+        let path = CapnpFacade::bundled_capnp_binary().expect("bundled capnp binary should exist");
+        assert!(
+            path.exists(),
+            "expected bundled capnp binary at {}",
+            path.display()
+        );
     }
 }
