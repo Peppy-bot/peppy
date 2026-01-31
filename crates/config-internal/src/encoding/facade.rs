@@ -190,29 +190,28 @@ impl CapnpFacade {
     }
 
     fn bundled_capnp_binary() -> Result<PathBuf> {
-        let binary_name = match (env::consts::OS, env::consts::ARCH) {
-            ("linux", "x86_64") => "capnp_linux_x86_64",
-            ("linux", "aarch64") => "capnp_linux_aarch64",
-            ("macos", "aarch64") => "capnp_macos_aarch64",
-            (os, arch) => {
-                return Err(Error::Encoding(format!(
-                    "no bundled capnp binary available for {os}/{arch}"
-                )));
-            }
-        };
-
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tools")
-            .join(binary_name);
-
-        if path.exists() {
-            Ok(path)
-        } else {
-            Err(Error::Encoding(format!(
-                "bundled capnp binary not found at {}",
-                path.display()
-            )))
+        mod embedded {
+            include!(concat!(env!("OUT_DIR"), "/embedded_capnp.rs"));
         }
+
+        let binary_bytes = embedded::CAPNP_BINARY.ok_or_else(|| {
+            Error::Encoding(format!(
+                "no bundled capnp binary available for {}/{}",
+                env::consts::OS,
+                env::consts::ARCH
+            ))
+        })?;
+
+        let temp_dir = std::env::temp_dir();
+        let binary_path = temp_dir.join("peppy_capnp_binary");
+
+        if !binary_path.exists() {
+            std::fs::write(&binary_path, binary_bytes).map_err(|err| {
+                Error::Encoding(format!("failed to write embedded capnp binary: {err}"))
+            })?;
+        }
+
+        Ok(binary_path)
     }
 }
 

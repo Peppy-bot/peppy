@@ -1,6 +1,7 @@
 mod capnp_build {
     use std::env;
     use std::fs;
+    use std::io::Write;
     use std::path::PathBuf;
     use std::process::Command;
 
@@ -160,8 +161,45 @@ mod capnp_build {
         );
     }
 
+    /// Generates a Rust module containing the embedded capnp binary for the target platform.
+    pub fn embed_bundled_capnp() {
+        let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+        let tools_dir = manifest_dir.join("tools");
+        let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+
+        let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+        let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+
+        let binary_name = match (target_os.as_str(), target_arch.as_str()) {
+            ("linux", "x86_64") => "capnp_linux_x86_64",
+            ("linux", "aarch64") => "capnp_linux_aarch64",
+            ("macos", "aarch64") => "capnp_macos_aarch64",
+            _ => {
+                // Generate a module that returns an error for unsupported platforms
+                let generated = out_dir.join("embedded_capnp.rs");
+                let mut file = fs::File::create(&generated).unwrap();
+                writeln!(file, r#"pub const CAPNP_BINARY: Option<&[u8]> = None;"#).unwrap();
+                println!("cargo:rerun-if-changed=build.rs");
+                return;
+            }
+        };
+
+        let binary_path = tools_dir.join(binary_name);
+        println!("cargo:rerun-if-changed={}", binary_path.display());
+
+        let generated = out_dir.join("embedded_capnp.rs");
+        let mut file = fs::File::create(&generated).unwrap();
+        writeln!(
+            file,
+            r#"pub const CAPNP_BINARY: Option<&[u8]> = Some(include_bytes!("{}"));"#,
+            binary_path.display()
+        )
+        .unwrap();
+    }
+
     pub fn run() {
         build_capnp(CAPNP_VERSION);
+        embed_bundled_capnp();
     }
 }
 

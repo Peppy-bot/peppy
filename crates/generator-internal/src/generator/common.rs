@@ -6,6 +6,7 @@ use crate::{
 use askama::Template;
 use config::encoding::compile_capnp;
 use proc_macro2::Span;
+use rust_embed::Embed;
 use std::{
     collections::{BTreeMap, HashMap},
     fs,
@@ -16,7 +17,52 @@ use syn::{
     Attribute, File, FnArg, ImplItem, ImplItemFn, Item, ItemFn, ItemImpl, Type, parse_file,
     parse_quote,
 };
-use toml::Value;
+
+#[derive(Embed)]
+#[folder = "templates/"]
+struct EmbeddedTemplates;
+
+#[derive(Embed)]
+#[folder = "../peppylib/"]
+#[include = "*.rs"]
+#[include = "*.toml"]
+#[include = "*.capnp"]
+#[include = "*.j2"]
+#[exclude = "target/*"]
+#[exclude = "tests/*"]
+#[exclude = "examples/*"]
+struct EmbeddedPeppylib;
+
+#[derive(Embed)]
+#[folder = "../pmi-internal/"]
+#[include = "*.rs"]
+#[include = "*.toml"]
+#[include = "*.capnp"]
+#[include = "*.j2"]
+#[exclude = "target/*"]
+#[exclude = "tests/*"]
+struct EmbeddedPmiInternal;
+
+#[derive(Embed)]
+#[folder = "../config-internal/"]
+#[include = "*.rs"]
+#[include = "*.toml"]
+#[include = "*.capnp"]
+#[include = "*.j2"]
+#[include = "tools/capnp_*"]
+#[exclude = "target/*"]
+#[exclude = "tests/*"]
+struct EmbeddedConfigInternal;
+
+#[derive(Embed)]
+#[folder = "../node-stack-internal/"]
+#[include = "*.rs"]
+#[include = "*.toml"]
+#[include = "*.capnp"]
+#[include = "*.j2"]
+#[exclude = "target/*"]
+#[exclude = "tests/*"]
+struct EmbeddedNodeStackInternal;
 
 #[derive(Template)]
 #[template(path = "peppygen/rust/Cargo.toml.j2", escape = "none")]
@@ -31,9 +77,19 @@ impl<'a> PeppyConfigTemplate<'a> {
 
 #[derive(Clone)]
 struct WorkspacePackageMetadata {
-    version: String,
-    edition: String,
-    authors: Vec<String>,
+    version: &'static str,
+    edition: &'static str,
+    authors: &'static [&'static str],
+}
+
+impl WorkspacePackageMetadata {
+    const fn embedded() -> Self {
+        Self {
+            version: env!("CARGO_PKG_VERSION"),
+            edition: "2024",
+            authors: &["Tuatini Godard <tuatini@peppy.bot>"],
+        }
+    }
 }
 
 pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>) -> Result<()> {
@@ -50,12 +106,20 @@ pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>) -> Result<()> {
 
     generate_lib_structure(to_path, PEPPYLIB_RELATIVE_PATH)?;
 
-    let metadata = workspace_package_metadata()?;
+    let metadata = WorkspacePackageMetadata::embedded();
 
-    copy_workspace_crate(PEPPYLIB_DIR, &vendored_crates_dir, &metadata)?;
-    copy_workspace_crate(PMI_INTERNAL_DIR, &vendored_crates_dir, &metadata)?;
-    copy_workspace_crate(CONFIG_INTERNAL_DIR, &vendored_crates_dir, &metadata)?;
-    copy_workspace_crate(NODE_STACK_DIR, &vendored_crates_dir, &metadata)?;
+    copy_embedded_crate::<EmbeddedPeppylib>(PEPPYLIB_DIR, &vendored_crates_dir, &metadata)?;
+    copy_embedded_crate::<EmbeddedPmiInternal>(PMI_INTERNAL_DIR, &vendored_crates_dir, &metadata)?;
+    copy_embedded_crate::<EmbeddedConfigInternal>(
+        CONFIG_INTERNAL_DIR,
+        &vendored_crates_dir,
+        &metadata,
+    )?;
+    copy_embedded_crate::<EmbeddedNodeStackInternal>(
+        NODE_STACK_DIR,
+        &vendored_crates_dir,
+        &metadata,
+    )?;
     Ok(())
 }
 
@@ -164,13 +228,10 @@ impl ModuleCategory {
 }
 
 fn generate_lib_structure(to_path: impl AsRef<Path>, peppylib_path: &str) -> Result<()> {
-    let templates_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
-    let template_root = templates_dir.join("peppygen/rust");
     let to_path = to_path.as_ref();
-
     fs::create_dir_all(to_path)?;
 
-    copy_templates(&templates_dir, &template_root, to_path, peppylib_path)
+    copy_embedded_templates("peppygen/rust", to_path, peppylib_path)
 }
 
 fn group_artifacts_by_category(
@@ -464,172 +525,95 @@ fn as_function_item(item: ImplItem) -> Option<Item> {
     }))
 }
 
-fn copy_templates(root: &Path, from: &Path, to: &Path, peppylib_path: &str) -> Result<()> {
-    for entry in fs::read_dir(from)? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let path = entry.path();
-        let destination = to.join(entry.file_name());
+fn copy_embedded_templates(prefix: &str, to: &Path, peppylib_path: &str) -> Result<()> {
+    let prefix_with_slash = if prefix.ends_with('/') {
+        prefix.to_string()
+    } else {
+        format!("{}/", prefix)
+    };
 
-        if file_type.is_dir() {
-            fs::create_dir_all(&destination)?;
-            copy_templates(root, &path, &destination, peppylib_path)?;
-        } else if file_type.is_file() {
-            let ext = path.extension().and_then(|ext| ext.to_str());
-            if ext == Some(".gitkeep") {
-                continue;
-            } else if ext == Some("j2") {
-                let rendered = render_template(root, &path, peppylib_path)?;
-                let destination = destination.with_extension("");
+    for file_path in EmbeddedTemplates::iter() {
+        let file_path_str = file_path.as_ref();
 
-                if let Some(parent) = destination.parent() {
-                    fs::create_dir_all(parent)?;
-                }
+        // Only process files under the specified prefix
+        let Some(relative_path) = file_path_str.strip_prefix(&prefix_with_slash) else {
+            continue;
+        };
 
-                fs::write(&destination, rendered)?;
-                continue;
-            }
+        // Skip .gitkeep files
+        if relative_path.ends_with(".gitkeep") {
+            continue;
+        }
 
-            if let Some(parent) = destination.parent() {
-                fs::create_dir_all(parent)?;
-            }
+        let destination = if relative_path.ends_with(".j2") {
+            // Remove the .j2 extension for template files
+            let without_ext = relative_path.strip_suffix(".j2").unwrap_or(relative_path);
+            to.join(without_ext)
+        } else {
+            to.join(relative_path)
+        };
 
-            fs::copy(&path, &destination)?;
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        if relative_path.ends_with(".j2") {
+            // Render template files
+            let rendered = render_template(file_path_str, peppylib_path)?;
+            fs::write(&destination, rendered)?;
+        } else {
+            // Copy regular files
+            let content = EmbeddedTemplates::get(file_path_str).ok_or_else(|| {
+                io::Error::new(
+                    ErrorKind::NotFound,
+                    format!("embedded template not found: {file_path_str}"),
+                )
+            })?;
+            fs::write(&destination, content.data.as_ref())?;
         }
     }
 
     Ok(())
 }
 
-fn workspace_crates_root() -> Result<PathBuf> {
-    Ok(repository_root()?.join("crates"))
-}
-
-fn copy_workspace_crate(
+fn copy_embedded_crate<E: Embed>(
     crate_dir: &str,
     vendored_root: &Path,
     metadata: &WorkspacePackageMetadata,
 ) -> Result<()> {
-    let workspace_root = workspace_crates_root()?;
-    let source_dir = workspace_root.join(crate_dir);
-    if !source_dir.exists() {
-        return Err(io::Error::new(
-            ErrorKind::NotFound,
-            format!(
-                "cannot copy workspace crate `{crate_dir}` from {}",
-                source_dir.display()
-            ),
-        )
-        .into());
-    }
-
     let destination_dir = vendored_root.join(crate_dir);
     if destination_dir.exists() {
         fs::remove_dir_all(&destination_dir)?;
     }
 
-    copy_dir_recursive(&source_dir, &destination_dir)?;
-    localize_cargo_toml(&destination_dir.join("Cargo.toml"), metadata)?;
-    Ok(())
-}
+    for file_path in E::iter() {
+        let file_path_str = file_path.as_ref();
+        let destination = destination_dir.join(file_path_str);
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
-    fs::create_dir_all(dst)?;
-    const IGNORED_DIRS: [&str; 4] = ["target", ".git", ".cargo", "tests"];
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let entry_path = entry.path();
-        let destination_path = dst.join(entry.file_name());
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
 
-        if file_type.is_dir() {
-            if IGNORED_DIRS.iter().any(|&d| entry.file_name() == d) {
-                continue;
-            }
-            copy_dir_recursive(&entry_path, &destination_path)?;
-        } else if file_type.is_file() {
-            if let Some(parent) = destination_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::copy(&entry_path, &destination_path)?;
-        } else if file_type.is_symlink() {
-            return Err(io::Error::new(
-                ErrorKind::Unsupported,
-                format!("symlinked file `{}` is not supported", entry_path.display()),
-            ));
+        let content = E::get(file_path_str).ok_or_else(|| {
+            io::Error::new(
+                ErrorKind::NotFound,
+                format!("embedded file not found: {file_path_str}"),
+            )
+        })?;
+        fs::write(&destination, content.data.as_ref())?;
+
+        // Set execute permissions on binary files in tools/ directory
+        #[cfg(unix)]
+        if file_path_str.starts_with("tools/") {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&destination)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&destination, perms)?;
         }
     }
 
+    localize_cargo_toml(&destination_dir.join("Cargo.toml"), metadata)?;
     Ok(())
-}
-
-fn repository_root() -> Result<PathBuf> {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .parent()
-        .and_then(|path| path.parent())
-        .map(|path| path.to_path_buf())
-        .ok_or_else(|| io::Error::other("unable to resolve repository root"))
-        .map_err(Into::into)
-}
-
-fn workspace_package_metadata() -> Result<WorkspacePackageMetadata> {
-    let root = repository_root()?;
-    let cargo_toml_path = root.join("Cargo.toml");
-    let contents = fs::read_to_string(&cargo_toml_path)?;
-
-    let doc: Value =
-        toml::from_str(&contents).map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
-
-    let workspace = doc
-        .get("workspace")
-        .and_then(Value::as_table)
-        .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "missing `[workspace]` table"))?;
-    let package = workspace
-        .get("package")
-        .and_then(Value::as_table)
-        .ok_or_else(|| {
-            io::Error::new(
-                ErrorKind::InvalidData,
-                "missing `[workspace.package]` table",
-            )
-        })?;
-
-    let version = package
-        .get("version")
-        .and_then(Value::as_str)
-        .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "missing workspace package version"))?
-        .to_string();
-    let edition = package
-        .get("edition")
-        .and_then(Value::as_str)
-        .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "missing workspace package edition"))?
-        .to_string();
-
-    let authors_value = package
-        .get("authors")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            io::Error::new(ErrorKind::InvalidData, "missing workspace package authors")
-        })?;
-
-    let mut authors = Vec::with_capacity(authors_value.len());
-    for author in authors_value {
-        let Some(author_str) = author.as_str() else {
-            return Err(io::Error::new(
-                ErrorKind::InvalidData,
-                "workspace package authors must be strings",
-            )
-            .into());
-        };
-        authors.push(author_str.to_string());
-    }
-
-    Ok(WorkspacePackageMetadata {
-        version,
-        edition,
-        authors,
-    })
 }
 
 fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetadata) -> Result<()> {
@@ -653,7 +637,7 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
             .and_then(|w| w.as_bool())
             == Some(true)
         {
-            package.insert("version", value(&metadata.version));
+            package.insert("version", value(metadata.version));
         }
 
         // Check if edition uses workspace inheritance
@@ -664,7 +648,7 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
             .and_then(|w| w.as_bool())
             == Some(true)
         {
-            package.insert("edition", value(&metadata.edition));
+            package.insert("edition", value(metadata.edition));
         }
 
         // Check if authors uses workspace inheritance
@@ -676,8 +660,8 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
             == Some(true)
         {
             let mut authors = Array::new();
-            for author in &metadata.authors {
-                authors.push(author.as_str());
+            for &author in metadata.authors {
+                authors.push(author);
             }
             package.insert("authors", value(authors));
         }
@@ -687,14 +671,8 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
     Ok(())
 }
 
-fn render_template(root: &Path, template_path: &Path, peppylib_path: &str) -> Result<String> {
-    let relative = template_path
-        .strip_prefix(root)
-        .unwrap_or(template_path)
-        .to_string_lossy()
-        .into_owned();
-
-    match relative.as_str() {
+fn render_template(template_path: &str, peppylib_path: &str) -> Result<String> {
+    match template_path {
         PeppyConfigTemplate::TEMPLATE_PATH => {
             let tpl = PeppyConfigTemplate {
                 peppylib_version: env!("CARGO_PKG_VERSION"),
@@ -702,7 +680,7 @@ fn render_template(root: &Path, template_path: &Path, peppylib_path: &str) -> Re
             };
             Ok(tpl.render()?)
         }
-        _ => Err(Error::UnknownTemplate(relative)),
+        _ => Err(Error::UnknownTemplate(template_path.to_string())),
     }
 }
 
