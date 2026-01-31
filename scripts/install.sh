@@ -107,7 +107,7 @@ __wrap__() {
     if [ -n "${ARCHIVE_PATH-}" ]; then
         printf "This script will install peppy for you.\nUsing local archive: %s\n" "$ARCHIVE_PATH"
     else
-        printf "This script will automatically download and install peppy (%s) for you.\nGetting it from this url: %s\n" "$VERSION" "$(mask_credentials "$DOWNLOAD_URL")"
+        printf "Downloading and installing peppy %s from:\n%s\n" "$VERSION" "$(mask_credentials "$DOWNLOAD_URL")"
     fi
 
     TEMP_FILE="$(mktemp "${TMPDIR:-/tmp}/.peppy_install.XXXXXXXX")"
