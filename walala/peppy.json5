@@ -1,0 +1,19 @@
+{
+  schema_version: 1,
+  manifest: {
+    name: "walala",
+    tag: "0.1.0",
+    language: "rust",
+    add_cmd: [
+      "cargo",
+      "build",
+      "--release"
+    ],
+    start_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
+  interfaces: {}
+}
