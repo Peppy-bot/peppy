@@ -88,4 +88,6 @@ This command will generate the interfaces to use in our source code. We can now 
   </TabItem>
 </Tabs>
 
-As you can see, the interface for our topic has already been generated. We didn't have to implement the serialization, encoding, or communication layers—PeppyOS handles all of that for us. 
+As you can see, the topic interface has already been generated. We didn't need to implement serialization, encoding, or communication layers—PeppyOS handles all of that automatically.
+
+Additionally, the tag and name assigned to your node provide version isolation. If the node's interfaces change in a future update, dependent nodes won't break—they continue using the previous version until explicitly migrated.
