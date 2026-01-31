@@ -187,27 +187,16 @@ fn is_root() -> bool {
     false
 }
 
-fn home_dir() -> Result<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .ok_or_else(|| Error::ExecutionFailed("Unable to locate home directory".to_string()))
-}
-
-fn xdg_config_dir() -> Result<PathBuf> {
-    if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
-        return Ok(PathBuf::from(config_home));
-    }
-
-    Ok(home_dir()?.join(".config"))
-}
-
 fn systemd_user_unit_dir() -> Result<PathBuf> {
-    Ok(xdg_config_dir()?.join("systemd").join("user"))
+    dirs::config_dir()
+        .map(|p| p.join("systemd").join("user"))
+        .ok_or_else(|| Error::ExecutionFailed("Unable to locate config directory".to_string()))
 }
 
 fn launchd_user_agent_dir() -> Result<PathBuf> {
-    Ok(home_dir()?.join("Library").join("LaunchAgents"))
+    dirs::home_dir()
+        .map(|p| p.join("Library").join("LaunchAgents"))
+        .ok_or_else(|| Error::ExecutionFailed("Unable to locate home directory".to_string()))
 }
 
 fn render_systemd_service(ctx: &ServiceInstallCtx) -> String {
