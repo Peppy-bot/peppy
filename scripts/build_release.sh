@@ -288,6 +288,57 @@ print(url)
 PY
     }
 
+    update_changelog() {
+        RELEASE_TAG="$1"
+        RELEASE_BODY="$2"
+        CHANGELOG_PATH="$3"
+
+        if [ ! -f "$CHANGELOG_PATH" ]; then
+            echo "warning: changelog file not found at '$CHANGELOG_PATH', skipping update" >&2
+            return 0
+        fi
+
+        UPDATED_CHANGELOG="$(mktemp_file)"
+        RELEASE_TAG="$RELEASE_TAG" RELEASE_BODY="$RELEASE_BODY" python3 - "$CHANGELOG_PATH" "$UPDATED_CHANGELOG" <<'PY'
+import os
+import sys
+import re
+
+changelog_path = sys.argv[1]
+output_path = sys.argv[2]
+release_tag = os.environ["RELEASE_TAG"]
+release_body = os.environ["RELEASE_BODY"]
+
+with open(changelog_path, "r", encoding="utf-8") as f:
+    content = f.read()
+
+# Build the new release section
+new_section = f"## {release_tag}\n\n{release_body.strip()}\n\n"
+
+# Find the position after the intro paragraph (before the first ## heading)
+# The pattern matches the frontmatter, title line, and intro paragraph
+match = re.search(r'^(---\n.*?\n---\n\n.*?\n\n)', content, re.DOTALL)
+if match:
+    insert_pos = match.end()
+    updated = content[:insert_pos] + new_section + content[insert_pos:]
+else:
+    # Fallback: insert after frontmatter
+    match = re.search(r'^(---\n.*?\n---\n\n)', content, re.DOTALL)
+    if match:
+        insert_pos = match.end()
+        updated = content[:insert_pos] + new_section + content[insert_pos:]
+    else:
+        # Last resort: prepend
+        updated = new_section + content
+
+with open(output_path, "w", encoding="utf-8") as f:
+    f.write(updated)
+PY
+
+        cp "$UPDATED_CHANGELOG" "$CHANGELOG_PATH"
+        echo "Updated changelog: $CHANGELOG_PATH"
+    }
+
     delete_asset_if_exists() {
         RELEASE_ID="$1"
         ASSET_NAME="$2"
@@ -484,6 +535,15 @@ PY
     delete_asset_if_exists "$RELEASE_ID" "$ASSET_NAME" "$OWNER" "$REPO"
     echo "Uploading ${ASSET_NAME}..."
     github_upload_asset "$RELEASE_ID" "$ASSET_NAME" "$ASSET_PATH" "$OWNER" "$REPO" >/dev/null
+
+    # Fetch the release body (handles both auto-generated and manual notes)
+    echo "Fetching release notes..."
+    RELEASE_DETAILS="$(github_api GET "https://api.github.com/repos/${OWNER}/${REPO}/releases/${RELEASE_ID}")"
+    RELEASE_BODY="$(printf "%s" "$RELEASE_DETAILS" | python3 -c "import json,sys; print(json.load(sys.stdin).get('body', ''))")"
+
+    # Update the changelog
+    CHANGELOG_PATH="${REPO_ROOT}/docs/src/content/docs/reference/changelog.mdx"
+    update_changelog "$TAG" "$RELEASE_BODY" "$CHANGELOG_PATH"
 
     echo "Release created: ${RELEASE_URL:-https://github.com/${SLUG}/releases/tag/${TAG}}"
 } && __wrap__
