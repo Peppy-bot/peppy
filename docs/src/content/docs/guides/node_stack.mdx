@@ -44,7 +44,7 @@ Re-adding a node with the same name and tag overrides the one that was previousl
 Start your node:
 
 ```sh
-peppy start hello_world:0.1.0
+peppy node start hello_world:0.1.0
 ```
 This will run the `start_cmd` command of the `peppy.json5` configuration.
 The format is `<node_name>:<tag>` for a node that is already part of the node stack.
@@ -66,7 +66,7 @@ The instance name is randomly generated as a memorable identifier.
 When you're done, you can stop your node:
 
 ```sh
-peppy stop <instance-id>
+peppy node stop <instance-id>
 ```
 
 ## Next steps

@@ -27,7 +27,7 @@ peppy node add .
 ```
 
 You'll get an error similar to this one:
-```
+```text
 Error: Fingerprint verification failed: Node config fingerprint mismatch: expected 9a58e1936c52c83d47d31621108e32bb78d2197c2d1989f0001e945a754e29a8, got ca1b1d51711a782db3152a723c6cdc255191c2a1721c7a19088e878fc9879c39. 
 The config may have been modified after code generation. Run `node sync` to update the peppygen lib on your node.
 ```
@@ -38,7 +38,7 @@ To sync the node, run:
 peppy node sync
 ```
 Now try to add the node again:
-```
+```sh
 peppy node add .
 ```
 The command should work this time, and you can see the node in the node stack by running:
