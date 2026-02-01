@@ -61,7 +61,16 @@ Now that we've synchronized our project, the new parameter can be used in the ma
   </TabItem>
 </Tabs>
 
-As long as our node doesn't have any dependencies, we can add it again to the node stack. Since it has the same node name and tag, it will simply override the one we previously added:
+Now add the node to the stack. Since we renamed the node to `hello_world_param:0.1.0` in `peppy.json5`, peppy treats it as a new node:
 ```sh
 peppy node add .
 ```
+
+While we're at it, let's remove the old `hello_world:0.1.0` node that was previously created in this folder:
+```sh
+peppy node remove hello_world:0.1.0
+```
+
+:::note
+You can overwrite nodes in the stack that share the same name and tag by running `peppy node add` again, as long as those nodes have no dependencies. This simplifies the development workflow.
+:::
