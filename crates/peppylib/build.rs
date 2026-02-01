@@ -2,16 +2,7 @@ use std::env;
 use std::path::PathBuf;
 
 fn get_capnp_binary() -> Option<PathBuf> {
-    // First, check if capnp is available in PATH
-    if let Ok(output) = std::process::Command::new("capnp")
-        .arg("--version")
-        .output()
-        && output.status.success()
-    {
-        return Some(PathBuf::from("capnp"));
-    }
-
-    // Fall back to bundled binaries in config-internal crate
+    // Use bundled binaries in config-internal crate
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").ok()?;
     let config_internal_tools = PathBuf::from(&manifest_dir)
         .parent()?
