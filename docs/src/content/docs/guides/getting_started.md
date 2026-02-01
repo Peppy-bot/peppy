@@ -5,6 +5,6 @@ sidebar:
   order: 1
 ---
 
-This guide will walk you through installing PeppyOS on your system and creating a few nodes to get a feel for how the system works.
+This guide covers the installation of PeppyOS and introduces you to creating nodes so you can understand how the system operates.
 
-PeppyOS is compatible with Linux and macOS.
+PeppyOS runs on Linux and macOS.
