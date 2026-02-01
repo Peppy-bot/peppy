@@ -4,9 +4,10 @@ description: Learn how to share your node or use other people's nodes
 sidebar:
   order: 7
 ---
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 One of PeppyOS's key features is the ability to share nodes with other people.
-As an example, we'll try to pull the `fake_uvc_camera` node from [this repo](https://github.com/Peppy-bot/example_nodes).
+As an example, we'll try to pull the `fake_uvc_camera` node from [this repo](https://github.com/Peppy-bot/example_nodes) in a separate shell.
 
 
 ```sh
@@ -17,18 +18,35 @@ or
 peppy node add --ref "0.1.0" https://github.com/Peppy-bot/example_nodes.git/fake_uvc_camera
 ```
 
+<Aside type="caution">
+The build may fail here if you don't have the required `ffmpeg` libraries installed on your system. 
+To install them, run:
+
+<Tabs>
+  <TabItem label="Ubuntu/Debian">
+  ```bash
+  sudo apt update
+  sudo apt install ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev
+  ```
+  </TabItem>
+  <TabItem label="macOS">
+  ```bash
+  brew install ffmpeg
+  ```
+  </TabItem>
+</Tabs>
+
+After installing, attempt to add the node again.
+</Aside>
+
 :::note
 When `--ref` is used during `peppy node add`, it corresponds to the git tag/release or hash of the repo. On the other hand, the tag in `peppy node start fake_uvc_camera:0.1.0` corresponds to the tag found in `peppy.json5`.
-:::
-
-:::caution
-The build may fail here if you don't have the required `ffmpeg` libraries installed on your system. Inspect the logs to understand what libraries need to be installed and attempt to add the node again.
 :::
 
 
 Now that this node is added, we can start it:
 ```
-peppy node start fake_uvc_camera:0.1.0
+peppy node start fake_uvc_camera:0.1.0 device.physical="/dev/device1" device.sim="the_camera" device.priority="physical" video.encoding="rgb" video.frame_rate=30 video.resolution.width=1280 video.resolution.height=720
 ```
 and inspect its logs:
 ```sh
@@ -43,22 +61,17 @@ and inspect its logs:
 ```
 
 We see that video frames are emitted from that node. We can pull a new node that depends on `fake_uvc_camera` to read those frames and reconstruct a short video.
-From the same GitHub repository, we can do exactly that:
+Pull another node from the same repository:
 ```sh
 peppy node add https://github.com/Peppy-bot/example_nodes.git/fake_video_reconstruction
 ```
 
-Then we start the nodes:
-```sh
-peppy node start fake_uvc_camera:0.1.0 device.physical="/dev/device1" device.sim="the_camera" device.priority="physical" video.encoding="rgb" video.frame_rate=30 video.resolution.width=1280 video.resolution.height=720
-```
-
-and
+Start the node:
 ```sh
 peppy node start fake_video_reconstruction:0.1.0 video_duration_seconds=5
 ```
 
-And if we look at the logs of the started `fake_video_reconstruction` node:
+If we look at the logs of the started `fake_video_reconstruction` node:
 ```text
 [2026-01-26T15:35:25.170] [stdout] Recording 250 frames (5 seconds at 50 fps)...
 [2026-01-26T15:35:27.408] [stdout] Recorded 50/250 frames (1 seconds)
