@@ -9,7 +9,7 @@ set -eu
 #
 # Outputs:
 #   - A tar.gz archive in ./dist/ named like: peppy-x86_64-unknown-linux-gnu.tar.gz
-#   - A release notes Markdown file in ./docs/src/content/releases/ (used by the docs changelog page + Atom feed)
+#   - A release notes HTML file in ./docs/src/content/releases/ (used by the docs changelog page + Atom feed)
 
 __wrap__() {
     die() {
@@ -107,6 +107,7 @@ __wrap__() {
         METHOD="$1"
         URL="$2"
         DATA_FILE="${3-}"
+        ACCEPT_HEADER="${4:-application/vnd.github+json}"
         BODY_FILE="$(mktemp_file)"
         HEADER_FILE="$(mktemp_file)"
         ERR_FILE="$(mktemp_file)"
@@ -116,7 +117,7 @@ __wrap__() {
         if [ -n "${DATA_FILE-}" ]; then
             curl -sS -L $FAIL_FLAG -X "$METHOD" \
                 -H "Authorization: Bearer ${GITHUB_PEPPY_RELEASE_TOKEN}" \
-                -H "Accept: application/vnd.github+json" \
+                -H "Accept: ${ACCEPT_HEADER}" \
                 -H "X-GitHub-Api-Version: 2022-11-28" \
                 -H "Content-Type: application/json" \
                 -D "$HEADER_FILE" \
@@ -130,7 +131,7 @@ __wrap__() {
         else
             curl -sS -L $FAIL_FLAG -X "$METHOD" \
                 -H "Authorization: Bearer ${GITHUB_PEPPY_RELEASE_TOKEN}" \
-                -H "Accept: application/vnd.github+json" \
+                -H "Accept: ${ACCEPT_HEADER}" \
                 -H "X-GitHub-Api-Version: 2022-11-28" \
                 -D "$HEADER_FILE" \
                 "$URL" >"$BODY_FILE" 2>"$ERR_FILE" || {
@@ -307,7 +308,7 @@ PY
         v* | V*) RELEASE_FILE_BASENAME="${RELEASE_TAG}" ;;
         *) RELEASE_FILE_BASENAME="v${RELEASE_TAG}" ;;
         esac
-        RELEASE_FILE_PATH="${RELEASES_DIR%/}/${RELEASE_FILE_BASENAME}.md"
+        RELEASE_FILE_PATH="${RELEASES_DIR%/}/${RELEASE_FILE_BASENAME}.html"
 
         if [ -e "$RELEASE_FILE_PATH" ]; then
             if ! prompt_yn "Release notes file already exists at '$RELEASE_FILE_PATH'. Overwrite?" N; then
@@ -349,15 +350,16 @@ if not release_date:
 with open(body_path, "r", encoding="utf-8") as f:
     body = f.read().rstrip()
 
-version_yaml = json.dumps(version)
-description_yaml = json.dumps(release_description)
+import html as _html
+
+def meta(name: str, value: str) -> str:
+    return f'<meta name="peppy:{name}" content="{_html.escape(value, quote=True)}" />\\n'
 
 parts = [
-    "---\n",
-    f"version: {version_yaml}\n",
-    f"date: {release_date}\n",
-    f"description: {description_yaml}\n",
-    "---\n\n",
+    meta("version", version),
+    meta("date", release_date),
+    meta("description", release_description),
+    "\n",
 ]
 if body:
     parts.append(body + "\n")
@@ -571,14 +573,35 @@ PY
     # Fetch the release body (handles both auto-generated and manual notes)
     echo "Fetching release notes..."
     RELEASE_DETAILS="$(github_api GET "https://api.github.com/repos/${OWNER}/${REPO}/releases/${RELEASE_ID}")"
-    RELEASE_BODY="$(printf "%s" "$RELEASE_DETAILS" | python3 -c "import json,sys; print(json.load(sys.stdin).get('body', ''))")"
+    RELEASE_BODY_MARKDOWN="$(printf "%s" "$RELEASE_DETAILS" | python3 -c "import json,sys; print(json.load(sys.stdin).get('body', ''))")"
+
+    RELEASE_DETAILS_HTML="$(github_api GET "https://api.github.com/repos/${OWNER}/${REPO}/releases/${RELEASE_ID}" "" "application/vnd.github.v3.html+json")"
+    RELEASE_BODY_HTML="$(
+        printf "%s" "$RELEASE_DETAILS_HTML" | python3 - <<'PY'
+import json
+import sys
+
+obj = json.load(sys.stdin)
+print(obj.get("body_html") or "")
+PY
+    )"
+    if [ -z "${RELEASE_BODY_HTML-}" ] && [ -n "${RELEASE_BODY_MARKDOWN-}" ]; then
+        RELEASE_BODY_HTML="$(
+            printf "%s" "$RELEASE_BODY_MARKDOWN" | python3 - <<'PY'
+import html
+import sys
+
+print("<pre><code>" + html.escape(sys.stdin.read()).rstrip() + "</code></pre>")
+PY
+        )"
+    fi
 
     # Write release notes for the docs changelog page
     RELEASE_DETAILS_FILE="$(mktemp_file)"
     printf "%s" "$RELEASE_DETAILS" >"$RELEASE_DETAILS_FILE"
 
     RELEASE_BODY_FILE="$(mktemp_file)"
-    printf "%s" "$RELEASE_BODY" >"$RELEASE_BODY_FILE"
+    printf "%s" "$RELEASE_BODY_HTML" >"$RELEASE_BODY_FILE"
 
     RELEASES_DIR="${REPO_ROOT}/docs/src/content/releases"
     write_release_notes_file "$TAG" "$DESCRIPTION" "$RELEASE_DETAILS_FILE" "$RELEASE_BODY_FILE" "$RELEASES_DIR"
