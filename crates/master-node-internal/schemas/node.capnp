@@ -28,6 +28,13 @@ struct NodeAddGoal {
         # HTTP URL source
         http @3 :Text;
     }
+    # Environment variables to apply when executing add_cmd (e.g. PATH)
+    envVars @4 :List(EnvVar);
+}
+
+struct EnvVar {
+    key @0 :Text;
+    value @1 :Text;
 }
 
 struct NodeAddGitSource {
@@ -107,6 +114,8 @@ struct NodeStartGoal {
     nodeName @1 :Text;
     # Tag of the node to start
     tag @2 :Text;
+    # Environment variables to apply when executing start_cmd (e.g. PATH)
+    envVars @3 :List(EnvVar);
 }
 
 struct NodeStartGoalResponse {

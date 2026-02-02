@@ -15,6 +15,8 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
 
+use super::env::caller_env_overrides;
+
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const SCROLLING_OUTPUT_LINES: usize = 10;
@@ -165,7 +167,8 @@ pub async fn start_instance_async(
     );
 
     let start_goal =
-        NodeStartGoal::new(&runtime_config_json, node_name.to_string(), tag.to_string());
+        NodeStartGoal::new(&runtime_config_json, node_name.to_string(), tag.to_string())
+            .with_env_vars(caller_env_overrides());
     let mut action_handle = start_goal
         .send_goal(
             messenger_handle,

@@ -33,6 +33,22 @@ const STARTUP_OUTPUT_QUIET_WINDOW: Duration = Duration::from_millis(10);
 
 static RUNTIME_CONFIG_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+fn filter_goal_env_vars(env_vars: &[(String, String)]) -> Vec<(String, String)> {
+    const ALLOWED_ENV_KEYS: [&str; 4] = ["PATH", "HOME", "CARGO_HOME", "RUSTUP_HOME"];
+
+    env_vars
+        .iter()
+        .filter_map(|(key, value)| {
+            let normalized = key.trim().to_ascii_uppercase();
+            if ALLOWED_ENV_KEYS.contains(&normalized.as_str()) {
+                Some((normalized, value.clone()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Validates that all required parameters from the schema are present in the provided arguments.
 /// Returns a list of all missing parameter paths (e.g., ["device.physical", "video.frame_rate"]).
 fn validate_parameters(
@@ -607,7 +623,9 @@ async fn process_node_start(
         runtime_config_json5,
         node_name,
         tag,
+        env_vars,
     } = goal;
+    let env_vars = filter_goal_env_vars(&env_vars);
 
     let instance_id_str = runtime_config.node_instance.instance_id.as_str();
     let instance_id = match Name::new(instance_id_str) {
@@ -645,7 +663,7 @@ async fn process_node_start(
         ));
     }
 
-    let mut child = match start_node(&entity, &runtime_config_json5, &log_file) {
+    let mut child = match start_node(&entity, &runtime_config_json5, &env_vars, &log_file) {
         Ok(child) => child,
         Err(e) => {
             debug!("Failed to start node instance '{}': {}", instance_id_str, e);
@@ -909,6 +927,7 @@ async fn kill_and_report_error(
 pub fn start_node(
     entity: &NodeEntity,
     runtime_config_json5: &str,
+    env_vars: &[(String, String)],
     log_file: &Arc<StdMutex<File>>,
 ) -> std::io::Result<Child> {
     let manifest = &entity.config().manifest;
@@ -956,9 +975,12 @@ pub fn start_node(
     command.current_dir(entity.root_path());
     command
         .args(args)
-        .env(RUNTIME_CONFIG_VAR_NAME, &runtime_config_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    for (key, value) in env_vars {
+        command.env(key, value);
+    }
+    command.env(RUNTIME_CONFIG_VAR_NAME, &runtime_config_path);
 
     command.spawn()
 }
