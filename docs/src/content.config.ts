@@ -6,9 +6,9 @@ const docs = defineCollection({ schema: docsSchema() });
 
 const releases = defineCollection({
   loader: glob({
-    pattern: '**/*.md',
+    pattern: '**/*.html',
     base: './src/content/releases',
-    generateId: ({ entry }) => entry.replace(/\.md$/, ''),
+    generateId: ({ entry }) => entry.replace(/\.html$/, ''),
   }),
   schema: z.object({
     version: z.string(),

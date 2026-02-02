@@ -1,6 +1,7 @@
 ---
-import { getCollection, render } from 'astro:content';
+import { getCollection } from 'astro:content';
 import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import HtmlContent from '../../components/HtmlContent.astro';
 
 export async function getStaticPaths() {
   const releases = await getCollection('releases');
@@ -11,13 +12,13 @@ export async function getStaticPaths() {
 }
 
 const { release } = Astro.props;
-const { Content } = await render(release);
 const version = release.data.version;
-const date = release.data.date.toLocaleDateString('en-US', {
+const date = new Intl.DateTimeFormat('en-US', {
   year: 'numeric',
   month: 'long',
   day: 'numeric',
-});
+  timeZone: 'UTC',
+}).format(release.data.date);
 ---
 
 <StarlightPage
@@ -28,6 +29,6 @@ const date = release.data.date.toLocaleDateString('en-US', {
 >
   <p><em>{release.data.description}</em></p>
   <p><small>Released on {date}</small></p>
-  <Content />
+  <HtmlContent html={release.body ?? ''} />
   <p><a href="/reference/changelog/">View all releases</a></p>
 </StarlightPage>
