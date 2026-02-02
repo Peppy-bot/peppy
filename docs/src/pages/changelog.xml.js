@@ -18,6 +18,7 @@ export async function GET(context) {
 
   const releases = await getCollection('releases');
   const sortedReleases = releases.sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf());
+  const authorName = 'PeppyOS';
   const feedUpdated =
     sortedReleases.length === 0
       ? new Date()
@@ -39,6 +40,7 @@ export async function GET(context) {
       return [
         '<entry>',
         `<title>${escapeXml(`v${version}`)}</title>`,
+        `<author><name>${escapeXml(authorName)}</name></author>`,
         `<id>${escapeXml(entryUrl.toString())}</id>`,
         `<link rel="alternate" type="text/html" href="${escapeXml(entryUrl.toString())}" />`,
         `<published>${publishedIso}</published>`,
@@ -54,7 +56,7 @@ export async function GET(context) {
     '<feed xmlns="http://www.w3.org/2005/Atom">',
     '<title>PeppyOS Changelog</title>',
     '<subtitle>Release notes and version history for PeppyOS</subtitle>',
-    '<author><name>PeppyOS</name></author>',
+    `<author><name>${escapeXml(authorName)}</name></author>`,
     `<id>${escapeXml(feedUrl.toString())}</id>`,
     `<link rel="self" type="application/atom+xml" href="${escapeXml(feedUrl.toString())}" />`,
     `<link rel="alternate" type="text/html" href="${escapeXml(changelogUrl.toString())}" />`,
