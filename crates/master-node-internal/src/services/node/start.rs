@@ -607,7 +607,14 @@ async fn process_node_start(
         runtime_config_json5,
         node_name,
         tag,
+        env_vars,
     } = goal;
+    let env_vars = match super::validate_goal_env_vars(&env_vars) {
+        Ok(vars) => vars,
+        Err(e) => {
+            return NodeStartResult::failure(e.to_string());
+        }
+    };
 
     let instance_id_str = runtime_config.node_instance.instance_id.as_str();
     let instance_id = match Name::new(instance_id_str) {
@@ -645,7 +652,7 @@ async fn process_node_start(
         ));
     }
 
-    let mut child = match start_node(&entity, &runtime_config_json5, &log_file) {
+    let mut child = match start_node(&entity, &runtime_config_json5, &env_vars, &log_file) {
         Ok(child) => child,
         Err(e) => {
             debug!("Failed to start node instance '{}': {}", instance_id_str, e);
@@ -909,6 +916,7 @@ async fn kill_and_report_error(
 pub fn start_node(
     entity: &NodeEntity,
     runtime_config_json5: &str,
+    env_vars: &[(String, String)],
     log_file: &Arc<StdMutex<File>>,
 ) -> std::io::Result<Child> {
     let manifest = &entity.config().manifest;
@@ -956,9 +964,12 @@ pub fn start_node(
     command.current_dir(entity.root_path());
     command
         .args(args)
-        .env(RUNTIME_CONFIG_VAR_NAME, &runtime_config_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    for (key, value) in env_vars {
+        command.env(key, value);
+    }
+    command.env(RUNTIME_CONFIG_VAR_NAME, &runtime_config_path);
 
     command.spawn()
 }

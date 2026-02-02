@@ -21,6 +21,7 @@ pub struct NodeStartGoal {
     pub runtime_config_json5: String,
     pub node_name: String,
     pub tag: String,
+    pub env_vars: Vec<(String, String)>,
 }
 
 impl NodeStartGoal {
@@ -33,7 +34,13 @@ impl NodeStartGoal {
             runtime_config_json5: runtime_config_json5.into(),
             node_name: node_name.into(),
             tag: tag.into(),
+            env_vars: Vec::new(),
         }
+    }
+
+    pub fn with_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
+        self.env_vars = env_vars;
+        self
     }
 
     pub fn encode(&self) -> Result<Bytes> {
@@ -43,6 +50,13 @@ impl NodeStartGoal {
             goal.set_runtime_config_json5(&self.runtime_config_json5);
             goal.set_node_name(&self.node_name);
             goal.set_tag(&self.tag);
+
+            let mut env_vars = goal.reborrow().init_env_vars(self.env_vars.len() as u32);
+            for (idx, (key, value)) in self.env_vars.iter().enumerate() {
+                let mut env_var = env_vars.reborrow().get(idx as u32);
+                env_var.set_key(key);
+                env_var.set_value(value);
+            }
         }
         encode_message(&builder)
     }
@@ -50,10 +64,22 @@ impl NodeStartGoal {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let goal = reader.get_root::<node_capnp::node_start_goal::Reader>()?;
+
+        let env_vars_reader = goal.get_env_vars()?;
+        let mut env_vars = Vec::with_capacity(env_vars_reader.len() as usize);
+        for idx in 0..env_vars_reader.len() {
+            let env_var = env_vars_reader.get(idx);
+            env_vars.push((
+                env_var.get_key()?.to_str()?.to_owned(),
+                env_var.get_value()?.to_str()?.to_owned(),
+            ));
+        }
+
         Ok(Self {
             runtime_config_json5: goal.get_runtime_config_json5()?.to_str()?.to_owned(),
             node_name: goal.get_node_name()?.to_str()?.to_owned(),
             tag: goal.get_tag()?.to_str()?.to_owned(),
+            env_vars,
         })
     }
 
