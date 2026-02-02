@@ -629,8 +629,12 @@ PY
 import json
 import sys
 
-obj = json.load(sys.stdin)
-print(obj.get("body_html") or "")
+raw = sys.stdin.read()
+if not raw.strip():
+    print("")
+else:
+    obj = json.loads(raw)
+    print(obj.get("body_html") or "")
 PY
     )"
     if [ -z "${RELEASE_BODY_HTML-}" ] && [ -n "${RELEASE_BODY_MARKDOWN-}" ]; then
@@ -655,5 +659,5 @@ PY
     write_release_notes_file "$TAG" "$DESCRIPTION" "$RELEASE_DETAILS_FILE" "$RELEASE_BODY_FILE" "$RELEASES_DIR"
 
     echo "Release created: ${RELEASE_URL:-https://github.com/${SLUG}/releases/tag/${TAG}}"
-    echo -e "\033[31mDo not forget to commit the new release note (to update https://forum.peppy.bot/c/peppy-os/announcements/6 and https://docs.peppy.bot/reference/changelog/)\033[0m"
+    printf "\033[31mDo not forget to commit the new release note (to update https://forum.peppy.bot/c/peppy-os/announcements/6 and https://docs.peppy.bot/reference/changelog/)\033[0m\n"
 } && __wrap__
