@@ -357,7 +357,7 @@ impl CleanupDir {
 impl Drop for CleanupDir {
     fn drop(&mut self) {
         if let Some(dir) = self.0.take() {
-            let _ = std::fs::remove_dir_all(dir);
+            std::fs::remove_dir_all(dir).ok();
         }
     }
 }
@@ -443,7 +443,7 @@ async fn resolve_git_source(
     .await
     .map_err(|e| format!("Failed to join git clone task: {}", e))?
     {
-        let _ = std::fs::remove_dir_all(&checkout_dir);
+        std::fs::remove_dir_all(&checkout_dir).ok();
         return Err(err);
     }
 
@@ -467,7 +467,7 @@ async fn resolve_git_source(
     let node_config = match NodeConfigParser::from_path(&config_path) {
         Ok(cfg) => cfg,
         Err(e) => {
-            let _ = std::fs::remove_dir_all(&checkout_dir);
+            std::fs::remove_dir_all(&checkout_dir).ok();
             return Err(format!(
                 "Failed to parse node config at {}: {}",
                 config_path.display(),
@@ -743,7 +743,7 @@ fn resolve_http_source_blocking(
 
     download_http_bundle(&url, &bundle_path)?;
     extract_http_bundle(&bundle_path, &extract_dir, &url)?;
-    let _ = std::fs::remove_file(&bundle_path);
+    std::fs::remove_file(&bundle_path).ok();
 
     let node_root_dir = locate_node_root_dir(&extract_dir)?;
     let config_path = node_root_dir.join(NODE_CONFIG_FILE);
@@ -1271,7 +1271,7 @@ async fn process_node_add(
         &goal.git_hash,
     ) {
         // Clean up the copied folder on failure
-        let _ = std::fs::remove_dir_all(&copied_path);
+        std::fs::remove_dir_all(&copied_path).ok();
         return NodeAddResult::failure(
             &ctx.log_path,
             format!("Failed to generate peppygen library: {}", e),
@@ -1289,12 +1289,12 @@ async fn process_node_add(
     .await
     {
         // Clean up the copied folder on failure
-        let _ = std::fs::remove_dir_all(&copied_path);
+        std::fs::remove_dir_all(&copied_path).ok();
         return NodeAddResult::failure(&ctx.log_path, format!("add_cmd failed: {}", e));
     }
 
     if let Err(e) = shutdown_existing_instances(&node_name, &node_tag, &ctx).await {
-        let _ = std::fs::remove_dir_all(&copied_path);
+        std::fs::remove_dir_all(&copied_path).ok();
         return NodeAddResult::failure(
             &ctx.log_path,
             format!("Failed to shutdown existing node instances: {}", e),
@@ -1304,7 +1304,7 @@ async fn process_node_add(
     // Add the node config to the stack
     if let Err(e) = ctx.node_stack.push_config(node_config, false, &copied_path) {
         // Clean up the copied folder on failure
-        let _ = std::fs::remove_dir_all(&copied_path);
+        std::fs::remove_dir_all(&copied_path).ok();
         return NodeAddResult::failure(&ctx.log_path, format!("Failed to add node config: {}", e));
     }
 
@@ -1312,7 +1312,7 @@ async fn process_node_add(
         && previous_snapshot_path != copied_path
         && is_node_snapshot_path(&previous_snapshot_path, &node_name, &node_tag)
     {
-        let _ = std::fs::remove_dir_all(&previous_snapshot_path);
+        std::fs::remove_dir_all(&previous_snapshot_path).ok();
     }
 
     debug!(

@@ -184,7 +184,7 @@ mod zenoh_build {
                 // Build in a temporary directory within cache
                 let build_dir = cache_dir.join("zenoh-src");
                 if build_dir.exists() {
-                    let _ = std::fs::remove_dir_all(&build_dir);
+                    std::fs::remove_dir_all(&build_dir).ok();
                 }
 
                 // Clone zenoh repository
@@ -229,7 +229,7 @@ mod zenoh_build {
                     .expect("Failed to copy zenohd binary to OUT_DIR");
 
                 // Clean up build directory
-                let _ = std::fs::remove_dir_all(&build_dir);
+                std::fs::remove_dir_all(&build_dir).ok();
             }
 
             // Set environment variable for runtime to find the zenohd binary

@@ -58,7 +58,7 @@ fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
         Ok(()) => {
             // Best-effort cleanup of old directory in background
             std::thread::spawn(move || {
-                let _ = std::fs::remove_dir_all(&old_peppy_dir);
+                std::fs::remove_dir_all(&old_peppy_dir).ok();
             });
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
