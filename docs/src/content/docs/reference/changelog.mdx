@@ -3,19 +3,29 @@ title: Changelog
 description: Release notes and version history for PeppyOS
 ---
 
+import { getCollection, render } from 'astro:content';
+
+export const releases = (await getCollection('releases')).sort(
+  (a, b) => b.data.date.valueOf() - a.data.date.valueOf()
+);
+
+export const renderedReleases = await Promise.all(
+  releases.map(async (release) => {
+    const { Content } = await render(release);
+    return { release, Content };
+  })
+);
+
 All notable changes to PeppyOS will be documented on this page.
 
-## v0.2.10 (Alpha)
+Subscribe to the [RSS feed](/changelog.xml) for updates.
 
-Initial alpha release of PeppyOS.
-
-### Features
-
-- Core node system with Rust support
-- Topic-based communication between nodes
-- Service and action patterns
-- Parameter system for node configuration
-- Launch files for multi-node orchestration
-- Node stack management
-- Standalone node execution mode
-- CLI tools for project management
+{renderedReleases.map(({ release, Content }) => (
+  <section>
+    <h2 id={`v${release.data.version.replace(/\./g, '')}`}>
+      v{release.data.version} (Alpha)
+    </h2>
+    <p><em>{release.data.description}</em></p>
+    <Content />
+  </section>
+))}
