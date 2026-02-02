@@ -643,7 +643,9 @@ PY
 import html
 import sys
 
-print("<pre><code>" + html.escape(sys.stdin.read()).rstrip() + "</code></pre>")
+content = sys.stdin.read().rstrip()
+if content:
+    print("<pre><code>" + html.escape(content) + "</code></pre>")
 PY
         )"
     fi
