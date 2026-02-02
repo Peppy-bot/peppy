@@ -24,6 +24,10 @@ Inside your node directory, add it to the PeppyOS stack by running:
 peppy node add .
 ```
 
+:::note
+Make sure you have `cargo` (Rust) or `uv` (Python) installed on your system. If these tools are missing, you may encounter a `No such file or directory` error.
+:::
+
 This command runs the `add_cmd` from the node's `peppy.json5` and registers it with the master node to make it available for execution.
 The output of this command provides some useful information:
 

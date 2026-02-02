@@ -48,7 +48,7 @@ export function renderReleaseArticleHtml({ version, description, date, docsUrl, 
 
 export function renderReleaseAtomEntry({ version, description, date, updated, site, bodyHtml }) {
   const docsUrl = site ? new URL(`/releases/v${version}/`, site).toString() : `/releases/v${version}/`;
-  const entryId = site ? new URL(`/releases/v${version}`, site).toString() : `/releases/v${version}`;
+  const entryId = docsUrl;
 
   const articleHtml = renderReleaseArticleHtml({
     version,
