@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
 
+use super::env::caller_env_overrides;
 use super::source::parse_node_source;
 use super::start::start_instance_async;
 use crate::context::AppContext;
@@ -124,7 +125,8 @@ async fn add_node_async(
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
     // Create and send the goal to start the add action
-    let add_goal = NodeAddGoal::from_source(node_source, git_hash);
+    let add_goal =
+        NodeAddGoal::from_source(node_source, git_hash).with_env_vars(caller_env_overrides());
     let mut action_handle = add_goal
         .send_goal(
             messenger_handle,

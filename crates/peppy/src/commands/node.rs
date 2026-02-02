@@ -1,4 +1,5 @@
 mod add;
+mod env;
 mod info;
 mod init;
 mod remove;

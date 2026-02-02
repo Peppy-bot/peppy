@@ -142,6 +142,7 @@ fn spawn_output_reader<R: Read + Send + 'static>(
 async fn run_add_cmd_with_streaming(
     add_cmd: Option<&Vec<String>>,
     working_dir: &Path,
+    env_vars: &[(String, String)],
     feedback_publisher: &TopicPublisher,
     log_file: Arc<StdMutex<File>>,
 ) -> std::result::Result<(), String> {
@@ -187,11 +188,15 @@ async fn run_add_cmd_with_streaming(
         }
     }
 
-    let mut child = Command::new(&program)
-        .args(&args)
-        .current_dir(working_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+    let mut command = Command::new(&program);
+    command.args(&args);
+    command.current_dir(working_dir);
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    for (key, value) in env_vars {
+        command.env(key, value);
+    }
+    let mut child = command
         .spawn()
         .map_err(|e| format!("failed to execute add_cmd: {}", e))?;
 
@@ -319,6 +324,22 @@ fn is_node_snapshot_path(path: &Path, node_name: &str, node_tag: &str) -> bool {
         return false;
     };
     folder_name.starts_with(&format!("{node_name}_{node_tag}_"))
+}
+
+fn filter_goal_env_vars(env_vars: &[(String, String)]) -> Vec<(String, String)> {
+    const ALLOWED_ENV_KEYS: [&str; 4] = ["PATH", "HOME", "CARGO_HOME", "RUSTUP_HOME"];
+
+    env_vars
+        .iter()
+        .filter_map(|(key, value)| {
+            let normalized = key.trim().to_ascii_uppercase();
+            if ALLOWED_ENV_KEYS.contains(&normalized.as_str()) {
+                Some((normalized, value.clone()))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// State for tracking the current node add action.
@@ -1214,6 +1235,7 @@ async fn process_node_add(
     cleanup_dir: Option<PathBuf>,
     ctx: ProcessNodeAddContext,
 ) -> NodeAddResult {
+    let env_vars = filter_goal_env_vars(&goal.env_vars);
     let _cleanup_guard = CleanupDir::new(cleanup_dir);
 
     let node_name = node_config.manifest.name.as_str().to_owned();
@@ -1271,6 +1293,7 @@ async fn process_node_add(
     if let Err(e) = run_add_cmd_with_streaming(
         node_config.manifest.add_cmd.as_ref(),
         &copied_path,
+        &env_vars,
         &ctx.feedback_publisher,
         Arc::clone(&ctx.log_file),
     )

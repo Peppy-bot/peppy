@@ -2,7 +2,7 @@ mod common;
 
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, send_node_add_and_wait,
-    start_master_node_with_mock_messenger, write_peppy_json5,
+    send_node_add_and_wait_with_env, start_master_node_with_mock_messenger, write_peppy_json5,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, logs_dir_add};
 use config::node::QoSProfile;
@@ -1944,10 +1944,10 @@ async fn node_add_same_node_shutdown_existing_instances() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_running_daemon_updates_path() {
-    // Emulates a real case scenario where a user first calls the NODE_ADD_ACTION without `cargo` being present on his system.
-    // He then install `cargo` with Rustup, which installs in `~/.cargo/bin/cargo` and add `. "$HOME/.cargo/env"` to his `.bashrc`.
-    // On the second call to NODE_ADD_ACTION, the code should find the newly installed `cargo` in the user env.
-    // During the entire process, the `start_master_node_with_mock_messenger` should NOT have been restarted.
+    // Emulates a real case scenario where the caller environment differs from the already-running
+    // daemon environment. In practice, users often "install a tool then source it" (e.g.
+    // `. "$HOME/.cargo/env"`), but that only affects their shell, not the daemon. We model this by
+    // passing a PATH override in the goal on the second attempt.
     const TARGET_NODE_NAME: &str = "the_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const STDOUT_MARKER: &str = "peppy_logfile_stdout_marker";
@@ -2006,24 +2006,25 @@ async fn listen_for_node_add_running_daemon_updates_path() {
             .expect("failed to set printout permissions");
     }
 
-    // Add the bin directory to PATH
+    // Pass the bin directory in PATH via env overrides to simulate the caller having an updated
+    // PATH without restarting the daemon.
     let current_path = std::env::var("PATH").unwrap_or_default();
     let new_path = format!("{}:{}", bin_dir.path().display(), current_path);
-    // SAFETY: This test is single-threaded at this point (no other threads are reading PATH)
-    unsafe { std::env::set_var("PATH", &new_path) };
+    let env_vars = vec![("PATH".to_string(), new_path)];
 
-    let add_result = send_node_add_and_wait(
+    let add_result = send_node_add_and_wait_with_env(
         &started_master.caller_handle,
         &started_master.master_node_name,
         source_dir.path(),
         GOAL_TIMEOUT,
         RESULT_TIMEOUT,
         None,
+        env_vars,
     )
     .await
     .expect("node_add request should succeed");
 
-    // Now the command should succeed, since `printout` has been added to the PATH
+    // Now the command should succeed, since `printout` is available in the PATH override
     assert!(
         add_result.success,
         "The command should succeed, got error: {:?}",

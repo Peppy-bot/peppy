@@ -2,9 +2,9 @@ mod common;
 
 use common::{
     AbortOnDrop, NodeStartTestTimeouts, create_test_node_with_name, send_node_add_and_wait,
-    send_node_start_and_wait, start_master_node_with_health_timeout,
-    start_master_node_with_mock_messenger, start_master_node_with_real_messenger,
-    write_peppy_json5,
+    send_node_start_and_wait, send_node_start_and_wait_with_env,
+    start_master_node_with_health_timeout, start_master_node_with_mock_messenger,
+    start_master_node_with_real_messenger, write_peppy_json5,
 };
 use config::consts::logs_dir_start;
 use config::node::Name as NodeName;
@@ -1101,6 +1101,161 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
 
     let _ = std::fs::remove_dir_all(&first_add_response.snapshot_path);
     let _ = std::fs::remove_dir_all(&second_add_response.snapshot_path);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_start_uses_env_overrides_for_path() {
+    const TARGET_NODE_NAME: &str = "env_path_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_INSTANCE_ID: &str = "env_path_instance";
+
+    let started = start_master_node_with_mock_messenger().await;
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                language: "rust",
+                start_cmd: ["printout", "3"]
+            }},
+            parameters: {{}}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_response = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.master_node_name,
+        source_dir.path(),
+        Duration::from_secs(30),
+        Duration::from_secs(120),
+        None,
+    )
+    .await
+    .expect("node_add should succeed");
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    let instance_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let _ready_task = AbortOnDrop(
+        listen_for_node_ready(
+            &instance_messenger,
+            &started.master_node_name,
+            TARGET_INSTANCE_ID,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("failed to start ready service"),
+    );
+    let _health_task = AbortOnDrop(
+        listen_for_node_health(
+            &instance_messenger,
+            &started.master_node_name,
+            TARGET_INSTANCE_ID,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("failed to start health service"),
+    );
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let runtime_config = RuntimeConfig::new(
+        "127.0.0.1",
+        config::consts::DEFAULT_MESSAGING_PORT,
+        NodeInstance {
+            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
+            arguments: Default::default(),
+        },
+        TARGET_NODE_NAME,
+        &started.master_node_name,
+    )
+    .expect("runtime config should be valid");
+    let runtime_config_json5 =
+        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+
+    // First attempt without env overrides: printout should not be found.
+    let start_response_missing = send_node_start_and_wait(
+        &started.caller_handle,
+        &started.master_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeStartTestTimeouts {
+            goal: Duration::from_secs(10),
+            result: Duration::from_secs(10),
+        },
+        None,
+    )
+    .await
+    .expect("node_start request should complete");
+
+    assert!(
+        !start_response_missing.result.success,
+        "node_start should fail when printout is missing from daemon PATH"
+    );
+    assert!(
+        start_response_missing
+            .result
+            .error_message
+            .as_ref()
+            .is_some_and(|msg| msg.contains("No such file or directory")),
+        "expected a spawn failure, got: {:?}",
+        start_response_missing.result.error_message
+    );
+    let _ = std::fs::remove_file(&start_response_missing.goal_response.log_path);
+
+    // Create a temp bin directory with a `printout` script.
+    let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
+    let printout_path = bin_dir.path().join("printout");
+    std::fs::write(&printout_path, "#!/bin/sh\nsleep \"${1:-3}\"\n")
+        .expect("failed to write printout script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&printout_path)
+            .expect("failed to get printout metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&printout_path, perms)
+            .expect("failed to set printout permissions");
+    }
+
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", bin_dir.path().display(), current_path);
+    let env_vars = vec![("PATH".to_string(), new_path)];
+
+    // Second attempt with env overrides: printout should be found.
+    let start_response = send_node_start_and_wait_with_env(
+        &started.caller_handle,
+        &started.master_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeStartTestTimeouts {
+            goal: Duration::from_secs(10),
+            result: Duration::from_secs(10),
+        },
+        None,
+        env_vars,
+    )
+    .await
+    .expect("node_start request should complete");
+
+    assert!(
+        start_response.result.success,
+        "node_start should succeed when caller PATH is passed, got error: {:?}",
+        start_response.result.error_message
+    );
+
+    let _ = std::fs::remove_file(&start_response.goal_response.log_path);
+    let _ = std::fs::remove_dir_all(&add_response.snapshot_path);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
