@@ -326,22 +326,6 @@ fn is_node_snapshot_path(path: &Path, node_name: &str, node_tag: &str) -> bool {
     folder_name.starts_with(&format!("{node_name}_{node_tag}_"))
 }
 
-fn filter_goal_env_vars(env_vars: &[(String, String)]) -> Vec<(String, String)> {
-    const ALLOWED_ENV_KEYS: [&str; 4] = ["PATH", "HOME", "CARGO_HOME", "RUSTUP_HOME"];
-
-    env_vars
-        .iter()
-        .filter_map(|(key, value)| {
-            let normalized = key.trim().to_ascii_uppercase();
-            if ALLOWED_ENV_KEYS.contains(&normalized.as_str()) {
-                Some((normalized, value.clone()))
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
 /// State for tracking the current node add action.
 #[derive(Default)]
 enum NodeAddActionState {
@@ -1235,7 +1219,12 @@ async fn process_node_add(
     cleanup_dir: Option<PathBuf>,
     ctx: ProcessNodeAddContext,
 ) -> NodeAddResult {
-    let env_vars = filter_goal_env_vars(&goal.env_vars);
+    let env_vars = match super::validate_goal_env_vars(&goal.env_vars) {
+        Ok(vars) => vars,
+        Err(e) => {
+            return NodeAddResult::failure(&ctx.log_path, e.to_string());
+        }
+    };
     let _cleanup_guard = CleanupDir::new(cleanup_dir);
 
     let node_name = node_config.manifest.name.as_str().to_owned();

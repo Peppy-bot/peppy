@@ -27,4 +27,4 @@ pub mod node_capnp {
 }
 
 pub use error::{Error, Result};
-pub use services::{MasterNode, MasterNodeArguments};
+pub use services::{FORBIDDEN_ENV_KEYS, MasterNode, MasterNodeArguments};

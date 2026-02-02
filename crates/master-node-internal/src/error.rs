@@ -33,6 +33,9 @@ pub enum Error {
     #[error("encoding error: {0}")]
     Encoding(String),
 
+    #[error("forbidden environment variable '{0}' is not allowed")]
+    ForbiddenEnvVar(String),
+
     // -- generator-internal
     #[error(transparent)]
     GeneratorError(#[from] generator::GeneratorError),
