@@ -1,13 +1,5 @@
 import { getCollection } from 'astro:content';
-
-function escapeXml(value) {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
+import { encodeXML } from 'entities';
 
 export async function GET(context) {
   if (!context.site) {
@@ -39,13 +31,13 @@ export async function GET(context) {
       const updatedIso = (release.data.updated ?? release.data.date).toISOString();
       return [
         '<entry>',
-        `<title>${escapeXml(`v${version}`)}</title>`,
-        `<author><name>${escapeXml(authorName)}</name></author>`,
-        `<id>${escapeXml(entryUrl.toString())}</id>`,
-        `<link rel="alternate" type="text/html" href="${escapeXml(entryUrl.toString())}" />`,
+        `<title>${encodeXML(`v${version}`)}</title>`,
+        `<author><name>${encodeXML(authorName)}</name></author>`,
+        `<id>${encodeXML(entryUrl.toString())}</id>`,
+        `<link rel="alternate" type="text/html" href="${encodeXML(entryUrl.toString())}" />`,
         `<published>${publishedIso}</published>`,
         `<updated>${updatedIso}</updated>`,
-        `<summary>${escapeXml(release.data.description)}</summary>`,
+        `<summary>${encodeXML(release.data.description)}</summary>`,
         '</entry>',
       ].join('');
     })
@@ -56,10 +48,10 @@ export async function GET(context) {
     '<feed xmlns="http://www.w3.org/2005/Atom">',
     '<title>PeppyOS Changelog</title>',
     '<subtitle>Release notes and version history for PeppyOS</subtitle>',
-    `<author><name>${escapeXml(authorName)}</name></author>`,
-    `<id>${escapeXml(feedUrl.toString())}</id>`,
-    `<link rel="self" type="application/atom+xml" href="${escapeXml(feedUrl.toString())}" />`,
-    `<link rel="alternate" type="text/html" href="${escapeXml(changelogUrl.toString())}" />`,
+    `<author><name>${encodeXML(authorName)}</name></author>`,
+    `<id>${encodeXML(feedUrl.toString())}</id>`,
+    `<link rel="self" type="application/atom+xml" href="${encodeXML(feedUrl.toString())}" />`,
+    `<link rel="alternate" type="text/html" href="${encodeXML(changelogUrl.toString())}" />`,
     `<updated>${feedUpdated.toISOString()}</updated>`,
     entriesXml,
     '</feed>',
