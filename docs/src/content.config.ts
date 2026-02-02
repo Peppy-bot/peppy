@@ -5,7 +5,11 @@ import { glob } from 'astro/loaders';
 const docs = defineCollection({ schema: docsSchema() });
 
 const releases = defineCollection({
-  loader: glob({ pattern: '**/*.md', base: './src/content/releases' }),
+  loader: glob({
+    pattern: '**/*.md',
+    base: './src/content/releases',
+    generateId: ({ entry }) => entry.replace(/\.md$/, ''),
+  }),
   schema: z.object({
     version: z.string(),
     date: z.date(),

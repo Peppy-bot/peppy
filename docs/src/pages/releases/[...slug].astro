@@ -1,0 +1,33 @@
+---
+import { getCollection, render } from 'astro:content';
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+
+export async function getStaticPaths() {
+  const releases = await getCollection('releases');
+  return releases.map((release) => ({
+    params: { slug: `v${release.data.version}` },
+    props: { release },
+  }));
+}
+
+const { release } = Astro.props;
+const { Content } = await render(release);
+const version = release.data.version;
+const date = release.data.date.toLocaleDateString('en-US', {
+  year: 'numeric',
+  month: 'long',
+  day: 'numeric',
+});
+---
+
+<StarlightPage
+  frontmatter={{
+    title: `v${version}`,
+    description: release.data.description,
+  }}
+>
+  <p><em>{release.data.description}</em></p>
+  <p><small>Released on {date}</small></p>
+  <Content />
+  <p><a href="/reference/changelog/">View all releases</a></p>
+</StarlightPage>

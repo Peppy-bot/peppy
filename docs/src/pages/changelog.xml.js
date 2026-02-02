@@ -1,5 +1,6 @@
 import { getCollection } from 'astro:content';
 import { encodeXML } from 'entities';
+import { marked } from 'marked';
 
 export async function GET(context) {
   if (!context.site) {
@@ -25,10 +26,10 @@ export async function GET(context) {
   const entriesXml = sortedReleases
     .map((release) => {
       const version = release.data.version;
-      const anchor = `v${version.replace(/\./g, '')}`;
-      const entryUrl = new URL(`/reference/changelog/#${anchor}`, context.site);
+      const entryUrl = new URL(`/releases/v${version}/`, context.site);
       const publishedIso = release.data.date.toISOString();
       const updatedIso = (release.data.updated ?? release.data.date).toISOString();
+      const contentHtml = marked.parse(release.body || '');
       return [
         '<entry>',
         `<title>${encodeXML(`v${version}`)}</title>`,
@@ -38,6 +39,7 @@ export async function GET(context) {
         `<published>${publishedIso}</published>`,
         `<updated>${updatedIso}</updated>`,
         `<summary>${encodeXML(release.data.description)}</summary>`,
+        `<content type="html">${encodeXML(contentHtml)}</content>`,
         '</entry>',
       ].join('');
     })

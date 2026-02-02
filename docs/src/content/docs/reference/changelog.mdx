@@ -20,12 +20,11 @@ All notable changes to PeppyOS will be documented on this page.
 
 Subscribe to the [Atom feed](/changelog.xml) for updates.
 
-{renderedReleases.map(({ release, Content }) => (
-  <section>
-    <h2 id={`v${release.data.version.replace(/\./g, '')}`}>
-      v{release.data.version} (Alpha)
-    </h2>
-    <p><em>{release.data.description}</em></p>
+{renderedReleases.map(({ release, Content }, index) => (
+  <details open={index === 0}>
+    <summary>
+      <strong>v{release.data.version} (Alpha)</strong> — <em>{release.data.description}</em>
+    </summary>
     <Content />
-  </section>
+  </details>
 ))}
