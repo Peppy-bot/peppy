@@ -80,6 +80,7 @@ pub fn write_peppy_json5(dir: &Path, content: &str) {
     config::fingerprint::create_codegen_fingerprint(&config_path, Path::new(PEPPYGEN_OUTPUT_PATH));
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send_node_start_and_wait_internal(
     messenger: &MessengerHandle,
     master_node_name: &str,
@@ -426,6 +427,7 @@ pub async fn send_node_start_and_wait(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn send_node_start_and_wait_with_env(
     messenger: &MessengerHandle,
     master_node_name: &str,
