@@ -142,6 +142,7 @@ fn spawn_output_reader<R: Read + Send + 'static>(
 async fn run_add_cmd_with_streaming(
     add_cmd: Option<&Vec<String>>,
     working_dir: &Path,
+    env_vars: &[(String, String)],
     feedback_publisher: &TopicPublisher,
     log_file: Arc<StdMutex<File>>,
 ) -> std::result::Result<(), String> {
@@ -149,8 +150,18 @@ async fn run_add_cmd_with_streaming(
         return Ok(());
     };
 
-    let Some((program, args)) = cmd.split_first() else {
+    if cmd.is_empty() {
         return Err("add_cmd is empty".to_string());
+    };
+
+    let (program, args) = if cmd.len() == 1 {
+        if cfg!(windows) {
+            ("cmd".to_string(), vec!["/C".to_string(), cmd[0].clone()])
+        } else {
+            ("sh".to_string(), vec!["-c".to_string(), cmd[0].clone()])
+        }
+    } else {
+        (cmd[0].clone(), cmd[1..].to_vec())
     };
 
     debug!(
@@ -160,7 +171,10 @@ async fn run_add_cmd_with_streaming(
 
     // Log the command being executed to the log file before attempting to spawn
     {
-        let full_cmd = cmd.join(" ");
+        let full_cmd = std::iter::once(program.as_str())
+            .chain(args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ");
         if let Ok(mut file) = log_file.lock() {
             let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
             let _ = writeln!(
@@ -174,11 +188,15 @@ async fn run_add_cmd_with_streaming(
         }
     }
 
-    let mut child = Command::new(program)
-        .args(args)
-        .current_dir(working_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+    let mut command = Command::new(&program);
+    command.args(&args);
+    command.current_dir(working_dir);
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    for (key, value) in env_vars {
+        command.env(key, value);
+    }
+    let mut child = command
         .spawn()
         .map_err(|e| format!("failed to execute add_cmd: {}", e))?;
 
@@ -339,7 +357,7 @@ impl CleanupDir {
 impl Drop for CleanupDir {
     fn drop(&mut self) {
         if let Some(dir) = self.0.take() {
-            let _ = std::fs::remove_dir_all(dir);
+            std::fs::remove_dir_all(dir).ok();
         }
     }
 }
@@ -425,7 +443,7 @@ async fn resolve_git_source(
     .await
     .map_err(|e| format!("Failed to join git clone task: {}", e))?
     {
-        let _ = std::fs::remove_dir_all(&checkout_dir);
+        std::fs::remove_dir_all(&checkout_dir).ok();
         return Err(err);
     }
 
@@ -449,7 +467,7 @@ async fn resolve_git_source(
     let node_config = match NodeConfigParser::from_path(&config_path) {
         Ok(cfg) => cfg,
         Err(e) => {
-            let _ = std::fs::remove_dir_all(&checkout_dir);
+            std::fs::remove_dir_all(&checkout_dir).ok();
             return Err(format!(
                 "Failed to parse node config at {}: {}",
                 config_path.display(),
@@ -725,7 +743,7 @@ fn resolve_http_source_blocking(
 
     download_http_bundle(&url, &bundle_path)?;
     extract_http_bundle(&bundle_path, &extract_dir, &url)?;
-    let _ = std::fs::remove_file(&bundle_path);
+    std::fs::remove_file(&bundle_path).ok();
 
     let node_root_dir = locate_node_root_dir(&extract_dir)?;
     let config_path = node_root_dir.join(NODE_CONFIG_FILE);
@@ -1201,6 +1219,12 @@ async fn process_node_add(
     cleanup_dir: Option<PathBuf>,
     ctx: ProcessNodeAddContext,
 ) -> NodeAddResult {
+    let env_vars = match super::validate_goal_env_vars(&goal.env_vars) {
+        Ok(vars) => vars,
+        Err(e) => {
+            return NodeAddResult::failure(&ctx.log_path, e.to_string());
+        }
+    };
     let _cleanup_guard = CleanupDir::new(cleanup_dir);
 
     let node_name = node_config.manifest.name.as_str().to_owned();
@@ -1247,7 +1271,7 @@ async fn process_node_add(
         &goal.git_hash,
     ) {
         // Clean up the copied folder on failure
-        let _ = std::fs::remove_dir_all(&copied_path);
+        std::fs::remove_dir_all(&copied_path).ok();
         return NodeAddResult::failure(
             &ctx.log_path,
             format!("Failed to generate peppygen library: {}", e),
@@ -1258,18 +1282,19 @@ async fn process_node_add(
     if let Err(e) = run_add_cmd_with_streaming(
         node_config.manifest.add_cmd.as_ref(),
         &copied_path,
+        &env_vars,
         &ctx.feedback_publisher,
         Arc::clone(&ctx.log_file),
     )
     .await
     {
         // Clean up the copied folder on failure
-        let _ = std::fs::remove_dir_all(&copied_path);
+        std::fs::remove_dir_all(&copied_path).ok();
         return NodeAddResult::failure(&ctx.log_path, format!("add_cmd failed: {}", e));
     }
 
     if let Err(e) = shutdown_existing_instances(&node_name, &node_tag, &ctx).await {
-        let _ = std::fs::remove_dir_all(&copied_path);
+        std::fs::remove_dir_all(&copied_path).ok();
         return NodeAddResult::failure(
             &ctx.log_path,
             format!("Failed to shutdown existing node instances: {}", e),
@@ -1279,7 +1304,7 @@ async fn process_node_add(
     // Add the node config to the stack
     if let Err(e) = ctx.node_stack.push_config(node_config, false, &copied_path) {
         // Clean up the copied folder on failure
-        let _ = std::fs::remove_dir_all(&copied_path);
+        std::fs::remove_dir_all(&copied_path).ok();
         return NodeAddResult::failure(&ctx.log_path, format!("Failed to add node config: {}", e));
     }
 
@@ -1287,7 +1312,7 @@ async fn process_node_add(
         && previous_snapshot_path != copied_path
         && is_node_snapshot_path(&previous_snapshot_path, &node_name, &node_tag)
     {
-        let _ = std::fs::remove_dir_all(&previous_snapshot_path);
+        std::fs::remove_dir_all(&previous_snapshot_path).ok();
     }
 
     debug!(

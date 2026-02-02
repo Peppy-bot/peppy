@@ -80,18 +80,129 @@ pub fn write_peppy_json5(dir: &Path, content: &str) {
     config::fingerprint::create_codegen_fingerprint(&config_path, Path::new(PEPPYGEN_OUTPUT_PATH));
 }
 
-/// Helper function to send a node_add goal and wait for the result.
-/// This wraps the action pattern for simpler test usage.
-///
-/// When `feedback_tx` is provided, wildcard caller IDs are used so mock pub/sub
-/// can match feedback topics with "*" segments.
-pub async fn send_node_add_and_wait<'a>(
+#[allow(clippy::too_many_arguments)]
+async fn send_node_start_and_wait_internal(
+    messenger: &MessengerHandle,
+    master_node_name: &str,
+    runtime_config_json5: &str,
+    node_name: &str,
+    tag: &str,
+    timeouts: &NodeStartTestTimeouts,
+    feedback_tx: Option<UnboundedSender<NodeStartFeedback>>,
+    env_vars: Vec<(String, String)>,
+) -> Result<NodeStartTestResponse, String> {
+    let goal = NodeStartGoal::new(runtime_config_json5, node_name, tag).with_env_vars(env_vars);
+    let (caller_master_node, caller_instance_id) = if feedback_tx.is_some() {
+        ("*", "*")
+    } else {
+        (master_node_name, CALLER_INSTANCE_ID)
+    };
+    let goal_payload = goal
+        .encode()
+        .map_err(|e| format!("Failed to encode goal: {}", e))?;
+
+    let mut action_handle = ActionMessenger::send_goal(
+        messenger,
+        caller_master_node,
+        caller_instance_id,
+        master_node_name,
+        names::NODE_START_ACTION,
+        Some(master_node_name),
+        None,
+        goal_payload,
+        QoSProfile::default(),
+        timeouts.goal,
+    )
+    .await
+    .map_err(|e| format!("Failed to send goal: {}", e))?;
+
+    // Decode the goal response to get log_path
+    let goal_response_payload = action_handle.goal_response().payload().to_bytes();
+    let goal_response = NodeStartGoalResponse::decode(&goal_response_payload)
+        .map_err(|e| format!("Failed to decode goal response: {}", e))?;
+
+    let deadline = tokio::time::Instant::now() + timeouts.result;
+    let feedback_tx = feedback_tx.as_ref();
+
+    loop {
+        // Drain feedback so the publisher doesn't block on a full channel.
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Err("Timeout waiting for node_start result".to_string());
+            }
+            let remaining = deadline - now;
+            let drain_timeout = Duration::from_millis(50).min(remaining);
+            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+                Ok(Ok(msg)) => {
+                    let payload = msg.payload();
+                    if let Ok(feedback) = NodeStartFeedback::decode(&payload.to_bytes())
+                        && let Some(tx) = feedback_tx
+                    {
+                        let _ = tx.send(feedback);
+                    }
+                }
+                Ok(Err(_)) => break,
+                Err(_) => break,
+            }
+        }
+
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err("Timeout waiting for node_start result".to_string());
+        }
+        let remaining = deadline - now;
+        let poll_timeout = Duration::from_millis(200).min(remaining);
+
+        match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
+            Ok(msg) => {
+                let payload = msg.payload().to_bytes();
+                match NodeStartResult::decode(&payload) {
+                    Ok(result) => {
+                        // Drain any remaining feedback that may have arrived while polling for the
+                        // result so callers can reliably assert on stdout/stderr markers.
+                        loop {
+                            let Ok(Some(msg)) = action_handle.try_next_feedback() else {
+                                break;
+                            };
+                            let payload = msg.payload();
+                            if let Ok(feedback) = NodeStartFeedback::decode(&payload.to_bytes())
+                                && let Some(tx) = feedback_tx
+                            {
+                                let _ = tx.send(feedback);
+                            }
+                        }
+                        return Ok(NodeStartTestResponse {
+                            goal_response,
+                            result,
+                        });
+                    }
+                    Err(err) => {
+                        let pending = std::str::from_utf8(payload.as_ref())
+                            .map(|text| text.starts_with("result pending"))
+                            .unwrap_or(false);
+                        if !pending {
+                            return Err(format!("Failed to decode result: {}", err));
+                        }
+                    }
+                }
+            }
+            Err(PeppyError::ActionResultTimeout { .. }) => {}
+            Err(err) => return Err(format!("Failed to get result: {}", err)),
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+async fn send_node_add_and_wait_internal<'a>(
     messenger: &MessengerHandle,
     master_node_name: &str,
     source: impl Into<NodeAddSource<'a>>,
     goal_timeout: Duration,
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
+    env_vars: Vec<(String, String)>,
 ) -> Result<NodeAddResult, String> {
     let source = source.into();
 
@@ -129,7 +240,8 @@ pub async fn send_node_add_and_wait<'a>(
             TEST_GIT_HASH,
         ),
         NodeAddSource::Http(url) => NodeAddGoal::new_http(url.clone(), TEST_GIT_HASH),
-    };
+    }
+    .with_env_vars(env_vars);
 
     let (caller_master_node, caller_instance_id) = if feedback_tx.is_some() {
         ("*", "*")
@@ -242,6 +354,52 @@ pub async fn send_node_add_and_wait<'a>(
     }
 }
 
+/// Helper function to send a node_add goal and wait for the result.
+/// This wraps the action pattern for simpler test usage.
+///
+/// When `feedback_tx` is provided, wildcard caller IDs are used so mock pub/sub
+/// can match feedback topics with "*" segments.
+pub async fn send_node_add_and_wait<'a>(
+    messenger: &MessengerHandle,
+    master_node_name: &str,
+    source: impl Into<NodeAddSource<'a>>,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+    feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
+) -> Result<NodeAddResult, String> {
+    send_node_add_and_wait_internal(
+        messenger,
+        master_node_name,
+        source,
+        goal_timeout,
+        result_timeout,
+        feedback_tx,
+        Vec::new(),
+    )
+    .await
+}
+
+pub async fn send_node_add_and_wait_with_env<'a>(
+    messenger: &MessengerHandle,
+    master_node_name: &str,
+    source: impl Into<NodeAddSource<'a>>,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+    feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
+    env_vars: Vec<(String, String)>,
+) -> Result<NodeAddResult, String> {
+    send_node_add_and_wait_internal(
+        messenger,
+        master_node_name,
+        source,
+        goal_timeout,
+        result_timeout,
+        feedback_tx,
+        env_vars,
+    )
+    .await
+}
+
 /// Helper function to send a node_start goal and wait for the result.
 /// This wraps the action pattern for simpler test usage.
 ///
@@ -256,108 +414,41 @@ pub async fn send_node_start_and_wait(
     timeouts: &NodeStartTestTimeouts,
     feedback_tx: Option<UnboundedSender<NodeStartFeedback>>,
 ) -> Result<NodeStartTestResponse, String> {
-    let goal = NodeStartGoal::new(runtime_config_json5, node_name, tag);
-    let (caller_master_node, caller_instance_id) = if feedback_tx.is_some() {
-        ("*", "*")
-    } else {
-        (master_node_name, CALLER_INSTANCE_ID)
-    };
-    let goal_payload = goal
-        .encode()
-        .map_err(|e| format!("Failed to encode goal: {}", e))?;
-
-    let mut action_handle = ActionMessenger::send_goal(
+    send_node_start_and_wait_internal(
         messenger,
-        caller_master_node,
-        caller_instance_id,
         master_node_name,
-        names::NODE_START_ACTION,
-        Some(master_node_name),
-        None,
-        goal_payload,
-        QoSProfile::default(),
-        timeouts.goal,
+        runtime_config_json5,
+        node_name,
+        tag,
+        timeouts,
+        feedback_tx,
+        Vec::new(),
     )
     .await
-    .map_err(|e| format!("Failed to send goal: {}", e))?;
+}
 
-    // Decode the goal response to get log_path
-    let goal_response_payload = action_handle.goal_response().payload().to_bytes();
-    let goal_response = NodeStartGoalResponse::decode(&goal_response_payload)
-        .map_err(|e| format!("Failed to decode goal response: {}", e))?;
-
-    let deadline = tokio::time::Instant::now() + timeouts.result;
-    let feedback_tx = feedback_tx.as_ref();
-
-    loop {
-        // Drain feedback so the publisher doesn't block on a full channel.
-        loop {
-            let now = tokio::time::Instant::now();
-            if now >= deadline {
-                return Err("Timeout waiting for node_start result".to_string());
-            }
-            let remaining = deadline - now;
-            let drain_timeout = Duration::from_millis(50).min(remaining);
-            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-                Ok(Ok(msg)) => {
-                    let payload = msg.payload();
-                    if let Ok(feedback) = NodeStartFeedback::decode(&payload.to_bytes())
-                        && let Some(tx) = feedback_tx
-                    {
-                        let _ = tx.send(feedback);
-                    }
-                }
-                Ok(Err(_)) => break,
-                Err(_) => break,
-            }
-        }
-
-        let now = tokio::time::Instant::now();
-        if now >= deadline {
-            return Err("Timeout waiting for node_start result".to_string());
-        }
-        let remaining = deadline - now;
-        let poll_timeout = Duration::from_millis(200).min(remaining);
-
-        match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
-            Ok(msg) => {
-                let payload = msg.payload().to_bytes();
-                match NodeStartResult::decode(&payload) {
-                    Ok(result) => {
-                        // Drain any remaining feedback that may have arrived while polling for the
-                        // result so callers can reliably assert on stdout/stderr markers.
-                        loop {
-                            let Ok(Some(msg)) = action_handle.try_next_feedback() else {
-                                break;
-                            };
-                            let payload = msg.payload();
-                            if let Ok(feedback) = NodeStartFeedback::decode(&payload.to_bytes())
-                                && let Some(tx) = feedback_tx
-                            {
-                                let _ = tx.send(feedback);
-                            }
-                        }
-                        return Ok(NodeStartTestResponse {
-                            goal_response,
-                            result,
-                        });
-                    }
-                    Err(err) => {
-                        let pending = std::str::from_utf8(payload.as_ref())
-                            .map(|text| text.starts_with("result pending"))
-                            .unwrap_or(false);
-                        if !pending {
-                            return Err(format!("Failed to decode result: {}", err));
-                        }
-                    }
-                }
-            }
-            Err(PeppyError::ActionResultTimeout { .. }) => {}
-            Err(err) => return Err(format!("Failed to get result: {}", err)),
-        }
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+#[allow(clippy::too_many_arguments)]
+pub async fn send_node_start_and_wait_with_env(
+    messenger: &MessengerHandle,
+    master_node_name: &str,
+    runtime_config_json5: &str,
+    node_name: &str,
+    tag: &str,
+    timeouts: &NodeStartTestTimeouts,
+    feedback_tx: Option<UnboundedSender<NodeStartFeedback>>,
+    env_vars: Vec<(String, String)>,
+) -> Result<NodeStartTestResponse, String> {
+    send_node_start_and_wait_internal(
+        messenger,
+        master_node_name,
+        runtime_config_json5,
+        node_name,
+        tag,
+        timeouts,
+        feedback_tx,
+        env_vars,
+    )
+    .await
 }
 
 /// Creates a fresh test node in a new temp directory.

@@ -32,6 +32,7 @@ pub enum NodeSource {
 pub struct NodeAddGoal {
     pub source: NodeSource,
     pub git_hash: String,
+    pub env_vars: Vec<(String, String)>,
 }
 
 impl NodeAddGoal {
@@ -40,6 +41,7 @@ impl NodeAddGoal {
         Self {
             source,
             git_hash: git_hash.into(),
+            env_vars: Vec::new(),
         }
     }
 
@@ -48,6 +50,7 @@ impl NodeAddGoal {
         Self {
             source: NodeSource::Fs(path.into()),
             git_hash: git_hash.into(),
+            env_vars: Vec::new(),
         }
     }
 
@@ -65,6 +68,7 @@ impl NodeAddGoal {
                 repo_ref,
             },
             git_hash: git_hash.into(),
+            env_vars: Vec::new(),
         }
     }
 
@@ -73,7 +77,13 @@ impl NodeAddGoal {
         Self {
             source: NodeSource::Http { url },
             git_hash: git_hash.into(),
+            env_vars: Vec::new(),
         }
+    }
+
+    pub fn with_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
+        self.env_vars = env_vars;
+        self
     }
 
     /// Returns the filesystem path if the source is `Fs`, otherwise `None`.
@@ -89,7 +99,7 @@ impl NodeAddGoal {
         {
             let mut goal = builder.init_root::<node_capnp::node_add_goal::Builder>();
             goal.set_git_hash(&self.git_hash);
-            let mut source = goal.init_source();
+            let mut source = goal.reborrow().init_source();
             match &self.source {
                 NodeSource::Fs(path) => {
                     source.set_fs(path.to_string_lossy().as_ref());
@@ -107,6 +117,13 @@ impl NodeAddGoal {
                 NodeSource::Http { url } => {
                     source.set_http(url.as_str());
                 }
+            }
+
+            let mut env_vars = goal.reborrow().init_env_vars(self.env_vars.len() as u32);
+            for (idx, (key, value)) in self.env_vars.iter().enumerate() {
+                let mut env_var = env_vars.reborrow().get(idx as u32);
+                env_var.set_key(key);
+                env_var.set_value(value);
             }
         }
         encode_message(&builder)
@@ -143,9 +160,21 @@ impl NodeAddGoal {
                 NodeSource::Http { url }
             }
         };
+
+        let env_vars_reader = goal.get_env_vars()?;
+        let mut env_vars = Vec::with_capacity(env_vars_reader.len() as usize);
+        for idx in 0..env_vars_reader.len() {
+            let env_var = env_vars_reader.get(idx);
+            env_vars.push((
+                env_var.get_key()?.to_str()?.to_owned(),
+                env_var.get_value()?.to_str()?.to_owned(),
+            ));
+        }
+
         Ok(Self {
             source,
             git_hash: goal.get_git_hash()?.to_str()?.to_owned(),
+            env_vars,
         })
     }
 

@@ -3,6 +3,8 @@ mod node;
 mod ping;
 mod stack;
 
+pub use node::FORBIDDEN_ENV_KEYS;
+
 use crate::Result;
 use config::{
     AnyType, NodeArguments,
