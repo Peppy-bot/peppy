@@ -1,5 +1,6 @@
 import { getCollection } from 'astro:content';
 import { encodeXML } from 'entities';
+import { formatAtomTimestamp, renderReleaseAtomEntry } from '../lib/releaseEntry.js';
 
 export async function GET(context) {
   if (!context.site) {
@@ -23,26 +24,17 @@ export async function GET(context) {
   const changelogUrl = new URL('/reference/changelog/', context.site);
 
   const entriesXml = sortedReleases
-    .map((release) => {
-      const version = release.data.version;
-      const entryUrl = new URL(`/releases/raw/v${version}`, context.site);
-      const publishedIso = release.data.date.toISOString();
-      const updatedIso = (release.data.updated ?? release.data.date).toISOString();
-      const contentHtml = release.body || '';
-      return [
-        '<entry>',
-        `<title>${encodeXML(`v${version}`)}</title>`,
-        `<author><name>${encodeXML(authorName)}</name></author>`,
-        `<id>${encodeXML(entryUrl.toString())}</id>`,
-        `<link rel="alternate" type="text/html" href="${encodeXML(entryUrl.toString())}" />`,
-        `<published>${publishedIso}</published>`,
-        `<updated>${updatedIso}</updated>`,
-        `<summary>${encodeXML(release.data.description)}</summary>`,
-        `<content type="html">${encodeXML(contentHtml)}</content>`,
-        '</entry>',
-      ].join('');
-    })
-    .join('');
+    .map((release) =>
+      renderReleaseAtomEntry({
+        version: release.data.version,
+        description: release.data.description,
+        date: release.data.date,
+        updated: release.data.updated ?? release.data.date,
+        site: context.site,
+        bodyHtml: release.body || '',
+      })
+    )
+    .join('\n');
 
   const atomXml = [
     '<?xml version="1.0" encoding="utf-8"?>',
@@ -53,10 +45,10 @@ export async function GET(context) {
     `<id>${encodeXML(feedUrl.toString())}</id>`,
     `<link rel="self" type="application/atom+xml" href="${encodeXML(feedUrl.toString())}" />`,
     `<link rel="alternate" type="text/html" href="${encodeXML(changelogUrl.toString())}" />`,
-    `<updated>${feedUpdated.toISOString()}</updated>`,
+    `<updated>${formatAtomTimestamp(feedUpdated)}</updated>`,
     entriesXml,
     '</feed>',
-  ].join('');
+  ].join('\n');
 
   return new Response(atomXml, {
     headers: {
