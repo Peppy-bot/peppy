@@ -33,22 +33,6 @@ const STARTUP_OUTPUT_QUIET_WINDOW: Duration = Duration::from_millis(10);
 
 static RUNTIME_CONFIG_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn filter_goal_env_vars(env_vars: &[(String, String)]) -> Vec<(String, String)> {
-    const ALLOWED_ENV_KEYS: [&str; 4] = ["PATH", "HOME", "CARGO_HOME", "RUSTUP_HOME"];
-
-    env_vars
-        .iter()
-        .filter_map(|(key, value)| {
-            let normalized = key.trim().to_ascii_uppercase();
-            if ALLOWED_ENV_KEYS.contains(&normalized.as_str()) {
-                Some((normalized, value.clone()))
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
 /// Validates that all required parameters from the schema are present in the provided arguments.
 /// Returns a list of all missing parameter paths (e.g., ["device.physical", "video.frame_rate"]).
 fn validate_parameters(
@@ -625,7 +609,12 @@ async fn process_node_start(
         tag,
         env_vars,
     } = goal;
-    let env_vars = filter_goal_env_vars(&env_vars);
+    let env_vars = match super::validate_goal_env_vars(&env_vars) {
+        Ok(vars) => vars,
+        Err(e) => {
+            return NodeStartResult::failure(e.to_string());
+        }
+    };
 
     let instance_id_str = runtime_config.node_instance.instance_id.as_str();
     let instance_id = match Name::new(instance_id_str) {

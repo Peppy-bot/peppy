@@ -1,12 +1,12 @@
-pub fn caller_env_overrides() -> Vec<(String, String)> {
-    const ENV_KEYS: [&str; 4] = ["PATH", "HOME", "CARGO_HOME", "RUSTUP_HOME"];
+use master_node::FORBIDDEN_ENV_KEYS;
 
-    ENV_KEYS
-        .iter()
-        .filter_map(|key| {
-            std::env::var(key)
-                .ok()
-                .map(|value| (key.to_string(), value))
+/// Collects environment variables from the caller's environment to pass to the daemon.
+/// Filters out forbidden env vars that could be used for code injection.
+pub fn caller_env_overrides() -> Vec<(String, String)> {
+    std::env::vars()
+        .filter(|(key, _)| {
+            let normalized = key.trim().to_ascii_uppercase();
+            !FORBIDDEN_ENV_KEYS.contains(&normalized.as_str())
         })
         .collect()
 }
