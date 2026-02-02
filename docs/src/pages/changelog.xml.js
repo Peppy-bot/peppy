@@ -18,7 +18,13 @@ export async function GET(context) {
 
   const releases = await getCollection('releases');
   const sortedReleases = releases.sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf());
-  const feedUpdated = sortedReleases[0]?.data.date ?? new Date();
+  const feedUpdated =
+    sortedReleases.length === 0
+      ? new Date()
+      : sortedReleases.reduce((latest, release) => {
+          const updated = release.data.updated ?? release.data.date;
+          return updated > latest ? updated : latest;
+        }, sortedReleases[0].data.updated ?? sortedReleases[0].data.date);
 
   const feedUrl = new URL('/changelog.xml', context.site);
   const changelogUrl = new URL('/reference/changelog/', context.site);
@@ -28,14 +34,15 @@ export async function GET(context) {
       const version = release.data.version;
       const anchor = `v${version.replace(/\./g, '')}`;
       const entryUrl = new URL(`/reference/changelog/#${anchor}`, context.site);
-      const dateIso = release.data.date.toISOString();
+      const publishedIso = release.data.date.toISOString();
+      const updatedIso = (release.data.updated ?? release.data.date).toISOString();
       return [
         '<entry>',
         `<title>${escapeXml(`v${version}`)}</title>`,
         `<id>${escapeXml(entryUrl.toString())}</id>`,
         `<link rel="alternate" type="text/html" href="${escapeXml(entryUrl.toString())}" />`,
-        `<published>${dateIso}</published>`,
-        `<updated>${dateIso}</updated>`,
+        `<published>${publishedIso}</published>`,
+        `<updated>${updatedIso}</updated>`,
         `<summary>${escapeXml(release.data.description)}</summary>`,
         '</entry>',
       ].join('');
@@ -47,6 +54,7 @@ export async function GET(context) {
     '<feed xmlns="http://www.w3.org/2005/Atom">',
     '<title>PeppyOS Changelog</title>',
     '<subtitle>Release notes and version history for PeppyOS</subtitle>',
+    '<author><name>PeppyOS</name></author>',
     `<id>${escapeXml(feedUrl.toString())}</id>`,
     `<link rel="self" type="application/atom+xml" href="${escapeXml(feedUrl.toString())}" />`,
     `<link rel="alternate" type="text/html" href="${escapeXml(changelogUrl.toString())}" />`,

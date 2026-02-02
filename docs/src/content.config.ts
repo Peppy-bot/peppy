@@ -9,6 +9,7 @@ const releases = defineCollection({
   schema: z.object({
     version: z.string(),
     date: z.date(),
+    updated: z.date().optional(),
     description: z.string(),
   }),
 });
