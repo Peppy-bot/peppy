@@ -584,4 +584,5 @@ PY
     write_release_notes_file "$TAG" "$DESCRIPTION" "$RELEASE_DETAILS_FILE" "$RELEASE_BODY_FILE" "$RELEASES_DIR"
 
     echo "Release created: ${RELEASE_URL:-https://github.com/${SLUG}/releases/tag/${TAG}}"
+    echo -e "\033[31mDo not forget to commit the new release note (to update https://forum.peppy.bot/c/peppy-os/announcements/6 and https://docs.peppy.bot/reference/changelog/)\033[0m"
 } && __wrap__
