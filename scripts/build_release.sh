@@ -9,6 +9,7 @@ set -eu
 #
 # Outputs:
 #   - A tar.gz archive in ./dist/ named like: peppy-x86_64-unknown-linux-gnu.tar.gz
+#   - A release notes Markdown file in ./docs/src/content/releases/ (used by the docs changelog page + Atom feed)
 
 __wrap__() {
     die() {
@@ -288,55 +289,84 @@ print(url)
 PY
     }
 
-    update_changelog() {
+    write_release_notes_file() {
         RELEASE_TAG="$1"
-        RELEASE_BODY="$2"
-        CHANGELOG_PATH="$3"
+        RELEASE_DESCRIPTION="$2"
+        RELEASE_DETAILS_FILE="$3"
+        RELEASE_BODY_FILE="$4"
+        RELEASES_DIR="$5"
 
-        if [ ! -f "$CHANGELOG_PATH" ]; then
-            echo "warning: changelog file not found at '$CHANGELOG_PATH', skipping update" >&2
-            return 0
+        [ -n "${RELEASE_TAG-}" ] || die "release tag cannot be empty"
+        [ -n "${RELEASE_DESCRIPTION-}" ] || die "release description cannot be empty"
+        [ -f "$RELEASE_DETAILS_FILE" ] || die "release details file not found: $RELEASE_DETAILS_FILE"
+        [ -f "$RELEASE_BODY_FILE" ] || die "release body file not found: $RELEASE_BODY_FILE"
+
+        mkdir -p "$RELEASES_DIR"
+
+        case "$RELEASE_TAG" in
+        v* | V*) RELEASE_FILE_BASENAME="${RELEASE_TAG}" ;;
+        *) RELEASE_FILE_BASENAME="v${RELEASE_TAG}" ;;
+        esac
+        RELEASE_FILE_PATH="${RELEASES_DIR%/}/${RELEASE_FILE_BASENAME}.md"
+
+        if [ -e "$RELEASE_FILE_PATH" ]; then
+            if ! prompt_yn "Release notes file already exists at '$RELEASE_FILE_PATH'. Overwrite?" N; then
+                die "refusing to overwrite existing release notes file: $RELEASE_FILE_PATH"
+            fi
         fi
 
-        UPDATED_CHANGELOG="$(mktemp_file)"
-        RELEASE_TAG="$RELEASE_TAG" RELEASE_BODY="$RELEASE_BODY" python3 - "$CHANGELOG_PATH" "$UPDATED_CHANGELOG" <<'PY'
+        RELEASE_TAG="$RELEASE_TAG" RELEASE_DESCRIPTION="$RELEASE_DESCRIPTION" \
+            python3 - "$RELEASE_DETAILS_FILE" "$RELEASE_BODY_FILE" "$RELEASE_FILE_PATH" <<'PY'
+import datetime as _dt
+import json
 import os
 import sys
-import re
 
-changelog_path = sys.argv[1]
-output_path = sys.argv[2]
+details_path = sys.argv[1]
+body_path = sys.argv[2]
+output_path = sys.argv[3]
+
 release_tag = os.environ["RELEASE_TAG"]
-release_body = os.environ["RELEASE_BODY"]
+release_description = os.environ["RELEASE_DESCRIPTION"]
 
-with open(changelog_path, "r", encoding="utf-8") as f:
-    content = f.read()
+version = release_tag
+if version.lower().startswith("v"):
+    version = version[1:]
 
-# Build the new release section
-new_section = f"## {release_tag}\n\n{release_body.strip()}\n\n"
+release_date = ""
+try:
+    with open(details_path, "r", encoding="utf-8") as f:
+        details = json.load(f)
+    dt = details.get("published_at") or details.get("created_at") or ""
+    if isinstance(dt, str) and len(dt) >= 10:
+        release_date = dt[:10]
+except Exception:
+    release_date = ""
 
-# Find the position after the intro paragraph (before the first ## heading)
-# The pattern matches the frontmatter, title line, and intro paragraph
-match = re.search(r'^(---\n.*?\n---\n\n.*?\n\n)', content, re.DOTALL)
-if match:
-    insert_pos = match.end()
-    updated = content[:insert_pos] + new_section + content[insert_pos:]
-else:
-    # Fallback: insert after frontmatter
-    match = re.search(r'^(---\n.*?\n---\n\n)', content, re.DOTALL)
-    if match:
-        insert_pos = match.end()
-        updated = content[:insert_pos] + new_section + content[insert_pos:]
-    else:
-        # Last resort: prepend
-        updated = new_section + content
+if not release_date:
+    release_date = _dt.date.today().isoformat()
+
+with open(body_path, "r", encoding="utf-8") as f:
+    body = f.read().rstrip()
+
+version_yaml = json.dumps(version)
+description_yaml = json.dumps(release_description)
+
+parts = [
+    "---\n",
+    f"version: {version_yaml}\n",
+    f"date: {release_date}\n",
+    f"description: {description_yaml}\n",
+    "---\n\n",
+]
+if body:
+    parts.append(body + "\n")
 
 with open(output_path, "w", encoding="utf-8") as f:
-    f.write(updated)
+    f.write("".join(parts))
 PY
 
-        cp "$UPDATED_CHANGELOG" "$CHANGELOG_PATH"
-        echo "Updated changelog: $CHANGELOG_PATH"
+        echo "Wrote docs release notes: $RELEASE_FILE_PATH"
     }
 
     delete_asset_if_exists() {
@@ -409,6 +439,8 @@ PY
     [ -n "${TAG-}" ] || die "release tag cannot be empty"
     TITLE="$(prompt "Release title")"
     [ -n "${TITLE-}" ] || die "release title cannot be empty"
+    DESCRIPTION="$(prompt "Docs release description (shows on changelog page)" "${TITLE-}")"
+    [ -n "${DESCRIPTION-}" ] || die "docs release description cannot be empty"
 
     GENERATE_NOTES=false
     NOTES_FILE=""
@@ -541,9 +573,15 @@ PY
     RELEASE_DETAILS="$(github_api GET "https://api.github.com/repos/${OWNER}/${REPO}/releases/${RELEASE_ID}")"
     RELEASE_BODY="$(printf "%s" "$RELEASE_DETAILS" | python3 -c "import json,sys; print(json.load(sys.stdin).get('body', ''))")"
 
-    # Update the changelog
-    CHANGELOG_PATH="${REPO_ROOT}/docs/src/content/docs/reference/changelog.mdx"
-    update_changelog "$TAG" "$RELEASE_BODY" "$CHANGELOG_PATH"
+    # Write release notes for the docs changelog page
+    RELEASE_DETAILS_FILE="$(mktemp_file)"
+    printf "%s" "$RELEASE_DETAILS" >"$RELEASE_DETAILS_FILE"
+
+    RELEASE_BODY_FILE="$(mktemp_file)"
+    printf "%s" "$RELEASE_BODY" >"$RELEASE_BODY_FILE"
+
+    RELEASES_DIR="${REPO_ROOT}/docs/src/content/releases"
+    write_release_notes_file "$TAG" "$DESCRIPTION" "$RELEASE_DETAILS_FILE" "$RELEASE_BODY_FILE" "$RELEASES_DIR"
 
     echo "Release created: ${RELEASE_URL:-https://github.com/${SLUG}/releases/tag/${TAG}}"
 } && __wrap__

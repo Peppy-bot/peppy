@@ -1,20 +1,63 @@
-import rss from '@astrojs/rss';
 import { getCollection } from 'astro:content';
 
-export async function GET(context) {
-  const releases = await getCollection('releases');
+function escapeXml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
 
-  return rss({
-    title: 'PeppyOS Changelog',
-    description: 'Release notes and version history for PeppyOS',
-    site: context.site,
-    items: releases
-      .sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf())
-      .map((release) => ({
-        title: `v${release.data.version}`,
-        pubDate: release.data.date,
-        description: release.data.description,
-        link: `/reference/changelog/#v${release.data.version.replace(/\./g, '')}`,
-      })),
+export async function GET(context) {
+  if (!context.site) {
+    throw new Error(
+      'Missing `site` config. Set `site` in `docs/astro.config.mjs` to generate the changelog Atom feed.'
+    );
+  }
+
+  const releases = await getCollection('releases');
+  const sortedReleases = releases.sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf());
+  const feedUpdated = sortedReleases[0]?.data.date ?? new Date();
+
+  const feedUrl = new URL('/changelog.xml', context.site);
+  const changelogUrl = new URL('/reference/changelog/', context.site);
+
+  const entriesXml = sortedReleases
+    .map((release) => {
+      const version = release.data.version;
+      const anchor = `v${version.replace(/\./g, '')}`;
+      const entryUrl = new URL(`/reference/changelog/#${anchor}`, context.site);
+      const dateIso = release.data.date.toISOString();
+      return [
+        '<entry>',
+        `<title>${escapeXml(`v${version}`)}</title>`,
+        `<id>${escapeXml(entryUrl.toString())}</id>`,
+        `<link rel="alternate" type="text/html" href="${escapeXml(entryUrl.toString())}" />`,
+        `<published>${dateIso}</published>`,
+        `<updated>${dateIso}</updated>`,
+        `<summary>${escapeXml(release.data.description)}</summary>`,
+        '</entry>',
+      ].join('');
+    })
+    .join('');
+
+  const atomXml = [
+    '<?xml version="1.0" encoding="utf-8"?>',
+    '<feed xmlns="http://www.w3.org/2005/Atom">',
+    '<title>PeppyOS Changelog</title>',
+    '<subtitle>Release notes and version history for PeppyOS</subtitle>',
+    `<id>${escapeXml(feedUrl.toString())}</id>`,
+    `<link rel="self" type="application/atom+xml" href="${escapeXml(feedUrl.toString())}" />`,
+    `<link rel="alternate" type="text/html" href="${escapeXml(changelogUrl.toString())}" />`,
+    `<updated>${feedUpdated.toISOString()}</updated>`,
+    entriesXml,
+    '</feed>',
+  ].join('');
+
+  return new Response(atomXml, {
+    headers: {
+      'Content-Type': 'application/atom+xml; charset=utf-8',
+    },
   });
 }
