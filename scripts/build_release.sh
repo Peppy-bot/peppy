@@ -376,7 +376,7 @@ updated_iso = _dt.datetime(date_obj.year, date_obj.month, date_obj.day, tzinfo=_
 updated_iso = updated_iso.replace("+00:00", "Z")
 
 docs_url = f"https://docs.peppy.bot/releases/v{version}/"
-entry_id = f"https://docs.peppy.bot/releases/v{version}"
+entry_id = docs_url
 
 # Escape user-supplied text for HTML where it will appear unescaped inside the HTML snippet.
 description_html = _html.escape(release_description, quote=False)
