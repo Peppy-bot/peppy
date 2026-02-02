@@ -330,9 +330,12 @@ output_path = sys.argv[3]
 release_tag = os.environ["RELEASE_TAG"]
 release_description = os.environ["RELEASE_DESCRIPTION"]
 
-version = release_tag
-if version.lower().startswith("v"):
-    version = version[1:]
+tag = release_tag.strip()
+if not tag:
+    raise ValueError("release tag cannot be empty")
+
+version = tag[1:] if tag.lower().startswith("v") else tag
+tag_title = f"v{version}"
 
 release_date = ""
 try:
@@ -352,20 +355,65 @@ with open(body_path, "r", encoding="utf-8") as f:
 
 import html as _html
 
-def meta(name: str, value: str) -> str:
-    return f'<meta name="peppy:{name}" content="{_html.escape(value, quote=True)}" />\\n'
+month_names = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+]
 
-parts = [
-    meta("version", version),
-    meta("date", release_date),
-    meta("description", release_description),
-    "\n",
+date_obj = _dt.date.fromisoformat(release_date)
+date_text = f"{month_names[date_obj.month - 1]} {date_obj.day}, {date_obj.year}"
+updated_iso = _dt.datetime(date_obj.year, date_obj.month, date_obj.day, tzinfo=_dt.timezone.utc).isoformat()
+updated_iso = updated_iso.replace("+00:00", "Z")
+
+docs_url = f"https://docs.peppy.bot/releases/v{version}/"
+entry_id = f"https://docs.peppy.bot/releases/v{version}"
+
+# Escape user-supplied text for HTML where it will appear unescaped inside the HTML snippet.
+description_html = _html.escape(release_description, quote=False)
+
+article_parts = [
+    "<article>",
+    "  <header>",
+    f"    <h1>{_html.escape(tag_title, quote=False)}</h1>",
+    f"    <p><em>{description_html}</em></p>",
+    "    <p><small>",
+    f'      Released on {_html.escape(date_text, quote=False)} · <a href="{_html.escape(docs_url, quote=True)}">View in docs</a>',
+    "    </small></p>",
+    "  </header>",
 ]
 if body:
-    parts.append(body + "\n")
+    article_parts.append(body)
+article_parts.append("</article>")
+
+article_html = "\n".join(article_parts)
+
+entry_xml = "\n".join(
+    [
+        "<entry>",
+        f"  <title>{_html.escape(tag_title, quote=False)}</title>",
+        f"  <id>{_html.escape(entry_id, quote=False)}</id>",
+        f"  <updated>{_html.escape(updated_iso, quote=False)}</updated>",
+        "",
+        f"  <summary>{_html.escape(release_description, quote=False)}</summary>",
+        "",
+        f'  <content type="html">{_html.escape(article_html, quote=False)}</content>',
+        "</entry>",
+        "",
+    ]
+)
 
 with open(output_path, "w", encoding="utf-8") as f:
-    f.write("".join(parts))
+    f.write(entry_xml)
 PY
 
         echo "Wrote docs release notes: $RELEASE_FILE_PATH"

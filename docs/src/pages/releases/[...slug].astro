@@ -27,8 +27,12 @@ const date = new Intl.DateTimeFormat('en-US', {
     description: release.data.description,
   }}
 >
-  <p><em>{release.data.description}</em></p>
-  <p><small>Released on {date}</small></p>
-  <HtmlContent html={release.body ?? ''} />
+  <article>
+    <header>
+      <p><em>{release.data.description}</em></p>
+      <p><small>Released on {date}</small></p>
+    </header>
+    <HtmlContent html={release.body ?? ''} />
+  </article>
   <p><a href="/reference/changelog/">View all releases</a></p>
 </StarlightPage>

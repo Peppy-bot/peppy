@@ -3,8 +3,65 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import { decodeHTML } from 'entities';
 import { fileURLToPath } from 'node:url';
+import { basename } from 'node:path';
 
 function releaseHtmlEntryType() {
+	function parseAtomEntry(source, fileUrl) {
+		const meta = {};
+		const filePath = fileURLToPath(fileUrl);
+		const fileBase = basename(filePath);
+		const idFromFile = fileBase.replace(/\.html$/i, '');
+		meta.version = idFromFile.replace(/^v/i, '');
+
+		const getTagText = (tag) => {
+			const match = source.match(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+			return match ? decodeHTML((match[1] ?? '').trim()) : '';
+		};
+
+		const publishedText = getTagText('published');
+		const updatedText = getTagText('updated');
+		const summaryText = getTagText('summary');
+		const contentMatch = source.match(/<content\b[^>]*>([\s\S]*?)<\/content>/i);
+		const contentText = contentMatch ? decodeHTML((contentMatch[1] ?? '').trim()) : '';
+
+		const dateText = publishedText || updatedText;
+		const parsedDate = new Date(dateText);
+		if (!dateText || Number.isNaN(parsedDate.valueOf())) {
+			throw new Error(`Invalid Atom date "${dateText}" in ${filePath}`);
+		}
+		meta.date = parsedDate;
+
+		if (updatedText) {
+			const parsedUpdated = new Date(updatedText);
+			if (Number.isNaN(parsedUpdated.valueOf())) {
+				throw new Error(`Invalid Atom updated date "${updatedText}" in ${filePath}`);
+			}
+			meta.updated = parsedUpdated;
+		}
+
+		meta.description = summaryText;
+		if (!meta.description && contentText) {
+			const emMatch = contentText.match(/<em>([\s\S]*?)<\/em>/i);
+			if (emMatch) {
+				meta.description = decodeHTML((emMatch[1] ?? '').trim());
+			}
+		}
+
+		let body = contentText;
+		const articleMatch = body.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i);
+		if (articleMatch) {
+			const articleInner = articleMatch[1] ?? '';
+			const headerEndIndex = articleInner.toLowerCase().indexOf('</header>');
+			body =
+				headerEndIndex === -1
+					? articleInner
+					: articleInner.slice(headerEndIndex + '</header>'.length);
+		}
+		body = body.trimStart();
+
+		return { data: meta, body };
+	}
+
 	return {
 		name: 'peppy-html-meta',
 		hooks: {
@@ -13,6 +70,11 @@ function releaseHtmlEntryType() {
 					extensions: ['.html'],
 					getEntryInfo({ contents, fileUrl }) {
 						const source = contents ?? '';
+						const trimmedSource = source.trimStart();
+						if (trimmedSource.startsWith('<entry')) {
+							return parseAtomEntry(trimmedSource, fileUrl);
+						}
+
 						const meta = {};
 						let cursor = 0;
 						while (true) {
