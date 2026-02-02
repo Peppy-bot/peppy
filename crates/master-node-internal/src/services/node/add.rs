@@ -149,8 +149,18 @@ async fn run_add_cmd_with_streaming(
         return Ok(());
     };
 
-    let Some((program, args)) = cmd.split_first() else {
+    if cmd.is_empty() {
         return Err("add_cmd is empty".to_string());
+    };
+
+    let (program, args) = if cmd.len() == 1 {
+        if cfg!(windows) {
+            ("cmd".to_string(), vec!["/C".to_string(), cmd[0].clone()])
+        } else {
+            ("sh".to_string(), vec!["-c".to_string(), cmd[0].clone()])
+        }
+    } else {
+        (cmd[0].clone(), cmd[1..].to_vec())
     };
 
     debug!(
@@ -160,7 +170,10 @@ async fn run_add_cmd_with_streaming(
 
     // Log the command being executed to the log file before attempting to spawn
     {
-        let full_cmd = cmd.join(" ");
+        let full_cmd = std::iter::once(program.as_str())
+            .chain(args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ");
         if let Ok(mut file) = log_file.lock() {
             let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
             let _ = writeln!(
@@ -174,8 +187,8 @@ async fn run_add_cmd_with_streaming(
         }
     }
 
-    let mut child = Command::new(program)
-        .args(args)
+    let mut child = Command::new(&program)
+        .args(&args)
         .current_dir(working_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
