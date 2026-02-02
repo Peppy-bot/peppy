@@ -1941,3 +1941,95 @@ async fn node_add_same_node_shutdown_existing_instances() {
     let _ = std::fs::remove_file(&add_v2.log_path);
     let _ = std::fs::remove_dir_all(&add_v2.snapshot_path);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_running_daemon_updates_path() {
+    // Emulates a real case scenario where a user first calls the NODE_ADD_ACTION without `cargo` being present on his system. He then install `cargo` with Rustup, which installs in `~/.cargo/bin/cargo` and add `. "$HOME/.cargo/env"` to his `.bashrc`. On the second call to NODE_ADD_ACTION, the code should find the newly installed `cargo` in the user env.
+    const TARGET_NODE_NAME: &str = "the_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const STDOUT_MARKER: &str = "peppy_logfile_stdout_marker";
+    const STDERR_MARKER: &str = "peppy_logfile_stderr_marker";
+
+    let started_master = start_master_node_with_mock_messenger().await;
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                language: "rust",
+                add_cmd: ["printout {STDOUT_MARKER}; printout {STDERR_MARKER} 1>&2"],
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    // `printout` does not exist in the system when this is run
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        !add_result.success,
+        "The command should fail, printout does not exist: {:?}",
+        add_result.error_message
+    );
+
+    // Create a temp bin directory with a `printout` script
+    let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
+    let printout_path = bin_dir.path().join("printout");
+    std::fs::write(&printout_path, "#!/bin/sh\necho \"$@\"\n")
+        .expect("failed to write printout script");
+
+    // Make it executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&printout_path)
+            .expect("failed to get printout metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&printout_path, perms)
+            .expect("failed to set printout permissions");
+    }
+
+    // Add the bin directory to PATH
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", bin_dir.path().display(), current_path);
+    // SAFETY: This test is single-threaded at this point (no other threads are reading PATH)
+    unsafe { std::env::set_var("PATH", &new_path) };
+
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    // Now the command should succeed, since `printout` has been added to the PATH
+    assert!(
+        add_result.success,
+        "The command should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    // Clean up log file
+    let _ = std::fs::remove_file(&add_result.log_path);
+
+    // Clean up snapshot directory
+    let _ = std::fs::remove_dir_all(&add_result.snapshot_path);
+}
