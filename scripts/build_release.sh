@@ -387,7 +387,7 @@ article_parts = [
     f"    <h1>{_html.escape(tag_title, quote=False)}</h1>",
     f"    <p><em>{description_html}</em></p>",
     "    <p><small>",
-    f'      Released on {_html.escape(date_text, quote=False)} · <a href="{_html.escape(docs_url, quote=True)}">View in docs</a>',
+    f'      Released on {_html.escape(date_text, quote=False)}',
     "    </small></p>",
     "  </header>",
 ]

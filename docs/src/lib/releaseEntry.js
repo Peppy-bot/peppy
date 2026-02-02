@@ -16,10 +16,6 @@ function escapeXmlText(value) {
     .replaceAll('>', '&gt;');
 }
 
-function escapeXmlAttribute(value) {
-  return escapeXmlText(value).replaceAll('"', '&quot;').replaceAll("'", '&apos;');
-}
-
 export function formatAtomTimestamp(date) {
   return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
@@ -28,11 +24,10 @@ export function formatReleaseDate(date) {
   return dateFormatter.format(date);
 }
 
-export function renderReleaseArticleHtml({ version, description, date, docsUrl, bodyHtml }) {
+export function renderReleaseArticleHtml({ version, description, date, bodyHtml }) {
   const safeVersion = escapeXmlText(version);
   const safeDescription = escapeXmlText(description);
   const safeDate = escapeXmlText(date);
-  const safeDocsUrl = escapeXmlAttribute(docsUrl);
 
   return [
     '<article>',
@@ -40,7 +35,7 @@ export function renderReleaseArticleHtml({ version, description, date, docsUrl, 
     `    <h1>v${safeVersion}</h1>`,
     `    <p><em>${safeDescription}</em></p>`,
     '    <p><small>',
-    `      Released on ${safeDate} · <a href="${safeDocsUrl}">View in docs</a>`,
+    `      Released on ${safeDate}`,
     '    </small></p>',
     '  </header>',
     bodyHtml || '',
@@ -59,7 +54,6 @@ export function renderReleaseAtomEntry({ version, description, date, updated, si
     version,
     description,
     date: formatReleaseDate(date),
-    docsUrl,
     bodyHtml,
   });
 
