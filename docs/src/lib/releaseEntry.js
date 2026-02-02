@@ -5,6 +5,10 @@ const dateFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: 'UTC',
 });
 
+export function releaseSlugFromVersion(version) {
+  return `v${String(version).replaceAll('.', '-')}`;
+}
+
 function escapeXmlText(value) {
   return String(value)
     .replaceAll('&', '&amp;')
@@ -47,7 +51,8 @@ export function renderReleaseArticleHtml({ version, description, date, docsUrl, 
 }
 
 export function renderReleaseAtomEntry({ version, description, date, updated, site, bodyHtml }) {
-  const docsUrl = site ? new URL(`/releases/v${version}/`, site).toString() : `/releases/v${version}/`;
+  const slug = releaseSlugFromVersion(version);
+  const docsUrl = site ? new URL(`/releases/${slug}/`, site).toString() : `/releases/${slug}/`;
   const entryId = docsUrl;
 
   const articleHtml = renderReleaseArticleHtml({

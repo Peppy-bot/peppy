@@ -375,7 +375,7 @@ date_text = f"{month_names[date_obj.month - 1]} {date_obj.day}, {date_obj.year}"
 updated_iso = _dt.datetime(date_obj.year, date_obj.month, date_obj.day, tzinfo=_dt.timezone.utc).isoformat()
 updated_iso = updated_iso.replace("+00:00", "Z")
 
-docs_url = f"https://docs.peppy.bot/releases/v{version}/"
+docs_url = f"https://docs.peppy.bot/releases/v{version.replace('.', '-')}/"
 entry_id = docs_url
 
 # Escape user-supplied text for HTML where it will appear unescaped inside the HTML snippet.
