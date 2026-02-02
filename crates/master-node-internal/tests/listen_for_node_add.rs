@@ -1944,7 +1944,10 @@ async fn node_add_same_node_shutdown_existing_instances() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_running_daemon_updates_path() {
-    // Emulates a real case scenario where a user first calls the NODE_ADD_ACTION without `cargo` being present on his system. He then install `cargo` with Rustup, which installs in `~/.cargo/bin/cargo` and add `. "$HOME/.cargo/env"` to his `.bashrc`. On the second call to NODE_ADD_ACTION, the code should find the newly installed `cargo` in the user env.
+    // Emulates a real case scenario where a user first calls the NODE_ADD_ACTION without `cargo` being present on his system.
+    // He then install `cargo` with Rustup, which installs in `~/.cargo/bin/cargo` and add `. "$HOME/.cargo/env"` to his `.bashrc`.
+    // On the second call to NODE_ADD_ACTION, the code should find the newly installed `cargo` in the user env.
+    // During the entire process, the `start_master_node_with_mock_messenger` should NOT have been restarted.
     const TARGET_NODE_NAME: &str = "the_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const STDOUT_MARKER: &str = "peppy_logfile_stdout_marker";
