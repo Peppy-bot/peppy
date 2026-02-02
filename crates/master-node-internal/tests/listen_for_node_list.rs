@@ -96,7 +96,7 @@ async fn listen_for_node_list_returns_succeeds() {
 
     // Clean up copied directory
     if let Some(entity) = node_stack.find(TARGET_NODE_NAME, TARGET_NODE_TAG) {
-        let _ = std::fs::remove_dir_all(entity.root_path());
+        std::fs::remove_dir_all(entity.root_path()).ok();
     }
 }
 
@@ -189,6 +189,6 @@ async fn listen_for_node_list_returns_dot_graph() {
 
     // Clean up copied directory
     if let Some(entity) = node_stack.find(TARGET_NODE_NAME, TARGET_NODE_TAG) {
-        let _ = std::fs::remove_dir_all(entity.root_path());
+        std::fs::remove_dir_all(entity.root_path()).ok();
     }
 }

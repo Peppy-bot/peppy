@@ -201,7 +201,7 @@ async fn listen_for_node_fs_add_success() {
     );
 
     // Clean up the copied directory
-    let _ = std::fs::remove_dir_all(root_path);
+    std::fs::remove_dir_all(root_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -268,7 +268,7 @@ async fn listen_for_node_git_add_success() {
     );
 
     // Clean up the copied directory
-    let _ = std::fs::remove_dir_all(root_path);
+    std::fs::remove_dir_all(root_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -333,14 +333,14 @@ async fn listen_for_node_git_add_with_ref_success() {
         .expect("node should exist in stack")
         .root_path()
         .to_path_buf();
-    let _ = std::fs::remove_dir_all(&snapshot_path_head);
+    std::fs::remove_dir_all(&snapshot_path_head).ok();
 
     let snapshot_path_ref = node_stack
         .find(TARGET_NODE_NAME, "0.1.0")
         .expect("node should exist in stack")
         .root_path()
         .to_path_buf();
-    let _ = std::fs::remove_dir_all(&snapshot_path_ref);
+    std::fs::remove_dir_all(&snapshot_path_ref).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -454,7 +454,7 @@ async fn listen_for_node_http_add_success() {
     );
 
     // Clean up the copied directory
-    let _ = std::fs::remove_dir_all(root_path);
+    std::fs::remove_dir_all(root_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -819,7 +819,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
     );
 
     // Clean up
-    let _ = std::fs::remove_dir_all(entity.root_path());
+    std::fs::remove_dir_all(entity.root_path()).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -980,8 +980,8 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
     );
 
     // Clean up snapshots created by successful adds
-    let _ = std::fs::remove_dir_all(&dependency_snapshot_path);
-    let _ = std::fs::remove_dir_all(&dependent_add.snapshot_path);
+    std::fs::remove_dir_all(&dependency_snapshot_path).ok();
+    std::fs::remove_dir_all(&dependent_add.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1060,10 +1060,10 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
 
     // Clean up copied directories
     if let Some(entity) = node_stack.find(NODE_NAME, "1.0.0") {
-        let _ = std::fs::remove_dir_all(entity.root_path());
+        std::fs::remove_dir_all(entity.root_path()).ok();
     }
     if let Some(entity) = node_stack.find(NODE_NAME, "2.0.0") {
-        let _ = std::fs::remove_dir_all(entity.root_path());
+        std::fs::remove_dir_all(entity.root_path()).ok();
     }
 }
 
@@ -1144,7 +1144,7 @@ async fn listen_for_node_add_copies_files_to_storage() {
     );
 
     // Clean up
-    let _ = std::fs::remove_dir_all(copied_path);
+    std::fs::remove_dir_all(copied_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1213,7 +1213,7 @@ async fn listen_for_node_add_runs_add_cmd() {
     );
 
     // Clean up
-    let _ = std::fs::remove_dir_all(copied_path);
+    std::fs::remove_dir_all(copied_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1388,7 +1388,7 @@ async fn listen_for_node_add_streams_stdout_and_stderr() {
     assert!(saw_stdout, "stdout feedback should include marker");
     assert!(saw_stderr, "stderr feedback should include marker");
 
-    let _ = std::fs::remove_dir_all(&add_result.snapshot_path);
+    std::fs::remove_dir_all(&add_result.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1563,10 +1563,10 @@ async fn listen_for_node_add_writes_log_file() {
     );
 
     // Clean up log file
-    let _ = std::fs::remove_file(&add_result.log_path);
+    std::fs::remove_file(&add_result.log_path).ok();
 
     // Clean up snapshot directory
-    let _ = std::fs::remove_dir_all(&add_result.snapshot_path);
+    std::fs::remove_dir_all(&add_result.snapshot_path).ok();
 }
 
 /// Tests that a new goal can be processed after a previous action was abandoned
@@ -1686,9 +1686,9 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
 
     // Clean up snapshot directories
     if let Some(entity) = node_stack.find(FIRST_NODE_NAME, FIRST_NODE_TAG) {
-        let _ = std::fs::remove_dir_all(entity.root_path());
+        std::fs::remove_dir_all(entity.root_path()).ok();
     }
-    let _ = std::fs::remove_dir_all(&second_add_result.snapshot_path);
+    std::fs::remove_dir_all(&second_add_result.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1937,13 +1937,13 @@ async fn node_add_same_node_shutdown_existing_instances() {
     assert!(saw_instance_2, "should emit stop feedback for instance 2");
 
     // Clean up log files and snapshot directory created by successful adds.
-    let _ = std::fs::remove_file(&add_v1.log_path);
-    let _ = std::fs::remove_file(&add_v2.log_path);
-    let _ = std::fs::remove_dir_all(&add_v2.snapshot_path);
+    std::fs::remove_file(&add_v1.log_path).ok();
+    std::fs::remove_file(&add_v2.log_path).ok();
+    std::fs::remove_dir_all(&add_v2.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_running_daemon_updates_path() {
+async fn listen_for_node_add_uses_env_overrides_for_path() {
     // Emulates a real case scenario where the caller environment differs from the already-running
     // daemon environment. In practice, users often "install a tool then source it" (e.g.
     // `. "$HOME/.cargo/env"`), but that only affects their shell, not the daemon. We model this by
@@ -2032,8 +2032,8 @@ async fn listen_for_node_add_running_daemon_updates_path() {
     );
 
     // Clean up log file
-    let _ = std::fs::remove_file(&add_result.log_path);
+    std::fs::remove_file(&add_result.log_path).ok();
 
     // Clean up snapshot directory
-    let _ = std::fs::remove_dir_all(&add_result.snapshot_path);
+    std::fs::remove_dir_all(&add_result.snapshot_path).ok();
 }
