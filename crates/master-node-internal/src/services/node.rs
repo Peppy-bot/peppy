@@ -37,9 +37,7 @@ pub const FORBIDDEN_ENV_KEYS: [&str; 16] = [
 
 /// Validates environment variables, rejecting any that are in the forbidden list.
 /// Returns an error if any forbidden env var is found.
-pub(self) fn validate_goal_env_vars(
-    env_vars: &[(String, String)],
-) -> Result<Vec<(String, String)>> {
+fn validate_goal_env_vars(env_vars: &[(String, String)]) -> Result<Vec<(String, String)>> {
     let mut result = Vec::with_capacity(env_vars.len());
     for (key, value) in env_vars {
         let normalized = key.trim().to_ascii_uppercase();
