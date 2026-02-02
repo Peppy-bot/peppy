@@ -25,7 +25,7 @@ export async function GET(context) {
   const entriesXml = sortedReleases
     .map((release) => {
       const version = release.data.version;
-      const entryUrl = new URL(`/releases/v${version}.html`, context.site);
+      const entryUrl = new URL(`/releases/raw/v${version}`, context.site);
       const publishedIso = release.data.date.toISOString();
       const updatedIso = (release.data.updated ?? release.data.date).toISOString();
       const contentHtml = release.body || '';

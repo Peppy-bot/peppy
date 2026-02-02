@@ -31,7 +31,7 @@ export async function GET(context) {
   const modifiedTime = (release.data.updated ?? release.data.date).toISOString();
   const dateText = dateFormatter.format(release.data.date);
 
-  const canonical = site ? new URL(`/releases/v${version}.html`, site).toString() : undefined;
+  const canonical = site ? new URL(`/releases/raw/v${version}`, site).toString() : undefined;
   const docsUrl = site ? new URL(`/releases/v${version}/`, site).toString() : `/releases/v${version}/`;
   const title = `v${version} | PeppyOS`;
 
@@ -74,4 +74,3 @@ export async function GET(context) {
     },
   });
 }
-
