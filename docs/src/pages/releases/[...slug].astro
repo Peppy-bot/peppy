@@ -2,13 +2,20 @@
 import { getCollection } from 'astro:content';
 import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
 import HtmlContent from '../../components/HtmlContent.astro';
+import { releaseSlugFromVersion } from '../../lib/releaseEntry.js';
 
 export async function getStaticPaths() {
   const releases = await getCollection('releases');
-  return releases.map((release) => ({
-    params: { slug: `v${release.data.version}` },
-    props: { release },
-  }));
+  return releases.flatMap((release) => [
+    {
+      params: { slug: releaseSlugFromVersion(release.data.version) },
+      props: { release },
+    },
+    {
+      params: { slug: `v${release.data.version}` },
+      props: { release },
+    },
+  ]);
 }
 
 const { release } = Astro.props;

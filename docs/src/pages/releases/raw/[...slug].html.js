@@ -12,7 +12,9 @@ export async function GET(context) {
   const { site, params } = context;
   const slug = params.slug;
   const releases = await getCollection('releases');
-  const release = releases.find((item) => item.id === slug);
+  const normalizedSlug =
+    typeof slug === 'string' ? `v${slug.replace(/^v/i, '').replaceAll('-', '.')}` : slug;
+  const release = releases.find((item) => item.id === normalizedSlug);
 
   if (!release) {
     return new Response('Not found', { status: 404 });
