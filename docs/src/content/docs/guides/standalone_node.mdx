@@ -17,7 +17,8 @@ While debugging the nodes based on the logs can be quite helpful, nothing beats 
 To support this, `peppy` can run a node in "standalone mode"—it communicates with other nodes in the stack but runs as a regular program outside of it, allowing you to use standard debugging tools.
 Let's create a new node:
 ```sh
-peppy node init standalone
+❯ peppy node init standalone
+❯ cd standalone
 ```
 with the following configuration:
 <Code code={standaloneConfig} lang="json5" title="peppy.json5" />
@@ -76,4 +77,4 @@ Now if we run the following command again:
 
 The node should run without a crash.
 The standalone object allows us to define parameters directly within the code, which in turn allows us to run our node as a regular Rust/Python program.
-Note that the standalone config is completely ignored when a node is run with `peppy node start`—all parameters provided during that operation take precedence.
+Note that the standalone config is completely ignored when a node is run with `peppy node start`, all parameters provided during the `node start` operation take precedence.
