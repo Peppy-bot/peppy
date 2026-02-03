@@ -15,6 +15,14 @@ curl -fsSL https://peppy.bot/install.sh | bash
 
 This installer also sets up the `peppy` background service. To skip that step, set `PEPPY_NO_SERVICE_INSTALL=1`.
 
+:::note
+To install a specific version, set the `PEPPY_VERSION` environment variable:
+
+```sh
+curl -fsSL https://peppy.bot/install.sh | PEPPY_VERSION="v0.2.10" sh
+```
+:::
+
 ## Verifying the installation
 
 You can verify the service is running with:
