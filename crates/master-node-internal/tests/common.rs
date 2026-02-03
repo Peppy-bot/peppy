@@ -91,7 +91,13 @@ async fn send_node_start_and_wait_internal(
     feedback_tx: Option<UnboundedSender<NodeStartFeedback>>,
     env_vars: Vec<(String, String)>,
 ) -> Result<NodeStartTestResponse, String> {
-    let goal = NodeStartGoal::new(runtime_config_json5, node_name, tag).with_env_vars(env_vars);
+    let goal = NodeStartGoal::new(
+        runtime_config_json5,
+        node_name,
+        tag,
+        timeouts.result.as_secs(),
+    )
+    .with_env_vars(env_vars);
     let (caller_master_node, caller_instance_id) = if feedback_tx.is_some() {
         ("*", "*")
     } else {
@@ -227,7 +233,7 @@ async fn send_node_add_and_wait_internal<'a>(
                     )
                 })?;
             }
-            NodeAddGoal::new(path, TEST_GIT_HASH)
+            NodeAddGoal::new(path, TEST_GIT_HASH, result_timeout.as_secs())
         }
         NodeAddSource::Git {
             repo_url,
@@ -238,8 +244,11 @@ async fn send_node_add_and_wait_internal<'a>(
             *repo_path,
             repo_ref.map(str::to_owned),
             TEST_GIT_HASH,
+            result_timeout.as_secs(),
         ),
-        NodeAddSource::Http(url) => NodeAddGoal::new_http(url.clone(), TEST_GIT_HASH),
+        NodeAddSource::Http(url) => {
+            NodeAddGoal::new_http(url.clone(), TEST_GIT_HASH, result_timeout.as_secs())
+        }
     }
     .with_env_vars(env_vars);
 

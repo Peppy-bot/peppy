@@ -1603,7 +1603,11 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         .expect("failed to write git hash");
 
     // Send first goal but DON'T wait for result (simulating abandoned action)
-    let first_goal = NodeAddGoal::new(first_source_dir.path(), TEST_GIT_HASH);
+    let first_goal = NodeAddGoal::new(
+        first_source_dir.path(),
+        TEST_GIT_HASH,
+        RESULT_TIMEOUT.as_secs(),
+    );
     let first_goal_payload = first_goal.encode().expect("failed to encode goal");
 
     let first_action_handle = ActionMessenger::send_goal(

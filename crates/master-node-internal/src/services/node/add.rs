@@ -23,7 +23,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tar::Archive;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
@@ -335,7 +335,10 @@ enum NodeAddActionState {
     /// The goal was rejected (no result polling expected).
     Rejected,
     /// An action is currently running.
-    Running,
+    Running {
+        started_at: Instant,
+        timeout_secs: u64,
+    },
     /// The action completed and the result is ready to be sent.
     Completed { result: NodeAddResult },
     /// The result has been sent to the requester.
@@ -982,26 +985,9 @@ async fn handle_goal_request(
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    // Check if already running and mark as running if not
-    {
-        let mut state_guard = state.lock().await;
-        if matches!(*state_guard, NodeAddActionState::Running) {
-            let response = NodeAddGoalResponse::rejected("action already in progress");
-            return response
-                .encode()
-                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                    identifier: "node_add_goal".to_string(),
-                    reason: format!("Failed to encode response: {}", e),
-                });
-        }
-        *state_guard = NodeAddActionState::Running;
-    }
-
     let goal = match NodeAddGoal::decode(&payload.as_bytes()) {
         Ok(g) => g,
         Err(e) => {
-            let mut state_guard = state.lock().await;
-            *state_guard = NodeAddActionState::Rejected;
             let response = NodeAddGoalResponse::rejected(format!("invalid payload: {}", e));
             return response
                 .encode()
@@ -1011,6 +997,33 @@ async fn handle_goal_request(
                 });
         }
     };
+
+    // Check if already running and mark as running if not
+    {
+        let mut state_guard = state.lock().await;
+        if let NodeAddActionState::Running {
+            started_at,
+            timeout_secs,
+        } = *state_guard
+        {
+            let remaining = Duration::from_secs(timeout_secs)
+                .saturating_sub(started_at.elapsed())
+                .as_secs();
+            let response = NodeAddGoalResponse::rejected(format!(
+                "action already in progress (times out in {remaining}s)"
+            ));
+            return response
+                .encode()
+                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                    identifier: "node_add_goal".to_string(),
+                    reason: format!("Failed to encode response: {}", e),
+                });
+        }
+        *state_guard = NodeAddActionState::Running {
+            started_at: Instant::now(),
+            timeout_secs: goal.timeout_secs,
+        };
+    }
 
     let mut resolved = match resolve_node_add_source(&goal).await {
         Ok(resolved) => resolved,
@@ -1346,7 +1359,7 @@ async fn handle_cancel_request(
     // For now, we don't support cancellation of the add operation
     // Just acknowledge the request
     let state_guard = state.lock().await;
-    if matches!(*state_guard, NodeAddActionState::Running) {
+    if matches!(*state_guard, NodeAddActionState::Running { .. }) {
         Ok(Bytes::from_static(
             b"cancel acknowledged (operation cannot be interrupted)",
         ))
@@ -1364,9 +1377,15 @@ async fn handle_result_request(
     let mut state_guard = state.lock().await;
 
     match std::mem::replace(&mut *state_guard, NodeAddActionState::Idle) {
-        NodeAddActionState::Running => {
+        NodeAddActionState::Running {
+            started_at,
+            timeout_secs,
+        } => {
             // Still running, restore state and return pending status
-            *state_guard = NodeAddActionState::Running;
+            *state_guard = NodeAddActionState::Running {
+                started_at,
+                timeout_secs,
+            };
             Ok(Bytes::from_static(
                 b"result pending: operation still in progress",
             ))
