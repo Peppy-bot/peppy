@@ -58,11 +58,26 @@ fn handle_feedback(
     }
 }
 
-pub fn launch(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> Result<()> {
-    crate::commands::block_on(launch_async(ctx, launcher_config_path))
+pub fn launch(
+    ctx: &Arc<AppContext>,
+    launcher_config_path: PathBuf,
+    node_add_timeout_secs: u64,
+    node_start_timeout_secs: u64,
+) -> Result<()> {
+    crate::commands::block_on(launch_async(
+        ctx,
+        launcher_config_path,
+        node_add_timeout_secs,
+        node_start_timeout_secs,
+    ))
 }
 
-async fn launch_async(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> Result<()> {
+async fn launch_async(
+    ctx: &Arc<AppContext>,
+    launcher_config_path: PathBuf,
+    node_add_timeout_secs: u64,
+    node_start_timeout_secs: u64,
+) -> Result<()> {
     let daemon_state = ctx.read_daemon_state().map_err(|e| {
         Error::ExecutionFailed(format!(
             "Failed to read daemon state. Is the peppy daemon running? Error: {}",
@@ -93,7 +108,12 @@ async fn launch_async(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> R
         .messenger_handle()
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
-    let goal = LaunchGoal::with_env_vars(&launcher_config_path, caller_env_overrides());
+    let goal = LaunchGoal::new(
+        &launcher_config_path,
+        node_add_timeout_secs,
+        node_start_timeout_secs,
+    )
+    .with_env_vars(caller_env_overrides());
 
     let mut action_handle = goal
         .send_goal(

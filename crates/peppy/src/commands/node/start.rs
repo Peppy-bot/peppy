@@ -166,9 +166,13 @@ pub async fn start_instance_async(
         node_name, tag, instance_id
     );
 
-    let start_goal =
-        NodeStartGoal::new(&runtime_config_json, node_name.to_string(), tag.to_string())
-            .with_env_vars(caller_env_overrides());
+    let start_goal = NodeStartGoal::new(
+        &runtime_config_json,
+        node_name.to_string(),
+        tag.to_string(),
+        timeout_secs,
+    )
+    .with_env_vars(caller_env_overrides());
     let mut action_handle = start_goal
         .send_goal(
             messenger_handle,

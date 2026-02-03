@@ -125,8 +125,8 @@ async fn add_node_async(
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
     // Create and send the goal to start the add action
-    let add_goal =
-        NodeAddGoal::from_source(node_source, git_hash).with_env_vars(caller_env_overrides());
+    let add_goal = NodeAddGoal::from_source(node_source, git_hash, timeout_secs)
+        .with_env_vars(caller_env_overrides());
     let mut action_handle = add_goal
         .send_goal(
             messenger_handle,
