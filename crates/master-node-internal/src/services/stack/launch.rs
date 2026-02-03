@@ -638,56 +638,38 @@ async fn validate_and_order_dependencies(
         .map(|p| NodeKey::new(&p.node_name, &p.node_tag))
         .collect();
 
-    let mut dependency_errors: Vec<String> = Vec::new();
-    let mut deps_for: HashMap<NodeKey, HashSet<NodeKey>> = HashMap::new();
-
-    for item in planned {
-        let dependant_key = NodeKey::new(&item.node_name, &item.node_tag);
-        let specs = node_stack::collect_dependency_specs(&item.config);
-        let mut deps = HashSet::new();
-
-        for spec in specs {
-            let dep_key = NodeKey::new(&spec.node_name, &spec.node_tag);
-            let Some(dependency_config) = configs_by_key.get(&dep_key) else {
-                dependency_errors.push(
-                    node_stack::NodeStackError::MissingDependency {
-                        dependant: item.node_name.clone(),
-                        dependant_tag: item.node_tag.clone(),
-                        dependency: spec.node_name.clone(),
-                        dependency_tag: spec.node_tag.clone(),
-                    }
-                    .to_string(),
-                );
-                continue;
-            };
-
-            if !node_stack::exposes_interface(dependency_config, &spec.interface) {
-                dependency_errors.push(
-                    node_stack::NodeStackError::MissingInterface {
-                        dependant: item.node_name.clone(),
-                        dependant_tag: item.node_tag.clone(),
-                        dependency: spec.node_name.clone(),
-                        dependency_tag: spec.node_tag.clone(),
-                        interface_kind: format!("{:?}", spec.interface.kind()),
-                        interface_name: spec.interface.name().to_owned(),
-                    }
-                    .to_string(),
-                );
-                continue;
-            }
-
-            if dep_key != root_key && planned_keys.contains(&dep_key) {
-                deps.insert(dep_key);
-            }
-        }
-
-        deps_for.insert(dependant_key, deps);
-    }
+    // Validate all dependencies exist and expose the required interfaces.
+    let dependency_errors: Vec<String> = planned
+        .iter()
+        .flat_map(|item| {
+            node_stack::validate_dependency_specs(
+                &item.config,
+                &item.node_name,
+                &item.node_tag,
+                |name, tag| configs_by_key.get(&NodeKey::new(name, tag)).cloned(),
+            )
+        })
+        .map(|e| e.to_string())
+        .collect();
 
     if !dependency_errors.is_empty() {
         let msg = dependency_errors.join("\n");
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
+    }
+
+    // Build the dependency graph for topological ordering.
+    let mut deps_for: HashMap<NodeKey, HashSet<NodeKey>> = HashMap::new();
+    for item in planned {
+        let dependant_key = NodeKey::new(&item.node_name, &item.node_tag);
+        let mut deps = HashSet::new();
+        for spec in node_stack::collect_dependency_specs(&item.config) {
+            let dep_key = NodeKey::new(&spec.node_name, &spec.node_tag);
+            if dep_key != root_key && planned_keys.contains(&dep_key) {
+                deps.insert(dep_key);
+            }
+        }
+        deps_for.insert(dependant_key, deps);
     }
 
     // Stable topological sort using original plan order as tie-breaker.
