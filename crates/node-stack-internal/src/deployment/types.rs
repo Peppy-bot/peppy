@@ -309,6 +309,44 @@ pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
         .collect()
 }
 
+/// Validates that all dependencies of a node config exist and expose the required interfaces.
+///
+/// Uses the provided `resolve` closure to look up a dependency's `NodeConfig` by name and tag.
+/// Returns a list of all validation errors found (empty if all dependencies are satisfied).
+pub fn validate_dependency_specs(
+    config: &NodeConfig,
+    dependant_name: &str,
+    dependant_tag: &str,
+    resolve: impl Fn(&str, &str) -> Option<NodeConfig>,
+) -> Vec<crate::error::Error> {
+    let mut errors = Vec::new();
+
+    for spec in collect_dependency_specs(config) {
+        let Some(dependency_config) = resolve(&spec.node_name, &spec.node_tag) else {
+            errors.push(crate::error::Error::MissingDependency {
+                dependant: dependant_name.to_owned(),
+                dependant_tag: dependant_tag.to_owned(),
+                dependency: spec.node_name,
+                dependency_tag: spec.node_tag,
+            });
+            continue;
+        };
+
+        if !exposes_interface(&dependency_config, &spec.interface) {
+            errors.push(crate::error::Error::MissingInterface {
+                dependant: dependant_name.to_owned(),
+                dependant_tag: dependant_tag.to_owned(),
+                dependency: spec.node_name,
+                dependency_tag: spec.node_tag,
+                interface_kind: format!("{:?}", spec.interface.kind()),
+                interface_name: spec.interface.name().to_owned(),
+            });
+        }
+    }
+
+    errors
+}
+
 pub fn exposes_interface(node: &NodeConfig, requirement: &InterfaceRequirement) -> bool {
     let Some(exposes) = node.interfaces.exposes.as_ref() else {
         return false;
@@ -392,38 +430,21 @@ impl NodeStackInner {
     }
 
     fn validate_dependencies(&self, node: &NodeEntity) -> Result<()> {
-        let specs = collect_dependency_specs(node.config());
+        let errors = validate_dependency_specs(
+            node.config(),
+            node.config().manifest.name.as_str(),
+            &node.config().manifest.tag,
+            |name, tag| {
+                let key = NodeKey::new(name, tag);
+                self.key_to_index
+                    .get(&key)
+                    .and_then(|&idx| self.graph.node_weight(idx))
+                    .map(|entity| entity.config().clone())
+            },
+        );
 
-        for spec in specs {
-            let key = NodeKey::new(&spec.node_name, &spec.node_tag);
-
-            // Check if the dependency node exists in the stack
-            let Some(&dependency_index) = self.key_to_index.get(&key) else {
-                // Dependency node doesn't exist in the stack - fail
-                return Err(Error::MissingDependency {
-                    dependant: node.config().manifest.name.as_str().to_owned(),
-                    dependant_tag: node.config().manifest.tag.clone(),
-                    dependency: spec.node_name,
-                    dependency_tag: spec.node_tag,
-                });
-            };
-
-            // Dependency exists - check if it exposes the required interface
-            let Some(dependency_node) = self.graph.node_weight(dependency_index) else {
-                continue;
-            };
-
-            // If the dependency exists but doesn't expose the required interface, fail
-            if !exposes_interface(dependency_node.config(), &spec.interface) {
-                return Err(Error::MissingInterface {
-                    dependant: node.config().manifest.name.as_str().to_owned(),
-                    dependant_tag: node.config().manifest.tag.clone(),
-                    dependency: spec.node_name,
-                    dependency_tag: spec.node_tag,
-                    interface_kind: format!("{:?}", spec.interface.kind()),
-                    interface_name: spec.interface.name().to_owned(),
-                });
-            }
+        if let Some(err) = errors.into_iter().next() {
+            return Err(err);
         }
 
         Ok(())
