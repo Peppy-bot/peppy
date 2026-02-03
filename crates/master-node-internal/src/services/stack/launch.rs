@@ -85,6 +85,7 @@ struct ProcessLaunchContext {
     feedback_publisher: TopicPublisher,
     log_file: Arc<StdMutex<File>>,
     log_path: PathBuf,
+    env_vars: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -848,7 +849,8 @@ async fn add_nodes_to_stack(
                 STACK_LAUNCH_GIT_HASH,
             ),
             NodeSource::Http { url } => NodeAddGoal::new_http(url.clone(), STACK_LAUNCH_GIT_HASH),
-        };
+        }
+        .with_env_vars(ctx.env_vars.clone());
 
         match run_node_add_and_forward_feedback(
             ctx,
@@ -939,7 +941,8 @@ async fn start_node_instances(
                 &runtime_config_json5,
                 item.node_name.as_str(),
                 item.node_tag.as_str(),
-            );
+            )
+            .with_env_vars(ctx.env_vars.clone());
 
             match run_node_start_and_forward_feedback(
                 ctx,
@@ -1208,6 +1211,7 @@ async fn handle_goal_request(
     let state_clone = Arc::clone(&state);
     let log_path_clone = log_path.clone();
     tokio::spawn(async move {
+        let env_vars = goal.env_vars.clone();
         let ctx = ProcessLaunchContext {
             messenger,
             bound_master_node,
@@ -1216,6 +1220,7 @@ async fn handle_goal_request(
             feedback_publisher,
             log_file,
             log_path: log_path_clone.clone(),
+            env_vars,
         };
         let result = process_launch(goal, ctx).await;
         let mut state_guard = state_clone.lock().await;

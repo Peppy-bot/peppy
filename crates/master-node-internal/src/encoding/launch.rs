@@ -19,12 +19,17 @@ use super::{decode_message, encode_message};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchGoal {
     pub peppy_launch_file_path: PathBuf,
+    pub env_vars: Vec<(String, String)>,
 }
 
 impl LaunchGoal {
-    pub fn new(peppy_launch_file_path: impl Into<PathBuf>) -> Self {
+    pub fn with_env_vars(
+        peppy_launch_file_path: impl Into<PathBuf>,
+        env_vars: Vec<(String, String)>,
+    ) -> Self {
         Self {
             peppy_launch_file_path: peppy_launch_file_path.into(),
+            env_vars,
         }
     }
 
@@ -33,6 +38,13 @@ impl LaunchGoal {
         {
             let mut goal = builder.init_root::<launch_capnp::launch_goal::Builder>();
             goal.set_peppy_launch_file_path(self.peppy_launch_file_path.to_string_lossy());
+
+            let mut env_vars = goal.reborrow().init_env_vars(self.env_vars.len() as u32);
+            for (idx, (key, value)) in self.env_vars.iter().enumerate() {
+                let mut env_var = env_vars.reborrow().get(idx as u32);
+                env_var.set_key(key);
+                env_var.set_value(value);
+            }
         }
         encode_message(&builder)
     }
@@ -40,8 +52,20 @@ impl LaunchGoal {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let goal = reader.get_root::<launch_capnp::launch_goal::Reader>()?;
+
+        let env_vars_reader = goal.get_env_vars()?;
+        let mut env_vars = Vec::with_capacity(env_vars_reader.len() as usize);
+        for idx in 0..env_vars_reader.len() {
+            let env_var = env_vars_reader.get(idx);
+            env_vars.push((
+                env_var.get_key()?.to_str()?.to_owned(),
+                env_var.get_value()?.to_str()?.to_owned(),
+            ));
+        }
+
         Ok(Self {
             peppy_launch_file_path: PathBuf::from(goal.get_peppy_launch_file_path()?.to_str()?),
+            env_vars,
         })
     }
 

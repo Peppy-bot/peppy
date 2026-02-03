@@ -22,6 +22,7 @@ use crate::{context::AppContext, error::Error as CommandError};
 
 use init::NodeInitBuilder;
 
+pub use env::caller_env_overrides;
 pub use types::NodeName;
 
 /// Parses a node_name:tag argument string into a tuple
