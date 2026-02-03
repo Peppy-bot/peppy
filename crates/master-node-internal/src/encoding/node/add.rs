@@ -33,24 +33,27 @@ pub struct NodeAddGoal {
     pub source: NodeSource,
     pub git_hash: String,
     pub env_vars: Vec<(String, String)>,
+    pub timeout_secs: u64,
 }
 
 impl NodeAddGoal {
     /// Creates a new NodeAddGoal from a NodeSource.
-    pub fn from_source(source: NodeSource, git_hash: impl Into<String>) -> Self {
+    pub fn from_source(source: NodeSource, git_hash: impl Into<String>, timeout_secs: u64) -> Self {
         Self {
             source,
             git_hash: git_hash.into(),
             env_vars: Vec::new(),
+            timeout_secs,
         }
     }
 
     /// Creates a new NodeAddGoal from a filesystem path.
-    pub fn new(path: impl Into<PathBuf>, git_hash: impl Into<String>) -> Self {
+    pub fn new(path: impl Into<PathBuf>, git_hash: impl Into<String>, timeout_secs: u64) -> Self {
         Self {
             source: NodeSource::Fs(path.into()),
             git_hash: git_hash.into(),
             env_vars: Vec::new(),
+            timeout_secs,
         }
     }
 
@@ -60,6 +63,7 @@ impl NodeAddGoal {
         repo_path: impl Into<String>,
         repo_ref: Option<String>,
         git_hash: impl Into<String>,
+        timeout_secs: u64,
     ) -> Self {
         Self {
             source: NodeSource::Git {
@@ -69,15 +73,17 @@ impl NodeAddGoal {
             },
             git_hash: git_hash.into(),
             env_vars: Vec::new(),
+            timeout_secs,
         }
     }
 
     /// Creates a new NodeAddGoal from an HTTP URL (for .tzst archives).
-    pub fn new_http(url: url::Url, git_hash: impl Into<String>) -> Self {
+    pub fn new_http(url: url::Url, git_hash: impl Into<String>, timeout_secs: u64) -> Self {
         Self {
             source: NodeSource::Http { url },
             git_hash: git_hash.into(),
             env_vars: Vec::new(),
+            timeout_secs,
         }
     }
 
@@ -125,6 +131,8 @@ impl NodeAddGoal {
                 env_var.set_key(key);
                 env_var.set_value(value);
             }
+
+            goal.reborrow().set_timeout_secs(self.timeout_secs);
         }
         encode_message(&builder)
     }
@@ -175,6 +183,7 @@ impl NodeAddGoal {
             source,
             git_hash: goal.get_git_hash()?.to_str()?.to_owned(),
             env_vars,
+            timeout_secs: goal.get_timeout_secs(),
         })
     }
 

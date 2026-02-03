@@ -818,8 +818,11 @@ async fn add_nodes_to_stack(
         )
         .await;
 
+        let timeout_secs = node_add_result_timeout.as_secs();
         let node_add_goal = match &item.source {
-            NodeSource::Fs(path) => NodeAddGoal::new(path.clone(), STACK_LAUNCH_GIT_HASH),
+            NodeSource::Fs(path) => {
+                NodeAddGoal::new(path.clone(), STACK_LAUNCH_GIT_HASH, timeout_secs)
+            }
             NodeSource::Git {
                 repo_url,
                 repo_path,
@@ -829,8 +832,11 @@ async fn add_nodes_to_stack(
                 repo_path.clone(),
                 repo_ref.clone(),
                 STACK_LAUNCH_GIT_HASH,
+                timeout_secs,
             ),
-            NodeSource::Http { url } => NodeAddGoal::new_http(url.clone(), STACK_LAUNCH_GIT_HASH),
+            NodeSource::Http { url } => {
+                NodeAddGoal::new_http(url.clone(), STACK_LAUNCH_GIT_HASH, timeout_secs)
+            }
         }
         .with_env_vars(ctx.env_vars.clone());
 
