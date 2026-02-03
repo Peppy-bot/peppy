@@ -60,5 +60,20 @@ We can modify our source file like this:
   </TabItem>
 </Tabs>
 
+Now if we run the following command again:
+<Tabs>
+  <TabItem label="Rust">
+    ```rust
+    cargo run
+    ```
+  </TabItem>
+  <TabItem label="Python">
+    :::caution
+    Python is not yet available
+    :::
+  </TabItem>
+</Tabs>
+
+The node should run without a crash.
 The standalone object allows us to define parameters directly within the code, which in turn allows us to run our node as a regular Rust/Python program.
 Note that the standalone config is completely ignored when a node is run with `peppy node start`—all parameters provided during that operation take precedence.
