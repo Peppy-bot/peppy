@@ -66,11 +66,6 @@ Now add the node to the stack. Since we renamed the node to `hello_world_param:0
 peppy node add .
 ```
 
-While we're at it, let's remove the old `hello_world:0.1.0` node that was previously created in this folder:
-```sh
-peppy node remove hello_world:0.1.0
-```
-
 :::note
 You can overwrite nodes in the stack that share the same name and tag by running `peppy node add` again, as long as those nodes have no dependencies. This simplifies the development workflow.
 :::
