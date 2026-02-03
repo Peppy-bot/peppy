@@ -32,19 +32,13 @@ Error: Fingerprint verification failed: Node config fingerprint mismatch: expect
 The config may have been modified after code generation. Run `node sync` to update the peppygen lib on your node.
 ```
 
-The reason for this error is that changes in `peppy.json5` must first be reflected in the interfaces. This protection ensures that the `peppy.json5` **always** matches the actual behavior of the node.
-To sync the node, run:
+This error occurs because any changes to `peppy.json5` need to be synced with the generated interfaces first. This safeguard guarantees that `peppy.json5` **always** stays in sync with the node's actual behavior.
+To update the interfaces, run:
 ```sh
 peppy node sync
 ```
-Now try to add the node again:
-```sh
-peppy node add .
-```
-The command should work this time, and you can see the node in the node stack by running:
-```sh
-peppy stack list
-```
+
+This ensures that `peppy node add .` will succeed on the next run. Before doing that, let's modify the source code first.
 
 ## Using the parameter
 
@@ -61,11 +55,20 @@ Now that we've synchronized our project, the new parameter can be used in the ma
   </TabItem>
 </Tabs>
 
-Now add the node to the stack. Since we renamed the node to `hello_world_param:0.1.0` in `peppy.json5`, peppy treats it as a new node:
+Next, add the node to the stack. Because we renamed it to `hello_world_param:0.1.0` in `peppy.json5`, peppy recognizes it as a new node:
 ```sh
 peppy node add .
 ```
 
 :::note
-You can overwrite nodes in the stack that share the same name and tag by running `peppy node add` again, as long as those nodes have no dependencies. This simplifies the development workflow.
+If a node in the stack shares the same name and tag and has no dependencies, running `peppy node add` again will overwrite it. This makes iterating during development straightforward.
+:::
+
+To verify the node was added, inspect the stack:
+```sh
+peppy stack list
+```
+
+:::note
+If you open the node project in your IDE, you should see autocompletion for the generated interfaces. This is because PeppyOS transforms the `peppy.json` configuration into bindings for the targeted programming language.
 :::
