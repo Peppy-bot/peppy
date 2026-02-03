@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use super::types::{NodeStack, collect_dependency_specs, exposes_interface};
+use super::types::{NodeStack, collect_dependency_specs, validate_dependency_specs};
 use super::{
     ResolvedNode, git::resolve_remote_git, local::resolve_local_deployment, url::resolve_remote_url,
 };
@@ -579,8 +579,6 @@ fn validate_parameter_types(
 }
 
 fn validate_stack_dependencies(stack: &NodeStack) -> Vec<Error> {
-    let mut errors = Vec::new();
-
     let snapshot = stack.snapshot();
     let node_index: HashMap<(&str, &str), &NodeConfig> = snapshot
         .iter()
@@ -593,39 +591,17 @@ fn validate_stack_dependencies(stack: &NodeStack) -> Vec<Error> {
         })
         .collect();
 
-    for entity in &snapshot {
-        let dependant_name = entity.config().manifest.name.as_str().to_owned();
-        let dependant_tag = entity.config().manifest.tag.clone();
-
-        for spec in collect_dependency_specs(entity.config()) {
-            let dependency_name = spec.node_name;
-            let dependency_tag = spec.node_tag;
-            let dependency_key = (dependency_name.as_str(), dependency_tag.as_str());
-
-            let Some(dependency_config) = node_index.get(&dependency_key).copied() else {
-                errors.push(Error::MissingDependency {
-                    dependant: dependant_name.clone(),
-                    dependant_tag: dependant_tag.clone(),
-                    dependency: dependency_name,
-                    dependency_tag,
-                });
-                continue;
-            };
-
-            if !exposes_interface(dependency_config, &spec.interface) {
-                errors.push(Error::MissingInterface {
-                    dependant: dependant_name.clone(),
-                    dependant_tag: dependant_tag.clone(),
-                    dependency: dependency_name,
-                    dependency_tag,
-                    interface_kind: spec.interface.kind().to_string(),
-                    interface_name: spec.interface.name().to_owned(),
-                });
-            }
-        }
-    }
-
-    errors
+    snapshot
+        .iter()
+        .flat_map(|entity| {
+            validate_dependency_specs(
+                entity.config(),
+                entity.config().manifest.name.as_str(),
+                &entity.config().manifest.tag,
+                |name, tag| node_index.get(&(name, tag)).map(|c| (*c).clone()),
+            )
+        })
+        .collect()
 }
 
 fn deployment_source_id(source: &DeploymentSource) -> String {

@@ -12,7 +12,7 @@ use config::consts::{
 };
 use config::node::{NodeConfig, NodeConfigParser};
 use git2::{Repository, build::CheckoutBuilder};
-use node_stack::NodeStack;
+use node_stack::{NodeStack, validate_dependency_specs};
 use peppylib::messaging::{
     ActionCreation, SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext, TopicPublisher,
 };
@@ -1260,6 +1260,20 @@ async fn process_node_add(
             );
         }
     };
+
+    // Validate that all dependency nodes exist in the stack and expose the required
+    // interfaces before running add_cmd. This prevents confusing build failures when
+    // peppygen is generated with incomplete interfaces due to missing dependencies.
+    let dep_errors = validate_dependency_specs(&node_config, &node_name, &node_tag, |name, tag| {
+        ctx.node_stack.find(name, tag).map(|e| e.config().clone())
+    });
+    if let Some(err) = dep_errors.into_iter().next() {
+        std::fs::remove_dir_all(&copied_path).ok();
+        return NodeAddResult::failure(
+            &ctx.log_path,
+            format!("Failed to add node config: {}", err),
+        );
+    }
 
     // Generate the peppygen library for the copied node
     let language = node_config.manifest.language;
