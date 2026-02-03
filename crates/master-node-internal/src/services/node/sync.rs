@@ -159,33 +159,42 @@ async fn handle_node_sync_request_inner(
         match NodeConfigParser::from_path(&node_config_path) {
             Ok(node_config) => {
                 // Validate dependencies exist in the node stack
-                let dependency_specs = node_stack::collect_dependency_specs(&node_config);
+                let dep_errors = node_stack::validate_dependency_specs(
+                    &node_config,
+                    node_config.manifest.name.as_str(),
+                    &node_config.manifest.tag,
+                    |name, tag| node_stack.find(name, tag).map(|e| e.config().clone()),
+                );
 
                 let mut missing_dependencies: HashSet<String> = HashSet::new();
                 let mut missing_interfaces: Vec<String> = Vec::new();
 
-                for spec in dependency_specs {
-                    // Check if the dependency node exists in the stack
-                    if let Some(dependency_entity) =
-                        node_stack.find(&spec.node_name, &spec.node_tag)
-                    {
-                        // Check if the dependency exposes the required interface
-                        if !node_stack::exposes_interface(
-                            dependency_entity.config(),
-                            &spec.interface,
-                        ) {
+                for err in &dep_errors {
+                    match err {
+                        node_stack::NodeStackError::MissingDependency {
+                            dependency,
+                            dependency_tag,
+                            ..
+                        } => {
+                            missing_dependencies
+                                .insert(format!("{}:{}", dependency, dependency_tag));
+                        }
+                        node_stack::NodeStackError::MissingInterface {
+                            dependency,
+                            dependency_tag,
+                            interface_kind,
+                            interface_name,
+                            ..
+                        } => {
                             missing_interfaces.push(format!(
                                 "expects {} `{}` from `{}:{}`, but it is not exposed",
-                                spec.interface.kind(),
-                                spec.interface.name(),
-                                spec.node_name,
-                                spec.node_tag
+                                interface_kind.to_lowercase(),
+                                interface_name,
+                                dependency,
+                                dependency_tag
                             ));
                         }
-                    } else {
-                        // Dependency node doesn't exist in the stack
-                        missing_dependencies
-                            .insert(format!("{}:{}", spec.node_name, spec.node_tag));
+                        _ => {}
                     }
                 }
 
