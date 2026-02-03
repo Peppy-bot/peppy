@@ -30,6 +30,8 @@ struct NodeAddGoal {
     }
     # Environment variables to apply when executing add_cmd (e.g. PATH)
     envVars @4 :List(EnvVar);
+    # Timeout in seconds for the add operation (used to report remaining time when busy)
+    timeoutSecs @5 :UInt64;
 }
 
 struct EnvVar {
