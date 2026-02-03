@@ -9,6 +9,7 @@ use master_node::encoding::{
 use peppylib::{ActionMessenger, PeppyError};
 use tracing::info;
 
+use crate::commands::node::caller_env_overrides;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
@@ -92,7 +93,7 @@ async fn launch_async(ctx: &Arc<AppContext>, launcher_config_path: PathBuf) -> R
         .messenger_handle()
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
-    let goal = LaunchGoal::new(&launcher_config_path);
+    let goal = LaunchGoal::with_env_vars(&launcher_config_path, caller_env_overrides());
 
     let mut action_handle = goal
         .send_goal(
