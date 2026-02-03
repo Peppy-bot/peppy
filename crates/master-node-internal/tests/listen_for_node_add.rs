@@ -2124,3 +2124,139 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
     // Clean up
     std::fs::remove_dir_all(&add_result.snapshot_path).ok();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exists() {
+    // The dependency node (fake_uvc_camera:0.1.0) exists in the stack but exposes a
+    // DIFFERENT topic name than what the dependent node subscribes to. The node add should
+    // fail with a MissingInterface error BEFORE running add_cmd. This mimics the real
+    // scenario where `fake_uvc_camera` is added first, but `fake_video_reconstruction`
+    // fails because the interface names don't match.
+    const DEPENDENCY_NODE_NAME: &str = "fake_uvc_camera";
+    const DEPENDENCY_NODE_TAG: &str = "0.1.0";
+    const TARGET_NODE_NAME: &str = "fake_video_reconstruction";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_master = start_master_node_with_mock_messenger().await;
+    let node_stack = started_master.node_stack.clone();
+
+    // Step 1: Add the dependency node that exposes a topic with a DIFFERENT name
+    // than what the dependent node will subscribe to.
+    let dep_source_dir = tempfile::tempdir().expect("failed to create temp dep source dir");
+    let dep_peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{DEPENDENCY_NODE_NAME}",
+                tag: "{DEPENDENCY_NODE_TAG}",
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            }},
+            interfaces: {{
+                exposes: {{
+                    topics: [{{ name: "wrong_topic_name" }}]
+                }}
+            }}
+        }}"#
+    );
+    write_peppy_json5(dep_source_dir.path(), &dep_peppy_json5);
+
+    let dep_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        dep_source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("dependency node_add request should complete");
+
+    assert!(
+        dep_result.success,
+        "dependency node_add should succeed, got error: {:?}",
+        dep_result.error_message
+    );
+    assert!(
+        node_stack.contains(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG),
+        "dependency node should be in the stack"
+    );
+    assert_eq!(node_stack.len(), 2, "root + dependency");
+
+    // Step 2: Add the dependent node that subscribes to a topic name that the
+    // dependency does NOT expose (node name+tag matches, but interface doesn't).
+    let target_source_dir = tempfile::tempdir().expect("failed to create temp target source dir");
+    let marker_dir = tempfile::tempdir().expect("failed to create temp marker dir");
+    let marker_path = marker_dir.path().join(ADD_CMD_MARKER_FILE);
+
+    let target_peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+          name: "TARGET_NODE_NAME",
+          tag: "TARGET_NODE_TAG",
+          language: "rust",
+          add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
+          start_cmd: ["sleep", "10"]
+        },
+        interfaces: {
+          subscribes_to: {
+            topics: [
+              {
+                id: "camera_stream",
+                node: "DEPENDENCY_NODE_NAME",
+                tag: "DEPENDENCY_NODE_TAG",
+                name: "video_stream"
+              },
+            ],
+          },
+        },
+    }"#
+    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
+    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG)
+    .replace("DEPENDENCY_NODE_NAME", DEPENDENCY_NODE_NAME)
+    .replace("DEPENDENCY_NODE_TAG", DEPENDENCY_NODE_TAG)
+    .replace("MARKER_PATH", &marker_path.to_string_lossy());
+    write_peppy_json5(target_source_dir.path(), &target_peppy_json5);
+
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        target_source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should complete");
+
+    assert!(
+        !add_result.success,
+        "node_add should fail when interface is not exposed by dependency"
+    );
+
+    assert!(
+        add_result
+            .error_message
+            .as_ref()
+            .map(|msg| msg.contains("is not exposed"))
+            .unwrap_or(false),
+        "error message should indicate missing interface, got: {:?}",
+        add_result.error_message
+    );
+
+    // add_cmd should NOT have been executed — interface validation must happen before add_cmd
+    assert!(
+        !marker_path.exists(),
+        "add_cmd should NOT have been executed when interface is missing"
+    );
+
+    assert!(
+        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        "dependent node should not be added when interface is missing"
+    );
+    assert_eq!(node_stack.len(), 2, "root + dependency only");
+
+    // Clean up
+    std::fs::remove_dir_all(&dep_result.snapshot_path).ok();
+    std::fs::remove_dir_all(&add_result.snapshot_path).ok();
+}
