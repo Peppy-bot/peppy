@@ -1217,7 +1217,7 @@ async fn listen_for_node_add_runs_add_cmd() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_add_cmd_failure_fails_add() {
+async fn listen_for_node_add_cmd_failure_fails_add() {
     const TARGET_NODE_NAME: &str = "add_cmd_fail_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 
@@ -1275,7 +1275,7 @@ async fn listen_for_node_add_add_cmd_failure_fails_add() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_add_cmd_nonzero_exit_fails_add() {
+async fn listen_for_node_add_cmd_nonzero_exit_fails_add() {
     const TARGET_NODE_NAME: &str = "add_cmd_exit_fail_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 
@@ -2035,5 +2035,80 @@ async fn listen_for_node_add_uses_env_overrides_for_path() {
     std::fs::remove_file(&add_result.log_path).ok();
 
     // Clean up snapshot directory
+    std::fs::remove_dir_all(&add_result.snapshot_path).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
+    // If there is a missing dependency, the NODE_ADD_ACTION should fail with a MissingDependency error
+    const TARGET_NODE_NAME: &str = "add_cmd_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_master = start_master_node_with_mock_messenger().await;
+    let node_stack = started_master.node_stack.clone();
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+
+    // add_cmd creates a marker file to prove it was executed
+    let peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+          name: "TARGET_NODE_NAME",
+          tag: "TARGET_NODE_TAG",
+          language: "rust",
+          add_cmd: ["touch", "ADD_CMD_MARKER_FILE"],
+          start_cmd: ["sleep", "10"]
+        },
+        interfaces: {
+          subscribes_to: {
+            topics: [
+              {
+                id: "camera_stream",
+                node: "fake_uvc_camera",
+                tag: "0.1.0",
+                name: "video_stream"
+              },
+            ],
+          },
+        },
+    }"#
+    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
+    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG)
+    .replace("ADD_CMD_MARKER_FILE", ADD_CMD_MARKER_FILE);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        !add_result.success,
+        "node_add should fail when add_cmd fails"
+    );
+
+    assert!(
+        add_result
+            .error_message
+            .as_ref()
+            .map(|msg| msg.contains("does not exist in the stack"))
+            .unwrap_or(false),
+        "error message should indicate missing dependency, got: {:?}",
+        add_result.error_message
+    );
+
+    assert!(
+        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        "node should not be added when dependency is missing"
+    );
+    assert_eq!(node_stack.len(), 1, "only root should exist");
+
+    // Clean up
     std::fs::remove_dir_all(&add_result.snapshot_path).ok();
 }
