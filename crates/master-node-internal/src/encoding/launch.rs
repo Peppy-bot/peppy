@@ -20,17 +20,27 @@ use super::{decode_message, encode_message};
 pub struct LaunchGoal {
     pub peppy_launch_file_path: PathBuf,
     pub env_vars: Vec<(String, String)>,
+    pub node_add_timeout_secs: u64,
+    pub node_start_timeout_secs: u64,
 }
 
 impl LaunchGoal {
-    pub fn with_env_vars(
+    pub fn new(
         peppy_launch_file_path: impl Into<PathBuf>,
-        env_vars: Vec<(String, String)>,
+        node_add_timeout_secs: u64,
+        node_start_timeout_secs: u64,
     ) -> Self {
         Self {
             peppy_launch_file_path: peppy_launch_file_path.into(),
-            env_vars,
+            env_vars: Vec::new(),
+            node_add_timeout_secs,
+            node_start_timeout_secs,
         }
+    }
+
+    pub fn with_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
+        self.env_vars = env_vars;
+        self
     }
 
     pub fn encode(&self) -> Result<Bytes> {
@@ -45,6 +55,11 @@ impl LaunchGoal {
                 env_var.set_key(key);
                 env_var.set_value(value);
             }
+
+            goal.reborrow()
+                .set_node_add_timeout_secs(self.node_add_timeout_secs);
+            goal.reborrow()
+                .set_node_start_timeout_secs(self.node_start_timeout_secs);
         }
         encode_message(&builder)
     }
@@ -66,6 +81,8 @@ impl LaunchGoal {
         Ok(Self {
             peppy_launch_file_path: PathBuf::from(goal.get_peppy_launch_file_path()?.to_str()?),
             env_vars,
+            node_add_timeout_secs: goal.get_node_add_timeout_secs(),
+            node_start_timeout_secs: goal.get_node_start_timeout_secs(),
         })
     }
 

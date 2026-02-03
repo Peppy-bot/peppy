@@ -86,6 +86,8 @@ struct ProcessLaunchContext {
     log_file: Arc<StdMutex<File>>,
     log_path: PathBuf,
     env_vars: Vec<(String, String)>,
+    node_add_timeout_secs: u64,
+    node_start_timeout_secs: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -810,9 +812,8 @@ async fn add_nodes_to_stack(
     )
     .await;
 
-    // TODO these timeouts should be user defined
+    let node_add_result_timeout = Duration::from_secs(ctx.node_add_timeout_secs);
     let goal_timeout = Duration::from_secs(30);
-    let node_add_result_timeout = Duration::from_secs(300);
 
     for key in ordered {
         let Some(item) = planned_by_key.get(key) else {
@@ -882,9 +883,8 @@ async fn start_node_instances(
 ) -> std::result::Result<(), LaunchResult> {
     publish_stdout(ctx, "Starting nodes...", LaunchFeedbackStep::LauncherStep).await;
 
-    // TODO these timeouts should be used defined
+    let node_start_result_timeout = Duration::from_secs(ctx.node_start_timeout_secs);
     let goal_timeout = Duration::from_secs(30);
-    let node_start_result_timeout = Duration::from_secs(300);
 
     // Compute runtime config host/port.
     let (messaging_host, messaging_port) = ctx
@@ -1212,6 +1212,8 @@ async fn handle_goal_request(
     let log_path_clone = log_path.clone();
     tokio::spawn(async move {
         let env_vars = goal.env_vars.clone();
+        let node_add_timeout_secs = goal.node_add_timeout_secs;
+        let node_start_timeout_secs = goal.node_start_timeout_secs;
         let ctx = ProcessLaunchContext {
             messenger,
             bound_master_node,
@@ -1221,6 +1223,8 @@ async fn handle_goal_request(
             log_file,
             log_path: log_path_clone.clone(),
             env_vars,
+            node_add_timeout_secs,
+            node_start_timeout_secs,
         };
         let result = process_launch(goal, ctx).await;
         let mut state_guard = state_clone.lock().await;
