@@ -803,6 +803,14 @@ async fn add_nodes_to_stack(
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
     backup_stack: &NodeStack,
 ) -> std::result::Result<(), LaunchResult> {
+    publish_stdout(
+        ctx,
+        "Adding nodes to the stack...",
+        LaunchFeedbackStep::LauncherStep,
+    )
+    .await;
+
+    // TODO these timeouts should be user defined
     let goal_timeout = Duration::from_secs(30);
     let node_add_result_timeout = Duration::from_secs(300);
 
@@ -872,6 +880,9 @@ async fn start_node_instances(
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
     backup_stack: &NodeStack,
 ) -> std::result::Result<(), LaunchResult> {
+    publish_stdout(ctx, "Starting nodes...", LaunchFeedbackStep::LauncherStep).await;
+
+    // TODO these timeouts should be used defined
     let goal_timeout = Duration::from_secs(30);
     let node_start_result_timeout = Duration::from_secs(300);
 
@@ -929,6 +940,7 @@ async fn start_node_instances(
                 &runtime_config_json5,
                 item.node_name.as_str(),
                 item.node_tag.as_str(),
+                node_start_result_timeout.as_secs(),
             )
             .with_env_vars(ctx.env_vars.clone());
 

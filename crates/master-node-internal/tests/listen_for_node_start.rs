@@ -1013,8 +1013,12 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
         .expect("first runtime config should serialize");
 
     // Send first goal but DON'T wait for result (simulating abandoned action)
-    let first_goal =
-        NodeStartGoal::new(&first_runtime_config_json5, FIRST_NODE_NAME, FIRST_NODE_TAG);
+    let first_goal = NodeStartGoal::new(
+        &first_runtime_config_json5,
+        FIRST_NODE_NAME,
+        FIRST_NODE_TAG,
+        60,
+    );
     let first_goal_payload = first_goal.encode().expect("failed to encode first goal");
 
     let first_action_handle = ActionMessenger::send_goal(
