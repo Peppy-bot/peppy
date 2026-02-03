@@ -2041,6 +2041,8 @@ async fn listen_for_node_add_uses_env_overrides_for_path() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
     // If there is a missing dependency, the NODE_ADD_ACTION should fail with a MissingDependency error
+    // BEFORE running add_cmd. This mimics real nodes (e.g. fake_video_reconstruction) where
+    // `cargo build` fails because peppygen interfaces are incomplete when dependencies are missing.
     const TARGET_NODE_NAME: &str = "add_cmd_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 
@@ -2048,15 +2050,19 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
     let node_stack = started_master.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let marker_dir = tempfile::tempdir().expect("failed to create temp marker dir");
+    let marker_path = marker_dir.path().join(ADD_CMD_MARKER_FILE);
 
-    // add_cmd creates a marker file to prove it was executed
+    // add_cmd creates a marker file then fails (simulating a build that fails due to
+    // incomplete peppygen interfaces from missing dependencies). We use an absolute path
+    // for the marker so it survives the copied-dir cleanup on failure.
     let peppy_json5 = r#"{
         schema_version: 1,
         manifest: {
           name: "TARGET_NODE_NAME",
           tag: "TARGET_NODE_TAG",
           language: "rust",
-          add_cmd: ["touch", "ADD_CMD_MARKER_FILE"],
+          add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
           start_cmd: ["sleep", "10"]
         },
         interfaces: {
@@ -2074,7 +2080,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
     }"#
     .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
     .replace("TARGET_NODE_TAG", TARGET_NODE_TAG)
-    .replace("ADD_CMD_MARKER_FILE", ADD_CMD_MARKER_FILE);
+    .replace("MARKER_PATH", &marker_path.to_string_lossy());
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_result = send_node_add_and_wait(
@@ -2090,7 +2096,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
 
     assert!(
         !add_result.success,
-        "node_add should fail when add_cmd fails"
+        "node_add should fail when dependency is missing"
     );
 
     assert!(
@@ -2101,6 +2107,12 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
             .unwrap_or(false),
         "error message should indicate missing dependency, got: {:?}",
         add_result.error_message
+    );
+
+    // add_cmd should NOT have been executed — dependency validation must happen before add_cmd
+    assert!(
+        !marker_path.exists(),
+        "add_cmd should NOT have been executed when dependency is missing"
     );
 
     assert!(
