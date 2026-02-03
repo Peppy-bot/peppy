@@ -273,14 +273,33 @@ fn create_uvc_camera_repo(to_path: &Path, node_tag: &str) -> PathBuf {
     repo_path
 }
 
-async fn send_launch_and_wait(
+async fn send_node_launch_and_wait(
     messenger: &MessengerHandle,
     master_node_name: &str,
     peppy_launch_file_path: &Path,
     goal_timeout: Duration,
     result_timeout: Duration,
 ) -> Result<(LaunchGoalResponse, LaunchResult), String> {
-    let goal = LaunchGoal::new(peppy_launch_file_path);
+    send_node_launch_and_wait_with_env(
+        messenger,
+        master_node_name,
+        peppy_launch_file_path,
+        goal_timeout,
+        result_timeout,
+        vec![],
+    )
+    .await
+}
+
+async fn send_node_launch_and_wait_with_env(
+    messenger: &MessengerHandle,
+    master_node_name: &str,
+    peppy_launch_file_path: &Path,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+    env_vars: Vec<(String, String)>,
+) -> Result<(LaunchGoalResponse, LaunchResult), String> {
+    let goal = LaunchGoal::with_env_vars(peppy_launch_file_path, env_vars);
     let goal_payload = goal
         .encode()
         .map_err(|e| format!("Failed to encode launch goal: {e}"))?;
@@ -476,7 +495,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
     // Allow listeners to establish.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let (_goal_response, result) = send_launch_and_wait(
+    let (_goal_response, result) = send_node_launch_and_wait(
         &started_master.caller_handle,
         &started_master.master_node_name,
         &launch_file_path,
@@ -617,7 +636,7 @@ async fn listen_for_launch_configuration_succeed() {
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, &launcher_json5).expect("failed to write launch file");
 
-    let (_goal_response, result) = send_launch_and_wait(
+    let (_goal_response, result) = send_node_launch_and_wait(
         &started_master.caller_handle,
         &started_master.master_node_name,
         &launch_file_path,
@@ -685,7 +704,7 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, bad_launcher_json5).expect("failed to write launch file");
 
-    let (_goal_response, result) = send_launch_and_wait(
+    let (_goal_response, result) = send_node_launch_and_wait(
         &started_master.caller_handle,
         &started_master.master_node_name,
         &launch_file_path,
@@ -730,7 +749,7 @@ async fn listen_for_launch_configuration_launch_file_path_must_be_a_file() {
     let bad_launch_file = nodes_dir.path().join("not_a_file_dir");
     fs::create_dir_all(&bad_launch_file).expect("failed to create directory");
     // Point to a path that is a directory, not a file
-    let (_goal_response, result) = send_launch_and_wait(
+    let (_goal_response, result) = send_node_launch_and_wait(
         &started_master.caller_handle,
         &started_master.master_node_name,
         &bad_launch_file,
@@ -786,7 +805,7 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, launcher_json5).expect("failed to write launch file");
 
-    let (_goal_response, result) = send_launch_and_wait(
+    let (_goal_response, result) = send_node_launch_and_wait(
         &started_master.caller_handle,
         &started_master.master_node_name,
         &launch_file_path,
@@ -863,7 +882,7 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, launcher_json5).expect("failed to write launch file");
 
-    let (_goal_response, result) = send_launch_and_wait(
+    let (_goal_response, result) = send_node_launch_and_wait(
         &started_master.caller_handle,
         &started_master.master_node_name,
         &launch_file_path,
@@ -958,7 +977,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     "#;
     let launch_file_path_a = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path_a, launch_a).expect("failed to write launch file");
-    let (_goal_a, result_a) = send_launch_and_wait(
+    let (_goal_a, result_a) = send_node_launch_and_wait(
         &started_master.caller_handle,
         &started_master.master_node_name,
         &launch_file_path_a,
@@ -975,7 +994,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     "#;
     let launch_file_path_b = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path_b, launch_b).expect("failed to write launch file");
-    let (_goal_b, result_b) = send_launch_and_wait(
+    let (_goal_b, result_b) = send_node_launch_and_wait(
         &started_master.caller_handle,
         &started_master.master_node_name,
         &launch_file_path_b,
@@ -1053,7 +1072,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, launch_b).expect("failed to write launch file");
 
-    let (_goal_response, result) = send_launch_and_wait(
+    let (_goal_response, result) = send_node_launch_and_wait(
         &started_master.caller_handle,
         &started_master.master_node_name,
         &launch_file_path,
@@ -1122,7 +1141,7 @@ async fn listen_for_launch_configuration_fails_when_add_cmd_fails_and_restores_s
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, launcher_json5).expect("failed to write launch file");
 
-    let (_goal_response, result) = send_launch_and_wait(
+    let (_goal_response, result) = send_node_launch_and_wait(
         &started_master.caller_handle,
         &started_master.master_node_name,
         &launch_file_path,
@@ -1141,5 +1160,119 @@ async fn listen_for_launch_configuration_fails_when_add_cmd_fails_and_restores_s
     assert!(
         !node_stack.contains("failing_node", NODE_TAG),
         "failing_node should not be present after failed launch"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_launch_uses_env_overrides_for_path() {
+    // Emulates a real case scenario where the caller environment differs from the already-running
+    // daemon environment. In practice, users often "install a tool then source it" (e.g.
+    // `. "$HOME/.cargo/env"`), but that only affects their shell, not the daemon. We model this by
+    // passing a PATH override in the goal on the second attempt.
+    const NODE_NAME: &str = "node_b";
+    const NODE_TAG: &str = "0.1.0";
+    const INSTANCE_ID: &str = "b1";
+
+    let started_master = start_master_node_with_mock_messenger().await;
+
+    let nodes_dir = tempdir().expect("failed to create nodes dir");
+    let _node_path = write_node_config(
+        nodes_dir.path(),
+        NODE_NAME,
+        NODE_TAG,
+        "test-hash",
+        &["printout", "60"], // start_cmd that sleeps via printout
+        false,
+        false,
+    );
+    let launch_json5 = format!(
+        r#"{{ deployments: [ {{ source: {{ local: "./{NODE_NAME}" }}, instances: [ {{ instance_id: "{INSTANCE_ID}" }} ] }} ] }}"#
+    );
+    let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
+    fs::write(&launch_file_path, &launch_json5).expect("failed to write launch file");
+
+    // `printout` does not exist in the system when this is run
+    let (_, launch_result) = send_node_launch_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        &launch_file_path,
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+    )
+    .await
+    .expect("launch request should complete");
+
+    assert!(
+        !launch_result.success,
+        "The launch should fail, printout does not exist: {:?}",
+        launch_result.error_message
+    );
+
+    // Create a temp bin directory with a `printout` script that sleeps
+    let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
+    let printout_path = bin_dir.path().join("printout");
+    std::fs::write(&printout_path, "#!/bin/sh\nsleep \"${1:-60}\"\n")
+        .expect("failed to write printout script");
+
+    // Make it executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&printout_path)
+            .expect("failed to get printout metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&printout_path, perms)
+            .expect("failed to set printout permissions");
+    }
+
+    // Set up ready/health responders for the instance
+    let node_messenger = MessengerHandle::from_shared(started_master.shared_messenger.clone());
+    let _ready = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started_master.master_node_name,
+            INSTANCE_ID,
+            NODE_NAME,
+        )
+        .await
+        .expect("ready service should start"),
+    );
+    let _health = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started_master.master_node_name,
+            INSTANCE_ID,
+            NODE_NAME,
+        )
+        .await
+        .expect("health service should start"),
+    );
+
+    // Allow listeners to establish.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Pass the bin directory in PATH via env overrides to simulate the caller having an updated
+    // PATH without restarting the daemon.
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", bin_dir.path().display(), current_path);
+    let env_vars = vec![("PATH".to_string(), new_path)];
+
+    let (_, launch_result) = send_node_launch_and_wait_with_env(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        &launch_file_path,
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        env_vars,
+    )
+    .await
+    .expect("launch request should complete");
+
+    // Now the launch should succeed, since `printout` is available in the PATH override
+    assert!(
+        launch_result.success,
+        "The launch should succeed, got error: {:?}",
+        launch_result.error_message
     );
 }
