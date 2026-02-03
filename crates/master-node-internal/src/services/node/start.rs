@@ -100,7 +100,10 @@ enum NodeStartActionState {
     /// and be ready to accept the next goal.
     Rejected,
     /// An action is currently running.
-    Running,
+    Running {
+        started_at: Instant,
+        timeout_secs: u64,
+    },
     /// The action completed and the result is ready to be sent.
     Completed { result: NodeStartResult },
     /// The result has been sent to the requester.
@@ -468,25 +471,9 @@ async fn handle_goal_request(
     let sender_instance_id = context.message().instance_id().to_string();
     let payload = context.message().payload();
 
-    {
-        let mut state_guard = state.lock().await;
-        if matches!(*state_guard, NodeStartActionState::Running) {
-            let response = NodeStartGoalResponse::rejected("action already in progress");
-            return response
-                .encode()
-                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                    identifier: "node_start_goal".to_string(),
-                    reason: format!("Failed to encode response: {}", e),
-                });
-        }
-        *state_guard = NodeStartActionState::Running;
-    }
-
     let goal = match NodeStartGoal::decode(&payload.as_bytes()) {
         Ok(goal) => goal,
         Err(e) => {
-            let mut state_guard = state.lock().await;
-            *state_guard = NodeStartActionState::Rejected;
             let response = NodeStartGoalResponse::rejected(format!("invalid payload: {}", e));
             return response
                 .encode()
@@ -496,6 +483,32 @@ async fn handle_goal_request(
                 });
         }
     };
+
+    {
+        let mut state_guard = state.lock().await;
+        if let NodeStartActionState::Running {
+            started_at,
+            timeout_secs,
+        } = *state_guard
+        {
+            let remaining = Duration::from_secs(timeout_secs)
+                .saturating_sub(started_at.elapsed())
+                .as_secs();
+            let response = NodeStartGoalResponse::rejected(format!(
+                "action already in progress (times out in {remaining}s)"
+            ));
+            return response
+                .encode()
+                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                    identifier: "node_start_goal".to_string(),
+                    reason: format!("Failed to encode response: {}", e),
+                });
+        }
+        *state_guard = NodeStartActionState::Running {
+            started_at: Instant::now(),
+            timeout_secs: goal.timeout_secs,
+        };
+    }
 
     // Parse runtime config to get instance_id for log file naming
     let runtime_config: RuntimeConfig = match serde_json5::from_str(&goal.runtime_config_json5) {
@@ -608,6 +621,7 @@ async fn process_node_start(
         node_name,
         tag,
         env_vars,
+        ..
     } = goal;
     let env_vars = match super::validate_goal_env_vars(&env_vars) {
         Ok(vars) => vars,
@@ -813,7 +827,7 @@ async fn handle_cancel_request(
     state: Arc<Mutex<NodeStartActionState>>,
 ) -> PeppyResult<Bytes> {
     let state_guard = state.lock().await;
-    if matches!(*state_guard, NodeStartActionState::Running) {
+    if matches!(*state_guard, NodeStartActionState::Running { .. }) {
         Ok(Bytes::from_static(
             b"cancel acknowledged (operation cannot be interrupted)",
         ))
@@ -831,8 +845,14 @@ async fn handle_result_request(
     let mut state_guard = state.lock().await;
 
     match std::mem::replace(&mut *state_guard, NodeStartActionState::Idle) {
-        NodeStartActionState::Running => {
-            *state_guard = NodeStartActionState::Running;
+        NodeStartActionState::Running {
+            started_at,
+            timeout_secs,
+        } => {
+            *state_guard = NodeStartActionState::Running {
+                started_at,
+                timeout_secs,
+            };
             Ok(Bytes::from_static(
                 b"result pending: operation still in progress",
             ))

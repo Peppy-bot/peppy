@@ -22,6 +22,7 @@ pub struct NodeStartGoal {
     pub node_name: String,
     pub tag: String,
     pub env_vars: Vec<(String, String)>,
+    pub timeout_secs: u64,
 }
 
 impl NodeStartGoal {
@@ -29,12 +30,14 @@ impl NodeStartGoal {
         runtime_config_json5: impl Into<String>,
         node_name: impl Into<String>,
         tag: impl Into<String>,
+        timeout_secs: u64,
     ) -> Self {
         Self {
             runtime_config_json5: runtime_config_json5.into(),
             node_name: node_name.into(),
             tag: tag.into(),
             env_vars: Vec::new(),
+            timeout_secs,
         }
     }
 
@@ -57,6 +60,8 @@ impl NodeStartGoal {
                 env_var.set_key(key);
                 env_var.set_value(value);
             }
+
+            goal.reborrow().set_timeout_secs(self.timeout_secs);
         }
         encode_message(&builder)
     }
@@ -80,6 +85,7 @@ impl NodeStartGoal {
             node_name: goal.get_node_name()?.to_str()?.to_owned(),
             tag: goal.get_tag()?.to_str()?.to_owned(),
             env_vars,
+            timeout_secs: goal.get_timeout_secs(),
         })
     }
 
