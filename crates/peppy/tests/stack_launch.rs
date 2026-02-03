@@ -199,6 +199,8 @@ async fn node_launch_command_succeed() {
     StackCommand {
         command: StackCommands::Launch {
             launcher_config_path: launcher_path,
+            node_add_timeout_secs: 60,
+            node_start_timeout_secs: 60,
         },
     }
     .execute(&ctx)
@@ -396,6 +398,8 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
     let launch_result = StackCommand {
         command: StackCommands::Launch {
             launcher_config_path: launcher_path,
+            node_add_timeout_secs: 60,
+            node_start_timeout_secs: 60,
         },
     }
     .execute(&ctx);
