@@ -12,7 +12,7 @@ use config::consts::{
 };
 use config::node::{NodeConfig, NodeConfigParser};
 use git2::{Repository, build::CheckoutBuilder};
-use node_stack::{NodeStack, NodeStackError, collect_dependency_specs};
+use node_stack::{NodeStack, NodeStackError, collect_dependency_specs, exposes_interface};
 use peppylib::messaging::{
     ActionCreation, SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext, TopicPublisher,
 };
@@ -1261,26 +1261,41 @@ async fn process_node_add(
         }
     };
 
-    // Validate that all dependency nodes exist in the stack before running add_cmd.
-    // This prevents confusing build failures when peppygen is generated with incomplete
-    // interfaces due to missing dependencies.
+    // Validate that all dependency nodes exist in the stack and expose the required
+    // interfaces before running add_cmd. This prevents confusing build failures when
+    // peppygen is generated with incomplete interfaces due to missing dependencies.
     for spec in collect_dependency_specs(&node_config) {
-        if ctx
-            .node_stack
-            .find(&spec.node_name, &spec.node_tag)
-            .is_none()
-        {
-            std::fs::remove_dir_all(&copied_path).ok();
-            let err = NodeStackError::MissingDependency {
-                dependant: node_name.clone(),
-                dependant_tag: node_tag.clone(),
-                dependency: spec.node_name,
-                dependency_tag: spec.node_tag,
-            };
-            return NodeAddResult::failure(
-                &ctx.log_path,
-                format!("Failed to add node config: {}", err),
-            );
+        match ctx.node_stack.find(&spec.node_name, &spec.node_tag) {
+            None => {
+                std::fs::remove_dir_all(&copied_path).ok();
+                let err = NodeStackError::MissingDependency {
+                    dependant: node_name.clone(),
+                    dependant_tag: node_tag.clone(),
+                    dependency: spec.node_name,
+                    dependency_tag: spec.node_tag,
+                };
+                return NodeAddResult::failure(
+                    &ctx.log_path,
+                    format!("Failed to add node config: {}", err),
+                );
+            }
+            Some(dependency_entity) => {
+                if !exposes_interface(dependency_entity.config(), &spec.interface) {
+                    std::fs::remove_dir_all(&copied_path).ok();
+                    let err = NodeStackError::MissingInterface {
+                        dependant: node_name.clone(),
+                        dependant_tag: node_tag.clone(),
+                        dependency: spec.node_name,
+                        dependency_tag: spec.node_tag,
+                        interface_kind: format!("{:?}", spec.interface.kind()),
+                        interface_name: spec.interface.name().to_owned(),
+                    };
+                    return NodeAddResult::failure(
+                        &ctx.log_path,
+                        format!("Failed to add node config: {}", err),
+                    );
+                }
+            }
         }
     }
 
