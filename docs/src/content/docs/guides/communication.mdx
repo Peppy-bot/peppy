@@ -62,7 +62,8 @@ In our `hello_world_param` node, we've already exposed a topic. Let's try to mak
 
 We first need to initialize the `hello_receiver` node in a new folder:
 ```sh
-peppy node init hello_receiver
+❯ peppy node init hello_receiver
+cd hello_receiver
 ```
 with the following `peppy.json5`:
 <Code code={helloReceiverNodeConfig} lang="json5" title="peppy.json5" />
@@ -82,8 +83,8 @@ and the following source file:
 
 Finally, add this new node to the stack:
 ```sh
-peppy node sync
-peppy node add .
+❯ peppy node sync
+❯ peppy node add .
 ```
 
 :::note
@@ -118,7 +119,7 @@ peppy node start hello_world_param:0.1.0 name=planet
 ```
 
 Since our node requires a `name`, we provide it with that argument on startup.
-Now let's start the `hello_receiver`:
+Now let's start the `hello_receiver` node:
 ```sh
 ❯ peppy node start hello_receiver:0.1.0
 Running node hello_receiver:0.1.0...
