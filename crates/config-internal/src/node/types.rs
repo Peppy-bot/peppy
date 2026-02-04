@@ -469,26 +469,20 @@ pub struct SubscribedAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActionServiceEndpoint {
-    #[serde(skip_serializing_if = "Option::is_none", rename = "type")]
-    pub service_type: Option<String>,
-    #[serde(default = "default_action_service_qos_profile")]
-    pub qos_profile: QoSProfile,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_message_format: Option<MessageFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_message_format: Option<MessageFormat>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+    #[serde(default = "default_action_service_qos_profile")]
+    pub qos_profile: QoSProfile,
 }
 
 impl Default for ActionServiceEndpoint {
     fn default() -> Self {
         Self {
-            service_type: None,
             qos_profile: default_action_service_qos_profile(),
             request_message_format: None,
             response_message_format: None,
-            name: None,
         }
     }
 }
