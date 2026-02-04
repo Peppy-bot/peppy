@@ -1,0 +1,17 @@
+---
+title: Interfaces integrity
+description: Validate dependency interfaces with hashes to prevent subscribing from a wrong node
+sidebar:
+  order: 3
+---
+
+## Introduction
+
+In order to guarantee that a topic/service/action you subscribe to is the one you expect, PeppyOS offers the ability to check the integrity of an interface.
+A typical scenario where integrity is a welcome solution is when node a scenario like this occurs:
+ 1. Node A depends on node topic X on node B
+    One of those two scenarios happen:
+    2a. Node B keeps the same name + tag + topic X but changes the topic X parameters
+    2b. Node B is swapped for a completely different node C but the name + tag + topic X are the same as node C
+ In both cases node A subscribtion will still be valid but the code that depends on this interface will be broken.
+ We want to prevent that scenario from happening by adding an extra validation step.
