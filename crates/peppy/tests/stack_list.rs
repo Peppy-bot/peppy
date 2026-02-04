@@ -57,6 +57,7 @@ fn make_consumer_depend_on_provider(
             node: provider_name.to_string(),
             name: topic_name.to_string(),
             tag: "0.1.0".to_string(),
+            integrity: None,
         }]),
         ..Default::default()
     });

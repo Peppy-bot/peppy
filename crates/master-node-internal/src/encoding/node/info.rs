@@ -170,7 +170,7 @@ impl NodeInfoResponse {
                 let mut entry = entries.reborrow().get(i as u32);
                 entry.set_name(&iface.name);
                 entry.set_sha256(&iface.sha256);
-                entry.set_interface_kind(&iface.interface_kind.to_string());
+                entry.set_interface_kind(iface.interface_kind.to_string());
             }
             response.set_config_sha256(&self.config_integrity);
         }
