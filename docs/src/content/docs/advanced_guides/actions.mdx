@@ -1,0 +1,339 @@
+---
+title: Actions
+description: How to use actions in peppy
+sidebar:
+  order: 3
+---
+
+Actions are for **long-running tasks** that need feedback during execution and support cancellation.
+A client sends a goal to an action node, which can provide periodic feedback while working and delivers a final result upon completion.
+
+Use actions for tasks like navigation, arm movement, or any operation that runs over time and benefits from progress updates.
+Actions are processed **serially** by a node: two requests to the same action cannot run in parallel.
+
+## Action lifecycle
+
+An action consists of three communication channels built on top of services and topics:
+
+1. **Goal** (service) — the client sends a goal request; the server accepts or rejects it.
+2. **Feedback** (topic) — the server publishes progress updates while working on the goal.
+3. **Result** (service) — the client requests the final result once the server finishes.
+
+Additionally, the client can issue a **cancel** request at any time to abort an active goal.
+
+```
+Client                              Server
+  │                                    │
+  │──── fire_goal (request) ──────────>│
+  │<─── GoalResponse (accepted) ───────│
+  │                                    │
+  │<─── feedback ──────────────────────│  (repeated)
+  │<─── feedback ──────────────────────│
+  │                                    │
+  │──── get_result (request) ─────────>│
+  │<─── ResultResponse ────────────────│
+```
+
+## Exposing an action
+
+A node that handles action goals declares its actions under `interfaces.exposes.actions` in its `peppy.json5`.
+Each action defines a `goal_service`, a `feedback_topic`, and a `result_service`:
+
+```json5
+{
+  schema_version: 1,
+  manifest: {
+    name: "brain",
+    tag: "0.1.0",
+    language: "rust",
+    add_cmd: ["cargo", "build", "--release"],
+    start_cmd: ["cargo", "run", "--release"]
+  },
+  interfaces: {
+    exposes: {
+      topics: [],
+      services: [],
+      actions: [
+        {
+          name: "move_arm",
+          goal_service: {
+            request_message_format: {
+              arm_id: "u16",
+              desired_position: {
+                $type: "array",
+                $items: "i32",
+                $length: 3
+              }
+            },
+            response_message_format: {
+              accepted: "bool"
+            }
+          },
+          feedback_topic: {
+            qos_profile: "sensor_data",
+            message_format: {
+              new_position: {
+                $type: "array",
+                $items: "i32",
+                $length: 3
+              }
+            }
+          },
+          result_service: {
+            response_message_format: {
+              success: "bool",
+              error_msg: {
+                $type: "string",
+                $optional: true
+              },
+              final_position: {
+                $type: "array",
+                $items: "i32",
+                $length: 3
+              }
+            }
+          }
+        }
+      ],
+    },
+    subscribes_to: {
+      topics: [],
+      services: [],
+      actions: [],
+    },
+  }
+}
+```
+
+The `goal_service.request_message_format` is optional — an action can have no goal parameters (e.g. a `calibrate` action that just starts when fired).
+
+### Handling goals
+
+After running `peppy node sync`, the code generator creates a module for each exposed action under `peppygen::exposed_actions`.
+Use `ActionHandle::expose` to set up the action, then handle goals, emit feedback, and respond with results.
+Each goal is handled in a separate task, but only one action can be processed at a time:
+
+```rust
+use peppygen::exposed_actions::move_arm;
+use peppygen::{NodeBuilder, Parameters, Result};
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+        let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
+
+        tokio::spawn(async move {
+            // Wait for a goal request
+            action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+                println!(
+                    "goal received: arm_id={} desired={:?}",
+                    request.data.arm_id, request.data.desired_position
+                );
+                Ok(move_arm::GoalResponse::new(true))
+            })
+            .await?;
+
+            // Emit feedback while working
+            action.emit_feedback([7, 31, 43]).await?;
+
+            // Handle the result request
+            action.handle_result_next_request(|_request| -> Result<move_arm::ResultResponse> {
+                Ok(move_arm::ResultResponse::new(
+                    true,
+                    None,
+                    [98, 4, 26],
+                ))
+            })
+            .await?;
+
+            Ok::<_, peppygen::Error>(())
+        });
+
+        Ok(())
+    })
+}
+```
+
+The `GoalRequest` contains:
+- `instance_id` — the instance that sent the goal.
+- `master_node` — the master node of the caller.
+- `data` — the deserialized goal parameters (only present when `request_message_format` is defined).
+
+### Handling cancellation
+
+Between accepting a goal and delivering a result, the server can handle cancel requests inside the spawned task:
+
+```rust
+action.handle_cancel_next_request(|request| -> Result<move_arm::CancelResponse> {
+    println!("cancel request from {}", request.instance_id);
+    Ok(move_arm::CancelResponse::new(
+        true,                                    // accepted
+        Some("goal cancelled".to_owned()),       // error_message
+    ))
+})
+.await?;
+```
+
+The `CancelResponse` contains:
+- `accepted` — whether the cancellation was accepted.
+- `error_message` — an optional message explaining the cancellation outcome.
+
+After accepting a cancellation, the server should stop processing and not respond to the result request for that goal.
+
+### Serving goals continuously
+
+To serve multiple goals in sequence, alternate between waiting for goals and handling follow-up requests:
+
+```rust
+let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
+
+loop {
+    // Wait for a new goal
+    action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
+        Ok(move_arm::GoalResponse::new(true))
+    })
+    .await?;
+
+    // Do work, emit feedback...
+    action.emit_feedback([0, 0, 0]).await?;
+
+    // Handle either cancel or result
+    action.handle_result_next_request(|_request| -> Result<move_arm::ResultResponse> {
+        Ok(move_arm::ResultResponse::new(true, None, [10, 20, 30]))
+    })
+    .await?;
+}
+```
+
+## Subscribing to an action
+
+A node that sends goals declares its subscriptions under `interfaces.subscribes_to.actions`:
+
+```json5
+{
+  schema_version: 1,
+  manifest: {
+    name: "controller",
+    tag: "0.1.0",
+    language: "rust",
+    add_cmd: ["cargo", "build", "--release"],
+    start_cmd: ["cargo", "run", "--release"]
+  },
+  interfaces: {
+    subscribes_to: {
+      topics: [],
+      services: [],
+      actions: [
+        {
+          id: "brain_move_arm",  // Your chosen identifier for this subscription
+          node: "brain",          // Target node name
+          name: "move_arm",       // Action name on that node
+          tag: "0.1.0",           // Target node tag/version
+        },
+      ],
+    },
+  }
+}
+```
+
+:::note
+The `node add` and `node sync` commands require the target node to already be in the node stack so the proper interfaces can be generated.
+:::
+
+### Firing a goal
+
+The code generator creates a module for each subscribed action under `peppygen::subscribed_actions`.
+Use `fire_goal` to send a goal, then listen for feedback and request the result:
+
+```rust
+use peppygen::subscribed_actions::brain_move_arm;
+use peppygen::{NodeBuilder, Parameters, QoSProfile, Result};
+use std::time::Duration;
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+        let request = brain_move_arm::GoalRequest {
+            arm_id: 7,
+            desired_position: [10, 20, 30],
+        };
+        let mut goal = brain_move_arm::fire_goal(
+            &node_runner,
+            Duration::from_secs(5),       // timeout
+            None,                          // target_master_node (None = any)
+            None,                          // target_instance_id (None = any)
+            request,
+            QoSProfile::SensorData,        // QoS for the feedback topic
+        )
+        .await?;
+
+        println!("goal accepted={}", goal.data.accepted);
+
+        Ok(())
+    })
+}
+```
+
+The `fire_goal` function returns a `GoalResponse` containing:
+- `data.accepted` — whether the goal was accepted.
+- `action_handle` — a handle used for subsequent feedback, result, and cancel calls.
+
+### Receiving feedback
+
+Use `on_next_feedback_message` to receive the next feedback message from the server:
+
+```rust
+let feedback = brain_move_arm::on_next_feedback_message(
+    &mut goal.action_handle,
+).await?;
+
+println!("new_position={:?}", feedback.new_position);
+```
+
+This blocks until a feedback message arrives. The server can emit multiple feedback messages, so you can call this in a loop if needed.
+
+### Getting the result
+
+Use `get_result` to request the final result from the server:
+
+```rust
+let result = brain_move_arm::get_result(
+    &node_runner,
+    &goal.action_handle,
+    Duration::from_secs(5), // timeout
+)
+.await?;
+
+println!(
+    "success={} error={:?} final_position={:?}",
+    result.data.success,
+    result.data.error_msg.as_deref(),
+    result.data.final_position
+);
+```
+
+### Cancelling a goal
+
+Use `cancel_goal` to request cancellation of an active goal:
+
+```rust
+let cancel_response = brain_move_arm::cancel_goal(
+    &node_runner,
+    &goal.action_handle,
+    Duration::from_secs(5), // timeout
+)
+.await?;
+
+println!(
+    "cancel accepted={} error={}",
+    cancel_response.data.accepted,
+    cancel_response.data.error_message.as_deref().unwrap_or("<none>"),
+);
+```
+
+After a goal is cancelled, requesting the result will fail with a timeout since the server stops processing that goal.
+
+## Serial processing
+
+Actions are designed for tasks where only one goal should be active at a time.
+The server processes goals one after another: it waits for a goal, handles it (with optional feedback and cancel), delivers the result, and then waits for the next goal.
+
+If you need parallel execution of similar tasks, consider using multiple instances of the same node or restructuring the work as independent services.

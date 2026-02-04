@@ -1,10 +1,12 @@
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
+use super::info::compute_interfaces_integrity;
 use super::sync::{collect_subscribed_interfaces, generate_peppygen_for_node};
 use crate::Result;
 use crate::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
 };
 use crate::names;
+use crate::{DependencyInterfaceIntegrityError, DependencyInterfaceIntegrityErrors};
 use bytes::Bytes;
 use chrono::Local;
 use config::consts::{
@@ -324,6 +326,138 @@ fn is_node_snapshot_path(path: &Path, node_name: &str, node_tag: &str) -> bool {
         return false;
     };
     folder_name.starts_with(&format!("{node_name}_{node_tag}_"))
+}
+
+fn normalize_integrity(value: &str) -> String {
+    let trimmed = value.trim();
+    let without_prefix = trimmed.strip_prefix("sha256:").unwrap_or(trimmed);
+    without_prefix.to_ascii_lowercase()
+}
+
+fn ensure_integrity_matches(
+    node_stack: &NodeStack,
+    dependency_name: &str,
+    dependency_tag: &str,
+    kind: config::node::InterfaceKind,
+    interface_name: &str,
+    expected_integrity_raw: &str,
+) -> std::result::Result<(), DependencyInterfaceIntegrityError> {
+    let expected_integrity = normalize_integrity(expected_integrity_raw);
+    let dependency_name = dependency_name.trim();
+    let dependency_tag = dependency_tag.trim();
+    let interface_name = interface_name.trim();
+
+    let Some(entity) = node_stack.find(dependency_name, dependency_tag) else {
+        return Err(DependencyInterfaceIntegrityError::DependencyNotInStack {
+            dependency: dependency_name.to_owned(),
+            dependency_tag: dependency_tag.to_owned(),
+        });
+    };
+
+    let entries = compute_interfaces_integrity(entity.config()).map_err(|reason| {
+        DependencyInterfaceIntegrityError::IntegrityComputationFailed {
+            dependency: dependency_name.to_owned(),
+            dependency_tag: dependency_tag.to_owned(),
+            reason,
+        }
+    })?;
+
+    let actual_integrity = entries
+        .iter()
+        .find(|entry| entry.interface_kind == kind && entry.name.trim() == interface_name)
+        .map(|entry| entry.sha256.as_str())
+        .ok_or_else(|| DependencyInterfaceIntegrityError::InterfaceNotFound {
+            dependency: dependency_name.to_owned(),
+            dependency_tag: dependency_tag.to_owned(),
+            interface_kind: kind,
+            interface_name: interface_name.to_owned(),
+        })?;
+
+    if expected_integrity == actual_integrity {
+        return Ok(());
+    }
+
+    Err(DependencyInterfaceIntegrityError::IntegrityMismatch {
+        dependency: dependency_name.to_owned(),
+        dependency_tag: dependency_tag.to_owned(),
+        interface_kind: kind,
+        interface_name: interface_name.to_owned(),
+        expected: expected_integrity_raw.trim().to_owned(),
+        actual: actual_integrity.to_owned(),
+    })
+}
+
+fn validate_dependency_interfaces_integrity(
+    node_config: &NodeConfig,
+    node_stack: &NodeStack,
+) -> std::result::Result<(), DependencyInterfaceIntegrityErrors> {
+    use config::node::InterfaceKind;
+
+    let Some(subscriptions) = node_config.interfaces.subscribes_to.as_ref() else {
+        return Ok(());
+    };
+
+    let mut errors: Vec<DependencyInterfaceIntegrityError> = Vec::new();
+
+    if let Some(topics) = subscriptions.topics.as_ref() {
+        for topic in topics {
+            let Some(expected) = topic.integrity.as_deref() else {
+                continue;
+            };
+            if let Err(err) = ensure_integrity_matches(
+                node_stack,
+                topic.node.trim(),
+                topic.tag.trim(),
+                InterfaceKind::Topic,
+                topic.name.trim(),
+                expected,
+            ) {
+                errors.push(err);
+            }
+        }
+    }
+
+    if let Some(services) = subscriptions.services.as_ref() {
+        for service in services {
+            let Some(expected) = service.integrity.as_deref() else {
+                continue;
+            };
+            if let Err(err) = ensure_integrity_matches(
+                node_stack,
+                service.node.trim(),
+                service.tag.trim(),
+                InterfaceKind::Service,
+                service.name.trim(),
+                expected,
+            ) {
+                errors.push(err);
+            }
+        }
+    }
+
+    if let Some(actions) = subscriptions.actions.as_ref() {
+        for action in actions {
+            let Some(expected) = action.integrity.as_deref() else {
+                continue;
+            };
+            if let Err(err) = ensure_integrity_matches(
+                node_stack,
+                action.node.trim(),
+                action.tag.trim(),
+                InterfaceKind::Action,
+                action.name.trim(),
+                expected,
+            ) {
+                errors.push(err);
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        return Ok(());
+    }
+
+    Err(DependencyInterfaceIntegrityErrors::new(errors))
 }
 
 /// State for tracking the current node add action.
@@ -1286,6 +1420,11 @@ async fn process_node_add(
             &ctx.log_path,
             format!("Failed to add node config: {}", err),
         );
+    }
+
+    if let Err(e) = validate_dependency_interfaces_integrity(&node_config, &ctx.node_stack) {
+        std::fs::remove_dir_all(&copied_path).ok();
+        return NodeAddResult::failure(&ctx.log_path, format!("Failed to add node config: {}", e));
     }
 
     // Generate the peppygen library for the copied node

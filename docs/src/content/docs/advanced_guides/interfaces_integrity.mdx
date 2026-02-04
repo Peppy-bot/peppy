@@ -1,0 +1,95 @@
+---
+title: Interfaces integrity
+description: Validate dependency interfaces with hashes to prevent subscribing from a wrong node
+sidebar:
+  order: 4
+---
+
+## Introduction
+
+PeppyOS offers interface integrity checks to guarantee that a topic, service, or action you subscribe to matches what you expect.
+
+Consider the following scenario: Node A subscribes to topic X provided by Node B. Later, one of these changes occurs:
+
+1. **Interface change**: Node B keeps the same name, tag, and topic X, but modifies the parameters of topic X.
+2. **Node swap**: Node B is replaced by a different Node C that has the same name + tag and exposes the same topic X.
+
+In both cases, Node A's subscription remains valid at the configuration level, but the code relying on that interface will break at runtime or compile time.
+Interface integrity checks prevent this by adding a hash-based validation step.
+
+:::note
+Integrity checks are optional but strongly recommended, especially for publicly shared nodes.
+:::
+
+## Retrieving interface hashes
+
+To enable integrity checking, you first need to obtain the integrity hashes of the interfaces exposed by the node you want to subscribe to.
+Run `peppy node info` with the path to the target node. Using [this node](https://github.com/Peppy-bot/example_nodes/tree/main/fake_uvc_camera) as an example:
+```
+❯ peppy node info https://github.com/Peppy-bot/example_nodes.git/fake_uvc_camera
+Getting node info for https://github.com/Peppy-bot/example_nodes.git/fake_uvc_camera...
+
+Node Information
+==================================================
+
+Name:      fake_uvc_camera
+Tag:       0.1.0
+Language:  Rust
+Labels:    uvc, camera, usb
+Add cmd:   cargo build --release
+Start cmd: cargo run --release
+
+Node Stack Status
+--------------------------------------------------
+Status:    Not in node stack
+
+Exposed Interfaces
+--------------------------------------------------
+Topics:
+  - video_stream (qos: SensorData)
+Services:
+  - video_stream_info
+
+Integrity
+--------------------------------------------------
+Config SHA256: 31aa0662c2b3d781e4382799fbdd62c446c1f4aeaa69010a6b69d214f7c85032
+Interfaces:
+  - video_stream (topic) c036900c2f8e375cf97cd5c12b5642ae97ee4d0aed61ae44e7a38a4e0b1bbc2a
+  - video_stream_info (service) 3e61eb1eccfb7ee6fe48005558807e267bcce444bea5384897c86d1c900ec28e
+
+Parameters
+--------------------------------------------------
+  device: {physical: "string", priority: "string", sim: "string"}
+  video: {encoding: "string", frame_rate: "u16", resolution: {height: "u16", width: "u16"}}
+```
+
+The **Integrity** section lists the hash for each exposed interface:
+ - video_stream (topic) `c036900c2f8e375cf97cd5c12b5642ae97ee4d0aed61ae44e7a38a4e0b1bbc2a`
+ - video_stream_info (service) `3e61eb1eccfb7ee6fe48005558807e267bcce444bea5384897c86d1c900ec28e`
+
+You can then reference these hashes in your subscriber node's configuration.
+
+## Adding integrity hashes to subscriptions
+
+To enable integrity checking, add the `integrity` field to your topic and service subscriptions in the subscriber node's configuration:
+```json5
+topics: [
+  {
+    id: "camera_stream",
+    node: "fake_uvc_camera",
+    name: "video_stream",
+    tag: "0.1.0",
+    integrity: "c036900c2f8e375cf97cd5c12b5642ae97ee4d0aed61ae44e7a38a4e0b1bbc2a",
+  }
+],
+services: [
+  {
+    id: "video_info",
+    node: "fake_uvc_camera",
+    name: "video_stream_info",
+    tag: "0.1.0",
+    integrity: "3e61eb1eccfb7ee6fe48005558807e267bcce444bea5384897c86d1c900ec28e",
+  }
+],
+```
+When an integrity hash is present and does not match the target node's interface, the master node will return a mismatch error during the `add` command, catching the problem early instead of failing at compilation or runtime.
