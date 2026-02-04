@@ -12,10 +12,10 @@ use config::test_helpers;
 use gix_url::Url as GitUrl;
 use master_node::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
 use master_node::names;
-use peppylib::ServiceMessenger;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
+use peppylib::{PeppyError, ServiceMessenger};
 use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
@@ -669,4 +669,90 @@ async fn listen_for_node_info_returns_integrity_fields() {
         info_response.interfaces_integrity, info_response2.interfaces_integrity,
         "interfaces_integrity should be deterministic"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_info_recovers_after_invalid_request() {
+    const TARGET_NODE_NAME: &str = "fs_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_master = start_master_node_with_mock_messenger().await;
+
+    // First, send a request that is guaranteed to fail quickly without performing I/O.
+    let bad_url = url::Url::parse("https://example.com/bad_url")
+        .expect("bad test URL should parse as a valid URL");
+    let bad_request = NodeInfoRequest::new(NodeSource::Http { url: bad_url });
+    let bad_payload = bad_request.encode().expect("encode should succeed");
+
+    let err = match ServiceMessenger::poll(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        CALLER_INSTANCE_ID,
+        &started_master.master_node_name,
+        names::NODE_INFO,
+        Some(&started_master.master_node_name),
+        None,
+        bad_payload,
+        Duration::from_secs(2),
+    )
+    .await
+    {
+        Ok(_) => panic!("node_info should return an error for invalid HTTP source"),
+        Err(err) => err,
+    };
+
+    let PeppyError::ServiceError {
+        service_name,
+        reason,
+        ..
+    } = err
+    else {
+        panic!("expected ServiceError, got: {err:?}");
+    };
+
+    assert_eq!(service_name, names::NODE_INFO);
+    assert!(
+        reason.contains("tar.zst") || reason.contains("tar.zstd") || reason.contains(".tzst"),
+        "error reason should mention supported archive types; got: {reason}"
+    );
+
+    // Then send a valid request to ensure the node_info listener is still alive.
+    let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(node_dir.path(), &peppy_json5);
+
+    let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
+    let request_payload = request.encode().expect("encode should succeed");
+
+    let response = ServiceMessenger::poll(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        CALLER_INSTANCE_ID,
+        &started_master.master_node_name,
+        names::NODE_INFO,
+        Some(&started_master.master_node_name),
+        None,
+        request_payload,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_info should still work after a failed request");
+
+    let info_response =
+        NodeInfoResponse::decode(&response.payload().to_bytes()).expect("decode should succeed");
+    assert_eq!(
+        info_response.config.manifest.name.as_str(),
+        TARGET_NODE_NAME
+    );
+    assert_eq!(info_response.config.manifest.tag, TARGET_NODE_TAG);
 }

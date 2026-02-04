@@ -81,6 +81,15 @@ pub enum Error {
         service_name: String,
     },
     #[error(
+        "service '{service_name}'{instance_suffix} returned error: {reason}",
+        instance_suffix = InstanceSuffix(.instance_id.as_deref())
+    )]
+    ServiceError {
+        instance_id: Option<String>,
+        service_name: String,
+        reason: String,
+    },
+    #[error(
         "action '{action_name}'{instance_suffix} has timed out waiting for result",
         instance_suffix = InstanceSuffix(.instance_id.as_deref())
     )]
