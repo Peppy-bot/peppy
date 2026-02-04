@@ -2264,3 +2264,140 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
     std::fs::remove_dir_all(&dep_result.snapshot_path).ok();
     std::fs::remove_dir_all(&add_result.snapshot_path).ok();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_dependency_resolved_and_integrity_check_fails() {
+    const PROVIDER_NODE_NAME: &str = "uvc_camera";
+    const PROVIDER_NODE_TAG: &str = "0.1.0";
+    const CONSUMER_NODE_NAME: &str = "consumer_node";
+    const CONSUMER_NODE_TAG: &str = "1.0.0";
+
+    let started_master = start_master_node_with_mock_messenger().await;
+    let node_stack = started_master.node_stack.clone();
+
+    // Step 1: Add the provider node that exposes the topic, service, and action
+    // that the consumer node subscribes to.
+    let provider_source_dir =
+        tempfile::tempdir().expect("failed to create temp provider source dir");
+    let provider_peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "$NAME",
+            tag: "$TAG",
+            language: "rust",
+            start_cmd: ["sleep", "10"]
+        },
+        interfaces: {
+            exposes: {
+                topics: [
+                    { name: "camera_stream" }
+                ],
+                services: [
+                    { name: "sensor_data" }
+                ],
+                actions: [
+                    { name: "move_camera" }
+                ]
+            }
+        }
+    }"#
+    .replace("$NAME", PROVIDER_NODE_NAME)
+    .replace("$TAG", PROVIDER_NODE_TAG);
+    write_peppy_json5(provider_source_dir.path(), &provider_peppy_json5);
+
+    let provider_add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        provider_source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("provider node_add request should complete");
+
+    assert!(
+        provider_add_result.success,
+        "provider node_add should succeed, got error: {:?}",
+        provider_add_result.error_message
+    );
+    assert!(
+        node_stack.contains(PROVIDER_NODE_NAME, PROVIDER_NODE_TAG),
+        "provider node should be in the stack"
+    );
+    assert_eq!(node_stack.len(), 2, "root + provider");
+
+    // Step 2: Add the consumer node that depends on the provider.
+    let consumer_source_dir =
+        tempfile::tempdir().expect("failed to create temp consumer source dir");
+    let consumer_peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "consumer_node",
+            tag: "1.0.0",
+            language: "rust",
+            start_cmd: ["sleep", "10"],
+        },
+        interfaces: {
+            subscribes_to: {
+                topics: [
+                    {
+                        id: "camera_stream",
+                        node: "uvc_camera",
+                        name: "camera_stream",
+                        tag: "0.1.0",
+                        // Ensures the topic this node subscribes to is coming from the right node
+                        integrity: "<wrong_hash>"
+                    }
+                ],
+                services: [
+                    {
+                        id: "activate_camera",
+                        node: "uvc_camera",
+                        name: "sensor_data",
+                        tag: "0.1.0",
+                        // Ensures the service this node subscribes to is coming from the right node
+                        integrity: "<wrong_hash>"
+                    }
+                ],
+                actions: [
+                    {
+                        id: "move_camera",
+                        node: "uvc_camera",
+                        name: "move_camera",
+                        tag: "0.1.0",
+                        // Ensures the action this node subscribes to is coming from the right node
+                        integrity: "<wrong_hash>"
+                    }
+                ]
+            }
+        }
+    }"#;
+    write_peppy_json5(consumer_source_dir.path(), consumer_peppy_json5);
+
+    let consumer_add_result = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        consumer_source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("consumer node_add request should complete");
+
+    assert!(
+        !consumer_add_result.success,
+        "The integrity check should fail, got: {:?}",
+        consumer_add_result.error_message
+    );
+    assert!(
+        !node_stack.contains(CONSUMER_NODE_NAME, CONSUMER_NODE_TAG),
+        "consumer node should not be in the stack"
+    );
+    assert_eq!(node_stack.len(), 1, "should only have master node");
+
+    // Clean up
+    std::fs::remove_dir_all(&provider_add_result.snapshot_path).ok();
+    std::fs::remove_dir_all(&consumer_add_result.snapshot_path).ok();
+}
