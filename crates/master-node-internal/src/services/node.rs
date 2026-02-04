@@ -53,6 +53,8 @@ fn validate_goal_env_vars(env_vars: &[(String, String)]) -> Result<Vec<(String, 
 pub use add::listen_for_node_add;
 pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
+pub use integrity::compute_interfaces_integrity;
+pub use integrity::listen_for_node_integrity;
 pub use remove::listen_for_node_remove;
 pub use start::listen_for_node_start;
 pub use stop::listen_for_node_stop;
