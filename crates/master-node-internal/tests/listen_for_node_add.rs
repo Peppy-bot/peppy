@@ -2328,6 +2328,11 @@ async fn listen_for_node_add_dependency_resolved_and_integrity_check_fails() {
         "provider node should be in the stack"
     );
     assert_eq!(node_stack.len(), 2, "root + provider");
+    let provider_snapshot_path = node_stack
+        .find(PROVIDER_NODE_NAME, PROVIDER_NODE_TAG)
+        .expect("provider should exist in the stack after add")
+        .root_path()
+        .to_path_buf();
 
     // Step 2: Add the consumer node that depends on the provider.
     let consumer_source_dir =
@@ -2397,7 +2402,20 @@ async fn listen_for_node_add_dependency_resolved_and_integrity_check_fails() {
         !node_stack.contains(CONSUMER_NODE_NAME, CONSUMER_NODE_TAG),
         "consumer node should not be in the stack"
     );
-    assert_eq!(node_stack.len(), 1, "should only have master node");
+    assert!(
+        node_stack.contains(PROVIDER_NODE_NAME, PROVIDER_NODE_TAG),
+        "provider node should remain in the stack after consumer integrity mismatch"
+    );
+    let provider_snapshot_path_after_failure = node_stack
+        .find(PROVIDER_NODE_NAME, PROVIDER_NODE_TAG)
+        .expect("provider should still exist after consumer integrity mismatch")
+        .root_path()
+        .to_path_buf();
+    assert_eq!(
+        provider_snapshot_path_after_failure, provider_snapshot_path,
+        "provider snapshot path should be unchanged after consumer integrity mismatch"
+    );
+    assert_eq!(node_stack.len(), 2, "root + provider");
 
     // Step 3: Add the consumer node again with the real integrity.
     let provider_info_request = NodeInfoRequest::new(master_node::encoding::NodeSource::Fs(
@@ -2436,28 +2454,6 @@ async fn listen_for_node_add_dependency_resolved_and_integrity_check_fails() {
     let topic_integrity = get_integrity(InterfaceKind::Topic, "camera_stream");
     let service_integrity = get_integrity(InterfaceKind::Service, "sensor_data");
     let action_integrity = get_integrity(InterfaceKind::Action, "move_camera");
-
-    // Provider was pruned from the stack as part of the integrity mismatch handling.
-    let provider_add_result2 = send_node_add_and_wait(
-        &started_master.caller_handle,
-        &started_master.master_node_name,
-        provider_source_dir.path(),
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        None,
-    )
-    .await
-    .expect("provider node_add request should complete (second attempt)");
-    assert!(
-        provider_add_result2.success,
-        "provider node_add should succeed (second attempt), got error: {:?}",
-        provider_add_result2.error_message
-    );
-    assert!(
-        node_stack.contains(PROVIDER_NODE_NAME, PROVIDER_NODE_TAG),
-        "provider node should be in the stack (second attempt)"
-    );
-    assert_eq!(node_stack.len(), 2, "root + provider");
 
     let consumer_peppy_json5 = r#"{
         schema_version: 1,
@@ -2532,6 +2528,5 @@ async fn listen_for_node_add_dependency_resolved_and_integrity_check_fails() {
     // Clean up
     std::fs::remove_dir_all(&provider_add_result.snapshot_path).ok();
     std::fs::remove_dir_all(&consumer_add_result.snapshot_path).ok();
-    std::fs::remove_dir_all(&provider_add_result2.snapshot_path).ok();
     std::fs::remove_dir_all(&consumer_add_result2.snapshot_path).ok();
 }

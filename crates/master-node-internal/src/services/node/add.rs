@@ -20,7 +20,6 @@ use peppylib::messaging::{
 };
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use rand::Rng;
-use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -399,7 +398,6 @@ fn validate_dependency_interfaces_integrity(
     };
 
     let mut errors: Vec<DependencyInterfaceIntegrityError> = Vec::new();
-    let mut dependencies_to_prune: HashSet<(String, String)> = HashSet::new();
 
     if let Some(topics) = subscriptions.topics.as_ref() {
         for topic in topics {
@@ -414,14 +412,6 @@ fn validate_dependency_interfaces_integrity(
                 topic.name.trim(),
                 expected,
             ) {
-                if let DependencyInterfaceIntegrityError::IntegrityMismatch {
-                    dependency,
-                    dependency_tag,
-                    ..
-                } = &err
-                {
-                    dependencies_to_prune.insert((dependency.clone(), dependency_tag.clone()));
-                }
                 errors.push(err);
             }
         }
@@ -440,14 +430,6 @@ fn validate_dependency_interfaces_integrity(
                 service.name.trim(),
                 expected,
             ) {
-                if let DependencyInterfaceIntegrityError::IntegrityMismatch {
-                    dependency,
-                    dependency_tag,
-                    ..
-                } = &err
-                {
-                    dependencies_to_prune.insert((dependency.clone(), dependency_tag.clone()));
-                }
                 errors.push(err);
             }
         }
@@ -466,14 +448,6 @@ fn validate_dependency_interfaces_integrity(
                 action.name.trim(),
                 expected,
             ) {
-                if let DependencyInterfaceIntegrityError::IntegrityMismatch {
-                    dependency,
-                    dependency_tag,
-                    ..
-                } = &err
-                {
-                    dependencies_to_prune.insert((dependency.clone(), dependency_tag.clone()));
-                }
                 errors.push(err);
             }
         }
@@ -481,25 +455,6 @@ fn validate_dependency_interfaces_integrity(
 
     if errors.is_empty() {
         return Ok(());
-    }
-
-    // If there is an integrity mismatch, it's likely the dependency is not the node this config
-    // was generated against. Best-effort prune mismatching dependencies from the stack so they can
-    // be re-added with the correct content.
-    let root = node_stack.root();
-    let root_name = root.config().manifest.name.as_str();
-    let root_tag = root.config().manifest.tag.as_str();
-    for (dependency_name, dependency_tag) in dependencies_to_prune {
-        if dependency_name == root_name && dependency_tag == root_tag {
-            continue;
-        }
-
-        if node_stack
-            .dependents_of(&dependency_name, &dependency_tag)
-            .is_empty()
-        {
-            let _ = node_stack.remove_config(&dependency_name, &dependency_tag);
-        }
     }
 
     Err(DependencyInterfaceIntegrityErrors::new(errors))
