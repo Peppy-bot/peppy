@@ -30,7 +30,7 @@ pub enum DependencyInterfaceIntegrityError {
     },
 
     #[error(
-        "integrity mismatch for {interface_kind} `{interface_name}` from `{dependency}:{dependency_tag}` (expected `{expected}`, got `{actual}`)"
+        "integrity mismatch for {interface_kind} `{interface_name}` from `{dependency}:{dependency_tag}` (expected `{expected}`, node stack has `{actual}`)"
     )]
     IntegrityMismatch {
         dependency: String,
