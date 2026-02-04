@@ -209,3 +209,30 @@ struct NodeInfoResponse {
     # Names of running instances of this node
     instancesNames @2 :List(Text);
 }
+
+# Node Integrity service
+struct NodeIntegrityRequest {
+    # Source of the node to get integrity info for
+    source :union {
+        # Filesystem path to the node directory
+        fs @0 :Text;
+        # Git repository source
+        git @1 :NodeAddGitSource;
+        # HTTP URL source
+        http @2 :Text;
+    }
+}
+
+struct InterfaceIntegrity {
+    name @0 :Text;
+    sha256 @1 :Text;
+    # Interface kind: "topic", "service", or "action"
+    interfaceKind @2 :Text;
+}
+
+struct NodeIntegrityResponse {
+    # Map of exposed interface name to sha256
+    interfacesIntegrity @0 :List(InterfaceIntegrity);
+    # Sha256 of the entire NodeConfig file
+    configSha256 @1 :Text;
+}

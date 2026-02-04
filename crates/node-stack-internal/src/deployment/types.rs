@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use config::node::{Interfaces, Name, NodeConfig};
+use config::node::{InterfaceKind, Interfaces, Name, NodeConfig};
 use names_generator2::get_random;
 use petgraph::{
     Direction,
@@ -167,23 +167,6 @@ impl From<&NodeEntity> for NodeKey {
             entity.config.manifest.name.as_str(),
             &entity.config.manifest.tag,
         )
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum InterfaceKind {
-    Topic,
-    Service,
-    Action,
-}
-
-impl std::fmt::Display for InterfaceKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            InterfaceKind::Topic => write!(f, "topic"),
-            InterfaceKind::Service => write!(f, "service"),
-            InterfaceKind::Action => write!(f, "action"),
-        }
     }
 }
 
