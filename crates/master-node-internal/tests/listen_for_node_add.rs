@@ -5,13 +5,15 @@ use common::{
     send_node_add_and_wait_with_env, start_master_node_with_mock_messenger, write_peppy_json5,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, logs_dir_add};
-use config::node::QoSProfile;
+use config::node::{InterfaceKind, QoSProfile};
 use config::test_helpers;
 use git2::{Repository, Signature};
 use gix_url::Url as GitUrl;
-use master_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse};
+use master_node::encoding::{
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeInfoRequest, NodeInfoResponse,
+};
 use master_node::names;
-use peppylib::ActionMessenger;
+use peppylib::{ActionMessenger, ServiceMessenger};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -2397,7 +2399,139 @@ async fn listen_for_node_add_dependency_resolved_and_integrity_check_fails() {
     );
     assert_eq!(node_stack.len(), 1, "should only have master node");
 
+    // Step 3: Add the consumer node again with the real integrity.
+    let provider_info_request = NodeInfoRequest::new(master_node::encoding::NodeSource::Fs(
+        provider_source_dir.path().to_path_buf(),
+    ));
+    let provider_info_payload = provider_info_request
+        .encode()
+        .expect("provider node_info request encode should succeed");
+    let provider_info_response = ServiceMessenger::poll(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        CALLER_INSTANCE_ID,
+        &started_master.master_node_name,
+        names::NODE_INFO,
+        Some(&started_master.master_node_name),
+        None,
+        provider_info_payload,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("provider node_info request should succeed");
+    let provider_info = NodeInfoResponse::decode(&provider_info_response.payload().to_bytes())
+        .expect("provider node_info response decode should succeed");
+
+    let get_integrity = |kind: InterfaceKind, name: &str| -> String {
+        provider_info
+            .interfaces_integrity
+            .iter()
+            .find(|iface| iface.interface_kind == kind && iface.name.trim() == name)
+            .unwrap_or_else(|| {
+                panic!("provider should expose {kind} `{name}` with an integrity hash")
+            })
+            .sha256
+            .clone()
+    };
+    let topic_integrity = get_integrity(InterfaceKind::Topic, "camera_stream");
+    let service_integrity = get_integrity(InterfaceKind::Service, "sensor_data");
+    let action_integrity = get_integrity(InterfaceKind::Action, "move_camera");
+
+    // Provider was pruned from the stack as part of the integrity mismatch handling.
+    let provider_add_result2 = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        provider_source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("provider node_add request should complete (second attempt)");
+    assert!(
+        provider_add_result2.success,
+        "provider node_add should succeed (second attempt), got error: {:?}",
+        provider_add_result2.error_message
+    );
+    assert!(
+        node_stack.contains(PROVIDER_NODE_NAME, PROVIDER_NODE_TAG),
+        "provider node should be in the stack (second attempt)"
+    );
+    assert_eq!(node_stack.len(), 2, "root + provider");
+
+    let consumer_peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "consumer_node",
+            tag: "1.0.0",
+            language: "rust",
+            start_cmd: ["sleep", "10"],
+        },
+        interfaces: {
+            subscribes_to: {
+                topics: [
+                    {
+                        id: "camera_stream",
+                        node: "uvc_camera",
+                        name: "camera_stream",
+                        tag: "0.1.0",
+                        integrity: "<topic_integrity>"
+                    }
+                ],
+                services: [
+                    {
+                        id: "activate_camera",
+                        node: "uvc_camera",
+                        name: "sensor_data",
+                        tag: "0.1.0",
+                        integrity: "<service_integrity>"
+                    }
+                ],
+                actions: [
+                    {
+                        id: "move_camera",
+                        node: "uvc_camera",
+                        name: "move_camera",
+                        tag: "0.1.0",
+                        integrity: "<action_integrity>"
+                    }
+                ]
+            }
+        }
+    }"#
+    .replace("<topic_integrity>", &topic_integrity)
+    .replace("<service_integrity>", &service_integrity)
+    .replace("<action_integrity>", &action_integrity);
+    write_peppy_json5(consumer_source_dir.path(), &consumer_peppy_json5);
+
+    let consumer_add_result2 = send_node_add_and_wait(
+        &started_master.caller_handle,
+        &started_master.master_node_name,
+        consumer_source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("consumer node_add request should complete (second attempt)");
+    assert!(
+        consumer_add_result2.success,
+        "consumer node_add should succeed with correct integrity, got error: {:?}",
+        consumer_add_result2.error_message
+    );
+    assert!(
+        node_stack.contains(CONSUMER_NODE_NAME, CONSUMER_NODE_TAG),
+        "consumer node should be in the stack after successful add"
+    );
+    assert!(
+        node_stack.contains(PROVIDER_NODE_NAME, PROVIDER_NODE_TAG),
+        "provider node should remain in the stack after successful add"
+    );
+    assert_eq!(node_stack.len(), 3, "root + provider + consumer");
+
     // Clean up
     std::fs::remove_dir_all(&provider_add_result.snapshot_path).ok();
     std::fs::remove_dir_all(&consumer_add_result.snapshot_path).ok();
+    std::fs::remove_dir_all(&provider_add_result2.snapshot_path).ok();
+    std::fs::remove_dir_all(&consumer_add_result2.snapshot_path).ok();
 }
