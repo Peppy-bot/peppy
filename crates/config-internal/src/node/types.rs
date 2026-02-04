@@ -177,6 +177,36 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum InterfaceKind {
+    Topic,
+    Service,
+    Action,
+}
+
+impl std::fmt::Display for InterfaceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InterfaceKind::Topic => write!(f, "topic"),
+            InterfaceKind::Service => write!(f, "service"),
+            InterfaceKind::Action => write!(f, "action"),
+        }
+    }
+}
+
+impl std::str::FromStr for InterfaceKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "topic" => Ok(InterfaceKind::Topic),
+            "service" => Ok(InterfaceKind::Service),
+            "action" => Ok(InterfaceKind::Action),
+            other => Err(format!("unknown interface kind: {other}")),
+        }
+    }
+}
+
 // Schema types used inside MessageFormat
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]

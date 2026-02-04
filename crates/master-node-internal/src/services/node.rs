@@ -1,6 +1,7 @@
 mod add;
 mod info;
 mod init;
+mod integrity;
 mod remove;
 mod start;
 mod stop;
