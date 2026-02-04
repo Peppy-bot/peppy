@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use capnp::message::Builder;
-use config::node::NodeConfig;
+use config::node::{InterfaceKind, NodeConfig};
 use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
@@ -113,19 +113,38 @@ impl NodeInfoRequest {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceIntegrity {
+    pub name: String,
+    pub sha256: String,
+    pub interface_kind: InterfaceKind,
+}
+
 #[derive(Debug, Clone)]
 pub struct NodeInfoResponse {
     pub config: NodeConfig,
     pub is_in_node_stack: bool,
     pub instances_names: Vec<String>,
+    /// SHA256 for each exposed interface of the NodeSource
+    pub interfaces_integrity: Vec<InterfaceIntegrity>,
+    /// SHA256 of the entire NodeConfig file taken from NodeSource
+    pub config_integrity: String,
 }
 
 impl NodeInfoResponse {
-    pub fn new(config: NodeConfig, is_in_node_stack: bool, instances_names: Vec<String>) -> Self {
+    pub fn new(
+        config: NodeConfig,
+        is_in_node_stack: bool,
+        instances_names: Vec<String>,
+        interfaces_integrity: Vec<InterfaceIntegrity>,
+        config_integrity: String,
+    ) -> Self {
         Self {
             config,
             is_in_node_stack,
             instances_names,
+            interfaces_integrity,
+            config_integrity,
         }
     }
 
@@ -138,10 +157,22 @@ impl NodeInfoResponse {
             })?;
             response.set_config_json5(&config_json5);
             response.set_is_in_node_stack(self.is_in_node_stack);
-            let mut instances = response.init_instances_names(self.instances_names.len() as u32);
+            let mut instances = response
+                .reborrow()
+                .init_instances_names(self.instances_names.len() as u32);
             for (i, name) in self.instances_names.iter().enumerate() {
                 instances.set(i as u32, name);
             }
+            let mut entries = response
+                .reborrow()
+                .init_interfaces_integrity(self.interfaces_integrity.len() as u32);
+            for (i, iface) in self.interfaces_integrity.iter().enumerate() {
+                let mut entry = entries.reborrow().get(i as u32);
+                entry.set_name(&iface.name);
+                entry.set_sha256(&iface.sha256);
+                entry.set_interface_kind(&iface.interface_kind.to_string());
+            }
+            response.set_config_sha256(&self.config_integrity);
         }
         encode_message(&builder)
     }
@@ -158,10 +189,28 @@ impl NodeInfoResponse {
         for i in 0..instances_names_reader.len() {
             instances_names.push(instances_names_reader.get(i)?.to_str()?.to_owned());
         }
+        let integrity_entries = response.get_interfaces_integrity()?;
+        let mut interfaces_integrity = Vec::with_capacity(integrity_entries.len() as usize);
+        for i in 0..integrity_entries.len() {
+            let entry = integrity_entries.get(i);
+            let interface_kind = entry
+                .get_interface_kind()?
+                .to_str()?
+                .parse::<InterfaceKind>()
+                .map_err(crate::Error::Decoding)?;
+            interfaces_integrity.push(InterfaceIntegrity {
+                name: entry.get_name()?.to_str()?.to_owned(),
+                sha256: entry.get_sha256()?.to_str()?.to_owned(),
+                interface_kind,
+            });
+        }
+        let config_integrity = response.get_config_sha256()?.to_str()?.to_owned();
         Ok(Self {
             config,
             is_in_node_stack,
             instances_names,
+            interfaces_integrity,
+            config_integrity,
         })
     }
 }

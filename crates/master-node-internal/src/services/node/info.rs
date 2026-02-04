@@ -1,9 +1,10 @@
 use crate::Result;
-use crate::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
+use crate::encoding::{InterfaceIntegrity, NodeInfoRequest, NodeInfoResponse, NodeSource};
 use crate::names;
 use bytes::Bytes;
 use config::consts::NODE_CONFIG_FILE;
-use config::node::{NodeConfig, NodeConfigParser};
+use config::fingerprint::fingerprint_for_bytes;
+use config::node::{InterfaceKind, NodeConfig, NodeConfigParser};
 use git2::{Repository, build::CheckoutBuilder};
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
@@ -100,9 +101,20 @@ async fn handle_node_info_request_inner(
         None => (false, Vec::new()),
     };
 
-    NodeInfoResponse::new(node_config, is_in_node_stack, instances_names)
-        .encode()
-        .map_err(|e| format!("{}", e))
+    let interfaces_integrity = compute_interfaces_integrity(&node_config)?;
+
+    let config_json = serde_json5::to_string(&node_config).map_err(|e| format!("{}", e))?;
+    let config_integrity = fingerprint_for_bytes(config_json.as_bytes());
+
+    NodeInfoResponse::new(
+        node_config,
+        is_in_node_stack,
+        instances_names,
+        interfaces_integrity,
+        config_integrity,
+    )
+    .encode()
+    .map_err(|e| format!("{}", e))
 }
 
 pub async fn resolve_node_config(source: NodeSource) -> std::result::Result<NodeConfig, String> {
@@ -380,4 +392,48 @@ fn parse_node_config_from_http_blocking(url: url::Url) -> std::result::Result<No
             e
         )
     })
+}
+
+/// Computes SHA256 hashes for each exposed interface in a node config.
+///
+/// Each interface (topic, service, action) is serialized to JSON and hashed
+/// individually, producing a list of [`InterfaceIntegrity`] entries that
+/// subscribers can use to verify interface compatibility.
+pub fn compute_interfaces_integrity(
+    config: &NodeConfig,
+) -> std::result::Result<Vec<InterfaceIntegrity>, String> {
+    let mut result = Vec::new();
+
+    let Some(exposes) = &config.interfaces.exposes else {
+        return Ok(result);
+    };
+
+    for topic in exposes.topics.iter().flatten() {
+        let json = serde_json::to_string(topic).map_err(|e| format!("{}", e))?;
+        result.push(InterfaceIntegrity {
+            name: topic.name.clone(),
+            sha256: fingerprint_for_bytes(json.as_bytes()),
+            interface_kind: InterfaceKind::Topic,
+        });
+    }
+
+    for service in exposes.services.iter().flatten() {
+        let json = serde_json::to_string(service).map_err(|e| format!("{}", e))?;
+        result.push(InterfaceIntegrity {
+            name: service.name.clone(),
+            sha256: fingerprint_for_bytes(json.as_bytes()),
+            interface_kind: InterfaceKind::Service,
+        });
+    }
+
+    for action in exposes.actions.iter().flatten() {
+        let json = serde_json::to_string(action).map_err(|e| format!("{}", e))?;
+        result.push(InterfaceIntegrity {
+            name: action.name.clone(),
+            sha256: fingerprint_for_bytes(json.as_bytes()),
+            interface_kind: InterfaceKind::Action,
+        });
+    }
+
+    Ok(result)
 }

@@ -2,7 +2,6 @@
 pub mod add;
 pub mod info;
 pub mod init;
-pub mod integrity;
 pub mod list;
 pub mod remove;
 pub mod start;
