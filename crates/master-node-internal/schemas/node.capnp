@@ -201,28 +201,6 @@ struct NodeInfoRequest {
     }
 }
 
-struct NodeInfoResponse {
-    # JSON5-serialized NodeConfig
-    configJson5 @0 :Text;
-    # Whether the node is already in the node stack
-    isInNodeStack @1 :Bool;
-    # Names of running instances of this node
-    instancesNames @2 :List(Text);
-}
-
-# Node Integrity service
-struct NodeIntegrityRequest {
-    # Source of the node to get integrity info for
-    source :union {
-        # Filesystem path to the node directory
-        fs @0 :Text;
-        # Git repository source
-        git @1 :NodeAddGitSource;
-        # HTTP URL source
-        http @2 :Text;
-    }
-}
-
 struct InterfaceIntegrity {
     name @0 :Text;
     sha256 @1 :Text;
@@ -230,9 +208,15 @@ struct InterfaceIntegrity {
     interfaceKind @2 :Text;
 }
 
-struct NodeIntegrityResponse {
-    # Map of exposed interface name to sha256
-    interfacesIntegrity @0 :List(InterfaceIntegrity);
-    # Sha256 of the entire NodeConfig file
-    configSha256 @1 :Text;
+struct NodeInfoResponse {
+    # JSON5-serialized NodeConfig
+    configJson5 @0 :Text;
+    # Whether the node is already in the node stack
+    isInNodeStack @1 :Bool;
+    # Names of running instances of this node
+    instancesNames @2 :List(Text);
+    # SHA256 hashes for each exposed interface
+    interfacesIntegrity @3 :List(InterfaceIntegrity);
+    # SHA256 of the entire NodeConfig file
+    configSha256 @4 :Text;
 }
