@@ -177,6 +177,36 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum InterfaceKind {
+    Topic,
+    Service,
+    Action,
+}
+
+impl std::fmt::Display for InterfaceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InterfaceKind::Topic => write!(f, "topic"),
+            InterfaceKind::Service => write!(f, "service"),
+            InterfaceKind::Action => write!(f, "action"),
+        }
+    }
+}
+
+impl std::str::FromStr for InterfaceKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "topic" => Ok(InterfaceKind::Topic),
+            "service" => Ok(InterfaceKind::Service),
+            "action" => Ok(InterfaceKind::Action),
+            other => Err(format!("unknown interface kind: {other}")),
+        }
+    }
+}
+
 // Schema types used inside MessageFormat
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
@@ -409,6 +439,8 @@ pub struct SubscribedTopic {
     pub name: String,
     #[serde(default)]
     pub tag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub integrity: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -422,6 +454,8 @@ pub struct SubscribedService {
     pub name: String,
     #[serde(default)]
     pub tag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub integrity: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -434,31 +468,27 @@ pub struct SubscribedAction {
     pub name: String,
     #[serde(default)]
     pub tag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub integrity: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActionServiceEndpoint {
-    #[serde(skip_serializing_if = "Option::is_none", rename = "type")]
-    pub service_type: Option<String>,
-    #[serde(default = "default_action_service_qos_profile")]
-    pub qos_profile: QoSProfile,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_message_format: Option<MessageFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_message_format: Option<MessageFormat>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+    #[serde(default = "default_action_service_qos_profile")]
+    pub qos_profile: QoSProfile,
 }
 
 impl Default for ActionServiceEndpoint {
     fn default() -> Self {
         Self {
-            service_type: None,
             qos_profile: default_action_service_qos_profile(),
             request_message_format: None,
             response_message_format: None,
-            name: None,
         }
     }
 }

@@ -30,6 +30,31 @@ const INSTANCE_ID_WILDCARD: &str = "**";
 /// Marker used in key expressions for broadcast requests (targeting any instance)
 const BROADCAST_MARKER: &str = "_any_";
 
+/// Prefix used for encoding service-side handler errors into response payloads.
+///
+/// This allows callers to get a useful error response instead of timing out, and prevents a
+/// single bad request from killing the entire service listener loop.
+const SERVICE_ERROR_PREFIX: &[u8] = b"\0peppy_service_error\0";
+
+fn encode_service_error_payload(reason: &str) -> Bytes {
+    let mut payload = Vec::with_capacity(SERVICE_ERROR_PREFIX.len() + reason.len());
+    payload.extend_from_slice(SERVICE_ERROR_PREFIX);
+    payload.extend_from_slice(reason.as_bytes());
+    Bytes::from(payload)
+}
+
+fn decode_service_error_payload(payload: &[u8]) -> Option<String> {
+    if !payload.starts_with(SERVICE_ERROR_PREFIX) {
+        return None;
+    }
+
+    let reason_bytes = &payload[SERVICE_ERROR_PREFIX.len()..];
+    match std::str::from_utf8(reason_bytes) {
+        Ok(reason) => Some(reason.to_owned()),
+        Err(_) => Some("service returned a non-UTF8 error payload".to_string()),
+    }
+}
+
 #[derive(Clone)]
 pub struct MessengerHandle {
     messenger: Arc<Mutex<Messenger>>,
@@ -90,7 +115,14 @@ impl ServiceEndpoint {
     {
         match self.next_request().await {
             Ok((context, response_topic)) => {
-                let response_payload = handler(context).await?;
+                let response_payload = match handler(context).await {
+                    Ok(payload) => payload,
+                    Err(err) => {
+                        let reason = err.to_string();
+                        error!(%reason, "service handler returned error");
+                        encode_service_error_payload(&reason)
+                    }
+                };
                 self.publish_response(response_topic, response_payload)
                     .await?;
                 Ok(true)
@@ -112,7 +144,14 @@ impl ServiceEndpoint {
                 Err(Error::ServiceRequestStreamClosed) => break,
                 Err(err) => return Err(err),
             };
-            let response_payload = handler(context).await?;
+            let response_payload = match handler(context).await {
+                Ok(payload) => payload,
+                Err(err) => {
+                    let reason = err.to_string();
+                    error!(%reason, "service handler returned error");
+                    encode_service_error_payload(&reason)
+                }
+            };
             self.publish_response(response_topic, response_payload)
                 .await?;
         }
@@ -138,7 +177,14 @@ impl ServiceEndpoint {
 
         let messenger = Arc::clone(&self.messenger);
         let task = tokio::spawn(async move {
-            let response_payload = handler(context).await?;
+            let response_payload = match handler(context).await {
+                Ok(payload) => payload,
+                Err(err) => {
+                    let reason = err.to_string();
+                    error!(%reason, "service handler returned error");
+                    encode_service_error_payload(&reason)
+                }
+            };
             ServiceEndpoint::publish_response_with_messenger(
                 messenger,
                 response_topic,
@@ -1010,6 +1056,15 @@ impl MessengerHandle {
                 }
             }
         };
+
+        let response_payload = response.payload().to_bytes();
+        if let Some(reason) = decode_service_error_payload(response_payload.as_ref()) {
+            return Err(Error::ServiceError {
+                instance_id: target_instance_id,
+                service_name: target_service_name.to_string(),
+                reason,
+            });
+        }
 
         Ok(response)
     }

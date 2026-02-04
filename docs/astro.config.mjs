@@ -136,6 +136,10 @@ export default defineConfig({
 					autogenerate: { directory: 'guides' },
 				},
 				{
+					label: 'Advanced Guides',
+					autogenerate: { directory: 'advanced_guides' },
+				},
+				{
 					label: 'Reference',
 					autogenerate: { directory: 'reference' },
 				},
