@@ -10,7 +10,7 @@ maturin = ">=1,<2"
 pip = "*"
 
 [target.linux-64.dependencies]
-patchelf = "*"
+patchelf = ">=0.17"
 
 [tasks]
 #build = "pixi build"
@@ -27,6 +27,6 @@ version = "0.0.1"
 backend = { name = "pixi-build-python", version = "==0.3.2" }
 
 [package.host-dependencies]
-python = "3.12.*"
+python = "3.14.*"
 rust = "*"         # provides cargo/rustc for building the extension
 maturin = ">=1,<2" # maturin is the PEP517 backend runner
