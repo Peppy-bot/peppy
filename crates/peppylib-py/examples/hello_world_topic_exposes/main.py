@@ -1,8 +1,7 @@
 import asyncio
 
-from names_generator import generate_name
-
 from peppylib import MessengerHandle, TopicMessenger
+from peppylib.names import generate_name
 from peppylib.config import DEFAULT_MESSAGING_PORT, QoSProfile
 
 

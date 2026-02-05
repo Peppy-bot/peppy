@@ -1,6 +1,8 @@
 use pyo3::prelude::*;
 
+mod config;
 mod messaging;
+mod names;
 
 /// Example function: returns the sum of two integers as a string.
 #[pyfunction]
@@ -13,6 +15,8 @@ fn sum_as_string(a: usize, b: usize) -> PyResult<String> {
 #[pymodule]
 fn _peppylib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sum_as_string, m)?)?;
+    config::register(m)?;
     messaging::register(m)?;
+    names::register(m)?;
     Ok(())
 }
