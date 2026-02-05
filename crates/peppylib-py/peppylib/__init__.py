@@ -15,7 +15,7 @@ sys.modules["peppylib._peppylib.names"] = _peppylib.names
 
 # Re-export the Rust-implemented functions/types from the native module
 from ._peppylib import sum_as_string  # type: ignore[import-not-found]
-from ._peppylib.messaging import MessengerHandle, TopicMessenger  # type: ignore[import-not-found]
+from ._peppylib.messaging import MessengerHandle, TopicMessenger, ZenohdInstance  # type: ignore[import-not-found]
 from ._peppylib.config import QoSProfile  # type: ignore[import-not-found]
 
-__all__ = ["sum_as_string", "MessengerHandle", "TopicMessenger", "QoSProfile", "__version__"]
+__all__ = ["sum_as_string", "MessengerHandle", "TopicMessenger", "ZenohdInstance", "QoSProfile", "__version__"]
