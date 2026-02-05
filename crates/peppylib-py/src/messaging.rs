@@ -17,7 +17,7 @@ pub struct PyMessengerHandle {
 impl PyMessengerHandle {
     /// Connect to a messenger at the specified host and port.
     #[staticmethod]
-    fn connect<'py>(py: Python<'py>, host: String, port: u16) -> PyResult<Bound<'py, PyAny>> {
+    fn from_host_port<'py>(py: Python<'py>, host: String, port: u16) -> PyResult<Bound<'py, PyAny>> {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let handle = MessengerHandle::from_host_port(&host, port)
                 .await

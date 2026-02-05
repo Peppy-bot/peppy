@@ -30,6 +30,18 @@ path = "peppylib/_version.py"
 
 [tool.uv.workspace]
 members = [
-    "examples/hello_world_topic_subscribes_to",
-    "examples/hello_world_topic_exposes",
+  "examples/hello_world_topic_subscribes_to",
+  "examples/hello_world_topic_exposes",
 ]
+
+[dependency-groups]
+dev = [
+  "taskipy>=1.14",
+  "maturin>=1.0,<2.0",
+  "patchelf>=0.17; sys_platform == 'linux'",
+]
+
+[tool.taskipy.tasks]
+dev = "maturin develop --uv"
+run-topics-exposes = "maturin develop --uv && python examples/hello_world_topic_exposes/main.py"
+run-topics-subscribes = "maturin develop --uv && python examples/hello_world_topic_subscribes_to/main.py"
