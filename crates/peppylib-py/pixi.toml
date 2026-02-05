@@ -1,0 +1,24 @@
+[workspace]
+name = "peppylib"
+version = "0.0.1"
+description = "The peppyOS control library"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+python = ">=3.11,<=3.14"
+pip = "*"
+
+[pypi-dependencies]
+maturin = ">=1.0,<2.0"
+pytest = ">=9.0"
+pytest-asyncio = ">=1.3"
+
+[target.linux-64.pypi-dependencies]
+patchelf = ">=0.17"
+
+[tasks]
+dev = "maturin develop"
+test = "maturin develop && pytest tests/"
+run-topics-exposes = "maturin develop && python examples/hello_world_topic_exposes/main.py"
+run-topics-subscribes = "maturin develop && python examples/hello_world_topic_subscribes_to/main.py"
