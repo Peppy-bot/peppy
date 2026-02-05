@@ -4,4 +4,7 @@ version = "0.1.0"
 description = "Example demonstrating how to emit messages to a topic using peppylib-py"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["peppylib-py"]
+dependencies = ["peppylib"]
+
+[tool.uv.sources]
+peppylib = { workspace = true }
