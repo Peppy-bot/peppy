@@ -1,7 +1,7 @@
 [project]
 name = "hello-world-topic-exposes"
 version = "0.1.0"
-description = "Add your description here"
+description = "Example demonstrating how to emit messages to a topic using peppylib-py"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["peppylib-py", "names-generator"]
