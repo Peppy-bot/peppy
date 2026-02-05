@@ -69,7 +69,10 @@ fn configure_python_from_pixi() {
     let python_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
     // Tell cargo to rerun if pixi.lock changes
-    println!("cargo:rerun-if-changed={}", manifest_dir.join("pixi.lock").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("pixi.lock").display()
+    );
 
     // Set PYO3_PYTHON for pyo3-build-config
     // SAFETY: build scripts run single-threaded before the main compilation

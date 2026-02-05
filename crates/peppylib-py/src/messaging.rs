@@ -1,11 +1,100 @@
 use crate::config::PyQoSProfile;
 use bytes::Bytes;
 use peppylib::messaging::{MessengerHandle, TopicMessenger};
-use pmi::{Subscription, TopicMessage};
+use pmi::{MessengerBackend, Subscription, TopicMessage, ZenohAdapter, ZenohdInstance};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+/// Python wrapper for ZenohdInstance - an ephemeral zenohd router for testing.
+///
+/// The router is automatically stopped when this instance is garbage collected.
+#[pyclass(name = "ZenohdInstance")]
+pub struct PyZenohdInstance {
+    inner: Arc<Mutex<Option<ZenohdInstance>>>,
+    host: String,
+    port: u16,
+}
+
+#[pymethods]
+impl PyZenohdInstance {
+    /// Start an ephemeral zenohd router on the specified host.
+    ///
+    /// If port is None, an available port will be automatically selected.
+    /// If port is Some, that specific port will be used.
+    ///
+    /// Returns a ZenohdInstance that automatically stops the router when dropped.
+    #[staticmethod]
+    #[pyo3(signature = (host, port=None))]
+    fn start_ephemeral<'py>(
+        py: Python<'py>,
+        host: String,
+        port: Option<u16>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let instance = ZenohAdapter::start_router_ephemeral(&host, port)
+                .await
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+
+            let host = instance.host.clone();
+            let port = instance.port;
+
+            Ok(PyZenohdInstance {
+                inner: Arc::new(Mutex::new(Some(instance))),
+                host,
+                port,
+            })
+        })
+    }
+
+    /// The host address the router is listening on.
+    #[getter]
+    fn host(&self) -> &str {
+        &self.host
+    }
+
+    /// The port the router is listening on.
+    #[getter]
+    fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Stop the router explicitly.
+    ///
+    /// This is called automatically when the instance is garbage collected,
+    /// but can be called manually for deterministic cleanup.
+    fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut guard = inner.lock().await;
+            if let Some(mut instance) = guard.take() {
+                instance.messenger().stop_router().await.map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
+                })?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Async context manager entry - returns self.
+    fn __aenter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+        // Return a coroutine that immediately resolves to self
+        pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(slf) })
+    }
+
+    /// Async context manager exit - stops the router.
+    #[pyo3(signature = (_exc_type=None, _exc_val=None, _exc_tb=None))]
+    fn __aexit__<'py>(
+        &self,
+        py: Python<'py>,
+        _exc_type: Option<Py<PyAny>>,
+        _exc_val: Option<Py<PyAny>>,
+        _exc_tb: Option<Py<PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.stop(py)
+    }
+}
 
 /// Python wrapper for MessengerHandle
 #[pyclass(name = "MessengerHandle")]
@@ -194,6 +283,7 @@ impl PyTopicMessenger {
 /// Register the messaging submodule
 pub fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let messaging_module = PyModule::new(parent_module.py(), "messaging")?;
+    messaging_module.add_class::<PyZenohdInstance>()?;
     messaging_module.add_class::<PyMessengerHandle>()?;
     messaging_module.add_class::<PyTopicMessage>()?;
     messaging_module.add_class::<PySubscription>()?;
