@@ -4,8 +4,6 @@ Tests for peppylib MessengerHandle.
 
 import inspect
 
-import pytest
-
 
 def test_messenger_handle_import():
     """MessengerHandle can be imported from peppylib."""
