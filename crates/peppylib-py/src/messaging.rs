@@ -17,7 +17,11 @@ pub struct PyMessengerHandle {
 impl PyMessengerHandle {
     /// Connect to a messenger at the specified host and port.
     #[staticmethod]
-    fn from_host_port<'py>(py: Python<'py>, host: String, port: u16) -> PyResult<Bound<'py, PyAny>> {
+    fn from_host_port<'py>(
+        py: Python<'py>,
+        host: String,
+        port: u16,
+    ) -> PyResult<Bound<'py, PyAny>> {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let handle = MessengerHandle::from_host_port(&host, port)
                 .await
@@ -119,7 +123,7 @@ pub struct PyTopicMessenger;
 impl PyTopicMessenger {
     /// Subscribe to a topic.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_master_node, as_instance_id, to_node_name, to_topic, qos, to_master_node=None, to_instance_id=None))]
+    #[pyo3(signature = (messenger, as_master_node, as_instance_id, to_node_name, to_topic, to_master_node, to_instance_id, qos))]
     #[allow(clippy::too_many_arguments)]
     fn subscribe<'py>(
         py: Python<'py>,
@@ -128,9 +132,9 @@ impl PyTopicMessenger {
         as_instance_id: String,
         to_node_name: String,
         to_topic: String,
-        qos: PyQoSProfile,
         to_master_node: Option<String>,
         to_instance_id: Option<String>,
+        qos: PyQoSProfile,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&messenger.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
