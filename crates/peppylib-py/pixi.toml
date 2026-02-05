@@ -19,6 +19,6 @@ patchelf = ">=0.17"
 
 [tasks]
 dev = "maturin develop"
-test = "maturin develop && pytest tests/"
+test = "maturin develop && pytest tests/ -v"
 run-topics-exposes = "maturin develop && python examples/hello_world_topic_exposes/main.py"
 run-topics-subscribes = "maturin develop && python examples/hello_world_topic_subscribes_to/main.py"
