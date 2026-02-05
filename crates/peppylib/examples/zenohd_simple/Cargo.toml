@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+config = { path = "../../../config-internal" }
 pmi = { path = "../../../pmi-internal" }
 tokio = { version = "1.47.0", features = ["rt-multi-thread", "macros", "signal"] }
 

@@ -1,10 +1,11 @@
+use config::consts::DEFAULT_MESSAGING_PORT;
 use pmi::{MessengerBackend, ZenohAdapter};
 use tokio::signal;
 
 #[tokio::main]
 async fn main() {
     let host = "0.0.0.0";
-    let port = config::consts::DEFAULT_MESSAGING_PORT;
+    let port = DEFAULT_MESSAGING_PORT;
 
     println!("Starting zenohd router on tcp/{host}:{port}…");
     let mut instance = match ZenohAdapter::start_router_ephemeral(host, Some(port)).await {

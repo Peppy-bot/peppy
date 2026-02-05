@@ -27,3 +27,9 @@ module-name = "peppylib._peppylib"
 [tool.maturin.version]
 provider = "file"
 path = "peppylib/_version.py"
+
+[tool.uv.workspace]
+members = [
+    "examples/hello_world_topic_subscribes_to",
+    "examples/hello_world_topic_exposes",
+]
