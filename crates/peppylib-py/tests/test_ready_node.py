@@ -105,30 +105,27 @@ async def test_ready_node(monkeypatch):
             # - broadcast master + specific instance
             # - full broadcast (master + instance)
             target_combinations = [
-                (TEST_MASTER_NODE_NAME, TEST_INSTANCE_ID),
-                (TEST_MASTER_NODE_NAME, None),
-                (None, TEST_INSTANCE_ID),
-                (None, None),
+                ("specific+specific", TEST_MASTER_NODE_NAME, TEST_INSTANCE_ID),
+                ("specific+broadcast", TEST_MASTER_NODE_NAME, None),
+                ("broadcast+specific", None, TEST_INSTANCE_ID),
+                ("broadcast+broadcast", None, None),
             ]
 
-            for target_master_node, target_instance_id in target_combinations:
-                # Use a fresh messenger for each poll to avoid cached publisher
-                # state in the Zenoh adapter from affecting subsequent polls.
-                poll_messenger = await MessengerHandle.from_host_port(
-                    router.host, router.port
-                )
-
-                response = await ServiceMessenger.poll(
-                    poll_messenger,
-                    TEST_MASTER_NODE_NAME,
-                    CALLER_INSTANCE_ID,
-                    TEST_NODE_NAME,
-                    NODE_READY_SERVICE,
-                    target_master_node,
-                    target_instance_id,
-                    request_payload,
-                    2.0,
-                )
+            for label, target_master_node, target_instance_id in target_combinations:
+                try:
+                    response = await ServiceMessenger.poll(
+                        messenger,
+                        TEST_MASTER_NODE_NAME,
+                        CALLER_INSTANCE_ID,
+                        TEST_NODE_NAME,
+                        NODE_READY_SERVICE,
+                        target_master_node,
+                        target_instance_id,
+                        request_payload,
+                        2.0,
+                    )
+                except RuntimeError as exc:
+                    pytest.fail(f"[{label}] poll failed: {exc}")
 
                 assert response.payload == request_payload
                 assert response.master_node == TEST_MASTER_NODE_NAME
