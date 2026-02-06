@@ -4,8 +4,6 @@ Tests for peppylib NodeBuilder runner lifecycle.
 Python equivalent of crates/peppylib/tests/runner.rs.
 """
 
-import hashlib
-import json
 import queue
 import tempfile
 import threading
@@ -25,59 +23,18 @@ from peppylib.config import (
 )
 from peppylib.runtime import CancellationToken, NodeBuilder, StandaloneConfig
 
+from common import (
+    PEPPY_CONFIG,
+    TEST_FREQUENCY_HZ,
+    TEST_INSTANCE_ID,
+    TEST_NODE_NAME,
+    create_codegen_fingerprint,
+    create_runtime_config,
+    wait_for_service,
+)
+
 TEST_MASTER_NODE = "test_master"
-TEST_NODE_NAME = "test_node"
-TEST_INSTANCE_ID = "test_instance"
 SHUTDOWN_SENDER_INSTANCE_ID = "test_shutdown_sender"
-TEST_FREQUENCY_HZ = 10.0
-
-PEPPY_CONFIG = """{
-  schema_version: 1,
-  manifest: {
-    name: "test_node",
-    tag: "0.1.0",
-    language: "rust",
-    start_cmd: ["cargo", "run"]
-  },
-  parameters: {
-    frequency_hz: "f64"
-  }
-}"""
-
-
-def create_codegen_fingerprint(config_path: str, output_path: str) -> None:
-    """Create a SHA256 fingerprint of the config file (pure Python equivalent)."""
-    config = Path(config_path)
-    config_dir = config.parent
-    fingerprint_dir = config_dir / output_path
-    fingerprint_dir.mkdir(parents=True, exist_ok=True)
-
-    config_bytes = config.read_bytes()
-    fingerprint = hashlib.sha256(config_bytes).hexdigest()
-    (fingerprint_dir / "peppy.json5.sha256").write_text(f"{fingerprint}\n")
-
-
-def create_runtime_config(
-    path: str,
-    host: str,
-    port: int,
-    node_name: str,
-    master_node: str,
-    instance_id: str,
-    arguments: dict,
-) -> None:
-    """Write a runtime config JSON file."""
-    config = {
-        "messaging_host": host,
-        "messaging_port": port,
-        "node_name": node_name,
-        "bound_master_node": master_node,
-        "node_instance": {
-            "instance_id": instance_id,
-            "arguments": arguments,
-        },
-    }
-    Path(path).write_text(json.dumps(config))
 
 
 async def _wait_for_service(
@@ -88,27 +45,18 @@ async def _wait_for_service(
     timeout_secs: float = 10.0,
 ):
     """Poll until a service becomes reachable, or fail."""
-    deadline = asyncio.get_event_loop().time() + timeout_secs
-    while True:
-        if not runner_thread.is_alive():
-            error = error_queue.get_nowait() if not error_queue.empty() else None
-            pytest.fail(f"Runner exited early: {error}")
-
-        if await ServiceMessenger.is_reachable(
-            messenger,
-            TEST_MASTER_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            TEST_NODE_NAME,
-            service_name,
-            TEST_MASTER_NODE,
-            TEST_INSTANCE_ID,
-        ):
-            return
-
-        if asyncio.get_event_loop().time() >= deadline:
-            pytest.fail(f"{service_name} service did not become reachable")
-
-        await asyncio.sleep(0.05)
+    await wait_for_service(
+        messenger,
+        service_name,
+        TEST_MASTER_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        TEST_NODE_NAME,
+        TEST_MASTER_NODE,
+        TEST_INSTANCE_ID,
+        runner_thread,
+        error_queue,
+        timeout_secs,
+    )
 
 
 @pytest.mark.asyncio
