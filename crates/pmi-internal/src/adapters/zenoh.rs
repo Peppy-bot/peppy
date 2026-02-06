@@ -257,9 +257,10 @@ impl MessengerBackend for ZenohAdapter {
 
     async fn publish(&mut self, message: Message, qos: PublisherQoS) -> Result<()> {
         let identifier = message.identifier().to_string();
-        let session = self.session.as_ref().ok_or_else(|| {
-            Error::MessagingSessionError("Session not initialized".to_string())
-        })?;
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
 
         // Map QoS to Zenoh settings
         let (priority, congestion_control, express) = match qos {
