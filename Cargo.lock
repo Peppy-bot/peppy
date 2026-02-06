@@ -2583,7 +2583,10 @@ dependencies = [
  "pyo3-async-runtimes",
  "pyo3-build-config",
  "rand 0.9.2",
+ "schemars 1.2.1",
+ "serde_json",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
