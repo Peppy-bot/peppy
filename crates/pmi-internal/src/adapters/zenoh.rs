@@ -9,6 +9,40 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
 
+/// Zenoh-specific QoS settings derived from a `PublisherQoS` level.
+struct ZenohQoS {
+    priority: Priority,
+    congestion_control: CongestionControl,
+    express: bool,
+}
+
+impl From<PublisherQoS> for ZenohQoS {
+    fn from(qos: PublisherQoS) -> Self {
+        match qos {
+            PublisherQoS::BestEffort => Self {
+                priority: Priority::DataLow,
+                congestion_control: CongestionControl::Drop,
+                express: true,
+            },
+            PublisherQoS::Standard => Self {
+                priority: Priority::Data,
+                congestion_control: CongestionControl::Drop,
+                express: false,
+            },
+            PublisherQoS::Important => Self {
+                priority: Priority::DataHigh,
+                congestion_control: CongestionControl::Block,
+                express: false,
+            },
+            PublisherQoS::Critical => Self {
+                priority: Priority::RealTime,
+                congestion_control: CongestionControl::Block,
+                express: true,
+            },
+        }
+    }
+}
+
 /// Reserves an ephemeral port by binding to port 0 and returning the assigned port.
 /// The returned `TcpListener` holds the port until dropped.
 fn reserve_ephemeral_port() -> std::io::Result<(u16, TcpListener)> {
@@ -262,13 +296,7 @@ impl MessengerBackend for ZenohAdapter {
             .as_ref()
             .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
 
-        // Map QoS to Zenoh settings
-        let (priority, congestion_control, express) = match qos {
-            PublisherQoS::BestEffort => (Priority::DataLow, CongestionControl::Drop, true),
-            PublisherQoS::Standard => (Priority::Data, CongestionControl::Drop, false),
-            PublisherQoS::Important => (Priority::DataHigh, CongestionControl::Block, false),
-            PublisherQoS::Critical => (Priority::RealTime, CongestionControl::Block, true),
-        };
+        let zenoh_qos = ZenohQoS::from(qos);
 
         // Use session.put() directly instead of declare_publisher() + put() + drop.
         // This avoids the publisher declaration/undeclare lifecycle that causes
@@ -276,9 +304,9 @@ impl MessengerBackend for ZenohAdapter {
         // targeting combinations.
         session
             .put(&identifier, message.payload().as_ref())
-            .congestion_control(congestion_control)
-            .priority(priority)
-            .express(express)
+            .congestion_control(zenoh_qos.congestion_control)
+            .priority(zenoh_qos.priority)
+            .express(zenoh_qos.express)
             .await
             .map_err(|e| Error::PublishError {
                 topic: e.to_string(),
