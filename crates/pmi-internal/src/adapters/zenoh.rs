@@ -6,8 +6,42 @@ use askama::Template;
 
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 use tracing::info;
+
+/// Zenoh-specific QoS settings derived from a `PublisherQoS` level.
+struct ZenohQoS {
+    priority: Priority,
+    congestion_control: CongestionControl,
+    express: bool,
+}
+
+impl From<PublisherQoS> for ZenohQoS {
+    fn from(qos: PublisherQoS) -> Self {
+        match qos {
+            PublisherQoS::BestEffort => Self {
+                priority: Priority::DataLow,
+                congestion_control: CongestionControl::Drop,
+                express: true,
+            },
+            PublisherQoS::Standard => Self {
+                priority: Priority::Data,
+                congestion_control: CongestionControl::Drop,
+                express: false,
+            },
+            PublisherQoS::Important => Self {
+                priority: Priority::DataHigh,
+                congestion_control: CongestionControl::Block,
+                express: false,
+            },
+            PublisherQoS::Critical => Self {
+                priority: Priority::RealTime,
+                congestion_control: CongestionControl::Block,
+                express: true,
+            },
+        }
+    }
+}
 
 /// Reserves an ephemeral port by binding to port 0 and returning the assigned port.
 /// The returned `TcpListener` holds the port until dropped.
@@ -84,7 +118,6 @@ pub struct ZenohAdapter {
     zenohd: Option<zenohd::ZenohdFacade>,
     client_config: ZenohClientConfig,
     session: Option<Arc<zenoh::Session>>,
-    publishers: HashMap<String, Arc<zenoh::pubsub::Publisher<'static>>>,
 }
 
 impl ZenohAdapter {
@@ -99,7 +132,6 @@ impl ZenohAdapter {
             zenohd: Some(facade),
             client_config,
             session: None,
-            publishers: HashMap::new(),
         })
     }
 
@@ -112,7 +144,6 @@ impl ZenohAdapter {
             zenohd: None,
             client_config,
             session: None,
-            publishers: HashMap::new(),
         })
     }
 
@@ -260,67 +291,22 @@ impl MessengerBackend for ZenohAdapter {
 
     async fn publish(&mut self, message: Message, qos: PublisherQoS) -> Result<()> {
         let identifier = message.identifier().to_string();
-        let publisher = if let Some(pub_ref) = self.publishers.get(identifier.as_str()) {
-            Arc::clone(pub_ref)
-        } else {
-            let session = self.session.as_ref().ok_or_else(|| {
-                Error::MessagingSessionError("Session not initialized".to_string())
-            })?;
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
 
-            // Map QoS to Zenoh settings
-            let (priority, congestion_control, express) = match qos {
-                PublisherQoS::BestEffort => (Priority::DataLow, CongestionControl::Drop, true),
-                PublisherQoS::Standard => (Priority::Data, CongestionControl::Drop, false),
-                PublisherQoS::Important => (Priority::DataHigh, CongestionControl::Block, false),
-                PublisherQoS::Critical => (Priority::RealTime, CongestionControl::Block, true),
-            };
+        let zenoh_qos = ZenohQoS::from(qos);
 
-            let new_publisher = Arc::new(
-                session
-                    .declare_publisher(identifier.clone())
-                    .congestion_control(congestion_control)
-                    .priority(priority)
-                    .express(express)
-                    .await
-                    .map_err(|e| {
-                        Error::PublisherCreationError(format!(
-                            "Failed to create publisher for topic '{}': {}",
-                            identifier, e
-                        ))
-                    })?,
-            );
-
-            #[cfg(debug_assertions)]
-            let key_expr = identifier.clone();
-            new_publisher
-                .matching_listener()
-                .callback(move |_matching_status| {
-                    #[cfg(debug_assertions)]
-                    {
-                        if _matching_status.matching() {
-                            info!("Publisher '{}' has matching subscribers", key_expr);
-                        } else {
-                            info!("Publisher '{}' has no more matching subscribers", key_expr);
-                        }
-                    }
-                })
-                .background()
-                .await
-                .map_err(|e| {
-                    Error::MatchingListenerError(format!(
-                        "Failed to register matching listener: {}",
-                        e
-                    ))
-                })?;
-
-            self.publishers
-                .insert(identifier.clone(), Arc::clone(&new_publisher));
-            new_publisher
-        };
-
-        // Publish the message payload
-        publisher
-            .put(message.payload().as_ref())
+        // Use session.put() directly instead of declare_publisher() + put() + drop.
+        // This avoids the publisher declaration/undeclare lifecycle that causes
+        // routing interference between successive service polls with different
+        // targeting combinations.
+        session
+            .put(&identifier, message.payload().as_ref())
+            .congestion_control(zenoh_qos.congestion_control)
+            .priority(zenoh_qos.priority)
+            .express(zenoh_qos.express)
             .await
             .map_err(|e| Error::PublishError {
                 topic: e.to_string(),
@@ -382,54 +368,6 @@ impl MessengerBackend for ZenohAdapter {
         let abort_handle = join_handle.abort_handle();
 
         Ok(Subscription::new(rx, abort_handle))
-    }
-
-    async fn has_matching_subscribers(&self, topic: &str) -> Result<bool> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
-
-        if let Some(existing) = self.publishers.get(topic) {
-            let matching = existing
-                .matching_status()
-                .await
-                .map_err(|e| {
-                    Error::MatchingListenerError(format!(
-                        "Failed to retrieve matching status for topic '{}': {}",
-                        topic, e
-                    ))
-                })?
-                .matching();
-            return Ok(matching);
-        }
-
-        let publisher = session.declare_publisher(topic).await.map_err(|e| {
-            Error::PublisherCreationError(format!(
-                "Failed to create publisher for topic '{}': {}",
-                topic, e
-            ))
-        })?;
-
-        let matching = publisher
-            .matching_status()
-            .await
-            .map_err(|e| {
-                Error::MatchingListenerError(format!(
-                    "Failed to retrieve matching status for topic '{}': {}",
-                    topic, e
-                ))
-            })?
-            .matching();
-
-        publisher.undeclare().await.map_err(|e| {
-            Error::MatchingListenerError(format!(
-                "Failed to undeclare publisher for topic '{}': {}",
-                topic, e
-            ))
-        })?;
-
-        Ok(matching)
     }
 
     async fn start_router(&mut self) -> Result<()> {
