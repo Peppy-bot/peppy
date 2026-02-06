@@ -17,7 +17,7 @@ use std::{
 use tokio::{
     sync::Mutex,
     task::JoinHandle,
-    time::{Duration, timeout},
+    time::{Duration, Instant, timeout},
 };
 use tracing::error;
 
@@ -35,6 +35,26 @@ const BROADCAST_MARKER: &str = "_any_";
 /// This allows callers to get a useful error response instead of timing out, and prevents a
 /// single bad request from killing the entire service listener loop.
 const SERVICE_ERROR_PREFIX: &[u8] = b"\0peppy_service_error\0";
+
+/// Sentinel payload sent by the service immediately upon receiving a request, before the handler
+/// runs. The caller uses this to distinguish `ServiceTimeout` (ack received but no response)
+/// from `ServiceUnreachable` (no ack at all within the timeout).
+const SERVICE_ACK_PAYLOAD: &[u8] = b"\0peppy_service_ack\0";
+
+/// Sentinel payload used by `is_reachable` to probe whether a service is listening without
+/// invoking the user handler. The service auto-responds to probes inside `next_request()`.
+const SERVICE_PROBE_PAYLOAD: &[u8] = b"\0peppy_service_probe\0";
+
+/// Timeout for reachability probes sent by `is_reachable`.
+const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+
+fn is_service_ack_payload(payload: &[u8]) -> bool {
+    payload == SERVICE_ACK_PAYLOAD
+}
+
+fn is_service_probe_payload(payload: &[u8]) -> bool {
+    payload == SERVICE_PROBE_PAYLOAD
+}
 
 fn encode_service_error_payload(reason: &str) -> Bytes {
     let mut payload = Vec::with_capacity(SERVICE_ERROR_PREFIX.len() + reason.len());
@@ -115,6 +135,7 @@ impl ServiceEndpoint {
     {
         match self.next_request().await {
             Ok((context, response_topic)) => {
+                self.publish_ack(&response_topic).await?;
                 let response_payload = match handler(context).await {
                     Ok(payload) => payload,
                     Err(err) => {
@@ -144,6 +165,7 @@ impl ServiceEndpoint {
                 Err(Error::ServiceRequestStreamClosed) => break,
                 Err(err) => return Err(err),
             };
+            self.publish_ack(&response_topic).await?;
             let response_payload = match handler(context).await {
                 Ok(payload) => payload,
                 Err(err) => {
@@ -174,6 +196,8 @@ impl ServiceEndpoint {
             Err(Error::ServiceRequestStreamClosed) => return Ok(None),
             Err(err) => return Err(err),
         };
+
+        self.publish_ack(&response_topic).await?;
 
         let messenger = Arc::clone(&self.messenger);
         let task = tokio::spawn(async move {
@@ -212,7 +236,17 @@ impl ServiceEndpoint {
             match request {
                 Some(request) => {
                     match self.build_request_context(request) {
-                        Ok((context, response_topic)) => return Ok((context, response_topic)),
+                        Ok((context, response_topic)) => {
+                            // Auto-handle probes: respond immediately without invoking
+                            // the user handler, so is_reachable() checks are transparent.
+                            if is_service_probe_payload(&context.message().payload().as_bytes()) {
+                                let _ = self
+                                    .publish_response(response_topic, Bytes::new())
+                                    .await;
+                                continue;
+                            }
+                            return Ok((context, response_topic));
+                        }
                         Err(Error::InvalidServiceRequest { .. }) => {
                             // Skip messages that do not match this service endpoint.
                             continue;
@@ -344,6 +378,15 @@ impl ServiceEndpoint {
         let context = ServiceRequestContext::new(message, request_id);
 
         Ok((context, response_topic))
+    }
+
+    async fn publish_ack(&self, response_topic: &str) -> Result<()> {
+        Self::publish_response_with_messenger(
+            Arc::clone(&self.messenger),
+            response_topic.to_string(),
+            Bytes::from_static(SERVICE_ACK_PAYLOAD),
+        )
+        .await
     }
 
     async fn publish_response(&self, topic: String, payload: Bytes) -> Result<()> {
@@ -572,11 +615,12 @@ impl ServiceMessenger {
             .await
     }
 
-    /// Returns `true` if there are active subscribers matching the service request topic that
-    /// would be used by [`ServiceMessenger::poll`].
+    /// Sends a lightweight probe to check whether a service is listening.
     ///
-    /// This is useful for checking if a specific service/instance is available without sending
-    /// an actual request (which could have side effects).
+    /// The probe is handled transparently by the service's request loop — the user
+    /// handler is never invoked. Returns `true` if the service responds within
+    /// [`PROBE_TIMEOUT`], `false` if unreachable.
+    #[allow(clippy::too_many_arguments)]
     pub async fn is_reachable(
         messenger: &MessengerHandle,
         bound_master_node: &str,
@@ -586,47 +630,25 @@ impl ServiceMessenger {
         target_master_node: Option<&str>,
         target_instance_id: Option<&str>,
     ) -> Result<bool> {
-        let service_root = format!("service/{target_node_name}/{target_service_name}");
-        let caller_target_instance_segment = format_target_instance_segment(as_instance_id)
-            .unwrap_or_else(|| INSTANCE_ID_WILDCARD.to_string());
-
-        let target_instance_id = target_instance_id.map(str::to_string);
-        let (effective_target_master, effective_target_instance) =
-            match (target_master_node, target_instance_id.as_deref()) {
-                (Some(master), Some(instance)) => (master.to_string(), instance.to_string()),
-                (Some(master), None) => (master.to_string(), BROADCAST_MARKER.to_string()),
-                (None, Some(instance)) => (BROADCAST_MARKER.to_string(), instance.to_string()),
-                (None, None) => (BROADCAST_MARKER.to_string(), BROADCAST_MARKER.to_string()),
-            };
-
-        let target_bound_instance_segment =
-            format_bound_instance_segment(&effective_target_instance);
-        let request_id = generate_request_id();
-
-        let target_master = target_bound_instance_segment
-            .as_ref()
-            .map(|_| effective_target_master.as_str())
-            .unwrap_or(BROADCAST_MARKER);
-        let target_instance = target_bound_instance_segment
-            .as_deref()
-            .unwrap_or(BROADCAST_MARKER);
-
-        let request_topic = format!(
-            "{}/{}/{}/{}/{}/request/{request_id}",
-            target_master,
-            bound_master_node,
-            target_instance,
-            caller_target_instance_segment,
-            service_root
-        );
-
-        let has_matching_subscribers = {
-            let messenger = messenger.messenger.lock().await;
-            messenger.has_matching_subscribers(&request_topic).await
+        match messenger
+            .poll_service(
+                "service",
+                bound_master_node,
+                as_instance_id,
+                target_node_name,
+                target_service_name,
+                target_master_node,
+                target_instance_id,
+                Bytes::from_static(SERVICE_PROBE_PAYLOAD),
+                PROBE_TIMEOUT,
+            )
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(Error::ServiceUnreachable { .. }) => Ok(false),
+            Err(Error::ServiceTimeout { .. }) => Ok(true),
+            Err(e) => Err(e),
         }
-        .map_err(Error::PeppyMessagingInterface)?;
-
-        Ok(has_matching_subscribers)
     }
 }
 
@@ -646,6 +668,38 @@ impl ActionMessenger {
                 as_instance_id,
             )
             .await
+    }
+
+    /// Sends a lightweight probe to check whether an action service is listening.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn is_reachable(
+        messenger: &MessengerHandle,
+        bound_master_node: &str,
+        as_instance_id: &str,
+        target_node_name: &str,
+        target_action_name: &str,
+        target_master_node: Option<&str>,
+        target_instance_id: Option<&str>,
+    ) -> Result<bool> {
+        match messenger
+            .poll_service(
+                "action",
+                bound_master_node,
+                as_instance_id,
+                target_node_name,
+                target_action_name,
+                target_master_node,
+                target_instance_id,
+                Bytes::from_static(SERVICE_PROBE_PAYLOAD),
+                PROBE_TIMEOUT,
+            )
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(Error::ServiceUnreachable { .. }) => Ok(false),
+            Err(Error::ServiceTimeout { .. }) => Ok(true),
+            Err(e) => Err(e),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1027,25 +1081,20 @@ impl MessengerHandle {
                 .map_err(Error::PeppyMessagingInterface)?;
         }
 
-        let response = match timeout(response_timeout, response_subscription.rx.recv()).await {
-            Ok(Some(message)) => message,
-            Ok(None) => {
-                return Err(Error::PeppyMessagingInterface(
-                    PeppyMessagingInterfaceError::BackendError(
-                        "service response channel closed".to_string(),
-                    ),
-                ));
-            }
-            Err(_) => {
-                let has_matching_subscribers = {
-                    let messenger = self.messenger.lock().await;
-                    messenger.has_matching_subscribers(&request_topic).await
-                }
-                .map_err(Error::PeppyMessagingInterface)?;
+        // Wait for the response using a deadline-based loop that tracks service acks.
+        // The service sends an ack immediately upon receiving the request (before the
+        // handler runs). If we receive the ack but no response, the service is alive
+        // but slow (ServiceTimeout). If we receive nothing, nobody is listening
+        // (ServiceUnreachable).
+        let deadline = Instant::now() + response_timeout;
+        let mut received_ack = false;
 
-                if has_matching_subscribers {
+        let response = loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                if received_ack {
                     return Err(Error::ServiceTimeout {
-                        instance_id: target_instance_id.clone(),
+                        instance_id: target_instance_id,
                         service_name: target_service_name.to_string(),
                     });
                 } else {
@@ -1053,6 +1102,36 @@ impl MessengerHandle {
                         instance_id: target_instance_id,
                         service_name: target_service_name.to_string(),
                     });
+                }
+            }
+
+            match timeout(remaining, response_subscription.rx.recv()).await {
+                Ok(Some(message)) => {
+                    if is_service_ack_payload(&message.payload().as_bytes()) {
+                        received_ack = true;
+                        continue;
+                    }
+                    break message;
+                }
+                Ok(None) => {
+                    return Err(Error::PeppyMessagingInterface(
+                        PeppyMessagingInterfaceError::BackendError(
+                            "service response channel closed".to_string(),
+                        ),
+                    ));
+                }
+                Err(_) => {
+                    if received_ack {
+                        return Err(Error::ServiceTimeout {
+                            instance_id: target_instance_id,
+                            service_name: target_service_name.to_string(),
+                        });
+                    } else {
+                        return Err(Error::ServiceUnreachable {
+                            instance_id: target_instance_id,
+                            service_name: target_service_name.to_string(),
+                        });
+                    }
                 }
             }
         };

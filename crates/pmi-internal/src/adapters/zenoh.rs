@@ -341,43 +341,6 @@ impl MessengerBackend for ZenohAdapter {
         Ok(Subscription::new(rx, abort_handle))
     }
 
-    async fn has_matching_subscribers(&self, topic: &str) -> Result<bool> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
-
-        // Use a temporary publisher to check matching status.
-        // The publisher is declared, checked, and undeclared in one shot to
-        // avoid leaving stale routing state in the Zenoh router.
-        let publisher = session.declare_publisher(topic).await.map_err(|e| {
-            Error::PublisherCreationError(format!(
-                "Failed to create publisher for topic '{}': {}",
-                topic, e
-            ))
-        })?;
-
-        let matching = publisher
-            .matching_status()
-            .await
-            .map_err(|e| {
-                Error::MatchingListenerError(format!(
-                    "Failed to retrieve matching status for topic '{}': {}",
-                    topic, e
-                ))
-            })?
-            .matching();
-
-        publisher.undeclare().await.map_err(|e| {
-            Error::MatchingListenerError(format!(
-                "Failed to undeclare publisher for topic '{}': {}",
-                topic, e
-            ))
-        })?;
-
-        Ok(matching)
-    }
-
     async fn start_router(&mut self) -> Result<()> {
         let zenohd = self
             .zenohd
