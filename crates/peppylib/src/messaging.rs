@@ -240,9 +240,7 @@ impl ServiceEndpoint {
                             // Auto-handle probes: respond immediately without invoking
                             // the user handler, so is_reachable() checks are transparent.
                             if is_service_probe_payload(&context.message().payload().as_bytes()) {
-                                let _ = self
-                                    .publish_response(response_topic, Bytes::new())
-                                    .await;
+                                let _ = self.publish_response(response_topic, Bytes::new()).await;
                                 continue;
                             }
                             return Ok((context, response_topic));
@@ -1007,9 +1005,6 @@ impl MessengerHandle {
         // Target's instance as BOUND (service is bound to receive requests)
         let target_bound_instance_segment =
             format_bound_instance_segment(&effective_target_instance);
-        // Target's instance as TARGET (identifies who responded)
-        let target_response_instance_segment =
-            format_target_instance_segment(&effective_target_instance);
         let request_id = generate_request_id();
 
         // Format: target_master/caller_master/target_instance/caller_instance/service_root/request/id
@@ -1030,37 +1025,16 @@ impl MessengerHandle {
         );
 
         // Response topic format: caller_master/responder_master/caller_instance/responder_instance/service_root/response/request_id
-        // For response subscriptions, use wildcard (*) instead of _any_ because we're subscribing (not publishing)
-        // The responder will publish with its actual master node, so we need a wildcard to match any responder
-        let response_master_pattern = if effective_target_master == BROADCAST_MARKER {
-            "*"
-        } else {
-            &effective_target_master
-        };
-        let response_topic = match target_response_instance_segment.as_deref() {
-            Some(segment) => {
-                // When targeting a specific instance, use wildcard for master if we don't know it
-                let response_instance_pattern = if segment == BROADCAST_MARKER {
-                    "*"
-                } else {
-                    segment
-                };
-                format!(
-                    "{}/{}/{}/{}/{}/response/{request_id}",
-                    bound_master_node,
-                    response_master_pattern,
-                    caller_bound_instance_segment,
-                    response_instance_pattern,
-                    service_root
-                )
-            }
-            None => {
-                format!(
-                    "{}/*/{}/*/{}/response/{request_id}",
-                    bound_master_node, caller_bound_instance_segment, service_root
-                )
-            }
-        };
+        // Always subscribe with wildcards for responder master and instance.
+        // The request_id (UUID) uniquely identifies our response, so wildcards
+        // are safe and — crucially — keep the subscriber pattern consistent
+        // across different targeting modes, avoiding Zenoh routing-table
+        // interference when the same session is reused for successive polls
+        // with varying target specificity.
+        let response_topic = format!(
+            "{}/*/{}/*/{}/response/{request_id}",
+            bound_master_node, caller_bound_instance_segment, service_root
+        );
 
         let mut response_subscription = {
             let messenger = self.messenger.lock().await;
