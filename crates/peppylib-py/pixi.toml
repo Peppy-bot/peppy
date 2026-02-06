@@ -20,11 +20,13 @@ patchelf = ">=0.17.2.4"
 [tasks]
 dev = "maturin develop"
 test = "maturin develop && pytest tests/ -v"
-run-topics-exposes = "maturin develop && python examples/hello_world_topic_exposes/main.py"
-run-topics-subscribes = "maturin develop && python examples/hello_world_topic_subscribes_to/main.py"
+zenoh-simple = "cargo run --manifest-path ../peppylib/examples/zenohd_simple/Cargo.toml"
 
-run-service-exposes = "maturin develop && python examples/hello_world_service_exposes/main.py"
-run-service-subscribes = "maturin develop && python examples/hello_world_service_subscribes_to/main.py"
+topic-exposes = "maturin develop && python examples/hello_world_topic_exposes/main.py"
+topic-subscribes = "maturin develop && python examples/hello_world_topic_subscribes_to/main.py"
 
-run-action-exposes = "maturin develop && python examples/hello_world_action_exposes/main.py"
-run-action-subscribes = "maturin develop && python examples/hello_world_action_subscribes_to/main.py"
+service-exposes = "maturin develop && python examples/hello_world_service_exposes/main.py"
+service-subscribes = "maturin develop && python examples/hello_world_service_subscribes_to/main.py"
+
+action-exposes = "maturin develop && python examples/hello_world_action_exposes/main.py"
+action-subscribes = "maturin develop && python examples/hello_world_action_subscribes_to/main.py"

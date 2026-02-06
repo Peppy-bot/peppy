@@ -96,24 +96,18 @@ async fn action_messenger_communication() {
     );
 
     // Client: receive feedback
-    let feedback = tokio::time::timeout(
-        Duration::from_secs(2),
-        goal_handle.on_next_feedback(),
-    )
-    .await
-    .expect("should receive feedback within timeout")
-    .expect("feedback should not be an error");
+    let feedback = tokio::time::timeout(Duration::from_secs(2), goal_handle.on_next_feedback())
+        .await
+        .expect("should receive feedback within timeout")
+        .expect("feedback should not be an error");
 
     assert_eq!(feedback.payload().to_bytes(), feedback_payload);
 
     // Client: request result
-    let result = ActionMessenger::request_result(
-        &client_handle,
-        &goal_handle,
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("request_result should succeed");
+    let result =
+        ActionMessenger::request_result(&client_handle, &goal_handle, Duration::from_secs(2))
+            .await
+            .expect("request_result should succeed");
 
     assert_eq!(result.payload().to_bytes(), result_payload);
 

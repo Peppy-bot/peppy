@@ -126,31 +126,71 @@ pub struct ServiceEndpoint {
     instance_id: String,
 }
 
+/// Handle returned by [`ServiceEndpoint::recv_next_request`] that must be used to send the
+/// response back to the caller.
+pub struct ServiceResponder {
+    messenger: Arc<Mutex<Messenger>>,
+    response_topic: String,
+}
+
+impl ServiceResponder {
+    /// Send the response payload for this request.
+    pub async fn respond(self, payload: Bytes) -> Result<()> {
+        let message = Message::new(&self.response_topic, payload);
+        let mut messenger = self.messenger.lock().await;
+        messenger
+            .publish(message, PublisherQoS::Standard)
+            .await
+            .map_err(Error::PeppyMessagingInterface)
+    }
+}
+
 impl ServiceEndpoint {
-    /// We need to use a callback system here to force the service to send back a response
+    /// Waits for the next service request, auto-handles probes, sends ACK, and returns the
+    /// request context together with a [`ServiceResponder`] that must be used to send the reply.
+    ///
+    /// Returns `Ok(None)` when the subscription stream has closed.
+    pub async fn recv_next_request(
+        &mut self,
+    ) -> Result<Option<(ServiceRequestContext, ServiceResponder)>> {
+        match self.next_request().await {
+            Ok((context, response_topic)) => {
+                self.publish_ack(&response_topic).await?;
+                Ok(Some((
+                    context,
+                    ServiceResponder {
+                        messenger: Arc::clone(&self.messenger),
+                        response_topic,
+                    },
+                )))
+            }
+            Err(Error::ServiceRequestStreamClosed) => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Handles a single incoming request using the provided callback.
+    ///
+    /// Returns `Ok(true)` after successfully processing a request, or `Ok(false)` when the
+    /// subscription stream has closed.
     pub async fn handle_next_request<F, Fut>(&mut self, handler: F) -> Result<bool>
     where
         F: FnOnce(ServiceRequestContext) -> Fut,
         Fut: std::future::Future<Output = Result<Bytes>>,
     {
-        match self.next_request().await {
-            Ok((context, response_topic)) => {
-                self.publish_ack(&response_topic).await?;
-                let response_payload = match handler(context).await {
-                    Ok(payload) => payload,
-                    Err(err) => {
-                        let reason = err.to_string();
-                        error!(%reason, "service handler returned error");
-                        encode_service_error_payload(&reason)
-                    }
-                };
-                self.publish_response(response_topic, response_payload)
-                    .await?;
-                Ok(true)
+        let Some((context, responder)) = self.recv_next_request().await? else {
+            return Ok(false);
+        };
+        let response_payload = match handler(context).await {
+            Ok(payload) => payload,
+            Err(err) => {
+                let reason = err.to_string();
+                error!(%reason, "service handler returned error");
+                encode_service_error_payload(&reason)
             }
-            Err(Error::ServiceRequestStreamClosed) => Ok(false),
-            Err(err) => Err(err),
-        }
+        };
+        responder.respond(response_payload).await?;
+        Ok(true)
     }
 
     /// Handles requests until the subscription stream ends.
@@ -159,13 +199,7 @@ impl ServiceEndpoint {
         F: FnMut(ServiceRequestContext) -> Fut,
         Fut: std::future::Future<Output = Result<Bytes>>,
     {
-        loop {
-            let (context, response_topic) = match self.next_request().await {
-                Ok(value) => value,
-                Err(Error::ServiceRequestStreamClosed) => break,
-                Err(err) => return Err(err),
-            };
-            self.publish_ack(&response_topic).await?;
+        while let Some((context, responder)) = self.recv_next_request().await? {
             let response_payload = match handler(context).await {
                 Ok(payload) => payload,
                 Err(err) => {
@@ -174,10 +208,8 @@ impl ServiceEndpoint {
                     encode_service_error_payload(&reason)
                 }
             };
-            self.publish_response(response_topic, response_payload)
-                .await?;
+            responder.respond(response_payload).await?;
         }
-
         Ok(())
     }
 
@@ -191,15 +223,9 @@ impl ServiceEndpoint {
         F: FnOnce(ServiceRequestContext) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<Bytes>> + Send + 'static,
     {
-        let (context, response_topic) = match self.next_request().await {
-            Ok(value) => value,
-            Err(Error::ServiceRequestStreamClosed) => return Ok(None),
-            Err(err) => return Err(err),
+        let Some((context, responder)) = self.recv_next_request().await? else {
+            return Ok(None);
         };
-
-        self.publish_ack(&response_topic).await?;
-
-        let messenger = Arc::clone(&self.messenger);
         let task = tokio::spawn(async move {
             let response_payload = match handler(context).await {
                 Ok(payload) => payload,
@@ -209,14 +235,8 @@ impl ServiceEndpoint {
                     encode_service_error_payload(&reason)
                 }
             };
-            ServiceEndpoint::publish_response_with_messenger(
-                messenger,
-                response_topic,
-                response_payload,
-            )
-            .await
+            responder.respond(response_payload).await
         });
-
         Ok(Some(task))
     }
 
