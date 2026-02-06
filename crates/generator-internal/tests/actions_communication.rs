@@ -12,7 +12,7 @@ use helpers::{
     WaitContext, compile_project, copy_config_to_output, init_cargo_user_node, init_test_env,
     send_shutdown, spawn_cargo_run, wait_for_child, wait_for_health_service_reachable_or_exit,
 };
-use pmi::{Messenger, MessengerAdapter, MessengerBackend, ZenohAdapter, ZenohNetProtocol};
+use peppylib::messaging::ActionMessenger;
 use std::path::Path;
 use std::time::Instant;
 use std::{fs, time::Duration};
@@ -36,23 +36,6 @@ pub async fn wait_for_action_service_reachable_or_exit(
     dir: &std::path::Path,
     timeout: Duration,
 ) {
-    const INSTANCE_ID_WILDCARD: &str = "**";
-    const BROADCAST_MARKER: &str = "_any_";
-
-    let (router_host, router_port) = ctx
-        .messenger
-        .messaging_endpoint()
-        .await
-        .expect("zenoh messaging endpoint should be available for reachability checks");
-
-    let adapter = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &router_host, router_port)
-        .expect("failed to create zenoh adapter for probe messenger");
-    let mut probe_messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
-    probe_messenger
-        .start_session()
-        .await
-        .expect("failed to start probe messenger session");
-
     let start = Instant::now();
     loop {
         if let Some(status) = child
@@ -72,52 +55,26 @@ pub async fn wait_for_action_service_reachable_or_exit(
             );
         }
 
-        let caller_target_instance_segment = if ctx.caller_instance_id != INSTANCE_ID_WILDCARD {
-            ctx.caller_instance_id
-        } else {
-            INSTANCE_ID_WILDCARD
-        };
-
-        let (effective_target_master, effective_target_instance) =
-            match (ctx.target_master_node, target_instance_id) {
-                (Some(master), Some(instance)) => (master, instance),
-                (Some(master), None) => (master, BROADCAST_MARKER),
-                (None, Some(instance)) => (BROADCAST_MARKER, instance),
-                (None, None) => (BROADCAST_MARKER, BROADCAST_MARKER),
-            };
-
-        let target_bound_instance_segment = (effective_target_instance != INSTANCE_ID_WILDCARD)
-            .then_some(effective_target_instance);
-
-        let target_master = target_bound_instance_segment
-            .as_ref()
-            .map(|_| effective_target_master)
-            .unwrap_or(BROADCAST_MARKER);
-        let target_instance = target_bound_instance_segment.unwrap_or(BROADCAST_MARKER);
-
-        let service_root = format!("action/{target_node_name}/{target_service_name}");
-        let request_topic = format!(
-            "{}/{}/{}/{}/{}/request/reachability_probe",
-            target_master,
+        let reachable = ActionMessenger::is_reachable(
+            ctx.messenger,
             ctx.bound_master_node,
-            target_instance,
-            caller_target_instance_segment,
-            service_root
-        );
-
-        let reachable = probe_messenger
-            .has_matching_subscribers(&request_topic)
-            .await
-            .unwrap_or_else(|err| {
-                panic!(
-                    "failed to check reachability for action `{}` (node={}, instance={:?}) for project at {}: {}",
-                    target_service_name,
-                    target_node_name,
-                    target_instance_id,
-                    dir.display(),
-                    err
-                )
-            });
+            ctx.caller_instance_id,
+            target_node_name,
+            target_service_name,
+            ctx.target_master_node,
+            target_instance_id,
+        )
+        .await
+        .unwrap_or_else(|err| {
+            panic!(
+                "failed to check reachability for action `{}` (node={}, instance={:?}) for project at {}: {}",
+                target_service_name,
+                target_node_name,
+                target_instance_id,
+                dir.display(),
+                err
+            )
+        });
 
         if reachable {
             break;
@@ -136,8 +93,6 @@ pub async fn wait_for_action_service_reachable_or_exit(
 
         sleep(Duration::from_millis(50)).await;
     }
-
-    let _ = probe_messenger.stop_session().await;
 }
 
 const EXPOSED_ACTION_EXAMPLE: &str = r#"

@@ -111,10 +111,18 @@ async def test_ready_node(monkeypatch):
                 ("broadcast+broadcast", None, None),
             ]
 
+            # Each poll uses a fresh MessengerHandle (Zenoh session) because
+            # Zenoh client-mode routing tables become unreliable when a session
+            # rapidly creates/drops wildcard subscribers (the response
+            # subscription in poll_service) interleaved with put() calls to
+            # varying key prefixes. A fresh session avoids this interference.
             for label, target_master_node, target_instance_id in target_combinations:
+                poll_messenger = await MessengerHandle.from_host_port(
+                    router.host, router.port
+                )
                 try:
                     response = await ServiceMessenger.poll(
-                        messenger,
+                        poll_messenger,
                         TEST_MASTER_NODE_NAME,
                         CALLER_INSTANCE_ID,
                         TEST_NODE_NAME,
