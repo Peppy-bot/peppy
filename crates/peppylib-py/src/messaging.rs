@@ -99,7 +99,7 @@ impl PyZenohdInstance {
 /// Python wrapper for MessengerHandle
 #[pyclass(name = "MessengerHandle")]
 pub struct PyMessengerHandle {
-    inner: Arc<Mutex<MessengerHandle>>,
+    pub(crate) inner: Arc<Mutex<MessengerHandle>>,
 }
 
 #[pymethods]
