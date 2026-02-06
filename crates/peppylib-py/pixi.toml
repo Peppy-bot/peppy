@@ -22,3 +22,9 @@ dev = "maturin develop"
 test = "maturin develop && pytest tests/ -v"
 run-topics-exposes = "maturin develop && python examples/hello_world_topic_exposes/main.py"
 run-topics-subscribes = "maturin develop && python examples/hello_world_topic_subscribes_to/main.py"
+
+run-service-exposes = "maturin develop && python examples/hello_world_service_exposes/main.py"
+run-service-subscribes = "maturin develop && python examples/hello_world_service_subscribes_to/main.py"
+
+run-action-exposes = "maturin develop && python examples/hello_world_action_exposes/main.py"
+run-action-subscribes = "maturin develop && python examples/hello_world_action_subscribes_to/main.py"
