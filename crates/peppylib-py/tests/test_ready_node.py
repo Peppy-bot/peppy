@@ -111,10 +111,19 @@ async def test_ready_node(monkeypatch):
                 ("broadcast+broadcast", None, None),
             ]
 
+            # Each poll uses a fresh MessengerHandle (Zenoh session) because
+            # the Zenoh router's internal routing state is affected by the
+            # response-subscriber lifecycle within poll_service: declaring and
+            # then undeclaring a wildcard response subscriber can disrupt
+            # delivery for subsequent broadcast-targeted requests on the same
+            # session.  A fresh session avoids this cross-poll interference.
             for label, target_master_node, target_instance_id in target_combinations:
+                poll_messenger = await MessengerHandle.from_host_port(
+                    router.host, router.port
+                )
                 try:
                     response = await ServiceMessenger.poll(
-                        messenger,
+                        poll_messenger,
                         TEST_MASTER_NODE_NAME,
                         CALLER_INSTANCE_ID,
                         TEST_NODE_NAME,
