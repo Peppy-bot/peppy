@@ -3,9 +3,6 @@ Tests for peppylib ServiceMessenger.
 
 Python equivalent of `service_messenger_communication` in
 crates/peppylib/tests/services.rs.
-
-Note: ServiceMessenger.listen and handle_next_request are not yet exposed
-to Python.  This test will not pass until those bindings are added.
 """
 
 import asyncio
