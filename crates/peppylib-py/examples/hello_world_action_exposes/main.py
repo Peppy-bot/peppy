@@ -204,7 +204,6 @@ async def main():
     master_node = f"{generate_name()}_master"
     instance_id = f"{generate_name()}_listener"
 
-    # NOTE: ActionMessenger.expose() is not yet exposed in the Python bindings.
     action = await ActionMessenger.expose(
         receiver_handle,
         master_node,

@@ -12,6 +12,7 @@ use super::{PyMessengerHandle, PyTopicMessage};
 /// Python wrapper for a service request received by a listener.
 #[pyclass(name = "ServiceRequestContext")]
 pub struct PyServiceRequestContext {
+    request_id: String,
     payload: Vec<u8>,
     instance_id: String,
     master_node: String,
@@ -19,6 +20,11 @@ pub struct PyServiceRequestContext {
 
 #[pymethods]
 impl PyServiceRequestContext {
+    #[getter]
+    fn request_id(&self) -> &str {
+        &self.request_id
+    }
+
     #[getter]
     fn payload<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new(py, &self.payload)
@@ -33,12 +39,25 @@ impl PyServiceRequestContext {
     fn master_node(&self) -> &str {
         &self.master_node
     }
+
+    /// Returns the underlying message as a `TopicMessage`.
+    #[getter]
+    fn message(&self) -> PyTopicMessage {
+        PyTopicMessage {
+            key_expr: String::new(),
+            payload: self.payload.clone(),
+            instance_id: self.instance_id.clone(),
+            master_node: self.master_node.clone(),
+        }
+    }
 }
 
 impl From<ServiceRequestContext> for PyServiceRequestContext {
     fn from(ctx: ServiceRequestContext) -> Self {
+        let request_id = ctx.request_id().to_string();
         let message = ctx.message();
         Self {
+            request_id,
             payload: message.payload().to_bytes().to_vec(),
             instance_id: message.instance_id().to_string(),
             master_node: message.master_node().to_string(),
@@ -49,7 +68,7 @@ impl From<ServiceRequestContext> for PyServiceRequestContext {
 /// Python wrapper for a service endpoint that listens for incoming requests.
 #[pyclass(name = "ServiceEndpoint")]
 pub struct PyServiceEndpoint {
-    inner: Arc<Mutex<ServiceEndpoint>>,
+    pub(crate) inner: Arc<Mutex<ServiceEndpoint>>,
 }
 
 #[pymethods]

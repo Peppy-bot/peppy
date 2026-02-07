@@ -3,16 +3,13 @@ Tests for peppylib ActionMessenger.
 
 Python equivalent of `action_messenger_communication` in
 crates/peppylib/tests/actions.rs.
-
-Note: ActionMessenger bindings are not yet exposed to Python.
-This test will not pass until those bindings are added.
 """
 
 import asyncio
 
 import pytest
 
-from peppylib import ActionMessenger, MessengerHandle, ZenohdInstance
+from peppylib import ActionMessenger, MessengerHandle, QoSProfile, ZenohdInstance
 
 MASTER_NODE = "test_master"
 INSTANCE_ID = "test_instance"
@@ -69,7 +66,7 @@ async def test_action_messenger_communication():
             MASTER_NODE,
             INSTANCE_ID,
             GOAL_PAYLOAD,
-            "reliable",
+            QoSProfile.Reliable,
             2.0,
         )
 
