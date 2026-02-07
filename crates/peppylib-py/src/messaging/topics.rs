@@ -1,4 +1,4 @@
-use super::{PyMessengerHandle, PySubscription};
+use super::{PyMessengerHandle, PySubscription, to_py_err};
 use crate::config::PyQoSProfile;
 use bytes::Bytes;
 use peppylib::messaging::TopicMessenger;
@@ -41,7 +41,7 @@ impl PyTopicMessenger {
                 qos.into(),
             )
             .await
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+            .map_err(to_py_err)?;
 
             Ok(PySubscription {
                 inner: Arc::new(Mutex::new(subscription)),
@@ -75,7 +75,7 @@ impl PyTopicMessenger {
                 Bytes::from(payload),
             )
             .await
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+            .map_err(to_py_err)?;
 
             Ok(())
         })
