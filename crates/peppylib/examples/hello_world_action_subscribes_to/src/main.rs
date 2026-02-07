@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use colored::Colorize;
-use config::{consts::DEFAULT_ZENOH_PORT, node::QoSProfile};
+use config::{consts::DEFAULT_MESSAGING_PORT, node::QoSProfile};
 use names_generator2::get_random;
 use peppylib::messaging::ActionGoalHandle;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError};
@@ -63,7 +63,7 @@ async fn receive_feedback(handle: &mut ActionGoalHandle, goal_label: &str) {
 
 #[tokio::main]
 async fn main() {
-    let sender_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
+    let sender_handle = connect_messenger("127.0.0.1", DEFAULT_MESSAGING_PORT).await;
     let master_node_name = format!("{}_master", get_random(rng()));
     let as_instance_id = format!("{}_listener", get_random(rng()));
 

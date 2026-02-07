@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use chrono::Local;
-use config::consts::DEFAULT_ZENOH_PORT;
+use config::consts::DEFAULT_MESSAGING_PORT;
 use names_generator2::get_random;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
@@ -66,7 +66,7 @@ fn handle_service_result(result: PeppyResult<bool>) -> bool {
 #[tokio::main]
 async fn main() {
     // Create a messenger for the receiving node.
-    let receiver_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
+    let receiver_handle = connect_messenger("127.0.0.1", DEFAULT_MESSAGING_PORT).await;
     let master_node = format!("{}_master", get_random(rng()));
     let instance_id = format!("{}_listener", get_random(rng()));
 

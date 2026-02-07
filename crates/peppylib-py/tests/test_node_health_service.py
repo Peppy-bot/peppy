@@ -1,0 +1,59 @@
+"""
+Tests for peppylib node health service.
+
+Python equivalent of crates/peppylib/tests/node_health_service.rs.
+"""
+
+import asyncio
+
+import pytest
+
+from peppylib import MessengerHandle, ServiceMessenger, ZenohdInstance
+from peppylib.config import NODE_HEALTH_SERVICE
+from peppylib.services import NodeHealthService
+
+from common import TEST_INSTANCE_ID, TEST_NODE_NAME
+
+TEST_MASTER_NODE_NAME = "test_master_node"
+CALLER_INSTANCE_ID = "caller_instance"
+
+
+@pytest.mark.asyncio
+async def test_node_health_request_response_roundtrip():
+    """Health service responds to a poll request with the correct instance_id."""
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        messenger = await MessengerHandle.from_host_port(router.host, router.port)
+
+        # Start the health service directly
+        task = await NodeHealthService.listen(
+            messenger,
+            TEST_MASTER_NODE_NAME,
+            TEST_INSTANCE_ID,
+            TEST_NODE_NAME,
+        )
+
+        # Allow the service to fully establish its listeners
+        await asyncio.sleep(0.05)
+
+        # Build and send the health request
+        request_payload = b"health"
+
+        response = await ServiceMessenger.poll(
+            messenger,
+            TEST_MASTER_NODE_NAME,
+            CALLER_INSTANCE_ID,
+            TEST_NODE_NAME,
+            NODE_HEALTH_SERVICE,
+            TEST_MASTER_NODE_NAME,
+            TEST_INSTANCE_ID,
+            request_payload,
+            2.0,
+        )
+
+        # Verify the response
+        assert response is not None
+        assert response.instance_id == TEST_INSTANCE_ID
+
+        # The health task should still be running
+        assert not task.is_finished()
+        task.abort()

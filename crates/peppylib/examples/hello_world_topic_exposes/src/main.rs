@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use config::consts::DEFAULT_ZENOH_PORT;
+use config::consts::DEFAULT_MESSAGING_PORT;
 use config::node::QoSProfile;
 use names_generator2::get_random;
 use peppylib::{MessengerHandle, TopicMessenger};
@@ -17,7 +17,7 @@ async fn main() {
 
     // Create a messenger for the sending node.
     let host = "127.0.0.1";
-    let port = DEFAULT_ZENOH_PORT;
+    let port = DEFAULT_MESSAGING_PORT;
     let sender_handle = MessengerHandle::from_host_port(host, port)
         .await
         .unwrap_or_else(|error| {

@@ -1,4 +1,7 @@
 {
+  "python.defaultInterpreterPath": "${workspaceFolder}/crates/peppylib-py/.pixi/envs/default/bin/python",
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": ["crates/peppylib-py/tests"],
   "rust-analyzer.linkedProjects": [
     "Cargo.toml",
     "docs/tests/integration/Cargo.toml"
