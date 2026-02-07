@@ -7,6 +7,14 @@ from peppylib.config import DEFAULT_MESSAGING_PORT, QoSProfile
 NODE_NAME = "hello_node"
 ACTION_NAME = "hello_action"
 
+BOLD = "\033[1m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+MAGENTA = "\033[35m"
+CYAN = "\033[36m"
+WHITE = "\033[37m"
+RESET = "\033[0m"
+
 FEEDBACK_TIMEOUT = 5.0
 GOAL_TIMEOUT = 3.0
 CANCEL_TIMEOUT = 3.0
@@ -18,18 +26,18 @@ async def receive_feedback(goal_handle, goal_label: str):
             goal_handle.on_next_feedback(), timeout=FEEDBACK_TIMEOUT
         )
     except asyncio.TimeoutError:
-        print(f"[FEEDBACK] Timed out waiting for feedback for `{goal_label}`")
+        print(f"{BOLD}{YELLOW}[FEEDBACK] Timed out waiting for feedback for `{goal_label}`{RESET}")
         return
     except Exception:
-        print(f"[FEEDBACK] Feedback channel closed early for `{goal_label}`")
+        print(f"{BOLD}{YELLOW}[FEEDBACK] Feedback channel closed early for `{goal_label}`{RESET}")
         return
 
     feedback_text = message.payload.decode("utf-8")
     master_node = message.master_node
     instance_id = message.instance_id
     print(
-        f"[FEEDBACK] Received feedback for `{goal_label}` from `{instance_id}` "
-        f"and master node `{master_node}`: `{feedback_text}`"
+        f"{BOLD}{YELLOW}[FEEDBACK] Received feedback for `{goal_label}` from `{instance_id}` "
+        f"and master node `{master_node}`: `{feedback_text}`{RESET}"
     )
 
 
@@ -50,8 +58,8 @@ async def main():
 
     # --- Send initial goal ---
     print(
-        f"[GOAL] Sending goal to `{ACTION_NAME}` action as `{instance_id}` "
-        f"and master node `{master_node}`..."
+        f"{BOLD}{GREEN}[GOAL] Sending goal to `{ACTION_NAME}` action as `{instance_id}` "
+        f"and master node `{master_node}`...{RESET}"
     )
     goal_handle = await ActionMessenger.send_goal(
         sender_handle,
@@ -69,25 +77,25 @@ async def main():
     goal_response = goal_handle.goal_response
     goal_response_text = goal_response.payload.decode("utf-8")
     print(
-        f"[GOAL] Received goal response from `{goal_response.instance_id}` "
-        f"and master node `{goal_response.master_node}`: `{goal_response_text}`"
+        f"{BOLD}{GREEN}[GOAL] Received goal response from `{goal_response.instance_id}` "
+        f"and master node `{goal_response.master_node}`: `{goal_response_text}`{RESET}"
     )
 
     await receive_feedback(goal_handle, "initial goal")
 
     # --- Request result ---
-    print("[RESULT] Requesting result payload...")
+    print(f"{BOLD}{CYAN}[RESULT] Requesting result payload...{RESET}")
     result_payload = await ActionMessenger.request_result(
         sender_handle, goal_handle, GOAL_TIMEOUT
     )
     result_text = result_payload.payload.decode("utf-8")
-    print(f"[RESULT] Received result: `{result_text}`")
+    print(f"{BOLD}{CYAN}[RESULT] Received result: `{result_text}`{RESET}")
 
     # --- Send cancellable goal ---
     print("Waiting before sending cancellable goal...")
     await asyncio.sleep(2)
 
-    print("[GOAL] Sending cancellable goal...")
+    print(f"{BOLD}{GREEN}[GOAL] Sending cancellable goal...{RESET}")
     goal_handle = await ActionMessenger.send_goal(
         sender_handle,
         master_node,
@@ -102,7 +110,7 @@ async def main():
     )
 
     cancel_goal_response_text = goal_handle.goal_response.payload.decode("utf-8")
-    print(f"[GOAL] Received goal response: `{cancel_goal_response_text}`")
+    print(f"{BOLD}{GREEN}[GOAL] Received goal response: `{cancel_goal_response_text}`{RESET}")
 
     await receive_feedback(goal_handle, "cancellable goal")
 
@@ -114,10 +122,10 @@ async def main():
         sender_handle, goal_handle, CANCEL_TIMEOUT
     )
     cancel_text = cancel_response.payload.decode("utf-8")
-    print(f"[CANCEL] Received cancel response: `{cancel_text}`")
+    print(f"{BOLD}{MAGENTA}[CANCEL] Received cancel response: `{cancel_text}`{RESET}")
 
     # --- Attempt result after cancellation (should fail) ---
-    print("[RESULT] Attempting to request result after cancellation...")
+    print(f"{BOLD}{CYAN}[RESULT] Attempting to request result after cancellation...{RESET}")
     try:
         result_payload = await ActionMessenger.request_result(
             sender_handle, goal_handle, GOAL_TIMEOUT
@@ -128,7 +136,7 @@ async def main():
             "The action should stop responding to this goal."
         )
     except (TimeoutError, ConnectionError):
-        print("[RESULT] No result returned after cancellation, as expected.")
+        print(f"{BOLD}{CYAN}[RESULT] No result returned after cancellation, as expected.{RESET}")
     except AssertionError:
         raise
     except Exception as error:
@@ -137,7 +145,7 @@ async def main():
         ) from error
 
     print(
-        "Action sender finished exercising goal, feedback, result, and cancel flows."
+        f"{BOLD}{WHITE}Action sender finished exercising goal, feedback, result, and cancel flows.{RESET}"
     )
 
 
