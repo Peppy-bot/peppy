@@ -29,7 +29,7 @@ impl PyServiceTask {
             .lock()
             .unwrap()
             .as_ref()
-            .map_or(true, |h| h.is_finished())
+            .is_none_or(|h| h.is_finished())
     }
 
     /// Abort the service task.
