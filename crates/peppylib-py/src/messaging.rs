@@ -8,6 +8,7 @@ use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
 use pyo3::prelude::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+pub use topics::{PySubscription, PyTopicMessage, PyTopicMessenger};
 
 /// Convert a `peppylib::error::Error` into an appropriate Python exception.
 ///
@@ -24,8 +25,6 @@ pub(crate) fn to_py_err(err: PeppyError) -> PyErr {
         _ => PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(err.to_string()),
     }
 }
-
-pub use topics::{PySubscription, PyTopicMessage, PyTopicMessenger};
 
 /// Python wrapper for ZenohdInstance - an ephemeral zenohd router for testing.
 ///
