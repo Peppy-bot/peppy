@@ -53,7 +53,6 @@ async def main():
         f"[GOAL] Sending goal to `{ACTION_NAME}` action as `{instance_id}` "
         f"and master node `{master_node}`..."
     )
-    # NOTE: ActionMessenger is not yet exposed in the Python bindings.
     goal_handle = await ActionMessenger.send_goal(
         sender_handle,
         master_node,

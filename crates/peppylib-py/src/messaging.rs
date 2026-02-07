@@ -145,12 +145,13 @@ impl PyMessengerHandle {
 }
 
 /// Python wrapper for TopicMessage
-#[pyclass(name = "TopicMessage")]
+#[pyclass(name = "TopicMessage", skip_from_py_object)]
+#[derive(Clone)]
 pub struct PyTopicMessage {
-    key_expr: String,
-    payload: Vec<u8>,
-    instance_id: String,
-    master_node: String,
+    pub(crate) key_expr: String,
+    pub(crate) payload: Vec<u8>,
+    pub(crate) instance_id: String,
+    pub(crate) master_node: String,
 }
 
 #[pymethods]
@@ -217,6 +218,7 @@ pub fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     messaging_module.add_class::<PySubscription>()?;
     messaging_module.add_class::<PyTopicMessenger>()?;
     services::register(&messaging_module)?;
+    actions::register(&messaging_module)?;
     parent_module.add_submodule(&messaging_module)?;
     Ok(())
 }

@@ -14,12 +14,14 @@ sys.modules["peppylib._peppylib.config"] = _peppylib.config
 sys.modules["peppylib._peppylib.names"] = _peppylib.names
 sys.modules["peppylib._peppylib.runtime"] = _peppylib.runtime
 sys.modules["peppylib._peppylib.messaging.services"] = _peppylib.messaging.services
+sys.modules["peppylib._peppylib.messaging.actions"] = _peppylib.messaging.actions
 
 # Re-export the Rust-implemented functions/types from the native module
 from ._peppylib import sum_as_string  # type: ignore[import-not-found]
 from ._peppylib.messaging import MessengerHandle, TopicMessenger, ZenohdInstance  # type: ignore[import-not-found]
 from ._peppylib.config import QoSProfile  # type: ignore[import-not-found]
 from ._peppylib.messaging.services import ServiceMessenger  # type: ignore[import-not-found]
+from ._peppylib.messaging.actions import ActionMessenger  # type: ignore[import-not-found]
 from ._peppylib.runtime import NodeBuilder, StandaloneConfig, NodeRunner, CancellationToken  # type: ignore[import-not-found]
 
 __all__ = [
@@ -29,6 +31,7 @@ __all__ = [
     "ZenohdInstance",
     "QoSProfile",
     "ServiceMessenger",
+    "ActionMessenger",
     "NodeBuilder",
     "StandaloneConfig",
     "NodeRunner",
