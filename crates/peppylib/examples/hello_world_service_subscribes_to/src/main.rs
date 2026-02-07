@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use config::consts::DEFAULT_ZENOH_PORT;
+use config::consts::DEFAULT_MESSAGING_PORT;
 use names_generator2::get_random;
 use peppylib::{MessengerHandle, ServiceMessenger};
 use rand::rng;
@@ -21,7 +21,7 @@ async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
 #[tokio::main]
 async fn main() {
     // Create a messenger for the sending node.
-    let sender_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
+    let sender_handle = connect_messenger("127.0.0.1", DEFAULT_MESSAGING_PORT).await;
     let master_node = format!("{}_master", get_random(rng()));
     let as_instance_id = format!("{}_caller", get_random(rng()));
 

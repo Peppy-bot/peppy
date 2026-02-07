@@ -3,7 +3,7 @@ name = "peppylib"
 dynamic = ["version"]
 license = { text = "Apache-2.0" }
 authors = [{ name = "GODARD Tuatini", email = "tuatini@peppy.bot" }]
-requires-python = ">= 3.10"
+requires-python = ">= 3.11"
 description = "The peppyOS control library"
 classifiers = [
   "Programming Language :: Python",
@@ -11,7 +11,6 @@ classifiers = [
   "Programming Language :: Python :: Implementation :: CPython",
   "Programming Language :: Python :: Implementation :: PyPy",
 ]
-# Pipy dependencies
 dependencies = []
 
 [project.urls]
@@ -27,3 +26,7 @@ module-name = "peppylib._peppylib"
 [tool.maturin.version]
 provider = "file"
 path = "peppylib/_version.py"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

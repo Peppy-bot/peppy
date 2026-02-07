@@ -5,7 +5,7 @@ use config::runtime::{NodeInstance, RuntimeConfig};
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
 use peppylib::messaging::{NODE_HEALTH_SERVICE, NODE_READY_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::runtime::NodeBuilder;
-use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
+use pmi::ZenohAdapter;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -94,27 +94,12 @@ impl Drop for EnvAndDirGuard {
     }
 }
 
-struct RouterGuard {
-    instance: Option<ZenohdInstance>,
-}
-
-impl RouterGuard {
-    async fn stop(&mut self) {
-        if let Some(mut instance) = self.instance.take() {
-            let _ = instance.messenger().stop_router().await;
-        }
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_runner_succeed() {
     let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
-    let mut router_guard = RouterGuard {
-        instance: Some(instance),
-    };
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
@@ -244,8 +229,6 @@ async fn daemon_runner_succeed() {
         .expect("runner should exit")
         .expect("runner task should not panic")
         .expect("runner should return Ok");
-
-    router_guard.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -260,9 +243,6 @@ async fn standalone_runner_succeed() {
         .await
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
-    let mut router_guard = RouterGuard {
-        instance: Some(instance),
-    };
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
@@ -312,8 +292,6 @@ async fn standalone_runner_succeed() {
         .expect("runner should exit")
         .expect("runner task should not panic")
         .expect("runner should return Ok");
-
-    router_guard.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -322,9 +300,6 @@ async fn node_ready_but_not_healthy() {
         .await
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
-    let mut router_guard = RouterGuard {
-        instance: Some(instance),
-    };
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
@@ -569,8 +544,6 @@ async fn node_ready_but_not_healthy() {
         .expect("runner should exit")
         .expect("runner task should not panic")
         .expect("runner should return Ok");
-
-    router_guard.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -579,9 +552,6 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
         .await
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
-    let mut router_guard = RouterGuard {
-        instance: Some(instance),
-    };
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
@@ -704,6 +674,4 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
         cancellation_token.is_cancelled(),
         "cancellation token should be cancelled after shutdown request"
     );
-
-    router_guard.stop().await;
 }

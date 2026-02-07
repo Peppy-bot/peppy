@@ -1,0 +1,87 @@
+# ----------------------------
+# Python / uv
+# ----------------------------
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# uv lock + cache
+.uv/
+uv.lock
+
+# Python cache / compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Testing / coverage
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+
+# Type checkers
+.pyre/
+.pytype/
+
+# Logs
+*.log
+
+# ----------------------------
+# Editors / IDEs
+# ----------------------------
+
+# VS Code
+.vscode/
+
+# JetBrains
+.idea/
+*.iml
+
+# Vim
+*.swp
+*.swo
+*~
+
+# ----------------------------
+# OS junk
+# ----------------------------
+
+.DS_Store
+Thumbs.db
+
+# ----------------------------
+# Environment variables / secrets
+# ----------------------------
+
+.env
+.env.*
+*.env
+
+# ----------------------------
+# Optional: documentation builds
+# ----------------------------
+
+site/
+docs/_build/
+
+# ----------------------------
+# Optional: Jupyter
+# ----------------------------
+
+.ipynb_checkpoints/
+
