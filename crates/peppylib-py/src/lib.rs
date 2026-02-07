@@ -15,6 +15,10 @@ fn sum_as_string(a: usize, b: usize) -> PyResult<String> {
 /// The function name must match `lib.name` in Cargo.toml.
 #[pymodule]
 fn _peppylib(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add(
+        "__version__",
+        option_env!("PEPPY_GIT_TAG").unwrap_or("0.0.1"),
+    )?;
     m.add_function(wrap_pyfunction!(sum_as_string, m)?)?;
     config::register(m)?;
     messaging::register(m)?;
