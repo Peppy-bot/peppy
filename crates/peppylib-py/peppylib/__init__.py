@@ -15,6 +15,7 @@ sys.modules["peppylib._peppylib.names"] = _peppylib.names
 sys.modules["peppylib._peppylib.runtime"] = _peppylib.runtime
 sys.modules["peppylib._peppylib.messaging.services"] = _peppylib.messaging.services
 sys.modules["peppylib._peppylib.messaging.actions"] = _peppylib.messaging.actions
+sys.modules["peppylib._peppylib.services"] = _peppylib.services
 
 # Re-export the Rust-implemented functions/types from the native module
 from ._peppylib import sum_as_string  # type: ignore[import-not-found]
