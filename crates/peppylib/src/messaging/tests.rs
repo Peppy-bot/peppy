@@ -1570,7 +1570,7 @@ async fn action_communication_no_instance_id_target() {
             let goal_handler = action
                 .goal_service
                 .handle_next_request(move |request| async move {
-                    assert_eq!(request.message.master_node(), CALLER_MASTER_NODE);
+                    assert_eq!(request.message().master_node(), CALLER_MASTER_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                     assert_eq!(request.message().payload(), &expected_goal_payload);
 
@@ -1581,7 +1581,7 @@ async fn action_communication_no_instance_id_target() {
             let result_handler = action.result_service.handle_next_request(move |request| {
                 let response_payload = result_payload_server.clone();
                 async move {
-                    assert_eq!(request.message.master_node(), CALLER_MASTER_NODE);
+                    assert_eq!(request.message().master_node(), CALLER_MASTER_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                     assert!(request.message().payload().is_empty());
 
@@ -1792,7 +1792,7 @@ async fn action_communication_with_instance_id_target() {
             let goal_handler = action
                 .goal_service
                 .handle_next_request(move |request| async move {
-                    assert_eq!(request.message.master_node(), CALLER_MASTER_NODE);
+                    assert_eq!(request.message().master_node(), CALLER_MASTER_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                     assert_eq!(request.message().payload(), &expected_goal_payload);
 
@@ -1803,7 +1803,7 @@ async fn action_communication_with_instance_id_target() {
             let result_handler = action.result_service.handle_next_request(move |request| {
                 let response_payload = result_payload_server.clone();
                 async move {
-                    assert_eq!(request.message.master_node(), CALLER_MASTER_NODE);
+                    assert_eq!(request.message().master_node(), CALLER_MASTER_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                     assert!(request.message().payload().is_empty());
 
@@ -1972,7 +1972,7 @@ async fn action_communication_goal_cancelled() {
             let goal_handler = action.goal_service.handle_next_request(move |request| {
                 let goal_call_count = Arc::clone(&goal_call_count);
                 async move {
-                    assert_eq!(request.message.master_node(), CALLER_MASTER_NODE);
+                    assert_eq!(request.message().master_node(), CALLER_MASTER_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                     assert_eq!(request.message().payload(), &expected_goal_payload);
 
@@ -2020,11 +2020,14 @@ async fn action_communication_goal_cancelled() {
                 })
             };
 
-            let (cancel_context, cancel_response_topic) =
-                tokio::time::timeout(Duration::from_secs(5), action.cancel_service.next_request())
-                    .await
-                    .expect("timed out waiting for cancel request")
-                    .expect("action should receive cancel request");
+            let (cancel_context, cancel_responder) = tokio::time::timeout(
+                Duration::from_secs(5),
+                action.cancel_service.recv_next_request(),
+            )
+            .await
+            .expect("timed out waiting for cancel request")
+            .expect("action should receive cancel request")
+            .expect("cancel subscription should not be closed");
 
             assert_eq!(cancel_context.message().master_node(), CALLER_MASTER_NODE);
             assert_eq!(cancel_context.message().instance_id(), CALLER_INSTANCE_ID);
@@ -2040,9 +2043,8 @@ async fn action_communication_goal_cancelled() {
             stop_feedback.notify_waiters();
             feedback_task.await.expect("feedback loop task panicked")?;
 
-            action
-                .cancel_service
-                .publish_response(cancel_response_topic, cancel_response_payload_server)
+            cancel_responder
+                .respond(cancel_response_payload_server)
                 .await?;
 
             Ok::<(), Error>(())

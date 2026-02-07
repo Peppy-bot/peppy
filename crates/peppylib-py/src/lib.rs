@@ -4,7 +4,6 @@ mod config;
 mod messaging;
 mod names;
 mod runtime;
-mod services;
 
 /// Example function: returns the sum of two integers as a string.
 #[pyfunction]
@@ -21,6 +20,5 @@ fn _peppylib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     messaging::register(m)?;
     names::register(m)?;
     runtime::register(m)?;
-    services::register(m)?;
     Ok(())
 }

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use crate::messaging::{PyMessengerHandle, PyTopicMessage};
+use super::{PyMessengerHandle, PyTopicMessage};
 
 /// Python wrapper for a service request received by a listener.
 #[pyclass(name = "ServiceRequestContext")]
