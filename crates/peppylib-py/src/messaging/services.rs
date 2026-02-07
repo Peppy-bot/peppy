@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use super::{PyMessengerHandle, PyTopicMessage};
+use super::{PyMessengerHandle, PyTopicMessage, to_py_err};
 
 /// Python wrapper for a service request received by a listener.
 #[pyclass(name = "ServiceRequestContext")]
@@ -89,10 +89,7 @@ impl PyServiceEndpoint {
             // Phase 1: receive next request (pure Rust, no GIL needed)
             let recv_result = {
                 let mut endpoint = inner.lock().await;
-                endpoint
-                    .recv_next_request()
-                    .await
-                    .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?
+                endpoint.recv_next_request().await.map_err(to_py_err)?
             };
 
             let Some((context, responder)) = recv_result else {
@@ -123,7 +120,7 @@ impl PyServiceEndpoint {
             responder
                 .respond(Bytes::from(response_bytes))
                 .await
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+                .map_err(to_py_err)?;
 
             Ok(true)
         })
@@ -159,7 +156,7 @@ impl PyServiceMessenger {
                 &as_service_name,
             )
             .await
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+            .map_err(to_py_err)?;
             Ok(PyServiceEndpoint {
                 inner: Arc::new(Mutex::new(endpoint)),
             })
@@ -193,7 +190,7 @@ impl PyServiceMessenger {
                 target_instance_id.as_deref(),
             )
             .await
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+            .map_err(to_py_err)?;
             Ok(reachable)
         })
     }
@@ -229,7 +226,7 @@ impl PyServiceMessenger {
                 Duration::from_secs_f64(response_timeout_secs),
             )
             .await
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+            .map_err(to_py_err)?;
             Ok(PyTopicMessage::from(response))
         })
     }

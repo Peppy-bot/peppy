@@ -2,12 +2,29 @@ mod actions;
 mod services;
 mod topics;
 
+use peppylib::PeppyError;
 use peppylib::messaging::MessengerHandle;
 use pmi::{MessengerBackend, Subscription, TopicMessage, ZenohAdapter, ZenohdInstance};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+/// Convert a `peppylib::error::Error` into an appropriate Python exception.
+///
+/// Maps timeout and unreachable variants to their natural Python counterparts
+/// so that callers can catch `TimeoutError` or `ConnectionError` by type.
+pub(crate) fn to_py_err(err: PeppyError) -> PyErr {
+    match &err {
+        PeppyError::ServiceTimeout { .. } | PeppyError::ActionResultTimeout { .. } => {
+            PyErr::new::<pyo3::exceptions::PyTimeoutError, _>(err.to_string())
+        }
+        PeppyError::ServiceUnreachable { .. } | PeppyError::ActionResultUnreachable { .. } => {
+            PyErr::new::<pyo3::exceptions::PyConnectionError, _>(err.to_string())
+        }
+        _ => PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(err.to_string()),
+    }
+}
 
 use topics::PyTopicMessenger;
 

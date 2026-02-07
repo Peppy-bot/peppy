@@ -289,8 +289,8 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                 "Health service should not be reachable while setup is blocked"
             )
 
-            # Polling health should fail
-            with pytest.raises(RuntimeError):
+            # Polling health should fail (service is unreachable)
+            with pytest.raises(ConnectionError):
                 await ServiceMessenger.poll(
                     messenger,
                     TEST_MASTER_NODE,

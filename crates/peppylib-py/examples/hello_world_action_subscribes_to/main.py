@@ -127,15 +127,14 @@ async def main():
             f"Received result `{result_text}` even though the goal was cancelled. "
             "The action should stop responding to this goal."
         )
+    except (TimeoutError, ConnectionError):
+        print("[RESULT] No result returned after cancellation, as expected.")
+    except AssertionError:
+        raise
     except Exception as error:
-        if "Timeout" in type(error).__name__ or "Unreachable" in type(error).__name__:
-            print("[RESULT] No result returned after cancellation, as expected.")
-        elif isinstance(error, AssertionError):
-            raise
-        else:
-            raise RuntimeError(
-                f"Unexpected error after cancelling goal: {error}"
-            ) from error
+        raise RuntimeError(
+            f"Unexpected error after cancelling goal: {error}"
+        ) from error
 
     print(
         "Action sender finished exercising goal, feedback, result, and cancel flows."

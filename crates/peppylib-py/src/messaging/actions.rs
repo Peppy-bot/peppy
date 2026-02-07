@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use super::services::PyServiceEndpoint;
-use super::{PyMessengerHandle, PyTopicMessage};
+use super::{PyMessengerHandle, PyTopicMessage, to_py_err};
 use crate::config::PyQoSProfile;
 
 // ---------------------------------------------------------------------------
@@ -28,7 +28,7 @@ impl PyTopicPublisher {
             publisher
                 .publish(Bytes::from(payload))
                 .await
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+                .map_err(to_py_err)?;
             Ok(())
         })
     }
@@ -58,10 +58,7 @@ impl PyActionGoalHandle {
         let inner = Arc::clone(&self.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let mut handle = inner.lock().await;
-            let msg = handle
-                .on_next_feedback()
-                .await
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+            let msg = handle.on_next_feedback().await.map_err(to_py_err)?;
             Ok(PyTopicMessage::from(msg))
         })
     }
@@ -142,7 +139,7 @@ impl PyActionMessenger {
                 &as_action_name,
             )
             .await
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+            .map_err(to_py_err)?;
 
             Ok(PyActionCreation {
                 goal_service: Arc::new(Mutex::new(creation.goal_service)),
@@ -186,7 +183,7 @@ impl PyActionMessenger {
                 Duration::from_secs_f64(goal_timeout_secs),
             )
             .await
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+            .map_err(to_py_err)?;
 
             // Cache goal_response data before moving handle into Arc<Mutex<>>
             let resp = goal_handle.goal_response();
@@ -223,7 +220,7 @@ impl PyActionMessenger {
                 Duration::from_secs_f64(cancel_timeout_secs),
             )
             .await
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+            .map_err(to_py_err)?;
             Ok(PyTopicMessage::from(response))
         })
     }
@@ -247,7 +244,7 @@ impl PyActionMessenger {
                 Duration::from_secs_f64(result_timeout_secs),
             )
             .await
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+            .map_err(to_py_err)?;
             Ok(PyTopicMessage::from(response))
         })
     }
@@ -279,7 +276,7 @@ impl PyActionMessenger {
                 target_instance_id.as_deref(),
             )
             .await
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+            .map_err(to_py_err)?;
             Ok(reachable)
         })
     }
