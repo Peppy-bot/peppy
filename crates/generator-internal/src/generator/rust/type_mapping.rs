@@ -6,7 +6,7 @@ use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 use syn::{File, parse2};
 
-pub(super) fn schema_type_to_tokens(
+pub fn schema_type_to_tokens(
     schema: &SchemaType,
     struct_prefix: &str,
     field_name: &str,
@@ -53,7 +53,7 @@ pub(super) fn schema_type_to_tokens(
     }
 }
 
-pub(super) fn primitive_type_token(token: &TypeToken) -> TokenStream {
+pub fn primitive_type_token(token: &TypeToken) -> TokenStream {
     match token {
         TypeToken::Bool => quote!(bool),
         TypeToken::String => quote!(String),
@@ -72,7 +72,7 @@ pub(super) fn primitive_type_token(token: &TypeToken) -> TokenStream {
     }
 }
 
-pub(super) fn sanitize_capnp_field_name(input: &str) -> String {
+pub fn sanitize_capnp_field_name(input: &str) -> String {
     fn to_pascal_case(input: &str) -> String {
         let mut result = String::new();
 
@@ -115,7 +115,7 @@ pub(super) fn sanitize_capnp_field_name(input: &str) -> String {
     }
 }
 
-pub(super) fn unused_params_stmt(params: &[FunctionParam]) -> TokenStream {
+pub fn unused_params_stmt(params: &[FunctionParam]) -> TokenStream {
     if params.is_empty() {
         TokenStream::new()
     } else if params.len() == 1 {
@@ -137,7 +137,7 @@ pub(super) fn unused_params_stmt(params: &[FunctionParam]) -> TokenStream {
     }
 }
 
-pub(super) fn render_tokens(tokens: TokenStream) -> String {
+pub fn render_tokens(tokens: TokenStream) -> String {
     parse2::<File>(tokens.clone())
         .map(|file| prettyplease::unparse(&file))
         .unwrap_or_else(|_| tokens.to_string())

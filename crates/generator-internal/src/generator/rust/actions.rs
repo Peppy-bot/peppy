@@ -9,7 +9,7 @@ use config::node::MessageFormat;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
-pub(super) fn build_action_handle_struct(
+pub fn build_action_handle_struct(
     has_goal: bool,
     has_feedback: bool,
     has_result: bool,
@@ -36,7 +36,7 @@ pub(super) fn build_action_handle_struct(
     }
 }
 
-pub(super) fn build_action_expose_method() -> TokenStream {
+pub fn build_action_expose_method() -> TokenStream {
     quote! {
         pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self> {
             let action = peppylib::ActionMessenger::expose(
@@ -58,7 +58,7 @@ pub(super) fn build_action_expose_method() -> TokenStream {
     }
 }
 
-pub(super) fn build_action_handle_method(
+pub fn build_action_handle_method(
     method_name: &Ident,
     helper_name: &Ident,
     request_struct: &Ident,
@@ -115,7 +115,7 @@ pub(super) fn build_action_handle_method(
     }
 }
 
-pub(super) fn build_action_payload_handler(
+pub fn build_action_payload_handler(
     handler_name: &Ident,
     deserializer_name: &Ident,
     request_struct: &Ident,
@@ -206,7 +206,7 @@ pub(super) fn build_action_payload_handler(
     }
 }
 
-pub(super) fn build_action_request_deserializer(
+pub fn build_action_request_deserializer(
     deserializer_fn_name: &Ident,
     request_spec: &MessageEncodingSpec,
     request_format: &MessageFormat,
@@ -237,7 +237,7 @@ pub(super) fn build_action_request_deserializer(
     )
 }
 
-pub(super) fn build_action_feedback_emit(
+pub fn build_action_feedback_emit(
     params: &[FunctionParam],
     encoding: Option<&MessageEncodingSpec>,
     label: &str,
