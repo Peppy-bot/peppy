@@ -4,7 +4,6 @@ mod tests;
 mod actions;
 mod context;
 mod deserialization;
-mod exposed_services;
 pub mod parameters;
 mod serialization;
 mod services;
@@ -36,7 +35,6 @@ use actions::{
 };
 use context::{GenerationContext, collect_function_params, map_message_format};
 use deserialization::{build_deserialize_fn, deserialize_format_fields};
-use exposed_services::ExposedServicesModule;
 use serialization::{
     MessageEncodingSpec, build_serialize_payload, generate_assignments_for_format,
     generate_assignments_from_struct,
@@ -53,7 +51,6 @@ use type_mapping::{render_tokens, unused_params_stmt};
 pub struct RustGenerator {
     sections: Vec<InterfaceArtifact>,
     schemas: HashMap<String, CapnpSchema>,
-    pending_exposed_services: Option<ExposedServicesModule>,
     parameters: config::NodeArguments,
 }
 
@@ -68,17 +65,8 @@ impl RustGenerator {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn into_artifacts(mut self) -> Vec<InterfaceArtifact> {
-        self.flush_pending_exposed_services();
+    pub fn into_artifacts(self) -> Vec<InterfaceArtifact> {
         self.sections
-    }
-
-    fn flush_pending_exposed_services(&mut self) {
-        if let Some(module) = self.pending_exposed_services.take() {
-            for artifact in module.into_artifacts() {
-                self.push_section(artifact);
-            }
-        }
     }
 
     fn register_schema(
@@ -780,10 +768,15 @@ impl LanguageGenerator for RustGenerator {
             module_name = fn_name_str.clone();
         }
 
-        let module = self
-            .pending_exposed_services
-            .get_or_insert_with(ExposedServicesModule::new);
-        module.push_service(module_name, service_tokens);
+        let tokens: TokenStream = quote! {
+            #( #service_tokens )*
+        };
+        let rendered = render_tokens(tokens);
+        self.push_section(InterfaceArtifact::from_kind(
+            &module_name,
+            InterfaceKind::ExposedService,
+            rendered,
+        ));
         Ok(())
     }
 
@@ -1530,9 +1523,7 @@ impl LanguageGenerator for RustGenerator {
         Ok(())
     }
 
-    fn build(mut self, to_path: impl AsRef<Path>) -> Result<()> {
-        self.flush_pending_exposed_services();
-
+    fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
         common::add_peppylib_dependencies(&to_path)?;
         common::write_capnp_schemas(&self.schemas, to_path.as_ref())?;
         common::add_artifacts_to_lib(&to_path, self.sections)?;
