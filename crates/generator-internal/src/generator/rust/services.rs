@@ -10,31 +10,53 @@ use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 use std::collections::HashMap;
 
-pub(super) struct ServiceResponseSpec<'a> {
-    pub(super) format: &'a MessageFormat,
-    pub(super) struct_ident: Ident,
-    pub(super) builder_type: TokenStream,
-    pub(super) include_service_instance_id: bool,
+pub struct ServiceResponseSpec<'a> {
+    pub format: &'a MessageFormat,
+    pub struct_ident: Ident,
+    pub builder_type: TokenStream,
+    pub include_service_instance_id: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn build_exposed_service_method(
-    fn_name: &Ident,
-    handler_fn_name_override: Option<&Ident>,
-    handler_helper_name_override: Option<&Ident>,
-    request_deserializer_name_override: Option<&Ident>,
-    wire_params: &[FunctionParam],
-    handler_params: &[FunctionParam],
-    instance_id_param: Option<&FunctionParam>,
-    encoding: Option<&MessageEncodingSpec>,
-    request_format: Option<&MessageFormat>,
-    label: &str,
-    service_name_literal: &Literal,
-    request_struct: Option<&Ident>,
-    request_data_struct: Option<&Ident>,
-    response_spec: Option<&ServiceResponseSpec>,
-    use_service_name_const: bool,
+#[derive(Clone, Copy)]
+pub struct ExposedServiceMethodSpec<'a> {
+    pub fn_name: &'a Ident,
+    pub handler_fn_name_override: Option<&'a Ident>,
+    pub handler_helper_name_override: Option<&'a Ident>,
+    pub request_deserializer_name_override: Option<&'a Ident>,
+    pub wire_params: &'a [FunctionParam],
+    pub handler_params: &'a [FunctionParam],
+    pub instance_id_param: Option<&'a FunctionParam>,
+    pub encoding: Option<&'a MessageEncodingSpec>,
+    pub request_format: Option<&'a MessageFormat>,
+    pub label: &'a str,
+    pub service_name_literal: &'a Literal,
+    pub request_struct: Option<&'a Ident>,
+    pub request_data_struct: Option<&'a Ident>,
+    pub response_spec: Option<&'a ServiceResponseSpec<'a>>,
+    pub use_service_name_const: bool,
+}
+
+pub fn build_exposed_service_method(
+    spec: &ExposedServiceMethodSpec,
 ) -> (TokenStream, Vec<TokenStream>) {
+    let ExposedServiceMethodSpec {
+        fn_name,
+        handler_fn_name_override,
+        handler_helper_name_override,
+        request_deserializer_name_override,
+        wire_params,
+        handler_params,
+        instance_id_param,
+        encoding,
+        request_format,
+        label,
+        service_name_literal,
+        request_struct,
+        request_data_struct,
+        response_spec,
+        use_service_name_const,
+    } = *spec;
+
     let handler_fn_name = handler_fn_name_override.cloned().unwrap_or_else(|| {
         Ident::new(
             &format!("handle_{}_next_request", fn_name),
@@ -162,31 +184,22 @@ pub(super) fn build_exposed_service_method(
             request_struct
         };
 
-        let request_deserializer = if instance_from_request_context {
-            build_request_deserializer(
-                &request_deserializer_name,
-                request_spec,
-                request_format,
-                wire_params,
-                handler_params,
-                label,
-                deserializer_struct,
-                None,
-                use_service_name_const,
-            )
+        let instance_id_for_deserializer = if instance_from_request_context {
+            None
         } else {
-            build_request_deserializer(
-                &request_deserializer_name,
-                request_spec,
-                request_format,
-                wire_params,
-                handler_params,
-                label,
-                deserializer_struct,
-                instance_id_param,
-                use_service_name_const,
-            )
+            instance_id_param
         };
+        let request_deserializer = build_request_deserializer(&RequestDeserializerSpec {
+            deserializer_fn_name: &request_deserializer_name,
+            request_spec,
+            request_format,
+            wire_params,
+            handler_params,
+            label,
+            request_struct: deserializer_struct,
+            instance_id_param: instance_id_for_deserializer,
+            use_service_name_const,
+        });
         helper_tokens.push(request_deserializer);
 
         let deserializer_pattern = if use_service_name_const {
@@ -479,7 +492,7 @@ pub(super) fn build_exposed_service_method(
     (method, helper_tokens)
 }
 
-pub(super) fn build_request_struct_with_name_and_impl(
+pub fn build_request_struct_with_name_and_impl(
     struct_name: &str,
     params: &[FunctionParam],
     with_impl: bool,
@@ -543,18 +556,32 @@ pub(super) fn build_request_struct_with_name_and_impl(
     Some((ident, tokens))
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn build_request_deserializer(
-    deserializer_fn_name: &Ident,
-    request_spec: &MessageEncodingSpec,
-    request_format: &MessageFormat,
-    wire_params: &[FunctionParam],
-    handler_params: &[FunctionParam],
-    label: &str,
-    request_struct: Option<&Ident>,
-    instance_id_param: Option<&FunctionParam>,
-    use_service_name_const: bool,
-) -> TokenStream {
+#[derive(Clone, Copy)]
+pub struct RequestDeserializerSpec<'a> {
+    pub deserializer_fn_name: &'a Ident,
+    pub request_spec: &'a MessageEncodingSpec,
+    pub request_format: &'a MessageFormat,
+    pub wire_params: &'a [FunctionParam],
+    pub handler_params: &'a [FunctionParam],
+    pub label: &'a str,
+    pub request_struct: Option<&'a Ident>,
+    pub instance_id_param: Option<&'a FunctionParam>,
+    pub use_service_name_const: bool,
+}
+
+pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> TokenStream {
+    let RequestDeserializerSpec {
+        deserializer_fn_name,
+        request_spec,
+        request_format,
+        wire_params,
+        handler_params,
+        label,
+        request_struct,
+        instance_id_param,
+        use_service_name_const,
+    } = *spec;
+
     let field_context_expr = if use_service_name_const {
         quote!(String::from(SERVICE_NAME))
     } else {
@@ -641,7 +668,7 @@ pub(super) fn build_request_deserializer(
     }
 }
 
-pub(super) fn build_response_serialization_code(
+pub fn build_response_serialization_code(
     response_spec: Option<&ServiceResponseSpec>,
     label: &str,
     callback_call: &TokenStream,
@@ -684,7 +711,7 @@ pub(super) fn build_response_serialization_code(
     })
 }
 
-pub(super) fn build_return_type_from_params(
+pub fn build_return_type_from_params(
     params: &[FunctionParam],
     request_struct: Option<&Ident>,
 ) -> TokenStream {
@@ -701,7 +728,7 @@ pub(super) fn build_return_type_from_params(
     }
 }
 
-pub(super) fn deserialize_fields_from_format(
+pub fn deserialize_fields_from_format(
     request_format: &MessageFormat,
     params: &[FunctionParam],
     label: &str,
@@ -731,7 +758,7 @@ pub(super) fn deserialize_fields_from_format(
     (field_statements, value_idents)
 }
 
-pub(super) fn build_result_expr_from_values(
+pub fn build_result_expr_from_values(
     params: &[FunctionParam],
     value_idents: &[Ident],
     request_struct: Option<&Ident>,
@@ -756,7 +783,7 @@ pub(super) fn build_result_expr_from_values(
     }
 }
 
-pub(super) fn build_response_payload_tokens(
+pub fn build_response_payload_tokens(
     spec: &ServiceResponseSpec,
     response_ident: &Ident,
     error_context: &TokenStream,

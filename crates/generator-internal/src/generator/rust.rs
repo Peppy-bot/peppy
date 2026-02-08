@@ -40,8 +40,8 @@ use serialization::{
     generate_assignments_from_struct,
 };
 use services::{
-    ServiceResponseSpec, build_exposed_service_method, build_request_struct_with_name_and_impl,
-    deserialize_fields_from_format,
+    ExposedServiceMethodSpec, ServiceResponseSpec, build_exposed_service_method,
+    build_request_struct_with_name_and_impl, deserialize_fields_from_format,
 };
 use topics::{build_subscribed_topic_callback, build_topic_emit};
 use type_mapping::{render_tokens, unused_params_stmt};
@@ -735,23 +735,24 @@ impl LanguageGenerator for RustGenerator {
         };
 
         let service_name_literal = Literal::string(service.name.as_str());
-        let (method_token, helper_tokens) = build_exposed_service_method(
-            &fn_name,
-            Some(&generic_handler_ident),
-            Some(&generic_helper_ident),
-            Some(&generic_deserializer_ident),
-            &wire_params,
-            &handler_params,
-            Some(&instance_id_param),
-            encoding.as_ref(),
-            request_format,
-            &fn_name_str,
-            &service_name_literal,
-            request_struct_ident.as_ref(),
-            request_data_struct_ident.as_ref(),
-            response_spec.as_ref(),
-            true,
-        );
+        let (method_token, helper_tokens) =
+            build_exposed_service_method(&ExposedServiceMethodSpec {
+                fn_name: &fn_name,
+                handler_fn_name_override: Some(&generic_handler_ident),
+                handler_helper_name_override: Some(&generic_helper_ident),
+                request_deserializer_name_override: Some(&generic_deserializer_ident),
+                wire_params: &wire_params,
+                handler_params: &handler_params,
+                instance_id_param: Some(&instance_id_param),
+                encoding: encoding.as_ref(),
+                request_format,
+                label: &fn_name_str,
+                service_name_literal: &service_name_literal,
+                request_struct: request_struct_ident.as_ref(),
+                request_data_struct: request_data_struct_ident.as_ref(),
+                response_spec: response_spec.as_ref(),
+                use_service_name_const: true,
+            });
 
         let service_name_const = {
             let service_name_str = Literal::string(service.name.as_str());

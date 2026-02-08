@@ -8,25 +8,21 @@ use quote::quote;
 use std::collections::HashMap;
 
 #[derive(Default)]
-pub(super) struct GenerationContext {
+pub struct GenerationContext {
     structs: Vec<StructDefinition>,
     private_items: Vec<TokenStream>,
 }
 
 impl GenerationContext {
-    pub(super) fn add_struct(&mut self, ident: Ident, fields: Vec<(Ident, TokenStream)>) {
+    pub fn add_struct(&mut self, ident: Ident, fields: Vec<(Ident, TokenStream)>) {
         self.add_struct_with_derives(ident, fields, true)
     }
 
-    pub(super) fn add_struct_without_clone(
-        &mut self,
-        ident: Ident,
-        fields: Vec<(Ident, TokenStream)>,
-    ) {
+    pub fn add_struct_without_clone(&mut self, ident: Ident, fields: Vec<(Ident, TokenStream)>) {
         self.add_struct_with_derives(ident, fields, false)
     }
 
-    pub(super) fn add_struct_with_derives(
+    pub fn add_struct_with_derives(
         &mut self,
         ident: Ident,
         fields: Vec<(Ident, TokenStream)>,
@@ -47,15 +43,15 @@ impl GenerationContext {
         }
     }
 
-    pub(super) fn add_private_struct(&mut self, tokens: TokenStream) {
+    pub fn add_private_struct(&mut self, tokens: TokenStream) {
         self.private_items.push(tokens);
     }
 
-    pub(super) fn wrap_optional_type(&mut self, ty: TokenStream) -> TokenStream {
+    pub fn wrap_optional_type(&mut self, ty: TokenStream) -> TokenStream {
         quote!(Option<#ty>)
     }
 
-    pub(super) fn into_tokens(self) -> Vec<TokenStream> {
+    pub fn into_tokens(self) -> Vec<TokenStream> {
         let mut items: Vec<TokenStream> = Vec::new();
         items.extend(self.structs.into_iter().map(StructDefinition::into_tokens));
         items.extend(self.private_items);
@@ -106,9 +102,7 @@ impl StructDefinition {
     }
 }
 
-pub(super) fn map_message_format(
-    format: Option<&MessageFormat>,
-) -> Result<Option<CapnpSchemaArtifacts>> {
+pub fn map_message_format(format: Option<&MessageFormat>) -> Result<Option<CapnpSchemaArtifacts>> {
     match format {
         Some(format) => MessageFormatMapper::new(format.clone())
             .map_message_format_to_capnpn()
@@ -118,12 +112,12 @@ pub(super) fn map_message_format(
     }
 }
 
-pub(super) struct SchemaFieldLookup<'a> {
+pub struct SchemaFieldLookup<'a> {
     entries: HashMap<String, (&'a String, &'a SchemaType)>,
 }
 
 impl<'a> SchemaFieldLookup<'a> {
-    pub(super) fn new(format: &'a MessageFormat) -> Self {
+    pub fn new(format: &'a MessageFormat) -> Self {
         let mut entries = HashMap::with_capacity(format.0.len() * 2);
         for (name, schema) in &format.0 {
             let capnp_key = sanitize_capnp_field_name(name);
@@ -135,7 +129,7 @@ impl<'a> SchemaFieldLookup<'a> {
         Self { entries }
     }
 
-    pub(super) fn get(&self, key: &str) -> (&'a String, &'a SchemaType) {
+    pub fn get(&self, key: &str) -> (&'a String, &'a SchemaType) {
         *self
             .entries
             .get(key)
@@ -143,7 +137,7 @@ impl<'a> SchemaFieldLookup<'a> {
     }
 }
 
-pub(super) fn collect_function_params(
+pub fn collect_function_params(
     accept_format_artifacts: Option<&CapnpSchemaArtifacts>,
     return_format_artifacts: Option<&CapnpSchemaArtifacts>,
     struct_prefix: &str,

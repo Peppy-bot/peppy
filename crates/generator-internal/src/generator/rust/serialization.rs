@@ -6,23 +6,23 @@ use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 use std::collections::HashMap;
 
-pub(super) struct MessageEncodingSpec {
-    pub(super) builder_type: TokenStream,
-    pub(super) assignments: Vec<TokenStream>,
-    pub(super) reader_type: TokenStream,
+pub struct MessageEncodingSpec {
+    pub builder_type: TokenStream,
+    pub assignments: Vec<TokenStream>,
+    pub reader_type: TokenStream,
 }
 
 #[derive(Default)]
-pub(super) struct NameGenerator {
+pub struct NameGenerator {
     counter: usize,
 }
 
 impl NameGenerator {
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         Self { counter: 0 }
     }
 
-    pub(super) fn next(&mut self, hint: &str) -> Ident {
+    pub fn next(&mut self, hint: &str) -> Ident {
         let sanitized = sanitize_component(hint);
         let suffix = self.counter;
         self.counter += 1;
@@ -35,7 +35,7 @@ impl NameGenerator {
     }
 }
 
-pub(super) fn generate_assignments_for_format(
+pub fn generate_assignments_for_format(
     builder_ident: &Ident,
     format: &MessageFormat,
     params: &[FunctionParam],
@@ -68,7 +68,7 @@ pub(super) fn generate_assignments_for_format(
     assignments
 }
 
-pub(super) fn generate_assignments_from_struct(
+pub fn generate_assignments_from_struct(
     builder_ident: &Ident,
     format: &MessageFormat,
     struct_ident: &Ident,
@@ -92,7 +92,7 @@ pub(super) fn generate_assignments_from_struct(
     assignments
 }
 
-pub(super) fn generate_field_assignment(
+pub fn generate_field_assignment(
     builder_expr: &TokenStream,
     field_name: &str,
     schema: &SchemaType,
@@ -350,7 +350,7 @@ fn generate_object_assignment(
 ///
 /// `pre_statements` are emitted before `init_root` (e.g. struct field unpacking).
 /// `error_context` must evaluate to `String` at runtime.
-pub(super) fn build_serialize_payload(
+pub fn build_serialize_payload(
     builder_type: &TokenStream,
     pre_statements: &[TokenStream],
     assignments: &[TokenStream],

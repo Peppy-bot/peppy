@@ -6,7 +6,7 @@ use indexmap::IndexMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
-pub(super) fn generate_field_reader_statements(
+pub fn generate_field_reader_statements(
     reader_expr: &TokenStream,
     field_name: &str,
     schema: &SchemaType,
@@ -29,7 +29,7 @@ pub(super) fn generate_field_reader_statements(
 /// `fn name(payload: &[u8]) -> crate::Result<T> { ... }`.
 ///
 /// `context_expr` must evaluate to `String` at runtime (e.g. `format!(...)`).
-pub(super) fn build_deserialize_fn(
+pub fn build_deserialize_fn(
     fn_name: &Ident,
     reader_type: &TokenStream,
     context_expr: &TokenStream,
@@ -85,7 +85,7 @@ pub(super) fn build_deserialize_fn(
 /// - `field_statements`: variable binding statements for each deserialized field
 /// - `field_inits`: struct field initializers (`field_name: value_ident`)
 /// - `value_idents`: the value identifiers for each field
-pub(super) fn deserialize_format_fields(
+pub fn deserialize_format_fields(
     format: &MessageFormat,
     struct_prefix: &str,
     context_expr: &TokenStream,

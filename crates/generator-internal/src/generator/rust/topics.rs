@@ -6,7 +6,7 @@ use config::node::{ExposedTopic, QoSProfile, SubscribedTopic};
 use proc_macro2::{Ident, Literal, TokenStream};
 use quote::quote;
 
-pub(super) fn build_topic_emit(
+pub fn build_topic_emit(
     method_ident: &Ident,
     params: &[FunctionParam],
     encoding: Option<&MessageEncodingSpec>,
@@ -87,7 +87,7 @@ pub(super) fn build_topic_emit(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn build_subscribed_topic_callback(
+pub fn build_subscribed_topic_callback(
     fn_name: &Ident,
     helper_fn_ident: &Ident,
     args_struct_ident: &Ident,
@@ -173,7 +173,7 @@ pub(super) fn build_subscribed_topic_callback(
     }
 }
 
-pub(super) fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
+pub fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
     let variant = match profile {
         QoSProfile::Standard => "Standard",
         QoSProfile::Reliable => "Reliable",
