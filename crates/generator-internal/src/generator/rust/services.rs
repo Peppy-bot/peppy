@@ -1,6 +1,8 @@
 use super::context::SchemaFieldLookup;
-use super::deserialization::generate_field_reader_statements;
-use super::serialization::{MessageEncodingSpec, NameGenerator, generate_field_assignment};
+use super::deserialization::{build_deserialize_fn, generate_field_reader_statements};
+use super::serialization::{
+    MessageEncodingSpec, NameGenerator, build_serialize_payload, generate_field_assignment,
+};
 use crate::generator::naming::sanitize_component;
 use config::encoding::FunctionParam;
 use config::node::MessageFormat;
@@ -553,59 +555,14 @@ pub(super) fn build_request_deserializer(
     instance_id_param: Option<&FunctionParam>,
     use_service_name_const: bool,
 ) -> TokenStream {
-    let (context_expr, field_context_expr) = if use_service_name_const {
-        (quote!(SERVICE_NAME), quote!(String::from(SERVICE_NAME)))
+    let field_context_expr = if use_service_name_const {
+        quote!(String::from(SERVICE_NAME))
     } else {
         let context_literal = Literal::string(label);
-        (
-            quote!(#context_literal),
-            quote!(String::from(#context_literal)),
-        )
+        quote!(String::from(#context_literal))
     };
 
     let reader_type = &request_spec.reader_type;
-
-    let build_deserializer_body =
-        |return_ty: TokenStream, result_expr: TokenStream, field_statements: Vec<TokenStream>| {
-            let root_stmt = if field_statements.is_empty() {
-                quote! {
-                    message_reader
-                        .get_root::<#reader_type>()
-                        .map_err(|source| crate::Error::CapnpDeserialize {
-                            context: String::from(#context_expr),
-                            source,
-                        })?;
-                }
-            } else {
-                quote! {
-                    let root = message_reader
-                        .get_root::<#reader_type>()
-                        .map_err(|source| crate::Error::CapnpDeserialize {
-                            context: String::from(#context_expr),
-                            source,
-                        })?;
-                }
-            };
-            quote! {
-                fn #deserializer_fn_name(payload: &[u8]) -> crate::Result<#return_ty> {
-                    let mut cursor = std::io::Cursor::new(payload);
-                    let message_reader = capnp::serialize::read_message(
-                            &mut cursor,
-                            capnp::message::ReaderOptions::new(),
-                        )
-                        .map_err(|source| crate::Error::CapnpDeserialize {
-                            context: String::from(#context_expr),
-                            source,
-                        })?;
-
-                    #root_stmt
-
-                    #(#field_statements)*
-
-                    Ok(#result_expr)
-                }
-            }
-        };
 
     if let Some(instance_param) = instance_id_param {
         let instance_ty = &instance_param.ty;
@@ -658,7 +615,14 @@ pub(super) fn build_request_deserializer(
             build_result_expr_from_values(handler_params, &ordered_request_values, request_struct);
         let result_expr = quote!((#instance_value_ident, #request_expr));
 
-        build_deserializer_body(return_ty, result_expr, field_statements)
+        build_deserialize_fn(
+            deserializer_fn_name,
+            reader_type,
+            &field_context_expr,
+            &return_ty,
+            &field_statements,
+            &result_expr,
+        )
     } else {
         let return_ty = build_return_type_from_params(handler_params, request_struct);
         let (field_statements, value_idents) =
@@ -666,7 +630,14 @@ pub(super) fn build_request_deserializer(
         let request_expr =
             build_result_expr_from_values(handler_params, &value_idents, request_struct);
 
-        build_deserializer_body(return_ty, request_expr, field_statements)
+        build_deserialize_fn(
+            deserializer_fn_name,
+            reader_type,
+            &field_context_expr,
+            &return_ty,
+            &field_statements,
+            &request_expr,
+        )
     }
 }
 
@@ -791,9 +762,8 @@ pub(super) fn build_response_payload_tokens(
     error_context: &TokenStream,
     service_instance_ident: Option<&Ident>,
 ) -> TokenStream {
-    let builder_type = &spec.builder_type;
     let format = spec.format;
-    let builder_ident = Ident::new("response_root", Span::call_site());
+    let builder_ident = Ident::new("root", Span::call_site());
 
     let mut assignments = Vec::new();
     let mut names = NameGenerator::new();
@@ -817,27 +787,5 @@ pub(super) fn build_response_payload_tokens(
         ));
     }
 
-    let init_root_tokens = if assignments.is_empty() {
-        quote!(let _ = capnp_msg.init_root::<#builder_type>();)
-    } else {
-        quote! {
-            let mut #builder_ident = capnp_msg.init_root::<#builder_type>();
-            #( #assignments )*
-        }
-    };
-
-    quote!({
-        let mut capnp_msg = capnp::message::Builder::new_default();
-        {
-            #init_root_tokens
-        }
-        let mut buffer = Vec::new();
-        capnp::serialize::write_message(&mut buffer, &capnp_msg).map_err(|source| {
-            crate::Error::CapnpSerialize {
-                context: #error_context,
-                source,
-            }
-        })?;
-        bytes::Bytes::from(buffer)
-    })
+    build_serialize_payload(&spec.builder_type, &[], &assignments, error_context)
 }

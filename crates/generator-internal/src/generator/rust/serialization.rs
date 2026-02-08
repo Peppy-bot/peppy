@@ -344,3 +344,40 @@ fn generate_object_assignment(
         #(#nested)*
     }
 }
+
+/// Generates a block expression that serializes fields into a Cap'n Proto message
+/// and returns `bytes::Bytes`.
+///
+/// `pre_statements` are emitted before `init_root` (e.g. struct field unpacking).
+/// `error_context` must evaluate to `String` at runtime.
+pub(super) fn build_serialize_payload(
+    builder_type: &TokenStream,
+    pre_statements: &[TokenStream],
+    assignments: &[TokenStream],
+    error_context: &TokenStream,
+) -> TokenStream {
+    let init_root_tokens = if assignments.is_empty() {
+        quote!(let _ = capnp_msg.init_root::<#builder_type>();)
+    } else {
+        quote! {
+            let mut root = capnp_msg.init_root::<#builder_type>();
+            #(#assignments)*
+        }
+    };
+
+    quote!({
+        let mut capnp_msg = capnp::message::Builder::new_default();
+        {
+            #(#pre_statements)*
+            #init_root_tokens
+        }
+        let mut buffer = Vec::new();
+        capnp::serialize::write_message(&mut buffer, &capnp_msg).map_err(|source| {
+            crate::Error::CapnpSerialize {
+                context: #error_context,
+                source,
+            }
+        })?;
+        bytes::Bytes::from(buffer)
+    })
+}
