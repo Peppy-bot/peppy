@@ -1,8 +1,10 @@
+use crate::messaging::PyMessengerHandle;
 use peppylib::runtime::{NodeBuilder, NodeRunner, StandaloneConfig};
 use pyo3::prelude::*;
 use pythonize::{depythonize, pythonize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 /// Python wrapper for CancellationToken.
@@ -37,6 +39,28 @@ impl PyNodeRunner {
         PyCancellationToken {
             inner: self.inner.cancellation_token().clone(),
         }
+    }
+
+    /// Get the messenger handle for pub/sub and service communication.
+    fn messenger(&self) -> PyMessengerHandle {
+        PyMessengerHandle {
+            inner: Arc::new(Mutex::new(self.inner.messenger().clone())),
+        }
+    }
+
+    /// Get the master node this instance is bound to.
+    fn bound_master_node(&self) -> &str {
+        self.inner.processor().bound_master_node()
+    }
+
+    /// Get the instance ID this node is bound to.
+    fn bound_instance_id(&self) -> &str {
+        self.inner.processor().bound_instance_id()
+    }
+
+    /// Get the node name.
+    fn node_name(&self) -> &str {
+        self.inner.processor().node_name()
     }
 }
 

@@ -675,3 +675,78 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
         "cancellation token should be cancelled after shutdown request"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_runner_exposes_messenger_and_metadata() {
+    let _env_guard = EnvAndDirGuard::new_standalone();
+
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
+    let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
+    let peppy_config = r#"{
+      schema_version: 1,
+      manifest: {
+        name: "test_node",
+        tag: "0.1.0",
+        language: "rust",
+        start_cmd: ["cargo", "run"]
+      },
+      parameters: {
+        frequency_hz: "f64"
+      }
+    }"#;
+    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
+
+    let standalone_config = peppylib::runtime::StandaloneConfig::new()
+        .with_parameters_json(serde_json::json!({ "frequency_hz": TEST_FREQUENCY_HZ }))
+        .with_messaging(&router_host, router_port)
+        .with_instance_id(TEST_INSTANCE_ID)
+        .with_node_name(TEST_NODE_NAME);
+
+    struct RunnerMetadata {
+        bound_master_node: String,
+        bound_instance_id: String,
+        node_name: String,
+        messaging_port: u16,
+        cancellation_token: CancellationToken,
+    }
+
+    let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<RunnerMetadata>();
+    let runner_task = tokio::task::spawn_blocking(move || {
+        NodeBuilder::new()
+            .with_config_path(&peppy_config_path)
+            .standalone(standalone_config)
+            .run(|_parameters: Parameters, node_runner| async move {
+                let _ = setup_tx.send(RunnerMetadata {
+                    bound_master_node: node_runner.processor().bound_master_node().to_string(),
+                    bound_instance_id: node_runner.processor().bound_instance_id().to_string(),
+                    node_name: node_runner.processor().node_name().to_string(),
+                    messaging_port: node_runner.messenger().messaging_port().await,
+                    cancellation_token: node_runner.cancellation_token().clone(),
+                });
+                Ok(())
+            })
+    });
+
+    let metadata = tokio::time::timeout(Duration::from_secs(5), setup_rx)
+        .await
+        .expect("runner setup should complete")
+        .expect("runner setup signal should be sent");
+
+    assert_eq!(metadata.bound_master_node, "standalone-master");
+    assert_eq!(metadata.bound_instance_id, TEST_INSTANCE_ID);
+    assert_eq!(metadata.node_name, TEST_NODE_NAME);
+    assert_eq!(metadata.messaging_port, router_port);
+
+    metadata.cancellation_token.cancel();
+
+    tokio::time::timeout(Duration::from_secs(10), runner_task)
+        .await
+        .expect("runner should exit")
+        .expect("runner task should not panic")
+        .expect("runner should return Ok");
+}
