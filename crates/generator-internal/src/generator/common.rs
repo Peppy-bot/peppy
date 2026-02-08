@@ -75,6 +75,16 @@ impl<'a> PeppyConfigTemplate<'a> {
     pub const TEMPLATE_PATH: &'static str = "peppygen/rust/Cargo.toml.j2";
 }
 
+#[derive(Template)]
+#[template(path = "peppygen/python/pyproject.toml.j2", escape = "none")]
+struct PeppyPythonConfigTemplate<'a> {
+    peppylib_path: &'a str,
+}
+
+impl<'a> PeppyPythonConfigTemplate<'a> {
+    pub const TEMPLATE_PATH: &'static str = "peppygen/python/pyproject.toml.j2";
+}
+
 #[derive(Clone)]
 struct WorkspacePackageMetadata {
     version: &'static str,
@@ -678,6 +688,10 @@ fn render_template(template_path: &str, peppylib_path: &str) -> Result<String> {
                 peppylib_version: env!("CARGO_PKG_VERSION"),
                 peppylib_path,
             };
+            Ok(tpl.render()?)
+        }
+        PeppyPythonConfigTemplate::TEMPLATE_PATH => {
+            let tpl = PeppyPythonConfigTemplate { peppylib_path };
             Ok(tpl.render()?)
         }
         _ => Err(Error::UnknownTemplate(template_path.to_string())),
