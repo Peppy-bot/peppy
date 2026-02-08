@@ -1174,7 +1174,6 @@ name = "generator"
 version = "0.0.1"
 dependencies = [
  "askama",
- "capnp",
  "config",
  "indexmap 2.13.0",
  "pmi",
