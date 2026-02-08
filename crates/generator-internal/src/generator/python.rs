@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests;
 
+use super::naming::{non_empty_str, prefixed_name};
 use super::types::{InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage};
 use crate::error::Result;
 use config::node::{
@@ -138,70 +139,4 @@ impl LanguageGenerator for PythonGenerator {
         // TODO: implement Python project scaffold generation.
         Ok(())
     }
-}
-
-fn non_empty_str(value: &str) -> Option<&str> {
-    if value.trim().is_empty() {
-        None
-    } else {
-        Some(value)
-    }
-}
-
-fn prefixed_name(prefix: &str, candidate: Option<&str>, fallback: &str) -> String {
-    let fallback_component = match sanitize_component(fallback) {
-        component if component.is_empty() => "item".to_string(),
-        component => component,
-    };
-
-    let maybe_component = candidate.and_then(|value| {
-        let sanitized = sanitize_component(value);
-        if sanitized.is_empty() {
-            None
-        } else {
-            Some(sanitized)
-        }
-    });
-
-    let component = maybe_component
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| fallback_component.clone());
-
-    if prefix.is_empty() {
-        component
-    } else {
-        format!("{prefix}_{component}")
-    }
-}
-
-fn sanitize_component(raw: &str) -> String {
-    let mut out = String::new();
-    let mut last_was_underscore = false;
-
-    for ch in raw.chars() {
-        let lower = ch.to_ascii_lowercase();
-        if lower.is_ascii_alphanumeric() {
-            out.push(lower);
-            last_was_underscore = false;
-        } else if !out.is_empty() && !last_was_underscore {
-            out.push('_');
-            last_was_underscore = true;
-        } else if out.is_empty() {
-            last_was_underscore = true;
-        }
-    }
-
-    while out.ends_with('_') {
-        out.pop();
-    }
-
-    if out.is_empty() {
-        return String::new();
-    }
-
-    if matches!(out.chars().next(), Some(c) if c.is_ascii_digit()) {
-        out.insert(0, '_');
-    }
-
-    out
 }
