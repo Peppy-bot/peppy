@@ -628,8 +628,8 @@ fn subscribed_to_two_actions_same_node() {
         .map(|artifact| (artifact.node_name, artifact.code_output))
         .collect();
 
-    let move_arm_module = subscribed_action_module_name(&move_arm_action);
-    let rotate_module = subscribed_action_module_name(&rotate_action);
+    let move_arm_module = module_name_from_components(&move_arm_action.node, &move_arm_action.name);
+    let rotate_module = module_name_from_components(&rotate_action.node, &rotate_action.name);
 
     let move_arm = artifact_map
         .get(&move_arm_module)
