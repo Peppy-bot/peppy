@@ -43,7 +43,7 @@ use services::{
     ExposedServiceMethodSpec, ServiceResponseSpec, build_exposed_service_method,
     build_request_struct_with_name_and_impl, deserialize_fields_from_format,
 };
-use topics::{build_subscribed_topic_callback, build_topic_emit};
+use topics::{SubscribedTopicCallbackSpec, build_subscribed_topic_callback, build_topic_emit};
 use type_mapping::{render_tokens, unused_params_stmt};
 
 /// Rust-specific implementation of the interface generator.
@@ -1149,16 +1149,16 @@ impl LanguageGenerator for RustGenerator {
                 &encoding_params,
             )?
             .expect("message encoding spec should exist when message format is provided");
-        let method_tokens = build_subscribed_topic_callback(
-            &callback_fn_ident,
-            &helper_fn_ident,
-            &args_struct_ident,
-            &params,
-            &format_artifacts,
-            &encoding,
+        let method_tokens = build_subscribed_topic_callback(SubscribedTopicCallbackSpec {
+            fn_name: &callback_fn_ident,
+            helper_fn_ident: &helper_fn_ident,
+            args_struct_ident: &args_struct_ident,
+            params: &params,
+            artifacts: &format_artifacts,
+            encoding: &encoding,
             topic,
-            &message_struct_name,
-        );
+            struct_prefix: &message_struct_name,
+        });
         let mut items = context.into_tokens();
         items.push(method_tokens);
 

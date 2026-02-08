@@ -6,6 +6,17 @@ use config::node::{ExposedTopic, QoSProfile, SubscribedTopic};
 use proc_macro2::{Ident, Literal, TokenStream};
 use quote::quote;
 
+pub struct SubscribedTopicCallbackSpec<'a> {
+    pub fn_name: &'a Ident,
+    pub helper_fn_ident: &'a Ident,
+    pub args_struct_ident: &'a Ident,
+    pub params: &'a [FunctionParam],
+    pub artifacts: &'a CapnpSchemaArtifacts,
+    pub encoding: &'a MessageEncodingSpec,
+    pub topic: &'a SubscribedTopic,
+    pub struct_prefix: &'a str,
+}
+
 pub fn build_topic_emit(
     method_ident: &Ident,
     params: &[FunctionParam],
@@ -86,17 +97,17 @@ pub fn build_topic_emit(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn build_subscribed_topic_callback(
-    fn_name: &Ident,
-    helper_fn_ident: &Ident,
-    args_struct_ident: &Ident,
-    params: &[FunctionParam],
-    artifacts: &CapnpSchemaArtifacts,
-    encoding: &MessageEncodingSpec,
-    topic: &SubscribedTopic,
-    struct_prefix: &str,
-) -> TokenStream {
+pub fn build_subscribed_topic_callback(spec: SubscribedTopicCallbackSpec) -> TokenStream {
+    let SubscribedTopicCallbackSpec {
+        fn_name,
+        helper_fn_ident,
+        args_struct_ident,
+        params,
+        artifacts,
+        encoding,
+        topic,
+        struct_prefix,
+    } = spec;
     let topic_literal = Literal::string(topic.name.as_str());
     let node_name_literal = Literal::string(topic.node.as_str());
     let reader_type = &encoding.reader_type;
