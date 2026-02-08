@@ -1,5 +1,7 @@
-mod helpers;
-
+use crate::helpers::{
+    WaitContext, compile_project, copy_config_to_output, init_cargo_user_node, init_test_env,
+    send_shutdown, spawn_cargo_run, wait_for_child, wait_for_health_service_reachable_or_exit,
+};
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
 use config::{
@@ -8,10 +10,6 @@ use config::{
     runtime::RuntimeConfig,
 };
 use generator::LanguageGenerator;
-use helpers::{
-    WaitContext, compile_project, copy_config_to_output, init_cargo_user_node, init_test_env,
-    send_shutdown, spawn_cargo_run, wait_for_child, wait_for_health_service_reachable_or_exit,
-};
 use std::path::Path;
 use std::{fs, time::Duration};
 use tempfile::TempDir;

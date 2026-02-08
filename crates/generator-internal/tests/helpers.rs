@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use generator::RustGenerator;
 use peppylib::messaging::{NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
@@ -168,7 +170,6 @@ pub fn wait_for_child(
     }
 }
 
-#[warn(dead_code)]
 pub fn compile_project(dir: impl AsRef<Path>) {
     let cargo_output = Command::new("cargo")
         .arg("build")
@@ -290,7 +291,6 @@ pub async fn wait_for_service_reachable_or_exit(
     }
 }
 
-#[allow(dead_code)]
 pub async fn wait_for_shutdown_service_reachable_or_exit(
     ctx: &WaitContext<'_>,
     target_node_name: &str,
@@ -363,7 +363,6 @@ pub async fn send_shutdown(
 
 /// Like `send_shutdown` but doesn't panic if the service is unreachable
 /// (e.g., the process has already exited).
-#[allow(dead_code)]
 pub async fn try_send_shutdown(
     messenger: &MessengerHandle,
     bound_master_node: &str,
