@@ -223,10 +223,24 @@ fn exposed_action() {
     // ActionHandle class
     assert_contains_all(&rendered, &["class ActionHandle:"]);
 
+    // Imports
+    assert_contains_all(
+        &rendered,
+        &[
+            "import peppylib",
+            "from dataclasses import dataclass",
+            "from typing import Optional",
+        ],
+    );
+
     // expose method
     assert_contains_all(
         &rendered,
-        &["async def expose(", "peppylib.ActionMessenger.expose("],
+        &[
+            "async def expose(",
+            "node_runner: peppylib.NodeRunner",
+            "peppylib.ActionMessenger.expose(",
+        ],
     );
 
     // Handler methods

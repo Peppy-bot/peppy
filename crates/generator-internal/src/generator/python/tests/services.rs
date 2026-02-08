@@ -122,10 +122,24 @@ fn expose_service() {
         ],
     );
 
+    // Imports
+    assert_contains_all(
+        &rendered,
+        &[
+            "import peppylib",
+            "from dataclasses import dataclass",
+            "from typing import Optional",
+        ],
+    );
+
     // Handler signature
     assert_contains_all(
         &rendered,
-        &["\"enable_camera\"", "async def handle_next_request("],
+        &[
+            "\"enable_camera\"",
+            "async def handle_next_request(",
+            "node_runner: peppylib.NodeRunner",
+        ],
     );
 
     // Messenger integration
@@ -217,7 +231,10 @@ fn subscribed_to_service() {
     assert_contains_all(&rendered, &["class Request:", "enable: bool"]);
 
     // Poll function signature
-    assert_contains_all(&rendered, &["async def poll(", "node_runner"]);
+    assert_contains_all(
+        &rendered,
+        &["async def poll(", "node_runner: peppylib.NodeRunner"],
+    );
 
     // Messenger integration
     assert_contains_all(&rendered, &["peppylib.ServiceMessenger.poll("]);

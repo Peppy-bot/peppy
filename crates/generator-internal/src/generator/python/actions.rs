@@ -1,5 +1,5 @@
 use super::code_builder::PythonCodeBuilder;
-use super::type_mapping::{NestedDataclass, collect_fields_from_format};
+use super::type_mapping::{NestedDataclass, collect_fields_from_format, uses_optional};
 use crate::generator::types::{
     SubscribedActionMessage, cancel_action_response_format, non_empty_message_format,
 };
@@ -24,6 +24,9 @@ fn emit_format_as_dataclass(
 ) {
     let mut nested_classes = Vec::new();
     let fields = collect_fields_from_format(format, class_name, &mut nested_classes);
+    if uses_optional(&fields, &nested_classes) {
+        builder.add_import("from typing import Optional");
+    }
     emit_nested_classes(builder, &nested_classes);
     let field_refs: Vec<(&str, &str)> = fields
         .iter()
@@ -35,6 +38,9 @@ fn emit_format_as_dataclass(
 fn emit_format_as_class(builder: &mut PythonCodeBuilder, class_name: &str, format: &MessageFormat) {
     let mut nested_classes = Vec::new();
     let fields = collect_fields_from_format(format, class_name, &mut nested_classes);
+    if uses_optional(&fields, &nested_classes) {
+        builder.add_import("from typing import Optional");
+    }
     emit_nested_classes(builder, &nested_classes);
     let field_refs: Vec<(&str, &str)> = fields
         .iter()
@@ -114,7 +120,8 @@ pub fn build_exposed_action(action: &ExposedAction) -> String {
     builder.class_def("ActionHandle", &[]);
 
     // expose method
-    builder.line("async def expose(node_runner):");
+    builder.add_import("import peppylib");
+    builder.line("async def expose(node_runner: peppylib.NodeRunner):");
     builder.indent();
     builder.line("action = await peppylib.ActionMessenger.expose(");
     builder.indent();
@@ -243,7 +250,8 @@ pub fn build_subscribed_action(
     }
 
     // fire_goal method
-    builder.line("async def fire_goal(node_runner, timeout, target_master_node=None, target_instance_id=None):");
+    builder.add_import("import peppylib");
+    builder.line("async def fire_goal(node_runner: peppylib.NodeRunner, timeout, target_master_node=None, target_instance_id=None):");
     builder.indent();
     builder.line("goal_payload = b\"\"");
     builder.line("action_handle = await peppylib.ActionMessenger.send_goal(");
@@ -265,7 +273,8 @@ pub fn build_subscribed_action(
     builder.blank_line();
 
     // cancel_goal method
-    builder.line("async def cancel_goal(node_runner, action_handle, timeout):");
+    builder
+        .line("async def cancel_goal(node_runner: peppylib.NodeRunner, action_handle, timeout):");
     builder.indent();
     builder.line("response = await peppylib.ActionMessenger.cancel_goal(");
     builder.indent();
@@ -289,7 +298,7 @@ pub fn build_subscribed_action(
     }
 
     // get_result method
-    builder.line("async def get_result(node_runner, action_handle, timeout):");
+    builder.line("async def get_result(node_runner: peppylib.NodeRunner, action_handle, timeout):");
     builder.indent();
     builder.line("response = await peppylib.ActionMessenger.request_result(");
     builder.indent();
