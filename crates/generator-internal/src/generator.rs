@@ -1,5 +1,8 @@
 mod common;
 pub(crate) mod naming;
+#[cfg(test)]
+#[macro_use]
+mod test_helpers;
 mod python;
 pub mod rust;
 pub mod types;
