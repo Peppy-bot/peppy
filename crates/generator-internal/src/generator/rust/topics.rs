@@ -1,6 +1,6 @@
-use super::context::SchemaFieldLookup;
-use super::deserialization::generate_field_reader_statements;
-use super::serialization::{MessageEncodingSpec, NameGenerator};
+use super::deserialization::build_deserialize_fn;
+use super::serialization::{MessageEncodingSpec, build_serialize_payload};
+use super::services::deserialize_fields_from_format;
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam};
 use config::node::{ExposedTopic, QoSProfile, SubscribedTopic};
 use proc_macro2::{Ident, Literal, TokenStream};
@@ -35,34 +35,14 @@ pub(super) fn build_topic_emit(
 
     match encoding {
         Some(spec) => {
-            let builder_type = &spec.builder_type;
-            let assignments = &spec.assignments;
-            let init_root_tokens = if assignments.is_empty() {
-                quote!(let _ = capnp_msg.init_root::<#builder_type>();)
-            } else {
-                quote! {
-                    let mut root = capnp_msg.init_root::<#builder_type>();
-                    #(#assignments)*
-                }
-            };
+            let error_context = quote!(String::from(#label_literal));
+            let serialize_block =
+                build_serialize_payload(&spec.builder_type, &[], &spec.assignments, &error_context);
 
             quote! {
                 #[allow(clippy::too_many_arguments)]
                 pub async fn #method_ident(#method_signature) -> crate::Result<()> {
-                    let mut capnp_msg = capnp::message::Builder::new_default();
-                    {
-                        #init_root_tokens
-                    }
-
-                    let mut buffer = Vec::new();
-                    capnp::serialize::write_message(&mut buffer, &capnp_msg).map_err(|source| {
-                        crate::Error::CapnpSerialize {
-                            context: String::from(#label_literal),
-                            source,
-                        }
-                    })?;
-
-                    let payload = bytes::Bytes::from(buffer);
+                    let payload = #serialize_block;
                     let qos = #qos_tokens;
                     let as_topic = #topic_literal;
                     let as_node_name = node_runner.processor().node_name();
@@ -120,29 +100,32 @@ pub(super) fn build_subscribed_topic_callback(
     let topic_literal = Literal::string(topic.name.as_str());
     let node_name_literal = Literal::string(topic.node.as_str());
     let reader_type = &encoding.reader_type;
-    let schema_lookup = SchemaFieldLookup::new(artifacts.message_format());
-
     let context_literal = Literal::string(struct_prefix);
     let context_expr = quote!(String::from(#context_literal));
 
-    let mut names = NameGenerator::new();
-    let mut field_statements = Vec::new();
-    let mut field_inits = Vec::new();
-    for param in params {
-        let key = param.ident.to_string();
-        let (original_name, schema) = schema_lookup.get(&key);
-        let (mut statements, value_ident) = generate_field_reader_statements(
-            &quote!(root),
-            original_name.as_str(),
-            schema,
-            struct_prefix,
-            &context_expr,
-            &mut names,
-        );
-        field_statements.append(&mut statements);
-        let field_ident = &param.ident;
-        field_inits.push(quote!(#field_ident: #value_ident));
-    }
+    let (field_statements, value_idents) = deserialize_fields_from_format(
+        artifacts.message_format(),
+        params,
+        struct_prefix,
+        &context_expr,
+    );
+    let field_inits: Vec<TokenStream> = params
+        .iter()
+        .zip(value_idents.iter())
+        .map(|(param, value_ident)| {
+            let field_ident = &param.ident;
+            quote!(#field_ident: #value_ident)
+        })
+        .collect();
+
+    let helper_fn_tokens = build_deserialize_fn(
+        helper_fn_ident,
+        reader_type,
+        &context_expr,
+        &quote!(#args_struct_ident),
+        &field_statements,
+        &quote!(#args_struct_ident { #( #field_inits ),* }),
+    );
 
     quote! {
         pub async fn #fn_name(
@@ -186,28 +169,7 @@ pub(super) fn build_subscribed_topic_callback(
             Ok((instance_id, message))
         }
 
-        fn #helper_fn_ident(payload: &[u8]) -> crate::Result<#args_struct_ident> {
-            let mut cursor = std::io::Cursor::new(payload);
-            let reader_options = capnp::message::ReaderOptions::new();
-            let message_reader = capnp::serialize::read_message(&mut cursor, reader_options)
-                .map_err(|source| crate::Error::CapnpDeserialize {
-                    context: String::from(#context_literal),
-                    source,
-                })?;
-
-            let root = message_reader
-                .get_root::<#reader_type>()
-                .map_err(|source| crate::Error::CapnpDeserialize {
-                    context: String::from(#context_literal),
-                    source,
-                })?;
-
-            #(#field_statements)*
-
-            Ok(#args_struct_ident {
-                #( #field_inits ),*
-            })
-        }
+        #helper_fn_tokens
     }
 }
 

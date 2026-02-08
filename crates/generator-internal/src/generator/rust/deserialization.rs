@@ -1,7 +1,7 @@
 use super::serialization::NameGenerator;
 use super::type_mapping::primitive_type_token;
 use crate::generator::naming::{sanitize_component, to_camel_case};
-use config::node::{ArraySchema, SchemaType, TypeToken};
+use config::node::{ArraySchema, MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
@@ -23,6 +23,94 @@ pub(super) fn generate_field_reader_statements(
         names,
         true,
     )
+}
+
+/// Generates a complete deserialization function:
+/// `fn name(payload: &[u8]) -> crate::Result<T> { ... }`.
+///
+/// `context_expr` must evaluate to `String` at runtime (e.g. `format!(...)`).
+pub(super) fn build_deserialize_fn(
+    fn_name: &Ident,
+    reader_type: &TokenStream,
+    context_expr: &TokenStream,
+    return_type: &TokenStream,
+    field_statements: &[TokenStream],
+    result_expr: &TokenStream,
+) -> TokenStream {
+    let root_stmt = if field_statements.is_empty() {
+        quote! {
+            message_reader
+                .get_root::<#reader_type>()
+                .map_err(|source| crate::Error::CapnpDeserialize {
+                    context: context.clone(),
+                    source,
+                })?;
+        }
+    } else {
+        quote! {
+            let root = message_reader
+                .get_root::<#reader_type>()
+                .map_err(|source| crate::Error::CapnpDeserialize {
+                    context: context.clone(),
+                    source,
+                })?;
+        }
+    };
+
+    quote! {
+        fn #fn_name(payload: &[u8]) -> crate::Result<#return_type> {
+            let context = #context_expr;
+            let mut cursor = std::io::Cursor::new(payload);
+            let message_reader = capnp::serialize::read_message(
+                    &mut cursor,
+                    capnp::message::ReaderOptions::new(),
+                )
+                .map_err(|source| crate::Error::CapnpDeserialize {
+                    context: context.clone(),
+                    source,
+                })?;
+
+            #root_stmt
+
+            #(#field_statements)*
+
+            Ok(#result_expr)
+        }
+    }
+}
+
+/// Deserializes all fields from a `MessageFormat`, iterating directly over format fields.
+///
+/// Returns `(field_statements, field_inits, value_idents)` where:
+/// - `field_statements`: variable binding statements for each deserialized field
+/// - `field_inits`: struct field initializers (`field_name: value_ident`)
+/// - `value_idents`: the value identifiers for each field
+pub(super) fn deserialize_format_fields(
+    format: &MessageFormat,
+    struct_prefix: &str,
+    context_expr: &TokenStream,
+) -> (Vec<TokenStream>, Vec<TokenStream>, Vec<Ident>) {
+    let mut names = NameGenerator::new();
+    let mut field_statements = Vec::new();
+    let mut field_inits = Vec::new();
+    let mut value_idents = Vec::new();
+
+    for (field_name, schema) in &format.0 {
+        let (mut statements, value_ident) = generate_field_reader_statements(
+            &quote!(root),
+            field_name,
+            schema,
+            struct_prefix,
+            context_expr,
+            &mut names,
+        );
+        field_statements.append(&mut statements);
+        let field_ident = Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
+        field_inits.push(quote!(#field_ident: #value_ident));
+        value_idents.push(value_ident);
+    }
+
+    (field_statements, field_inits, value_idents)
 }
 
 fn generate_field_reader_statements_inner(

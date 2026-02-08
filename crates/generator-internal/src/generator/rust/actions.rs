@@ -1,4 +1,5 @@
-use super::serialization::MessageEncodingSpec;
+use super::deserialization::build_deserialize_fn;
+use super::serialization::{MessageEncodingSpec, build_serialize_payload};
 use super::services::{
     ServiceResponseSpec, build_response_payload_tokens, build_result_expr_from_values,
     build_return_type_from_params, deserialize_fields_from_format,
@@ -225,45 +226,15 @@ pub(super) fn build_action_request_deserializer(
         deserialize_fields_from_format(request_format, params, label, &context_expr);
 
     let request_expr = build_result_expr_from_values(params, &value_idents, request_struct);
-    let root_stmt = if field_statements.is_empty() {
-        quote! {
-            message_reader
-                .get_root::<#reader_type>()
-                .map_err(|source| crate::Error::CapnpDeserialize {
-                    context: #context_expr,
-                    source,
-                })?;
-        }
-    } else {
-        quote! {
-            let root = message_reader
-                .get_root::<#reader_type>()
-                .map_err(|source| crate::Error::CapnpDeserialize {
-                    context: #context_expr,
-                    source,
-                })?;
-        }
-    };
 
-    quote! {
-        fn #deserializer_fn_name(payload: &[u8]) -> crate::Result<#return_ty> {
-            let mut cursor = std::io::Cursor::new(payload);
-            let message_reader = capnp::serialize::read_message(
-                    &mut cursor,
-                    capnp::message::ReaderOptions::new(),
-                )
-                .map_err(|source| crate::Error::CapnpDeserialize {
-                    context: #context_expr,
-                    source,
-                })?;
-
-            #root_stmt
-
-            #(#field_statements)*
-
-            Ok(#request_expr)
-        }
-    }
+    build_deserialize_fn(
+        deserializer_fn_name,
+        reader_type,
+        &context_expr,
+        &return_ty,
+        &field_statements,
+        &request_expr,
+    )
 }
 
 pub(super) fn build_action_feedback_emit(
@@ -292,34 +263,14 @@ pub(super) fn build_action_feedback_emit(
 
     match encoding {
         Some(spec) => {
-            let builder_type = &spec.builder_type;
-            let assignments = &spec.assignments;
-            let init_root_tokens = if assignments.is_empty() {
-                quote!(let _ = capnp_msg.init_root::<#builder_type>();)
-            } else {
-                quote! {
-                    let mut root = capnp_msg.init_root::<#builder_type>();
-                    #(#assignments)*
-                }
-            };
+            let error_context = quote!(format!("{} {}", #label_literal, ACTION_NAME));
+            let serialize_block =
+                build_serialize_payload(&spec.builder_type, &[], &spec.assignments, &error_context);
 
             quote! {
                 #[allow(clippy::too_many_arguments)]
                 pub async fn emit_feedback(#method_signature) -> crate::Result<()> {
-                    let mut capnp_msg = capnp::message::Builder::new_default();
-                    {
-                        #init_root_tokens
-                    }
-
-                    let mut buffer = Vec::new();
-                    capnp::serialize::write_message(&mut buffer, &capnp_msg).map_err(|source| {
-                        crate::Error::CapnpSerialize {
-                            context: format!("{} {}", #label_literal, ACTION_NAME),
-                            source,
-                        }
-                    })?;
-
-                    let payload = bytes::Bytes::from(buffer);
+                    let payload = #serialize_block;
                     self.feedback_publisher.publish(payload).await?;
                     Ok(())
                 }
