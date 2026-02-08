@@ -1,8 +1,9 @@
 use crate::error::Result;
 use config::node::{
-    ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
-    SubscribedService, SubscribedTopic,
+    ExposedAction, ExposedService, ExposedTopic, MessageFormat, PrimitiveSchema, SchemaType,
+    SubscribedAction, SubscribedService, SubscribedTopic, TypeToken,
 };
+use indexmap::IndexMap;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +128,27 @@ impl DeploymentInterface {
             }
         }
     }
+}
+
+/// Filters out empty `MessageFormat`s, returning `None` for formats with no fields.
+pub fn non_empty_message_format(format: Option<&MessageFormat>) -> Option<&MessageFormat> {
+    format.filter(|format| !format.0.is_empty())
+}
+
+/// Returns the hardcoded cancel-action response format used by both Rust and Python generators.
+///
+/// The format contains `accepted: bool` and `error_message: Optional[String]`.
+pub fn cancel_action_response_format() -> MessageFormat {
+    let mut fields = IndexMap::new();
+    fields.insert(String::from("accepted"), SchemaType::Type(TypeToken::Bool));
+    fields.insert(
+        String::from("error_message"),
+        SchemaType::Primitive(PrimitiveSchema {
+            kind: TypeToken::String,
+            optional: true,
+        }),
+    );
+    MessageFormat(fields)
 }
 
 #[derive(Clone)]

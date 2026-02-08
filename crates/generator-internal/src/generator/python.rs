@@ -1,7 +1,14 @@
 #[cfg(test)]
 mod tests;
 
-use super::naming::{non_empty_str, prefixed_name};
+mod actions;
+mod code_builder;
+mod parameters;
+mod services;
+mod topics;
+mod type_mapping;
+
+use super::naming::module_name_from_components;
 use super::types::{InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage};
 use crate::error::Result;
 use config::node::{
@@ -33,6 +40,7 @@ impl PythonGenerator {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn into_artifacts(self) -> Vec<InterfaceArtifact> {
         self.sections
     }
@@ -44,35 +52,31 @@ impl LanguageGenerator for PythonGenerator {
     }
 
     fn add_exposed_topic(&mut self, topic: &ExposedTopic) -> Result<()> {
-        let name = prefixed_name("exposed_topic", non_empty_str(topic.name.as_str()), "topic");
+        let code = topics::build_exposed_topic(topic);
         self.push_section(InterfaceArtifact::from_kind(
             &topic.name,
             InterfaceKind::ExposedTopic,
-            format!("def {name}():\n    raise NotImplementedError(\"publish PMI topic\")\n"),
+            code,
         ));
         Ok(())
     }
 
     fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()> {
-        let name = prefixed_name(
-            "exposed_service",
-            non_empty_str(service.name.as_str()),
-            "service",
-        );
+        let code = services::build_exposed_service(service);
         self.push_section(InterfaceArtifact::from_kind(
             &service.name,
             InterfaceKind::ExposedService,
-            format!("def {name}():\n    raise NotImplementedError(\"expose PMI service\")\n"),
+            code,
         ));
         Ok(())
     }
 
     fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()> {
-        let name = prefixed_name("exposed_action", non_empty_str(&action.name), "action");
+        let code = actions::build_exposed_action(action);
         self.push_section(InterfaceArtifact::from_kind(
             &action.name,
             InterfaceKind::ExposedAction,
-            format!("def {name}():\n    raise NotImplementedError(\"expose PMI action\")\n"),
+            code,
         ));
         Ok(())
     }
@@ -80,13 +84,14 @@ impl LanguageGenerator for PythonGenerator {
     fn add_subscribed_topic(
         &mut self,
         topic: &SubscribedTopic,
-        _arguments: MessageFormat,
+        arguments: MessageFormat,
     ) -> Result<()> {
+        let code = topics::build_subscribed_topic(topic, &arguments);
+        let module_label = topics::subscribed_topic_module_label(topic);
         self.push_section(InterfaceArtifact::from_kind(
-            &topic.name,
+            &module_label,
             InterfaceKind::SubscribedTopic,
-            "async def on_message():\n    raise NotImplementedError(\"await for message with PMI\")\n"
-                .to_string(),
+            code,
         ));
         Ok(())
     }
@@ -94,17 +99,16 @@ impl LanguageGenerator for PythonGenerator {
     fn add_subscribed_service(
         &mut self,
         service: &SubscribedService,
-        _request_arguments: &MessageFormat,
-        _response_arguments: &MessageFormat,
+        request_arguments: &MessageFormat,
+        response_arguments: &MessageFormat,
     ) -> Result<()> {
-        let fn_name = prefixed_name("on", non_empty_str(service.name.as_str()), "service");
+        let code =
+            services::build_subscribed_service(service, request_arguments, response_arguments);
+        let module_label = module_name_from_components(&service.node, &service.name);
         self.push_section(InterfaceArtifact::from_kind(
-            &service.name,
+            &module_label,
             InterfaceKind::SubscribedService,
-            format!(
-                "async def {}():\n    raise NotImplementedError(\"await for service response with PMI\")\n",
-                fn_name
-            ),
+            code,
         ));
         Ok(())
     }
@@ -112,31 +116,27 @@ impl LanguageGenerator for PythonGenerator {
     fn add_subscribed_action(
         &mut self,
         action: &SubscribedAction,
-        _messages: &SubscribedActionMessage,
+        messages: &SubscribedActionMessage,
     ) -> Result<()> {
-        let base_name = prefixed_name("on", non_empty_str(action.name.as_str()), "action");
-        let mut sections = Vec::new();
-
-        sections.push(format!(
-            "async def {}_feedback():\n    raise NotImplementedError(\"await for action feedback with PMI\")\n",
-            base_name
-        ));
-        sections.push(format!(
-            "async def {}_result():\n    raise NotImplementedError(\"await for action result with PMI\")\n",
-            base_name
-        ));
-
+        let code = actions::build_subscribed_action(action, messages);
+        let module_label = module_name_from_components(&action.node, &action.name);
         self.push_section(InterfaceArtifact::from_kind(
-            &action.name,
+            &module_label,
             InterfaceKind::SubscribedAction,
-            sections.join("\n"),
+            code,
         ));
         Ok(())
     }
+
     fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
-        let _ = to_path;
-        let _artifacts = self.into_artifacts();
-        // TODO: implement Python project scaffold generation.
+        let to_path = to_path.as_ref();
+        std::fs::create_dir_all(to_path)?;
+
+        // Generate and write parameters.py
+        let parameters_code = parameters::generate_python_parameters(&self.parameters)?;
+        let parameters_file = to_path.join("parameters.py");
+        std::fs::write(&parameters_file, parameters_code)?;
+
         Ok(())
     }
 }

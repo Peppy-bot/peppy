@@ -15,13 +15,14 @@ pub use parameters::generate_parameters_struct;
 use super::common;
 use super::types::{
     CapnpSchema, InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage,
+    cancel_action_response_format, non_empty_message_format,
 };
 use crate::error::Result;
 use crate::generator::naming::{non_empty_str, sanitize_component, to_camel_case};
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam};
 use config::node::{
-    ExposedAction, ExposedService, ExposedTopic, MessageFormat, PrimitiveSchema, SchemaType,
-    SubscribedAction, SubscribedService, SubscribedTopic, TypeToken,
+    ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
+    SubscribedService, SubscribedTopic,
 };
 use indexmap::IndexMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -1533,37 +1534,9 @@ impl LanguageGenerator for RustGenerator {
     }
 }
 
-fn non_empty_message_format(format: Option<&MessageFormat>) -> Option<&MessageFormat> {
-    format.filter(|format| !format.0.is_empty())
-}
-
-fn cancel_action_response_format() -> MessageFormat {
-    let mut fields = IndexMap::new();
-    fields.insert(String::from("accepted"), SchemaType::Type(TypeToken::Bool));
-    fields.insert(
-        String::from("error_message"),
-        SchemaType::Primitive(PrimitiveSchema {
-            kind: TypeToken::String,
-            optional: true,
-        }),
-    );
-
-    MessageFormat(fields)
-}
-
 fn prefixed_ident(prefix: &str, candidate: Option<&str>, fallback: &str) -> Ident {
     let name = crate::generator::naming::prefixed_name(prefix, candidate, fallback);
     Ident::new(&name, Span::call_site())
 }
 
-fn module_name_from_components(node: &str, name: &str) -> String {
-    let node_component = sanitize_component(node);
-    let name_component = sanitize_component(name);
-
-    match (node_component.is_empty(), name_component.is_empty()) {
-        (false, false) => format!("{node_component}_{name_component}"),
-        (false, true) => node_component,
-        (true, false) => name_component,
-        (true, true) => String::new(),
-    }
-}
+use super::naming::module_name_from_components;

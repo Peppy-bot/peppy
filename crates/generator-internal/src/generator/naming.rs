@@ -126,6 +126,21 @@ pub(crate) fn normalize_snake_case(input: &str) -> String {
     result
 }
 
+/// Builds a module name from node and name components.
+///
+/// Returns a combined `node_name` string, or the non-empty component if the other is empty.
+pub fn module_name_from_components(node: &str, name: &str) -> String {
+    let node_component = sanitize_component(node);
+    let name_component = sanitize_component(name);
+
+    match (node_component.is_empty(), name_component.is_empty()) {
+        (false, false) => format!("{node_component}_{name_component}"),
+        (false, true) => node_component,
+        (true, false) => name_component,
+        (true, true) => String::new(),
+    }
+}
+
 /// Converts a snake_case or raw string to CamelCase.
 pub(crate) fn to_camel_case(raw: &str) -> String {
     let sanitized = sanitize_component(raw);
