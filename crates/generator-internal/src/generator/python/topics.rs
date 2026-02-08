@@ -1,5 +1,7 @@
 use super::code_builder::PythonCodeBuilder;
-use super::type_mapping::{NestedDataclass, collect_fields_from_format, qos_profile_python};
+use super::type_mapping::{
+    NestedDataclass, collect_fields_from_format, qos_profile_python, uses_optional,
+};
 use crate::generator::naming::sanitize_component;
 use config::node::{ExposedTopic, MessageFormat, SubscribedTopic};
 
@@ -27,11 +29,16 @@ pub fn build_exposed_topic(topic: &ExposedTopic) -> String {
         .map(|fmt| collect_fields_from_format(fmt, "Message", &mut nested_classes))
         .unwrap_or_default();
 
+    if uses_optional(&fields, &nested_classes) {
+        builder.add_import("from typing import Optional");
+    }
+
     // Emit nested dataclasses (e.g., MessageHeader)
     emit_nested_classes(&mut builder, &nested_classes);
 
     // Build parameter list for emit function
-    let mut param_parts = vec![String::from("node_runner")];
+    builder.add_import("import peppylib");
+    let mut param_parts = vec![String::from("node_runner: peppylib.NodeRunner")];
     for field in &fields {
         param_parts.push(format!("{}: {}", field.name, field.type_str));
     }
@@ -68,6 +75,10 @@ pub fn build_subscribed_topic(topic: &SubscribedTopic, arguments: &MessageFormat
     // Collect fields from the message format
     let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes);
 
+    if uses_optional(&fields, &nested_classes) {
+        builder.add_import("from typing import Optional");
+    }
+
     // Emit nested dataclasses first (dependency order)
     emit_nested_classes(&mut builder, &nested_classes);
 
@@ -79,7 +90,8 @@ pub fn build_subscribed_topic(topic: &SubscribedTopic, arguments: &MessageFormat
     builder.dataclass("Message", &field_refs);
 
     // Generate on_next_message_received function
-    builder.line("async def on_next_message_received(node_runner):");
+    builder.add_import("import peppylib");
+    builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner):");
     builder.indent();
     builder.line(&format!("node_name = \"{}\"", topic.node));
     builder.line(&format!("topic_name = \"{}\"", topic.name));

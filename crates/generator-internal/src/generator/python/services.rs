@@ -1,5 +1,5 @@
 use super::code_builder::PythonCodeBuilder;
-use super::type_mapping::{NestedDataclass, collect_fields_from_format};
+use super::type_mapping::{NestedDataclass, collect_fields_from_format, uses_optional};
 use crate::generator::types::non_empty_message_format;
 use config::node::{ExposedService, MessageFormat, SubscribedService};
 
@@ -26,6 +26,9 @@ pub fn build_exposed_service(service: &ExposedService) -> String {
     if let Some(fmt) = response_format {
         let mut nested_classes = Vec::new();
         let fields = collect_fields_from_format(fmt, "Response", &mut nested_classes);
+        if uses_optional(&fields, &nested_classes) {
+            builder.add_import("from typing import Optional");
+        }
         emit_nested_classes(&mut builder, &nested_classes);
         let field_refs: Vec<(&str, &str)> = fields
             .iter()
@@ -38,6 +41,9 @@ pub fn build_exposed_service(service: &ExposedService) -> String {
     if let Some(fmt) = request_format {
         let mut nested_classes = Vec::new();
         let fields = collect_fields_from_format(fmt, "RequestData", &mut nested_classes);
+        if uses_optional(&fields, &nested_classes) {
+            builder.add_import("from typing import Optional");
+        }
         emit_nested_classes(&mut builder, &nested_classes);
         let field_refs: Vec<(&str, &str)> = fields
             .iter()
@@ -57,7 +63,8 @@ pub fn build_exposed_service(service: &ExposedService) -> String {
     builder.blank_line();
 
     // handle_next_request function
-    builder.line("async def handle_next_request(node_runner):");
+    builder.add_import("import peppylib");
+    builder.line("async def handle_next_request(node_runner: peppylib.NodeRunner):");
     builder.indent();
     builder.line("endpoint = await peppylib.ServiceMessenger.listen(");
     builder.indent();
@@ -94,6 +101,9 @@ pub fn build_subscribed_service(
     if let Some(fmt) = request_format {
         let mut nested_classes = Vec::new();
         let fields = collect_fields_from_format(fmt, "Request", &mut nested_classes);
+        if uses_optional(&fields, &nested_classes) {
+            builder.add_import("from typing import Optional");
+        }
         emit_nested_classes(&mut builder, &nested_classes);
         let field_refs: Vec<(&str, &str)> = fields
             .iter()
@@ -106,6 +116,9 @@ pub fn build_subscribed_service(
     if let Some(fmt) = response_format {
         let mut nested_classes = Vec::new();
         let fields = collect_fields_from_format(fmt, "ResponseData", &mut nested_classes);
+        if uses_optional(&fields, &nested_classes) {
+            builder.add_import("from typing import Optional");
+        }
         emit_nested_classes(&mut builder, &nested_classes);
         let field_refs: Vec<(&str, &str)> = fields
             .iter()
@@ -124,8 +137,9 @@ pub fn build_subscribed_service(
     }
 
     // poll function
+    builder.add_import("import peppylib");
     builder.line(
-        "async def poll(node_runner, timeout, target_master_node=None, target_instance_id=None):",
+        "async def poll(node_runner: peppylib.NodeRunner, timeout, target_master_node=None, target_instance_id=None):",
     );
     builder.indent();
     builder.line("response = await peppylib.ServiceMessenger.poll(");

@@ -98,6 +98,14 @@ pub fn collect_fields_from_format(
     fields
 }
 
+/// Returns `true` if any field (direct or nested) uses `Optional[...]`.
+pub fn uses_optional(fields: &[PythonField], nested_classes: &[NestedDataclass]) -> bool {
+    fields.iter().any(|f| f.type_str.contains("Optional"))
+        || nested_classes
+            .iter()
+            .any(|c| c.fields.iter().any(|f| f.type_str.contains("Optional")))
+}
+
 /// Returns the Python string for a QoS profile variant.
 pub fn qos_profile_python(profile: &QoSProfile) -> &'static str {
     match profile {

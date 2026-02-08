@@ -123,6 +123,12 @@ fn expose_topic() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
+    // Imports
+    assert_contains_all(
+        &rendered,
+        &["import peppylib", "from dataclasses import dataclass"],
+    );
+
     // Python dataclass for nested header type
     assert_contains_all(
         &rendered,
@@ -139,7 +145,7 @@ fn expose_topic() {
         &rendered,
         &[
             "async def emit(",
-            "node_runner",
+            "node_runner: peppylib.NodeRunner",
             "header: MessageHeader",
             "encoding: str",
             "width: int",
@@ -198,6 +204,12 @@ fn subscribed_to_topic() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
+    // Imports
+    assert_contains_all(
+        &rendered,
+        &["import peppylib", "from dataclasses import dataclass"],
+    );
+
     // Generated dataclasses with various field types
     assert_contains_all(
         &rendered,
@@ -213,7 +225,10 @@ fn subscribed_to_topic() {
     // Subscriber function signature
     assert_contains_all(
         &rendered,
-        &["async def on_next_message_received(", "node_runner"],
+        &[
+            "async def on_next_message_received(",
+            "node_runner: peppylib.NodeRunner",
+        ],
     );
 
     // Topic metadata
