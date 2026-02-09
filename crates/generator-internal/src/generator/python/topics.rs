@@ -1,7 +1,9 @@
 use super::code_builder::PythonCodeBuilder;
+use super::serialization;
 use super::type_mapping::{
     NestedDataclass, collect_fields_from_format, qos_profile_python, uses_optional,
 };
+use super::PythonSchemaInfo;
 use crate::generator::naming::sanitize_component;
 use config::node::{ExposedTopic, MessageFormat, SubscribedTopic};
 
@@ -18,7 +20,10 @@ fn emit_nested_classes(builder: &mut PythonCodeBuilder, nested_classes: &[Nested
 }
 
 /// Generates Python code for an exposed (publishing) topic.
-pub fn build_exposed_topic(topic: &ExposedTopic) -> String {
+pub fn build_exposed_topic(
+    topic: &ExposedTopic,
+    schema_info: Option<&PythonSchemaInfo>,
+) -> String {
     let mut builder = PythonCodeBuilder::new();
     let mut nested_classes = Vec::new();
 
@@ -31,6 +36,21 @@ pub fn build_exposed_topic(topic: &ExposedTopic) -> String {
 
     if uses_optional(&fields, &nested_classes) {
         builder.add_import("from typing import Optional");
+    }
+
+    // Add capnp import and schema loading as a module-level constant
+    if let Some(info) = schema_info {
+        builder.add_import("import capnp");
+        builder.add_import("import types");
+        builder.add_import("from pathlib import Path");
+        builder.blank_line();
+        builder.line("_CUR_DIR = Path(__file__).resolve().parent");
+        builder.line(&format!(
+            "{}_CAPNP: types.ModuleType = capnp.load(str(_CUR_DIR / \"capnp/{}.capnp\"))",
+            info.file_stem.to_uppercase(),
+            info.file_stem
+        ));
+        builder.blank_line();
     }
 
     // Emit nested dataclasses (e.g., MessageHeader)
@@ -49,15 +69,30 @@ pub fn build_exposed_topic(topic: &ExposedTopic) -> String {
     // Generate the emit function
     builder.line(&format!("async def emit({params_str}):"));
     builder.indent();
-    builder.line(&format!("topic_name = \"{}\"", topic.name));
+    builder.line(&format!("TOPIC_NAME = \"{}\"", topic.name));
     builder.line(&format!("qos = {qos}"));
+
+    // Generate payload serialization
+    if let (Some(info), Some(fmt)) = (schema_info, topic.message_format.as_ref()) {
+        builder.line(&format!(
+            "capnp_msg = {}_CAPNP.{}.new_message()",
+            info.file_stem.to_uppercase(),
+            info.struct_name
+        ));
+        let mut counter = 0u32;
+        serialization::emit_capnp_assignments(&mut builder, "capnp_msg", fmt, "", &mut counter);
+        builder.line("payload = capnp_msg.to_bytes()");
+    } else {
+        builder.line("payload = b\"\"");
+    }
+
     builder.line("await peppylib.TopicMessenger.emit(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_master_node,");
     builder.line("node_runner.bound_instance_id,");
     builder.line("node_runner.node_name,");
-    builder.line("topic_name,");
+    builder.line("TOPIC_NAME,");
     builder.line("qos,");
     builder.line("payload,");
     builder.dedent();

@@ -4,24 +4,45 @@ mod tests;
 mod actions;
 mod code_builder;
 mod parameters;
+pub(crate) mod serialization;
 mod services;
 mod topics;
 mod type_mapping;
 
-use super::naming::module_name_from_components;
-use super::types::{InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage};
+use super::naming::{module_name_from_components, sanitize_component, to_camel_case};
+use super::types::{
+    CapnpSchema, InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage,
+};
 use crate::error::Result;
+use config::encoding::MessageFormatMapper;
 use config::node::{
     ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
     SubscribedService, SubscribedTopic,
 };
+use std::collections::HashMap;
 use std::path::Path;
 
+/// Schema metadata needed by code generation functions to emit capnp load/init code.
+pub(crate) struct PythonSchemaInfo {
+    pub file_stem: String,
+    pub struct_name: String,
+}
+
 /// Python-specific implementation of the interface generator.
-#[derive(Default)]
 pub struct PythonGenerator {
     sections: Vec<InterfaceArtifact>,
     parameters: config::NodeArguments,
+    schemas: HashMap<String, CapnpSchema>,
+}
+
+impl Default for PythonGenerator {
+    fn default() -> Self {
+        Self {
+            sections: Vec::new(),
+            parameters: config::NodeArguments::default(),
+            schemas: HashMap::new(),
+        }
+    }
 }
 
 impl PythonGenerator {
@@ -44,6 +65,43 @@ impl PythonGenerator {
     pub fn into_artifacts(self) -> Vec<InterfaceArtifact> {
         self.sections
     }
+
+    /// Registers a Cap'n Proto schema for the given message format and returns
+    /// metadata needed by code generation to emit `capnp.load()` / `.new_message()`.
+    fn register_schema(
+        &mut self,
+        schema_key: &str,
+        format: &MessageFormat,
+    ) -> Result<PythonSchemaInfo> {
+        let artifacts = MessageFormatMapper::new(format.clone())
+            .map_message_format_to_capnpn()
+            .map_err(crate::error::Error::MessageEncoding)?;
+        let schema_source = artifacts.encoding_schema().to_string();
+
+        let key_component = sanitize_component(schema_key);
+        let base_name = if key_component.is_empty() {
+            "message".to_string()
+        } else {
+            key_component
+        };
+        let file_stem = if base_name.ends_with("_message") {
+            base_name.clone()
+        } else {
+            format!("{base_name}_message")
+        };
+
+        let struct_name = format!("{}Message", to_camel_case(&base_name));
+        let schema_text =
+            schema_source.replacen("struct Message", &format!("struct {struct_name}"), 1);
+
+        self.schemas
+            .insert(file_stem.clone(), CapnpSchema::new(file_stem.clone(), schema_text));
+
+        Ok(PythonSchemaInfo {
+            file_stem,
+            struct_name,
+        })
+    }
 }
 
 impl LanguageGenerator for PythonGenerator {
@@ -52,7 +110,13 @@ impl LanguageGenerator for PythonGenerator {
     }
 
     fn add_exposed_topic(&mut self, topic: &ExposedTopic) -> Result<()> {
-        let code = topics::build_exposed_topic(topic);
+        let schema_info = topic
+            .message_format
+            .as_ref()
+            .map(|fmt| self.register_schema(&topic.name, fmt))
+            .transpose()?;
+
+        let code = topics::build_exposed_topic(topic, schema_info.as_ref());
         self.push_section(InterfaceArtifact::from_kind(
             &topic.name,
             InterfaceKind::ExposedTopic,
@@ -131,6 +195,16 @@ impl LanguageGenerator for PythonGenerator {
     fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
         let to_path = to_path.as_ref();
         std::fs::create_dir_all(to_path)?;
+
+        // Write Cap'n Proto schema files for pycapnp runtime loading
+        if !self.schemas.is_empty() {
+            let capnp_dir = to_path.join("capnp");
+            std::fs::create_dir_all(&capnp_dir)?;
+            for schema in self.schemas.values() {
+                let file_path = capnp_dir.join(format!("{}.capnp", schema.file_stem()));
+                std::fs::write(&file_path, schema.schema())?;
+            }
+        }
 
         // Generate and write parameters.py
         let parameters_code = parameters::generate_python_parameters(&self.parameters)?;

@@ -126,7 +126,22 @@ fn expose_topic() {
     // Imports
     assert_contains_all(
         &rendered,
-        &["import peppylib", "from dataclasses import dataclass"],
+        &[
+            "import capnp",
+            "import peppylib",
+            "import types",
+            "from dataclasses import dataclass",
+            "from pathlib import Path",
+        ],
+    );
+
+    // Module directory and schema loading as module-level typed constant
+    assert_contains_all(
+        &rendered,
+        &[
+            "_CUR_DIR = Path(__file__).resolve().parent",
+            "VIDEO_STREAM_MESSAGE_CAPNP: types.ModuleType = capnp.load(str(_CUR_DIR / \"capnp/video_stream_message.capnp\"))",
+        ],
     );
 
     // Python dataclass for nested header type
@@ -154,13 +169,34 @@ fn expose_topic() {
         ],
     );
 
+    // Cap'n Proto serialization via pycapnp
+    assert_contains_all(
+        &rendered,
+        &[
+            "VIDEO_STREAM_MESSAGE_CAPNP.VideoStreamMessage.new_message()",
+            ".init(\"header\")",
+            "peppylib.encoding.convert_time(header.stamp)",
+            ".init(\"stamp\")",
+            ".sec = timestamp_",
+            ".nsec = timestamp_",
+            ".frameId = header.frame_id",
+            "capnp_msg.encoding = encoding",
+            "capnp_msg.width = width",
+            "capnp_msg.height = height",
+            "capnp_msg.frame = frame",
+            "payload = capnp_msg.to_bytes()",
+        ],
+    );
+
     // Topic metadata and messenger call
     assert_contains_all(
         &rendered,
         &[
-            "\"video_stream\"",
+            "TOPIC_NAME = \"video_stream\"",
             "peppylib.QoSProfile.SensorData",
             "peppylib.TopicMessenger.emit(",
+            "TOPIC_NAME,",
+            "payload,",
         ],
     );
 }
