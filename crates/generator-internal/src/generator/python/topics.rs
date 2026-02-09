@@ -1,9 +1,9 @@
+use super::PythonSchemaInfo;
 use super::code_builder::PythonCodeBuilder;
 use super::serialization;
 use super::type_mapping::{
     NestedDataclass, collect_fields_from_format, qos_profile_python, uses_optional,
 };
-use super::PythonSchemaInfo;
 use crate::generator::naming::sanitize_component;
 use config::node::{ExposedTopic, MessageFormat, SubscribedTopic};
 
@@ -20,10 +20,7 @@ fn emit_nested_classes(builder: &mut PythonCodeBuilder, nested_classes: &[Nested
 }
 
 /// Generates Python code for an exposed (publishing) topic.
-pub fn build_exposed_topic(
-    topic: &ExposedTopic,
-    schema_info: Option<&PythonSchemaInfo>,
-) -> String {
+pub fn build_exposed_topic(topic: &ExposedTopic, schema_info: Option<&PythonSchemaInfo>) -> String {
     let mut builder = PythonCodeBuilder::new();
     let mut nested_classes = Vec::new();
 

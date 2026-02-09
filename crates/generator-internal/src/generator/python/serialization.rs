@@ -62,7 +62,14 @@ pub fn emit_capnp_assignments(
             format!("{param_prefix}.{python_name}")
         };
 
-        emit_field_assignment(builder, builder_var, field_name, schema, &value_expr, counter);
+        emit_field_assignment(
+            builder,
+            builder_var,
+            field_name,
+            schema,
+            &value_expr,
+            counter,
+        );
     }
 }
 
