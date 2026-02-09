@@ -126,9 +126,9 @@ pub fn build_exposed_action(action: &ExposedAction) -> String {
     builder.line("action = await peppylib.ActionMessenger.expose(");
     builder.indent();
     builder.line("node_runner.messenger(),");
-    builder.line("node_runner.bound_master_node,");
-    builder.line("node_runner.bound_instance_id,");
-    builder.line("node_runner.node_name,");
+    builder.line("node_runner.bound_master_node(),");
+    builder.line("node_runner.bound_instance_id(),");
+    builder.line("node_runner.node_name(),");
     builder.line("ACTION_NAME,");
     builder.dedent();
     builder.line(")");
@@ -257,8 +257,8 @@ pub fn build_subscribed_action(
     builder.line("action_handle = await peppylib.ActionMessenger.send_goal(");
     builder.indent();
     builder.line("node_runner.messenger(),");
-    builder.line("node_runner.bound_master_node,");
-    builder.line("node_runner.bound_instance_id,");
+    builder.line("node_runner.bound_master_node(),");
+    builder.line("node_runner.bound_instance_id(),");
     builder.line("TARGET_NODE_NAME,");
     builder.line("TARGET_ACTION_NAME,");
     builder.line("target_master_node,");

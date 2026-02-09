@@ -93,7 +93,7 @@ fn generate_parameters_struct() {
     generator.set_parameters(node_config.parameters);
     generator.build(&output_dir).unwrap();
 
-    let parameters_file = output_dir.join("parameters.py");
+    let parameters_file = output_dir.join("peppygen").join("parameters.py");
     assert!(
         parameters_file.exists(),
         "Expected parameters.py to be generated"
@@ -151,7 +151,7 @@ fn generate_empty_parameters_struct() {
     // Don't set any parameters - use the default empty parameters
     generator.build(&output_dir).unwrap();
 
-    let parameters_file = output_dir.join("parameters.py");
+    let parameters_file = output_dir.join("peppygen").join("parameters.py");
     assert!(
         parameters_file.exists(),
         "Expected parameters.py to be generated"

@@ -139,8 +139,8 @@ fn expose_topic() {
     assert_contains_all(
         &rendered,
         &[
-            "_CUR_DIR = Path(__file__).resolve().parent",
-            "VIDEO_STREAM_MESSAGE_CAPNP: types.ModuleType = capnp.load(str(_CUR_DIR / \"capnp/video_stream_message.capnp\"))",
+            "_PKG_DIR = Path(__file__).resolve().parent.parent",
+            "VIDEO_STREAM_MESSAGE_CAPNP: types.ModuleType = capnp.load(str(_PKG_DIR / \"capnp/video_stream_message.capnp\"))",
         ],
     );
 
@@ -290,8 +290,8 @@ fn subscribed_to_topic() {
     assert_contains_all(
         &rendered,
         &[
-            "_CUR_DIR = Path(__file__).resolve().parent",
-            "VIDEO_STREAM_MESSAGE_CAPNP: types.ModuleType = capnp.load(str(_CUR_DIR / \"capnp/video_stream_message.capnp\"))",
+            "_PKG_DIR = Path(__file__).resolve().parent.parent",
+            "VIDEO_STREAM_MESSAGE_CAPNP: types.ModuleType = capnp.load(str(_PKG_DIR / \"capnp/video_stream_message.capnp\"))",
         ],
     );
 
@@ -361,8 +361,8 @@ fn subscribed_to_topic() {
         &rendered,
         &[
             "raw_message = await subscription.on_next_message()",
-            "payload = raw_message.payload()",
-            "instance_id = raw_message.instance_id()",
+            "payload = raw_message.payload",
+            "instance_id = raw_message.instance_id",
             "message = _deserialize_payload(payload)",
             "return instance_id, message",
         ],

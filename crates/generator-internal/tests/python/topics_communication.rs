@@ -118,16 +118,30 @@ async fn topics_communication() {
     init_python_user_node(&user_node_subscriber);
     let subscriber_main = r#"
 import asyncio
+import sys
+import traceback
 from peppygen import NodeBuilder
 from peppygen.subscribed_topics import uvc_camera_video_stream
 
 def setup(parameters, node_runner):
     async def async_main():
-        instance_id, frame = await uvc_camera_video_stream.on_next_message_received(node_runner)
-        print(
-            f"got {frame.width}x{frame.height} frame encoded as {frame.encoding} from {instance_id}"
-        )
-    asyncio.run(async_main())
+        try:
+            print("subscriber: about to subscribe", flush=True)
+            instance_id, frame = await uvc_camera_video_stream.on_next_message_received(node_runner)
+            print(
+                f"got {frame.width}x{frame.height} frame encoded as {frame.encoding} from {instance_id}",
+                flush=True,
+            )
+        except Exception as e:
+            print(f"subscriber error: {e}", flush=True)
+            traceback.print_exc()
+            raise
+    try:
+        asyncio.run(async_main())
+    except Exception as e:
+        print(f"subscriber asyncio.run error: {e}", flush=True)
+        traceback.print_exc()
+        raise
 
 def main():
     NodeBuilder().run(setup)
@@ -186,6 +200,8 @@ if __name__ == "__main__":
     let exposer_main = r#"
 import asyncio
 import time
+import sys
+import traceback
 import threading
 from peppygen import NodeBuilder
 from peppygen.exposed_topics import video_stream
@@ -197,20 +213,33 @@ def setup(parameters, node_runner):
     def emit_loop():
         async def run():
             frame_id = 0
+            print(f"exposer: starting emit loop with interval={interval}", flush=True)
             while True:
-                await video_stream.emit(
-                    node_runner,
-                    video_stream.MessageHeader(stamp=time.time(), frame_id=frame_id),
-                    "rgb8",
-                    640,
-                    480,
-                    bytes([1, 2, 3]),
-                )
+                try:
+                    await video_stream.emit(
+                        node_runner,
+                        video_stream.MessageHeader(stamp=time.time(), frame_id=frame_id),
+                        "rgb8",
+                        640,
+                        480,
+                        bytes([1, 2, 3]),
+                    )
+                    if frame_id == 0:
+                        print("exposer: first emit succeeded", flush=True)
+                except Exception as e:
+                    print(f"exposer emit error: {e}", flush=True)
+                    traceback.print_exc()
+                    raise
                 frame_id = (frame_id + 1) % (2**32)
                 await asyncio.sleep(interval)
-        asyncio.run(run())
+        try:
+            asyncio.run(run())
+        except Exception as e:
+            print(f"exposer asyncio.run error: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
 
     threading.Thread(target=emit_loop, daemon=True).start()
+    print("exposer: daemon thread started", flush=True)
 
 def main():
     NodeBuilder().run(setup)
@@ -227,6 +256,8 @@ if __name__ == "__main__":
     let user_node_exposer_runtime_config_str =
         exposer_runtime_config_path.to_str().unwrap().to_owned();
 
+    println!("User node subscriber = {}", user_node_subscriber.display());
+    println!("User node exposer = {}", user_node_exposer.display());
     compile_python_project(&user_node_subscriber);
     compile_python_project(&user_node_exposer);
 
@@ -254,24 +285,77 @@ if __name__ == "__main__":
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
         target_master_node: Some(TEST_MASTER_NODE),
     };
-    wait_for_health_service_reachable_or_exit(
-        &ctx,
-        SUBSCRIBER_NODE_NAME,
-        subscriber_instance_id,
-        &mut subscriber_child,
-        &user_node_subscriber,
-        Duration::from_secs(10),
-    )
-    .await;
+
+    // First wait for the exposer health to ensure it's running
     wait_for_health_service_reachable_or_exit(
         &ctx,
         UVC_CAMERA_NODE_NAME,
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
-        Duration::from_secs(10),
+        Duration::from_secs(15),
     )
     .await;
+    eprintln!("DEBUG: exposer health is reachable");
+
+    // Now wait for subscriber (which blocks until it receives a message)
+    let subscriber_timeout = Duration::from_secs(20);
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(status) = subscriber_child
+            .try_wait()
+            .expect("failed to poll subscriber")
+        {
+            let output = wait_for_child(&mut subscriber_child, None, &user_node_subscriber);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            panic!(
+                "subscriber exited before health became reachable (status: {:?})\nstdout:\n{}\nstderr:\n{}",
+                status.code(),
+                stdout,
+                stderr
+            );
+        }
+
+        let reachable = tokio::time::timeout(
+            Duration::from_secs(2),
+            peppylib::ServiceMessenger::is_reachable(
+                &messenger,
+                TEST_MASTER_NODE,
+                SHUTDOWN_SENDER_INSTANCE_ID,
+                SUBSCRIBER_NODE_NAME,
+                peppylib::messaging::NODE_HEALTH_SERVICE,
+                Some(TEST_MASTER_NODE),
+                Some(subscriber_instance_id),
+            ),
+        )
+        .await
+        .unwrap_or(Ok(false))
+        .unwrap_or(false);
+
+        if reachable {
+            eprintln!("DEBUG: subscriber health is reachable");
+            break;
+        }
+
+        if start.elapsed() > subscriber_timeout {
+            // Kill both processes and dump output for debugging
+            let _ = subscriber_child.kill();
+            let _ = exposer_child.kill();
+            let sub_out = wait_for_child(&mut subscriber_child, None, &user_node_subscriber);
+            let exp_out = wait_for_child(&mut exposer_child, None, &user_node_exposer);
+            panic!(
+                "subscriber timed out after {:?}\n\n--- SUBSCRIBER stdout ---\n{}\n--- SUBSCRIBER stderr ---\n{}\n\n--- EXPOSER stdout ---\n{}\n--- EXPOSER stderr ---\n{}",
+                subscriber_timeout,
+                String::from_utf8_lossy(&sub_out.stdout),
+                String::from_utf8_lossy(&sub_out.stderr),
+                String::from_utf8_lossy(&exp_out.stdout),
+                String::from_utf8_lossy(&exp_out.stderr),
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 
     send_shutdown(
         &messenger,
