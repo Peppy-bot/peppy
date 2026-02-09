@@ -282,7 +282,7 @@ fn subscribed_to_topic() {
             "import types",
             "from dataclasses import dataclass",
             "from pathlib import Path",
-            "from typing import Optional",
+            "from typing import Optional, Tuple",
         ],
     );
 
@@ -332,7 +332,7 @@ fn subscribed_to_topic() {
         ],
     );
 
-    // Subscriber function signature with optional targeting parameters
+    // Subscriber function signature with optional targeting parameters and return type
     assert_contains_all(
         &rendered,
         &[
@@ -340,6 +340,7 @@ fn subscribed_to_topic() {
             "node_runner: peppylib.NodeRunner",
             "master_node_target: Optional[str] = None",
             "instance_id_target: Optional[str] = None",
+            ") -> Tuple[str, Message]:",
         ],
     );
 
@@ -391,12 +392,43 @@ fn subscribed_to_two_topics_same_node() {
         artifacts.len()
     );
 
-    // Verify each topic gets distinct artifact with correct topic name
+    // Verify each topic gets its own distinct artifact
     assert_artifact_contains(&artifacts, "\"video_stream\"");
     assert_artifact_contains(&artifacts, "\"sound\"");
 
-    // Verify both reference the same source node
-    for rendered in &artifacts {
-        assert_contains_all(rendered, &["\"uvc_camera\""]);
-    }
+    // Verify each artifact is self-contained: has its own schema and doesn't leak the other topic
+    let video_rendered = artifacts
+        .iter()
+        .find(|a| a.contains("\"video_stream\""))
+        .expect("video_stream artifact is present");
+    let sound_rendered = artifacts
+        .iter()
+        .find(|a| a.contains("\"sound\""))
+        .expect("sound artifact is present");
+
+    assert_contains_all(
+        video_rendered,
+        &[
+            "video_stream_message.capnp\")",
+            "topic_name = \"video_stream\"",
+            "node_name = \"uvc_camera\"",
+        ],
+    );
+    assert!(
+        !video_rendered.contains("\"sound\""),
+        "video_stream artifact should not reference sound"
+    );
+
+    assert_contains_all(
+        sound_rendered,
+        &[
+            "sound_message.capnp\")",
+            "topic_name = \"sound\"",
+            "node_name = \"uvc_camera\"",
+        ],
+    );
+    assert!(
+        !sound_rendered.contains("video_stream"),
+        "sound artifact should not reference video_stream"
+    );
 }
