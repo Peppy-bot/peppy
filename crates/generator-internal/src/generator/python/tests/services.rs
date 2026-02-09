@@ -91,7 +91,7 @@ fn expose_service() {
 
     let mut generator = PythonGenerator::new();
     generator.add_exposed_service(&service).unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         1,
@@ -152,7 +152,7 @@ fn expose_service_without_request_body() {
 
     let mut generator = PythonGenerator::new();
     generator.add_exposed_service(&service).unwrap();
-    let rendered = render_artifacts(generator)
+    let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
         .expect("artifact is present");
@@ -177,7 +177,7 @@ fn expose_two_services() {
     generator.add_exposed_service(&service1).unwrap();
     generator.add_exposed_service(&service2).unwrap();
 
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         2,
@@ -204,7 +204,7 @@ fn subscribed_to_service() {
     generator
         .add_subscribed_service(&service, &request_format, &response_format)
         .unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         1,
@@ -261,7 +261,7 @@ fn subscribed_to_two_services_same_node() {
     generator
         .add_subscribed_service(&service2, &empty_format, &response_format2)
         .unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         2,
@@ -302,7 +302,7 @@ fn subscribed_service_without_response_payload() {
         .add_subscribed_service(&service, &empty_format, &empty_format)
         .expect("generator should allow services without response format");
 
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         1,

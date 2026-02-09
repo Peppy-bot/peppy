@@ -163,7 +163,7 @@ fn exposed_action() {
 
     let mut generator = PythonGenerator::new();
     generator.add_exposed_action(&action).unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         1,
@@ -263,7 +263,7 @@ fn expose_action_without_request_body() {
 
     let mut generator = PythonGenerator::new();
     generator.add_exposed_action(&action).unwrap();
-    let rendered = render_artifacts(generator)
+    let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
         .expect("artifact is present");
@@ -377,7 +377,7 @@ fn subscribed_to_action() {
 
     let mut generator = PythonGenerator::new();
     generator.add_subscribed_action(&action, &format).unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         1,
@@ -599,7 +599,7 @@ fn subscribed_action_without_response_payload() {
     generator
         .add_subscribed_action(&action, &format)
         .expect("generator should allow subscribed actions with empty response payloads");
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         1,
@@ -637,7 +637,7 @@ fn subscribed_action_without_feedback() {
     generator
         .add_subscribed_action(&action, &format)
         .expect("generator should allow subscribed actions without feedback payloads");
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(artifacts.len(), 1, "expected single generated artifact");
 
     let rendered = &artifacts[0];

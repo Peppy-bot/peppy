@@ -123,7 +123,7 @@ fn expose_topic() {
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_topic(&topic).unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         1,
@@ -181,7 +181,7 @@ fn expose_two_topics() {
     let mut generator = RustGenerator::new();
     generator.add_exposed_topic(&topic1).unwrap();
     generator.add_exposed_topic(&topic2).unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         2,
@@ -202,7 +202,7 @@ fn subscribed_to_topic() {
 
     let mut generator = RustGenerator::new();
     generator.add_subscribed_topic(&topic, format).unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         1,
@@ -273,7 +273,7 @@ fn subscribed_to_two_topics_same_node() {
     generator
         .add_subscribed_topic(&sound_topic, sound_format)
         .unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         2,
