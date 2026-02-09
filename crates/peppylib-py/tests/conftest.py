@@ -2,7 +2,18 @@
 Pytest configuration and shared fixtures for peppylib tests.
 """
 
+import subprocess
+from pathlib import Path
+
 import pytest
+
+CRATE_DIR = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _build_native_extension():
+    """Rebuild the native extension before running tests."""
+    subprocess.check_call(["maturin", "develop"], cwd=CRATE_DIR)
 
 
 @pytest.fixture
