@@ -6,6 +6,7 @@ mod build;
 mod code_builder;
 mod deserialization;
 mod parameters;
+mod ruff;
 pub(crate) mod serialization;
 mod services;
 mod topics;
@@ -203,6 +204,10 @@ impl LanguageGenerator for PythonGenerator {
 
         build::write_capnp_schemas(&self.schemas, to_path)?;
         build::write_parameters(&self.parameters, to_path)?;
+
+        let ruff = ruff::RuffFacade::new()?;
+        ruff.check_and_fix(to_path)?;
+        ruff.format(to_path)?;
 
         Ok(())
     }
