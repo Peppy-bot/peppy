@@ -114,7 +114,7 @@ fn expose_topic() {
 
     let mut generator = PythonGenerator::new();
     generator.add_exposed_topic(&topic).unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         1,
@@ -209,17 +209,50 @@ fn expose_two_topics() {
     let mut generator = PythonGenerator::new();
     generator.add_exposed_topic(&topic1).unwrap();
     generator.add_exposed_topic(&topic2).unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         2,
         "expected two generated artifacts, got {}",
         artifacts.len()
     );
-
     // Verify each topic gets its own distinct artifact
     assert_artifact_contains(&artifacts, "\"video_stream\"");
     assert_artifact_contains(&artifacts, "\"push_lidar_object\"");
+
+    // Verify each artifact is self-contained: has its own schema and doesn't leak the other topic
+    let video_rendered = artifacts
+        .iter()
+        .find(|a| a.contains("\"video_stream\""))
+        .expect("video_stream artifact is present");
+    let lidar_rendered = artifacts
+        .iter()
+        .find(|a| a.contains("\"push_lidar_object\""))
+        .expect("push_lidar_object artifact is present");
+
+    assert_contains_all(
+        video_rendered,
+        &[
+            "video_stream_message.capnp\")",
+            "TOPIC_NAME = \"video_stream\"",
+        ],
+    );
+    assert!(
+        !video_rendered.contains("push_lidar_object"),
+        "video_stream artifact should not reference push_lidar_object"
+    );
+
+    assert_contains_all(
+        lidar_rendered,
+        &[
+            "push_lidar_object_message.capnp\")",
+            "TOPIC_NAME = \"push_lidar_object\"",
+        ],
+    );
+    assert!(
+        !lidar_rendered.contains("video_stream"),
+        "push_lidar_object artifact should not reference video_stream"
+    );
 }
 
 /// In the case of a topic, a "subscribed" topic is an entity that expects to receive messages
@@ -231,7 +264,7 @@ fn subscribed_to_topic() {
 
     let mut generator = PythonGenerator::new();
     generator.add_subscribed_topic(&topic, format).unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         1,
@@ -293,7 +326,7 @@ fn subscribed_to_two_topics_same_node() {
     generator
         .add_subscribed_topic(&sound_topic, sound_format)
         .unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         2,

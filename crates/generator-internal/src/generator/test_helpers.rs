@@ -9,27 +9,9 @@ macro_rules! assert_rendered {
 
 use super::types::InterfaceArtifact;
 
-/// Trait implemented by generators that can produce test artifacts.
-pub trait IntoArtifacts {
-    fn into_artifacts(self) -> Vec<InterfaceArtifact>;
-}
-
-impl IntoArtifacts for super::rust::RustGenerator {
-    fn into_artifacts(self) -> Vec<InterfaceArtifact> {
-        self.into_artifacts()
-    }
-}
-
-impl IntoArtifacts for super::python::PythonGenerator {
-    fn into_artifacts(self) -> Vec<InterfaceArtifact> {
-        self.into_artifacts()
-    }
-}
-
-/// Converts a generator's artifacts into a vector of generated code strings.
-pub fn render_artifacts<G: IntoArtifacts>(generator: G) -> Vec<String> {
-    generator
-        .into_artifacts()
+/// Converts artifacts into a vector of generated code strings.
+pub fn render_artifacts(artifacts: Vec<InterfaceArtifact>) -> Vec<String> {
+    artifacts
         .into_iter()
         .map(|artifact| artifact.code_output)
         .collect()
