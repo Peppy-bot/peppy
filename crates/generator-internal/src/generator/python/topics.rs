@@ -1,5 +1,6 @@
 use super::PythonSchemaInfo;
 use super::code_builder::PythonCodeBuilder;
+use super::deserialization;
 use super::serialization;
 use super::type_mapping::{
     NestedDataclass, collect_fields_from_format, qos_profile_python, uses_optional,
@@ -100,7 +101,11 @@ pub fn build_exposed_topic(topic: &ExposedTopic, schema_info: Option<&PythonSche
 }
 
 /// Generates Python code for a subscribed (receiving) topic.
-pub fn build_subscribed_topic(topic: &SubscribedTopic, arguments: &MessageFormat) -> String {
+pub fn build_subscribed_topic(
+    topic: &SubscribedTopic,
+    arguments: &MessageFormat,
+    schema_info: Option<&PythonSchemaInfo>,
+) -> String {
     let mut builder = PythonCodeBuilder::new();
     let mut nested_classes = Vec::new();
 
@@ -110,6 +115,21 @@ pub fn build_subscribed_topic(topic: &SubscribedTopic, arguments: &MessageFormat
     // Always need Optional for the function parameters (master_node_target, instance_id_target),
     // plus any Optional fields in the dataclasses.
     builder.add_import("from typing import Optional");
+
+    // Add capnp import and schema loading as a module-level constant
+    if let Some(info) = schema_info {
+        builder.add_import("import capnp");
+        builder.add_import("import types");
+        builder.add_import("from pathlib import Path");
+        builder.blank_line();
+        builder.line("_CUR_DIR = Path(__file__).resolve().parent");
+        builder.line(&format!(
+            "{}_CAPNP: types.ModuleType = capnp.load(str(_CUR_DIR / \"capnp/{}.capnp\"))",
+            info.file_stem.to_uppercase(),
+            info.file_stem
+        ));
+        builder.blank_line();
+    }
 
     // Emit nested dataclasses first (dependency order)
     emit_nested_classes(&mut builder, &nested_classes);
@@ -121,8 +141,14 @@ pub fn build_subscribed_topic(topic: &SubscribedTopic, arguments: &MessageFormat
         .collect();
     builder.dataclass("Message", &field_refs);
 
+    // Generate deserialize_payload helper function
+    if let Some(info) = schema_info {
+        deserialization::build_deserialize_fn(&mut builder, info, arguments, "Message");
+    }
+
     // Generate on_next_message_received function
     builder.add_import("import peppylib");
+    builder.blank_line();
     builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, master_node_target: Optional[str] = None, instance_id_target: Optional[str] = None):");
     builder.indent();
     builder.line(&format!("node_name = \"{}\"", topic.node));
@@ -139,7 +165,15 @@ pub fn build_subscribed_topic(topic: &SubscribedTopic, arguments: &MessageFormat
     builder.line("peppylib.QoSProfile.Standard,");
     builder.dedent();
     builder.line(")");
-    builder.line("message = await subscription.on_next_message()");
+    builder.line("raw_message = await subscription.on_next_message()");
+
+    if schema_info.is_some() {
+        builder.line("payload = raw_message.payload()");
+        builder.line("instance_id = raw_message.instance_id()");
+        builder.line("message = _deserialize_payload(payload)");
+        builder.line("return instance_id, message");
+    }
+
     builder.dedent();
 
     builder.build()

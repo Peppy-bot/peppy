@@ -277,9 +277,21 @@ fn subscribed_to_topic() {
     assert_contains_all(
         &rendered,
         &[
+            "import capnp",
             "import peppylib",
+            "import types",
             "from dataclasses import dataclass",
+            "from pathlib import Path",
             "from typing import Optional",
+        ],
+    );
+
+    // Module directory and schema loading as module-level typed constant
+    assert_contains_all(
+        &rendered,
+        &[
+            "_CUR_DIR = Path(__file__).resolve().parent",
+            "VIDEO_STREAM_MESSAGE_CAPNP: types.ModuleType = capnp.load(str(_CUR_DIR / \"capnp/video_stream_message.capnp\"))",
         ],
     );
 
@@ -292,6 +304,31 @@ fn subscribed_to_topic() {
             "class MessageHeader:",
             "stamp: float",
             "frame: bytes",
+        ],
+    );
+
+    // _deserialize_payload helper function
+    assert_contains_all(
+        &rendered,
+        &[
+            "def _deserialize_payload(payload):",
+            "VIDEO_STREAM_MESSAGE_CAPNP.VideoStreamMessage.from_bytes(payload)",
+        ],
+    );
+
+    // Cap'n Proto deserialization: nested object reader, time conversion, primitive reads, bytes
+    assert_contains_all(
+        &rendered,
+        &[
+            "capnp_msg.header",
+            "peppylib.encoding.convert_time_from_capnp(",
+            ".frameId",
+            "MessageHeader(stamp=",
+            "capnp_msg.encoding",
+            "capnp_msg.width",
+            "capnp_msg.height",
+            "bytes(capnp_msg.frame)",
+            "return Message(",
         ],
     );
 
@@ -315,6 +352,18 @@ fn subscribed_to_topic() {
             "peppylib.TopicMessenger.subscribe(",
             "master_node_target,",
             "instance_id_target,",
+        ],
+    );
+
+    // on_next_message_received body: receive, deserialize, return
+    assert_contains_all(
+        &rendered,
+        &[
+            "raw_message = await subscription.on_next_message()",
+            "payload = raw_message.payload()",
+            "instance_id = raw_message.instance_id()",
+            "message = _deserialize_payload(payload)",
+            "return instance_id, message",
         ],
     );
 }
