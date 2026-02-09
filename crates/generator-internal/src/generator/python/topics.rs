@@ -107,9 +107,9 @@ pub fn build_subscribed_topic(topic: &SubscribedTopic, arguments: &MessageFormat
     // Collect fields from the message format
     let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes);
 
-    if uses_optional(&fields, &nested_classes) {
-        builder.add_import("from typing import Optional");
-    }
+    // Always need Optional for the function parameters (master_node_target, instance_id_target),
+    // plus any Optional fields in the dataclasses.
+    builder.add_import("from typing import Optional");
 
     // Emit nested dataclasses first (dependency order)
     emit_nested_classes(&mut builder, &nested_classes);
@@ -123,7 +123,7 @@ pub fn build_subscribed_topic(topic: &SubscribedTopic, arguments: &MessageFormat
 
     // Generate on_next_message_received function
     builder.add_import("import peppylib");
-    builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner):");
+    builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, master_node_target: Optional[str] = None, instance_id_target: Optional[str] = None):");
     builder.indent();
     builder.line(&format!("node_name = \"{}\"", topic.node));
     builder.line(&format!("topic_name = \"{}\"", topic.name));
@@ -134,8 +134,8 @@ pub fn build_subscribed_topic(topic: &SubscribedTopic, arguments: &MessageFormat
     builder.line("node_runner.bound_instance_id,");
     builder.line("node_name,");
     builder.line("topic_name,");
-    builder.line("None,");
-    builder.line("None,");
+    builder.line("master_node_target,");
+    builder.line("instance_id_target,");
     builder.line("peppylib.QoSProfile.Standard,");
     builder.dedent();
     builder.line(")");
