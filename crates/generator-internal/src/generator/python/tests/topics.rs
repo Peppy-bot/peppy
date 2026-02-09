@@ -131,16 +131,19 @@ fn expose_topic() {
             "import peppylib",
             "import types",
             "from dataclasses import dataclass",
+            "from functools import lru_cache",
             "from pathlib import Path",
         ],
     );
 
-    // Module directory and schema loading as module-level typed constant
+    // Module directory and lazy cached schema loader
     assert_contains_all(
         &rendered,
         &[
             "_PKG_DIR = Path(__file__).resolve().parent.parent",
-            "VIDEO_STREAM_MESSAGE_CAPNP: types.ModuleType = capnp.load(str(_PKG_DIR / \"capnp/video_stream_message.capnp\"))",
+            "@lru_cache(maxsize=1)",
+            "def _video_stream_message_capnp() -> types.ModuleType:",
+            "return capnp.load(str(_PKG_DIR / \"capnp/video_stream_message.capnp\"))",
         ],
     );
 
@@ -173,7 +176,7 @@ fn expose_topic() {
     assert_contains_all(
         &rendered,
         &[
-            "VIDEO_STREAM_MESSAGE_CAPNP.VideoStreamMessage.new_message()",
+            "_video_stream_message_capnp().VideoStreamMessage.new_message()",
             ".init(\"header\")",
             "peppylib.encoding.convert_time(header.stamp)",
             ".init(\"stamp\")",
@@ -281,17 +284,20 @@ fn subscribed_to_topic() {
             "import peppylib",
             "import types",
             "from dataclasses import dataclass",
+            "from functools import lru_cache",
             "from pathlib import Path",
             "from typing import Optional, Tuple",
         ],
     );
 
-    // Module directory and schema loading as module-level typed constant
+    // Module directory and lazy cached schema loader
     assert_contains_all(
         &rendered,
         &[
             "_PKG_DIR = Path(__file__).resolve().parent.parent",
-            "VIDEO_STREAM_MESSAGE_CAPNP: types.ModuleType = capnp.load(str(_PKG_DIR / \"capnp/video_stream_message.capnp\"))",
+            "@lru_cache(maxsize=1)",
+            "def _video_stream_message_capnp() -> types.ModuleType:",
+            "return capnp.load(str(_PKG_DIR / \"capnp/video_stream_message.capnp\"))",
         ],
     );
 
@@ -312,7 +318,7 @@ fn subscribed_to_topic() {
         &rendered,
         &[
             "def _deserialize_payload(payload):",
-            "with VIDEO_STREAM_MESSAGE_CAPNP.VideoStreamMessage.from_bytes(payload) as capnp_msg:",
+            "with _video_stream_message_capnp().VideoStreamMessage.from_bytes(payload) as capnp_msg:",
         ],
     );
 

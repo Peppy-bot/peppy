@@ -48,7 +48,7 @@ pub fn generate_field_reader_statements(
 /// Emits:
 /// ```python
 /// def deserialize_payload(payload):
-///     with SCHEMA_CAPNP.StructName.from_bytes(payload) as capnp_msg:
+///     with capnp_module_expr.StructName.from_bytes(payload) as capnp_msg:
 ///         ...field reads...
 ///         return Message(field1=var1, ...)
 /// ```
@@ -57,13 +57,13 @@ pub fn build_deserialize_fn(
     schema_info: &PythonSchemaInfo,
     format: &MessageFormat,
     struct_prefix: &str,
+    capnp_module_expr: &str,
 ) {
     builder.blank_line();
     builder.line("def _deserialize_payload(payload):");
     builder.indent();
     builder.line(&format!(
-        "with {}_CAPNP.{}.from_bytes(payload) as capnp_msg:",
-        schema_info.file_stem.to_uppercase(),
+        "with {capnp_module_expr}.{}.from_bytes(payload) as capnp_msg:",
         schema_info.struct_name
     ));
     builder.indent();

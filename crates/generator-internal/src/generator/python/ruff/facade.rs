@@ -35,13 +35,10 @@ impl RuffFacade {
             .output()?;
 
         if !output.status.success() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!(
-                    "ruff format failed: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ),
-            ));
+            return Err(std::io::Error::other(format!(
+                "ruff format failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
         }
 
         Ok(())
@@ -55,13 +52,10 @@ impl RuffFacade {
             .output()?;
 
         if !output.status.success() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!(
-                    "ruff check --fix failed: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ),
-            ));
+            return Err(std::io::Error::other(format!(
+                "ruff check --fix failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
         }
 
         Ok(())
