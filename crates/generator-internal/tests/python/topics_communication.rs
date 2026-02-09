@@ -296,7 +296,6 @@ if __name__ == "__main__":
         Duration::from_secs(15),
     )
     .await;
-    eprintln!("DEBUG: exposer health is reachable");
 
     // Now wait for subscriber (which blocks until it receives a message)
     let subscriber_timeout = Duration::from_secs(20);
@@ -334,7 +333,6 @@ if __name__ == "__main__":
         .unwrap_or(false);
 
         if reachable {
-            eprintln!("DEBUG: subscriber health is reachable");
             break;
         }
 

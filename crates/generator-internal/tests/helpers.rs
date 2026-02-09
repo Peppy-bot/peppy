@@ -410,7 +410,7 @@ pub fn init_python_user_node(to_dir: impl AsRef<Path>) {
         r#"[project]
 name = "user_node"
 version = "0.1.0"
-requires-python = ">= 3.11"
+requires-python = ">= 3.11, < 3.14"
 dependencies = ["peppygen"]
 
 [tool.uv.sources]

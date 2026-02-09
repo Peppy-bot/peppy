@@ -312,7 +312,7 @@ fn subscribed_to_topic() {
         &rendered,
         &[
             "def _deserialize_payload(payload):",
-            "VIDEO_STREAM_MESSAGE_CAPNP.VideoStreamMessage.from_bytes(payload)",
+            "with VIDEO_STREAM_MESSAGE_CAPNP.VideoStreamMessage.from_bytes(payload) as capnp_msg:",
         ],
     );
 
