@@ -1,6 +1,7 @@
 use crate::helpers::{
-    WaitContext, compile_project, copy_config_to_output, init_cargo_user_node, init_test_env,
-    send_shutdown, spawn_cargo_run, wait_for_child, wait_for_health_service_reachable_or_exit,
+    STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output, init_cargo_user_node,
+    init_test_env, send_shutdown, spawn_cargo_run, wait_for_child,
+    wait_for_health_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
@@ -215,7 +216,7 @@ async fn actions_communication() {
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
-        init_test_env(&temp_dir_subscriber);
+        init_test_env::<generator::RustGenerator>(&temp_dir_subscriber, STUB_NODE_CONFIG);
     generator
         .add_subscribed_action(&subscribed_action, &action_messages)
         .unwrap();
@@ -290,7 +291,7 @@ fn main() -> Result<()> {
     let temp_dir_exposer = TempDir::new().unwrap();
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env(&temp_dir_exposer);
+        init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator.build(&output_dir_exposer).unwrap();
@@ -524,7 +525,7 @@ async fn actions_communication_cancel_goal() {
         result_response: Some(result_response_format),
     };
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
-        init_test_env(&temp_dir_subscriber);
+        init_test_env::<generator::RustGenerator>(&temp_dir_subscriber, STUB_NODE_CONFIG);
     generator
         .add_subscribed_action(&subscribed_action, &action_messages)
         .unwrap();
@@ -595,7 +596,7 @@ fn main() -> Result<()> {
     let temp_dir_exposer = TempDir::new().unwrap();
     let exposed_action: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env(&temp_dir_exposer);
+        init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator.build(&output_dir_exposer).unwrap();
