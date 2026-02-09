@@ -4,6 +4,7 @@ mod tests;
 mod actions;
 mod build;
 mod code_builder;
+mod deserialization;
 mod parameters;
 pub(crate) mod serialization;
 mod services;
@@ -153,7 +154,8 @@ impl LanguageGenerator for PythonGenerator {
         topic: &SubscribedTopic,
         arguments: MessageFormat,
     ) -> Result<()> {
-        let code = topics::build_subscribed_topic(topic, &arguments);
+        let schema_info = self.register_schema(&topic.name, &arguments)?;
+        let code = topics::build_subscribed_topic(topic, &arguments, Some(&schema_info));
         let module_label = topics::subscribed_topic_module_label(topic);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
