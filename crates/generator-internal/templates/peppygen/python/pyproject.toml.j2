@@ -6,3 +6,9 @@ dependencies = ["peppylib"]
 
 [tool.uv.sources]
 peppylib = { path = "{{ peppylib_path }}" }
+
+[tool.ruff]
+exclude = ["crates"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]

@@ -202,7 +202,7 @@ impl LanguageGenerator for PythonGenerator {
         let to_path = to_path.as_ref();
         std::fs::create_dir_all(to_path)?;
 
-        // TODO: add_peppylib_dependencies is missing here
+        build::add_peppylib_dependencies(to_path)?;
         build::add_capnp_schemas(&self.schemas, to_path)?;
         // TODO: add_artifacts_to_lib is missing here
         build::add_parameters_to_lib(&self.parameters, to_path)?;

@@ -39,7 +39,12 @@ pub fn prepare_directories(
 
 pub fn init_test_env<G: Default>(
     temp_dir: &TempDir,
-) -> (G, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+) -> (
+    G,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
     let (output_dir, user_node, peppy_node_config_path) = prepare_directories(temp_dir);
     (G::default(), output_dir, user_node, peppy_node_config_path)
 }

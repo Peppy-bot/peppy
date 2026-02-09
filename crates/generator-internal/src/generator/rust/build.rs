@@ -1,6 +1,9 @@
 use crate::{
     error::{Error, Result},
-    generator::types::{CapnpSchema, InterfaceArtifact, InterfaceKind},
+    generator::{
+        common::{WorkspacePackageMetadata, copy_embedded_crate},
+        types::{CapnpSchema, InterfaceArtifact, InterfaceKind},
+    },
 };
 use config::encoding::compile_capnp;
 use proc_macro2::Span;
@@ -8,7 +11,6 @@ use rust_embed::Embed;
 use std::{
     collections::{BTreeMap, HashMap},
     fs,
-    io::{self, ErrorKind},
     path::{Path, PathBuf},
 };
 use syn::{
@@ -57,23 +59,6 @@ struct EmbeddedConfigInternal;
 #[exclude = "target/*"]
 #[exclude = "tests/*"]
 struct EmbeddedNodeStackInternal;
-
-#[derive(Clone)]
-struct WorkspacePackageMetadata {
-    version: &'static str,
-    edition: &'static str,
-    authors: &'static [&'static str],
-}
-
-impl WorkspacePackageMetadata {
-    const fn embedded() -> Self {
-        Self {
-            version: env!("CARGO_PKG_VERSION"),
-            edition: "2024",
-            authors: &["Tuatini Godard <tuatini@peppy.bot>"],
-        }
-    }
-}
 
 pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>) -> Result<()> {
     const PEPPYLIB_DIR: &str = "peppylib";
@@ -533,99 +518,4 @@ fn as_function_item(item: ImplItem) -> Option<Item> {
         sig,
         block: Box::new(block),
     }))
-}
-
-fn copy_embedded_crate<E: Embed>(
-    crate_dir: &str,
-    vendored_root: &Path,
-    metadata: &WorkspacePackageMetadata,
-) -> Result<()> {
-    let destination_dir = vendored_root.join(crate_dir);
-    if destination_dir.exists() {
-        fs::remove_dir_all(&destination_dir)?;
-    }
-
-    for file_path in E::iter() {
-        let file_path_str = file_path.as_ref();
-        let destination = destination_dir.join(file_path_str);
-
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let content = E::get(file_path_str).ok_or_else(|| {
-            io::Error::new(
-                ErrorKind::NotFound,
-                format!("embedded file not found: {file_path_str}"),
-            )
-        })?;
-        fs::write(&destination, content.data.as_ref())?;
-
-        // Set execute permissions on binary files in tools/ directory
-        #[cfg(unix)]
-        if file_path_str.starts_with("tools/") {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&destination)?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&destination, perms)?;
-        }
-    }
-
-    localize_cargo_toml(&destination_dir.join("Cargo.toml"), metadata)?;
-    Ok(())
-}
-
-fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetadata) -> Result<()> {
-    use toml_edit::{Array, DocumentMut, value};
-
-    if !cargo_toml_path.exists() {
-        return Ok(());
-    }
-
-    let contents = fs::read_to_string(cargo_toml_path)?;
-    let mut doc: DocumentMut = contents
-        .parse()
-        .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
-
-    if let Some(package) = doc.get_mut("package").and_then(|p| p.as_table_mut()) {
-        // Check if version uses workspace inheritance
-        if package
-            .get("version")
-            .and_then(|v| v.as_table())
-            .and_then(|table| table.get("workspace"))
-            .and_then(|w| w.as_bool())
-            == Some(true)
-        {
-            package.insert("version", value(metadata.version));
-        }
-
-        // Check if edition uses workspace inheritance
-        if package
-            .get("edition")
-            .and_then(|v| v.as_table())
-            .and_then(|table| table.get("workspace"))
-            .and_then(|w| w.as_bool())
-            == Some(true)
-        {
-            package.insert("edition", value(metadata.edition));
-        }
-
-        // Check if authors uses workspace inheritance
-        if package
-            .get("authors")
-            .and_then(|v| v.as_table())
-            .and_then(|table| table.get("workspace"))
-            .and_then(|w| w.as_bool())
-            == Some(true)
-        {
-            let mut authors = Array::new();
-            for &author in metadata.authors {
-                authors.push(author);
-            }
-            package.insert("authors", value(authors));
-        }
-    }
-
-    fs::write(cargo_toml_path, doc.to_string())?;
-    Ok(())
 }
