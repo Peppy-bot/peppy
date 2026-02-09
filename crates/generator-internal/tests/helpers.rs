@@ -423,7 +423,7 @@ peppygen = {{ path = "{}" }}
 }
 
 /// Resolves and installs dependencies for the Python project via `uv sync`.
-pub fn compile_python_project(dir: impl AsRef<Path>) {
+pub fn init_python_project_venv(dir: impl AsRef<Path>) {
     let output = Command::new("uv")
         .arg("sync")
         .current_dir(dir.as_ref())

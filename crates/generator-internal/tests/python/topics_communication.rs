@@ -1,5 +1,5 @@
 use crate::helpers::{
-    STUB_PYTHON_NODE_CONFIG, WaitContext, compile_python_project, copy_config_to_output,
+    STUB_PYTHON_NODE_CONFIG, WaitContext, copy_config_to_output, init_python_project_venv,
     init_python_user_node, init_test_env, send_shutdown, spawn_python_run, wait_for_child,
     wait_for_health_service_reachable_or_exit,
 };
@@ -124,22 +124,17 @@ from peppygen import NodeBuilder
 from peppygen.subscribed_topics import uvc_camera_video_stream
 
 def setup(parameters, node_runner):
-    async def async_main():
-        try:
-            print("subscriber: about to subscribe", flush=True)
-            instance_id, frame = await uvc_camera_video_stream.on_next_message_received(node_runner)
-            print(
-                f"got {frame.width}x{frame.height} frame encoded as {frame.encoding} from {instance_id}",
-                flush=True,
-            )
-        except Exception as e:
-            print(f"subscriber error: {e}", flush=True)
-            traceback.print_exc()
-            raise
     try:
-        asyncio.run(async_main())
+        print("subscriber: about to subscribe", flush=True)
+        instance_id, frame = asyncio.run(
+            uvc_camera_video_stream.on_next_message_received(node_runner)
+        )
+        print(
+            f"got {frame.width}x{frame.height} frame encoded as {frame.encoding} from {instance_id}",
+            flush=True,
+        )
     except Exception as e:
-        print(f"subscriber asyncio.run error: {e}", flush=True)
+        print(f"subscriber error: {e}", flush=True)
         traceback.print_exc()
         raise
 
@@ -210,35 +205,29 @@ def setup(parameters, node_runner):
     frequency_hz = parameters["frequency"]
     interval = 1.0 / frequency_hz
 
-    def emit_loop():
-        async def run():
-            frame_id = 0
-            print(f"exposer: starting emit loop with interval={interval}", flush=True)
-            while True:
-                try:
-                    await video_stream.emit(
-                        node_runner,
-                        video_stream.MessageHeader(stamp=time.time(), frame_id=frame_id),
-                        "rgb8",
-                        640,
-                        480,
-                        bytes([1, 2, 3]),
-                    )
-                    if frame_id == 0:
-                        print("exposer: first emit succeeded", flush=True)
-                except Exception as e:
-                    print(f"exposer emit error: {e}", flush=True)
-                    traceback.print_exc()
-                    raise
-                frame_id = (frame_id + 1) % (2**32)
-                await asyncio.sleep(interval)
-        try:
-            asyncio.run(run())
-        except Exception as e:
-            print(f"exposer asyncio.run error: {e}", file=sys.stderr, flush=True)
-            traceback.print_exc(file=sys.stderr)
+    async def emit_loop():
+        frame_id = 0
+        print(f"exposer: starting emit loop with interval={interval}", flush=True)
+        while True:
+            try:
+                await video_stream.emit(
+                    node_runner,
+                    video_stream.MessageHeader(stamp=time.time(), frame_id=frame_id),
+                    "rgb8",
+                    640,
+                    480,
+                    bytes([1, 2, 3]),
+                )
+                if frame_id == 0:
+                    print("exposer: first emit succeeded", flush=True)
+            except Exception as e:
+                print(f"exposer emit error: {e}", flush=True)
+                traceback.print_exc()
+                raise
+            frame_id = (frame_id + 1) % (2**32)
+            await asyncio.sleep(interval)
 
-    threading.Thread(target=emit_loop, daemon=True).start()
+    threading.Thread(target=lambda: asyncio.run(emit_loop()), daemon=True).start()
     print("exposer: daemon thread started", flush=True)
 
 def main():
@@ -258,8 +247,9 @@ if __name__ == "__main__":
 
     println!("User node subscriber = {}", user_node_subscriber.display());
     println!("User node exposer = {}", user_node_exposer.display());
-    compile_python_project(&user_node_subscriber);
-    compile_python_project(&user_node_exposer);
+
+    init_python_project_venv(&user_node_subscriber);
+    init_python_project_venv(&user_node_exposer);
 
     // Spawn both processes
     let mut subscriber_child = spawn_python_run(
