@@ -1,6 +1,6 @@
 use crate::helpers::{
-    WaitContext, compile_project, copy_config_to_output, init_cargo_user_node, init_test_env,
-    send_shutdown, spawn_cargo_run, try_send_shutdown, wait_for_child,
+    STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output, init_cargo_user_node,
+    init_test_env, send_shutdown, spawn_cargo_run, try_send_shutdown, wait_for_child,
     wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
@@ -108,7 +108,7 @@ async fn services_communication_no_target_instance_id() {
     let subscribed_response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE).unwrap();
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
-        init_test_env(&temp_dir_subscriber);
+        init_test_env::<generator::RustGenerator>(&temp_dir_subscriber, STUB_NODE_CONFIG);
     generator
         .add_subscribed_service(
             &subscribed_service,
@@ -172,7 +172,7 @@ fn main() -> Result<()> {
     let temp_dir_exposer = TempDir::new().unwrap();
     let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env(&temp_dir_exposer);
+        init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
     generator.add_exposed_service(&exposed_service).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator.build(&output_dir_exposer).unwrap();
@@ -381,7 +381,7 @@ async fn services_communication_exposed_service_without_request_body() {
     let subscribed_response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE).unwrap();
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
-        init_test_env(&temp_dir_subscriber);
+        init_test_env::<generator::RustGenerator>(&temp_dir_subscriber, STUB_NODE_CONFIG);
     generator
         .add_subscribed_service(
             &subscribed_service,
@@ -442,7 +442,7 @@ fn main() -> Result<()> {
     let exposed_service: ExposedService =
         serde_json5::from_str(EXPOSED_SERVICE_NO_REQUEST_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env(&temp_dir_exposer);
+        init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
     generator.add_exposed_service(&exposed_service).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator.build(&output_dir_exposer).unwrap();
@@ -641,7 +641,7 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
     let subscribed_response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE).unwrap();
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
-        init_test_env(&temp_dir_subscriber);
+        init_test_env::<generator::RustGenerator>(&temp_dir_subscriber, STUB_NODE_CONFIG);
     generator
         .add_subscribed_service(
             &subscribed_service,
@@ -704,7 +704,7 @@ fn main() -> Result<()> {
     let temp_dir_exposer1 = TempDir::new().unwrap();
     let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer1, user_node_exposer1, peppy_node_config_path) =
-        init_test_env(&temp_dir_exposer1);
+        init_test_env::<generator::RustGenerator>(&temp_dir_exposer1, STUB_NODE_CONFIG);
     generator.add_exposed_service(&exposed_service).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer1, &output_dir_exposer1);
     generator.build(&output_dir_exposer1).unwrap();
@@ -761,7 +761,7 @@ fn main() -> Result<()> {
     let temp_dir_exposer2 = TempDir::new().unwrap();
     let exposed_service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, output_dir_exposer2, user_node_exposer2, peppy_node_config_path) =
-        init_test_env(&temp_dir_exposer2);
+        init_test_env::<generator::RustGenerator>(&temp_dir_exposer2, STUB_NODE_CONFIG);
     generator.add_exposed_service(&exposed_service2).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer2, &output_dir_exposer2);
     generator.build(&output_dir_exposer2).unwrap();

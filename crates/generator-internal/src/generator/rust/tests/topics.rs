@@ -329,7 +329,7 @@ fn clippy_single_exposed_topic_empty_format() {
         result_response: None,
     };
 
-    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_exposed_topic(&exposed_topic).unwrap();
     generator
         .add_subscribed_action(&subscribed_action1, &action_messages)
@@ -388,7 +388,7 @@ fn compile_lib_with_exposed_and_subscribed_topics() {
     let subscribed_topic2 = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
     let subscribed_format2 = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2);
 
-    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_exposed_topic(&exposed_topic1).unwrap();
     generator.add_exposed_topic(&exposed_topic2).unwrap();
     generator

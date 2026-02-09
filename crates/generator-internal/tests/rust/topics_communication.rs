@@ -1,6 +1,7 @@
 use crate::helpers::{
-    WaitContext, compile_project, copy_config_to_output, init_cargo_user_node, init_test_env,
-    send_shutdown, spawn_cargo_run, wait_for_child, wait_for_health_service_reachable_or_exit,
+    STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output, init_cargo_user_node,
+    init_test_env, send_shutdown, spawn_cargo_run, wait_for_child,
+    wait_for_health_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
@@ -86,7 +87,7 @@ async fn topics_communication() {
     let subscribed_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
     let (mut generator, subscriber_dir, user_node_subscriber, peppy_node_config_path) =
-        init_test_env(&temp_dir_proj2);
+        init_test_env::<generator::RustGenerator>(&temp_dir_proj2, STUB_NODE_CONFIG);
     generator
         .add_subscribed_topic(&subscribed_topic, subscribed_format)
         .unwrap();
@@ -140,7 +141,7 @@ fn main() -> Result<()> {
     let temp_dir_proj1 = TempDir::new().unwrap();
     let exposed_topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
     let (mut generator, exposer_dir, user_node_exposer, peppy_node_config_path) =
-        init_test_env(&temp_dir_proj1);
+        init_test_env::<generator::RustGenerator>(&temp_dir_proj1, STUB_NODE_CONFIG);
     let exposer_parameters: config::NodeArguments =
         serde_json5::from_str(r#"{ frequency: "f64" }"#).unwrap();
     generator.set_parameters(exposer_parameters.clone());

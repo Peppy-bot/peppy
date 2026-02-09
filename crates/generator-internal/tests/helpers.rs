@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use generator::RustGenerator;
 use peppylib::messaging::{NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::{MessengerHandle, ServiceMessenger};
 use std::io::Read;
@@ -35,21 +34,18 @@ pub fn prepare_directories(
     (output_dir, user_node, peppy_node_config)
 }
 
-pub fn init_test_env(
+pub fn init_test_env<G: Default>(
     temp_dir: &TempDir,
+    node_config: &str,
 ) -> (
-    RustGenerator,
+    G,
     std::path::PathBuf,
     std::path::PathBuf,
     std::path::PathBuf,
 ) {
     let (output_dir, user_node, peppy_node_config_path) = prepare_directories(temp_dir);
-    (
-        RustGenerator::new(),
-        output_dir,
-        user_node,
-        peppy_node_config_path,
-    )
+    fs::write(&peppy_node_config_path, node_config).unwrap();
+    (G::default(), output_dir, user_node, peppy_node_config_path)
 }
 
 pub fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> std::path::PathBuf {
@@ -385,4 +381,75 @@ pub async fn try_send_shutdown(
         timeout,
     )
     .await;
+}
+
+// ---------------------------------------------------------------------------
+// Python-specific helpers
+// ---------------------------------------------------------------------------
+
+pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
+  schema_version: 1,
+  manifest: {
+    name: "generated_node",
+    tag: "0.1.0",
+    language: "python",
+    start_cmd: ["uv", "run", "python", "main.py"]
+  }
+}
+"#;
+
+/// Initialises a Python user-node project at `to_dir`.
+///
+/// Creates a minimal `pyproject.toml` that depends on the generated `peppygen`
+/// package (located at [`PEPPYGEN_OUTPUT_PATH`] relative to the project root).
+pub fn init_python_user_node(to_dir: impl AsRef<Path>) {
+    let project_dir = to_dir.as_ref();
+    fs::create_dir_all(project_dir).expect("failed to create Python user node directory");
+
+    let pyproject = format!(
+        r#"[project]
+name = "user_node"
+version = "0.1.0"
+requires-python = ">= 3.11"
+dependencies = ["peppygen"]
+
+[tool.uv.sources]
+peppygen = {{ path = "{}" }}
+"#,
+        PEPPYGEN_OUTPUT_PATH
+    );
+    fs::write(project_dir.join("pyproject.toml"), pyproject)
+        .expect("failed to write Python user node pyproject.toml");
+}
+
+/// Resolves and installs dependencies for the Python project via `uv sync`.
+pub fn compile_python_project(dir: impl AsRef<Path>) {
+    let output = Command::new("uv")
+        .arg("sync")
+        .current_dir(dir.as_ref())
+        .output()
+        .expect("failed to invoke uv sync on Python project");
+    assert!(
+        output.status.success(),
+        "uv sync failed for Python project with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Spawns `uv run python main.py` inside the given project directory.
+pub fn spawn_python_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std::process::Child {
+    let mut command = Command::new("uv");
+    command
+        .args(["run", "python", "main.py"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .current_dir(dir);
+
+    for &(key, value) in env_vars {
+        command.env(key, value);
+    }
+
+    command.spawn().expect("failed to spawn uv run python")
 }

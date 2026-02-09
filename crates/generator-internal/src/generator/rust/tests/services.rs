@@ -396,7 +396,7 @@ fn clippy_single_exposed_service_without_request_body() {
         result_response: None,
     };
 
-    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_exposed_service(&exposed_service).unwrap();
     generator
         .add_subscribed_action(&subscribed_action1, &action_messages)
@@ -468,7 +468,7 @@ fn compile_lib_with_exposed_and_subscribed_services() {
 
     let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
 
-    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_exposed_service(&exposed_service1).unwrap();
     generator.add_exposed_service(&exposed_service2).unwrap();
     generator
@@ -586,7 +586,7 @@ fn clippy_subscribed_service_empty_request_format() {
     let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
     let response_format: MessageFormat = serde_json5::from_str(r#"{ status: "string" }"#).unwrap();
 
-    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator
         .add_subscribed_service(&subscribed_service, &empty_format, &response_format)
         .unwrap();
@@ -634,7 +634,7 @@ fn clippy_subscribed_service_empty_response_format() {
     let request_format: MessageFormat = serde_json5::from_str(r#"{ action_id: "u32" }"#).unwrap();
     let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
 
-    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator
         .add_subscribed_service(&subscribed_service, &request_format, &empty_format)
         .unwrap();

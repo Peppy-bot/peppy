@@ -846,7 +846,7 @@ fn clippy_single_exposed_action_empty_goal_request() {
         result_response: Some(subscribed_action2_result_response),
     };
 
-    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_exposed_action(&action).unwrap();
     generator
         .add_subscribed_action(&subscribed_action1, &subscribed_action1_messages)
@@ -944,7 +944,7 @@ fn compile_lib_with_exposed_and_subscribed_actions() {
         result_response: Some(subscribed_action2_result_response),
     };
 
-    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_exposed_action(&action1).unwrap();
     generator.add_exposed_action(&action2).unwrap();
     generator
@@ -1082,7 +1082,7 @@ fn clippy_subscribed_action_empty_goal_request() {
         result_response: None,
     };
 
-    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator
         .add_subscribed_action(&subscribed_action, &action_messages)
         .unwrap();
