@@ -2,6 +2,7 @@
 mod tests;
 
 mod actions;
+mod build;
 mod context;
 mod deserialization;
 pub mod parameters;
@@ -12,7 +13,6 @@ mod type_mapping;
 
 pub use parameters::generate_parameters_struct;
 
-use super::common;
 use super::types::{
     CapnpSchema, InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage,
     cancel_action_response_format, non_empty_message_format,
@@ -1526,10 +1526,10 @@ impl LanguageGenerator for RustGenerator {
     }
 
     fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
-        common::add_peppylib_dependencies(&to_path)?;
-        common::write_capnp_schemas(&self.schemas, to_path.as_ref())?;
-        common::add_artifacts_to_lib(&to_path, self.sections)?;
-        common::add_parameters_to_lib(&to_path, &self.parameters)?;
+        build::add_peppylib_dependencies(&to_path)?;
+        build::write_capnp_schemas(&self.schemas, to_path.as_ref())?;
+        build::add_artifacts_to_lib(&to_path, self.sections)?;
+        build::add_parameters_to_lib(&to_path, &self.parameters)?;
         Ok(())
     }
 }

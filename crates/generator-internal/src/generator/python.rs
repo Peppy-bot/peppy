@@ -2,6 +2,7 @@
 mod tests;
 
 mod actions;
+mod build;
 mod code_builder;
 mod parameters;
 pub(crate) mod serialization;
@@ -94,8 +95,10 @@ impl PythonGenerator {
         let schema_text =
             schema_source.replacen("struct Message", &format!("struct {struct_name}"), 1);
 
-        self.schemas
-            .insert(file_stem.clone(), CapnpSchema::new(file_stem.clone(), schema_text));
+        self.schemas.insert(
+            file_stem.clone(),
+            CapnpSchema::new(file_stem.clone(), schema_text),
+        );
 
         Ok(PythonSchemaInfo {
             file_stem,
@@ -196,20 +199,8 @@ impl LanguageGenerator for PythonGenerator {
         let to_path = to_path.as_ref();
         std::fs::create_dir_all(to_path)?;
 
-        // Write Cap'n Proto schema files for pycapnp runtime loading
-        if !self.schemas.is_empty() {
-            let capnp_dir = to_path.join("capnp");
-            std::fs::create_dir_all(&capnp_dir)?;
-            for schema in self.schemas.values() {
-                let file_path = capnp_dir.join(format!("{}.capnp", schema.file_stem()));
-                std::fs::write(&file_path, schema.schema())?;
-            }
-        }
-
-        // Generate and write parameters.py
-        let parameters_code = parameters::generate_python_parameters(&self.parameters)?;
-        let parameters_file = to_path.join("parameters.py");
-        std::fs::write(&parameters_file, parameters_code)?;
+        build::write_capnp_schemas(&self.schemas, to_path)?;
+        build::write_parameters(&self.parameters, to_path)?;
 
         Ok(())
     }
