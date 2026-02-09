@@ -20,6 +20,31 @@ fn emit_nested_classes(builder: &mut PythonCodeBuilder, nested_classes: &[Nested
     }
 }
 
+fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
+    format!("_{}_capnp", schema_info.file_stem)
+}
+
+fn emit_capnp_schema_loader(builder: &mut PythonCodeBuilder, schema_info: &PythonSchemaInfo) {
+    builder.add_import("import capnp");
+    builder.add_import("import types");
+    builder.add_import("from functools import lru_cache");
+    builder.add_import("from pathlib import Path");
+    builder.blank_line();
+    builder.line("_PKG_DIR = Path(__file__).resolve().parent.parent");
+    builder.blank_line();
+
+    let loader_fn_name = capnp_loader_fn_name(schema_info);
+    builder.line("@lru_cache(maxsize=1)");
+    builder.line(&format!("def {loader_fn_name}() -> types.ModuleType:"));
+    builder.indent();
+    builder.line(&format!(
+        "return capnp.load(str(_PKG_DIR / \"capnp/{}.capnp\"))",
+        schema_info.file_stem
+    ));
+    builder.dedent();
+    builder.blank_line();
+}
+
 /// Generates Python code for an exposed (publishing) topic.
 pub fn build_exposed_topic(topic: &ExposedTopic, schema_info: Option<&PythonSchemaInfo>) -> String {
     let mut builder = PythonCodeBuilder::new();
@@ -36,19 +61,9 @@ pub fn build_exposed_topic(topic: &ExposedTopic, schema_info: Option<&PythonSche
         builder.add_import("from typing import Optional");
     }
 
-    // Add capnp import and schema loading as a module-level constant
+    // Add capnp imports and a lazy, cached schema loader.
     if let Some(info) = schema_info {
-        builder.add_import("import capnp");
-        builder.add_import("import types");
-        builder.add_import("from pathlib import Path");
-        builder.blank_line();
-        builder.line("_PKG_DIR = Path(__file__).resolve().parent.parent");
-        builder.line(&format!(
-            "{}_CAPNP: types.ModuleType = capnp.load(str(_PKG_DIR / \"capnp/{}.capnp\"))",
-            info.file_stem.to_uppercase(),
-            info.file_stem
-        ));
-        builder.blank_line();
+        emit_capnp_schema_loader(&mut builder, info);
     }
 
     // Emit nested dataclasses (e.g., MessageHeader)
@@ -72,9 +87,9 @@ pub fn build_exposed_topic(topic: &ExposedTopic, schema_info: Option<&PythonSche
 
     // Generate payload serialization
     if let (Some(info), Some(fmt)) = (schema_info, topic.message_format.as_ref()) {
+        let loader_fn_name = capnp_loader_fn_name(info);
         builder.line(&format!(
-            "capnp_msg = {}_CAPNP.{}.new_message()",
-            info.file_stem.to_uppercase(),
+            "capnp_msg = {loader_fn_name}().{}.new_message()",
             info.struct_name
         ));
         let mut counter = 0u32;
@@ -117,19 +132,9 @@ pub fn build_subscribed_topic(
     // Tuple is used for the return type of on_next_message_received.
     builder.add_import("from typing import Optional, Tuple");
 
-    // Add capnp import and schema loading as a module-level constant
+    // Add capnp imports and a lazy, cached schema loader.
     if let Some(info) = schema_info {
-        builder.add_import("import capnp");
-        builder.add_import("import types");
-        builder.add_import("from pathlib import Path");
-        builder.blank_line();
-        builder.line("_PKG_DIR = Path(__file__).resolve().parent.parent");
-        builder.line(&format!(
-            "{}_CAPNP: types.ModuleType = capnp.load(str(_PKG_DIR / \"capnp/{}.capnp\"))",
-            info.file_stem.to_uppercase(),
-            info.file_stem
-        ));
-        builder.blank_line();
+        emit_capnp_schema_loader(&mut builder, info);
     }
 
     // Emit nested dataclasses first (dependency order)
@@ -144,7 +149,14 @@ pub fn build_subscribed_topic(
 
     // Generate deserialize_payload helper function
     if let Some(info) = schema_info {
-        deserialization::build_deserialize_fn(&mut builder, info, arguments, "Message");
+        let loader_fn_name = capnp_loader_fn_name(info);
+        deserialization::build_deserialize_fn(
+            &mut builder,
+            info,
+            arguments,
+            "Message",
+            &format!("{loader_fn_name}()"),
+        );
     }
 
     // Generate on_next_message_received function

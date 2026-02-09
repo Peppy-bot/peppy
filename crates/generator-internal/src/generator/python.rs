@@ -32,20 +32,11 @@ pub(crate) struct PythonSchemaInfo {
 }
 
 /// Python-specific implementation of the interface generator.
+#[derive(Default)]
 pub struct PythonGenerator {
     sections: Vec<InterfaceArtifact>,
     parameters: config::NodeArguments,
     schemas: HashMap<String, CapnpSchema>,
-}
-
-impl Default for PythonGenerator {
-    fn default() -> Self {
-        Self {
-            sections: Vec::new(),
-            parameters: config::NodeArguments::default(),
-            schemas: HashMap::new(),
-        }
-    }
 }
 
 impl PythonGenerator {
