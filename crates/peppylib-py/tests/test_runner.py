@@ -21,7 +21,12 @@ from peppylib.config import (
     RUNTIME_CONFIG_VAR_NAME,
     SHUTDOWN_SERVICE,
 )
-from peppylib.runtime import CancellationToken, NodeBuilder, NodeRunner, StandaloneConfig
+from peppylib.runtime import (
+    CancellationToken,
+    NodeBuilder,
+    NodeRunner,
+    StandaloneConfig,
+)
 
 from common import (
     PEPPY_CONFIG,
@@ -158,7 +163,7 @@ async def test_standalone_runner_succeed(monkeypatch):
 
             standalone_config = (
                 StandaloneConfig()
-                .with_parameters_json({"frequency_hz": TEST_FREQUENCY_HZ})
+                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
                 .with_messaging(router.host, router.port)
                 .with_instance_id(TEST_INSTANCE_ID)
             )
@@ -443,7 +448,7 @@ async def test_node_runner_exposes_messenger_and_metadata(monkeypatch):
 
             standalone_config = (
                 StandaloneConfig()
-                .with_parameters_json({"frequency_hz": TEST_FREQUENCY_HZ})
+                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
                 .with_messaging(router.host, router.port)
                 .with_instance_id(TEST_INSTANCE_ID)
                 .with_node_name(TEST_NODE_NAME)

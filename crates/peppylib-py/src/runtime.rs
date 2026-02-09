@@ -80,8 +80,8 @@ impl PyStandaloneConfig {
         }
     }
 
-    /// Set runtime parameters from a Python dict (JSON-like value).
-    fn with_parameters_json(&self, py: Python<'_>, params: Py<PyAny>) -> PyResult<Self> {
+    /// Set runtime parameters from a Python dict.
+    fn with_parameters(&self, py: Python<'_>, params: Py<PyAny>) -> PyResult<Self> {
         let value: serde_json::Value = depythonize(params.bind(py))?;
         Ok(Self {
             inner: self.inner.clone().with_parameters_json(value),
