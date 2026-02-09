@@ -42,9 +42,9 @@ pub fn build_exposed_topic(topic: &ExposedTopic, schema_info: Option<&PythonSche
         builder.add_import("import types");
         builder.add_import("from pathlib import Path");
         builder.blank_line();
-        builder.line("_CUR_DIR = Path(__file__).resolve().parent");
+        builder.line("_PKG_DIR = Path(__file__).resolve().parent.parent");
         builder.line(&format!(
-            "{}_CAPNP: types.ModuleType = capnp.load(str(_CUR_DIR / \"capnp/{}.capnp\"))",
+            "{}_CAPNP: types.ModuleType = capnp.load(str(_PKG_DIR / \"capnp/{}.capnp\"))",
             info.file_stem.to_uppercase(),
             info.file_stem
         ));
@@ -87,9 +87,9 @@ pub fn build_exposed_topic(topic: &ExposedTopic, schema_info: Option<&PythonSche
     builder.line("await peppylib.TopicMessenger.emit(");
     builder.indent();
     builder.line("node_runner.messenger(),");
-    builder.line("node_runner.bound_master_node,");
-    builder.line("node_runner.bound_instance_id,");
-    builder.line("node_runner.node_name,");
+    builder.line("node_runner.bound_master_node(),");
+    builder.line("node_runner.bound_instance_id(),");
+    builder.line("node_runner.node_name(),");
     builder.line("TOPIC_NAME,");
     builder.line("qos,");
     builder.line("payload,");
@@ -123,9 +123,9 @@ pub fn build_subscribed_topic(
         builder.add_import("import types");
         builder.add_import("from pathlib import Path");
         builder.blank_line();
-        builder.line("_CUR_DIR = Path(__file__).resolve().parent");
+        builder.line("_PKG_DIR = Path(__file__).resolve().parent.parent");
         builder.line(&format!(
-            "{}_CAPNP: types.ModuleType = capnp.load(str(_CUR_DIR / \"capnp/{}.capnp\"))",
+            "{}_CAPNP: types.ModuleType = capnp.load(str(_PKG_DIR / \"capnp/{}.capnp\"))",
             info.file_stem.to_uppercase(),
             info.file_stem
         ));
@@ -157,8 +157,8 @@ pub fn build_subscribed_topic(
     builder.line("subscription = await peppylib.TopicMessenger.subscribe(");
     builder.indent();
     builder.line("node_runner.messenger(),");
-    builder.line("node_runner.bound_master_node,");
-    builder.line("node_runner.bound_instance_id,");
+    builder.line("node_runner.bound_master_node(),");
+    builder.line("node_runner.bound_instance_id(),");
     builder.line("node_name,");
     builder.line("topic_name,");
     builder.line("master_node_target,");
@@ -169,8 +169,8 @@ pub fn build_subscribed_topic(
     builder.line("raw_message = await subscription.on_next_message()");
 
     if schema_info.is_some() {
-        builder.line("payload = raw_message.payload()");
-        builder.line("instance_id = raw_message.instance_id()");
+        builder.line("payload = raw_message.payload");
+        builder.line("instance_id = raw_message.instance_id");
         builder.line("message = _deserialize_payload(payload)");
         builder.line("return instance_id, message");
     }

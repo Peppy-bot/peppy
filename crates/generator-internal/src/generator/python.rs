@@ -204,7 +204,7 @@ impl LanguageGenerator for PythonGenerator {
 
         build::add_peppylib_dependencies(to_path)?;
         build::add_capnp_schemas(&self.schemas, to_path)?;
-        // TODO: add_artifacts_to_lib is missing here
+        build::add_artifacts_to_lib(to_path, self.sections)?;
         build::add_parameters_to_lib(&self.parameters, to_path)?;
 
         // Last step, lint the project

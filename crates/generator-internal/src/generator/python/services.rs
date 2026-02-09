@@ -69,9 +69,9 @@ pub fn build_exposed_service(service: &ExposedService) -> String {
     builder.line("endpoint = await peppylib.ServiceMessenger.listen(");
     builder.indent();
     builder.line("node_runner.messenger(),");
-    builder.line("node_runner.bound_master_node,");
-    builder.line("node_runner.bound_instance_id,");
-    builder.line("node_runner.node_name,");
+    builder.line("node_runner.bound_master_node(),");
+    builder.line("node_runner.bound_instance_id(),");
+    builder.line("node_runner.node_name(),");
     builder.line("SERVICE_NAME,");
     builder.dedent();
     builder.line(")");
@@ -145,8 +145,8 @@ pub fn build_subscribed_service(
     builder.line("response = await peppylib.ServiceMessenger.poll(");
     builder.indent();
     builder.line("node_runner.messenger(),");
-    builder.line("node_runner.bound_master_node,");
-    builder.line("node_runner.bound_instance_id,");
+    builder.line("node_runner.bound_master_node(),");
+    builder.line("node_runner.bound_instance_id(),");
     builder.line("NODE_NAME,");
     builder.line("SERVICE_NAME,");
     builder.line("target_master_node,");

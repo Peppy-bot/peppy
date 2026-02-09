@@ -1,8 +1,8 @@
 use crate::error::Result;
 use crate::generator::common::{WorkspacePackageMetadata, copy_embedded_crate};
-use crate::generator::types::CapnpSchema;
+use crate::generator::types::{CapnpSchema, InterfaceArtifact, InterfaceKind};
 use rust_embed::Embed;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
 
@@ -105,11 +105,11 @@ pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, to_path: &Path)
         return Ok(());
     }
 
-    let capnp_dir = to_path.join("capnp");
-    std::fs::create_dir_all(&capnp_dir)?;
+    let capnp_dir = to_path.join("peppygen").join("capnp");
+    fs::create_dir_all(&capnp_dir)?;
     for schema in schemas.values() {
         let file_path = capnp_dir.join(format!("{}.capnp", schema.file_stem()));
-        std::fs::write(&file_path, schema.schema())?;
+        fs::write(&file_path, schema.schema())?;
     }
 
     Ok(())
@@ -117,7 +117,143 @@ pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, to_path: &Path)
 
 pub fn add_parameters_to_lib(parameters: &config::NodeArguments, to_path: &Path) -> Result<()> {
     let parameters_code = super::parameters::generate_python_parameters(parameters)?;
-    let parameters_file = to_path.join("parameters.py");
-    std::fs::write(&parameters_file, parameters_code)?;
+    let peppygen_dir = to_path.join("peppygen");
+    fs::create_dir_all(&peppygen_dir)?;
+    let parameters_file = peppygen_dir.join("parameters.py");
+    fs::write(&parameters_file, parameters_code)?;
     Ok(())
+}
+
+pub fn add_artifacts_to_lib(to_path: &Path, artifacts: Vec<InterfaceArtifact>) -> Result<()> {
+    let peppygen_dir = to_path.join("peppygen");
+
+    let mut grouped: BTreeMap<ModuleCategory, Vec<InterfaceArtifact>> = BTreeMap::new();
+    for artifact in artifacts {
+        let category = ModuleCategory::from_kind(artifact.kind);
+        grouped.entry(category).or_default().push(artifact);
+    }
+
+    for category in ModuleCategory::ALL {
+        let category_dir = peppygen_dir.join(category.dir_name());
+        if category_dir.exists() {
+            fs::remove_dir_all(&category_dir)?;
+        }
+        fs::create_dir_all(&category_dir)?;
+
+        let artifacts = grouped.remove(&category).unwrap_or_default();
+        write_category(&category_dir, artifacts)?;
+    }
+
+    Ok(())
+}
+
+fn write_category(category_dir: &Path, artifacts: Vec<InterfaceArtifact>) -> Result<()> {
+    let mut module_names: Vec<String> = Vec::new();
+    let mut counts: HashMap<String, usize> = HashMap::new();
+
+    for artifact in artifacts {
+        let module_name = unique_module_name(&artifact.node_name, &mut counts);
+        let module_file = category_dir.join(format!("{module_name}.py"));
+        let mut code = artifact.code_output;
+        if !code.ends_with('\n') {
+            code.push('\n');
+        }
+        fs::write(&module_file, code)?;
+        module_names.push(module_name);
+    }
+
+    let mut init_content = String::new();
+    for name in &module_names {
+        init_content.push_str(&format!("from . import {name}\n"));
+    }
+    fs::write(category_dir.join("__init__.py"), init_content)?;
+
+    Ok(())
+}
+
+fn unique_module_name(original: &str, counts: &mut HashMap<String, usize>) -> String {
+    let base = sanitize_module_name(original);
+    let counter = counts.entry(base.clone()).or_insert(0);
+    let name = if *counter == 0 {
+        base.clone()
+    } else {
+        format!("{base}_{counter}")
+    };
+    *counter += 1;
+    name
+}
+
+fn sanitize_module_name(raw: &str) -> String {
+    let mut out = String::new();
+    let mut last_was_underscore = false;
+
+    for ch in raw.chars() {
+        let lower = ch.to_ascii_lowercase();
+        if lower.is_ascii_alphanumeric() {
+            out.push(lower);
+            last_was_underscore = false;
+        } else if !out.is_empty() && !last_was_underscore {
+            out.push('_');
+            last_was_underscore = true;
+        } else if out.is_empty() {
+            last_was_underscore = true;
+        }
+    }
+
+    while out.ends_with('_') {
+        out.pop();
+    }
+
+    if out.is_empty() {
+        return "module".to_string();
+    }
+
+    if matches!(out.chars().next(), Some(ch) if ch.is_ascii_digit()) {
+        out.insert(0, '_');
+    }
+
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ModuleCategory {
+    ExposedTopics,
+    SubscribedTopics,
+    ExposedServices,
+    SubscribedServices,
+    ExposedActions,
+    SubscribedActions,
+}
+
+impl ModuleCategory {
+    const ALL: [Self; 6] = [
+        Self::ExposedTopics,
+        Self::SubscribedTopics,
+        Self::ExposedServices,
+        Self::SubscribedServices,
+        Self::ExposedActions,
+        Self::SubscribedActions,
+    ];
+
+    fn from_kind(kind: InterfaceKind) -> Self {
+        match kind {
+            InterfaceKind::ExposedTopic => Self::ExposedTopics,
+            InterfaceKind::SubscribedTopic => Self::SubscribedTopics,
+            InterfaceKind::ExposedService => Self::ExposedServices,
+            InterfaceKind::SubscribedService => Self::SubscribedServices,
+            InterfaceKind::ExposedAction => Self::ExposedActions,
+            InterfaceKind::SubscribedAction => Self::SubscribedActions,
+        }
+    }
+
+    fn dir_name(self) -> &'static str {
+        match self {
+            Self::ExposedTopics => "exposed_topics",
+            Self::SubscribedTopics => "subscribed_topics",
+            Self::ExposedServices => "exposed_services",
+            Self::SubscribedServices => "subscribed_services",
+            Self::ExposedActions => "exposed_actions",
+            Self::SubscribedActions => "subscribed_actions",
+        }
+    }
 }

@@ -2,10 +2,16 @@
 name = "peppygen"
 version = "0.1.0"
 requires-python = ">= 3.11"
-dependencies = ["peppylib"]
+dependencies = ["peppylib", "pycapnp"]
 
 [tool.uv.sources]
 peppylib = { path = "{{ peppylib_path }}" }
+
+[tool.setuptools.packages.find]
+include = ["peppygen*"]
+
+[tool.setuptools.package-data]
+peppygen = ["capnp/*.capnp"]
 
 [tool.ruff]
 exclude = ["crates"]
