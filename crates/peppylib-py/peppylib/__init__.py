@@ -4,6 +4,7 @@ peppylib - The peppyOS control library
 
 import sys
 from ._version import __version__
+from . import encoding
 
 # Import the native module and register submodules in sys.modules
 # This is required for PyO3 submodules to be importable with dot notation
@@ -42,5 +43,6 @@ __all__ = [
     "StandaloneConfig",
     "NodeRunner",
     "CancellationToken",
+    "encoding",
     "__version__",
 ]
