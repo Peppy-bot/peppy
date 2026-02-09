@@ -276,7 +276,11 @@ fn subscribed_to_topic() {
     // Imports
     assert_contains_all(
         &rendered,
-        &["import peppylib", "from dataclasses import dataclass"],
+        &[
+            "import peppylib",
+            "from dataclasses import dataclass",
+            "from typing import Optional",
+        ],
     );
 
     // Generated dataclasses with various field types
@@ -291,22 +295,26 @@ fn subscribed_to_topic() {
         ],
     );
 
-    // Subscriber function signature
+    // Subscriber function signature with optional targeting parameters
     assert_contains_all(
         &rendered,
         &[
             "async def on_next_message_received(",
             "node_runner: peppylib.NodeRunner",
+            "master_node_target: Optional[str] = None",
+            "instance_id_target: Optional[str] = None",
         ],
     );
 
-    // Topic metadata
+    // Topic metadata and subscribe call passes targeting parameters
     assert_contains_all(
         &rendered,
         &[
             "\"uvc_camera\"",
             "\"video_stream\"",
             "peppylib.TopicMessenger.subscribe(",
+            "master_node_target,",
+            "instance_id_target,",
         ],
     );
 }
