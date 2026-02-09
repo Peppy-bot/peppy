@@ -145,10 +145,7 @@ pub fn add_parameters_to_lib(
     Ok(())
 }
 
-pub fn write_capnp_schemas(
-    schemas: &HashMap<String, CapnpSchema>,
-    crate_root: &Path,
-) -> Result<()> {
+pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, crate_root: &Path) -> Result<()> {
     let src_dir = crate_root.join("src");
     if schemas.is_empty() {
         let capnp_rs = src_dir.join("capnp.rs");

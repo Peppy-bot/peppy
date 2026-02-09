@@ -114,7 +114,8 @@ pub fn build_subscribed_topic(
 
     // Always need Optional for the function parameters (master_node_target, instance_id_target),
     // plus any Optional fields in the dataclasses.
-    builder.add_import("from typing import Optional");
+    // Tuple is used for the return type of on_next_message_received.
+    builder.add_import("from typing import Optional, Tuple");
 
     // Add capnp import and schema loading as a module-level constant
     if let Some(info) = schema_info {
@@ -149,7 +150,7 @@ pub fn build_subscribed_topic(
     // Generate on_next_message_received function
     builder.add_import("import peppylib");
     builder.blank_line();
-    builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, master_node_target: Optional[str] = None, instance_id_target: Optional[str] = None):");
+    builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, master_node_target: Optional[str] = None, instance_id_target: Optional[str] = None) -> Tuple[str, Message]:");
     builder.indent();
     builder.line(&format!("node_name = \"{}\"", topic.node));
     builder.line(&format!("topic_name = \"{}\"", topic.name));

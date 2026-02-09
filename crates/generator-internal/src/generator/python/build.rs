@@ -3,7 +3,7 @@ use crate::generator::types::CapnpSchema;
 use std::collections::HashMap;
 use std::path::Path;
 
-pub fn write_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, to_path: &Path) -> Result<()> {
+pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, to_path: &Path) -> Result<()> {
     if schemas.is_empty() {
         return Ok(());
     }
@@ -18,7 +18,7 @@ pub fn write_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, to_path: &Pat
     Ok(())
 }
 
-pub fn write_parameters(parameters: &config::NodeArguments, to_path: &Path) -> Result<()> {
+pub fn add_parameters_to_lib(parameters: &config::NodeArguments, to_path: &Path) -> Result<()> {
     let parameters_code = super::parameters::generate_python_parameters(parameters)?;
     let parameters_file = to_path.join("parameters.py");
     std::fs::write(&parameters_file, parameters_code)?;
