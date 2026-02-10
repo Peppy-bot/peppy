@@ -245,7 +245,15 @@ if __name__ == "__main__":
     let user_node_exposer_runtime_config_str =
         exposer_runtime_config_path.to_str().unwrap().to_owned();
 
+    println!(
+        "User node subscriber PEPPY_RUNTIME_CONFIG=\"{}\"",
+        &subscriber_runtime_config_path.display()
+    );
     println!("User node subscriber = {}", user_node_subscriber.display());
+    println!(
+        "User node exposer PEPPY_RUNTIME_CONFIG=\"{}\"",
+        &exposer_runtime_config_path.display()
+    );
     println!("User node exposer = {}", user_node_exposer.display());
 
     init_python_project_venv(&user_node_subscriber);

@@ -160,9 +160,12 @@ mod zenoh_build {
                 println!("cargo:rerun-if-changed={}", lockfile_path.display());
             }
 
+            let profile = env::var("PROFILE").unwrap();
+            let is_release = profile == "release";
+
             // Use named temp directory for persistent cache
             let cache_dir = get_temp_cache_dir("zenoh");
-            let cached_zenoh_path = cache_dir.join(format!("zenohd-{}", release_tag));
+            let cached_zenoh_path = cache_dir.join(format!("zenohd-{}-{}", release_tag, profile));
 
             // Always copy to OUT_DIR for runtime access
             let out_dir = env::var("OUT_DIR").unwrap();
@@ -210,12 +213,15 @@ mod zenoh_build {
                 }
 
                 // Build zenohd in its own cloned directory. Remove CARGO_TARGET_DIR
-                // so the binary lands at build_dir/target/release/ as expected.
-                let status = Command::new("cargo")
-                    .current_dir(&build_dir)
-                    .env_remove("CARGO_TARGET_DIR")
-                    .args(["build", "--release", "--bin", "zenohd"])
-                    .status();
+                // so the binary lands at build_dir/target/{profile}/ as expected.
+                let mut cmd = Command::new("cargo");
+                cmd.current_dir(&build_dir).env_remove("CARGO_TARGET_DIR");
+                if is_release {
+                    cmd.args(["build", "--release", "--bin", "zenohd"]);
+                } else {
+                    cmd.args(["build", "--bin", "zenohd"]);
+                }
+                let status = cmd.status();
 
                 if status.is_err() || !status.unwrap().success() {
                     println!("cargo:warning=Failed to build zenohd binary");
@@ -223,8 +229,12 @@ mod zenoh_build {
                 }
 
                 // Copy to cache with version tag
-                std::fs::copy(build_dir.join("target/release/zenohd"), &cached_zenoh_path)
-                    .expect("Failed to cache zenohd binary");
+                let target_subdir = if is_release { "release" } else { "debug" };
+                std::fs::copy(
+                    build_dir.join(format!("target/{target_subdir}/zenohd")),
+                    &cached_zenoh_path,
+                )
+                .expect("Failed to cache zenohd binary");
 
                 // Copy to OUT_DIR for runtime
                 std::fs::copy(&cached_zenoh_path, &zenoh_binary_path)
