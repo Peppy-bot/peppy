@@ -13,7 +13,6 @@ use config::{
 use generator::{LanguageGenerator, SubscribedActionMessage};
 use peppylib::messaging::ActionMessenger;
 use std::path::Path;
-use std::time::Instant;
 use std::{fs, time::Duration};
 use tempfile::TempDir;
 use tokio::time::sleep;
@@ -33,9 +32,7 @@ pub async fn wait_for_action_service_reachable_or_exit(
     target_instance_id: Option<&str>,
     child: &mut std::process::Child,
     dir: &std::path::Path,
-    timeout: Duration,
 ) {
-    let start = Instant::now();
     loop {
         if let Some(status) = child
             .try_wait()
@@ -77,17 +74,6 @@ pub async fn wait_for_action_service_reachable_or_exit(
 
         if reachable {
             break;
-        }
-
-        if start.elapsed() > timeout {
-            panic!(
-                "timed out after {:?} waiting for action `{}` to become reachable (node={}, instance={:?}) for project at {}",
-                timeout,
-                target_service_name,
-                target_node_name,
-                target_instance_id,
-                dir.display()
-            );
         }
 
         sleep(Duration::from_millis(50)).await;
@@ -391,7 +377,6 @@ fn main() -> Result<()> {
         None,
         &mut exposer_child,
         &user_node_exposer,
-        Duration::from_secs(15),
     )
     .await;
 
@@ -412,7 +397,6 @@ fn main() -> Result<()> {
         subscriber_instance_id,
         &mut subscriber_child,
         &user_node_subscriber,
-        Duration::from_secs(15),
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -421,7 +405,6 @@ fn main() -> Result<()> {
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
-        Duration::from_secs(15),
     )
     .await;
 
@@ -692,7 +675,6 @@ fn main() -> Result<()> {
         None,
         &mut exposer_child,
         &user_node_exposer,
-        Duration::from_secs(15),
     )
     .await;
 
@@ -713,7 +695,6 @@ fn main() -> Result<()> {
         subscriber_instance_id,
         &mut subscriber_child,
         &user_node_subscriber,
-        Duration::from_secs(15),
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -722,7 +703,6 @@ fn main() -> Result<()> {
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
-        Duration::from_secs(15),
     )
     .await;
 

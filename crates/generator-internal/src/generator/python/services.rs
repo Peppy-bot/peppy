@@ -179,12 +179,12 @@ pub fn build_exposed_service(
     // _on_request wrapper
     builder.line("async def _on_request(request_context):");
     builder.indent();
-    builder.line("message = request_context.message()");
+    builder.line("message = request_context.message");
     if has_request {
-        builder.line("payload = message.payload()");
+        builder.line("payload = message.payload");
     }
-    builder.line("master_node = message.master_node()");
-    builder.line("instance_id = message.instance_id()");
+    builder.line("master_node = message.master_node");
+    builder.line("instance_id = message.instance_id");
     if has_request {
         builder.line("return _handle_request_payload(payload, handler, master_node, instance_id)");
     } else {
