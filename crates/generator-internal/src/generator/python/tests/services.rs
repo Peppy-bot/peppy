@@ -440,8 +440,39 @@ fn subscribed_to_two_services_same_node() {
         assert_contains_all(rendered, &["\"uvc_camera\""]);
     }
 
-    // get_camera_info has specific response fields
-    assert_artifact_contains(&artifacts, "card_type: str");
+    // enable_camera has request+response: full path
+    let enable_camera = artifacts
+        .iter()
+        .find(|a| a.contains("\"enable_camera\""))
+        .expect("enable_camera artifact is present");
+    assert_contains_all(
+        enable_camera,
+        &[
+            "request: Request",
+            "def _deserialize_response(payload: bytes) -> ResponseData:",
+            ") -> Response:",
+        ],
+    );
+
+    // get_camera_info has no request body but has response
+    let camera_info = artifacts
+        .iter()
+        .find(|a| a.contains("\"get_camera_info\""))
+        .expect("get_camera_info artifact is present");
+    assert_contains_all(
+        camera_info,
+        &[
+            "card_type: str",
+            "request_payload = b\"\"",
+            "def _deserialize_response(payload: bytes) -> ResponseData:",
+            ") -> Response:",
+        ],
+    );
+    assert_rendered!(
+        !camera_info.contains("class Request:"),
+        camera_info,
+        "get_camera_info should not have Request class (no request format)"
+    );
 }
 
 #[test]
