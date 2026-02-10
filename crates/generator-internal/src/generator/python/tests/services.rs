@@ -264,6 +264,44 @@ fn expose_two_services() {
     // Verify each service gets its own distinct artifact
     assert_artifact_contains(&artifacts, "\"enable_camera\"");
     assert_artifact_contains(&artifacts, "\"get_lidar_info\"");
+
+    // Verify each artifact is self-contained and doesn't leak the other service
+    let camera_rendered = artifacts
+        .iter()
+        .find(|a| a.contains("\"enable_camera\""))
+        .expect("enable_camera artifact is present");
+    let lidar_rendered = artifacts
+        .iter()
+        .find(|a| a.contains("\"get_lidar_info\""))
+        .expect("get_lidar_info artifact is present");
+
+    assert_contains_all(
+        camera_rendered,
+        &[
+            "\"enable_camera\"",
+            "async def handle_next_request(",
+            "peppylib.ServiceMessenger.listen(",
+            "enable: bool",
+        ],
+    );
+    assert!(
+        !camera_rendered.contains("get_lidar_info"),
+        "enable_camera artifact should not reference get_lidar_info"
+    );
+
+    assert_contains_all(
+        lidar_rendered,
+        &[
+            "\"get_lidar_info\"",
+            "async def handle_next_request(",
+            "peppylib.ServiceMessenger.listen(",
+            "channels: str",
+        ],
+    );
+    assert!(
+        !lidar_rendered.contains("enable_camera"),
+        "get_lidar_info artifact should not reference enable_camera"
+    );
 }
 
 /// In the case of a service, a "subscribed" service is an entity that connects to another
