@@ -209,9 +209,11 @@ mod zenoh_build {
                     return;
                 }
 
-                // Build zenohd
+                // Build zenohd in its own cloned directory. Remove CARGO_TARGET_DIR
+                // so the binary lands at build_dir/target/release/ as expected.
                 let status = Command::new("cargo")
                     .current_dir(&build_dir)
+                    .env_remove("CARGO_TARGET_DIR")
                     .args(["build", "--release", "--bin", "zenohd"])
                     .status();
 

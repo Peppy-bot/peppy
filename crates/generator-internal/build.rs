@@ -1,28 +1,26 @@
 /// Pinned ruff release tag used when building from source.
 const RUFF_VERSION: &str = "0.15.0";
 
+fn get_temp_cache_dir(cache_suffix: &str) -> std::path::PathBuf {
+    let temp_dir = std::env::temp_dir();
+    let cache_dir = temp_dir.join(format!("{}-peppy-cache", cache_suffix));
+
+    if !cache_dir.exists() {
+        std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
+    }
+
+    cache_dir
+}
+
 mod ruff_build {
     use std::env;
-    use std::path::PathBuf;
     use std::process::Command;
-
-    fn get_temp_cache_dir(cache_suffix: &str) -> PathBuf {
-        let temp_dir = env::temp_dir();
-        let cache_dir = temp_dir.join(format!("{}-peppy-cache", cache_suffix));
-
-        // Create cache directory if it doesn't exist
-        if !cache_dir.exists() {
-            std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
-        }
-
-        cache_dir
-    }
 
     pub fn run() {
         println!("cargo:rerun-if-changed=build.rs");
 
         // Use version-tagged temp directory for persistent cache
-        let cache_dir = get_temp_cache_dir(&format!("ruff-{}", super::RUFF_VERSION));
+        let cache_dir = super::get_temp_cache_dir(&format!("ruff-{}", super::RUFF_VERSION));
         let cached_ruff_path = cache_dir.join("ruff");
 
         // Always copy to OUT_DIR for runtime access
@@ -103,6 +101,63 @@ mod ruff_build {
     }
 }
 
+mod peppylib_build {
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    pub fn run() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let peppylib_py_dir = manifest_dir.join("../peppylib-py");
+        let so_path = peppylib_py_dir.join("peppylib/_peppylib.abi3.so");
+
+        // Rerun when peppylib-py Rust source or Cargo.toml changes
+        println!("cargo:rerun-if-changed=../peppylib-py/src/");
+        println!("cargo:rerun-if-changed=../peppylib-py/Cargo.toml");
+
+        // Use a separate CARGO_TARGET_DIR so maturin's inner `cargo build`
+        // does not deadlock on the workspace build lock held by the outer cargo.
+        let cache_dir = super::get_temp_cache_dir("peppylib-py");
+        let target_dir = cache_dir.join("target");
+
+        println!("cargo:warning=Building peppylib-py native extension via pixi…");
+
+        let output = Command::new("pixi")
+            .args(["run", "dev"])
+            .current_dir(&peppylib_py_dir)
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .env_remove("RUSTC")
+            .env_remove("RUSTDOC")
+            .output()
+            .expect("Failed to run `pixi run dev` for peppylib-py");
+
+        if !output.status.success() {
+            panic!(
+                "pixi run dev failed for peppylib-py:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+
+        assert!(
+            so_path.exists(),
+            "Expected _peppylib.abi3.so at {:?} after pixi run dev, but not found",
+            so_path,
+        );
+
+        // Emit an env var that changes when the .so is rebuilt. This forces
+        // cargo to recompile the generator crate so rust_embed re-embeds the
+        // fresh native extension.
+        let mtime = std::fs::metadata(&so_path)
+            .and_then(|m| m.modified())
+            .expect("failed to read .so metadata")
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        println!("cargo:rustc-env=PEPPYLIB_SO_MTIME={mtime}");
+    }
+}
+
 fn main() {
     ruff_build::run();
+    peppylib_build::run();
 }
