@@ -20,11 +20,11 @@ fn emit_nested_classes(builder: &mut PythonCodeBuilder, nested_classes: &[Nested
     }
 }
 
-fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
+pub(super) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
     format!("_{}_capnp", schema_info.file_stem)
 }
 
-fn emit_capnp_schema_loader(builder: &mut PythonCodeBuilder, schema_info: &PythonSchemaInfo) {
+pub(super) fn emit_capnp_schema_loader(builder: &mut PythonCodeBuilder, schema_info: &PythonSchemaInfo) {
     builder.add_import("import capnp");
     builder.add_import("import types");
     builder.add_import("from functools import lru_cache");
@@ -156,6 +156,7 @@ pub fn build_subscribed_topic(
             arguments,
             "Message",
             &format!("{loader_fn_name}()"),
+            "_deserialize_payload",
         );
     }
 

@@ -1,4 +1,8 @@
+use super::PythonSchemaInfo;
 use super::code_builder::PythonCodeBuilder;
+use super::deserialization;
+use super::serialization;
+use super::topics::{capnp_loader_fn_name, emit_capnp_schema_loader};
 use super::type_mapping::{NestedDataclass, collect_fields_from_format, uses_optional};
 use crate::generator::types::non_empty_message_format;
 use config::node::{ExposedService, MessageFormat, SubscribedService};
@@ -16,11 +20,23 @@ fn emit_nested_classes(builder: &mut PythonCodeBuilder, nested_classes: &[Nested
 }
 
 /// Generates Python code for an exposed (handler) service.
-pub fn build_exposed_service(service: &ExposedService) -> String {
+pub fn build_exposed_service(
+    service: &ExposedService,
+    request_schema_info: Option<&PythonSchemaInfo>,
+    response_schema_info: Option<&PythonSchemaInfo>,
+) -> String {
     let mut builder = PythonCodeBuilder::new();
 
     let request_format = non_empty_message_format(service.request_message_format.as_ref());
     let response_format = non_empty_message_format(service.response_message_format.as_ref());
+
+    // Emit capnp schema loaders
+    if let Some(info) = request_schema_info {
+        emit_capnp_schema_loader(&mut builder, info);
+    }
+    if let Some(info) = response_schema_info {
+        emit_capnp_schema_loader(&mut builder, info);
+    }
 
     // Response dataclass
     if let Some(fmt) = response_format {
@@ -37,7 +53,8 @@ pub fn build_exposed_service(service: &ExposedService) -> String {
         builder.dataclass("Response", &field_refs);
     }
 
-    // RequestData + Request classes
+    // RequestData + Request dataclasses
+    let has_request = request_format.is_some();
     if let Some(fmt) = request_format {
         let mut nested_classes = Vec::new();
         let fields = collect_fields_from_format(fmt, "RequestData", &mut nested_classes);
@@ -49,22 +66,93 @@ pub fn build_exposed_service(service: &ExposedService) -> String {
             .iter()
             .map(|f| (f.name.as_str(), f.type_str.as_str()))
             .collect();
-        builder.class_def("RequestData", &field_refs);
-        builder.class_def(
+        builder.dataclass("RequestData", &field_refs);
+        builder.dataclass(
             "Request",
-            &[("instance_id", "str"), ("data", "RequestData")],
+            &[
+                ("instance_id", "str"),
+                ("master_node", "str"),
+                ("data", "RequestData"),
+            ],
         );
     } else {
-        builder.class_def("Request", &[("instance_id", "str")]);
+        builder.dataclass(
+            "Request",
+            &[("instance_id", "str"), ("master_node", "str")],
+        );
     }
 
     // Service name constant
     builder.line(&format!("SERVICE_NAME = \"{}\"", service.name));
     builder.blank_line();
 
-    // handle_next_request function
+    // _deserialize_request helper (when request format exists)
+    if let Some((fmt, info)) = service
+        .request_message_format
+        .as_ref()
+        .filter(|f| !f.0.is_empty())
+        .zip(request_schema_info)
+    {
+        let loader_fn_name = capnp_loader_fn_name(info);
+        deserialization::build_deserialize_fn(
+            &mut builder,
+            info,
+            fmt,
+            "RequestData",
+            &format!("{loader_fn_name}()"),
+            "_deserialize_request",
+        );
+    }
+
+    // _handle_request_payload helper
+    builder.blank_line();
+    if has_request {
+        builder.line("def _handle_request_payload(payload, handler, master_node, instance_id):");
+    } else {
+        builder.line("def _handle_request_payload(handler, master_node, instance_id):");
+    }
+    builder.indent();
+
+    if has_request {
+        builder.line("request_data = _deserialize_request(payload)");
+        builder.line(
+            "request = Request(instance_id=instance_id, master_node=master_node, data=request_data)",
+        );
+    } else {
+        builder.line("request = Request(instance_id=instance_id, master_node=master_node)");
+    }
+
+    if let Some((resp_fmt, resp_info)) = service
+        .response_message_format
+        .as_ref()
+        .filter(|f| !f.0.is_empty())
+        .zip(response_schema_info)
+    {
+        builder.line("response = handler(request)");
+        let loader_fn_name = capnp_loader_fn_name(resp_info);
+        builder.line(&format!(
+            "capnp_msg = {loader_fn_name}().{}.new_message()",
+            resp_info.struct_name
+        ));
+        let mut counter = 0u32;
+        serialization::emit_capnp_assignments(
+            &mut builder,
+            "capnp_msg",
+            resp_fmt,
+            "response",
+            &mut counter,
+        );
+        builder.line("return capnp_msg.to_bytes()");
+    } else {
+        builder.line("handler(request)");
+        builder.line("return b\"\"");
+    }
+    builder.dedent();
+
+    // handle_next_request async function
     builder.add_import("import peppylib");
-    builder.line("async def handle_next_request(node_runner: peppylib.NodeRunner):");
+    builder.blank_line();
+    builder.line("async def handle_next_request(node_runner: peppylib.NodeRunner, handler):");
     builder.indent();
     builder.line("endpoint = await peppylib.ServiceMessenger.listen(");
     builder.indent();
@@ -75,7 +163,26 @@ pub fn build_exposed_service(service: &ExposedService) -> String {
     builder.line("SERVICE_NAME,");
     builder.dedent();
     builder.line(")");
-    builder.line("await endpoint.handle_next_request(handler)");
+
+    // _on_request wrapper
+    builder.line("async def _on_request(request_context):");
+    builder.indent();
+    builder.line("message = request_context.message()");
+    if has_request {
+        builder.line("payload = message.payload()");
+    }
+    builder.line("master_node = message.master_node()");
+    builder.line("instance_id = message.instance_id()");
+    if has_request {
+        builder.line(
+            "return _handle_request_payload(payload, handler, master_node, instance_id)",
+        );
+    } else {
+        builder.line("return _handle_request_payload(handler, master_node, instance_id)");
+    }
+    builder.dedent();
+
+    builder.line("await endpoint.handle_next_request(_on_request)");
     builder.dedent();
 
     builder.build()

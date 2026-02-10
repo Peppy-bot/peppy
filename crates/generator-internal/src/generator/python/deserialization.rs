@@ -58,9 +58,10 @@ pub fn build_deserialize_fn(
     format: &MessageFormat,
     struct_prefix: &str,
     capnp_module_expr: &str,
+    fn_name: &str,
 ) {
     builder.blank_line();
-    builder.line("def _deserialize_payload(payload):");
+    builder.line(&format!("def {fn_name}(payload):"));
     builder.indent();
     builder.line(&format!(
         "with {capnp_module_expr}.{}.from_bytes(payload) as capnp_msg:",

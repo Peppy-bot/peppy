@@ -122,7 +122,25 @@ impl LanguageGenerator for PythonGenerator {
     }
 
     fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()> {
-        let code = services::build_exposed_service(service);
+        let request_schema_info = service
+            .request_message_format
+            .as_ref()
+            .filter(|fmt| !fmt.0.is_empty())
+            .map(|fmt| self.register_schema(&format!("{}_request", service.name), fmt))
+            .transpose()?;
+
+        let response_schema_info = service
+            .response_message_format
+            .as_ref()
+            .filter(|fmt| !fmt.0.is_empty())
+            .map(|fmt| self.register_schema(&format!("{}_response", service.name), fmt))
+            .transpose()?;
+
+        let code = services::build_exposed_service(
+            service,
+            request_schema_info.as_ref(),
+            response_schema_info.as_ref(),
+        );
         self.push_section(InterfaceArtifact::from_kind(
             &service.name,
             InterfaceKind::ExposedService,
