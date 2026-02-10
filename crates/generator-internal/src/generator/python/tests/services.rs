@@ -132,18 +132,53 @@ fn expose_service() {
         ],
     );
 
-    // Handler signature
+    // Handler signature (includes handler parameter)
     assert_contains_all(
         &rendered,
         &[
             "\"enable_camera\"",
             "async def handle_next_request(",
             "node_runner: peppylib.NodeRunner",
+            "handler",
         ],
     );
 
     // Messenger integration
     assert_contains_all(&rendered, &["peppylib.ServiceMessenger.listen("]);
+
+    // master_node field in Request
+    assert_contains_all(&rendered, &["master_node: str"]);
+
+    // _deserialize_request function
+    assert_contains_all(
+        &rendered,
+        &[
+            "def _deserialize_request(payload):",
+            "return RequestData(",
+        ],
+    );
+
+    // _handle_request_payload function
+    assert_contains_all(
+        &rendered,
+        &[
+            "def _handle_request_payload(payload, handler, master_node, instance_id):",
+            "request_data = _deserialize_request(payload)",
+            "request = Request(instance_id=instance_id, master_node=master_node, data=request_data)",
+            "response = handler(request)",
+            "return capnp_msg.to_bytes()",
+        ],
+    );
+
+    // _on_request wrapper inside handle_next_request
+    assert_contains_all(
+        &rendered,
+        &[
+            "async def _on_request(request_context):",
+            "return _handle_request_payload(payload, handler, master_node, instance_id)",
+            "await endpoint.handle_next_request(_on_request)",
+        ],
+    );
 }
 
 #[test]
@@ -158,13 +193,42 @@ fn expose_service_without_request_body() {
         .expect("artifact is present");
 
     // Service without request body should still have Request class for metadata
-    assert_contains_all(&rendered, &["class Request:", "instance_id: str"]);
+    assert_contains_all(&rendered, &["class Request:", "instance_id: str", "master_node: str"]);
 
     // But no RequestData class
     assert_rendered!(
         !rendered.contains("class RequestData"),
         &rendered,
         "expected no RequestData class when there is no request body"
+    );
+
+    // Should NOT have _deserialize_request (no request format)
+    assert_rendered!(
+        !rendered.contains("def _deserialize_request"),
+        &rendered,
+        "expected no _deserialize_request when there is no request body"
+    );
+
+    // _handle_request_payload without payload parameter
+    assert_contains_all(
+        &rendered,
+        &[
+            "def _handle_request_payload(handler, master_node, instance_id):",
+            "request = Request(instance_id=instance_id, master_node=master_node)",
+        ],
+    );
+
+    // handler parameter in handle_next_request
+    assert_contains_all(&rendered, &["async def handle_next_request(", "handler"]);
+
+    // _on_request wrapper without payload
+    assert_contains_all(
+        &rendered,
+        &[
+            "async def _on_request(request_context):",
+            "return _handle_request_payload(handler, master_node, instance_id)",
+            "await endpoint.handle_next_request(_on_request)",
+        ],
     );
 }
 
