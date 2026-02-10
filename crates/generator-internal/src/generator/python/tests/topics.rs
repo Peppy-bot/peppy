@@ -317,7 +317,7 @@ fn subscribed_to_topic() {
     assert_contains_all(
         &rendered,
         &[
-            "def _deserialize_payload(payload):",
+            "def _deserialize_payload(payload: bytes) -> Message:",
             "with _video_stream_message_capnp().VideoStreamMessage.from_bytes(payload) as capnp_msg:",
         ],
     );

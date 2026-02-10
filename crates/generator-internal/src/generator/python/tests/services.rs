@@ -128,18 +128,20 @@ fn expose_service() {
         &[
             "import peppylib",
             "from dataclasses import dataclass",
+            "from typing import Callable",
             "from typing import Optional",
         ],
     );
 
-    // Handler signature (includes handler parameter)
+    // Handler signature (includes typed handler parameter and return type)
     assert_contains_all(
         &rendered,
         &[
             "\"enable_camera\"",
             "async def handle_next_request(",
             "node_runner: peppylib.NodeRunner",
-            "handler",
+            "handler: Callable[[Request], Response]",
+            ") -> None:",
         ],
     );
 
@@ -149,20 +151,20 @@ fn expose_service() {
     // master_node field in Request
     assert_contains_all(&rendered, &["master_node: str"]);
 
-    // _deserialize_request function
+    // _deserialize_request function with typed signature
     assert_contains_all(
         &rendered,
         &[
-            "def _deserialize_request(payload):",
+            "def _deserialize_request(payload: bytes) -> RequestData:",
             "return RequestData(",
         ],
     );
 
-    // _handle_request_payload function
+    // _handle_request_payload function with typed signature
     assert_contains_all(
         &rendered,
         &[
-            "def _handle_request_payload(payload, handler, master_node, instance_id):",
+            "def _handle_request_payload(payload: bytes, handler: Callable[[Request], Response], master_node: str, instance_id: str) -> bytes:",
             "request_data = _deserialize_request(payload)",
             "request = Request(instance_id=instance_id, master_node=master_node, data=request_data)",
             "response = handler(request)",
@@ -193,7 +195,10 @@ fn expose_service_without_request_body() {
         .expect("artifact is present");
 
     // Service without request body should still have Request class for metadata
-    assert_contains_all(&rendered, &["class Request:", "instance_id: str", "master_node: str"]);
+    assert_contains_all(
+        &rendered,
+        &["class Request:", "instance_id: str", "master_node: str"],
+    );
 
     // But no RequestData class
     assert_rendered!(
@@ -209,17 +214,24 @@ fn expose_service_without_request_body() {
         "expected no _deserialize_request when there is no request body"
     );
 
-    // _handle_request_payload without payload parameter
+    // _handle_request_payload without payload parameter, typed signature
     assert_contains_all(
         &rendered,
         &[
-            "def _handle_request_payload(handler, master_node, instance_id):",
+            "def _handle_request_payload(handler: Callable[[Request], Response], master_node: str, instance_id: str) -> bytes:",
             "request = Request(instance_id=instance_id, master_node=master_node)",
         ],
     );
 
-    // handler parameter in handle_next_request
-    assert_contains_all(&rendered, &["async def handle_next_request(", "handler"]);
+    // handler parameter in handle_next_request with return type
+    assert_contains_all(
+        &rendered,
+        &[
+            "async def handle_next_request(",
+            "handler: Callable[[Request], Response]",
+            ") -> None:",
+        ],
+    );
 
     // _on_request wrapper without payload
     assert_contains_all(
