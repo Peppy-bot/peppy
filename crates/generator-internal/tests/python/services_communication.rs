@@ -241,6 +241,17 @@ if __name__ == "__main__":
     let main_file = user_node_exposer.join("main.py");
     fs::write(main_file, exposer_main).expect("failed to write exposer main.py");
 
+    println!(
+        "User node subscriber PEPPY_RUNTIME_CONFIG=\"{}\"",
+        &subscriber_runtime_config_path.display()
+    );
+    println!("User node subscriber = {}", user_node_subscriber.display());
+    println!(
+        "User node exposer PEPPY_RUNTIME_CONFIG=\"{}\"",
+        &exposer_runtime_config_path.display()
+    );
+    println!("User node exposer = {}", user_node_exposer.display());
+
     init_python_project_venv(&user_node_subscriber);
     init_python_project_venv(&user_node_exposer);
 
