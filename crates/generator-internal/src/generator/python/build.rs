@@ -1,101 +1,43 @@
 use crate::error::Result;
-use crate::generator::common::{WorkspacePackageMetadata, copy_embedded_crate};
 use crate::generator::types::{CapnpSchema, InterfaceArtifact, InterfaceKind};
 use rust_embed::Embed;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::io;
 use std::path::Path;
 
+/// Pre-built peppylib Python package (Python wrappers + compiled native extension).
 #[derive(Embed)]
-#[folder = "../peppylib-py/"]
-#[include = "*.rs"]
-#[include = "*.toml"]
+#[folder = "../peppylib-py/peppylib/"]
 #[include = "*.py"]
-#[exclude = "target/*"]
-#[exclude = "tests/*"]
-#[exclude = "examples/*"]
-#[exclude = "*.so"]
-#[exclude = "*.lock"]
+#[include = "*.so"]
 #[exclude = "__pycache__/*"]
 struct EmbeddedPeppylibPy;
 
-#[derive(Embed)]
-#[folder = "../peppylib/"]
-#[include = "*.rs"]
-#[include = "*.toml"]
-#[include = "*.capnp"]
-#[include = "*.j2"]
-#[exclude = "target/*"]
-#[exclude = "tests/*"]
-#[exclude = "examples/*"]
-struct EmbeddedPeppylib;
-
-#[derive(Embed)]
-#[folder = "../pmi-internal/"]
-#[include = "*.rs"]
-#[include = "*.toml"]
-#[include = "*.capnp"]
-#[include = "*.j2"]
-#[exclude = "target/*"]
-#[exclude = "tests/*"]
-struct EmbeddedPmiInternal;
-
-#[derive(Embed)]
-#[folder = "../config-internal/"]
-#[include = "*.rs"]
-#[include = "*.toml"]
-#[include = "*.capnp"]
-#[include = "*.j2"]
-#[include = "tools/capnp_*"]
-#[exclude = "target/*"]
-#[exclude = "tests/*"]
-struct EmbeddedConfigInternal;
-
-#[derive(Embed)]
-#[folder = "../node-stack-internal/"]
-#[include = "*.rs"]
-#[include = "*.toml"]
-#[include = "*.capnp"]
-#[include = "*.j2"]
-#[exclude = "target/*"]
-#[exclude = "tests/*"]
-struct EmbeddedNodeStackInternal;
-
 pub fn add_peppylib_dependencies(to_path: &Path) -> Result<()> {
-    const PEPPYLIB_PY_DIR: &str = "peppylib-py";
-    const PEPPYLIB_DIR: &str = "peppylib";
-    const PMI_INTERNAL_DIR: &str = "pmi-internal";
-    const CONFIG_INTERNAL_DIR: &str = "config-internal";
-    const NODE_STACK_DIR: &str = "node-stack-internal";
-    const VENDORED_ROOT: &str = "crates";
-    const PEPPYLIB_PY_RELATIVE_PATH: &str = "crates/peppylib-py";
-
-    let vendored_crates_dir = to_path.join(VENDORED_ROOT);
-    fs::create_dir_all(&vendored_crates_dir)?;
-
     // Copy Python project templates (pyproject.toml, peppygen/__init__.py)
-    crate::generator::common::copy_embedded_templates(
-        "peppygen/python",
-        to_path,
-        PEPPYLIB_PY_RELATIVE_PATH,
-    )?;
+    crate::generator::common::copy_embedded_templates("peppygen/python", to_path, "")?;
 
-    let metadata = WorkspacePackageMetadata::embedded();
+    // Copy the pre-built peppylib Python package (Python files + native .so)
+    let peppylib_dir = to_path.join("peppylib");
+    fs::create_dir_all(&peppylib_dir)?;
 
-    // Vendor peppylib-py and its Rust dependency crates
-    copy_embedded_crate::<EmbeddedPeppylibPy>(PEPPYLIB_PY_DIR, &vendored_crates_dir, &metadata)?;
-    copy_embedded_crate::<EmbeddedPeppylib>(PEPPYLIB_DIR, &vendored_crates_dir, &metadata)?;
-    copy_embedded_crate::<EmbeddedPmiInternal>(PMI_INTERNAL_DIR, &vendored_crates_dir, &metadata)?;
-    copy_embedded_crate::<EmbeddedConfigInternal>(
-        CONFIG_INTERNAL_DIR,
-        &vendored_crates_dir,
-        &metadata,
-    )?;
-    copy_embedded_crate::<EmbeddedNodeStackInternal>(
-        NODE_STACK_DIR,
-        &vendored_crates_dir,
-        &metadata,
-    )?;
+    for file_path in EmbeddedPeppylibPy::iter() {
+        let file_path_str = file_path.as_ref();
+        let destination = peppylib_dir.join(file_path_str);
+
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let content = EmbeddedPeppylibPy::get(file_path_str).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("embedded peppylib file not found: {file_path_str}"),
+            )
+        })?;
+        fs::write(&destination, content.data.as_ref())?;
+    }
 
     Ok(())
 }
