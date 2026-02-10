@@ -24,7 +24,9 @@ pub(super) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
     format!("_{}_capnp", schema_info.file_stem)
 }
 
-pub(super) fn emit_capnp_schema_loader(builder: &mut PythonCodeBuilder, schema_info: &PythonSchemaInfo) {
+/// Emits the shared `_PKG_DIR` constant and related imports needed by capnp schema loaders.
+/// Call this once before emitting any loaders via [`emit_capnp_loader_fn`].
+pub(super) fn emit_capnp_preamble(builder: &mut PythonCodeBuilder) {
     builder.add_import("import capnp");
     builder.add_import("import types");
     builder.add_import("from functools import lru_cache");
@@ -32,7 +34,14 @@ pub(super) fn emit_capnp_schema_loader(builder: &mut PythonCodeBuilder, schema_i
     builder.blank_line();
     builder.line("_PKG_DIR = Path(__file__).resolve().parent.parent");
     builder.blank_line();
+}
 
+/// Emits a single `@lru_cache` loader function for a capnp schema.
+/// Requires [`emit_capnp_preamble`] to have been called first.
+pub(super) fn emit_capnp_loader_fn(
+    builder: &mut PythonCodeBuilder,
+    schema_info: &PythonSchemaInfo,
+) {
     let loader_fn_name = capnp_loader_fn_name(schema_info);
     builder.line("@lru_cache(maxsize=1)");
     builder.line(&format!("def {loader_fn_name}() -> types.ModuleType:"));
@@ -43,6 +52,16 @@ pub(super) fn emit_capnp_schema_loader(builder: &mut PythonCodeBuilder, schema_i
     ));
     builder.dedent();
     builder.blank_line();
+}
+
+/// Convenience wrapper: emits preamble + a single loader function.
+/// Use this when there is only one schema to load.
+pub(super) fn emit_capnp_schema_loader(
+    builder: &mut PythonCodeBuilder,
+    schema_info: &PythonSchemaInfo,
+) {
+    emit_capnp_preamble(builder);
+    emit_capnp_loader_fn(builder, schema_info);
 }
 
 /// Generates Python code for an exposed (publishing) topic.

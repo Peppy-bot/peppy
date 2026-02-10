@@ -2,7 +2,7 @@ use super::PythonSchemaInfo;
 use super::code_builder::PythonCodeBuilder;
 use super::deserialization;
 use super::serialization;
-use super::topics::{capnp_loader_fn_name, emit_capnp_schema_loader};
+use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
 use super::type_mapping::{NestedDataclass, collect_fields_from_format, uses_optional};
 use crate::generator::types::non_empty_message_format;
 use config::node::{ExposedService, MessageFormat, SubscribedService};
@@ -31,11 +31,14 @@ pub fn build_exposed_service(
     let response_format = non_empty_message_format(service.response_message_format.as_ref());
 
     // Emit capnp schema loaders
+    if request_schema_info.is_some() || response_schema_info.is_some() {
+        emit_capnp_preamble(&mut builder);
+    }
     if let Some(info) = request_schema_info {
-        emit_capnp_schema_loader(&mut builder, info);
+        emit_capnp_loader_fn(&mut builder, info);
     }
     if let Some(info) = response_schema_info {
-        emit_capnp_schema_loader(&mut builder, info);
+        emit_capnp_loader_fn(&mut builder, info);
     }
 
     // Response dataclass
@@ -76,10 +79,7 @@ pub fn build_exposed_service(
             ],
         );
     } else {
-        builder.dataclass(
-            "Request",
-            &[("instance_id", "str"), ("master_node", "str")],
-        );
+        builder.dataclass("Request", &[("instance_id", "str"), ("master_node", "str")]);
     }
 
     // Service name constant
@@ -104,12 +104,22 @@ pub fn build_exposed_service(
         );
     }
 
+    // Determine handler callable type
+    let has_response = response_format.is_some();
+    let handler_return_type = if has_response { "Response" } else { "None" };
+    let handler_type = format!("Callable[[Request], {handler_return_type}]");
+    builder.add_import("from typing import Callable");
+
     // _handle_request_payload helper
     builder.blank_line();
     if has_request {
-        builder.line("def _handle_request_payload(payload, handler, master_node, instance_id):");
+        builder.line(&format!(
+            "def _handle_request_payload(payload: bytes, handler: {handler_type}, master_node: str, instance_id: str) -> bytes:"
+        ));
     } else {
-        builder.line("def _handle_request_payload(handler, master_node, instance_id):");
+        builder.line(&format!(
+            "def _handle_request_payload(handler: {handler_type}, master_node: str, instance_id: str) -> bytes:"
+        ));
     }
     builder.indent();
 
@@ -152,7 +162,9 @@ pub fn build_exposed_service(
     // handle_next_request async function
     builder.add_import("import peppylib");
     builder.blank_line();
-    builder.line("async def handle_next_request(node_runner: peppylib.NodeRunner, handler):");
+    builder.line(&format!(
+        "async def handle_next_request(node_runner: peppylib.NodeRunner, handler: {handler_type}) -> None:"
+    ));
     builder.indent();
     builder.line("endpoint = await peppylib.ServiceMessenger.listen(");
     builder.indent();
@@ -174,9 +186,7 @@ pub fn build_exposed_service(
     builder.line("master_node = message.master_node()");
     builder.line("instance_id = message.instance_id()");
     if has_request {
-        builder.line(
-            "return _handle_request_payload(payload, handler, master_node, instance_id)",
-        );
+        builder.line("return _handle_request_payload(payload, handler, master_node, instance_id)");
     } else {
         builder.line("return _handle_request_payload(handler, master_node, instance_id)");
     }
