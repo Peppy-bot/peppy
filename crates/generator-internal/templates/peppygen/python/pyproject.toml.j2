@@ -3,19 +3,17 @@ name = "peppygen"
 version = "0.1.0"
 # pycapnp does not yet provide Python 3.14 wheels, so keep uv on 3.13 or older.
 requires-python = ">= 3.11, < 3.14"
-dependencies = ["peppylib", "pycapnp"]
-
-[tool.uv.sources]
-peppylib = { path = "{{ peppylib_path }}" }
+dependencies = ["pycapnp"]
 
 [tool.setuptools.packages.find]
-include = ["peppygen*"]
+include = ["peppygen*", "peppylib*"]
 
 [tool.setuptools.package-data]
 peppygen = ["capnp/*.capnp"]
+peppylib = ["*.so"]
 
 [tool.ruff]
-exclude = ["crates"]
+exclude = ["peppylib"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
