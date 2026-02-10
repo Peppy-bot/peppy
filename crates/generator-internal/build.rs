@@ -19,9 +19,12 @@ mod ruff_build {
     pub fn run() {
         println!("cargo:rerun-if-changed=build.rs");
 
+        let profile = env::var("PROFILE").unwrap();
+        let is_release = profile == "release";
+
         // Use version-tagged temp directory for persistent cache
         let cache_dir = super::get_temp_cache_dir(&format!("ruff-{}", super::RUFF_VERSION));
-        let cached_ruff_path = cache_dir.join("ruff");
+        let cached_ruff_path = cache_dir.join(format!("ruff-{profile}"));
 
         // Always copy to OUT_DIR for runtime access
         let out_dir = env::var("OUT_DIR").unwrap();
@@ -72,21 +75,29 @@ mod ruff_build {
             // RUSTC/RUSTDOC because Cargo injects the current toolchain's paths
             // into the build-script environment, which would override the
             // RUSTUP_TOOLCHAIN selection.
-            let status = Command::new("cargo")
-                .current_dir(&build_dir)
+            let mut cmd = Command::new("cargo");
+            cmd.current_dir(&build_dir)
                 .env("RUSTUP_TOOLCHAIN", "stable")
                 .env_remove("RUSTC")
-                .env_remove("RUSTDOC")
-                .args(["build", "--release", "--bin", "ruff"])
-                .status();
+                .env_remove("RUSTDOC");
+            if is_release {
+                cmd.args(["build", "--release", "--bin", "ruff"]);
+            } else {
+                cmd.args(["build", "--bin", "ruff"]);
+            }
+            let status = cmd.status();
 
             if status.is_err() || !status.unwrap().success() {
                 panic!("Failed to build ruff binary");
             }
 
             // Copy to cache with version tag
-            std::fs::copy(build_dir.join("target/release/ruff"), &cached_ruff_path)
-                .expect("Failed to cache ruff binary");
+            let target_subdir = if is_release { "release" } else { "debug" };
+            std::fs::copy(
+                build_dir.join(format!("target/{target_subdir}/ruff")),
+                &cached_ruff_path,
+            )
+            .expect("Failed to cache ruff binary");
 
             // Copy to OUT_DIR for runtime
             std::fs::copy(&cached_ruff_path, &ruff_binary_path)
@@ -119,20 +130,27 @@ mod peppylib_build {
         let cache_dir = super::get_temp_cache_dir("peppylib-py");
         let target_dir = cache_dir.join("target");
 
-        println!("cargo:warning=Building peppylib-py native extension via pixi…");
+        let profile = std::env::var("PROFILE").unwrap();
+        let pixi_task = if profile == "release" {
+            "release"
+        } else {
+            "dev"
+        };
+
+        println!("cargo:warning=Building peppylib-py native extension via pixi ({pixi_task})…");
 
         let output = Command::new("pixi")
-            .args(["run", "dev"])
+            .args(["run", "-e", "default", pixi_task])
             .current_dir(&peppylib_py_dir)
             .env("CARGO_TARGET_DIR", &target_dir)
             .env_remove("RUSTC")
             .env_remove("RUSTDOC")
             .output()
-            .expect("Failed to run `pixi run dev` for peppylib-py");
+            .expect("Failed to run `pixi run` for peppylib-py");
 
         if !output.status.success() {
             panic!(
-                "pixi run dev failed for peppylib-py:\nstdout:\n{}\nstderr:\n{}",
+                "pixi run {pixi_task} failed for peppylib-py:\nstdout:\n{}\nstderr:\n{}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr),
             );
@@ -140,7 +158,7 @@ mod peppylib_build {
 
         assert!(
             so_path.exists(),
-            "Expected _peppylib.abi3.so at {:?} after pixi run dev, but not found",
+            "Expected _peppylib.abi3.so at {:?} after pixi run {pixi_task}, but not found",
             so_path,
         );
 
