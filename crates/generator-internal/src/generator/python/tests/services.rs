@@ -330,28 +330,76 @@ fn subscribed_to_service() {
     // Module-level constants
     assert_contains_all(&rendered, &["\"uvc_camera\"", "\"enable_camera\""]);
 
+    // Imports
+    assert_contains_all(
+        &rendered,
+        &[
+            "import peppylib",
+            "from dataclasses import dataclass",
+            "from typing import Optional",
+        ],
+    );
+
+    // Capnp schema loaders
+    assert_contains_all(
+        &rendered,
+        &["import capnp", "from functools import lru_cache"],
+    );
+
+    // Request dataclass
+    assert_contains_all(&rendered, &["@dataclass", "class Request:", "enable: bool"]);
+
     // Response dataclasses
     assert_contains_all(
         &rendered,
         &[
-            "@dataclass",
             "class ResponseData:",
+            "enabled: bool",
+            "error_msg: Optional[str]",
             "class Response:",
+            "master_node: str",
+            "instance_id: str",
             "data: ResponseData",
         ],
     );
 
-    // Request dataclass
-    assert_contains_all(&rendered, &["class Request:", "enable: bool"]);
-
-    // Poll function signature
+    // _deserialize_response function
     assert_contains_all(
         &rendered,
-        &["async def poll(", "node_runner: peppylib.NodeRunner"],
+        &[
+            "def _deserialize_response(payload: bytes) -> ResponseData:",
+            "return ResponseData(",
+        ],
     );
+
+    // Poll function signature with typed params and return type
+    assert_contains_all(
+        &rendered,
+        &[
+            "async def poll(",
+            "node_runner: peppylib.NodeRunner",
+            "request: Request",
+            "timeout: float",
+            "target_master_node: Optional[str] = None",
+            "target_instance_id: Optional[str] = None",
+            ") -> Response:",
+        ],
+    );
+
+    // Request serialization
+    assert_contains_all(&rendered, &["request_payload = capnp_msg.to_bytes()"]);
 
     // Messenger integration
     assert_contains_all(&rendered, &["peppylib.ServiceMessenger.poll("]);
+
+    // Response deserialization in poll body
+    assert_contains_all(
+        &rendered,
+        &[
+            "response_data = _deserialize_response(payload)",
+            "return Response(",
+        ],
+    );
 }
 
 #[test]
@@ -423,7 +471,33 @@ fn subscribed_service_without_response_payload() {
         "expected single generated artifact, got {}",
         artifacts.len()
     );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
 
     // Poll function should still be generated
-    assert_artifact_contains(&artifacts, "peppylib.ServiceMessenger.poll(");
+    assert_contains_all(&rendered, &["peppylib.ServiceMessenger.poll("]);
+
+    // Return type should be None
+    assert_contains_all(&rendered, &["-> None:"]);
+
+    // Empty request payload (no request format)
+    assert_contains_all(&rendered, &["request_payload = b\"\""]);
+
+    // Should NOT have Response/ResponseData classes
+    assert_rendered!(
+        !rendered.contains("class ResponseData"),
+        &rendered,
+        "expected no ResponseData class when there is no response format"
+    );
+    assert_rendered!(
+        !rendered.contains("class Response"),
+        &rendered,
+        "expected no Response class when there is no response format"
+    );
+
+    // Should NOT have _deserialize_response
+    assert_rendered!(
+        !rendered.contains("def _deserialize_response"),
+        &rendered,
+        "expected no _deserialize_response when there is no response format"
+    );
 }

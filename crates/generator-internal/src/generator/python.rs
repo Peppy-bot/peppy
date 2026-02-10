@@ -15,6 +15,7 @@ mod type_mapping;
 use super::naming::{module_name_from_components, sanitize_component, to_camel_case};
 use super::types::{
     CapnpSchema, InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage,
+    non_empty_message_format,
 };
 use crate::error::Result;
 use config::encoding::MessageFormatMapper;
@@ -181,8 +182,21 @@ impl LanguageGenerator for PythonGenerator {
         request_arguments: &MessageFormat,
         response_arguments: &MessageFormat,
     ) -> Result<()> {
-        let code =
-            services::build_subscribed_service(service, request_arguments, response_arguments);
+        let request_schema_info = non_empty_message_format(Some(request_arguments))
+            .map(|fmt| self.register_schema(&format!("{}_request", service.name), fmt))
+            .transpose()?;
+
+        let response_schema_info = non_empty_message_format(Some(response_arguments))
+            .map(|fmt| self.register_schema(&format!("{}_response", service.name), fmt))
+            .transpose()?;
+
+        let code = services::build_subscribed_service(
+            service,
+            request_arguments,
+            response_arguments,
+            request_schema_info.as_ref(),
+            response_schema_info.as_ref(),
+        );
         let module_label = module_name_from_components(&service.node, &service.name);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
