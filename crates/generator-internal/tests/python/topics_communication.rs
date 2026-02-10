@@ -291,7 +291,6 @@ if __name__ == "__main__":
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
-        Duration::from_secs(15),
     )
     .await;
 

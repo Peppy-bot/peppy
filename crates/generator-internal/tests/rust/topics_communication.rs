@@ -261,7 +261,6 @@ fn main() -> Result<()> {
         subscriber_instance_id,
         &mut subscriber_child,
         &user_node_subscriber,
-        Duration::from_secs(10),
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -270,7 +269,6 @@ fn main() -> Result<()> {
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
-        Duration::from_secs(10),
     )
     .await;
 

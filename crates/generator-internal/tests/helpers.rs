@@ -226,9 +226,7 @@ pub async fn wait_for_service_reachable_or_exit(
     target_instance_id: Option<&str>,
     child: &mut std::process::Child,
     dir: &std::path::Path,
-    timeout: Duration,
 ) {
-    let start = Instant::now();
     loop {
         if let Some(status) = child
             .try_wait()
@@ -272,17 +270,6 @@ pub async fn wait_for_service_reachable_or_exit(
             return;
         }
 
-        if start.elapsed() > timeout {
-            panic!(
-                "timed out after {:?} waiting for `{}` to become reachable (node={}, instance={:?}) for project at {}",
-                timeout,
-                target_service_name,
-                target_node_name,
-                target_instance_id,
-                dir.display()
-            );
-        }
-
         sleep(Duration::from_millis(50)).await;
     }
 }
@@ -293,7 +280,6 @@ pub async fn wait_for_shutdown_service_reachable_or_exit(
     target_instance_id: &str,
     child: &mut std::process::Child,
     dir: &std::path::Path,
-    timeout: Duration,
 ) {
     wait_for_service_reachable_or_exit(
         ctx,
@@ -302,7 +288,6 @@ pub async fn wait_for_shutdown_service_reachable_or_exit(
         Some(target_instance_id),
         child,
         dir,
-        timeout,
     )
     .await;
 }
@@ -313,7 +298,6 @@ pub async fn wait_for_health_service_reachable_or_exit(
     target_instance_id: &str,
     child: &mut std::process::Child,
     dir: &std::path::Path,
-    timeout: Duration,
 ) {
     wait_for_service_reachable_or_exit(
         ctx,
@@ -322,7 +306,6 @@ pub async fn wait_for_health_service_reachable_or_exit(
         Some(target_instance_id),
         child,
         dir,
-        timeout,
     )
     .await;
 }
