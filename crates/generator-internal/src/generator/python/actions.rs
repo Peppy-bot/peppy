@@ -343,9 +343,10 @@ pub fn build_exposed_action(
     builder.line("class ActionHandle:");
     builder.indent();
 
-    // expose @staticmethod
-    builder.line("@staticmethod");
-    builder.line("async def expose(node_runner: peppylib.NodeRunner) -> \"ActionHandle\":");
+    // expose @classmethod
+    builder.line("@classmethod");
+    builder.add_import("from typing import Self");
+    builder.line("async def expose(cls, node_runner: peppylib.NodeRunner) -> Self:");
     builder.indent();
     builder.line("action = await peppylib.ActionMessenger.expose(");
     builder.indent();
@@ -356,7 +357,7 @@ pub fn build_exposed_action(
     builder.line("ACTION_NAME,");
     builder.dedent();
     builder.line(")");
-    builder.line("handle = ActionHandle()");
+    builder.line("handle = cls()");
     if has_goal {
         builder.line("handle.goal_service = action.goal_service");
         builder.line("handle.cancel_service = action.cancel_service");
