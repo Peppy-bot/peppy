@@ -135,7 +135,7 @@ impl RustGenerator {
         request_format: Option<&MessageFormat>,
         response_format: Option<&MessageFormat>,
         schema_key: &str,
-    ) -> Result<(TokenStream, Vec<TokenStream>)> {
+    ) -> Result<(TokenStream, Vec<TokenStream>, bool)> {
         let request_artifacts = map_message_format(request_format)?;
         let response_artifacts = map_message_format(response_format)?;
 
@@ -158,7 +158,7 @@ impl RustGenerator {
 
         // Build GoalResponseData struct
         let goal_response_data_ident = Ident::new("GoalResponseData", Span::call_site());
-        let goal_response_ident = Ident::new("GoalResponse", Span::call_site());
+        let has_goal_response_data = response_artifacts.is_some();
 
         // Build goal payload encoding (shared between both branches)
         let goal_payload_tokens = if let Some(ref request_artifacts) = request_artifacts {
@@ -206,18 +206,6 @@ impl RustGenerator {
                 Some(&goal_response_data_ident),
             )?;
 
-            let goal_response_fields = vec![
-                (
-                    Ident::new("action_handle", Span::call_site()),
-                    quote!(peppylib::messaging::ActionGoalHandle),
-                ),
-                (
-                    Ident::new("data", Span::call_site()),
-                    quote!(#goal_response_data_ident),
-                ),
-            ];
-            context.add_struct_without_clone(goal_response_ident.clone(), goal_response_fields);
-
             // Build deserializer helper
             let response_schema_key = format!("{schema_key}_response");
             let response_schema = self.register_schema(
@@ -248,21 +236,17 @@ impl RustGenerator {
             quote! {
                 let payload = action_handle.goal_response().payload().as_bytes();
                 let response_data = deserialize_goal_response(payload.as_ref())?;
-                Ok(#goal_response_ident {
-                    action_handle,
+                Ok(Self {
+                    messenger: node_runner.messenger().clone(),
+                    inner: action_handle,
                     data: response_data,
                 })
             }
         } else {
-            let goal_response_fields = vec![(
-                Ident::new("action_handle", Span::call_site()),
-                quote!(peppylib::messaging::ActionGoalHandle),
-            )];
-            context.add_struct_without_clone(goal_response_ident.clone(), goal_response_fields);
-
             quote! {
-                Ok(#goal_response_ident {
-                    action_handle,
+                Ok(Self {
+                    messenger: node_runner.messenger().clone(),
+                    inner: action_handle,
                 })
             }
         };
@@ -275,7 +259,7 @@ impl RustGenerator {
                 target_instance_id: Option<&str>,
                 #request_param
                 feedback_qos: peppylib::config::QoSProfile,
-            ) -> crate::Result<#goal_response_ident> {
+            ) -> crate::Result<Self> {
                 #goal_payload_tokens
 
                 let action_handle = peppylib::ActionMessenger::send_goal(
@@ -296,7 +280,7 @@ impl RustGenerator {
             }
         };
 
-        Ok((method_tokens, helper_items))
+        Ok((method_tokens, helper_items, has_goal_response_data))
     }
 
     /// Builds the cancel_goal method for subscribed actions using ActionMessenger::cancel_goal
@@ -358,13 +342,12 @@ impl RustGenerator {
 
         let method_tokens = quote! {
             pub async fn cancel_goal(
-                node_runner: &crate::NodeRunner,
-                action_handle: &peppylib::messaging::ActionGoalHandle,
+                &self,
                 timeout: std::time::Duration,
             ) -> crate::Result<#cancel_response_ident> {
                 let response = peppylib::ActionMessenger::cancel_goal(
-                    node_runner.messenger(),
-                    action_handle,
+                    &self.messenger,
+                    &self.inner,
                     timeout,
                 )
                 .await?;
@@ -454,9 +437,9 @@ impl RustGenerator {
         let method_ident = Ident::new("on_next_feedback_message", Span::call_site());
         let method_tokens = quote! {
             pub async fn #method_ident(
-                action_handle: &mut peppylib::messaging::ActionGoalHandle,
+                &mut self,
             ) -> crate::Result<#struct_ident> {
-                let feedback = action_handle.on_next_feedback().await?;
+                let feedback = self.inner.on_next_feedback().await?;
                 let payload = feedback.payload().as_bytes();
                 #helper_fn_ident(payload.as_ref())
             }
@@ -526,13 +509,12 @@ impl RustGenerator {
 
             quote! {
                 pub async fn get_result(
-                    node_runner: &crate::NodeRunner,
-                    action_handle: &peppylib::messaging::ActionGoalHandle,
+                    &self,
                     timeout: std::time::Duration,
                 ) -> crate::Result<#result_response_ident> {
                     let response = peppylib::ActionMessenger::request_result(
-                        node_runner.messenger(),
-                        action_handle,
+                        &self.messenger,
+                        &self.inner,
                         timeout,
                     )
                     .await?;
@@ -555,13 +537,12 @@ impl RustGenerator {
 
             quote! {
                 pub async fn get_result(
-                    node_runner: &crate::NodeRunner,
-                    action_handle: &peppylib::messaging::ActionGoalHandle,
+                    &self,
                     timeout: std::time::Duration,
                 ) -> crate::Result<#result_response_ident> {
                     let response = peppylib::ActionMessenger::request_result(
-                        node_runner.messenger(),
-                        action_handle,
+                        &self.messenger,
+                        &self.inner,
                         timeout,
                     )
                     .await?;
@@ -1467,13 +1448,14 @@ impl LanguageGenerator for RustGenerator {
         let result_response_format = non_empty_message_format(messages.result_response.as_ref());
 
         let goal_schema_key = format!("{action_struct_name}_fire_goal");
-        let (goal_method, mut goal_helpers) = self.build_subscribed_action_fire_goal_method(
-            &mut context,
-            &action_struct_name,
-            goal_request_format,
-            goal_response_format,
-            &goal_schema_key,
-        )?;
+        let (goal_method, mut goal_helpers, has_goal_response_data) = self
+            .build_subscribed_action_fire_goal_method(
+                &mut context,
+                &action_struct_name,
+                goal_request_format,
+                goal_response_format,
+                &goal_schema_key,
+            )?;
         methods.push(goal_method);
         helper_items.append(&mut goal_helpers);
 
@@ -1507,9 +1489,32 @@ impl LanguageGenerator for RustGenerator {
         methods.push(result_method);
         helper_items.append(&mut result_helpers);
 
+        let goal_response_data_ident = Ident::new("GoalResponseData", Span::call_site());
+        let action_handle_struct = if has_goal_response_data {
+            quote! {
+                pub struct ActionHandle {
+                    messenger: peppylib::MessengerHandle,
+                    inner: peppylib::messaging::ActionGoalHandle,
+                    pub data: #goal_response_data_ident,
+                }
+            }
+        } else {
+            quote! {
+                pub struct ActionHandle {
+                    messenger: peppylib::MessengerHandle,
+                    inner: peppylib::messaging::ActionGoalHandle,
+                }
+            }
+        };
+
         let mut items = vec![constants_tokens];
         items.extend(context.into_tokens());
-        items.extend(methods);
+        items.push(action_handle_struct);
+        items.push(quote! {
+            impl ActionHandle {
+                #( #methods )*
+            }
+        });
         items.extend(helper_items);
 
         let tokens: TokenStream = quote! {

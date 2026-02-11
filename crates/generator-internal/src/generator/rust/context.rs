@@ -15,31 +15,10 @@ pub struct GenerationContext {
 
 impl GenerationContext {
     pub fn add_struct(&mut self, ident: Ident, fields: Vec<(Ident, TokenStream)>) {
-        self.add_struct_with_derives(ident, fields, true)
-    }
-
-    pub fn add_struct_without_clone(&mut self, ident: Ident, fields: Vec<(Ident, TokenStream)>) {
-        self.add_struct_with_derives(ident, fields, false)
-    }
-
-    pub fn add_struct_with_derives(
-        &mut self,
-        ident: Ident,
-        fields: Vec<(Ident, TokenStream)>,
-        derive_clone: bool,
-    ) {
         if let Some(existing) = self.structs.iter_mut().find(|def| def.ident == ident) {
-            *existing = StructDefinition {
-                ident,
-                fields,
-                derive_clone,
-            };
+            *existing = StructDefinition { ident, fields };
         } else {
-            self.structs.push(StructDefinition {
-                ident,
-                fields,
-                derive_clone,
-            });
+            self.structs.push(StructDefinition { ident, fields });
         }
     }
 
@@ -62,7 +41,6 @@ impl GenerationContext {
 struct StructDefinition {
     ident: Ident,
     fields: Vec<(Ident, TokenStream)>,
-    derive_clone: bool,
 }
 
 impl StructDefinition {
@@ -78,21 +56,15 @@ impl StructDefinition {
             })
             .collect();
 
-        let derive_attr = if self.derive_clone {
-            quote!(#[derive(Debug, Clone)])
-        } else {
-            quote!(#[derive(Debug)])
-        };
-
         if field_tokens.is_empty() {
             quote! {
-                #derive_attr
+                #[derive(Debug, Clone)]
                 #[allow(dead_code)]
                 pub struct #ident {}
             }
         } else {
             quote! {
-                #derive_attr
+                #[derive(Debug, Clone)]
                 #[allow(dead_code)]
                 pub struct #ident {
                     #( #field_tokens ),*
