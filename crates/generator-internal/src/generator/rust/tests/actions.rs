@@ -474,15 +474,21 @@ fn subscribed_to_action() {
         ],
     );
 
-    // GoalResponseData and GoalResponse structs
+    // GoalResponseData struct
+    assert_contains_all(
+        &rendered,
+        &["pub struct GoalResponseData", "pub accepted: bool"],
+    );
+
+    // ActionHandle struct
     assert_contains_all(
         &rendered,
         &[
-            "pub struct GoalResponseData",
-            "pub accepted: bool",
-            "pub struct GoalResponse",
-            "pub action_handle: peppylib::messaging::ActionGoalHandle",
+            "pub struct ActionHandle",
+            "messenger: peppylib::MessengerHandle",
+            "inner: peppylib::messaging::ActionGoalHandle",
             "pub data: GoalResponseData",
+            "impl ActionHandle",
         ],
     );
 
@@ -514,15 +520,16 @@ fn subscribed_to_action() {
         &["pub struct FeedbackMessage", "pub new_position: [i32; 3]"],
     );
 
-    // fire_goal method
+    // fire_goal method (constructor)
     assert_contains_all(
         &rendered,
         &[
             "pub async fn fire_goal(",
             "request: GoalRequest",
             "feedback_qos: peppylib::config::QoSProfile",
-            "-> crate::Result<GoalResponse>",
+            "-> crate::Result<Self>",
             "peppylib::ActionMessenger::send_goal",
+            "node_runner.messenger().clone()",
         ],
     );
 
@@ -530,10 +537,12 @@ fn subscribed_to_action() {
     assert_contains_all(
         &rendered,
         &[
-            "pub async fn cancel_goal",
-            "action_handle: &peppylib::messaging::ActionGoalHandle",
+            "pub async fn cancel_goal(",
+            "&self,",
             "-> crate::Result<CancelResponse>",
             "peppylib::ActionMessenger::cancel_goal",
+            "&self.messenger",
+            "&self.inner",
         ],
     );
 
@@ -541,9 +550,8 @@ fn subscribed_to_action() {
     assert_contains_all(
         &rendered,
         &[
-            "pub async fn on_next_feedback_message",
-            "action_handle: &mut peppylib::messaging::ActionGoalHandle",
-            "action_handle.on_next_feedback()",
+            "pub async fn on_next_feedback_message(&mut self)",
+            "self.inner.on_next_feedback()",
             "fn deserialize_feedback_payload",
         ],
     );
@@ -552,9 +560,12 @@ fn subscribed_to_action() {
     assert_contains_all(
         &rendered,
         &[
-            "pub async fn get_result",
+            "pub async fn get_result(",
+            "&self,",
             "-> crate::Result<ResultResponse>",
             "peppylib::ActionMessenger::request_result",
+            "&self.messenger",
+            "&self.inner",
         ],
     );
 
@@ -649,8 +660,10 @@ fn subscribed_to_two_actions_same_node() {
             "const TARGET_ACTION_NAME: &str = \"move_arm\";",
             "pub struct GoalRequest",
             "pub struct GoalResponseData",
-            "pub struct GoalResponse",
-            "pub action_handle: peppylib::messaging::ActionGoalHandle",
+            "pub struct ActionHandle",
+            "inner: peppylib::messaging::ActionGoalHandle",
+            "messenger: peppylib::MessengerHandle",
+            "impl ActionHandle",
             "pub struct ResultResponse",
             "pub struct FeedbackMessage",
             "arm_id: u16",
@@ -686,12 +699,14 @@ fn subscribed_to_two_actions_same_node() {
             "const TARGET_NODE_NAME: &str = \"brain\";",
             "const TARGET_ACTION_NAME: &str = \"rotate_servo_clockwise\";",
             "pub struct GoalResponseData",
-            "pub struct GoalResponse",
-            "pub action_handle: peppylib::messaging::ActionGoalHandle",
+            "pub struct ActionHandle",
+            "inner: peppylib::messaging::ActionGoalHandle",
+            "messenger: peppylib::MessengerHandle",
+            "impl ActionHandle",
             "pub struct ResultResponse",
             "pub struct FeedbackMessage",
             "fn deserialize_feedback_payload",
-            "-> crate::Result<GoalResponse>",
+            "-> crate::Result<Self>",
         ],
     );
 
@@ -702,7 +717,7 @@ fn subscribed_to_two_actions_same_node() {
             "peppylib::ActionMessenger::send_goal",
             "peppylib::ActionMessenger::cancel_goal",
             "peppylib::ActionMessenger::request_result",
-            "action_handle.on_next_feedback",
+            "self.inner.on_next_feedback",
         ],
     );
 
@@ -746,14 +761,24 @@ fn subscribed_action_without_response_payload() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
+    // ActionHandle struct without GoalResponseData (no goal response format)
     assert_contains_all(
         &rendered,
         &[
+            "pub struct ActionHandle",
+            "messenger: peppylib::MessengerHandle",
+            "inner: peppylib::messaging::ActionGoalHandle",
+            "impl ActionHandle",
             "pub async fn fire_goal",
             "pub async fn get_result",
             "peppylib::ActionMessenger::send_goal",
             "peppylib::ActionMessenger::request_result",
         ],
+    );
+    assert_rendered!(
+        !rendered.contains("GoalResponseData"),
+        rendered,
+        "expected no GoalResponseData when goal response format is absent"
     );
 }
 
@@ -780,10 +805,14 @@ fn subscribed_action_without_feedback() {
 
     let rendered = &artifacts[0];
 
-    // Should still emit goal and result helpers
+    // ActionHandle struct and methods
     assert_contains_all(
         rendered,
         &[
+            "pub struct ActionHandle",
+            "messenger: peppylib::MessengerHandle",
+            "inner: peppylib::messaging::ActionGoalHandle",
+            "impl ActionHandle",
             "pub async fn fire_goal",
             "pub async fn get_result",
             "peppylib::ActionMessenger::send_goal",

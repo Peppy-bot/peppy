@@ -243,7 +243,7 @@ fn main() -> Result<()> {
             arm_id: 7,
             desired_position: [10, 20, 30],
         };
-        let mut goal = brain_move_arm::fire_goal(
+        let mut goal = brain_move_arm::ActionHandle::fire_goal(
             &node_runner,
             Duration::from_secs(5),
             None,
@@ -253,11 +253,11 @@ fn main() -> Result<()> {
         ).await?;
         println!("goal accepted={}", goal.data.accepted);
 
-        let feedback = brain_move_arm::on_next_feedback_message(&mut goal.action_handle).await?;
+        let feedback = goal.on_next_feedback_message().await?;
         assert_eq!(feedback.new_position, [7, 31, 43], "unexpected feedback message");
         println!("feedback message received new_position={:?}", feedback.new_position);
 
-        let result = brain_move_arm::get_result(&node_runner, &goal.action_handle, Duration::from_secs(5)).await?;
+        let result = goal.get_result(Duration::from_secs(5)).await?;
         println!(
             "result success={} error={:?} final_position={:?}",
             result.data.success,
@@ -549,7 +549,7 @@ fn main() -> Result<()> {
             arm_id: 7,
             desired_position: [10, 20, 30],
         };
-        let goal = brain_move_arm::fire_goal(
+        let goal = brain_move_arm::ActionHandle::fire_goal(
             &node_runner,
             Duration::from_secs(5),
             None,
@@ -559,7 +559,7 @@ fn main() -> Result<()> {
         ).await?;
         println!("goal accepted={}", goal.data.accepted);
 
-        let cancel_response = brain_move_arm::cancel_goal(&node_runner, &goal.action_handle, Duration::from_secs(5)).await?;
+        let cancel_response = goal.cancel_goal(Duration::from_secs(5)).await?;
         let error_msg = cancel_response.data.error_message.as_deref().unwrap_or("<none>");
         println!(
             "cancel accepted={} error={}",
