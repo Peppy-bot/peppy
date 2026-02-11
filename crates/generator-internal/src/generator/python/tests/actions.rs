@@ -172,6 +172,18 @@ fn exposed_action() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
+    // Capnp preamble imports
+    assert_contains_all(
+        &rendered,
+        &[
+            "import capnp",
+            "import types",
+            "from functools import lru_cache",
+            "from pathlib import Path",
+            "_PKG_DIR = Path(__file__).resolve().parent.parent",
+        ],
+    );
+
     // ACTION_NAME constant and GoalRequestData dataclass
     assert_contains_all(
         &rendered,
@@ -229,32 +241,108 @@ fn exposed_action() {
         &[
             "import peppylib",
             "from dataclasses import dataclass",
+            "from typing import Callable",
             "from typing import Optional",
         ],
     );
 
-    // expose method
+    // expose @staticmethod inside ActionHandle
     assert_contains_all(
         &rendered,
         &[
+            "@staticmethod",
             "async def expose(",
             "node_runner: peppylib.NodeRunner",
             "peppylib.ActionMessenger.expose(",
+            "handle = ActionHandle()",
+            "handle.goal_service = action.goal_service",
+            "handle.cancel_service = action.cancel_service",
+            "handle.result_service = action.result_service",
+            "handle.feedback_publisher = action.feedback_publisher",
+            "return handle",
         ],
     );
 
-    // Handler methods
+    // _deserialize_goal_request function (module level)
     assert_contains_all(
         &rendered,
         &[
-            "async def handle_goal_next_request(",
-            "async def handle_cancel_next_request(",
-            "async def handle_result_next_request(",
+            "def _deserialize_goal_request(payload: bytes) -> GoalRequestData:",
+            "return GoalRequestData(",
         ],
     );
 
-    // Feedback emit method
-    assert_contains_all(&rendered, &["async def emit_feedback("]);
+    // _handle_goal_payload function with typed signature (module level)
+    assert_contains_all(
+        &rendered,
+        &[
+            "def _handle_goal_payload(payload: bytes, handler: Callable[[GoalRequest], GoalResponse], master_node: str, instance_id: str) -> bytes:",
+            "request_data = _deserialize_goal_request(payload)",
+            "request = GoalRequest(instance_id=instance_id, master_node=master_node, data=request_data)",
+            "response = handler(request)",
+            "return capnp_msg.to_bytes()",
+        ],
+    );
+
+    // handle_goal_next_request as method with self
+    assert_contains_all(
+        &rendered,
+        &[
+            "async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalResponse]) -> None:",
+            "async def _on_request(request_context):",
+            "return _handle_goal_payload(payload, handler, master_node, instance_id)",
+            "await self.goal_service.handle_next_request(_on_request)",
+        ],
+    );
+
+    // _handle_cancel_payload function (module level)
+    assert_contains_all(
+        &rendered,
+        &[
+            "def _handle_cancel_payload(handler: Callable[[CancelRequest], CancelResponse], master_node: str, instance_id: str) -> bytes:",
+            "request = CancelRequest(instance_id=instance_id, master_node=master_node)",
+            "response = handler(request)",
+        ],
+    );
+
+    // handle_cancel_next_request as method with self
+    assert_contains_all(
+        &rendered,
+        &[
+            "async def handle_cancel_next_request(self, handler: Callable[[CancelRequest], CancelResponse]) -> None:",
+            "return _handle_cancel_payload(handler, master_node, instance_id)",
+            "await self.cancel_service.handle_next_request(_on_request)",
+        ],
+    );
+
+    // _handle_result_payload function (module level)
+    assert_contains_all(
+        &rendered,
+        &[
+            "def _handle_result_payload(handler: Callable[[ResultRequest], ResultResponse], master_node: str, instance_id: str) -> bytes:",
+            "request = ResultRequest(instance_id=instance_id, master_node=master_node)",
+        ],
+    );
+
+    // handle_result_next_request as method with self
+    assert_contains_all(
+        &rendered,
+        &[
+            "async def handle_result_next_request(self, handler: Callable[[ResultRequest], ResultResponse]) -> None:",
+            "return _handle_result_payload(handler, master_node, instance_id)",
+            "await self.result_service.handle_next_request(_on_request)",
+        ],
+    );
+
+    // emit_feedback as method with self
+    assert_contains_all(
+        &rendered,
+        &[
+            "async def emit_feedback(self, new_position: list[int]):",
+            "payload = capnp_msg.to_bytes()",
+            "await self.feedback_publisher.publish(payload)",
+        ],
+    );
 }
 
 #[test]
@@ -278,6 +366,31 @@ fn expose_action_without_request_body() {
         ],
     );
 
+    // Should NOT have _deserialize_goal_request (no request format)
+    assert_rendered!(
+        !rendered.contains("def _deserialize_goal_request"),
+        &rendered,
+        "expected no _deserialize_goal_request when there is no request body"
+    );
+
+    // _handle_goal_payload without payload parameter
+    assert_contains_all(
+        &rendered,
+        &[
+            "def _handle_goal_payload(handler: Callable[[GoalRequest], GoalResponse], master_node: str, instance_id: str) -> bytes:",
+            "request = GoalRequest(instance_id=instance_id, master_node=master_node)",
+        ],
+    );
+
+    // handle_goal_next_request - _on_request without payload
+    assert_contains_all(
+        &rendered,
+        &[
+            "return _handle_goal_payload(handler, master_node, instance_id)",
+            "await self.goal_service.handle_next_request(_on_request)",
+        ],
+    );
+
     // Result handling
     assert_contains_all(
         &rendered,
@@ -295,11 +408,28 @@ fn expose_action_without_request_body() {
         &[
             "class CancelResponse:",
             "async def handle_cancel_next_request(",
+            "def _handle_cancel_payload(",
+            "await self.cancel_service.handle_next_request(_on_request)",
         ],
     );
 
-    // Feedback emitter
-    assert_contains_all(&rendered, &["async def emit_feedback("]);
+    // Result handler implementation
+    assert_contains_all(
+        &rendered,
+        &[
+            "def _handle_result_payload(",
+            "await self.result_service.handle_next_request(_on_request)",
+        ],
+    );
+
+    // Feedback emitter as method with self
+    assert_contains_all(
+        &rendered,
+        &[
+            "async def emit_feedback(self, new_position: int, speed: int):",
+            "await self.feedback_publisher.publish(payload)",
+        ],
+    );
 }
 
 #[test]
@@ -335,11 +465,21 @@ fn expose_two_actions() {
     assert_contains_all(
         move_arm,
         &[
-            "async def handle_goal_next_request(",
+            "\"move_arm\"",
+            "import capnp",
             "class GoalRequest:",
             "class ResultResponse:",
-            "async def emit_feedback(",
-            "\"move_arm\"",
+            "class ActionHandle:",
+            "@staticmethod",
+            "async def handle_goal_next_request(self,",
+            "def _handle_goal_payload(",
+            "def _handle_cancel_payload(",
+            "def _handle_result_payload(",
+            "await self.goal_service.handle_next_request(_on_request)",
+            "await self.cancel_service.handle_next_request(_on_request)",
+            "await self.result_service.handle_next_request(_on_request)",
+            "async def emit_feedback(self,",
+            "await self.feedback_publisher.publish(payload)",
         ],
     );
 
@@ -347,11 +487,21 @@ fn expose_two_actions() {
     assert_contains_all(
         rotate_servo,
         &[
-            "async def handle_goal_next_request(",
+            "\"rotate_servo_clockwise\"",
+            "import capnp",
             "class GoalResponse:",
             "class ResultResponse:",
-            "async def emit_feedback(",
-            "\"rotate_servo_clockwise\"",
+            "class ActionHandle:",
+            "@staticmethod",
+            "async def handle_goal_next_request(self,",
+            "def _handle_goal_payload(",
+            "def _handle_cancel_payload(",
+            "def _handle_result_payload(",
+            "await self.goal_service.handle_next_request(_on_request)",
+            "await self.cancel_service.handle_next_request(_on_request)",
+            "await self.result_service.handle_next_request(_on_request)",
+            "async def emit_feedback(self,",
+            "await self.feedback_publisher.publish(payload)",
         ],
     );
 }
