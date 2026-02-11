@@ -15,7 +15,7 @@ mod type_mapping;
 use super::naming::{module_name_from_components, sanitize_component, to_camel_case};
 use super::types::{
     CapnpSchema, InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage,
-    non_empty_message_format,
+    cancel_action_response_format, non_empty_message_format,
 };
 use crate::error::Result;
 use config::encoding::MessageFormatMapper;
@@ -151,7 +151,53 @@ impl LanguageGenerator for PythonGenerator {
     }
 
     fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()> {
-        let code = actions::build_exposed_action(action);
+        let goal_request_schema_info = action
+            .goal_service
+            .as_ref()
+            .and_then(|gs| gs.request_message_format.as_ref())
+            .filter(|fmt| !fmt.0.is_empty())
+            .map(|fmt| self.register_schema(&format!("{}_goal_request", action.name), fmt))
+            .transpose()?;
+
+        let goal_response_schema_info = action
+            .goal_service
+            .as_ref()
+            .and_then(|gs| gs.response_message_format.as_ref())
+            .filter(|fmt| !fmt.0.is_empty())
+            .map(|fmt| self.register_schema(&format!("{}_goal_response", action.name), fmt))
+            .transpose()?;
+
+        let cancel_response_schema_info = if action.goal_service.is_some() {
+            let cancel_format = cancel_action_response_format();
+            Some(self.register_schema(&format!("{}_cancel_response", action.name), &cancel_format)?)
+        } else {
+            None
+        };
+
+        let result_response_schema_info = action
+            .result_service
+            .as_ref()
+            .and_then(|rs| rs.response_message_format.as_ref())
+            .filter(|fmt| !fmt.0.is_empty())
+            .map(|fmt| self.register_schema(&format!("{}_result_response", action.name), fmt))
+            .transpose()?;
+
+        let feedback_schema_info = action
+            .feedback_topic
+            .as_ref()
+            .and_then(|ft| ft.message_format.as_ref())
+            .filter(|fmt| !fmt.0.is_empty())
+            .map(|fmt| self.register_schema(&format!("{}_feedback", action.name), fmt))
+            .transpose()?;
+
+        let code = actions::build_exposed_action(
+            action,
+            goal_request_schema_info.as_ref(),
+            goal_response_schema_info.as_ref(),
+            cancel_response_schema_info.as_ref(),
+            result_response_schema_info.as_ref(),
+            feedback_schema_info.as_ref(),
+        );
         self.push_section(InterfaceArtifact::from_kind(
             &action.name,
             InterfaceKind::ExposedAction,
