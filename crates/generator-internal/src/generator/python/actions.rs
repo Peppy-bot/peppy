@@ -485,6 +485,11 @@ pub fn build_exposed_action(
 pub fn build_subscribed_action(
     action: &SubscribedAction,
     messages: &SubscribedActionMessage,
+    goal_request_schema_info: Option<&PythonSchemaInfo>,
+    goal_response_schema_info: Option<&PythonSchemaInfo>,
+    cancel_response_schema_info: Option<&PythonSchemaInfo>,
+    feedback_schema_info: Option<&PythonSchemaInfo>,
+    result_response_schema_info: Option<&PythonSchemaInfo>,
 ) -> String {
     let mut builder = PythonCodeBuilder::new();
 
@@ -492,6 +497,29 @@ pub fn build_subscribed_action(
     let goal_response_format = non_empty_message_format(messages.goal_response.as_ref());
     let feedback_format = non_empty_message_format(messages.feedback.as_ref());
     let result_response_format = non_empty_message_format(messages.result_response.as_ref());
+
+    // Capnp preamble and loader functions
+    let any_schema = goal_request_schema_info.is_some()
+        || goal_response_schema_info.is_some()
+        || cancel_response_schema_info.is_some()
+        || feedback_schema_info.is_some()
+        || result_response_schema_info.is_some();
+
+    if any_schema {
+        emit_capnp_preamble(&mut builder);
+    }
+    for info in [
+        goal_request_schema_info,
+        goal_response_schema_info,
+        cancel_response_schema_info,
+        feedback_schema_info,
+        result_response_schema_info,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        emit_capnp_loader_fn(&mut builder, info);
+    }
 
     // Constants
     builder.line(&format!("TARGET_NODE_NAME = \"{}\"", action.node));
@@ -546,11 +574,102 @@ pub fn build_subscribed_action(
         emit_format_as_class(&mut builder, "FeedbackMessage", fmt);
     }
 
+    // ---------------------------------------------------------------
+    // Deserialization helper functions
+    // ---------------------------------------------------------------
+
+    // _deserialize_goal_response
+    if let Some((fmt, info)) = goal_response_format.zip(goal_response_schema_info) {
+        let loader_fn_name = capnp_loader_fn_name(info);
+        deserialization::build_deserialize_fn(
+            &mut builder,
+            info,
+            fmt,
+            "GoalResponseData",
+            &format!("{loader_fn_name}()"),
+            "_deserialize_goal_response",
+        );
+    }
+
+    // _deserialize_cancel_response
+    if let Some(info) = cancel_response_schema_info {
+        let loader_fn_name = capnp_loader_fn_name(info);
+        deserialization::build_deserialize_fn(
+            &mut builder,
+            info,
+            &cancel_format,
+            "CancelResponseData",
+            &format!("{loader_fn_name}()"),
+            "_deserialize_cancel_response",
+        );
+    }
+
+    // _deserialize_feedback_payload
+    if let Some((fmt, info)) = feedback_format.zip(feedback_schema_info) {
+        let loader_fn_name = capnp_loader_fn_name(info);
+        deserialization::build_deserialize_fn(
+            &mut builder,
+            info,
+            fmt,
+            "FeedbackMessage",
+            &format!("{loader_fn_name}()"),
+            "_deserialize_feedback_payload",
+        );
+    }
+
+    // _deserialize_result_response
+    if let Some((fmt, info)) = result_response_format.zip(result_response_schema_info) {
+        let loader_fn_name = capnp_loader_fn_name(info);
+        deserialization::build_deserialize_fn(
+            &mut builder,
+            info,
+            fmt,
+            "ResultResponseData",
+            &format!("{loader_fn_name}()"),
+            "_deserialize_result_response",
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // API functions
+    // ---------------------------------------------------------------
+
+    let has_goal_request = goal_request_format.is_some();
+    let has_goal_response = goal_response_format.is_some();
+    let has_result_response = result_response_format.is_some();
+
     // fire_goal method
     builder.add_import("import peppylib");
-    builder.line("async def fire_goal(node_runner: peppylib.NodeRunner, timeout, target_master_node=None, target_instance_id=None):");
+    builder.add_import("from typing import Optional");
+    builder.blank_line();
+
+    if has_goal_request {
+        builder.line("async def fire_goal(node_runner: peppylib.NodeRunner, request: GoalRequest, timeout: float, target_master_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> GoalResponse:");
+    } else {
+        builder.line("async def fire_goal(node_runner: peppylib.NodeRunner, timeout: float, target_master_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> GoalResponse:");
+    }
     builder.indent();
-    builder.line("goal_payload = b\"\"");
+
+    // Serialize request payload
+    if let Some((fmt, info)) = goal_request_format.zip(goal_request_schema_info) {
+        let loader_fn_name = capnp_loader_fn_name(info);
+        builder.line(&format!(
+            "capnp_msg = {loader_fn_name}().{}.new_message()",
+            info.struct_name
+        ));
+        let mut counter = 0u32;
+        serialization::emit_capnp_assignments(
+            &mut builder,
+            "capnp_msg",
+            fmt,
+            "request",
+            &mut counter,
+        );
+        builder.line("goal_payload = capnp_msg.to_bytes()");
+    } else {
+        builder.line("goal_payload = b\"\"");
+    }
+
     builder.line("action_handle = await peppylib.ActionMessenger.send_goal(");
     builder.indent();
     builder.line("node_runner.messenger(),");
@@ -565,13 +684,23 @@ pub fn build_subscribed_action(
     builder.line("timeout,");
     builder.dedent();
     builder.line(")");
-    builder.line("return action_handle");
+
+    // Deserialize goal response
+    if has_goal_response {
+        builder.line("payload = action_handle.goal_response.payload");
+        builder.line("goal_response_data = _deserialize_goal_response(payload)");
+        builder.line("return GoalResponse(data=goal_response_data)");
+    } else {
+        builder.line("return GoalResponse()");
+    }
+
     builder.dedent();
     builder.blank_line();
 
     // cancel_goal method
-    builder
-        .line("async def cancel_goal(node_runner: peppylib.NodeRunner, action_handle, timeout):");
+    builder.line(
+        "async def cancel_goal(node_runner: peppylib.NodeRunner, action_handle, timeout: float) -> CancelResponse:",
+    );
     builder.indent();
     builder.line("response = await peppylib.ActionMessenger.cancel_goal(");
     builder.indent();
@@ -580,22 +709,37 @@ pub fn build_subscribed_action(
     builder.line("timeout,");
     builder.dedent();
     builder.line(")");
-    builder.line("return response");
+
+    if cancel_response_schema_info.is_some() {
+        builder.line("payload = response.payload");
+        builder.line("cancel_response_data = _deserialize_cancel_response(payload)");
+        builder.line("return CancelResponse(master_node=response.master_node, instance_id=response.instance_id, data=cancel_response_data)");
+    } else {
+        builder.line("return CancelResponse(master_node=response.master_node, instance_id=response.instance_id)");
+    }
+
     builder.dedent();
     builder.blank_line();
 
     // on_next_feedback_message (only when feedback format exists)
     if feedback_format.is_some() {
-        builder.line("async def on_next_feedback_message(action_handle):");
+        builder.line("async def on_next_feedback_message(action_handle) -> FeedbackMessage:");
         builder.indent();
         builder.line("feedback = await action_handle.on_next_feedback()");
-        builder.line("return feedback");
+        if feedback_schema_info.is_some() {
+            builder.line("payload = feedback.payload");
+            builder.line("return _deserialize_feedback_payload(payload)");
+        } else {
+            builder.line("return feedback");
+        }
         builder.dedent();
         builder.blank_line();
     }
 
     // get_result method
-    builder.line("async def get_result(node_runner: peppylib.NodeRunner, action_handle, timeout):");
+    builder.line(
+        "async def get_result(node_runner: peppylib.NodeRunner, action_handle, timeout: float) -> ResultResponse:",
+    );
     builder.indent();
     builder.line("response = await peppylib.ActionMessenger.request_result(");
     builder.indent();
@@ -604,7 +748,15 @@ pub fn build_subscribed_action(
     builder.line("timeout,");
     builder.dedent();
     builder.line(")");
-    builder.line("return response");
+
+    if has_result_response {
+        builder.line("payload = response.payload");
+        builder.line("result_response_data = _deserialize_result_response(payload)");
+        builder.line("return ResultResponse(master_node=response.master_node, instance_id=response.instance_id, data=result_response_data)");
+    } else {
+        builder.line("return ResultResponse(master_node=response.master_node, instance_id=response.instance_id)");
+    }
+
     builder.dedent();
 
     builder.build()
