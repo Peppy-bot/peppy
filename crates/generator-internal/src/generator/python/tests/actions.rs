@@ -537,6 +537,18 @@ fn subscribed_to_action() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
+    // Capnp preamble imports
+    assert_contains_all(
+        &rendered,
+        &[
+            "import capnp",
+            "import types",
+            "from functools import lru_cache",
+            "from pathlib import Path",
+            "_PKG_DIR = Path(__file__).resolve().parent.parent",
+        ],
+    );
+
     // Constants
     assert_contains_all(&rendered, &["\"brain\"", "\"move_arm\""]);
 
@@ -588,33 +600,74 @@ fn subscribed_to_action() {
         &["class FeedbackMessage:", "new_position: list[int]"],
     );
 
-    // fire_goal method
+    // Deserialization functions
+    assert_contains_all(
+        &rendered,
+        &[
+            "def _deserialize_goal_response(payload: bytes) -> GoalResponseData:",
+            "return GoalResponseData(",
+            "def _deserialize_cancel_response(payload: bytes) -> CancelResponseData:",
+            "return CancelResponseData(",
+            "def _deserialize_feedback_payload(payload: bytes) -> FeedbackMessage:",
+            "return FeedbackMessage(",
+            "def _deserialize_result_response(payload: bytes) -> ResultResponseData:",
+            "return ResultResponseData(",
+        ],
+    );
+
+    // Imports
+    assert_contains_all(
+        &rendered,
+        &["import peppylib", "from typing import Optional"],
+    );
+
+    // fire_goal with typed signature, serialization, and deserialization
     assert_contains_all(
         &rendered,
         &[
             "async def fire_goal(",
+            "request: GoalRequest",
+            "timeout: float",
+            "target_master_node: Optional[str] = None",
+            "target_instance_id: Optional[str] = None",
+            ") -> GoalResponse:",
+            "goal_payload = capnp_msg.to_bytes()",
             "peppylib.ActionMessenger.send_goal(",
+            "goal_response_data = _deserialize_goal_response(payload)",
+            "return GoalResponse(data=goal_response_data)",
         ],
     );
 
-    // cancel_goal method
+    // cancel_goal with return type and deserialization
     assert_contains_all(
         &rendered,
         &[
             "async def cancel_goal(",
+            "timeout: float) -> CancelResponse:",
             "peppylib.ActionMessenger.cancel_goal(",
+            "cancel_response_data = _deserialize_cancel_response(payload)",
+            "return CancelResponse(",
         ],
     );
 
-    // on_next_feedback_message method
-    assert_contains_all(&rendered, &["async def on_next_feedback_message("]);
+    // on_next_feedback_message with return type and deserialization
+    assert_contains_all(
+        &rendered,
+        &[
+            "async def on_next_feedback_message(action_handle) -> FeedbackMessage:",
+            "return _deserialize_feedback_payload(payload)",
+        ],
+    );
 
-    // get_result method
+    // get_result with return type and deserialization
     assert_contains_all(
         &rendered,
         &[
             "async def get_result(",
+            "timeout: float) -> ResultResponse:",
             "peppylib.ActionMessenger.request_result(",
+            "result_response_data = _deserialize_result_response(payload)",
+            "return ResultResponse(",
         ],
     );
 }
@@ -686,6 +739,7 @@ fn subscribed_to_two_actions_same_node() {
         &[
             "\"brain\"",
             "\"move_arm\"",
+            "import capnp",
             "class GoalRequest:",
             "class GoalResponseData:",
             "class GoalResponse:",
@@ -693,6 +747,22 @@ fn subscribed_to_two_actions_same_node() {
             "class FeedbackMessage:",
             "arm_id: int",
             "desired_position: list[int]",
+        ],
+    );
+
+    // move_arm - deserialization functions and serialization
+    assert_contains_all(
+        move_arm,
+        &[
+            "def _deserialize_goal_response(",
+            "def _deserialize_cancel_response(",
+            "def _deserialize_feedback_payload(",
+            "def _deserialize_result_response(",
+            "request: GoalRequest",
+            ") -> GoalResponse:",
+            ") -> CancelResponse:",
+            ") -> ResultResponse:",
+            "goal_payload = capnp_msg.to_bytes()",
         ],
     );
 
@@ -712,10 +782,26 @@ fn subscribed_to_two_actions_same_node() {
         &[
             "\"brain\"",
             "\"rotate_servo_clockwise\"",
+            "import capnp",
             "class GoalResponseData:",
             "class GoalResponse:",
             "class ResultResponse:",
             "class FeedbackMessage:",
+        ],
+    );
+
+    // rotate_servo_clockwise - deserialization functions (no goal request → empty payload)
+    assert_contains_all(
+        rotate_servo,
+        &[
+            "def _deserialize_goal_response(",
+            "def _deserialize_cancel_response(",
+            "def _deserialize_feedback_payload(",
+            "def _deserialize_result_response(",
+            ") -> GoalResponse:",
+            ") -> CancelResponse:",
+            ") -> ResultResponse:",
+            "goal_payload = b\"\"",
         ],
     );
 
@@ -768,6 +854,44 @@ fn subscribed_action_without_response_payload() {
             "peppylib.ActionMessenger.request_result(",
         ],
     );
+
+    // Should NOT have deserialization for goal_response or result_response
+    assert_rendered!(
+        !rendered.contains("def _deserialize_goal_response"),
+        &rendered,
+        "expected no _deserialize_goal_response when goal_response is None"
+    );
+    assert_rendered!(
+        !rendered.contains("def _deserialize_result_response"),
+        &rendered,
+        "expected no _deserialize_result_response when result_response is None"
+    );
+
+    // Should still have cancel and feedback deserialization
+    assert_contains_all(
+        &rendered,
+        &[
+            "def _deserialize_cancel_response(",
+            "def _deserialize_feedback_payload(",
+        ],
+    );
+
+    // fire_goal should have serialization (goal_request exists) but return GoalResponse()
+    assert_contains_all(
+        &rendered,
+        &[
+            "goal_payload = capnp_msg.to_bytes()",
+            "return GoalResponse()",
+        ],
+    );
+
+    // get_result should return without data
+    assert_contains_all(
+        &rendered,
+        &[
+            "return ResultResponse(master_node=response.master_node, instance_id=response.instance_id)",
+        ],
+    );
 }
 
 #[test]
@@ -809,5 +933,16 @@ fn subscribed_action_without_feedback() {
         !rendered.contains("async def on_next_feedback_message"),
         rendered,
         "expected generator to skip feedback listener when no feedback payload is provided"
+    );
+    assert_rendered!(
+        !rendered.contains("def _deserialize_feedback_payload"),
+        rendered,
+        "expected no _deserialize_feedback_payload when feedback is None"
+    );
+
+    // Should still have cancel deserialization (always present) and capnp preamble
+    assert_contains_all(
+        rendered,
+        &["import capnp", "def _deserialize_cancel_response("],
     );
 }
