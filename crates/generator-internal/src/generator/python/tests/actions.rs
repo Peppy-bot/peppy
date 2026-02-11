@@ -243,18 +243,19 @@ fn exposed_action() {
             "from dataclasses import dataclass",
             "from typing import Callable",
             "from typing import Optional",
+            "from typing import Self",
         ],
     );
 
-    // expose @staticmethod inside ActionHandle
+    // expose @classmethod inside ActionHandle
     assert_contains_all(
         &rendered,
         &[
-            "@staticmethod",
-            "async def expose(",
-            "node_runner: peppylib.NodeRunner",
+            "@classmethod",
+            "async def expose(cls,",
+            "node_runner: peppylib.NodeRunner) -> Self:",
             "peppylib.ActionMessenger.expose(",
-            "handle = ActionHandle()",
+            "handle = cls()",
             "handle.goal_service = action.goal_service",
             "handle.cancel_service = action.cancel_service",
             "handle.result_service = action.result_service",
@@ -470,7 +471,7 @@ fn expose_two_actions() {
             "class GoalRequest:",
             "class ResultResponse:",
             "class ActionHandle:",
-            "@staticmethod",
+            "@classmethod",
             "async def handle_goal_next_request(self,",
             "def _handle_goal_payload(",
             "def _handle_cancel_payload(",
@@ -492,7 +493,7 @@ fn expose_two_actions() {
             "class GoalResponse:",
             "class ResultResponse:",
             "class ActionHandle:",
-            "@staticmethod",
+            "@classmethod",
             "async def handle_goal_next_request(self,",
             "def _handle_goal_payload(",
             "def _handle_cancel_payload(",
