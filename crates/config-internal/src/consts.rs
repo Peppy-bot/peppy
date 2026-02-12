@@ -15,6 +15,17 @@ pub const PEPPY_MESSAGING_PORT_VAR_NAME: &str = "PEPPY_MESSAGING_PORT";
 pub const ALLOWED_CONFIG_CHARS: &str =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
 
+/// Minimum Python version required by peppylib and peppygen projects (e.g. "3.11").
+///
+/// NOTE: When updating, also update the static files in `peppylib-py/`
+/// (`Cargo.toml` abi3 feature, `pyproject.toml`, `pixi.toml`, `Readme.md`)
+/// which cannot be programmatically derived from this constant.
+pub const PYTHON_MIN_VERSION: &str = "3.11";
+
+/// Maximum Python version supported (exclusive, e.g. "3.14").
+/// Driven by pycapnp wheel availability.
+pub const PYTHON_MAX_VERSION: &str = "3.14";
+
 // Application runtime environment (dev/prod) tracked internally.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppEnv {
@@ -97,4 +108,44 @@ pub fn logs_dir_launch() -> std::path::PathBuf {
 /// Returns the runtime config directory path.
 pub fn runtime_config_dir() -> std::path::PathBuf {
     peppy_data_dir().join("runtime")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Ensures that static files in peppylib-py/ that cannot be programmatically
+    /// templated stay in sync with the canonical PYTHON_MIN_VERSION constant.
+    #[test]
+    fn python_version_consistency_in_static_files() {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let peppylib_py_dir = manifest_dir.join("../peppylib-py");
+
+        let files_and_patterns: &[(&str, String)] = &[
+            (
+                "pyproject.toml",
+                format!("requires-python = \">= {}\"", PYTHON_MIN_VERSION),
+            ),
+            ("Readme.md", format!("Python >= {}", PYTHON_MIN_VERSION)),
+            ("pixi.toml", format!("python = \">={}", PYTHON_MIN_VERSION)),
+            (
+                "Cargo.toml",
+                format!("abi3-py{}", PYTHON_MIN_VERSION.replace('.', "")),
+            ),
+        ];
+
+        for (filename, expected_pattern) in files_and_patterns {
+            let file_path = peppylib_py_dir.join(filename);
+            let contents = std::fs::read_to_string(&file_path)
+                .unwrap_or_else(|e| panic!("Failed to read {}: {}", file_path.display(), e));
+            assert!(
+                contents.contains(expected_pattern.as_str()),
+                "File {} does not contain expected pattern '{}'. \
+                 Update this file to match config::consts::PYTHON_MIN_VERSION = \"{}\"",
+                file_path.display(),
+                expected_pattern,
+                PYTHON_MIN_VERSION,
+            );
+        }
+    }
 }
