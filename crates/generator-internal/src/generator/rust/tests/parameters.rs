@@ -80,6 +80,42 @@ const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
 }
 "#;
 
+const NESTED_STRUCT_COLLISION_NODE_EXAMPLE: &str = r#"
+{
+  schema_version: 1,
+  manifest: {
+    name: "uvc_camera",
+    tag: "0.1.0",
+    language: "rust",
+    labels: [
+      "uvc",
+      "camera",
+      "usb",
+    ],
+    start_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
+  parameters: {
+    control: {
+      left: {
+        config: {
+          threshold: "u16"
+        }
+      },
+      right: {
+        config: {
+          enabled: "bool"
+        }
+      }
+    }
+  },
+  interfaces: {}
+}
+"#;
+
 #[test]
 fn generate_parameters_struct() {
     let temp_dir = TempDir::new().unwrap();
@@ -125,15 +161,19 @@ fn generate_parameters_struct() {
             "pub mod video",
             "pub struct Video",
             "pub frame_rate: u16",
-            "pub resolution: Resolution",
+            "pub resolution: VideoResolution",
             "pub encoding: String",
         ],
     );
 
-    // Verify nested Resolution struct (simple name, no prefix)
+    // Verify nested VideoResolution struct
     assert_contains_all(
         &generated,
-        &["pub struct Resolution", "pub width: u16", "pub height: u16"],
+        &[
+            "pub struct VideoResolution",
+            "pub width: u16",
+            "pub height: u16",
+        ],
     );
 
     // Verify derive attributes
@@ -166,6 +206,50 @@ fn generate_empty_parameters_struct() {
             "#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]",
             "pub struct Parameters",
         ],
+    );
+}
+
+#[test]
+fn generate_parameters_struct_avoids_nested_struct_name_collisions() {
+    let temp_dir = TempDir::new().unwrap();
+    let node_config: NodeConfig = serde_json5::from_str(NESTED_STRUCT_COLLISION_NODE_EXAMPLE)
+        .expect("failed to parse NESTED_STRUCT_COLLISION_NODE_EXAMPLE into NodeConfig");
+
+    let (mut generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
+    generator.set_parameters(node_config.parameters);
+    generator.build(&output_dir).unwrap();
+
+    let parameters_file = output_dir.join("src/parameters.rs");
+    assert!(
+        parameters_file.exists(),
+        "Expected parameters.rs to be generated"
+    );
+
+    let generated = fs::read_to_string(&parameters_file).expect("failed to read parameters.rs");
+    assert_contains_all(
+        &generated,
+        &[
+            "pub struct Parameters",
+            "pub control: control::Control",
+            "pub mod control",
+            "pub struct Control",
+            "pub left: ControlLeft",
+            "pub right: ControlRight",
+            "pub struct ControlLeft",
+            "pub config: ControlLeftConfig",
+            "pub struct ControlRight",
+            "pub config: ControlRightConfig",
+            "pub struct ControlLeftConfig",
+            "pub threshold: u16",
+            "pub struct ControlRightConfig",
+            "pub enabled: bool",
+        ],
+    );
+
+    assert_rendered!(
+        !generated.contains("pub struct Config"),
+        &generated,
+        "expected no ambiguous shared nested struct name"
     );
 }
 

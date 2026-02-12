@@ -80,6 +80,40 @@ const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
 }
 "#;
 
+const NESTED_CLASS_COLLISION_NODE_EXAMPLE: &str = r#"
+{
+  schema_version: 1,
+  manifest: {
+    name: "uvc_camera",
+    tag: "0.1.0",
+    language: "python",
+    labels: [
+      "uvc",
+      "camera",
+      "usb",
+    ],
+    start_cmd: [
+      "python",
+      "-m",
+      "uvc_camera"
+    ]
+  },
+  parameters: {
+    left: {
+      config: {
+        threshold: "u16"
+      }
+    },
+    right: {
+      config: {
+        enabled: "bool"
+      }
+    }
+  },
+  interfaces: {}
+}
+"#;
+
 #[test]
 fn generate_parameters_struct() {
     let temp_dir = TempDir::new().unwrap();
@@ -128,15 +162,57 @@ fn generate_parameters_struct() {
         &[
             "class Video:",
             "frame_rate: int",
-            "resolution: Resolution",
+            "resolution: VideoResolution",
             "encoding: str",
         ],
     );
 
-    // Verify nested Resolution dataclass
+    // Verify nested VideoResolution dataclass
     assert_contains_all(
         &generated,
-        &["class Resolution:", "width: int", "height: int"],
+        &["class VideoResolution:", "width: int", "height: int"],
+    );
+}
+
+#[test]
+fn generate_parameters_struct_avoids_nested_class_name_collisions() {
+    let temp_dir = TempDir::new().unwrap();
+    let node_config: NodeConfig = serde_json5::from_str(NESTED_CLASS_COLLISION_NODE_EXAMPLE)
+        .expect("failed to parse NESTED_CLASS_COLLISION_NODE_EXAMPLE into NodeConfig");
+
+    let output_dir = temp_dir.path().join("output");
+    fs::create_dir_all(&output_dir).unwrap();
+
+    let mut generator = PythonGenerator::new();
+    generator.set_parameters(node_config.parameters);
+    generator.build(&output_dir).unwrap();
+
+    let parameters_file = output_dir.join("peppygen").join("parameters.py");
+    assert!(
+        parameters_file.exists(),
+        "Expected parameters.py to be generated"
+    );
+
+    let generated = fs::read_to_string(&parameters_file).expect("failed to read parameters.py");
+
+    assert_contains_all(
+        &generated,
+        &[
+            "class Left:",
+            "config: LeftConfig",
+            "class Right:",
+            "config: RightConfig",
+            "class LeftConfig:",
+            "threshold: int",
+            "class RightConfig:",
+            "enabled: bool",
+        ],
+    );
+
+    assert_rendered!(
+        !generated.contains("class Config:"),
+        &generated,
+        "expected no ambiguous shared nested class name"
     );
 }
 

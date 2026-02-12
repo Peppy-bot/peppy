@@ -135,7 +135,7 @@ fn generate_parameter_struct(
                     field_tokens.push(quote!(pub #field_ident: #rust_type));
                 }
                 AnyType::Object(_) => {
-                    let nested_struct_name = to_camel_case(field_name);
+                    let nested_struct_name = nested_struct_name(struct_name, field_name);
                     let nested_struct_ident = Ident::new(&nested_struct_name, Span::call_site());
 
                     generate_parameter_struct(field_spec, &nested_struct_name, structs);
@@ -153,6 +153,10 @@ fn generate_parameter_struct(
             }
         });
     }
+}
+
+fn nested_struct_name(parent_struct: &str, field_name: &str) -> String {
+    format!("{parent_struct}{}", to_camel_case(field_name))
 }
 
 fn type_name_to_rust_type(type_name: &str) -> TokenStream {

@@ -66,7 +66,7 @@ fn generate_nested_parameter_class(
         // Recurse into nested objects first (so they're defined before referenced)
         for (field_name, field_spec) in fields {
             if let AnyType::Object(_) = field_spec {
-                let nested_name = to_camel_case(field_name);
+                let nested_name = nested_class_name(class_name, field_name);
                 generate_nested_parameter_class(field_spec, &nested_name, output);
             }
         }
@@ -83,7 +83,7 @@ fn generate_nested_parameter_class(
                     builder.line(&format!("{field_ident}: {py_type}"));
                 }
                 AnyType::Object(_) => {
-                    let nested_name = to_camel_case(field_name);
+                    let nested_name = nested_class_name(class_name, field_name);
                     builder.line(&format!("{field_ident}: {nested_name}"));
                 }
                 _ => {}
@@ -92,4 +92,8 @@ fn generate_nested_parameter_class(
         builder.dedent();
         output.push(builder.build());
     }
+}
+
+fn nested_class_name(parent_class: &str, field_name: &str) -> String {
+    format!("{parent_class}{}", to_camel_case(field_name))
 }
