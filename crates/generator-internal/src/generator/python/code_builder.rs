@@ -1,4 +1,40 @@
+use super::type_mapping::{NestedDataclass, collect_fields_from_format, uses_optional};
+use crate::error::Result;
+use config::node::MessageFormat;
 use std::collections::BTreeSet;
+
+/// Emits all nested dataclass definitions collected during field collection.
+pub fn emit_nested_classes(builder: &mut PythonCodeBuilder, nested_classes: &[NestedDataclass]) {
+    for class_def in nested_classes {
+        let fields: Vec<(&str, &str)> = class_def
+            .fields
+            .iter()
+            .map(|f| (f.name.as_str(), f.type_str.as_str()))
+            .collect();
+        builder.dataclass(&class_def.name, &fields);
+    }
+}
+
+/// Collects fields from a message format, emits any nested dataclasses, adds
+/// `Optional` import when needed, and emits the top-level dataclass.
+pub fn emit_format_as_dataclass(
+    builder: &mut PythonCodeBuilder,
+    class_name: &str,
+    format: &MessageFormat,
+) -> Result<()> {
+    let mut nested_classes = Vec::new();
+    let fields = collect_fields_from_format(format, class_name, &mut nested_classes)?;
+    if uses_optional(&fields, &nested_classes) {
+        builder.add_import("from typing import Optional");
+    }
+    emit_nested_classes(builder, &nested_classes);
+    let field_refs: Vec<(&str, &str)> = fields
+        .iter()
+        .map(|f| (f.name.as_str(), f.type_str.as_str()))
+        .collect();
+    builder.dataclass(class_name, &field_refs);
+    Ok(())
+}
 
 /// Accumulates lines of Python code with proper indentation handling.
 pub struct PythonCodeBuilder {
