@@ -403,7 +403,7 @@ impl ServiceMessenger {
         target_master_node: Option<&str>,
         target_instance_id: Option<&str>,
         request_payload: Bytes,
-        response_timeout: Duration,
+        response_timeout: impl Into<Option<Duration>>,
     ) -> Result<TopicMessage> {
         messenger
             .poll_service(

@@ -1,9 +1,10 @@
 use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
+use std::time::Duration;
 
 use config::node::Toolchain;
 use peppy::commands::Command;
-use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
+use peppy::commands::node::{NodeCommand, NodeCommands, NodeInitBuilder, NodeName};
 use peppy::context::AppContext;
 
 #[test]
@@ -119,14 +120,15 @@ fn node_uv_init_command_success() {
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    NodeCommand {
-        command: NodeCommands::Init {
-            node_name: NodeName::new(node_name).expect("valid node name"),
-            toolchain: Toolchain::Uv,
-            to_dir: None,
-        },
-    }
-    .execute(&node_ctx)
+    // Use NodeInitBuilder directly with no timeout (signal-based waiting)
+    // to avoid flakiness from wall-clock dependencies in CI.
+    NodeInitBuilder::new(
+        &node_ctx,
+        NodeName::new(node_name).expect("valid node name"),
+        Toolchain::Uv,
+    )
+    .with_timeout(None::<Duration>)
+    .build()
     .expect("node create command should succeed");
 
     let created_node_dir = node_dir.path().join(node_name);
