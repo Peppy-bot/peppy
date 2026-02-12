@@ -39,20 +39,6 @@ fn emit_format_as_dataclass(
     builder.dataclass(class_name, &field_refs);
 }
 
-fn emit_format_as_class(builder: &mut PythonCodeBuilder, class_name: &str, format: &MessageFormat) {
-    let mut nested_classes = Vec::new();
-    let fields = collect_fields_from_format(format, class_name, &mut nested_classes);
-    if uses_optional(&fields, &nested_classes) {
-        builder.add_import("from typing import Optional");
-    }
-    emit_nested_classes(builder, &nested_classes);
-    let field_refs: Vec<(&str, &str)> = fields
-        .iter()
-        .map(|f| (f.name.as_str(), f.type_str.as_str()))
-        .collect();
-    builder.class_def(class_name, &field_refs);
-}
-
 // ---------------------------------------------------------------------------
 // Exposed actions
 // ---------------------------------------------------------------------------
@@ -126,7 +112,7 @@ pub fn build_exposed_action(
 
         if let Some(fmt) = request_format {
             emit_format_as_dataclass(&mut builder, "GoalRequestData", fmt);
-            builder.class_def(
+            builder.dataclass(
                 "GoalRequest",
                 &[
                     ("instance_id", "str"),
@@ -135,25 +121,25 @@ pub fn build_exposed_action(
                 ],
             );
         } else {
-            builder.class_def(
+            builder.dataclass(
                 "GoalRequest",
                 &[("instance_id", "str"), ("master_node", "str")],
             );
         }
 
         if let Some(fmt) = response_format {
-            emit_format_as_class(&mut builder, "GoalResponse", fmt);
+            emit_format_as_dataclass(&mut builder, "GoalResponse", fmt);
         } else {
-            builder.class_def("GoalResponse", &[]);
+            builder.dataclass("GoalResponse", &[]);
         }
 
-        builder.class_def(
+        builder.dataclass(
             "CancelRequest",
             &[("instance_id", "str"), ("master_node", "str")],
         );
 
         let cancel_format = cancel_action_response_format();
-        emit_format_as_class(&mut builder, "CancelResponse", &cancel_format);
+        emit_format_as_dataclass(&mut builder, "CancelResponse", &cancel_format);
 
         let return_type = if has_goal_response {
             "GoalResponse"
@@ -167,16 +153,16 @@ pub fn build_exposed_action(
     };
 
     let result_handler_type = if let Some(result) = &action.result_service {
-        builder.class_def(
+        builder.dataclass(
             "ResultRequest",
             &[("instance_id", "str"), ("master_node", "str")],
         );
 
         let result_resp_format = non_empty_message_format(result.response_message_format.as_ref());
         if let Some(fmt) = result_resp_format {
-            emit_format_as_class(&mut builder, "ResultResponse", fmt);
+            emit_format_as_dataclass(&mut builder, "ResultResponse", fmt);
         } else {
-            builder.class_def("ResultResponse", &[]);
+            builder.dataclass("ResultResponse", &[]);
         }
 
         let return_type = if has_result_response {
@@ -380,7 +366,7 @@ pub fn build_exposed_action(
             "async def handle_goal_next_request(self, handler: {ght}) -> None:"
         ));
         builder.indent();
-        builder.line("async def _on_request(request_context):");
+        builder.line("def _on_request(request_context):");
         builder.indent();
         builder.line("message = request_context.message");
         if has_goal_request {
@@ -404,7 +390,7 @@ pub fn build_exposed_action(
             "async def handle_cancel_next_request(self, handler: {cancel_handler_type}) -> None:"
         ));
         builder.indent();
-        builder.line("async def _on_request(request_context):");
+        builder.line("def _on_request(request_context):");
         builder.indent();
         builder.line("message = request_context.message");
         builder.line("master_node = message.master_node");
@@ -424,7 +410,7 @@ pub fn build_exposed_action(
             "async def handle_result_next_request(self, handler: {rht}) -> None:"
         ));
         builder.indent();
-        builder.line("async def _on_request(request_context):");
+        builder.line("def _on_request(request_context):");
         builder.indent();
         builder.line("message = request_context.message");
         builder.line("master_node = message.master_node");
@@ -528,7 +514,7 @@ pub fn build_subscribed_action(
 
     // GoalRequest class
     if let Some(fmt) = goal_request_format {
-        emit_format_as_class(&mut builder, "GoalRequest", fmt);
+        emit_format_as_dataclass(&mut builder, "GoalRequest", fmt);
     }
 
     // GoalResponseData (no wrapper class — data lives on ActionHandle.data)
@@ -539,7 +525,7 @@ pub fn build_subscribed_action(
     // CancelResponseData + CancelResponse
     let cancel_format = cancel_action_response_format();
     emit_format_as_dataclass(&mut builder, "CancelResponseData", &cancel_format);
-    builder.class_def(
+    builder.dataclass(
         "CancelResponse",
         &[
             ("master_node", "str"),
@@ -551,7 +537,7 @@ pub fn build_subscribed_action(
     // ResultResponseData + ResultResponse
     if let Some(fmt) = result_response_format {
         emit_format_as_dataclass(&mut builder, "ResultResponseData", fmt);
-        builder.class_def(
+        builder.dataclass(
             "ResultResponse",
             &[
                 ("master_node", "str"),
@@ -560,7 +546,7 @@ pub fn build_subscribed_action(
             ],
         );
     } else {
-        builder.class_def(
+        builder.dataclass(
             "ResultResponse",
             &[("master_node", "str"), ("instance_id", "str")],
         );
@@ -568,7 +554,7 @@ pub fn build_subscribed_action(
 
     // FeedbackMessage (only when feedback format exists)
     if let Some(fmt) = feedback_format {
-        emit_format_as_class(&mut builder, "FeedbackMessage", fmt);
+        emit_format_as_dataclass(&mut builder, "FeedbackMessage", fmt);
     }
 
     // ---------------------------------------------------------------
@@ -646,9 +632,9 @@ pub fn build_subscribed_action(
     // fire_goal @classmethod
     builder.line("@classmethod");
     if has_goal_request {
-        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, request: GoalRequest, timeout: float, target_master_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Self:");
+        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, request: GoalRequest, timeout: float, feedback_qos: peppylib.QoSProfile, target_master_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Self:");
     } else {
-        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, timeout: float, target_master_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Self:");
+        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, timeout: float, feedback_qos: peppylib.QoSProfile, target_master_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Self:");
     }
     builder.indent();
 
@@ -682,7 +668,7 @@ pub fn build_subscribed_action(
     builder.line("target_master_node,");
     builder.line("target_instance_id,");
     builder.line("goal_payload,");
-    builder.line("peppylib.QoSProfile.Standard,");
+    builder.line("feedback_qos,");
     builder.line("timeout,");
     builder.dedent();
     builder.line(")");

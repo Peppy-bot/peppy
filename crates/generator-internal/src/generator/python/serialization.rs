@@ -83,6 +83,12 @@ fn emit_field_assignment(
     counter: &mut u32,
 ) {
     let capnp_name = capnp_field_name(field_name);
+    let optional = schema.is_optional();
+
+    if optional {
+        builder.line(&format!("if {value_expr} is not None:"));
+        builder.indent();
+    }
 
     match schema {
         SchemaType::Type(TypeToken::Time) => {
@@ -118,6 +124,10 @@ fn emit_field_assignment(
                 );
             }
         }
+    }
+
+    if optional {
+        builder.dedent();
     }
 }
 

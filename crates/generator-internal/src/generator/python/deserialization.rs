@@ -5,6 +5,19 @@ use crate::generator::naming::{sanitize_component, to_camel_case};
 use config::node::{MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
 
+/// Returns `true` when the Cap'n Proto encoding stores this type as a pointer
+/// (i.e. it is possible to detect "not set" via `_has()`).
+fn is_capnp_pointer_type(schema: &SchemaType) -> bool {
+    match schema {
+        SchemaType::Type(TypeToken::String | TypeToken::Time) => true,
+        SchemaType::Primitive(prim) => {
+            matches!(prim.kind, TypeToken::String | TypeToken::Time)
+        }
+        SchemaType::Array(_) | SchemaType::Object(_) => true,
+        _ => false,
+    }
+}
+
 /// Generates a single field reader statement, dispatching on the schema type.
 ///
 /// `reader_var` is the pycapnp reader variable (e.g., `"capnp_msg"` or `"reader_0"`).
@@ -17,7 +30,7 @@ pub fn generate_field_reader_statements(
     struct_prefix: &str,
     counter: &mut u32,
 ) -> String {
-    match schema {
+    let var = match schema {
         SchemaType::Type(TypeToken::Time) => {
             generate_time_reader(builder, reader_var, field_name, counter)
         }
@@ -39,7 +52,21 @@ pub fn generate_field_reader_statements(
             struct_prefix,
             counter,
         ),
+    };
+
+    // For optional pointer-typed fields, override the value with None when the
+    // Cap'n Proto field was never set (null pointer).
+    if schema.is_optional() && is_capnp_pointer_type(schema) {
+        let capnp_name = capnp_field_name(field_name);
+        builder.line(&format!(
+            "if not {reader_var}._has(\"{capnp_name}\"):"
+        ));
+        builder.indent();
+        builder.line(&format!("{var} = None"));
+        builder.dedent();
     }
+
+    var
 }
 
 /// Generates a complete `deserialize_payload` helper function that reads a Cap'n Proto
