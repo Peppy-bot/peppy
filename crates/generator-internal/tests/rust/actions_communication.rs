@@ -180,6 +180,11 @@ use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
 
+const TARGET_NODE_NAME: &str = "brain";
+const TARGET_INSTANCE_ID: &str = "exposer_instance";
+const FEEDBACK_READY_SERVICE: &str = "move_arm_feedback_ready";
+const FEEDBACK_RECEIVED_SERVICE: &str = "move_arm_feedback_received";
+
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         let request = brain_move_arm::GoalRequest {
@@ -196,9 +201,36 @@ fn main() -> Result<()> {
         ).await?;
         println!("goal accepted={}", goal.data.accepted);
 
-        let feedback = goal.on_next_feedback_message().await?;
+        let feedback_wait = goal.on_next_feedback_message();
+        let notify_feedback_ready = peppygen::ServiceMessenger::poll(
+            node_runner.messenger(),
+            node_runner.processor().bound_master_node(),
+            node_runner.processor().bound_instance_id(),
+            TARGET_NODE_NAME,
+            FEEDBACK_READY_SERVICE,
+            Some(node_runner.processor().bound_master_node()),
+            Some(TARGET_INSTANCE_ID),
+            Vec::<u8>::new().into(),
+            Duration::from_secs(5),
+        );
+        let (feedback, ready_response) = tokio::join!(feedback_wait, notify_feedback_ready);
+        ready_response?;
+        let feedback = feedback?;
         assert_eq!(feedback.new_position, [7, 31, 43], "unexpected feedback message");
         println!("feedback message received new_position={:?}", feedback.new_position);
+
+        peppygen::ServiceMessenger::poll(
+            node_runner.messenger(),
+            node_runner.processor().bound_master_node(),
+            node_runner.processor().bound_instance_id(),
+            TARGET_NODE_NAME,
+            FEEDBACK_RECEIVED_SERVICE,
+            Some(node_runner.processor().bound_master_node()),
+            Some(TARGET_INSTANCE_ID),
+            Vec::<u8>::new().into(),
+            Duration::from_secs(5),
+        )
+        .await?;
 
         let result = goal.get_result(Duration::from_secs(5)).await?;
         println!(
@@ -251,6 +283,13 @@ fn main() -> Result<()> {
 use peppygen::exposed_actions::move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+const FEEDBACK_READY_SERVICE: &str = "move_arm_feedback_ready";
+const FEEDBACK_RECEIVED_SERVICE: &str = "move_arm_feedback_received";
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
@@ -266,9 +305,50 @@ fn main() -> Result<()> {
         })
         .await?;
 
+        let mut feedback_ready_service = peppygen::ServiceMessenger::listen(
+            node_runner.messenger(),
+            node_runner.processor().bound_master_node(),
+            node_runner.processor().bound_instance_id(),
+            node_runner.processor().node_name(),
+            FEEDBACK_READY_SERVICE,
+        )
+        .await?;
+        feedback_ready_service
+            .handle_next_request(|_request| async move { Ok(Vec::<u8>::new().into()) })
+            .await?;
+        println!("server received feedback-ready handshake");
+
+        let mut feedback_received_service = peppygen::ServiceMessenger::listen(
+            node_runner.messenger(),
+            node_runner.processor().bound_master_node(),
+            node_runner.processor().bound_instance_id(),
+            node_runner.processor().node_name(),
+            FEEDBACK_RECEIVED_SERVICE,
+        )
+        .await?;
+        let feedback_received = Arc::new(AtomicBool::new(false));
+        let feedback_received_flag = Arc::clone(&feedback_received);
+        let feedback_received_task = tokio::spawn(async move {
+            feedback_received_service
+                .handle_next_request(|_request| async move { Ok(Vec::<u8>::new().into()) })
+                .await?;
+            feedback_received_flag.store(true, Ordering::Release);
+            Ok::<(), peppygen::Error>(())
+        });
+
         let feedback_message = [7, 31, 43];
-        action.emit_feedback(feedback_message).await?;
-        println!("server emitted feedback message {:?}", feedback_message);
+        let mut feedback_logged = false;
+        while !feedback_received.load(Ordering::Acquire) {
+            action.emit_feedback(feedback_message).await?;
+            if !feedback_logged {
+                println!("server emitted feedback message {:?}", feedback_message);
+                feedback_logged = true;
+            }
+            tokio::task::yield_now().await;
+        }
+        feedback_received_task
+            .await
+            .expect("feedback ack task should not panic")?;
 
         let final_position = [98, 4, 26];
         action.handle_result_next_request(|_request| -> Result<move_arm::ResultResponse> {

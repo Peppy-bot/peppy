@@ -183,6 +183,11 @@ import peppylib
 from peppygen import NodeBuilder
 from peppygen.subscribed_actions import brain_move_arm
 
+TARGET_NODE_NAME = "brain"
+TARGET_INSTANCE_ID = "exposer_instance"
+FEEDBACK_READY_SERVICE = "move_arm_feedback_ready"
+FEEDBACK_RECEIVED_SERVICE = "move_arm_feedback_received"
+
 async def run_subscriber(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
     goal = await brain_move_arm.ActionHandle.fire_goal(
@@ -190,9 +195,33 @@ async def run_subscriber(node_runner):
     )
     print(f"goal accepted={goal.data.accepted}", flush=True)
 
-    feedback = await goal.on_next_feedback_message()
+    feedback_task = asyncio.create_task(goal.on_next_feedback_message())
+    await peppylib.ServiceMessenger.poll(
+        node_runner.messenger(),
+        node_runner.bound_master_node(),
+        node_runner.bound_instance_id(),
+        TARGET_NODE_NAME,
+        FEEDBACK_READY_SERVICE,
+        node_runner.bound_master_node(),
+        TARGET_INSTANCE_ID,
+        b"",
+        5.0,
+    )
+    feedback = await feedback_task
     assert feedback.new_position == [7, 31, 43], "unexpected feedback message"
     print(f"feedback message received new_position={feedback.new_position}", flush=True)
+
+    await peppylib.ServiceMessenger.poll(
+        node_runner.messenger(),
+        node_runner.bound_master_node(),
+        node_runner.bound_instance_id(),
+        TARGET_NODE_NAME,
+        FEEDBACK_RECEIVED_SERVICE,
+        node_runner.bound_master_node(),
+        TARGET_INSTANCE_ID,
+        b"",
+        5.0,
+    )
 
     result = await goal.get_result(5.0)
     print(
@@ -253,8 +282,12 @@ if __name__ == "__main__":
 import asyncio
 import sys
 import traceback
+import peppylib
 from peppygen import NodeBuilder
 from peppygen.exposed_actions import move_arm
+
+FEEDBACK_READY_SERVICE = "move_arm_feedback_ready"
+FEEDBACK_RECEIVED_SERVICE = "move_arm_feedback_received"
 
 async def run_exposer(node_runner):
     action = await move_arm.ActionHandle.expose(node_runner)
@@ -268,9 +301,40 @@ async def run_exposer(node_runner):
 
     await action.handle_goal_next_request(goal_handler)
 
+    feedback_ready_service = await peppylib.ServiceMessenger.listen(
+        node_runner.messenger(),
+        node_runner.bound_master_node(),
+        node_runner.bound_instance_id(),
+        node_runner.node_name(),
+        FEEDBACK_READY_SERVICE,
+    )
+    await feedback_ready_service.handle_next_request(lambda _request: b"")
+    print("server received feedback-ready handshake", flush=True)
+
+    feedback_received_service = await peppylib.ServiceMessenger.listen(
+        node_runner.messenger(),
+        node_runner.bound_master_node(),
+        node_runner.bound_instance_id(),
+        node_runner.node_name(),
+        FEEDBACK_RECEIVED_SERVICE,
+    )
+    feedback_received = asyncio.Event()
+
+    async def _wait_feedback_received():
+        await feedback_received_service.handle_next_request(lambda _request: b"")
+        feedback_received.set()
+
+    feedback_received_task = asyncio.create_task(_wait_feedback_received())
+
     feedback_message = [7, 31, 43]
-    await action.emit_feedback(feedback_message)
-    print(f"server emitted feedback message {feedback_message}", flush=True)
+    feedback_logged = False
+    while not feedback_received.is_set():
+        await action.emit_feedback(feedback_message)
+        if not feedback_logged:
+            print(f"server emitted feedback message {feedback_message}", flush=True)
+            feedback_logged = True
+        await asyncio.sleep(0)
+    await feedback_received_task
 
     final_position = [98, 4, 26]
     def result_handler(request):
