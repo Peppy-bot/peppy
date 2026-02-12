@@ -1,5 +1,5 @@
 use super::code_builder::PythonCodeBuilder;
-use crate::generator::naming::sanitize_component;
+use super::identifiers::{is_python_keyword, sanitize_python_identifier};
 use config::node::{MessageFormat, SchemaType, TypeToken};
 
 /// Converts a field name to camelCase for Cap'n Proto field access in pycapnp.
@@ -55,7 +55,7 @@ pub fn emit_capnp_assignments(
     counter: &mut u32,
 ) {
     for (field_name, schema) in &format.0 {
-        let python_name = sanitize_component(field_name);
+        let python_name = sanitize_python_identifier(field_name);
         let value_expr = if param_prefix.is_empty() {
             python_name.clone()
         } else {
@@ -70,6 +70,14 @@ pub fn emit_capnp_assignments(
             &value_expr,
             counter,
         );
+    }
+}
+
+fn capnp_assignment_stmt(builder_var: &str, capnp_name: &str, value_expr: &str) -> String {
+    if is_python_keyword(capnp_name) {
+        format!("setattr({builder_var}, \"{capnp_name}\", {value_expr})")
+    } else {
+        format!("{builder_var}.{capnp_name} = {value_expr}")
     }
 }
 
@@ -98,10 +106,10 @@ fn emit_field_assignment(
             emit_time_assignment(builder, builder_var, &capnp_name, value_expr, counter);
         }
         SchemaType::Type(_) | SchemaType::Primitive(_) => {
-            builder.line(&format!("{builder_var}.{capnp_name} = {value_expr}"));
+            builder.line(&capnp_assignment_stmt(builder_var, &capnp_name, value_expr));
         }
         SchemaType::Array(_) => {
-            builder.line(&format!("{builder_var}.{capnp_name} = {value_expr}"));
+            builder.line(&capnp_assignment_stmt(builder_var, &capnp_name, value_expr));
         }
         SchemaType::Object(object) => {
             let idx = *counter;
@@ -112,7 +120,7 @@ fn emit_field_assignment(
             ));
             // Recurse into nested object fields
             for (nested_name, nested_schema) in &object.fields {
-                let nested_python = sanitize_component(nested_name);
+                let nested_python = sanitize_python_identifier(nested_name);
                 let nested_value = format!("{value_expr}.{nested_python}");
                 emit_field_assignment(
                     builder,

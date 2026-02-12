@@ -1,4 +1,5 @@
-use crate::generator::naming::{sanitize_component, to_camel_case};
+use super::identifiers::sanitize_python_identifier;
+use crate::generator::naming::to_camel_case;
 use config::node::{QoSProfile, SchemaType, TypeToken};
 
 /// A field in a Python dataclass.
@@ -58,7 +59,7 @@ pub fn schema_type_to_python(
                 let field_type =
                     schema_type_to_python(nested_schema, &class_name, nested_name, nested_classes);
                 fields.push(PythonField {
-                    name: sanitize_component(nested_name),
+                    name: sanitize_python_identifier(nested_name),
                     type_str: field_type,
                 });
             }
@@ -91,7 +92,7 @@ pub fn collect_fields_from_format(
     for (field_name, schema) in &format.0 {
         let type_str = schema_type_to_python(schema, struct_prefix, field_name, nested_classes);
         fields.push(PythonField {
-            name: sanitize_component(field_name),
+            name: sanitize_python_identifier(field_name),
             type_str,
         });
     }

@@ -5,6 +5,7 @@ mod actions;
 mod build;
 mod code_builder;
 mod deserialization;
+mod identifiers;
 mod parameters;
 mod ruff;
 pub(crate) mod serialization;

@@ -1,3 +1,4 @@
+use super::identifiers::is_python_keyword;
 use crate::error::Result;
 use crate::generator::types::{CapnpSchema, InterfaceArtifact, InterfaceKind};
 use rust_embed::Embed;
@@ -154,6 +155,10 @@ fn sanitize_module_name(raw: &str) -> String {
         out.insert(0, '_');
     }
 
+    if is_python_keyword(&out) {
+        out.push('_');
+    }
+
     out
 }
 
@@ -197,5 +202,36 @@ impl ModuleCategory {
             Self::ExposedActions => "exposed_actions",
             Self::SubscribedActions => "subscribed_actions",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn sanitize_module_name_escapes_python_keywords() {
+        assert_eq!(sanitize_module_name("class"), "class_");
+        assert_eq!(sanitize_module_name("from"), "from_");
+    }
+
+    #[test]
+    fn write_category_escapes_keyword_module_in_init_import() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let artifact = InterfaceArtifact::from_kind(
+            "class",
+            InterfaceKind::ExposedTopic,
+            String::from("x = 1\n"),
+        );
+
+        write_category(temp_dir.path(), vec![artifact]).expect("category should be written");
+
+        let module_file = temp_dir.path().join("class_.py");
+        assert!(module_file.exists(), "expected escaped module filename");
+
+        let init_content = fs::read_to_string(temp_dir.path().join("__init__.py"))
+            .expect("expected __init__.py content");
+        assert_eq!(init_content, "from . import class_\n");
     }
 }

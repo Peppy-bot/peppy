@@ -1,7 +1,8 @@
 use super::code_builder::PythonCodeBuilder;
+use super::identifiers::sanitize_python_identifier;
 use super::type_mapping::type_name_to_python;
 use crate::error::Result;
-use crate::generator::naming::{sanitize_component, to_camel_case};
+use crate::generator::naming::to_camel_case;
 use crate::generator::rust::generate_parameters_struct as validate_parameters;
 use config::AnyType;
 
@@ -25,12 +26,12 @@ pub fn generate_python_parameters(parameters: &config::NodeArguments) -> Result<
         match type_spec {
             AnyType::Object(_) => {
                 let struct_name = to_camel_case(field_name);
-                let field_ident = sanitize_component(field_name);
+                let field_ident = sanitize_python_identifier(field_name);
                 main_fields.push((field_ident, struct_name.clone()));
                 generate_nested_parameter_class(type_spec, &struct_name, &mut nested_builders);
             }
             AnyType::String(type_name) => {
-                let field_ident = sanitize_component(field_name);
+                let field_ident = sanitize_python_identifier(field_name);
                 let python_type = type_name_to_python(type_name);
                 main_fields.push((field_ident, python_type.to_string()));
             }
@@ -75,7 +76,7 @@ fn generate_nested_parameter_class(
         builder.line(&format!("class {class_name}:"));
         builder.indent();
         for (field_name, field_spec) in fields {
-            let field_ident = sanitize_component(field_name);
+            let field_ident = sanitize_python_identifier(field_name);
             match field_spec {
                 AnyType::String(type_name) => {
                     let py_type = type_name_to_python(type_name);
