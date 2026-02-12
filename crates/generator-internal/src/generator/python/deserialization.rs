@@ -1,7 +1,8 @@
 use super::PythonSchemaInfo;
 use super::code_builder::PythonCodeBuilder;
+use super::identifiers::{is_python_keyword, sanitize_python_identifier};
 use super::serialization::capnp_field_name;
-use crate::generator::naming::{sanitize_component, to_camel_case};
+use crate::generator::naming::to_camel_case;
 use config::node::{MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
 
@@ -15,6 +16,14 @@ fn is_capnp_pointer_type(schema: &SchemaType) -> bool {
         }
         SchemaType::Array(_) | SchemaType::Object(_) => true,
         _ => false,
+    }
+}
+
+fn capnp_read_expr(reader_var: &str, capnp_name: &str) -> String {
+    if is_python_keyword(capnp_name) {
+        format!("getattr({reader_var}, \"{capnp_name}\")")
+    } else {
+        format!("{reader_var}.{capnp_name}")
     }
 }
 
@@ -122,7 +131,7 @@ pub fn deserialize_format_fields(
     let mut field_bindings = Vec::new();
 
     for (field_name, schema) in &format.0 {
-        let python_name = sanitize_component(field_name);
+        let python_name = sanitize_python_identifier(field_name);
         let var_name = generate_field_reader_statements(
             builder,
             reader_var,
@@ -144,11 +153,11 @@ fn generate_primitive_reader(
     counter: &mut u32,
 ) -> String {
     let capnp_name = capnp_field_name(field_name);
-    let python_name = sanitize_component(field_name);
+    let python_name = sanitize_python_identifier(field_name);
     let idx = *counter;
     *counter += 1;
     let var = format!("{python_name}_{idx}");
-    builder.line(&format!("{var} = {reader_var}.{capnp_name}"));
+    builder.line(&format!("{var} = {}", capnp_read_expr(reader_var, &capnp_name)));
     var
 }
 
@@ -159,14 +168,14 @@ fn generate_time_reader(
     counter: &mut u32,
 ) -> String {
     let capnp_name = capnp_field_name(field_name);
-    let python_name = sanitize_component(field_name);
+    let python_name = sanitize_python_identifier(field_name);
     let ts_idx = *counter;
     *counter += 1;
     let ts_var = format!("timestamp_{ts_idx}");
     let result_idx = *counter;
     *counter += 1;
     let result_var = format!("{python_name}_{result_idx}");
-    builder.line(&format!("{ts_var} = {reader_var}.{capnp_name}"));
+    builder.line(&format!("{ts_var} = {}", capnp_read_expr(reader_var, &capnp_name)));
     builder.line(&format!(
         "{result_var} = peppylib.encoding.convert_time_from_capnp({ts_var}.sec, {ts_var}.nsec)"
     ));
@@ -181,14 +190,20 @@ fn generate_array_reader(
     counter: &mut u32,
 ) -> String {
     let capnp_name = capnp_field_name(field_name);
-    let python_name = sanitize_component(field_name);
+    let python_name = sanitize_python_identifier(field_name);
     let idx = *counter;
     *counter += 1;
     let var = format!("{python_name}_{idx}");
     if is_u8 {
-        builder.line(&format!("{var} = bytes({reader_var}.{capnp_name})"));
+        builder.line(&format!(
+            "{var} = bytes({})",
+            capnp_read_expr(reader_var, &capnp_name)
+        ));
     } else {
-        builder.line(&format!("{var} = list({reader_var}.{capnp_name})"));
+        builder.line(&format!(
+            "{var} = list({})",
+            capnp_read_expr(reader_var, &capnp_name)
+        ));
     }
     var
 }
@@ -202,13 +217,16 @@ fn generate_object_reader(
     counter: &mut u32,
 ) -> String {
     let capnp_name = capnp_field_name(field_name);
-    let python_name = sanitize_component(field_name);
+    let python_name = sanitize_python_identifier(field_name);
     let nested_prefix = format!("{struct_prefix}{}", to_camel_case(field_name));
 
     let reader_idx = *counter;
     *counter += 1;
     let sub_reader = format!("reader_{reader_idx}");
-    builder.line(&format!("{sub_reader} = {reader_var}.{capnp_name}"));
+    builder.line(&format!(
+        "{sub_reader} = {}",
+        capnp_read_expr(reader_var, &capnp_name)
+    ));
 
     let mut nested_bindings = Vec::new();
     for (nested_name, nested_schema) in fields {
@@ -220,7 +238,7 @@ fn generate_object_reader(
             &nested_prefix,
             counter,
         );
-        nested_bindings.push((sanitize_component(nested_name), nested_var));
+        nested_bindings.push((sanitize_python_identifier(nested_name), nested_var));
     }
 
     let result_idx = *counter;

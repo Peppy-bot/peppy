@@ -42,6 +42,17 @@ const EXPOSED_TOPIC_EXAMPLE2: &str = r#"
 }
 "#;
 
+const EXPOSED_TOPIC_WITH_PYTHON_KEYWORD_FIELDS: &str = r#"
+{
+  name: "keyword_topic",
+  qos_profile: "standard",
+  message_format: {
+    "class": "u32",
+    "from": "string"
+  }
+}
+"#;
+
 const SUBSCRIBED_TOPIC_EXAMPLE1: &str = r#"
 {
     id: "video_stream",
@@ -77,6 +88,15 @@ const SUBSCRIBED_TOPIC_EXAMPLE2: &str = r#"
 }
 "#;
 
+const SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS: &str = r#"
+{
+    id: "keyword_topic",
+    node: "keyword_source",
+    name: "keyword_topic",
+    tag: "0.1.0"
+}
+"#;
+
 const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2: &str = r#"
 {
   header: {
@@ -92,6 +112,13 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2: &str = r#"
     $type: "array",
     $items: "u8",
   }
+}
+"#;
+
+const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS: &str = r#"
+{
+    "class": "u32",
+    "from": "string"
 }
 "#;
 
@@ -258,6 +285,29 @@ fn expose_two_topics() {
     );
 }
 
+#[test]
+fn expose_topic_escapes_python_keyword_fields() {
+    let topic = parse_exposed_topic(EXPOSED_TOPIC_WITH_PYTHON_KEYWORD_FIELDS);
+
+    let mut generator = PythonGenerator::new();
+    generator.add_exposed_topic(&topic).unwrap();
+    let rendered = render_artifacts(generator.into_artifacts())
+        .into_iter()
+        .next()
+        .expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &[
+            "async def emit(",
+            "class_: int",
+            "from_: str",
+            "setattr(capnp_msg, \"class\", class_)",
+            "setattr(capnp_msg, \"from\", from_)",
+        ],
+    );
+}
+
 /// In the case of a topic, a "subscribed" topic is an entity that expects to receive messages
 /// from another entity.
 #[test]
@@ -371,6 +421,29 @@ fn subscribed_to_topic() {
             "instance_id = raw_message.instance_id",
             "message = _deserialize_payload(payload)",
             "return instance_id, message",
+        ],
+    );
+}
+
+#[test]
+fn subscribed_topic_escapes_python_keyword_fields() {
+    let topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS);
+    let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS);
+
+    let mut generator = PythonGenerator::new();
+    generator.add_subscribed_topic(&topic, format).unwrap();
+    let rendered = render_artifacts(generator.into_artifacts())
+        .into_iter()
+        .next()
+        .expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &[
+            "class_: int",
+            "from_: str",
+            "getattr(capnp_msg, \"class\")",
+            "getattr(capnp_msg, \"from\")",
         ],
     );
 }
