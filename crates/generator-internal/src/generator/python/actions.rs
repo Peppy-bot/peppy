@@ -4,7 +4,7 @@ use super::deserialization;
 use super::serialization;
 use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
 use super::type_mapping::{collect_fields_from_format, uses_optional};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::generator::types::{
     SubscribedActionMessage, cancel_action_response_format, non_empty_message_format,
 };
@@ -187,7 +187,13 @@ pub fn build_exposed_action(
         }
 
         // _handle_goal_payload helper
-        let ght = goal_handler_type.as_ref().unwrap();
+        let ght = goal_handler_type
+            .as_ref()
+            .ok_or_else(|| Error::InvariantViolation {
+                context: String::from(
+                    "goal handler type should exist when goal service is present",
+                ),
+            })?;
         builder.blank_line();
         if has_goal_request {
             builder.line(&format!(
@@ -272,7 +278,13 @@ pub fn build_exposed_action(
 
     if let Some(result) = &action.result_service {
         // _handle_result_payload helper
-        let rht = result_handler_type.as_ref().unwrap();
+        let rht = result_handler_type
+            .as_ref()
+            .ok_or_else(|| Error::InvariantViolation {
+                context: String::from(
+                    "result handler type should exist when result service is present",
+                ),
+            })?;
         builder.line(&format!(
             "def _handle_result_payload(handler: {rht}, master_node: str, instance_id: str) -> bytes:"
         ));
@@ -347,7 +359,13 @@ pub fn build_exposed_action(
 
     // handle_goal_next_request method
     if action.goal_service.is_some() {
-        let ght = goal_handler_type.as_ref().unwrap();
+        let ght = goal_handler_type
+            .as_ref()
+            .ok_or_else(|| Error::InvariantViolation {
+                context: String::from(
+                    "goal handler type should exist when goal service is present",
+                ),
+            })?;
 
         builder.line(&format!(
             "async def handle_goal_next_request(self, handler: {ght}) -> None:"
@@ -391,7 +409,13 @@ pub fn build_exposed_action(
 
     // handle_result_next_request method
     if action.result_service.is_some() {
-        let rht = result_handler_type.as_ref().unwrap();
+        let rht = result_handler_type
+            .as_ref()
+            .ok_or_else(|| Error::InvariantViolation {
+                context: String::from(
+                    "result handler type should exist when result service is present",
+                ),
+            })?;
 
         builder.line(&format!(
             "async def handle_result_next_request(self, handler: {rht}) -> None:"
