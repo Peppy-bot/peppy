@@ -1,9 +1,11 @@
 use super::type_mapping::{sanitize_capnp_field_name, schema_type_to_tokens};
 use crate::error::{Error, Result};
 use crate::generator::naming::sanitize_rust_identifier;
-use crate::generator::types::validate_message_format_field_names;
+use crate::generator::types::{
+    validate_fixed_length_array_items, validate_message_format_field_names,
+};
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam, MessageFormatMapper};
-use config::node::{MessageFormat, SchemaType};
+use config::node::{MessageFormat, PeppygenLanguage, SchemaType};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 use std::collections::HashMap;
@@ -79,6 +81,7 @@ pub fn map_message_format(format: Option<&MessageFormat>) -> Result<Option<Capnp
     match format {
         Some(format) => {
             validate_message_format_field_names(format, "message_format")?;
+            validate_fixed_length_array_items(format, PeppygenLanguage::Rust)?;
             MessageFormatMapper::new(format.clone())
                 .map_message_format_to_capnpn()
                 .map(Some)
