@@ -1,5 +1,5 @@
 use super::*;
-use config::node::{ExposedTopic, MessageFormat, SubscribedTopic};
+use config::node::{ExposedTopic, MessageFormat, PeppygenLanguage, SubscribedTopic};
 use std::process::Command;
 
 const EXPOSED_TOPIC_EXAMPLE: &str = r#"
@@ -69,6 +69,20 @@ const EXPOSED_TOPIC_RESERVED_FIELD_EXAMPLE: &str = r#"
   message_format: {
     instance_id: "string",
     status: "u8"
+  }
+}
+"#;
+
+const EXPOSED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE: &str = r#"
+{
+  name: "labels",
+  qos_profile: "standard",
+  message_format: {
+    labels: {
+      $type: "array",
+      $items: "string",
+      $length: 3
+    }
   }
 }
 "#;
@@ -275,6 +289,29 @@ fn expose_topic_rejects_reserved_message_field_name() {
             assert_eq!(context, "message_format");
         }
         other => panic!("expected UnauthorizedMessageFieldName, got: {other:?}"),
+    }
+}
+
+#[test]
+fn expose_topic_rejects_fixed_string_array() {
+    use crate::error::Error;
+
+    let topic = parse_exposed_topic(EXPOSED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE);
+    let mut generator = RustGenerator::new();
+
+    let err = generator.add_exposed_topic(&topic).unwrap_err();
+
+    match err {
+        Error::UnsupportedFixedArrayItemType {
+            language,
+            field,
+            item,
+        } => {
+            assert_eq!(language, PeppygenLanguage::Rust);
+            assert_eq!(field, "labels");
+            assert_eq!(item, "string");
+        }
+        other => panic!("expected UnsupportedFixedArrayItemType, got: {other:?}"),
     }
 }
 

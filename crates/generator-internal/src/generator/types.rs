@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use config::node::{
-    ExposedAction, ExposedService, ExposedTopic, MessageFormat, PrimitiveSchema, SchemaType,
-    SubscribedAction, SubscribedService, SubscribedTopic, TypeToken,
+    ExposedAction, ExposedService, ExposedTopic, MessageFormat, PeppygenLanguage, PrimitiveSchema,
+    SchemaType, SubscribedAction, SubscribedService, SubscribedTopic, TypeToken,
 };
 use indexmap::IndexMap;
 use std::path::Path;
@@ -137,6 +137,87 @@ pub fn non_empty_message_format(format: Option<&MessageFormat>) -> Option<&Messa
 
 const RESERVED_MESSAGE_FIELD_NAMES: &[&str] = &["instance_id"];
 
+fn type_token_name(token: &TypeToken) -> &'static str {
+    match token {
+        TypeToken::Bool => "bool",
+        TypeToken::String => "string",
+        TypeToken::Bytes => "bytes",
+        TypeToken::Time => "time",
+        TypeToken::U8 => "u8",
+        TypeToken::U16 => "u16",
+        TypeToken::U32 => "u32",
+        TypeToken::U64 => "u64",
+        TypeToken::I8 => "i8",
+        TypeToken::I16 => "i16",
+        TypeToken::I32 => "i32",
+        TypeToken::I64 => "i64",
+        TypeToken::F32 => "f32",
+        TypeToken::F64 => "f64",
+    }
+}
+
+fn is_fixed_array_item_copy_primitive(token: &TypeToken) -> bool {
+    matches!(
+        token,
+        TypeToken::Bool
+            | TypeToken::U8
+            | TypeToken::U16
+            | TypeToken::U32
+            | TypeToken::U64
+            | TypeToken::I8
+            | TypeToken::I16
+            | TypeToken::I32
+            | TypeToken::I64
+            | TypeToken::F32
+            | TypeToken::F64
+    )
+}
+
+fn validate_fixed_array_schema(
+    schema: &SchemaType,
+    path: &str,
+    language: PeppygenLanguage,
+) -> Result<()> {
+    match schema {
+        SchemaType::Array(array) => {
+            if array.length.is_some() {
+                let token = array.items.as_ref().as_type_token().ok_or_else(|| {
+                    Error::UnsupportedArrayItemSchema {
+                        field: path.to_string(),
+                    }
+                })?;
+                if !is_fixed_array_item_copy_primitive(token) {
+                    return Err(Error::UnsupportedFixedArrayItemType {
+                        language,
+                        field: path.to_string(),
+                        item: type_token_name(token),
+                    });
+                }
+            }
+
+            validate_fixed_array_schema(array.items.as_ref(), path, language)
+        }
+        SchemaType::Object(object) => {
+            for (field_name, nested) in &object.fields {
+                let nested_path = format!("{path}.{field_name}");
+                validate_fixed_array_schema(nested, &nested_path, language)?;
+            }
+            Ok(())
+        }
+        SchemaType::Type(_) | SchemaType::Primitive(_) => Ok(()),
+    }
+}
+
+pub fn validate_fixed_length_array_items(
+    format: &MessageFormat,
+    language: PeppygenLanguage,
+) -> Result<()> {
+    for (field_name, schema) in &format.0 {
+        validate_fixed_array_schema(schema, field_name, language)?;
+    }
+    Ok(())
+}
+
 fn validate_schema_field_names(schema: &SchemaType, path: &str, context: &str) -> Result<()> {
     match schema {
         SchemaType::Object(object) => validate_field_map(object.fields.iter(), path, context),
@@ -255,6 +336,55 @@ mod tests {
             }
             other => panic!("expected UnauthorizedMessageFieldName, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn reject_fixed_string_array_for_rust() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+                labels: {
+                    $type: "array",
+                    $items: "string",
+                    $length: 3
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = validate_fixed_length_array_items(&format, PeppygenLanguage::Rust).unwrap_err();
+        match err {
+            Error::UnsupportedFixedArrayItemType {
+                language,
+                field,
+                item,
+            } => {
+                assert_eq!(language, PeppygenLanguage::Rust);
+                assert_eq!(field, "labels");
+                assert_eq!(item, "string");
+            }
+            other => panic!("expected UnsupportedFixedArrayItemType, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn allow_fixed_i32_array_for_rust() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+                samples: {
+                    $type: "array",
+                    $items: "i32",
+                    $length: 4
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        validate_fixed_length_array_items(&format, PeppygenLanguage::Rust)
+            .expect("fixed i32 arrays are supported");
     }
 }
 

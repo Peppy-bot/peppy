@@ -1,4 +1,4 @@
-use config::ConfigError;
+use config::{ConfigError, node::PeppygenLanguage};
 use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -51,4 +51,12 @@ This field name is reserved by peppy transport metadata and cannot be used insid
     },
     #[error("unsupported nested schema type in array `{field}`")]
     UnsupportedArrayItemSchema { field: String },
+    #[error(
+        "unsupported fixed-length array item type `{item}` in field `{field}` for `{language:?}` generator"
+    )]
+    UnsupportedFixedArrayItemType {
+        language: PeppygenLanguage,
+        field: String,
+        item: &'static str,
+    },
 }

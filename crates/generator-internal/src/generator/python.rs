@@ -16,12 +16,13 @@ mod type_mapping;
 use super::naming::{module_name_from_components, sanitize_component, to_camel_case};
 use super::types::{
     CapnpSchema, InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage,
-    cancel_action_response_format, non_empty_message_format, validate_message_format_field_names,
+    cancel_action_response_format, non_empty_message_format, validate_fixed_length_array_items,
+    validate_message_format_field_names,
 };
 use crate::error::Result;
 use config::encoding::MessageFormatMapper;
 use config::node::{
-    ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
+    ExposedAction, ExposedService, ExposedTopic, MessageFormat, PeppygenLanguage, SubscribedAction,
     SubscribedService, SubscribedTopic,
 };
 use std::collections::HashMap;
@@ -70,6 +71,7 @@ impl PythonGenerator {
         format: &MessageFormat,
     ) -> Result<PythonSchemaInfo> {
         validate_message_format_field_names(format, schema_key)?;
+        validate_fixed_length_array_items(format, PeppygenLanguage::Python)?;
 
         let artifacts = MessageFormatMapper::new(format.clone())
             .map_message_format_to_capnpn()
