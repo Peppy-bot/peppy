@@ -1,4 +1,4 @@
-use crate::generator::naming::sanitize_component;
+use crate::generator::naming::{sanitize_component, sanitize_rust_identifier};
 use config::encoding::FunctionParam;
 use config::node::{MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
@@ -23,7 +23,7 @@ impl NameGenerator {
     }
 
     pub fn next(&mut self, hint: &str) -> Ident {
-        let sanitized = sanitize_component(hint);
+        let sanitized = sanitize_rust_identifier(hint);
         let suffix = self.counter;
         self.counter += 1;
         let base = if sanitized.is_empty() {
@@ -50,7 +50,7 @@ pub fn generate_assignments_for_format(
     let builder_expr = quote!(#builder_ident);
 
     for (field_name, schema) in &format.0 {
-        let sanitized = sanitize_component(field_name);
+        let sanitized = sanitize_rust_identifier(field_name);
         let param_ident = param_lookup
             .get(&sanitized)
             .unwrap_or_else(|| panic!("missing parameter for field `{field_name}`"))
@@ -78,7 +78,7 @@ pub fn generate_assignments_from_struct(
     let builder_expr = quote!(#builder_ident);
 
     for (field_name, schema) in &format.0 {
-        let field_ident = Ident::new(&sanitize_component(field_name), Span::call_site());
+        let field_ident = Ident::new(&sanitize_rust_identifier(field_name), Span::call_site());
         let value_expr = quote!(#struct_ident.#field_ident);
         assignments.push(generate_field_assignment(
             &builder_expr,
@@ -328,7 +328,10 @@ fn generate_object_assignment(
     let mut nested = Vec::with_capacity(fields.len());
 
     for (nested_name, nested_schema) in fields {
-        let nested_ident = Ident::new(&sanitize_component(nested_name.as_str()), Span::call_site());
+        let nested_ident = Ident::new(
+            &sanitize_rust_identifier(nested_name.as_str()),
+            Span::call_site(),
+        );
         let nested_value_expr = quote!(#value_expr.#nested_ident);
         nested.push(generate_field_assignment(
             &quote!(#builder_ident),

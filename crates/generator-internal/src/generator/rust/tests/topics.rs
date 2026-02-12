@@ -51,6 +51,17 @@ const EXPOSED_TOPIC_EXAMPLE2: &str = r#"
 }
 "#;
 
+const EXPOSED_TOPIC_KEYWORD_FIELDS_EXAMPLE: &str = r#"
+{
+  name: "keyword_topic",
+  qos_profile: "standard",
+  message_format: {
+    "type": "u32",
+    "match": "string"
+  }
+}
+"#;
+
 const SUBSCRIBED_TOPIC_EXAMPLE1: &str = r#"
 {
     id: "video_stream",
@@ -86,6 +97,15 @@ const SUBSCRIBED_TOPIC_EXAMPLE2: &str = r#"
 }
 "#;
 
+const SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS: &str = r#"
+{
+    id: "keyword_topic",
+    node: "keyword_source",
+    name: "keyword_topic",
+    tag: "0.1.0"
+}
+"#;
+
 const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2: &str = r#"
 {
   header: {
@@ -101,6 +121,13 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2: &str = r#"
     $type: "array",
     $items: "u8",              // raw bytes; interpret per 'encoding'
   }
+}
+"#;
+
+const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS: &str = r#"
+{
+    "type": "u32",
+    "match": "string"
 }
 "#;
 
@@ -194,6 +221,29 @@ fn expose_two_topics() {
     assert_artifact_contains(&artifacts, "push_lidar_object_message_capnp");
 }
 
+#[test]
+fn expose_topic_escapes_rust_keyword_fields() {
+    let topic = parse_exposed_topic(EXPOSED_TOPIC_KEYWORD_FIELDS_EXAMPLE);
+
+    let mut generator = RustGenerator::new();
+    generator.add_exposed_topic(&topic).unwrap();
+    let rendered = render_artifacts(generator.into_artifacts())
+        .into_iter()
+        .next()
+        .expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &[
+            "pub async fn emit(",
+            "type_: u32",
+            "match_: String",
+            "root.set_type(type_);",
+            "root.set_match(match_.as_str());",
+        ],
+    );
+}
+
 /// In the case of a topic, a "subscribed" topic is an entity expects to receive messages from another entity
 #[test]
 fn subscribed_to_topic() {
@@ -254,6 +304,30 @@ fn subscribed_to_topic() {
         &[
             "crate::Error::TopicSubscribe",
             "crate::Error::SubscriptionClosed",
+        ],
+    );
+}
+
+#[test]
+fn subscribed_topic_escapes_rust_keyword_fields() {
+    let topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS);
+    let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS);
+
+    let mut generator = RustGenerator::new();
+    generator.add_subscribed_topic(&topic, format).unwrap();
+    let rendered = render_artifacts(generator.into_artifacts())
+        .into_iter()
+        .next()
+        .expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &[
+            "pub struct Message",
+            "pub type_: u32",
+            "pub match_: String",
+            ".get_type()",
+            ".get_match()",
         ],
     );
 }

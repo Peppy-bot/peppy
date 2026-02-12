@@ -2,6 +2,7 @@ use crate::{
     error::{Error, Result},
     generator::{
         common::{WorkspacePackageMetadata, copy_embedded_crate},
+        naming::is_rust_keyword,
         types::{CapnpSchema, InterfaceArtifact, InterfaceKind},
     },
 };
@@ -418,6 +419,10 @@ fn sanitize_module_name(raw: &str) -> String {
         out.insert(0, '_');
     }
 
+    if is_rust_keyword(&out) {
+        out.push('_');
+    }
+
     out
 }
 
@@ -518,4 +523,15 @@ fn as_function_item(item: ImplItem) -> Option<Item> {
         sig,
         block: Box::new(block),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_module_name_escapes_rust_keywords() {
+        assert_eq!(sanitize_module_name("mod"), "mod_");
+        assert_eq!(sanitize_module_name("type"), "type_");
+    }
 }
