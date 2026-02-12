@@ -114,7 +114,7 @@ impl LanguageGenerator for PythonGenerator {
             .map(|fmt| self.register_schema(&topic.name, fmt))
             .transpose()?;
 
-        let code = topics::build_exposed_topic(topic, schema_info.as_ref());
+        let code = topics::build_exposed_topic(topic, schema_info.as_ref())?;
         self.push_section(InterfaceArtifact::from_kind(
             &topic.name,
             InterfaceKind::ExposedTopic,
@@ -142,7 +142,7 @@ impl LanguageGenerator for PythonGenerator {
             service,
             request_schema_info.as_ref(),
             response_schema_info.as_ref(),
-        );
+        )?;
         self.push_section(InterfaceArtifact::from_kind(
             &service.name,
             InterfaceKind::ExposedService,
@@ -198,7 +198,7 @@ impl LanguageGenerator for PythonGenerator {
             cancel_response_schema_info.as_ref(),
             result_response_schema_info.as_ref(),
             feedback_schema_info.as_ref(),
-        );
+        )?;
         self.push_section(InterfaceArtifact::from_kind(
             &action.name,
             InterfaceKind::ExposedAction,
@@ -213,7 +213,7 @@ impl LanguageGenerator for PythonGenerator {
         arguments: MessageFormat,
     ) -> Result<()> {
         let schema_info = self.register_schema(&topic.name, &arguments)?;
-        let code = topics::build_subscribed_topic(topic, &arguments, Some(&schema_info));
+        let code = topics::build_subscribed_topic(topic, &arguments, Some(&schema_info))?;
         let module_label = topics::subscribed_topic_module_label(topic);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
@@ -243,7 +243,7 @@ impl LanguageGenerator for PythonGenerator {
             response_arguments,
             request_schema_info.as_ref(),
             response_schema_info.as_ref(),
-        );
+        )?;
         let module_label = module_name_from_components(&service.node, &service.name);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
@@ -299,7 +299,7 @@ impl LanguageGenerator for PythonGenerator {
             cancel_response_schema_info.as_ref(),
             feedback_schema_info.as_ref(),
             result_response_schema_info.as_ref(),
-        );
+        )?;
         let module_label = module_name_from_components(&action.node, &action.name);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
