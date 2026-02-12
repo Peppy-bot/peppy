@@ -73,6 +73,30 @@ const EXPOSED_ACTION_EXAMPLE2: &str = r#"
 }
 "#;
 
+const EXPOSED_ACTION_WITH_NESTED_FEEDBACK_EXAMPLE: &str = r#"
+{
+  name: "move_gripper",
+  goal_service: {
+    response_message_format: {
+      accepted: "bool"
+    }
+  },
+  feedback_topic: {
+    qos_profile: "sensor_data",
+    message_format: {
+      state: {
+        $type: "object",
+        position: "i32",
+        note: {
+          $type: "string",
+          $optional: true
+        }
+      }
+    }
+  }
+}
+"#;
+
 // --- Subscribes examples
 const SUBSCRIBED_ACTION_EXAMPLE1: &str = r#"
 {
@@ -430,6 +454,42 @@ fn expose_action_without_request_body() {
             "async def emit_feedback(self, new_position: int, speed: int):",
             "await self.feedback_publisher.publish(payload)",
         ],
+    );
+}
+
+#[test]
+fn exposed_action_feedback_emits_nested_types() {
+    let action: ExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_WITH_NESTED_FEEDBACK_EXAMPLE).unwrap();
+
+    let mut generator = PythonGenerator::new();
+    generator.add_exposed_action(&action).unwrap();
+    let rendered = render_artifacts(generator.into_artifacts())
+        .into_iter()
+        .next()
+        .expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &[
+            "from typing import Optional",
+            "class FeedbackState:",
+            "position: int",
+            "note: Optional[str]",
+            "async def emit_feedback(self, state: FeedbackState):",
+        ],
+    );
+
+    let nested_pos = rendered
+        .find("class FeedbackState:")
+        .expect("FeedbackState class should be generated");
+    let handle_pos = rendered
+        .find("class ActionHandle:")
+        .expect("ActionHandle class should be generated");
+    assert_rendered!(
+        nested_pos < handle_pos,
+        &rendered,
+        "expected feedback nested classes to be defined before ActionHandle"
     );
 }
 
