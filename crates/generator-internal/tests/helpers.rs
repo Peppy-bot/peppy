@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use peppylib::messaging::{NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
+use peppylib::messaging::{ActionMessenger, NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::{MessengerHandle, ServiceMessenger};
 use std::io::Read;
 use std::path::Path;
@@ -268,6 +268,61 @@ pub async fn wait_for_service_reachable_or_exit(
 
         if reachable {
             return;
+        }
+
+        sleep(Duration::from_millis(50)).await;
+    }
+}
+
+pub async fn wait_for_action_service_reachable_or_exit(
+    ctx: &WaitContext<'_>,
+    target_node_name: &str,
+    target_service_name: &str,
+    target_instance_id: Option<&str>,
+    child: &mut std::process::Child,
+    dir: &std::path::Path,
+) {
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .expect("failed to poll process status for generated project")
+        {
+            let output = wait_for_child(child, None, dir);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            panic!(
+                "process exited before action `{}` became reachable (status: {:?}) for project at {}\nstdout:\n{}\nstderr:\n{}",
+                target_service_name,
+                status.code(),
+                dir.display(),
+                stdout,
+                stderr
+            );
+        }
+
+        let reachable = ActionMessenger::is_reachable(
+            ctx.messenger,
+            ctx.bound_master_node,
+            ctx.caller_instance_id,
+            target_node_name,
+            target_service_name,
+            ctx.target_master_node,
+            target_instance_id,
+        )
+        .await
+        .unwrap_or_else(|err| {
+            panic!(
+                "failed to check reachability for action `{}` (node={}, instance={:?}) for project at {}: {}",
+                target_service_name,
+                target_node_name,
+                target_instance_id,
+                dir.display(),
+                err
+            )
+        });
+
+        if reachable {
+            break;
         }
 
         sleep(Duration::from_millis(50)).await;

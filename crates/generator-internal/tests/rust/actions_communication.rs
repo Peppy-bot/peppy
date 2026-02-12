@@ -1,7 +1,7 @@
 use crate::helpers::{
     STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output, init_cargo_user_node,
-    init_test_env, send_shutdown, spawn_cargo_run, wait_for_child,
-    wait_for_health_service_reachable_or_exit,
+    init_test_env, send_shutdown, spawn_cargo_run, wait_for_action_service_reachable_or_exit,
+    wait_for_child, wait_for_health_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
@@ -11,11 +11,9 @@ use config::{
     runtime::RuntimeConfig,
 };
 use generator::{LanguageGenerator, SubscribedActionMessage};
-use peppylib::messaging::ActionMessenger;
 use std::path::Path;
 use std::{fs, time::Duration};
 use tempfile::TempDir;
-use tokio::time::sleep;
 
 // --- Common test constants
 const TEST_MASTER_NODE: &str = "test_master";
@@ -24,61 +22,6 @@ const SUBSCRIBER_INSTANCE_ID: &str = "subscriber_instance";
 const EXPOSER_INSTANCE_ID: &str = "exposer_instance";
 const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const BRAIN_NODE_NAME: &str = "brain";
-
-pub async fn wait_for_action_service_reachable_or_exit(
-    ctx: &WaitContext<'_>,
-    target_node_name: &str,
-    target_service_name: &str,
-    target_instance_id: Option<&str>,
-    child: &mut std::process::Child,
-    dir: &std::path::Path,
-) {
-    loop {
-        if let Some(status) = child
-            .try_wait()
-            .expect("failed to poll process status for generated project")
-        {
-            let output = wait_for_child(child, None, dir);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            panic!(
-                "process exited before action `{}` became reachable (status: {:?}) for project at {}\nstdout:\n{}\nstderr:\n{}",
-                target_service_name,
-                status.code(),
-                dir.display(),
-                stdout,
-                stderr
-            );
-        }
-
-        let reachable = ActionMessenger::is_reachable(
-            ctx.messenger,
-            ctx.bound_master_node,
-            ctx.caller_instance_id,
-            target_node_name,
-            target_service_name,
-            ctx.target_master_node,
-            target_instance_id,
-        )
-        .await
-        .unwrap_or_else(|err| {
-            panic!(
-                "failed to check reachability for action `{}` (node={}, instance={:?}) for project at {}: {}",
-                target_service_name,
-                target_node_name,
-                target_instance_id,
-                dir.display(),
-                err
-            )
-        });
-
-        if reachable {
-            break;
-        }
-
-        sleep(Duration::from_millis(50)).await;
-    }
-}
 
 const EXPOSED_ACTION_EXAMPLE: &str = r#"
 {
