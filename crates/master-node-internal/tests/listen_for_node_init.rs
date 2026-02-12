@@ -115,7 +115,7 @@ async fn listen_for_node_init_python_success() {
             &started_master.master_node_name,
             CALLER_INSTANCE_ID,
             &started_master.master_node_name,
-            Duration::from_secs(10),
+            None::<Duration>,
         )
         .await
         .expect("node_init request should complete");
