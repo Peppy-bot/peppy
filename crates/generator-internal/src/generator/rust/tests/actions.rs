@@ -111,6 +111,19 @@ const EXPOSED_ACTION_EXAMPLE2: &str = r#"
 }
 "#;
 
+const EXPOSED_ACTION_RESERVED_FEEDBACK_FIELD_EXAMPLE: &str = r#"
+{
+  name: "status_ping",
+  feedback_topic: {
+    qos_profile: "standard",
+    message_format: {
+      instance_id: "string",
+      progress: "u8"
+    }
+  }
+}
+"#;
+
 // --- Subscribes examples
 const SUBSCRIBED_ACTION_EXAMPLE1: &str = r#"
 {
@@ -368,6 +381,30 @@ fn expose_action_without_request_body() {
 
     // Feedback emitter
     assert_contains_all(&rendered, &["pub async fn emit_feedback"]);
+}
+
+#[test]
+fn exposed_action_rejects_reserved_message_field_name() {
+    use crate::error::Error;
+
+    let action: ExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_RESERVED_FEEDBACK_FIELD_EXAMPLE).unwrap();
+
+    let mut generator = RustGenerator::new();
+    let err = generator.add_exposed_action(&action).unwrap_err();
+
+    match err {
+        Error::UnauthorizedMessageFieldName {
+            field,
+            path,
+            context,
+        } => {
+            assert_eq!(field, "instance_id");
+            assert_eq!(path, "instance_id");
+            assert_eq!(context, "message_format");
+        }
+        other => panic!("expected UnauthorizedMessageFieldName, got: {other:?}"),
+    }
 }
 
 #[test]

@@ -1,6 +1,7 @@
 use super::type_mapping::{sanitize_capnp_field_name, schema_type_to_tokens};
 use crate::error::{Error, Result};
 use crate::generator::naming::sanitize_rust_identifier;
+use crate::generator::types::validate_message_format_field_names;
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam, MessageFormatMapper};
 use config::node::{MessageFormat, SchemaType};
 use proc_macro2::{Ident, Span, TokenStream};
@@ -76,10 +77,13 @@ impl StructDefinition {
 
 pub fn map_message_format(format: Option<&MessageFormat>) -> Result<Option<CapnpSchemaArtifacts>> {
     match format {
-        Some(format) => MessageFormatMapper::new(format.clone())
-            .map_message_format_to_capnpn()
-            .map(Some)
-            .map_err(Error::MessageEncoding),
+        Some(format) => {
+            validate_message_format_field_names(format, "message_format")?;
+            MessageFormatMapper::new(format.clone())
+                .map_message_format_to_capnpn()
+                .map(Some)
+                .map_err(Error::MessageEncoding)
+        }
         None => Ok(None),
     }
 }

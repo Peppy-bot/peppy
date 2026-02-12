@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{Error, Result};
 use config::node::{
     ExposedAction, ExposedService, ExposedTopic, MessageFormat, PrimitiveSchema, SchemaType,
     SubscribedAction, SubscribedService, SubscribedTopic, TypeToken,
@@ -135,6 +135,55 @@ pub fn non_empty_message_format(format: Option<&MessageFormat>) -> Option<&Messa
     format.filter(|format| !format.0.is_empty())
 }
 
+const RESERVED_MESSAGE_FIELD_NAMES: &[&str] = &["instance_id"];
+
+fn validate_schema_field_names(schema: &SchemaType, path: &str, context: &str) -> Result<()> {
+    match schema {
+        SchemaType::Object(object) => validate_field_map(object.fields.iter(), path, context),
+        SchemaType::Array(array) => {
+            validate_schema_field_names(array.items.as_ref(), path, context)
+        }
+        SchemaType::Type(_) | SchemaType::Primitive(_) => Ok(()),
+    }
+}
+
+fn validate_field_map<'a, I>(fields: I, parent_path: &str, context: &str) -> Result<()>
+where
+    I: IntoIterator<Item = (&'a String, &'a SchemaType)>,
+{
+    for (field_name, schema) in fields {
+        let path = if parent_path.is_empty() {
+            field_name.clone()
+        } else {
+            format!("{parent_path}.{field_name}")
+        };
+
+        if RESERVED_MESSAGE_FIELD_NAMES.contains(&field_name.as_str()) {
+            return Err(Error::UnauthorizedMessageFieldName {
+                field: field_name.clone(),
+                path,
+                context: context.to_string(),
+            });
+        }
+
+        validate_schema_field_names(schema, &path, context)?;
+    }
+
+    Ok(())
+}
+
+/// Validates payload field names used inside a message format.
+///
+/// Some names are reserved by transport metadata and cannot be used in payload schemas.
+pub fn validate_message_format_field_names(format: &MessageFormat, context: &str) -> Result<()> {
+    let normalized_context = if context.trim().is_empty() {
+        "message_format"
+    } else {
+        context
+    };
+    validate_field_map(format.0.iter(), "", normalized_context)
+}
+
 /// Returns the hardcoded cancel-action response format used by both Rust and Python generators.
 ///
 /// The format contains `accepted: bool` and `error_message: Optional[String]`.
@@ -149,6 +198,64 @@ pub fn cancel_action_response_format() -> MessageFormat {
         }),
     );
     MessageFormat(fields)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reject_reserved_message_field_name() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+                instance_id: "string",
+                value: "u8"
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = validate_message_format_field_names(&format, "test.topic").unwrap_err();
+
+        match err {
+            Error::UnauthorizedMessageFieldName {
+                field,
+                path,
+                context,
+            } => {
+                assert_eq!(field, "instance_id");
+                assert_eq!(path, "instance_id");
+                assert_eq!(context, "test.topic");
+            }
+            other => panic!("expected UnauthorizedMessageFieldName, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reject_reserved_nested_message_field_name() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+                header: {
+                    $type: "object",
+                    instance_id: "string"
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = validate_message_format_field_names(&format, "test.topic").unwrap_err();
+
+        match err {
+            Error::UnauthorizedMessageFieldName { field, path, .. } => {
+                assert_eq!(field, "instance_id");
+                assert_eq!(path, "header.instance_id");
+            }
+            other => panic!("expected UnauthorizedMessageFieldName, got: {other:?}"),
+        }
+    }
 }
 
 #[derive(Clone)]

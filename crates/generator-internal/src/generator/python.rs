@@ -16,7 +16,7 @@ mod type_mapping;
 use super::naming::{module_name_from_components, sanitize_component, to_camel_case};
 use super::types::{
     CapnpSchema, InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage,
-    cancel_action_response_format, non_empty_message_format,
+    cancel_action_response_format, non_empty_message_format, validate_message_format_field_names,
 };
 use crate::error::Result;
 use config::encoding::MessageFormatMapper;
@@ -69,6 +69,8 @@ impl PythonGenerator {
         schema_key: &str,
         format: &MessageFormat,
     ) -> Result<PythonSchemaInfo> {
+        validate_message_format_field_names(format, schema_key)?;
+
         let artifacts = MessageFormatMapper::new(format.clone())
             .map_message_format_to_capnpn()
             .map_err(crate::error::Error::MessageEncoding)?;
