@@ -64,6 +64,19 @@ const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1: &str = r#"
 }
 "#;
 
+const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_SCALAR_AND_BYTES: &str = r#"
+{
+  maybe_code: {
+    $type: "u32",
+    $optional: true
+  },
+  maybe_payload: {
+    $type: "bytes",
+    $optional: true
+  }
+}
+"#;
+
 const SUBSCRIBED_SERVICE_EXAMPLE2: &str = r#"
 {
     id: "uvc_camera_get_camera_info",
@@ -398,6 +411,35 @@ fn subscribed_to_service() {
         &[
             "response_data = _deserialize_response(payload)",
             "return Response(",
+        ],
+    );
+}
+
+#[test]
+fn subscribed_service_optional_scalar_and_bytes_use_has_checks() {
+    let service: SubscribedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
+    let request_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
+    let response_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_SCALAR_AND_BYTES).unwrap();
+
+    let mut generator = PythonGenerator::new();
+    generator
+        .add_subscribed_service(&service, &request_format, &response_format)
+        .unwrap();
+    let rendered = render_artifacts(generator.into_artifacts())
+        .into_iter()
+        .next()
+        .expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &[
+            "maybe_code: Optional[int]",
+            "maybe_payload: Optional[bytes]",
+            "if not capnp_msg._has(\"maybeCode\"):",
+            "if not capnp_msg._has(\"maybePayload\"):",
+            "maybe_code_0 = None",
+            "maybe_payload_1 = None",
         ],
     );
 }

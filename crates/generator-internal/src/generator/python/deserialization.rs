@@ -6,19 +6,6 @@ use crate::generator::naming::to_camel_case;
 use config::node::{MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
 
-/// Returns `true` when the Cap'n Proto encoding stores this type as a pointer
-/// (i.e. it is possible to detect "not set" via `_has()`).
-fn is_capnp_pointer_type(schema: &SchemaType) -> bool {
-    match schema {
-        SchemaType::Type(TypeToken::String | TypeToken::Time) => true,
-        SchemaType::Primitive(prim) => {
-            matches!(prim.kind, TypeToken::String | TypeToken::Time)
-        }
-        SchemaType::Array(_) | SchemaType::Object(_) => true,
-        _ => false,
-    }
-}
-
 fn capnp_read_expr(reader_var: &str, capnp_name: &str) -> String {
     if is_python_keyword(capnp_name) {
         format!("getattr({reader_var}, \"{capnp_name}\")")
@@ -63,9 +50,9 @@ pub fn generate_field_reader_statements(
         ),
     };
 
-    // For optional pointer-typed fields, override the value with None when the
-    // Cap'n Proto field was never set (null pointer).
-    if schema.is_optional() && is_capnp_pointer_type(schema) {
+    // For optional fields, override the value with None when the Cap'n Proto
+    // field was never set.
+    if schema.is_optional() {
         let capnp_name = capnp_field_name(field_name);
         builder.line(&format!("if not {reader_var}._has(\"{capnp_name}\"):"));
         builder.indent();
