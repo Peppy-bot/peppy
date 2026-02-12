@@ -58,9 +58,7 @@ pub fn generate_field_reader_statements(
     // Cap'n Proto field was never set (null pointer).
     if schema.is_optional() && is_capnp_pointer_type(schema) {
         let capnp_name = capnp_field_name(field_name);
-        builder.line(&format!(
-            "if not {reader_var}._has(\"{capnp_name}\"):"
-        ));
+        builder.line(&format!("if not {reader_var}._has(\"{capnp_name}\"):"));
         builder.indent();
         builder.line(&format!("{var} = None"));
         builder.dedent();
