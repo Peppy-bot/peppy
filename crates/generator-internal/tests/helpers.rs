@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::node::PeppygenLanguage;
+use generator::generate_peppygen_lib;
 use peppylib::messaging::{ActionMessenger, NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::{MessengerHandle, ServiceMessenger};
 use std::io::Read;
@@ -209,6 +211,50 @@ pub fn insert_dependency_line(contents: &str, dependency_line: &str) -> String {
         updated.push_str(dependency_line);
         updated
     }
+}
+
+pub fn run_generate_peppygen_lib_test(
+    language: PeppygenLanguage,
+    json_config_content: &str,
+) -> (TempDir, std::path::PathBuf) {
+    let temp_dir = TempDir::new().expect("failed to create temp directory");
+    let node_dir = temp_dir.path();
+
+    // Write the peppy.json5 config
+    let config_path = node_dir.join(config::consts::NODE_CONFIG_FILE);
+    fs::write(&config_path, json_config_content).expect("failed to write peppy.json5");
+
+    // Generate the library
+    generate_peppygen_lib(language, node_dir, Vec::new(), "test-hash")
+        .expect("failed to generate library");
+
+    // Verify the generated library structure exists
+    let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        peppygen_dir.exists(),
+        "peppygen directory should exist at {}",
+        peppygen_dir.display()
+    );
+
+    // Check that the fingerprint was created
+    let config_path = node_dir.join(NODE_CONFIG_FILE);
+    let fingerprint =
+        config::fingerprint::read_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
+            .expect("fingerprint file should exist in peppygen directory");
+    assert!(!fingerprint.is_empty(), "fingerprint should not be empty");
+
+    // Check that the git.hash was created
+    let git_hash_path = node_dir
+        .join(config::consts::PEPPY_OUTPUT_DIR)
+        .join("git.hash");
+    let git_hash_content =
+        fs::read_to_string(&git_hash_path).expect("git.hash file should exist in .peppy directory");
+    assert_eq!(
+        git_hash_content, "test-hash",
+        "git.hash should contain the expected hash value"
+    );
+
+    (temp_dir, peppygen_dir)
 }
 
 /// Context for waiting on service reachability in tests.
