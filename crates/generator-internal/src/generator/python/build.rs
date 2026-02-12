@@ -1,5 +1,6 @@
 use super::identifiers::is_python_keyword;
 use crate::error::Result;
+use crate::generator::naming::sanitize_component;
 use crate::generator::types::{CapnpSchema, InterfaceArtifact, InterfaceKind};
 use rust_embed::Embed;
 use std::collections::{BTreeMap, HashMap};
@@ -127,38 +128,13 @@ fn unique_module_name(original: &str, counts: &mut HashMap<String, usize>) -> St
 }
 
 fn sanitize_module_name(raw: &str) -> String {
-    let mut out = String::new();
-    let mut last_was_underscore = false;
-
-    for ch in raw.chars() {
-        let lower = ch.to_ascii_lowercase();
-        if lower.is_ascii_alphanumeric() {
-            out.push(lower);
-            last_was_underscore = false;
-        } else if !out.is_empty() && !last_was_underscore {
-            out.push('_');
-            last_was_underscore = true;
-        } else if out.is_empty() {
-            last_was_underscore = true;
-        }
-    }
-
-    while out.ends_with('_') {
-        out.pop();
-    }
-
+    let mut out = sanitize_component(raw);
     if out.is_empty() {
         return "module".to_string();
     }
-
-    if matches!(out.chars().next(), Some(ch) if ch.is_ascii_digit()) {
-        out.insert(0, '_');
-    }
-
     if is_python_keyword(&out) {
         out.push('_');
     }
-
     out
 }
 

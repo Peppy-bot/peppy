@@ -1,25 +1,11 @@
 use super::PythonSchemaInfo;
-use super::code_builder::PythonCodeBuilder;
+use super::code_builder::{PythonCodeBuilder, emit_nested_classes};
 use super::deserialization;
 use super::serialization;
-use super::type_mapping::{
-    NestedDataclass, collect_fields_from_format, qos_profile_python, uses_optional,
-};
+use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
 use crate::generator::naming::sanitize_component;
 use config::node::{ExposedTopic, MessageFormat, SubscribedTopic};
-
-/// Emits all nested dataclass definitions collected during field collection.
-fn emit_nested_classes(builder: &mut PythonCodeBuilder, nested_classes: &[NestedDataclass]) {
-    for class_def in nested_classes {
-        let fields: Vec<(&str, &str)> = class_def
-            .fields
-            .iter()
-            .map(|f| (f.name.as_str(), f.type_str.as_str()))
-            .collect();
-        builder.dataclass(&class_def.name, &fields);
-    }
-}
 
 pub(super) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
     format!("_{}_capnp", schema_info.file_stem)
@@ -143,7 +129,7 @@ pub fn build_exposed_topic(
 pub fn build_subscribed_topic(
     topic: &SubscribedTopic,
     arguments: &MessageFormat,
-    schema_info: Option<&PythonSchemaInfo>,
+    schema_info: &PythonSchemaInfo,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
     let mut nested_classes = Vec::new();
@@ -157,9 +143,7 @@ pub fn build_subscribed_topic(
     builder.add_import("from typing import Optional, Tuple");
 
     // Add capnp imports and a lazy, cached schema loader.
-    if let Some(info) = schema_info {
-        emit_capnp_schema_loader(&mut builder, info);
-    }
+    emit_capnp_schema_loader(&mut builder, schema_info);
 
     // Emit nested dataclasses first (dependency order)
     emit_nested_classes(&mut builder, &nested_classes);
@@ -172,17 +156,15 @@ pub fn build_subscribed_topic(
     builder.dataclass("Message", &field_refs);
 
     // Generate deserialize_payload helper function
-    if let Some(info) = schema_info {
-        let loader_fn_name = capnp_loader_fn_name(info);
-        deserialization::build_deserialize_fn(
-            &mut builder,
-            info,
-            arguments,
-            "Message",
-            &format!("{loader_fn_name}()"),
-            "_deserialize_payload",
-        );
-    }
+    let loader_fn_name = capnp_loader_fn_name(schema_info);
+    deserialization::build_deserialize_fn(
+        &mut builder,
+        schema_info,
+        arguments,
+        "Message",
+        &format!("{loader_fn_name}()"),
+        "_deserialize_payload",
+    );
 
     // Generate on_next_message_received function
     builder.add_import("import peppylib");
@@ -204,13 +186,10 @@ pub fn build_subscribed_topic(
     builder.dedent();
     builder.line(")");
     builder.line("raw_message = await subscription.on_next_message()");
-
-    if schema_info.is_some() {
-        builder.line("payload = raw_message.payload");
-        builder.line("instance_id = raw_message.instance_id");
-        builder.line("message = _deserialize_payload(payload)");
-        builder.line("return instance_id, message");
-    }
+    builder.line("payload = raw_message.payload");
+    builder.line("instance_id = raw_message.instance_id");
+    builder.line("message = _deserialize_payload(payload)");
+    builder.line("return instance_id, message");
 
     builder.dedent();
 

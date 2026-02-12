@@ -213,7 +213,7 @@ impl LanguageGenerator for PythonGenerator {
         arguments: MessageFormat,
     ) -> Result<()> {
         let schema_info = self.register_schema(&topic.name, &arguments)?;
-        let code = topics::build_subscribed_topic(topic, &arguments, Some(&schema_info))?;
+        let code = topics::build_subscribed_topic(topic, &arguments, &schema_info)?;
         let module_label = topics::subscribed_topic_module_label(topic);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,

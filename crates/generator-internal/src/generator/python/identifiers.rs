@@ -11,7 +11,10 @@ pub(super) fn sanitize_python_identifier(raw: &str) -> String {
 pub(super) fn is_python_keyword(ident: &str) -> bool {
     matches!(
         ident,
-        "and"
+        "False"
+            | "None"
+            | "True"
+            | "and"
             | "as"
             | "assert"
             | "async"

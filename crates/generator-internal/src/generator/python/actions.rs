@@ -1,45 +1,14 @@
 use super::PythonSchemaInfo;
-use super::code_builder::PythonCodeBuilder;
+use super::code_builder::{PythonCodeBuilder, emit_format_as_dataclass, emit_nested_classes};
 use super::deserialization;
 use super::serialization;
 use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
-use super::type_mapping::{NestedDataclass, collect_fields_from_format, uses_optional};
+use super::type_mapping::{collect_fields_from_format, uses_optional};
 use crate::error::Result;
 use crate::generator::types::{
     SubscribedActionMessage, cancel_action_response_format, non_empty_message_format,
 };
-use config::node::{ExposedAction, MessageFormat, SubscribedAction};
-
-/// Emits all nested dataclass definitions.
-fn emit_nested_classes(builder: &mut PythonCodeBuilder, nested_classes: &[NestedDataclass]) {
-    for class_def in nested_classes {
-        let fields: Vec<(&str, &str)> = class_def
-            .fields
-            .iter()
-            .map(|f| (f.name.as_str(), f.type_str.as_str()))
-            .collect();
-        builder.dataclass(&class_def.name, &fields);
-    }
-}
-
-fn emit_format_as_dataclass(
-    builder: &mut PythonCodeBuilder,
-    class_name: &str,
-    format: &MessageFormat,
-) -> Result<()> {
-    let mut nested_classes = Vec::new();
-    let fields = collect_fields_from_format(format, class_name, &mut nested_classes)?;
-    if uses_optional(&fields, &nested_classes) {
-        builder.add_import("from typing import Optional");
-    }
-    emit_nested_classes(builder, &nested_classes);
-    let field_refs: Vec<(&str, &str)> = fields
-        .iter()
-        .map(|f| (f.name.as_str(), f.type_str.as_str()))
-        .collect();
-    builder.dataclass(class_name, &field_refs);
-    Ok(())
-}
+use config::node::{ExposedAction, SubscribedAction};
 
 // ---------------------------------------------------------------------------
 // Exposed actions

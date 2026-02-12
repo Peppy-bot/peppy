@@ -1,24 +1,11 @@
 use super::PythonSchemaInfo;
-use super::code_builder::PythonCodeBuilder;
+use super::code_builder::{PythonCodeBuilder, emit_format_as_dataclass};
 use super::deserialization;
 use super::serialization;
 use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
-use super::type_mapping::{NestedDataclass, collect_fields_from_format, uses_optional};
 use crate::error::Result;
 use crate::generator::types::non_empty_message_format;
 use config::node::{ExposedService, MessageFormat, SubscribedService};
-
-/// Emits all nested dataclass definitions.
-fn emit_nested_classes(builder: &mut PythonCodeBuilder, nested_classes: &[NestedDataclass]) {
-    for class_def in nested_classes {
-        let fields: Vec<(&str, &str)> = class_def
-            .fields
-            .iter()
-            .map(|f| (f.name.as_str(), f.type_str.as_str()))
-            .collect();
-        builder.dataclass(&class_def.name, &fields);
-    }
-}
 
 /// Generates Python code for an exposed (handler) service.
 pub fn build_exposed_service(
@@ -44,33 +31,13 @@ pub fn build_exposed_service(
 
     // Response dataclass
     if let Some(fmt) = response_format {
-        let mut nested_classes = Vec::new();
-        let fields = collect_fields_from_format(fmt, "Response", &mut nested_classes)?;
-        if uses_optional(&fields, &nested_classes) {
-            builder.add_import("from typing import Optional");
-        }
-        emit_nested_classes(&mut builder, &nested_classes);
-        let field_refs: Vec<(&str, &str)> = fields
-            .iter()
-            .map(|f| (f.name.as_str(), f.type_str.as_str()))
-            .collect();
-        builder.dataclass("Response", &field_refs);
+        emit_format_as_dataclass(&mut builder, "Response", fmt)?;
     }
 
     // RequestData + Request dataclasses
     let has_request = request_format.is_some();
     if let Some(fmt) = request_format {
-        let mut nested_classes = Vec::new();
-        let fields = collect_fields_from_format(fmt, "RequestData", &mut nested_classes)?;
-        if uses_optional(&fields, &nested_classes) {
-            builder.add_import("from typing import Optional");
-        }
-        emit_nested_classes(&mut builder, &nested_classes);
-        let field_refs: Vec<(&str, &str)> = fields
-            .iter()
-            .map(|f| (f.name.as_str(), f.type_str.as_str()))
-            .collect();
-        builder.dataclass("RequestData", &field_refs);
+        emit_format_as_dataclass(&mut builder, "RequestData", fmt)?;
         builder.dataclass(
             "Request",
             &[
@@ -230,32 +197,12 @@ pub fn build_subscribed_service(
 
     // Request dataclass
     if let Some(fmt) = request_format {
-        let mut nested_classes = Vec::new();
-        let fields = collect_fields_from_format(fmt, "Request", &mut nested_classes)?;
-        if uses_optional(&fields, &nested_classes) {
-            builder.add_import("from typing import Optional");
-        }
-        emit_nested_classes(&mut builder, &nested_classes);
-        let field_refs: Vec<(&str, &str)> = fields
-            .iter()
-            .map(|f| (f.name.as_str(), f.type_str.as_str()))
-            .collect();
-        builder.dataclass("Request", &field_refs);
+        emit_format_as_dataclass(&mut builder, "Request", fmt)?;
     }
 
     // ResponseData + Response dataclasses
     if let Some(fmt) = response_format {
-        let mut nested_classes = Vec::new();
-        let fields = collect_fields_from_format(fmt, "ResponseData", &mut nested_classes)?;
-        if uses_optional(&fields, &nested_classes) {
-            builder.add_import("from typing import Optional");
-        }
-        emit_nested_classes(&mut builder, &nested_classes);
-        let field_refs: Vec<(&str, &str)> = fields
-            .iter()
-            .map(|f| (f.name.as_str(), f.type_str.as_str()))
-            .collect();
-        builder.dataclass("ResponseData", &field_refs);
+        emit_format_as_dataclass(&mut builder, "ResponseData", fmt)?;
 
         builder.dataclass(
             "Response",

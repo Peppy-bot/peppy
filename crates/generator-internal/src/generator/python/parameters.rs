@@ -15,11 +15,8 @@ pub fn generate_python_parameters(parameters: &config::NodeArguments) -> Result<
     validate_parameters(parameters)?;
 
     let mut builder = PythonCodeBuilder::new();
-    builder.line("from dataclasses import dataclass");
-    builder.blank_line();
 
-    // Collect and emit nested classes first (dependency order)
-    let mut nested_builders = Vec::new();
+    // Emit nested classes in dependency order, then collect main fields
     let mut main_fields: Vec<(String, String)> = Vec::new();
 
     for (field_name, type_spec) in parameters {
@@ -28,7 +25,7 @@ pub fn generate_python_parameters(parameters: &config::NodeArguments) -> Result<
                 let struct_name = to_camel_case(field_name);
                 let field_ident = sanitize_python_identifier(field_name);
                 main_fields.push((field_ident, struct_name.clone()));
-                generate_nested_parameter_class(type_spec, &struct_name, &mut nested_builders);
+                emit_nested_parameter_class(&mut builder, type_spec, &struct_name);
             }
             AnyType::String(type_name) => {
                 let field_ident = sanitize_python_identifier(field_name);
@@ -37,14 +34,6 @@ pub fn generate_python_parameters(parameters: &config::NodeArguments) -> Result<
             }
             _ => {}
         }
-    }
-
-    // Emit nested classes
-    for nested in &nested_builders {
-        for line in nested.lines() {
-            builder.line(line);
-        }
-        builder.blank_line();
     }
 
     // Emit main Parameters class
@@ -57,40 +46,41 @@ pub fn generate_python_parameters(parameters: &config::NodeArguments) -> Result<
     Ok(builder.build())
 }
 
-fn generate_nested_parameter_class(
+fn emit_nested_parameter_class(
+    builder: &mut PythonCodeBuilder,
     type_spec: &AnyType,
     class_name: &str,
-    output: &mut Vec<String>,
 ) {
     if let AnyType::Object(fields) = type_spec {
         // Recurse into nested objects first (so they're defined before referenced)
         for (field_name, field_spec) in fields {
             if let AnyType::Object(_) = field_spec {
                 let nested_name = nested_class_name(class_name, field_name);
-                generate_nested_parameter_class(field_spec, &nested_name, output);
+                emit_nested_parameter_class(builder, field_spec, &nested_name);
             }
         }
 
-        let mut builder = PythonCodeBuilder::new();
-        builder.line("@dataclass");
-        builder.line(&format!("class {class_name}:"));
-        builder.indent();
+        let mut class_fields: Vec<(String, String)> = Vec::new();
         for (field_name, field_spec) in fields {
             let field_ident = sanitize_python_identifier(field_name);
             match field_spec {
                 AnyType::String(type_name) => {
                     let py_type = type_name_to_python(type_name);
-                    builder.line(&format!("{field_ident}: {py_type}"));
+                    class_fields.push((field_ident, py_type.to_string()));
                 }
                 AnyType::Object(_) => {
                     let nested_name = nested_class_name(class_name, field_name);
-                    builder.line(&format!("{field_ident}: {nested_name}"));
+                    class_fields.push((field_ident, nested_name));
                 }
                 _ => {}
             }
         }
-        builder.dedent();
-        output.push(builder.build());
+
+        let field_refs: Vec<(&str, &str)> = class_fields
+            .iter()
+            .map(|(name, ty)| (name.as_str(), ty.as_str()))
+            .collect();
+        builder.dataclass(class_name, &field_refs);
     }
 }
 
