@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
-use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::consts::{
+    NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION,
+};
 use config::node::PeppygenLanguage;
 use generator::generate_peppygen_lib;
 use peppylib::messaging::{ActionMessenger, NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
@@ -494,7 +496,7 @@ pub fn init_python_user_node(to_dir: impl AsRef<Path>) {
         r#"[project]
 name = "user_node"
 version = "0.1.0"
-requires-python = ">= 3.11, < 3.14"
+requires-python = ">= {PYTHON_MIN_VERSION}, < {PYTHON_MAX_VERSION}"
 dependencies = ["peppygen"]
 
 [tool.uv.sources]

@@ -26,6 +26,7 @@ pub struct RustCargoToml<'a> {
 pub struct PythonPyprojectToml<'a> {
     pub node_name: &'a str,
     pub pepygen_path: &'a str,
+    pub python_min_version: &'a str,
 }
 
 /// Template for Rust peppy.json5 file
@@ -102,6 +103,7 @@ pub fn apply_python_templates(node_name: &str, node_dir: &Path) -> Result<()> {
     let pyproject_toml = PythonPyprojectToml {
         node_name,
         pepygen_path: config::consts::PEPPYGEN_OUTPUT_PATH,
+        python_min_version: config::consts::PYTHON_MIN_VERSION,
     };
     std::fs::write(node_dir.join("pyproject.toml"), pyproject_toml.render()?)?;
 

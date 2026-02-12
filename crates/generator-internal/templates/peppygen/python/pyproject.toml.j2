@@ -2,7 +2,7 @@
 name = "peppygen"
 version = "0.1.0"
 # pycapnp does not yet provide Python 3.14 wheels, so keep uv on 3.13 or older.
-requires-python = ">= 3.11, < 3.14"
+requires-python = ">= {{ python_min_version }}, < {{ python_max_version }}"
 dependencies = ["pycapnp"]
 
 [tool.setuptools.packages.find]

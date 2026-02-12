@@ -25,9 +25,12 @@ impl<'a> PeppyConfigTemplate<'a> {
 
 #[derive(Template)]
 #[template(path = "peppygen/python/pyproject.toml.j2", escape = "none")]
-struct PeppyPythonConfigTemplate;
+struct PeppyPythonConfigTemplate<'a> {
+    python_min_version: &'a str,
+    python_max_version: &'a str,
+}
 
-impl PeppyPythonConfigTemplate {
+impl PeppyPythonConfigTemplate<'_> {
     pub const TEMPLATE_PATH: &'static str = "peppygen/python/pyproject.toml.j2";
 }
 
@@ -92,7 +95,10 @@ fn render_template(template_path: &str, peppylib_path: &str) -> Result<String> {
             Ok(tpl.render()?)
         }
         PeppyPythonConfigTemplate::TEMPLATE_PATH => {
-            let tpl = PeppyPythonConfigTemplate {};
+            let tpl = PeppyPythonConfigTemplate {
+                python_min_version: config::consts::PYTHON_MIN_VERSION,
+                python_max_version: config::consts::PYTHON_MAX_VERSION,
+            };
             Ok(tpl.render()?)
         }
         _ => Err(Error::UnknownTemplate(template_path.to_string())),
