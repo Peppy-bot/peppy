@@ -25,6 +25,7 @@ pub struct RustCargoToml<'a> {
 #[template(path = "node_init/python/pyproject.toml.j2")]
 pub struct PythonPyprojectToml<'a> {
     pub node_name: &'a str,
+    pub pepygen_path: &'a str,
 }
 
 /// Template for Rust peppy.json5 file
@@ -97,11 +98,11 @@ pub fn apply_rust_templates(node_name: &str, node_dir: &Path) -> Result<()> {
 
 /// Applies templates and copies static files for Python node initialization
 pub fn apply_python_templates(node_name: &str, node_dir: &Path) -> Result<()> {
-    // Copy all static files (non-.j2 files) recursively
-    copy_embedded_static_files("node_init/python", node_dir)?;
-
     // Apply pyproject.toml template
-    let pyproject_toml = PythonPyprojectToml { node_name };
+    let pyproject_toml = PythonPyprojectToml {
+        node_name,
+        pepygen_path: config::consts::PEPPYGEN_OUTPUT_PATH,
+    };
     std::fs::write(node_dir.join("pyproject.toml"), pyproject_toml.render()?)?;
 
     // Apply peppy.json5 template
@@ -109,6 +110,30 @@ pub fn apply_python_templates(node_name: &str, node_dir: &Path) -> Result<()> {
     std::fs::write(
         node_dir.join(config::consts::NODE_CONFIG_FILE),
         peppy_json5.render()?,
+    )?;
+
+    // Create Python package structure: src/<node_name>/__init__.py + __main__.py
+    let package_dir = node_dir.join("src").join(node_name);
+    std::fs::create_dir_all(&package_dir)?;
+
+    std::fs::write(package_dir.join("__init__.py"), "")?;
+
+    std::fs::write(
+        package_dir.join("__main__.py"),
+        r#""""Main entry point for node."""
+
+from peppygen import NodeBuilder, NodeRunner
+from peppygen.parameters import Parameters
+
+def setup(params: Parameters, node_runner: NodeRunner):
+    pass
+
+def main():
+    NodeBuilder().run(setup)
+
+if __name__ == "__main__":
+    main()
+"#,
     )?;
 
     Ok(())
