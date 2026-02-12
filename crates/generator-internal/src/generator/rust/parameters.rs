@@ -1,6 +1,6 @@
 use super::type_mapping::render_tokens;
 use crate::error::{Error, Result};
-use crate::generator::naming::{sanitize_component, to_camel_case};
+use crate::generator::naming::{sanitize_rust_identifier, to_camel_case};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 
@@ -22,8 +22,8 @@ pub fn generate_parameters_struct(parameters: &config::NodeArguments) -> Result<
     let mut modules = Vec::new();
 
     for (field_name, type_spec) in parameters {
-        let field_ident = Ident::new(&sanitize_component(field_name), Span::call_site());
-        let module_name = sanitize_component(field_name);
+        let field_ident = Ident::new(&sanitize_rust_identifier(field_name), Span::call_site());
+        let module_name = sanitize_rust_identifier(field_name);
         let module_ident = Ident::new(&module_name, Span::call_site());
 
         match type_spec {
@@ -127,7 +127,7 @@ fn generate_parameter_struct(
         let mut field_tokens = Vec::new();
 
         for (field_name, field_spec) in fields {
-            let field_ident = Ident::new(&sanitize_component(field_name), Span::call_site());
+            let field_ident = Ident::new(&sanitize_rust_identifier(field_name), Span::call_site());
 
             match field_spec {
                 AnyType::String(type_name) => {

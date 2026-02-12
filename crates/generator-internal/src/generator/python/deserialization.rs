@@ -157,7 +157,10 @@ fn generate_primitive_reader(
     let idx = *counter;
     *counter += 1;
     let var = format!("{python_name}_{idx}");
-    builder.line(&format!("{var} = {}", capnp_read_expr(reader_var, &capnp_name)));
+    builder.line(&format!(
+        "{var} = {}",
+        capnp_read_expr(reader_var, &capnp_name)
+    ));
     var
 }
 
@@ -175,7 +178,10 @@ fn generate_time_reader(
     let result_idx = *counter;
     *counter += 1;
     let result_var = format!("{python_name}_{result_idx}");
-    builder.line(&format!("{ts_var} = {}", capnp_read_expr(reader_var, &capnp_name)));
+    builder.line(&format!(
+        "{ts_var} = {}",
+        capnp_read_expr(reader_var, &capnp_name)
+    ));
     builder.line(&format!(
         "{result_var} = peppylib.encoding.convert_time_from_capnp({ts_var}.sec, {ts_var}.nsec)"
     ));

@@ -3,7 +3,7 @@ use super::deserialization::{build_deserialize_fn, generate_field_reader_stateme
 use super::serialization::{
     MessageEncodingSpec, NameGenerator, build_serialize_payload, generate_field_assignment,
 };
-use crate::generator::naming::sanitize_component;
+use crate::generator::naming::sanitize_rust_identifier;
 use config::encoding::FunctionParam;
 use config::node::MessageFormat;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -803,7 +803,10 @@ pub fn build_response_payload_tokens(
             continue;
         }
 
-        let field_ident = Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
+        let field_ident = Ident::new(
+            &sanitize_rust_identifier(field_name.as_str()),
+            Span::call_site(),
+        );
         let value_expr = quote!(#response_ident.#field_ident);
         assignments.push(generate_field_assignment(
             &quote!(#builder_ident),

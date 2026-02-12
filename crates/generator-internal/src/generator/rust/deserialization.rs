@@ -1,6 +1,6 @@
 use super::serialization::NameGenerator;
 use super::type_mapping::primitive_type_token;
-use crate::generator::naming::{sanitize_component, to_camel_case};
+use crate::generator::naming::{sanitize_component, sanitize_rust_identifier, to_camel_case};
 use config::node::{ArraySchema, MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -105,7 +105,10 @@ pub fn deserialize_format_fields(
             &mut names,
         );
         field_statements.append(&mut statements);
-        let field_ident = Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
+        let field_ident = Ident::new(
+            &sanitize_rust_identifier(field_name.as_str()),
+            Span::call_site(),
+        );
         field_inits.push(quote!(#field_ident: #value_ident));
         value_idents.push(value_ident);
     }
@@ -498,7 +501,7 @@ fn generate_object_reader(
             names,
         );
         field_statements.append(&mut nested_statements);
-        let field_ident = Ident::new(&sanitize_component(nested_name), Span::call_site());
+        let field_ident = Ident::new(&sanitize_rust_identifier(nested_name), Span::call_site());
         field_inits.push(quote!(#field_ident: #nested_value_ident));
     }
 

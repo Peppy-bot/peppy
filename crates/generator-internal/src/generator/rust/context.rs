@@ -1,6 +1,6 @@
 use super::type_mapping::{sanitize_capnp_field_name, schema_type_to_tokens};
 use crate::error::{Error, Result};
-use crate::generator::naming::sanitize_component;
+use crate::generator::naming::sanitize_rust_identifier;
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam, MessageFormatMapper};
 use config::node::{MessageFormat, SchemaType};
 use proc_macro2::{Ident, Span, TokenStream};
@@ -95,7 +95,7 @@ impl<'a> SchemaFieldLookup<'a> {
             let capnp_key = sanitize_capnp_field_name(name);
             entries.insert(capnp_key, (name, schema));
 
-            let rust_key = sanitize_component(name);
+            let rust_key = sanitize_rust_identifier(name);
             entries.entry(rust_key).or_insert((name, schema));
         }
         Self { entries }
@@ -126,8 +126,10 @@ pub fn collect_function_params(
         let mut ctor_bindings: Vec<TokenStream> = Vec::new();
 
         for (field_name, schema) in &return_artifacts.message_format().0 {
-            let field_ident =
-                Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
+            let field_ident = Ident::new(
+                &sanitize_rust_identifier(field_name.as_str()),
+                Span::call_site(),
+            );
             let field_ty =
                 schema_type_to_tokens(schema, &response_struct_name, field_name, context);
             let ctor_ident = field_ident.clone();
@@ -176,7 +178,7 @@ pub fn collect_function_params(
         let key = param.ident.to_string();
         let (original_name, schema) = schema_lookup.get(&key);
 
-        let ident = Ident::new(&sanitize_component(original_name), Span::call_site());
+        let ident = Ident::new(&sanitize_rust_identifier(original_name), Span::call_site());
         let ty = schema_type_to_tokens(schema, struct_prefix, original_name, context);
 
         params.push(FunctionParam::new(ident, ty));

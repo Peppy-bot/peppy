@@ -1,5 +1,5 @@
 use super::context::GenerationContext;
-use crate::generator::naming::{sanitize_component, to_camel_case};
+use crate::generator::naming::{sanitize_rust_identifier, to_camel_case};
 use config::encoding::FunctionParam;
 use config::node::{SchemaType, TypeToken};
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -34,8 +34,10 @@ pub fn schema_type_to_tokens(
 
             let mut fields = Vec::with_capacity(object.fields.len());
             for (nested_name, nested_schema) in &object.fields {
-                let field_ident =
-                    Ident::new(&sanitize_component(nested_name.as_str()), Span::call_site());
+                let field_ident = Ident::new(
+                    &sanitize_rust_identifier(nested_name.as_str()),
+                    Span::call_site(),
+                );
                 let field_ty =
                     schema_type_to_tokens(nested_schema, &struct_name, nested_name, context);
                 fields.push((field_ident, field_ty));
