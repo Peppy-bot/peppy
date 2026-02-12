@@ -4,6 +4,7 @@ use super::deserialization;
 use super::serialization;
 use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
 use super::type_mapping::{NestedDataclass, collect_fields_from_format, uses_optional};
+use crate::error::Result;
 use crate::generator::types::{
     SubscribedActionMessage, cancel_action_response_format, non_empty_message_format,
 };
@@ -25,9 +26,9 @@ fn emit_format_as_dataclass(
     builder: &mut PythonCodeBuilder,
     class_name: &str,
     format: &MessageFormat,
-) {
+) -> Result<()> {
     let mut nested_classes = Vec::new();
-    let fields = collect_fields_from_format(format, class_name, &mut nested_classes);
+    let fields = collect_fields_from_format(format, class_name, &mut nested_classes)?;
     if uses_optional(&fields, &nested_classes) {
         builder.add_import("from typing import Optional");
     }
@@ -37,6 +38,7 @@ fn emit_format_as_dataclass(
         .map(|f| (f.name.as_str(), f.type_str.as_str()))
         .collect();
     builder.dataclass(class_name, &field_refs);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -51,7 +53,7 @@ pub fn build_exposed_action(
     cancel_response_schema_info: Option<&PythonSchemaInfo>,
     result_response_schema_info: Option<&PythonSchemaInfo>,
     feedback_schema_info: Option<&PythonSchemaInfo>,
-) -> String {
+) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
 
     let has_goal = action.goal_service.is_some();
@@ -116,7 +118,7 @@ pub fn build_exposed_action(
         let response_format = non_empty_message_format(goal.response_message_format.as_ref());
 
         if let Some(fmt) = request_format {
-            emit_format_as_dataclass(&mut builder, "GoalRequestData", fmt);
+            emit_format_as_dataclass(&mut builder, "GoalRequestData", fmt)?;
             builder.dataclass(
                 "GoalRequest",
                 &[
@@ -133,7 +135,7 @@ pub fn build_exposed_action(
         }
 
         if let Some(fmt) = response_format {
-            emit_format_as_dataclass(&mut builder, "GoalResponse", fmt);
+            emit_format_as_dataclass(&mut builder, "GoalResponse", fmt)?;
         } else {
             builder.dataclass("GoalResponse", &[]);
         }
@@ -144,7 +146,7 @@ pub fn build_exposed_action(
         );
 
         let cancel_format = cancel_action_response_format();
-        emit_format_as_dataclass(&mut builder, "CancelResponse", &cancel_format);
+        emit_format_as_dataclass(&mut builder, "CancelResponse", &cancel_format)?;
 
         let return_type = if has_goal_response {
             "GoalResponse"
@@ -165,7 +167,7 @@ pub fn build_exposed_action(
 
         let result_resp_format = non_empty_message_format(result.response_message_format.as_ref());
         if let Some(fmt) = result_resp_format {
-            emit_format_as_dataclass(&mut builder, "ResultResponse", fmt);
+            emit_format_as_dataclass(&mut builder, "ResultResponse", fmt)?;
         } else {
             builder.dataclass("ResultResponse", &[]);
         }
@@ -185,7 +187,7 @@ pub fn build_exposed_action(
     // Emit any nested dataclasses/imports at module scope so annotations resolve.
     if let Some(fmt) = feedback_format {
         let mut nested_classes = Vec::new();
-        feedback_fields = collect_fields_from_format(fmt, "Feedback", &mut nested_classes);
+        feedback_fields = collect_fields_from_format(fmt, "Feedback", &mut nested_classes)?;
         if uses_optional(&feedback_fields, &nested_classes) {
             builder.add_import("from typing import Optional");
         }
@@ -468,7 +470,7 @@ pub fn build_exposed_action(
 
     builder.dedent(); // end of class ActionHandle
 
-    builder.build()
+    Ok(builder.build())
 }
 
 // ---------------------------------------------------------------------------
@@ -484,7 +486,7 @@ pub fn build_subscribed_action(
     cancel_response_schema_info: Option<&PythonSchemaInfo>,
     feedback_schema_info: Option<&PythonSchemaInfo>,
     result_response_schema_info: Option<&PythonSchemaInfo>,
-) -> String {
+) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
 
     let goal_request_format = non_empty_message_format(messages.goal_request.as_ref());
@@ -522,17 +524,17 @@ pub fn build_subscribed_action(
 
     // GoalRequest class
     if let Some(fmt) = goal_request_format {
-        emit_format_as_dataclass(&mut builder, "GoalRequest", fmt);
+        emit_format_as_dataclass(&mut builder, "GoalRequest", fmt)?;
     }
 
     // GoalResponseData (no wrapper class — data lives on ActionHandle.data)
     if let Some(fmt) = goal_response_format {
-        emit_format_as_dataclass(&mut builder, "GoalResponseData", fmt);
+        emit_format_as_dataclass(&mut builder, "GoalResponseData", fmt)?;
     }
 
     // CancelResponseData + CancelResponse
     let cancel_format = cancel_action_response_format();
-    emit_format_as_dataclass(&mut builder, "CancelResponseData", &cancel_format);
+    emit_format_as_dataclass(&mut builder, "CancelResponseData", &cancel_format)?;
     builder.dataclass(
         "CancelResponse",
         &[
@@ -544,7 +546,7 @@ pub fn build_subscribed_action(
 
     // ResultResponseData + ResultResponse
     if let Some(fmt) = result_response_format {
-        emit_format_as_dataclass(&mut builder, "ResultResponseData", fmt);
+        emit_format_as_dataclass(&mut builder, "ResultResponseData", fmt)?;
         builder.dataclass(
             "ResultResponse",
             &[
@@ -562,7 +564,7 @@ pub fn build_subscribed_action(
 
     // FeedbackMessage (only when feedback format exists)
     if let Some(fmt) = feedback_format {
-        emit_format_as_dataclass(&mut builder, "FeedbackMessage", fmt);
+        emit_format_as_dataclass(&mut builder, "FeedbackMessage", fmt)?;
     }
 
     // ---------------------------------------------------------------
@@ -755,5 +757,5 @@ pub fn build_subscribed_action(
 
     builder.dedent(); // end of class ActionHandle
 
-    builder.build()
+    Ok(builder.build())
 }

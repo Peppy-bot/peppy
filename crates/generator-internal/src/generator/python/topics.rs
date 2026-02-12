@@ -5,6 +5,7 @@ use super::serialization;
 use super::type_mapping::{
     NestedDataclass, collect_fields_from_format, qos_profile_python, uses_optional,
 };
+use crate::error::Result;
 use crate::generator::naming::sanitize_component;
 use config::node::{ExposedTopic, MessageFormat, SubscribedTopic};
 
@@ -65,7 +66,10 @@ pub(super) fn emit_capnp_schema_loader(
 }
 
 /// Generates Python code for an exposed (publishing) topic.
-pub fn build_exposed_topic(topic: &ExposedTopic, schema_info: Option<&PythonSchemaInfo>) -> String {
+pub fn build_exposed_topic(
+    topic: &ExposedTopic,
+    schema_info: Option<&PythonSchemaInfo>,
+) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
     let mut nested_classes = Vec::new();
 
@@ -74,6 +78,7 @@ pub fn build_exposed_topic(topic: &ExposedTopic, schema_info: Option<&PythonSche
         .message_format
         .as_ref()
         .map(|fmt| collect_fields_from_format(fmt, "Message", &mut nested_classes))
+        .transpose()?
         .unwrap_or_default();
 
     if uses_optional(&fields, &nested_classes) {
@@ -131,7 +136,7 @@ pub fn build_exposed_topic(topic: &ExposedTopic, schema_info: Option<&PythonSche
     builder.line(")");
     builder.dedent();
 
-    builder.build()
+    Ok(builder.build())
 }
 
 /// Generates Python code for a subscribed (receiving) topic.
@@ -139,12 +144,12 @@ pub fn build_subscribed_topic(
     topic: &SubscribedTopic,
     arguments: &MessageFormat,
     schema_info: Option<&PythonSchemaInfo>,
-) -> String {
+) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
     let mut nested_classes = Vec::new();
 
     // Collect fields from the message format
-    let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes);
+    let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes)?;
 
     // Always need Optional for the function parameters (master_node_target, instance_id_target),
     // plus any Optional fields in the dataclasses.
@@ -209,7 +214,7 @@ pub fn build_subscribed_topic(
 
     builder.dedent();
 
-    builder.build()
+    Ok(builder.build())
 }
 
 /// Returns the module label for a subscribed topic artifact.

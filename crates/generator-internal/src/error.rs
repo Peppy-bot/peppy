@@ -40,4 +40,6 @@ pub enum Error {
         "Invalid parameter field name `{name}`: contains invalid characters. Allowed: {allowed}"
     )]
     InvalidParameterFieldName { name: String, allowed: &'static str },
+    #[error("unsupported nested schema type in array `{field}`")]
+    UnsupportedArrayItemSchema { field: String },
 }

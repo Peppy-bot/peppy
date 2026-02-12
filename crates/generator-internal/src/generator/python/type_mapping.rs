@@ -1,4 +1,5 @@
 use super::identifiers::sanitize_python_identifier;
+use crate::error::{Error, Result};
 use crate::generator::naming::to_camel_case;
 use config::node::{QoSProfile, SchemaType, TypeToken};
 
@@ -40,15 +41,19 @@ pub fn schema_type_to_python(
     struct_prefix: &str,
     field_name: &str,
     nested_classes: &mut Vec<NestedDataclass>,
-) -> String {
+) -> Result<String> {
     let base_type = match schema {
         SchemaType::Type(token) => primitive_type_str(token).to_string(),
         SchemaType::Primitive(primitive) => primitive_type_str(&primitive.kind).to_string(),
         SchemaType::Array(array) => {
             let item_type = match array.items.as_ref().as_type_token() {
-                Some(TypeToken::U8) => return wrap_optional(schema, "bytes".to_string()),
+                Some(TypeToken::U8) => return Ok(wrap_optional(schema, "bytes".to_string())),
                 Some(token) => primitive_type_str(token),
-                None => panic!("unsupported nested schema type in array `{field_name}`"),
+                None => {
+                    return Err(Error::UnsupportedArrayItemSchema {
+                        field: field_name.to_string(),
+                    });
+                }
             };
             format!("list[{item_type}]")
         }
@@ -57,7 +62,7 @@ pub fn schema_type_to_python(
             let mut fields = Vec::new();
             for (nested_name, nested_schema) in &object.fields {
                 let field_type =
-                    schema_type_to_python(nested_schema, &class_name, nested_name, nested_classes);
+                    schema_type_to_python(nested_schema, &class_name, nested_name, nested_classes)?;
                 fields.push(PythonField {
                     name: sanitize_python_identifier(nested_name),
                     type_str: field_type,
@@ -71,7 +76,7 @@ pub fn schema_type_to_python(
         }
     };
 
-    wrap_optional(schema, base_type)
+    Ok(wrap_optional(schema, base_type))
 }
 
 fn wrap_optional(schema: &SchemaType, type_str: String) -> String {
@@ -87,16 +92,16 @@ pub fn collect_fields_from_format(
     format: &config::node::MessageFormat,
     struct_prefix: &str,
     nested_classes: &mut Vec<NestedDataclass>,
-) -> Vec<PythonField> {
+) -> Result<Vec<PythonField>> {
     let mut fields = Vec::new();
     for (field_name, schema) in &format.0 {
-        let type_str = schema_type_to_python(schema, struct_prefix, field_name, nested_classes);
+        let type_str = schema_type_to_python(schema, struct_prefix, field_name, nested_classes)?;
         fields.push(PythonField {
             name: sanitize_python_identifier(field_name),
             type_str,
         });
     }
-    fields
+    Ok(fields)
 }
 
 /// Returns `true` if any field (direct or nested) uses `Optional[...]`.
@@ -127,5 +132,38 @@ pub fn type_name_to_python(type_name: &str) -> &'static str {
         "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" => "int",
         "f32" | "float" | "f64" | "double" => "float",
         _ => "str",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use config::node::{ArrayKind, ArraySchema, MessageFormat};
+    use indexmap::IndexMap;
+
+    #[test]
+    fn collect_fields_rejects_nested_array_item_shapes() {
+        let invalid_items = SchemaType::Array(ArraySchema {
+            kind: ArrayKind::Array,
+            items: Box::new(SchemaType::Type(TypeToken::U8)),
+            length: None,
+            optional: false,
+        });
+        let invalid_array = SchemaType::Array(ArraySchema {
+            kind: ArrayKind::Array,
+            items: Box::new(invalid_items),
+            length: None,
+            optional: false,
+        });
+        let mut fields = IndexMap::new();
+        fields.insert("samples".to_string(), invalid_array);
+        let format = MessageFormat(fields);
+
+        let mut nested = Vec::new();
+        let result = collect_fields_from_format(&format, "Message", &mut nested);
+        assert!(matches!(
+            result,
+            Err(Error::UnsupportedArrayItemSchema { field }) if field == "samples"
+        ));
     }
 }

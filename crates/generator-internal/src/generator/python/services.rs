@@ -4,6 +4,7 @@ use super::deserialization;
 use super::serialization;
 use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
 use super::type_mapping::{NestedDataclass, collect_fields_from_format, uses_optional};
+use crate::error::Result;
 use crate::generator::types::non_empty_message_format;
 use config::node::{ExposedService, MessageFormat, SubscribedService};
 
@@ -24,7 +25,7 @@ pub fn build_exposed_service(
     service: &ExposedService,
     request_schema_info: Option<&PythonSchemaInfo>,
     response_schema_info: Option<&PythonSchemaInfo>,
-) -> String {
+) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
 
     let request_format = non_empty_message_format(service.request_message_format.as_ref());
@@ -44,7 +45,7 @@ pub fn build_exposed_service(
     // Response dataclass
     if let Some(fmt) = response_format {
         let mut nested_classes = Vec::new();
-        let fields = collect_fields_from_format(fmt, "Response", &mut nested_classes);
+        let fields = collect_fields_from_format(fmt, "Response", &mut nested_classes)?;
         if uses_optional(&fields, &nested_classes) {
             builder.add_import("from typing import Optional");
         }
@@ -60,7 +61,7 @@ pub fn build_exposed_service(
     let has_request = request_format.is_some();
     if let Some(fmt) = request_format {
         let mut nested_classes = Vec::new();
-        let fields = collect_fields_from_format(fmt, "RequestData", &mut nested_classes);
+        let fields = collect_fields_from_format(fmt, "RequestData", &mut nested_classes)?;
         if uses_optional(&fields, &nested_classes) {
             builder.add_import("from typing import Optional");
         }
@@ -195,7 +196,7 @@ pub fn build_exposed_service(
     builder.line("await endpoint.handle_next_request(_on_request)");
     builder.dedent();
 
-    builder.build()
+    Ok(builder.build())
 }
 
 /// Generates Python code for a subscribed (polling) service.
@@ -205,7 +206,7 @@ pub fn build_subscribed_service(
     response_arguments: &MessageFormat,
     request_schema_info: Option<&PythonSchemaInfo>,
     response_schema_info: Option<&PythonSchemaInfo>,
-) -> String {
+) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
 
     let request_format = non_empty_message_format(Some(request_arguments));
@@ -230,7 +231,7 @@ pub fn build_subscribed_service(
     // Request dataclass
     if let Some(fmt) = request_format {
         let mut nested_classes = Vec::new();
-        let fields = collect_fields_from_format(fmt, "Request", &mut nested_classes);
+        let fields = collect_fields_from_format(fmt, "Request", &mut nested_classes)?;
         if uses_optional(&fields, &nested_classes) {
             builder.add_import("from typing import Optional");
         }
@@ -245,7 +246,7 @@ pub fn build_subscribed_service(
     // ResponseData + Response dataclasses
     if let Some(fmt) = response_format {
         let mut nested_classes = Vec::new();
-        let fields = collect_fields_from_format(fmt, "ResponseData", &mut nested_classes);
+        let fields = collect_fields_from_format(fmt, "ResponseData", &mut nested_classes)?;
         if uses_optional(&fields, &nested_classes) {
             builder.add_import("from typing import Optional");
         }
@@ -352,5 +353,5 @@ pub fn build_subscribed_service(
 
     builder.dedent();
 
-    builder.build()
+    Ok(builder.build())
 }
