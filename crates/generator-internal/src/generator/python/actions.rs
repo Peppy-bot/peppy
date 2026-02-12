@@ -104,6 +104,11 @@ pub fn build_exposed_action(
         .as_ref()
         .and_then(|rs| non_empty_message_format(rs.response_message_format.as_ref()))
         .is_some();
+    let feedback_format = action
+        .feedback_topic
+        .as_ref()
+        .and_then(|topic| non_empty_message_format(topic.message_format.as_ref()));
+    let mut feedback_fields = Vec::new();
 
     // Compute goal handler type early (needed by both helpers and class methods)
     let goal_handler_type = if let Some(goal) = &action.goal_service {
@@ -175,6 +180,17 @@ pub fn build_exposed_action(
     } else {
         None
     };
+
+    // Feedback field type annotations are used by ActionHandle.emit_feedback().
+    // Emit any nested dataclasses/imports at module scope so annotations resolve.
+    if let Some(fmt) = feedback_format {
+        let mut nested_classes = Vec::new();
+        feedback_fields = collect_fields_from_format(fmt, "Feedback", &mut nested_classes);
+        if uses_optional(&feedback_fields, &nested_classes) {
+            builder.add_import("from typing import Optional");
+        }
+        emit_nested_classes(&mut builder, &nested_classes);
+    }
 
     // ---------------------------------------------------------------
     // Phase 2: Module-level helper functions
@@ -423,17 +439,9 @@ pub fn build_exposed_action(
     }
 
     // emit_feedback method
-    if let Some(feedback) = &action.feedback_topic {
-        let feedback_format = non_empty_message_format(feedback.message_format.as_ref());
-        let mut nested_classes = Vec::new();
-        let fields = if let Some(fmt) = feedback_format {
-            collect_fields_from_format(fmt, "Feedback", &mut nested_classes)
-        } else {
-            Vec::new()
-        };
-
+    if action.feedback_topic.is_some() {
         let mut param_parts = vec![String::from("self")];
-        for field in &fields {
+        for field in &feedback_fields {
             param_parts.push(format!("{}: {}", field.name, field.type_str));
         }
         let params = param_parts.join(", ");
@@ -441,7 +449,7 @@ pub fn build_exposed_action(
         builder.line(&format!("async def emit_feedback({params}):"));
         builder.indent();
 
-        if let (Some(info), Some(fmt)) = (feedback_schema_info, feedback.message_format.as_ref()) {
+        if let (Some(info), Some(fmt)) = (feedback_schema_info, feedback_format) {
             let loader_fn_name = capnp_loader_fn_name(info);
             builder.line(&format!(
                 "capnp_msg = {loader_fn_name}().{}.new_message()",
