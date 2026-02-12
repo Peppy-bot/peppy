@@ -1031,7 +1031,7 @@ impl LanguageGenerator for RustGenerator {
         }
 
         let action_handle_struct = build_action_handle_struct(has_goal, has_feedback, has_result);
-        let expose_method = build_action_expose_method();
+        let expose_method = build_action_expose_method(has_goal, has_feedback, has_result);
 
         let mut items = vec![quote!(const ACTION_NAME: &str = #action_name_literal;)];
         items.extend(context.into_tokens());

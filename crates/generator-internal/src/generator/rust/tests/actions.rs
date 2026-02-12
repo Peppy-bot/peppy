@@ -371,6 +371,57 @@ fn expose_action_without_request_body() {
 }
 
 #[test]
+fn expose_action_with_feedback_only_initializes_existing_fields() {
+    let action: ExposedAction = serde_json5::from_str(
+        r#"
+        {
+          name: "blink_led",
+          feedback_topic: {
+            qos_profile: "standard",
+            message_format: {
+              progress: "u8"
+            }
+          }
+        }
+        "#,
+    )
+    .unwrap();
+
+    let mut generator = RustGenerator::new();
+    generator.add_exposed_action(&action).unwrap();
+    let rendered = render_artifacts(generator.into_artifacts())
+        .into_iter()
+        .next()
+        .expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &[
+            "pub struct ActionHandle",
+            "feedback_publisher: peppylib::messaging::TopicPublisher",
+            "pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self>",
+            "feedback_publisher: action.feedback_publisher",
+        ],
+    );
+
+    assert_rendered!(
+        !rendered.contains("goal_service: action.goal_service"),
+        rendered,
+        "expose method should not initialize goal_service when goal service is missing"
+    );
+    assert_rendered!(
+        !rendered.contains("cancel_service: action.cancel_service"),
+        rendered,
+        "expose method should not initialize cancel_service when goal service is missing"
+    );
+    assert_rendered!(
+        !rendered.contains("result_service: action.result_service"),
+        rendered,
+        "expose method should not initialize result_service when result service is missing"
+    );
+}
+
+#[test]
 fn expose_two_actions() {
     let action1: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let action2: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();

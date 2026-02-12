@@ -36,7 +36,26 @@ pub fn build_action_handle_struct(
     }
 }
 
-pub fn build_action_expose_method() -> TokenStream {
+pub fn build_action_expose_method(
+    has_goal: bool,
+    has_feedback: bool,
+    has_result: bool,
+) -> TokenStream {
+    let mut init_fields = Vec::new();
+
+    if has_goal {
+        init_fields.push(quote!(goal_service: action.goal_service));
+        init_fields.push(quote!(cancel_service: action.cancel_service));
+    }
+
+    if has_result {
+        init_fields.push(quote!(result_service: action.result_service));
+    }
+
+    if has_feedback {
+        init_fields.push(quote!(feedback_publisher: action.feedback_publisher));
+    }
+
     quote! {
         pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self> {
             let action = peppylib::ActionMessenger::expose(
@@ -49,10 +68,7 @@ pub fn build_action_expose_method() -> TokenStream {
             .await?;
 
             Ok(Self {
-                goal_service: action.goal_service,
-                cancel_service: action.cancel_service,
-                result_service: action.result_service,
-                feedback_publisher: action.feedback_publisher,
+                #( #init_fields ),*
             })
         }
     }
