@@ -53,6 +53,17 @@ const EXPOSED_TOPIC_WITH_PYTHON_KEYWORD_FIELDS: &str = r#"
 }
 "#;
 
+const EXPOSED_TOPIC_RESERVED_FIELD_EXAMPLE: &str = r#"
+{
+  name: "robot_state",
+  qos_profile: "standard",
+  message_format: {
+    instance_id: "string",
+    status: "u8"
+  }
+}
+"#;
+
 const SUBSCRIBED_TOPIC_EXAMPLE1: &str = r#"
 {
     id: "video_stream",
@@ -306,6 +317,29 @@ fn expose_topic_escapes_python_keyword_fields() {
             "setattr(capnp_msg, \"from\", from_)",
         ],
     );
+}
+
+#[test]
+fn expose_topic_rejects_reserved_message_field_name() {
+    use crate::error::Error;
+
+    let topic = parse_exposed_topic(EXPOSED_TOPIC_RESERVED_FIELD_EXAMPLE);
+
+    let mut generator = PythonGenerator::new();
+    let err = generator.add_exposed_topic(&topic).unwrap_err();
+
+    match err {
+        Error::UnauthorizedMessageFieldName {
+            field,
+            path,
+            context,
+        } => {
+            assert_eq!(field, "instance_id");
+            assert_eq!(path, "instance_id");
+            assert_eq!(context, "robot_state");
+        }
+        other => panic!("expected UnauthorizedMessageFieldName, got: {other:?}"),
+    }
 }
 
 /// In the case of a topic, a "subscribed" topic is an entity that expects to receive messages

@@ -40,6 +40,15 @@ pub enum Error {
         "Invalid parameter field name `{name}`: contains invalid characters. Allowed: {allowed}"
     )]
     InvalidParameterFieldName { name: String, allowed: &'static str },
+    #[error(
+        "Unauthorized message field name `{field}` at `{path}` in `{context}`. \
+This field name is reserved by peppy transport metadata and cannot be used inside `message_format`."
+    )]
+    UnauthorizedMessageFieldName {
+        field: String,
+        path: String,
+        context: String,
+    },
     #[error("unsupported nested schema type in array `{field}`")]
     UnsupportedArrayItemSchema { field: String },
 }
