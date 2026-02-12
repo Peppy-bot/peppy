@@ -118,7 +118,7 @@ impl RustGenerator {
         let schema_info = self.register_schema(schema_key, struct_prefix, artifacts)?;
         let builder_ident = Ident::new("root", Span::call_site());
         let assignments =
-            generate_assignments_for_format(&builder_ident, artifacts.message_format(), params);
+            generate_assignments_for_format(&builder_ident, artifacts.message_format(), params)?;
 
         Ok(Some(MessageEncodingSpec {
             builder_type: schema_info.builder_type_tokens(),
@@ -174,7 +174,7 @@ impl RustGenerator {
                 &Ident::new("root", Span::call_site()),
                 request_format.expect("request_format should be Some when artifacts exist"),
                 &request_ident,
-            );
+            )?;
 
             let error_context = quote!(format!(
                 "fire_goal {} {}",
@@ -416,7 +416,7 @@ impl RustGenerator {
             &params,
             &schema_struct_name,
             &feedback_context_expr,
-        );
+        )?;
         let field_inits: Vec<TokenStream> = params
             .iter()
             .zip(value_idents.iter())
@@ -734,7 +734,7 @@ impl LanguageGenerator for RustGenerator {
                 request_data_struct: request_data_struct_ident.as_ref(),
                 response_spec: response_spec.as_ref(),
                 use_service_name_const: true,
-            });
+            })?;
 
         let service_name_const = {
             let service_name_str = Literal::string(service.name.as_str());
@@ -858,7 +858,7 @@ impl LanguageGenerator for RustGenerator {
                     &goal_data_params,
                     &label,
                     goal_request_data_struct.as_ref(),
-                );
+                )?;
                 helper_tokens.push(deserializer_fn);
             }
 
@@ -869,7 +869,7 @@ impl LanguageGenerator for RustGenerator {
                 goal_request_data_struct.as_ref(),
                 response_spec.as_ref(),
                 encoding.is_some(),
-            );
+            )?;
             helper_tokens.push(goal_handler_fn);
 
             let goal_method = build_action_handle_method(
@@ -929,7 +929,7 @@ impl LanguageGenerator for RustGenerator {
                 None,
                 cancel_response_spec.as_ref(),
                 false,
-            );
+            )?;
             helper_tokens.push(cancel_handler_fn);
 
             let cancel_method = build_action_handle_method(
@@ -990,7 +990,7 @@ impl LanguageGenerator for RustGenerator {
                 None,
                 result_response_spec.as_ref(),
                 false,
-            );
+            )?;
             helper_tokens.push(result_handler_fn);
 
             let result_method = build_action_handle_method(
@@ -1140,7 +1140,7 @@ impl LanguageGenerator for RustGenerator {
             encoding: &encoding,
             topic,
             struct_prefix: &message_struct_name,
-        });
+        })?;
         let mut items = context.into_tokens();
         items.push(method_tokens);
 

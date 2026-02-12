@@ -108,11 +108,13 @@ impl<'a> SchemaFieldLookup<'a> {
         Self { entries }
     }
 
-    pub fn get(&self, key: &str) -> (&'a String, &'a SchemaType) {
-        *self
-            .entries
+    pub fn get(&self, key: &str) -> Result<(&'a String, &'a SchemaType)> {
+        self.entries
             .get(key)
-            .unwrap_or_else(|| panic!("missing schema entry for field `{key}`"))
+            .copied()
+            .ok_or_else(|| Error::InvariantViolation {
+                context: format!("missing schema entry for field `{key}`"),
+            })
     }
 }
 
@@ -183,7 +185,7 @@ pub fn collect_function_params(
     let mut params = Vec::with_capacity(capnp_params.len());
     for param in capnp_params {
         let key = param.ident.to_string();
-        let (original_name, schema) = schema_lookup.get(&key);
+        let (original_name, schema) = schema_lookup.get(&key)?;
 
         let ident = Ident::new(&sanitize_rust_identifier(original_name), Span::call_site());
         let ty = schema_type_to_tokens(schema, struct_prefix, original_name, context);
