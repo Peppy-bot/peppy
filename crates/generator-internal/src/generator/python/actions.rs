@@ -531,12 +531,9 @@ pub fn build_subscribed_action(
         emit_format_as_class(&mut builder, "GoalRequest", fmt);
     }
 
-    // GoalResponseData + GoalResponse
+    // GoalResponseData (no wrapper class — data lives on ActionHandle.data)
     if let Some(fmt) = goal_response_format {
         emit_format_as_dataclass(&mut builder, "GoalResponseData", fmt);
-        builder.class_def("GoalResponse", &[("data", "GoalResponseData")]);
-    } else {
-        builder.class_def("GoalResponse", &[]);
     }
 
     // CancelResponseData + CancelResponse
@@ -631,22 +628,27 @@ pub fn build_subscribed_action(
     }
 
     // ---------------------------------------------------------------
-    // API functions
+    // ActionHandle class
     // ---------------------------------------------------------------
 
     let has_goal_request = goal_request_format.is_some();
     let has_goal_response = goal_response_format.is_some();
     let has_result_response = result_response_format.is_some();
 
-    // fire_goal method
     builder.add_import("import peppylib");
     builder.add_import("from typing import Optional");
+    builder.add_import("from typing import Self");
     builder.blank_line();
 
+    builder.line("class ActionHandle:");
+    builder.indent();
+
+    // fire_goal @classmethod
+    builder.line("@classmethod");
     if has_goal_request {
-        builder.line("async def fire_goal(node_runner: peppylib.NodeRunner, request: GoalRequest, timeout: float, target_master_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> GoalResponse:");
+        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, request: GoalRequest, timeout: float, target_master_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Self:");
     } else {
-        builder.line("async def fire_goal(node_runner: peppylib.NodeRunner, timeout: float, target_master_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> GoalResponse:");
+        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, timeout: float, target_master_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Self:");
     }
     builder.indent();
 
@@ -685,27 +687,27 @@ pub fn build_subscribed_action(
     builder.dedent();
     builder.line(")");
 
-    // Deserialize goal response
+    // Construct ActionHandle instance
+    builder.line("handle = cls()");
+    builder.line("handle._messenger = node_runner.messenger()");
+    builder.line("handle._inner = action_handle");
     if has_goal_response {
         builder.line("payload = action_handle.goal_response.payload");
         builder.line("goal_response_data = _deserialize_goal_response(payload)");
-        builder.line("return GoalResponse(data=goal_response_data)");
-    } else {
-        builder.line("return GoalResponse()");
+        builder.line("handle.data = goal_response_data");
     }
+    builder.line("return handle");
 
     builder.dedent();
     builder.blank_line();
 
     // cancel_goal method
-    builder.line(
-        "async def cancel_goal(node_runner: peppylib.NodeRunner, action_handle, timeout: float) -> CancelResponse:",
-    );
+    builder.line("async def cancel_goal(self, timeout: float) -> CancelResponse:");
     builder.indent();
     builder.line("response = await peppylib.ActionMessenger.cancel_goal(");
     builder.indent();
-    builder.line("node_runner.messenger(),");
-    builder.line("action_handle,");
+    builder.line("self._messenger,");
+    builder.line("self._inner,");
     builder.line("timeout,");
     builder.dedent();
     builder.line(")");
@@ -723,9 +725,9 @@ pub fn build_subscribed_action(
 
     // on_next_feedback_message (only when feedback format exists)
     if feedback_format.is_some() {
-        builder.line("async def on_next_feedback_message(action_handle) -> FeedbackMessage:");
+        builder.line("async def on_next_feedback_message(self) -> FeedbackMessage:");
         builder.indent();
-        builder.line("feedback = await action_handle.on_next_feedback()");
+        builder.line("feedback = await self._inner.on_next_feedback()");
         if feedback_schema_info.is_some() {
             builder.line("payload = feedback.payload");
             builder.line("return _deserialize_feedback_payload(payload)");
@@ -737,14 +739,12 @@ pub fn build_subscribed_action(
     }
 
     // get_result method
-    builder.line(
-        "async def get_result(node_runner: peppylib.NodeRunner, action_handle, timeout: float) -> ResultResponse:",
-    );
+    builder.line("async def get_result(self, timeout: float) -> ResultResponse:");
     builder.indent();
     builder.line("response = await peppylib.ActionMessenger.request_result(");
     builder.indent();
-    builder.line("node_runner.messenger(),");
-    builder.line("action_handle,");
+    builder.line("self._messenger,");
+    builder.line("self._inner,");
     builder.line("timeout,");
     builder.dedent();
     builder.line(")");
@@ -758,6 +758,8 @@ pub fn build_subscribed_action(
     }
 
     builder.dedent();
+
+    builder.dedent(); // end of class ActionHandle
 
     builder.build()
 }

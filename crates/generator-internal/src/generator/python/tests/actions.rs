@@ -562,15 +562,8 @@ fn subscribed_to_action() {
         ],
     );
 
-    // GoalResponseData and GoalResponse dataclasses
-    assert_contains_all(
-        &rendered,
-        &[
-            "class GoalResponseData:",
-            "accepted: bool",
-            "class GoalResponse:",
-        ],
-    );
+    // GoalResponseData dataclass (no GoalResponse wrapper — data lives on ActionHandle)
+    assert_contains_all(&rendered, &["class GoalResponseData:", "accepted: bool"]);
 
     // CancelResponseData and CancelResponse dataclasses
     assert_contains_all(
@@ -618,54 +611,70 @@ fn subscribed_to_action() {
     // Imports
     assert_contains_all(
         &rendered,
-        &["import peppylib", "from typing import Optional"],
+        &[
+            "import peppylib",
+            "from typing import Optional",
+            "from typing import Self",
+        ],
     );
 
-    // fire_goal with typed signature, serialization, and deserialization
+    // ActionHandle class
+    assert_contains_all(&rendered, &["class ActionHandle:"]);
+
+    // fire_goal @classmethod with typed signature, serialization, and ActionHandle construction
     assert_contains_all(
         &rendered,
         &[
-            "async def fire_goal(",
+            "@classmethod",
+            "async def fire_goal(cls,",
+            "node_runner: peppylib.NodeRunner",
             "request: GoalRequest",
             "timeout: float",
             "target_master_node: Optional[str] = None",
             "target_instance_id: Optional[str] = None",
-            ") -> GoalResponse:",
+            ") -> Self:",
             "goal_payload = capnp_msg.to_bytes()",
             "peppylib.ActionMessenger.send_goal(",
+            "handle = cls()",
+            "handle._messenger = node_runner.messenger()",
+            "handle._inner = action_handle",
             "goal_response_data = _deserialize_goal_response(payload)",
-            "return GoalResponse(data=goal_response_data)",
+            "handle.data = goal_response_data",
+            "return handle",
         ],
     );
 
-    // cancel_goal with return type and deserialization
+    // cancel_goal as self method with deserialization
     assert_contains_all(
         &rendered,
         &[
-            "async def cancel_goal(",
-            "timeout: float) -> CancelResponse:",
+            "async def cancel_goal(self, timeout: float) -> CancelResponse:",
             "peppylib.ActionMessenger.cancel_goal(",
+            "self._messenger,",
+            "self._inner,",
             "cancel_response_data = _deserialize_cancel_response(payload)",
             "return CancelResponse(",
         ],
     );
 
-    // on_next_feedback_message with return type and deserialization
+    // on_next_feedback_message as self method with deserialization
     assert_contains_all(
         &rendered,
         &[
-            "async def on_next_feedback_message(action_handle) -> FeedbackMessage:",
+            "async def on_next_feedback_message(self) -> FeedbackMessage:",
+            "await self._inner.on_next_feedback()",
             "return _deserialize_feedback_payload(payload)",
         ],
     );
 
-    // get_result with return type and deserialization
+    // get_result as self method with deserialization
     assert_contains_all(
         &rendered,
         &[
-            "async def get_result(",
-            "timeout: float) -> ResultResponse:",
+            "async def get_result(self, timeout: float) -> ResultResponse:",
             "peppylib.ActionMessenger.request_result(",
+            "self._messenger,",
+            "self._inner,",
             "result_response_data = _deserialize_result_response(payload)",
             "return ResultResponse(",
         ],
@@ -742,7 +751,7 @@ fn subscribed_to_two_actions_same_node() {
             "import capnp",
             "class GoalRequest:",
             "class GoalResponseData:",
-            "class GoalResponse:",
+            "class ActionHandle:",
             "class ResultResponse:",
             "class FeedbackMessage:",
             "arm_id: int",
@@ -759,7 +768,7 @@ fn subscribed_to_two_actions_same_node() {
             "def _deserialize_feedback_payload(",
             "def _deserialize_result_response(",
             "request: GoalRequest",
-            ") -> GoalResponse:",
+            ") -> Self:",
             ") -> CancelResponse:",
             ") -> ResultResponse:",
             "goal_payload = capnp_msg.to_bytes()",
@@ -784,7 +793,7 @@ fn subscribed_to_two_actions_same_node() {
             "\"rotate_servo_clockwise\"",
             "import capnp",
             "class GoalResponseData:",
-            "class GoalResponse:",
+            "class ActionHandle:",
             "class ResultResponse:",
             "class FeedbackMessage:",
         ],
@@ -798,7 +807,7 @@ fn subscribed_to_two_actions_same_node() {
             "def _deserialize_cancel_response(",
             "def _deserialize_feedback_payload(",
             "def _deserialize_result_response(",
-            ") -> GoalResponse:",
+            ") -> Self:",
             ") -> CancelResponse:",
             ") -> ResultResponse:",
             "goal_payload = b\"\"",
@@ -876,13 +885,24 @@ fn subscribed_action_without_response_payload() {
         ],
     );
 
-    // fire_goal should have serialization (goal_request exists) but return GoalResponse()
+    // ActionHandle class
+    assert_contains_all(&rendered, &["class ActionHandle:"]);
+
+    // fire_goal should have serialization (goal_request exists) but no handle.data (no goal_response)
     assert_contains_all(
         &rendered,
         &[
             "goal_payload = capnp_msg.to_bytes()",
-            "return GoalResponse()",
+            "handle = cls()",
+            "handle._messenger = node_runner.messenger()",
+            "handle._inner = action_handle",
+            "return handle",
         ],
+    );
+    assert_rendered!(
+        !rendered.contains("handle.data"),
+        &rendered,
+        "expected no handle.data when goal_response is None"
     );
 
     // get_result should return without data
@@ -917,10 +937,11 @@ fn subscribed_action_without_feedback() {
 
     let rendered = &artifacts[0];
 
-    // Should still emit goal and result methods
+    // ActionHandle class with goal and result methods
     assert_contains_all(
         rendered,
         &[
+            "class ActionHandle:",
             "async def fire_goal(",
             "async def get_result(",
             "peppylib.ActionMessenger.send_goal(",
