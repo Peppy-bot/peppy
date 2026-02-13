@@ -75,4 +75,16 @@ This field name is reserved by peppy transport metadata and cannot be used insid
         field: String,
         item: &'static str,
     },
+    #[error(
+        "field name normalization collision in `{context}` for `{language:?}` generator: \
+`{first_field}` and `{second_field}` both normalize to `{normalized}` as `{normalization}`"
+    )]
+    FieldNameNormalizationCollision {
+        language: PeppygenLanguage,
+        context: String,
+        normalization: &'static str,
+        normalized: String,
+        first_field: String,
+        second_field: String,
+    },
 }

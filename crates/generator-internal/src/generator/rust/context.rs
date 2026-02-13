@@ -81,6 +81,7 @@ impl StructDefinition {
 pub fn map_message_format(format: Option<&MessageFormat>) -> Result<Option<CapnpSchemaArtifacts>> {
     match format {
         Some(format) => {
+            validate_normalized_field_names_for_rust(format)?;
             validate_message_format_field_names(format, "message_format")?;
             validate_fixed_length_array_items(format, PeppygenLanguage::Rust)?;
             validate_optional_scalar_fields_for_rust(format)?;
@@ -162,21 +163,84 @@ fn validate_optional_scalar_fields_for_rust(format: &MessageFormat) -> Result<()
     Ok(())
 }
 
+fn validate_normalized_field_names_for_rust(format: &MessageFormat) -> Result<()> {
+    validate_object_field_name_collisions_for_rust(format.0.iter(), "message_format")
+}
+
+fn validate_object_field_name_collisions_for_rust<'a, I>(fields: I, context: &str) -> Result<()>
+where
+    I: IntoIterator<Item = (&'a String, &'a SchemaType)>,
+{
+    let mut rust_identifiers: HashMap<String, String> = HashMap::new();
+    let mut capnp_fields: HashMap<String, String> = HashMap::new();
+
+    for (field_name, schema) in fields {
+        let rust_ident = sanitize_rust_identifier(field_name);
+        if let Some(previous_field) = rust_identifiers.get(&rust_ident) {
+            if previous_field != field_name {
+                return Err(Error::FieldNameNormalizationCollision {
+                    language: PeppygenLanguage::Rust,
+                    context: context.to_string(),
+                    normalization: "rust identifier",
+                    normalized: rust_ident,
+                    first_field: previous_field.clone(),
+                    second_field: field_name.clone(),
+                });
+            }
+        } else {
+            rust_identifiers.insert(rust_ident, field_name.clone());
+        }
+
+        let capnp_field = sanitize_capnp_field_name(field_name);
+        if let Some(previous_field) = capnp_fields.get(&capnp_field) {
+            if previous_field != field_name {
+                return Err(Error::FieldNameNormalizationCollision {
+                    language: PeppygenLanguage::Rust,
+                    context: context.to_string(),
+                    normalization: "capnp field name",
+                    normalized: capnp_field,
+                    first_field: previous_field.clone(),
+                    second_field: field_name.clone(),
+                });
+            }
+        } else {
+            capnp_fields.insert(capnp_field, field_name.clone());
+        }
+
+        validate_nested_field_name_collisions_for_rust(schema, &format!("{context}.{field_name}"))?;
+    }
+
+    Ok(())
+}
+
+fn validate_nested_field_name_collisions_for_rust(schema: &SchemaType, path: &str) -> Result<()> {
+    match schema {
+        SchemaType::Object(object) => {
+            validate_object_field_name_collisions_for_rust(object.fields.iter(), path)
+        }
+        SchemaType::Array(array) => validate_nested_field_name_collisions_for_rust(
+            array.items.as_ref(),
+            &format!("{path}[]"),
+        ),
+        SchemaType::Type(_) | SchemaType::Primitive(_) => Ok(()),
+    }
+}
+
 pub struct SchemaFieldLookup<'a> {
     entries: HashMap<String, (&'a String, &'a SchemaType)>,
 }
 
 impl<'a> SchemaFieldLookup<'a> {
-    pub fn new(format: &'a MessageFormat) -> Self {
+    pub fn new(format: &'a MessageFormat) -> Result<Self> {
         let mut entries = HashMap::with_capacity(format.0.len() * 2);
         for (name, schema) in &format.0 {
             let capnp_key = sanitize_capnp_field_name(name);
-            entries.insert(capnp_key, (name, schema));
+            insert_lookup_entry(&mut entries, capnp_key, name, schema, "capnp field name")?;
 
             let rust_key = sanitize_rust_identifier(name);
-            entries.entry(rust_key).or_insert((name, schema));
+            insert_lookup_entry(&mut entries, rust_key, name, schema, "rust identifier")?;
         }
-        Self { entries }
+        Ok(Self { entries })
     }
 
     pub fn get(&self, key: &str) -> Result<(&'a String, &'a SchemaType)> {
@@ -187,6 +251,31 @@ impl<'a> SchemaFieldLookup<'a> {
                 context: format!("missing schema entry for field `{key}`"),
             })
     }
+}
+
+fn insert_lookup_entry<'a>(
+    entries: &mut HashMap<String, (&'a String, &'a SchemaType)>,
+    key: String,
+    field_name: &'a String,
+    schema: &'a SchemaType,
+    normalization: &'static str,
+) -> Result<()> {
+    if let Some((existing_name, _)) = entries.get(&key) {
+        if *existing_name != field_name {
+            return Err(Error::FieldNameNormalizationCollision {
+                language: PeppygenLanguage::Rust,
+                context: String::from("message_format"),
+                normalization,
+                normalized: key,
+                first_field: (*existing_name).clone(),
+                second_field: field_name.clone(),
+            });
+        }
+        return Ok(());
+    }
+
+    entries.insert(key, (field_name, schema));
+    Ok(())
 }
 
 pub fn collect_function_params(
@@ -248,7 +337,7 @@ pub fn collect_function_params(
     };
 
     let format = artifacts.message_format();
-    let schema_lookup = SchemaFieldLookup::new(format);
+    let schema_lookup = SchemaFieldLookup::new(format)?;
     let capnp_params = artifacts
         .build_function_params()
         .map_err(Error::MessageEncoding)?;
@@ -347,5 +436,80 @@ mod tests {
 
         validate_optional_scalar_fields_for_rust(&format)
             .expect("optional string/bytes should remain supported for Rust");
+    }
+
+    #[test]
+    fn reject_colliding_normalized_field_names_for_rust() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+                "foo-bar": "u8",
+                foo_bar: "u8"
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = match map_message_format(Some(&format)) {
+            Ok(_) => panic!("expected FieldNameNormalizationCollision"),
+            Err(err) => err,
+        };
+        match err {
+            Error::FieldNameNormalizationCollision {
+                language,
+                context,
+                normalization,
+                normalized,
+                first_field,
+                second_field,
+            } => {
+                assert_eq!(language, PeppygenLanguage::Rust);
+                assert_eq!(context, "message_format");
+                assert_eq!(normalization, "rust identifier");
+                assert_eq!(normalized, "foo_bar");
+                assert_eq!(first_field, "foo-bar");
+                assert_eq!(second_field, "foo_bar");
+            }
+            other => panic!("expected FieldNameNormalizationCollision, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reject_nested_colliding_normalized_field_names_for_rust() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+                status: {
+                    $type: "object",
+                    "foo-bar": "u8",
+                    foo_bar: "u8"
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = match map_message_format(Some(&format)) {
+            Ok(_) => panic!("expected FieldNameNormalizationCollision"),
+            Err(err) => err,
+        };
+        match err {
+            Error::FieldNameNormalizationCollision {
+                language,
+                context,
+                normalization,
+                normalized,
+                first_field,
+                second_field,
+            } => {
+                assert_eq!(language, PeppygenLanguage::Rust);
+                assert_eq!(context, "message_format.status");
+                assert_eq!(normalization, "rust identifier");
+                assert_eq!(normalized, "foo_bar");
+                assert_eq!(first_field, "foo-bar");
+                assert_eq!(second_field, "foo_bar");
+            }
+            other => panic!("expected FieldNameNormalizationCollision, got: {other:?}"),
+        }
     }
 }

@@ -608,7 +608,7 @@ pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> Result<Toke
         let request_return_ty = build_return_type_from_params(handler_params, request_struct);
         let return_ty = quote!((#instance_ty, #request_return_ty));
 
-        let schema_lookup = SchemaFieldLookup::new(request_format);
+        let schema_lookup = SchemaFieldLookup::new(request_format)?;
         let mut names = NameGenerator::new();
         let mut field_statements = Vec::new();
         let mut handler_value_map: HashMap<String, Ident> = HashMap::new();
@@ -754,7 +754,7 @@ pub fn deserialize_fields_from_format(
     label: &str,
     context_expr: &TokenStream,
 ) -> Result<(Vec<TokenStream>, Vec<Ident>)> {
-    let schema_lookup = SchemaFieldLookup::new(request_format);
+    let schema_lookup = SchemaFieldLookup::new(request_format)?;
     let mut names = NameGenerator::new();
     let mut field_statements = Vec::new();
     let mut value_idents = Vec::new();
