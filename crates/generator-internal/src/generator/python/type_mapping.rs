@@ -1,7 +1,8 @@
 use super::identifiers::sanitize_python_identifier;
 use crate::error::{Error, Result};
 use crate::generator::naming::to_camel_case;
-use config::node::{QoSProfile, SchemaType, TypeToken};
+use config::node::{PeppygenLanguage, QoSProfile, SchemaType, TypeToken};
+use std::collections::HashMap;
 
 /// A field in a Python dataclass.
 pub struct PythonField {
@@ -60,6 +61,7 @@ pub fn schema_type_to_python(
         }
         SchemaType::Object(object) => {
             let class_name = format!("{struct_prefix}{}", to_camel_case(field_name));
+            validate_python_identifier_collisions(object.fields.keys(), &class_name)?;
             let mut fields = Vec::new();
             for (nested_name, nested_schema) in &object.fields {
                 let field_type =
@@ -95,6 +97,7 @@ pub fn collect_fields_from_format(
     struct_prefix: &str,
     nested_classes: &mut Vec<NestedDataclass>,
 ) -> Result<Vec<PythonField>> {
+    validate_python_identifier_collisions(format.0.keys(), struct_prefix)?;
     let mut fields = Vec::new();
     for (field_name, schema) in &format.0 {
         let type_str = schema_type_to_python(schema, struct_prefix, field_name, nested_classes)?;
@@ -105,6 +108,31 @@ pub fn collect_fields_from_format(
         });
     }
     Ok(fields)
+}
+
+fn validate_python_identifier_collisions<'a, I>(field_names: I, context: &str) -> Result<()>
+where
+    I: IntoIterator<Item = &'a String>,
+{
+    let mut seen: HashMap<String, String> = HashMap::new();
+    for field_name in field_names {
+        let normalized = sanitize_python_identifier(field_name);
+        if let Some(previous_field) = seen.get(&normalized) {
+            if previous_field != field_name {
+                return Err(Error::FieldNameNormalizationCollision {
+                    language: PeppygenLanguage::Python,
+                    context: context.to_string(),
+                    normalization: "python identifier",
+                    normalized,
+                    first_field: previous_field.clone(),
+                    second_field: field_name.clone(),
+                });
+            }
+        } else {
+            seen.insert(normalized, field_name.clone());
+        }
+    }
+    Ok(())
 }
 
 /// Returns `true` if any field (direct or nested) uses `Optional[...]`.
@@ -144,7 +172,7 @@ pub fn type_name_to_python(type_name: &str, path: &str) -> Result<&'static str> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::node::{ArrayKind, ArraySchema, MessageFormat};
+    use config::node::{ArrayKind, ArraySchema, MessageFormat, PeppygenLanguage};
     use indexmap::IndexMap;
 
     #[test]
@@ -171,5 +199,82 @@ mod tests {
             result,
             Err(Error::UnsupportedArrayItemSchema { field }) if field == "samples"
         ));
+    }
+
+    #[test]
+    fn collect_fields_rejects_python_identifier_collisions() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+                "foo-bar": "u8",
+                foo_bar: "u8"
+            }
+            "#,
+        )
+        .unwrap();
+
+        let mut nested = Vec::new();
+        let err = match collect_fields_from_format(&format, "Message", &mut nested) {
+            Ok(_) => panic!("expected FieldNameNormalizationCollision"),
+            Err(err) => err,
+        };
+        match err {
+            Error::FieldNameNormalizationCollision {
+                language,
+                context,
+                normalization,
+                normalized,
+                first_field,
+                second_field,
+            } => {
+                assert_eq!(language, PeppygenLanguage::Python);
+                assert_eq!(context, "Message");
+                assert_eq!(normalization, "python identifier");
+                assert_eq!(normalized, "foo_bar");
+                assert_eq!(first_field, "foo-bar");
+                assert_eq!(second_field, "foo_bar");
+            }
+            other => panic!("expected FieldNameNormalizationCollision, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn collect_fields_rejects_nested_python_identifier_collisions() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+                status: {
+                    $type: "object",
+                    "foo-bar": "u8",
+                    foo_bar: "u8"
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let mut nested = Vec::new();
+        let err = match collect_fields_from_format(&format, "Message", &mut nested) {
+            Ok(_) => panic!("expected FieldNameNormalizationCollision"),
+            Err(err) => err,
+        };
+        match err {
+            Error::FieldNameNormalizationCollision {
+                language,
+                context,
+                normalization,
+                normalized,
+                first_field,
+                second_field,
+            } => {
+                assert_eq!(language, PeppygenLanguage::Python);
+                assert_eq!(context, "MessageStatus");
+                assert_eq!(normalization, "python identifier");
+                assert_eq!(normalized, "foo_bar");
+                assert_eq!(first_field, "foo-bar");
+                assert_eq!(second_field, "foo_bar");
+            }
+            other => panic!("expected FieldNameNormalizationCollision, got: {other:?}"),
+        }
     }
 }
