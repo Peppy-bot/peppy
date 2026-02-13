@@ -10,6 +10,12 @@ from . import encoding
 # This is required for PyO3 submodules to be importable with dot notation
 from . import _peppylib  # type: ignore[import-not-found]
 
+# Public module aliases
+sys.modules["peppylib.messaging"] = _peppylib.messaging
+sys.modules["peppylib.messaging.services"] = _peppylib.messaging.services
+sys.modules["peppylib.messaging.actions"] = _peppylib.messaging.actions
+
+# Internal/native module aliases
 sys.modules["peppylib._peppylib.messaging"] = _peppylib.messaging
 sys.modules["peppylib._peppylib.config"] = _peppylib.config
 sys.modules["peppylib._peppylib.names"] = _peppylib.names
@@ -17,6 +23,9 @@ sys.modules["peppylib._peppylib.runtime"] = _peppylib.runtime
 sys.modules["peppylib._peppylib.messaging.services"] = _peppylib.messaging.services
 sys.modules["peppylib._peppylib.messaging.actions"] = _peppylib.messaging.actions
 sys.modules["peppylib._peppylib.services"] = _peppylib.services
+
+# Expose as attribute for `from peppylib import messaging`
+messaging = _peppylib.messaging
 
 # Re-export the Rust-implemented functions/types from the native module
 from ._peppylib.messaging import MessengerHandle, TopicMessenger, ZenohdInstance  # noqa: E402  # type: ignore[import-not-found]
@@ -43,6 +52,7 @@ __all__ = [
     "NodeRunner",
     "CancellationToken",
     "SpawnedAsyncTask",
+    "messaging",
     "encoding",
     "__version__",
 ]
