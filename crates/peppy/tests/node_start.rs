@@ -34,7 +34,7 @@ async fn node_run_command_succeeds() {
 
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -124,7 +124,7 @@ async fn node_run_command_succeeds() {
     );
 
     // Start in-process node services for health/ready so node_start can succeed.
-    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle =
         listen_for_node_ready(&node_messenger, &daemon_node_name, instance_id, node_name)
             .await
@@ -213,7 +213,7 @@ async fn node_run_command_with_args_succeeds() {
 
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -338,7 +338,7 @@ async fn node_run_command_with_args_succeeds() {
     );
 
     // Start in-process node services for health/ready so node_start can succeed.
-    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle =
         listen_for_node_ready(&node_messenger, &daemon_node_name, instance_id, node_name)
             .await
@@ -437,7 +437,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
 
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -527,7 +527,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
     );
 
     // Start in-process node services for health/ready so node_start can succeed.
-    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle = listen_for_node_ready(
         &node_messenger,
         &daemon_node_name,
