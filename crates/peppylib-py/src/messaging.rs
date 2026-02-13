@@ -145,9 +145,10 @@ impl PyMessengerHandle {
     /// Get the messaging port.
     fn messaging_port<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let handle = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            Ok(handle.messaging_port().await)
-        })
+        pyo3_async_runtimes::tokio::future_into_py(
+            py,
+            async move { Ok(handle.messaging_port().await) },
+        )
     }
 
     /// Get the messaging endpoint as (host, port) tuple, or None if unavailable.

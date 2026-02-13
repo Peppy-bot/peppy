@@ -1,14 +1,15 @@
 """Main entry point for node."""
 
-import asyncio
-
 from peppygen import NodeBuilder, NodeRunner
 from peppygen.parameters import Parameters
 from peppygen.subscribed_topics import hello_world_param_message_stream
 
 
-def setup(params: Parameters, node_runner: NodeRunner):
-    asyncio.run(receive_messages(node_runner))
+def setup(_params: Parameters, node_runner: NodeRunner):
+    node_runner.spawn_async(
+        "hello-receiver",
+        lambda: receive_messages(node_runner),
+    )
 
 
 async def receive_messages(node_runner: NodeRunner):

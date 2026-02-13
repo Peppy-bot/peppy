@@ -74,6 +74,76 @@ impl PyNodeRunner {
     fn node_name(&self) -> &str {
         self.inner.processor().node_name()
     }
+
+    /// Spawn an async task in a dedicated Python daemon thread.
+    ///
+    /// `task` can be:
+    /// - an awaitable object (e.g. `my_coro(...)`)
+    /// - a zero-arg callable returning an awaitable
+    ///
+    /// If the task raises, the traceback is printed and the node cancellation
+    /// token is triggered to shut down the runner.
+    fn spawn_async(&self, py: Python<'_>, name: String, task: Py<PyAny>) -> PyResult<Py<PyAny>> {
+        let io_err = |e: PyErr| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string());
+
+        let py_cancel = Py::new(
+            py,
+            PyCancellationToken {
+                inner: self.inner.cancellation_token().clone(),
+            },
+        )
+        .map_err(&io_err)?;
+
+        let helper = PyModule::from_code(
+            py,
+            c"
+def make_target(task_name, task_or_factory, cancel_token):
+    def target():
+        try:
+            import asyncio
+
+            maybe_awaitable = task_or_factory() if callable(task_or_factory) else task_or_factory
+            if not hasattr(maybe_awaitable, '__await__'):
+                raise TypeError(
+                    f\"{task_name}: expected awaitable or callable returning awaitable, got {type(maybe_awaitable)!r}\"
+                )
+
+            asyncio.run(maybe_awaitable)
+        except BaseException:
+            import sys, traceback
+            print(
+                f\"peppy: async task '{task_name}' raised an exception, shutting down node\",
+                file=sys.stderr,
+            )
+            traceback.print_exc()
+            cancel_token.cancel()
+
+    return target
+",
+            c"_peppy_spawn_async_helper",
+            c"_peppy_spawn_async_helper",
+        )
+        .map_err(&io_err)?;
+
+        let target = helper
+            .getattr("make_target")
+            .map_err(&io_err)?
+            .call1((&name, task, py_cancel))
+            .map_err(&io_err)?;
+
+        let kwargs = pyo3::types::PyDict::new(py);
+        kwargs.set_item("target", target).map_err(&io_err)?;
+        kwargs.set_item("name", name).map_err(&io_err)?;
+        kwargs.set_item("daemon", true).map_err(&io_err)?;
+
+        let threading = py.import("threading").map_err(&io_err)?;
+        let thread = threading
+            .call_method("Thread", (), Some(&kwargs))
+            .map_err(&io_err)?;
+        thread.call_method0("start").map_err(&io_err)?;
+
+        Ok(thread.unbind())
+    }
 }
 
 /// Python wrapper for StandaloneConfig.
@@ -192,12 +262,13 @@ impl PyNodeBuilder {
                                 })?
                                 .unbind();
                             let py_runner =
-                                Py::new(py, PyNodeRunner::new(Arc::clone(&node_runner)))
-                                    .map_err(|e| {
+                                Py::new(py, PyNodeRunner::new(Arc::clone(&node_runner))).map_err(
+                                    |e| {
                                         peppylib::PeppyError::Io(std::io::Error::other(format!(
                                             "failed to create PyNodeRunner: {e}"
                                         )))
-                                    })?;
+                                    },
+                                )?;
                             let py_cancel = Py::new(
                                 py,
                                 PyCancellationToken {
