@@ -2,11 +2,10 @@ use bytes::Bytes;
 use peppylib::messaging::{ActionGoalHandle, ActionMessenger, ServiceEndpoint, TopicPublisher};
 use pyo3::prelude::*;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::Mutex;
 
 use super::services::PyServiceEndpoint;
-use super::{PyMessengerHandle, PyTopicMessage, to_py_err};
+use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err};
 use crate::config::PyQoSProfile;
 
 // ---------------------------------------------------------------------------
@@ -166,6 +165,7 @@ impl PyActionMessenger {
         feedback_qos: PyQoSProfile,
         goal_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let goal_timeout = duration_from_secs_f64("goal_timeout_secs", goal_timeout_secs)?;
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let goal_handle = ActionMessenger::send_goal(
@@ -178,7 +178,7 @@ impl PyActionMessenger {
                 target_instance_id.as_deref(),
                 Bytes::from(goal_payload),
                 feedback_qos.into(),
-                Duration::from_secs_f64(goal_timeout_secs),
+                goal_timeout,
             )
             .await
             .map_err(to_py_err)?;
@@ -207,17 +207,14 @@ impl PyActionMessenger {
         goal_handle: &PyActionGoalHandle,
         cancel_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let cancel_timeout = duration_from_secs_f64("cancel_timeout_secs", cancel_timeout_secs)?;
         let handle = messenger.inner.clone();
         let goal_inner = Arc::clone(&goal_handle.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let goal = goal_inner.lock().await;
-            let response = ActionMessenger::cancel_goal(
-                &handle,
-                &goal,
-                Duration::from_secs_f64(cancel_timeout_secs),
-            )
-            .await
-            .map_err(to_py_err)?;
+            let response = ActionMessenger::cancel_goal(&handle, &goal, cancel_timeout)
+                .await
+                .map_err(to_py_err)?;
             Ok(PyTopicMessage::from(response))
         })
     }
@@ -230,17 +227,14 @@ impl PyActionMessenger {
         goal_handle: &PyActionGoalHandle,
         result_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let result_timeout = duration_from_secs_f64("result_timeout_secs", result_timeout_secs)?;
         let handle = messenger.inner.clone();
         let goal_inner = Arc::clone(&goal_handle.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let goal = goal_inner.lock().await;
-            let response = ActionMessenger::request_result(
-                &handle,
-                &goal,
-                Duration::from_secs_f64(result_timeout_secs),
-            )
-            .await
-            .map_err(to_py_err)?;
+            let response = ActionMessenger::request_result(&handle, &goal, result_timeout)
+                .await
+                .map_err(to_py_err)?;
             Ok(PyTopicMessage::from(response))
         })
     }

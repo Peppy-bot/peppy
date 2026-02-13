@@ -4,10 +4,9 @@ use peppylib::messaging::{ServiceEndpoint, ServiceRequestContext};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::Mutex;
 
-use super::{PyMessengerHandle, PyTopicMessage, to_py_err};
+use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err};
 
 /// Python wrapper for a service request received by a listener.
 #[pyclass(name = "ServiceRequestContext")]
@@ -215,6 +214,8 @@ impl PyServiceMessenger {
         request_payload: Vec<u8>,
         response_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let response_timeout =
+            duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let response = ServiceMessenger::poll(
@@ -226,7 +227,7 @@ impl PyServiceMessenger {
                 target_daemon_node.as_deref(),
                 target_instance_id.as_deref(),
                 Bytes::from(request_payload),
-                Duration::from_secs_f64(response_timeout_secs),
+                response_timeout,
             )
             .await
             .map_err(to_py_err)?;

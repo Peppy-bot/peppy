@@ -115,17 +115,29 @@ mod tests {
     use super::*;
 
     /// Ensures that static files in peppylib-py/ that cannot be programmatically
-    /// templated stay in sync with the canonical PYTHON_MIN_VERSION constant.
+    /// templated stay in sync with the canonical PYTHON_MIN_VERSION/PYTHON_MAX_VERSION constants.
     #[test]
     fn python_version_consistency_in_static_files() {
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let peppylib_py_dir = manifest_dir.join("../peppylib-py");
 
+        let pyproject_path = peppylib_py_dir.join("pyproject.toml");
+        let pyproject_contents = std::fs::read_to_string(&pyproject_path)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", pyproject_path.display(), e));
+        let min_spec_ok = pyproject_contents.contains(format!(">={}", PYTHON_MIN_VERSION).as_str())
+            || pyproject_contents.contains(format!(">= {}", PYTHON_MIN_VERSION).as_str());
+        let max_spec_ok = pyproject_contents.contains(format!("<{}", PYTHON_MAX_VERSION).as_str())
+            || pyproject_contents.contains(format!("< {}", PYTHON_MAX_VERSION).as_str());
+        assert!(
+            pyproject_contents.contains("requires-python") && min_spec_ok && max_spec_ok,
+            "File {} must declare requires-python with both min and max constraints: \
+             expected >= {} and < {}",
+            pyproject_path.display(),
+            PYTHON_MIN_VERSION,
+            PYTHON_MAX_VERSION,
+        );
+
         let files_and_patterns: &[(&str, String)] = &[
-            (
-                "pyproject.toml",
-                format!("requires-python = \">= {}\"", PYTHON_MIN_VERSION),
-            ),
             ("Readme.md", format!("Python >= {}", PYTHON_MIN_VERSION)),
             (
                 "pixi.toml",

@@ -90,3 +90,24 @@ async def test_action_messenger_communication():
         assert result.payload == RESULT_PAYLOAD
 
         await server_task
+
+
+@pytest.mark.asyncio
+async def test_send_goal_rejects_invalid_timeout():
+    """send_goal validates timeout input and raises ValueError for invalid values."""
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        client_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        with pytest.raises(ValueError, match="goal_timeout_secs"):
+            await ActionMessenger.send_goal(
+                client_handle,
+                DAEMON_NODE,
+                INSTANCE_ID,
+                NODE_NAME,
+                ACTION_NAME,
+                DAEMON_NODE,
+                INSTANCE_ID,
+                GOAL_PAYLOAD,
+                QoSProfile.Reliable,
+                -1.0,
+            )
