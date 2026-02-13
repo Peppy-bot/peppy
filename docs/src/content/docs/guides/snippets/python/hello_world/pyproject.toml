@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hello_world"
+version = "0.1.0"
+description = "hello_world peppy node"
+requires-python = ">=3.11"
+dependencies = ["peppygen"]
+
+[project.scripts]
+hello_world = "hello_world.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hello_world"]
+
+[dependency-groups]
+dev = []
+
+[tool.uv.sources]
+peppygen = { path = ".peppy/libs/peppygen" }

@@ -1,0 +1,18 @@
+{
+  schema_version: 1,
+  manifest: {
+    name: "first_node",
+    tag: "0.1.0",
+    language: "python",
+    add_cmd: [
+      "uv",
+      "sync"
+    ],
+    start_cmd: [
+      "uv",
+      "run",
+      "first_node"
+    ]
+  },
+  interfaces: {}
+}
