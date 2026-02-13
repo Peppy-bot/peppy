@@ -29,6 +29,7 @@ from ._peppylib.runtime import (  # noqa: E402  # type: ignore[import-not-found]
     StandaloneConfig,
     NodeRunner,
     CancellationToken,
+    SpawnedAsyncTask,
 )
 
 __all__ = [
@@ -43,6 +44,7 @@ __all__ = [
     "StandaloneConfig",
     "NodeRunner",
     "CancellationToken",
+    "SpawnedAsyncTask",
     "encoding",
     "__version__",
 ]

@@ -25,6 +25,7 @@ from peppylib.runtime import (
     CancellationToken,
     NodeBuilder,
     NodeRunner,
+    SpawnedAsyncTask,
     StandaloneConfig,
 )
 
@@ -258,6 +259,125 @@ async def test_spawn_async_runs_background_task(monkeypatch):
 
     assert not runner_thread.is_alive(), "Runner should have exited"
     assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"
+
+
+@pytest.mark.asyncio
+async def test_spawn_async_returns_task_handle_and_failure(monkeypatch):
+    """spawn_async returns a handle exposing thread status and failure tracebacks."""
+    monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
+            Path(peppy_config_path).write_text(PEPPY_CONFIG)
+
+            standalone_config = (
+                StandaloneConfig()
+                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
+                .with_messaging(router.host, router.port)
+                .with_instance_id(TEST_INSTANCE_ID)
+            )
+
+            token_queue: queue.Queue = queue.Queue()
+            task_queue: queue.Queue = queue.Queue()
+            error_queue: queue.Queue = queue.Queue()
+
+            def run_node():
+                try:
+
+                    def setup_fn(_params, node_runner):
+                        token_queue.put(node_runner.cancellation_token())
+
+                        async def failing_task():
+                            await asyncio.sleep(0.01)
+                            raise RuntimeError("spawned task boom")
+
+                        task_queue.put(
+                            node_runner.spawn_async(
+                                "failing-task",
+                                failing_task,
+                                cancel_on_error=False,
+                            )
+                        )
+
+                    (
+                        NodeBuilder()
+                        .with_config_path(peppy_config_path)
+                        .standalone(standalone_config)
+                        .run(setup_fn)
+                    )
+                except Exception as e:
+                    error_queue.put(e)
+
+            runner_thread = threading.Thread(target=run_node, daemon=True)
+            runner_thread.start()
+
+            task_handle: SpawnedAsyncTask = await asyncio.to_thread(
+                task_queue.get, timeout=5.0
+            )
+            assert task_handle.thread.daemon is False
+
+            finished = await asyncio.to_thread(task_handle.join, 5.0)
+            assert finished, "spawned task should complete"
+            assert not task_handle.is_alive()
+
+            traceback_text = task_handle.exception()
+            assert traceback_text is not None
+            assert "RuntimeError: spawned task boom" in traceback_text
+            with pytest.raises(RuntimeError):
+                task_handle.raise_if_failed()
+
+            cancellation_token: CancellationToken = await asyncio.to_thread(
+                token_queue.get, timeout=5.0
+            )
+            cancellation_token.cancel()
+            runner_thread.join(timeout=10.0)
+
+    assert not runner_thread.is_alive(), "Runner should have exited"
+    assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"
+
+
+@pytest.mark.asyncio
+async def test_setup_exception_propagates_to_run(monkeypatch):
+    """Exceptions from setup propagate out of NodeBuilder.run."""
+    monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
+            Path(peppy_config_path).write_text(PEPPY_CONFIG)
+
+            standalone_config = (
+                StandaloneConfig()
+                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
+                .with_messaging(router.host, router.port)
+                .with_instance_id(TEST_INSTANCE_ID)
+            )
+
+            error_queue: queue.Queue = queue.Queue()
+
+            def run_node():
+                try:
+
+                    def setup_fn(_params, _node_runner):
+                        raise RuntimeError("setup boom")
+
+                    (
+                        NodeBuilder()
+                        .with_config_path(peppy_config_path)
+                        .standalone(standalone_config)
+                        .run(setup_fn)
+                    )
+                except Exception as e:
+                    error_queue.put(e)
+
+            runner_thread = threading.Thread(target=run_node, daemon=True)
+            runner_thread.start()
+
+            error = await asyncio.to_thread(error_queue.get, timeout=5.0)
+            assert isinstance(error, RuntimeError)
+            assert "setup boom" in str(error)
+            runner_thread.join(timeout=10.0)
+
+    assert not runner_thread.is_alive(), "Runner should have exited"
 
 
 @pytest.mark.asyncio

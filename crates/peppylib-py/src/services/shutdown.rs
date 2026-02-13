@@ -19,7 +19,10 @@ impl PyShutdownReceiver {
     /// Returns `True` when a shutdown request is received, or `False` if the
     /// sender was dropped without sending.
     fn wait<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let rx = self.inner.lock().unwrap().take().ok_or_else(|| {
+        let mut guard = self.inner.lock().map_err(|_| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("shutdown receiver mutex poisoned")
+        })?;
+        let rx = guard.take().ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("shutdown receiver already consumed")
         })?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
