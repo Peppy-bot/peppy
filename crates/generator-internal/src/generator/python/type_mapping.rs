@@ -7,6 +7,7 @@ use config::node::{QoSProfile, SchemaType, TypeToken};
 pub struct PythonField {
     pub name: String,
     pub type_str: String,
+    pub is_optional: bool,
 }
 
 /// A nested dataclass definition collected during type mapping.
@@ -66,6 +67,7 @@ pub fn schema_type_to_python(
                 fields.push(PythonField {
                     name: sanitize_python_identifier(nested_name),
                     type_str: field_type,
+                    is_optional: nested_schema.is_optional(),
                 });
             }
             nested_classes.push(NestedDataclass {
@@ -99,6 +101,7 @@ pub fn collect_fields_from_format(
         fields.push(PythonField {
             name: sanitize_python_identifier(field_name),
             type_str,
+            is_optional: schema.is_optional(),
         });
     }
     Ok(fields)
@@ -106,10 +109,10 @@ pub fn collect_fields_from_format(
 
 /// Returns `true` if any field (direct or nested) uses `Optional[...]`.
 pub fn uses_optional(fields: &[PythonField], nested_classes: &[NestedDataclass]) -> bool {
-    fields.iter().any(|f| f.type_str.contains("Optional"))
+    fields.iter().any(|f| f.is_optional)
         || nested_classes
             .iter()
-            .any(|c| c.fields.iter().any(|f| f.type_str.contains("Optional")))
+            .any(|c| c.fields.iter().any(|f| f.is_optional))
 }
 
 /// Returns the Python string for a QoS profile variant.

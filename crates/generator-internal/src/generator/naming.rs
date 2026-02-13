@@ -67,7 +67,7 @@ pub(crate) fn normalize_snake_case(input: &str) -> String {
                 result.push('_');
             }
             result.push(ch.to_ascii_lowercase());
-            prev_was_lower_or_digit = true;
+            prev_was_lower_or_digit = false;
         } else if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
             result.push(ch);
             prev_was_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
@@ -215,6 +215,31 @@ mod tests {
         assert_eq!(sanitize_capnp_field_name("encoding"), "encoding");
         assert_eq!(sanitize_capnp_field_name("x"), "x");
         assert_eq!(sanitize_capnp_field_name("return_type"), "returnType");
+    }
+
+    #[test]
+    fn normalize_snake_case_standard_camel() {
+        assert_eq!(normalize_snake_case("camelCase"), "camel_case");
+        assert_eq!(normalize_snake_case("SensorData"), "sensor_data");
+        assert_eq!(
+            normalize_snake_case("GoalResponseMessage"),
+            "goal_response_message"
+        );
+    }
+
+    #[test]
+    fn normalize_snake_case_consecutive_uppercase() {
+        assert_eq!(normalize_snake_case("HTMLParser"), "html_parser");
+        assert_eq!(normalize_snake_case("ABCDef"), "abc_def");
+        assert_eq!(normalize_snake_case("HTTPSConnection"), "https_connection");
+    }
+
+    #[test]
+    fn normalize_snake_case_edge_cases() {
+        assert_eq!(normalize_snake_case("ABC"), "abc");
+        assert_eq!(normalize_snake_case("A"), "a");
+        assert_eq!(normalize_snake_case("alllowercase"), "alllowercase");
+        assert_eq!(normalize_snake_case("already_snake"), "already_snake");
     }
 
     #[test]

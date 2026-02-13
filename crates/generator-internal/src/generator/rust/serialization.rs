@@ -295,10 +295,14 @@ fn generate_list_assignment(
 
     let length_expr = match length {
         Some(len) => {
-            let len_lit = Literal::u32_unsuffixed(len as u32);
+            let len_lit = Literal::u32_unsuffixed(u32::try_from(len).map_err(|_| {
+                Error::InvariantViolation {
+                    context: format!("list length {len} for field `{field_name}` exceeds u32::MAX"),
+                }
+            })?);
             quote!(#len_lit)
         }
-        None => quote!((#value_expr).len() as u32),
+        None => quote!(u32::try_from((#value_expr).len()).expect("list length exceeds u32::MAX")),
     };
 
     let element_setter = match token {
