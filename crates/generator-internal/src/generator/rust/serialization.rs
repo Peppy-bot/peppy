@@ -136,10 +136,10 @@ fn generate_field_assignment_inner(
                     &inner_expr,
                     names,
                     false,
-                    false,
+                    true,
                 )?;
                 return Ok(quote! {
-                    if let Some(#binding) = (#value_expr).cloned() {
+                    if let Some(#binding) = (#value_expr).as_ref() {
                         #inner
                     }
                 });
@@ -213,6 +213,7 @@ fn generate_field_assignment_inner(
             &init_method,
             value_expr,
             &object.fields,
+            value_is_ref,
             names,
         ),
     }
@@ -339,6 +340,7 @@ fn generate_object_assignment(
     init_method: &Ident,
     value_expr: &TokenStream,
     fields: &IndexMap<String, SchemaType>,
+    value_is_ref: bool,
     names: &mut NameGenerator,
 ) -> Result<TokenStream> {
     let builder_ident = names.next("builder");
@@ -349,13 +351,19 @@ fn generate_object_assignment(
             &sanitize_rust_identifier(nested_name.as_str()),
             Span::call_site(),
         );
-        let nested_value_expr = quote!(#value_expr.#nested_ident);
-        nested.push(generate_field_assignment(
+        let nested_value_expr = if value_is_ref {
+            quote!(&(#value_expr).#nested_ident)
+        } else {
+            quote!((#value_expr).#nested_ident)
+        };
+        nested.push(generate_field_assignment_inner(
             &quote!(#builder_ident),
             nested_name,
             nested_schema,
             &nested_value_expr,
             names,
+            true,
+            value_is_ref,
         )?);
     }
 
