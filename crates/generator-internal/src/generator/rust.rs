@@ -649,12 +649,10 @@ impl LanguageGenerator for RustGenerator {
         let mut context = GenerationContext::default();
         let request_format = non_empty_message_format(service.request_message_format.as_ref());
         let request_wire_artifacts = map_message_format(request_format)?;
-        let response_format = service.response_message_format.clone();
-        let response_struct_artifacts = map_message_format(response_format.as_ref())?;
-        let response_wire_artifacts = map_message_format(response_format.as_ref())?;
+        let response_artifacts = map_message_format(service.response_message_format.as_ref())?;
         let wire_params = collect_function_params(
             request_wire_artifacts.as_ref(),
-            response_struct_artifacts.as_ref(),
+            response_artifacts.as_ref(),
             &struct_prefix,
             &mut context,
             Some(&generic_response_ident),
@@ -702,7 +700,7 @@ impl LanguageGenerator for RustGenerator {
         context.add_private_struct(request_struct_tokens);
         let request_struct_ident = Some(Ident::new("Request", Span::call_site()));
 
-        let response_spec = if let Some(return_artifacts) = response_wire_artifacts.as_ref() {
+        let response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
             let response_prefix = format!("{struct_prefix}Response");
             let schema_key = format!("{fn_name_str}_response");
             let schema_info =

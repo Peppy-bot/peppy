@@ -281,11 +281,7 @@ fn generate_primitive_reader(
                         })?;
                 },
                 quote! {
-                    let len = #reader_ident.len();
-                    let mut #value_ident = Vec::with_capacity(len as usize);
-                    for byte in #reader_ident.iter() {
-                        #value_ident.push(*byte);
-                    }
+                    let #value_ident = #reader_ident.to_vec();
                 },
             ];
             (statements, value_ident)
@@ -398,13 +394,8 @@ fn generate_u8_array_reader(
             });
         }
         None => {
-            let vec_ident = names.next("bytes");
             statements.push(quote! {
-                let mut #vec_ident = Vec::with_capacity(#reader_ident.len() as usize);
-                for byte in #reader_ident.iter() {
-                    #vec_ident.push(*byte);
-                }
-                let #value_ident = #vec_ident;
+                let #value_ident = #reader_ident.to_vec();
             });
         }
     }
@@ -457,13 +448,8 @@ fn generate_primitive_array_reader(
             }
         });
     } else {
-        let vec_ident = names.next("values");
         statements.push(quote! {
-            let mut #vec_ident = Vec::with_capacity(#reader_ident.len() as usize);
-            for value in #reader_ident.iter() {
-                #vec_ident.push(value);
-            }
-            let #value_ident = #vec_ident;
+            let #value_ident = #reader_ident.iter().collect::<Vec<#element_ty>>();
         });
     }
 
