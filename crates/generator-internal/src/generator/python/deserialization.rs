@@ -1,8 +1,7 @@
 use super::PythonSchemaInfo;
 use super::code_builder::PythonCodeBuilder;
 use super::identifiers::{is_python_keyword, sanitize_python_identifier};
-use super::serialization::capnp_field_name;
-use crate::generator::naming::to_camel_case;
+use crate::generator::naming::{sanitize_capnp_field_name, to_camel_case};
 use config::node::{MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
 
@@ -53,7 +52,7 @@ pub fn generate_field_reader_statements(
     // For optional fields, override the value with None when the Cap'n Proto
     // field was never set.
     if schema.is_optional() {
-        let capnp_name = capnp_field_name(field_name);
+        let capnp_name = sanitize_capnp_field_name(field_name);
         builder.line(&format!("if not {reader_var}._has(\"{capnp_name}\"):"));
         builder.indent();
         builder.line(&format!("{var} = None"));
@@ -139,7 +138,7 @@ fn generate_primitive_reader(
     field_name: &str,
     counter: &mut u32,
 ) -> String {
-    let capnp_name = capnp_field_name(field_name);
+    let capnp_name = sanitize_capnp_field_name(field_name);
     let python_name = sanitize_python_identifier(field_name);
     let idx = *counter;
     *counter += 1;
@@ -157,7 +156,7 @@ fn generate_time_reader(
     field_name: &str,
     counter: &mut u32,
 ) -> String {
-    let capnp_name = capnp_field_name(field_name);
+    let capnp_name = sanitize_capnp_field_name(field_name);
     let python_name = sanitize_python_identifier(field_name);
     let ts_idx = *counter;
     *counter += 1;
@@ -182,7 +181,7 @@ fn generate_array_reader(
     is_u8: bool,
     counter: &mut u32,
 ) -> String {
-    let capnp_name = capnp_field_name(field_name);
+    let capnp_name = sanitize_capnp_field_name(field_name);
     let python_name = sanitize_python_identifier(field_name);
     let idx = *counter;
     *counter += 1;
@@ -209,7 +208,7 @@ fn generate_object_reader(
     struct_prefix: &str,
     counter: &mut u32,
 ) -> String {
-    let capnp_name = capnp_field_name(field_name);
+    let capnp_name = sanitize_capnp_field_name(field_name);
     let python_name = sanitize_python_identifier(field_name);
     let nested_prefix = format!("{struct_prefix}{}", to_camel_case(field_name));
 

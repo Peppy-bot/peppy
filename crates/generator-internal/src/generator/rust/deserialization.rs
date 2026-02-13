@@ -1,6 +1,8 @@
+use super::identifiers::sanitize_rust_identifier;
 use super::serialization::NameGenerator;
 use super::type_mapping::primitive_type_token;
-use crate::generator::naming::{sanitize_component, sanitize_rust_identifier, to_camel_case};
+use crate::error::{Error, Result};
+use crate::generator::naming::{sanitize_component, to_camel_case};
 use config::node::{ArraySchema, MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -13,7 +15,7 @@ pub fn generate_field_reader_statements(
     struct_prefix: &str,
     context_expr: &TokenStream,
     names: &mut NameGenerator,
-) -> (Vec<TokenStream>, Ident) {
+) -> Result<(Vec<TokenStream>, Ident)> {
     generate_field_reader_statements_inner(
         reader_expr,
         field_name,
@@ -89,7 +91,7 @@ pub fn deserialize_format_fields(
     format: &MessageFormat,
     struct_prefix: &str,
     context_expr: &TokenStream,
-) -> (Vec<TokenStream>, Vec<TokenStream>, Vec<Ident>) {
+) -> Result<(Vec<TokenStream>, Vec<TokenStream>, Vec<Ident>)> {
     let mut names = NameGenerator::new();
     let mut field_statements = Vec::new();
     let mut field_inits = Vec::new();
@@ -103,7 +105,7 @@ pub fn deserialize_format_fields(
             struct_prefix,
             context_expr,
             &mut names,
-        );
+        )?;
         field_statements.append(&mut statements);
         let field_ident = Ident::new(
             &sanitize_rust_identifier(field_name.as_str()),
@@ -113,7 +115,7 @@ pub fn deserialize_format_fields(
         value_idents.push(value_ident);
     }
 
-    (field_statements, field_inits, value_idents)
+    Ok((field_statements, field_inits, value_idents))
 }
 
 fn generate_field_reader_statements_inner(
@@ -124,7 +126,7 @@ fn generate_field_reader_statements_inner(
     context_expr: &TokenStream,
     names: &mut NameGenerator,
     handle_optional: bool,
-) -> (Vec<TokenStream>, Ident) {
+) -> Result<(Vec<TokenStream>, Ident)> {
     if handle_optional && schema.is_optional() {
         let option_ident = names.next(&format!("{field_name}_opt"));
         if schema_supports_presence_check(schema) {
@@ -140,7 +142,7 @@ fn generate_field_reader_statements_inner(
                 context_expr,
                 names,
                 false,
-            );
+            )?;
             let statements = vec![quote! {
                 let #option_ident = if #reader_expr.reborrow().#has_method() {
                     #( #inner_statements )*
@@ -149,7 +151,7 @@ fn generate_field_reader_statements_inner(
                     None
                 };
             }];
-            return (statements, option_ident);
+            return Ok((statements, option_ident));
         } else {
             let (mut statements, value_ident) = generate_field_reader_statements_inner(
                 reader_expr,
@@ -159,23 +161,27 @@ fn generate_field_reader_statements_inner(
                 context_expr,
                 names,
                 false,
-            );
+            )?;
             statements.push(quote!(let #option_ident = Some(#value_ident);));
-            return (statements, option_ident);
+            return Ok((statements, option_ident));
         }
     }
 
     match schema {
-        SchemaType::Type(token) => {
-            generate_primitive_reader(reader_expr, field_name, token, context_expr, names)
-        }
-        SchemaType::Primitive(primitive) => generate_primitive_reader(
+        SchemaType::Type(token) => Ok(generate_primitive_reader(
+            reader_expr,
+            field_name,
+            token,
+            context_expr,
+            names,
+        )),
+        SchemaType::Primitive(primitive) => Ok(generate_primitive_reader(
             reader_expr,
             field_name,
             &primitive.kind,
             context_expr,
             names,
-        ),
+        )),
         SchemaType::Array(array) => {
             generate_array_reader(reader_expr, field_name, array, context_expr, names)
         }
@@ -317,21 +323,21 @@ fn generate_array_reader(
     array: &ArraySchema,
     context_expr: &TokenStream,
     names: &mut NameGenerator,
-) -> (Vec<TokenStream>, Ident) {
+) -> Result<(Vec<TokenStream>, Ident)> {
     let method_ident = Ident::new(
         &format!("get_{}", sanitize_component(field_name)),
         Span::call_site(),
     );
     match array.items.as_ref().as_type_token() {
-        Some(TypeToken::U8) => generate_u8_array_reader(
+        Some(TypeToken::U8) => Ok(generate_u8_array_reader(
             reader_expr,
             field_name,
             &method_ident,
             array.length,
             context_expr,
             names,
-        ),
-        Some(token) => generate_primitive_array_reader(
+        )),
+        Some(token) => Ok(generate_primitive_array_reader(
             reader_expr,
             field_name,
             token,
@@ -339,8 +345,10 @@ fn generate_array_reader(
             array.length,
             context_expr,
             names,
-        ),
-        None => panic!("unsupported nested schema type in array `{field_name}`"),
+        )),
+        None => Err(Error::UnsupportedArrayItemSchema {
+            field: field_name.to_string(),
+        }),
     }
 }
 
@@ -469,7 +477,7 @@ fn generate_object_reader(
     struct_prefix: &str,
     context_expr: &TokenStream,
     names: &mut NameGenerator,
-) -> (Vec<TokenStream>, Ident) {
+) -> Result<(Vec<TokenStream>, Ident)> {
     let method_ident = Ident::new(
         &format!("get_{}", sanitize_component(field_name)),
         Span::call_site(),
@@ -499,7 +507,7 @@ fn generate_object_reader(
             &nested_prefix,
             context_expr,
             names,
-        );
+        )?;
         field_statements.append(&mut nested_statements);
         let field_ident = Ident::new(&sanitize_rust_identifier(nested_name), Span::call_site());
         field_inits.push(quote!(#field_ident: #nested_value_ident));
@@ -516,5 +524,5 @@ fn generate_object_reader(
         };
     });
 
-    (statements, value_ident)
+    Ok((statements, value_ident))
 }

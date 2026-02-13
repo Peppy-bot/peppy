@@ -1,10 +1,10 @@
 use super::context::SchemaFieldLookup;
 use super::deserialization::{build_deserialize_fn, generate_field_reader_statements};
+use super::identifiers::sanitize_rust_identifier;
 use super::serialization::{
     MessageEncodingSpec, NameGenerator, build_serialize_payload, generate_field_assignment,
 };
 use crate::error::{Error, Result};
-use crate::generator::naming::sanitize_rust_identifier;
 use config::encoding::FunctionParam;
 use config::node::MessageFormat;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -626,7 +626,7 @@ pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> Result<Toke
                 label,
                 &field_context_expr,
                 &mut names,
-            );
+            )?;
             field_statements.append(&mut statements);
 
             if field_key == instance_field_key {
@@ -770,7 +770,7 @@ pub fn deserialize_fields_from_format(
             label,
             context_expr,
             &mut names,
-        );
+        )?;
         field_statements.append(&mut statements);
         value_idents.push(value_ident);
     }
