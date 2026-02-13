@@ -93,6 +93,67 @@ async def test_action_messenger_communication():
 
 
 @pytest.mark.asyncio
+async def test_cancel_goal_concurrent_with_feedback():
+    """cancel_goal must not deadlock when on_next_feedback is waiting."""
+
+    CANCEL_RESPONSE_PAYLOAD = b"cancelled"
+
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        server_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        client_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        action = await ActionMessenger.expose(
+            server_handle,
+            DAEMON_NODE,
+            INSTANCE_ID,
+            NODE_NAME,
+            ACTION_NAME,
+        )
+
+        await asyncio.sleep(0.05)
+
+        # Server: accept goal then handle cancel (never send feedback)
+        async def server():
+            await action.goal_service.handle_next_request(
+                lambda _req: GOAL_RESPONSE_PAYLOAD
+            )
+            await action.cancel_service.handle_next_request(
+                lambda _req: CANCEL_RESPONSE_PAYLOAD
+            )
+
+        server_task = asyncio.create_task(server())
+
+        goal_handle = await ActionMessenger.send_goal(
+            client_handle,
+            DAEMON_NODE,
+            INSTANCE_ID,
+            NODE_NAME,
+            ACTION_NAME,
+            DAEMON_NODE,
+            INSTANCE_ID,
+            GOAL_PAYLOAD,
+            QoSProfile.Reliable,
+            2.0,
+        )
+
+        # Start waiting for feedback (will block — server never sends any).
+        feedback_task = asyncio.ensure_future(goal_handle.on_next_feedback())
+
+        cancel_response = await asyncio.wait_for(
+            ActionMessenger.cancel_goal(client_handle, goal_handle, 2.0),
+            timeout=3.0,
+        )
+
+        assert cancel_response.payload == CANCEL_RESPONSE_PAYLOAD
+
+        feedback_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await feedback_task
+
+        await server_task
+
+
+@pytest.mark.asyncio
 async def test_send_goal_rejects_invalid_timeout():
     """send_goal validates timeout input and raises ValueError for invalid values."""
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:

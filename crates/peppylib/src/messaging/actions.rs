@@ -180,17 +180,42 @@ impl ActionMessenger {
         action_handle: &ActionGoalHandle,
         cancel_timeout: Duration,
     ) -> Result<TopicMessage> {
-        let cancel_service_name = format!("{}/cancel", action_handle.action_name);
+        Self::cancel_goal_with(
+            messenger_handle,
+            &action_handle.daemon_node,
+            &action_handle.instance_id,
+            &action_handle.node_name,
+            &action_handle.action_name,
+            action_handle.target_instance_id.as_deref(),
+            cancel_timeout,
+        )
+        .await
+    }
+
+    /// Like [`cancel_goal`](Self::cancel_goal) but accepts individual fields,
+    /// allowing callers to avoid holding a lock on the goal handle during the
+    /// network round-trip.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn cancel_goal_with(
+        messenger_handle: &MessengerHandle,
+        daemon_node: &str,
+        instance_id: &str,
+        node_name: &str,
+        action_name: &str,
+        target_instance_id: Option<&str>,
+        cancel_timeout: Duration,
+    ) -> Result<TopicMessage> {
+        let cancel_service_name = format!("{action_name}/cancel");
 
         messenger_handle
             .poll_service(
                 "action",
-                &action_handle.daemon_node,
-                &action_handle.instance_id,
-                &action_handle.node_name,
+                daemon_node,
+                instance_id,
+                node_name,
                 &cancel_service_name,
                 None,
-                action_handle.target_instance_id.as_deref(),
+                target_instance_id,
                 Bytes::new(),
                 cancel_timeout,
             )
@@ -202,17 +227,42 @@ impl ActionMessenger {
         action_handle: &ActionGoalHandle,
         result_timeout: Duration,
     ) -> Result<TopicMessage> {
-        let result_service_name = format!("{}/result", action_handle.action_name);
+        Self::request_result_with(
+            messenger_handle,
+            &action_handle.daemon_node,
+            &action_handle.instance_id,
+            &action_handle.node_name,
+            &action_handle.action_name,
+            action_handle.target_instance_id.as_deref(),
+            result_timeout,
+        )
+        .await
+    }
+
+    /// Like [`request_result`](Self::request_result) but accepts individual
+    /// fields, allowing callers to avoid holding a lock on the goal handle
+    /// during the network round-trip.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn request_result_with(
+        messenger_handle: &MessengerHandle,
+        daemon_node: &str,
+        instance_id: &str,
+        node_name: &str,
+        action_name: &str,
+        target_instance_id: Option<&str>,
+        result_timeout: Duration,
+    ) -> Result<TopicMessage> {
+        let result_service_name = format!("{action_name}/result");
 
         messenger_handle
             .poll_service(
                 "action",
-                &action_handle.daemon_node,
-                &action_handle.instance_id,
-                &action_handle.node_name,
+                daemon_node,
+                instance_id,
+                node_name,
                 &result_service_name,
                 None,
-                action_handle.target_instance_id.as_deref(),
+                target_instance_id,
                 Bytes::new(),
                 result_timeout,
             )
@@ -220,11 +270,11 @@ impl ActionMessenger {
             .map_err(|err| match err {
                 Error::ServiceTimeout { instance_id, .. } => Error::ActionResultTimeout {
                     instance_id,
-                    action_name: action_handle.action_name.clone(),
+                    action_name: action_name.to_string(),
                 },
                 Error::ServiceUnreachable { instance_id, .. } => Error::ActionResultUnreachable {
                     instance_id,
-                    action_name: action_handle.action_name.clone(),
+                    action_name: action_name.to_string(),
                 },
                 other => other,
             })
