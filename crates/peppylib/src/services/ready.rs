@@ -5,17 +5,17 @@ use tracing::debug;
 use crate::messaging::ServiceRequestContext;
 use crate::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 
-/// This service is exposed by each Node instance to signal to the master node that
+/// This service is exposed by each Node instance to signal to the daemon node that
 /// the node's runner::run() has started (i.e., the node is ready for health checks).
 pub async fn listen_for_node_ready(
     messenger: &MessengerHandle,
-    master_node_node: &str,
+    daemon_node_node: &str,
     instance_id: &str,
     node_name: &str,
 ) -> PeppyResult<JoinHandle<PeppyResult<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
-        master_node_node,
+        daemon_node_node,
         instance_id,
         node_name,
         super::super::messaging::NODE_READY_SERVICE,

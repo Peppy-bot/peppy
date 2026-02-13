@@ -10,7 +10,7 @@ async fn service_messenger_communication() {
         .expect("failed to start zenoh router for test");
     let (host, port) = (instance.host.clone(), instance.port);
 
-    let master_node = "test_master";
+    let daemon_node = "test_daemon";
     let instance_id = "test_instance";
     let node_name = "test_node";
     let service_name = "test_service";
@@ -27,7 +27,7 @@ async fn service_messenger_communication() {
     // Start the service listener
     let mut service = ServiceMessenger::listen(
         &server_handle,
-        master_node,
+        daemon_node,
         instance_id,
         node_name,
         service_name,
@@ -50,11 +50,11 @@ async fn service_messenger_communication() {
     // Poll the service as a client
     let response = ServiceMessenger::poll(
         &client_handle,
-        master_node,
+        daemon_node,
         instance_id,
         node_name,
         service_name,
-        Some(master_node),
+        Some(daemon_node),
         Some(instance_id),
         request_payload,
         Duration::from_secs(2),
@@ -66,5 +66,5 @@ async fn service_messenger_communication() {
 
     assert_eq!(response.payload().to_bytes(), response_payload);
     assert_eq!(response.instance_id(), instance_id);
-    assert_eq!(response.master_node(), master_node);
+    assert_eq!(response.daemon_node(), daemon_node);
 }

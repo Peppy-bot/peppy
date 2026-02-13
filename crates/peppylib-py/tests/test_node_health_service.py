@@ -14,7 +14,7 @@ from peppylib.services import NodeHealthService
 
 from common import TEST_INSTANCE_ID, TEST_NODE_NAME
 
-TEST_MASTER_NODE_NAME = "test_master_node"
+TEST_DAEMON_NODE_NAME = "test_daemon_node"
 CALLER_INSTANCE_ID = "caller_instance"
 
 
@@ -27,7 +27,7 @@ async def test_node_health_request_response_roundtrip():
         # Start the health service directly
         task = await NodeHealthService.listen(
             messenger,
-            TEST_MASTER_NODE_NAME,
+            TEST_DAEMON_NODE_NAME,
             TEST_INSTANCE_ID,
             TEST_NODE_NAME,
         )
@@ -40,11 +40,11 @@ async def test_node_health_request_response_roundtrip():
 
         response = await ServiceMessenger.poll(
             messenger,
-            TEST_MASTER_NODE_NAME,
+            TEST_DAEMON_NODE_NAME,
             CALLER_INSTANCE_ID,
             TEST_NODE_NAME,
             NODE_HEALTH_SERVICE,
-            TEST_MASTER_NODE_NAME,
+            TEST_DAEMON_NODE_NAME,
             TEST_INSTANCE_ID,
             request_payload,
             2.0,

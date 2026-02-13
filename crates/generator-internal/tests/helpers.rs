@@ -262,9 +262,9 @@ pub fn run_generate_peppygen_lib_test(
 /// Context for waiting on service reachability in tests.
 pub struct WaitContext<'a> {
     pub messenger: &'a MessengerHandle,
-    pub bound_master_node: &'a str,
+    pub bound_daemon_node: &'a str,
     pub caller_instance_id: &'a str,
-    pub target_master_node: Option<&'a str>,
+    pub target_daemon_node: Option<&'a str>,
 }
 
 pub async fn wait_for_service_reachable_or_exit(
@@ -295,11 +295,11 @@ pub async fn wait_for_service_reachable_or_exit(
 
         let reachable = ServiceMessenger::is_reachable(
             ctx.messenger,
-            ctx.bound_master_node,
+            ctx.bound_daemon_node,
             ctx.caller_instance_id,
             target_node_name,
             target_service_name,
-            ctx.target_master_node,
+            ctx.target_daemon_node,
             target_instance_id,
         )
         .await
@@ -350,11 +350,11 @@ pub async fn wait_for_action_service_reachable_or_exit(
 
         let reachable = ActionMessenger::is_reachable(
             ctx.messenger,
-            ctx.bound_master_node,
+            ctx.bound_daemon_node,
             ctx.caller_instance_id,
             target_node_name,
             target_service_name,
-            ctx.target_master_node,
+            ctx.target_daemon_node,
             target_instance_id,
         )
         .await
@@ -415,21 +415,21 @@ pub async fn wait_for_health_service_reachable_or_exit(
 
 pub async fn send_shutdown(
     messenger: &MessengerHandle,
-    bound_master_node: &str,
+    bound_daemon_node: &str,
     sender_instance_id: &str,
     target_node_name: &str,
-    target_master_node: Option<&str>,
+    target_daemon_node: Option<&str>,
     target_instance_id: &str,
     timeout: Duration,
 ) {
     let payload = bytes::Bytes::from_static(b"shutdown");
     ServiceMessenger::poll(
         messenger,
-        bound_master_node,
+        bound_daemon_node,
         sender_instance_id,
         target_node_name,
         SHUTDOWN_SERVICE,
-        target_master_node,
+        target_daemon_node,
         Some(target_instance_id),
         payload,
         timeout,
@@ -437,8 +437,8 @@ pub async fn send_shutdown(
     .await
     .unwrap_or_else(|err| {
         panic!(
-            "failed to send shutdown to node={} instance={} (project master={}): {}",
-            target_node_name, target_instance_id, bound_master_node, err
+            "failed to send shutdown to node={} instance={} (project daemon={}): {}",
+            target_node_name, target_instance_id, bound_daemon_node, err
         )
     });
 }
@@ -447,21 +447,21 @@ pub async fn send_shutdown(
 /// (e.g., the process has already exited).
 pub async fn try_send_shutdown(
     messenger: &MessengerHandle,
-    bound_master_node: &str,
+    bound_daemon_node: &str,
     sender_instance_id: &str,
     target_node_name: &str,
-    target_master_node: Option<&str>,
+    target_daemon_node: Option<&str>,
     target_instance_id: &str,
     timeout: Duration,
 ) {
     let payload = bytes::Bytes::from_static(b"shutdown");
     let _ = ServiceMessenger::poll(
         messenger,
-        bound_master_node,
+        bound_daemon_node,
         sender_instance_id,
         target_node_name,
         SHUTDOWN_SERVICE,
-        target_master_node,
+        target_daemon_node,
         Some(target_instance_id),
         payload,
         timeout,

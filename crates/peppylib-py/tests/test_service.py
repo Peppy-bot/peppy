@@ -11,7 +11,7 @@ import pytest
 
 from peppylib import MessengerHandle, ServiceMessenger, ZenohdInstance
 
-MASTER_NODE = "test_master"
+DAEMON_NODE = "test_daemon"
 INSTANCE_ID = "test_instance"
 NODE_NAME = "test_node"
 SERVICE_NAME = "test_service"
@@ -30,7 +30,7 @@ async def test_service_messenger_communication():
         # Start the service listener
         service = await ServiceMessenger.listen(
             server_handle,
-            MASTER_NODE,
+            DAEMON_NODE,
             INSTANCE_ID,
             NODE_NAME,
             SERVICE_NAME,
@@ -48,11 +48,11 @@ async def test_service_messenger_communication():
         # Poll the service as a client
         response = await ServiceMessenger.poll(
             client_handle,
-            MASTER_NODE,
+            DAEMON_NODE,
             INSTANCE_ID,
             NODE_NAME,
             SERVICE_NAME,
-            MASTER_NODE,
+            DAEMON_NODE,
             INSTANCE_ID,
             REQUEST_PAYLOAD,
             2.0,
@@ -62,4 +62,4 @@ async def test_service_messenger_communication():
 
         assert response.payload == RESPONSE_PAYLOAD
         assert response.instance_id == INSTANCE_ID
-        assert response.master_node == MASTER_NODE
+        assert response.daemon_node == DAEMON_NODE

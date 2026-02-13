@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use config::node::Name;
 use node_stack::{NodeStack, NodeStackError};
 
-use crate::helpers::config_common::master_node_config;
+use crate::helpers::config_common::daemon_node_config;
 
 #[test]
 fn add_instance_creates_new_entity() {
@@ -20,7 +20,7 @@ fn add_instance_creates_new_entity() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
     assert_eq!(stack.len(), 1, "stack should start with root node only");
 
     // Push config first
@@ -28,7 +28,7 @@ fn add_instance_creates_new_entity() {
         .push_config(config, false, PathBuf::from("/tmp"))
         .expect("should push config");
 
-    assert_eq!(stack.len(), 2, "stack should have master node + one entity");
+    assert_eq!(stack.len(), 2, "stack should have daemon node + one entity");
     assert!(
         stack.contains("sensor", "1.0.0"),
         "entity should be findable"
@@ -51,12 +51,12 @@ fn add_instance_creates_new_entity() {
         "instance ID should match the returned one"
     );
 
-    // Verify sensor is in the stack but is not the root (master node is the root/parent)
+    // Verify sensor is in the stack but is not the root (daemon node is the root/parent)
     let root = stack.root();
     assert_eq!(
         root.config().manifest.name.as_str(),
-        "master",
-        "root should be master node, not sensor"
+        "daemon",
+        "root should be daemon node, not sensor"
     );
     assert_ne!(
         entity.config().manifest.name.as_str(),
@@ -64,18 +64,18 @@ fn add_instance_creates_new_entity() {
         "sensor should not be the root node"
     );
 
-    // Verify sensor is in the stack's snapshot alongside master
+    // Verify sensor is in the stack's snapshot alongside daemon
     let snapshot = stack.snapshot();
     assert_eq!(
         snapshot.len(),
         2,
-        "snapshot should contain master and sensor"
+        "snapshot should contain daemon and sensor"
     );
     let names: Vec<_> = snapshot
         .iter()
         .map(|e| e.config().manifest.name.as_str())
         .collect();
-    assert!(names.contains(&"master"), "snapshot should contain master");
+    assert!(names.contains(&"daemon"), "snapshot should contain daemon");
     assert!(names.contains(&"sensor"), "snapshot should contain sensor");
 }
 
@@ -94,7 +94,7 @@ fn add_instance_to_existing_entity() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
 
     // Push config first
     stack
@@ -106,7 +106,7 @@ fn add_instance_to_existing_entity() {
         .add_instance("sensor", "1.0.0", None, None)
         .expect("should spawn first instance");
 
-    assert_eq!(stack.len(), 2, "stack should have master node + one entity");
+    assert_eq!(stack.len(), 2, "stack should have daemon node + one entity");
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
         entity.instances().len(),
@@ -158,7 +158,7 @@ fn add_instance_with_specific_id() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
     let custom_id = Name::new("my-custom-instance").expect("valid name");
 
     // First push the config
@@ -199,7 +199,7 @@ fn remove_instance_from_entity_with_multiple_instances() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
     let first_id = Name::new("instance-1").expect("valid name");
     let second_id = Name::new("instance-2").expect("valid name");
 
@@ -216,7 +216,7 @@ fn remove_instance_from_entity_with_multiple_instances() {
         .add_instance("sensor", "1.0.0", Some(&second_id), None)
         .expect("should spawn second instance");
 
-    assert_eq!(stack.len(), 2, "stack should have master node + one entity");
+    assert_eq!(stack.len(), 2, "stack should have daemon node + one entity");
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
         entity.instances().len(),
@@ -260,7 +260,7 @@ fn remove_last_instance_removes_entity() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
     let instance_id = Name::new("only-instance").expect("valid name");
 
     // Push config and spawn instance
@@ -284,8 +284,8 @@ fn remove_last_instance_removes_entity() {
         .expect("should succeed");
     assert!(removed, "instance should be removed");
 
-    // Entity should be gone, but master node remains
-    assert_eq!(stack.len(), 1, "stack should only have the master node");
+    // Entity should be gone, but daemon node remains
+    assert_eq!(stack.len(), 1, "stack should only have the daemon node");
     assert!(
         stack.find("sensor", "1.0.0").is_none(),
         "entity should not exist"
@@ -307,7 +307,7 @@ fn remove_nonexistent_instance_returns_false() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
     let instance_id = Name::new("real-instance").expect("valid name");
     let fake_id = Name::new("fake-instance").expect("valid name");
 
@@ -337,7 +337,7 @@ fn remove_nonexistent_instance_returns_false() {
 }
 
 #[test]
-fn reset_clears_all_except_master_node() {
+fn reset_clears_all_except_daemon_node() {
     let config1: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -364,7 +364,7 @@ fn reset_clears_all_except_master_node() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
     stack
         .push_config(config1, false, PathBuf::from("/tmp"))
         .expect("config1 has no dependencies");
@@ -377,7 +377,7 @@ fn reset_clears_all_except_master_node() {
 
     assert_eq!(stack.len(), 1, "stack should only have root after reset");
     assert!(
-        stack.contains("master", "1.0.0"),
+        stack.contains("daemon", "1.0.0"),
         "root should still exist after reset"
     );
     assert!(
@@ -405,14 +405,14 @@ fn spawning_multiple_instances_on_same_entity() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
     stack
         .push_config(config, false, PathBuf::from("/tmp"))
         .expect("config has no dependencies");
     assert_eq!(
         stack.len(),
         2,
-        "stack should have the master node + one entity"
+        "stack should have the daemon node + one entity"
     );
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
@@ -441,7 +441,7 @@ fn spawning_multiple_instances_on_same_entity() {
     assert_eq!(
         stack.len(),
         2,
-        "stack should still have the master node + one entity"
+        "stack should still have the daemon node + one entity"
     );
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
@@ -507,13 +507,13 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
 
     // Add the first config
     stack
         .push_config(config_with_topic, false, PathBuf::from("/tmp/sensor_v1"))
         .expect("first config has no dependencies");
-    assert_eq!(stack.len(), 2, "stack should have master + sensor");
+    assert_eq!(stack.len(), 2, "stack should have daemon + sensor");
 
     // Re-adding the same entity should overwrite the previous snapshot when there are no dependents
     stack
@@ -523,7 +523,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
             PathBuf::from("/tmp/sensor_v2"),
         )
         .expect("should overwrite existing entity without dependents");
-    assert_eq!(stack.len(), 2, "stack should still have master + sensor");
+    assert_eq!(stack.len(), 2, "stack should still have daemon + sensor");
 
     // Entity should still exist (no instances since push_config doesn't create them)
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
@@ -604,13 +604,13 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
     )
     .expect("valid node config");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
 
     // Add version 1.0.0
     stack
         .push_config(config_v1, false, PathBuf::from("/tmp"))
         .expect("first config has no dependencies");
-    assert_eq!(stack.len(), 2, "stack should have master + sensor v1");
+    assert_eq!(stack.len(), 2, "stack should have daemon + sensor v1");
 
     // Adding version 2.0.0 with different interfaces should succeed (different tag = different entity)
     stack
@@ -619,7 +619,7 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
     assert_eq!(
         stack.len(),
         3,
-        "stack should have master + sensor v1 + sensor v2"
+        "stack should have daemon + sensor v1 + sensor v2"
     );
 
     // Both entities should exist (with no instances since push_config doesn't create them)
@@ -643,14 +643,14 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
 }
 
 #[test]
-fn root_returns_the_master_node() {
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+fn root_returns_the_daemon_node() {
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
 
     let root = stack.root();
     assert_eq!(
         root.config().manifest.name.as_str(),
-        "master",
-        "root should be master node"
+        "daemon",
+        "root should be daemon node"
     );
     assert_eq!(
         root.config().manifest.tag,
@@ -666,18 +666,18 @@ fn root_returns_the_master_node() {
 
 #[test]
 fn cannot_modify_root_node() {
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
     let root_instance_id = stack.root().instances()[0].instance_id().clone();
 
     // Try to remove the root's instance
-    let result = stack.remove_instance("master", "1.0.0", &root_instance_id);
+    let result = stack.remove_instance("daemon", "1.0.0", &root_instance_id);
     assert!(
         result.is_err(),
         "should not be able to remove root node instance"
     );
 
     // Try to add another instance to root
-    let result = stack.push_config(master_node_config(), false, PathBuf::from("/tmp"));
+    let result = stack.push_config(daemon_node_config(), false, PathBuf::from("/tmp"));
     assert!(
         result.is_err(),
         "should not be able to add instance to root node"
@@ -739,7 +739,7 @@ fn node_stack_wires_dependencies_for_dependants() {
     )
     .expect("valid dependent node config");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
     stack
         .push_config(dependency, false, PathBuf::from("/tmp"))
         .expect("dependency has no dependencies");
@@ -815,13 +815,13 @@ fn dependency_fails_when_node_name_mismatches() {
     )
     .expect("valid dependency node config");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
 
     // Add lidar (which is NOT the expected dependency "uvc_camera")
     stack
         .push_config(wrong_dependency, false, PathBuf::from("/tmp"))
         .expect("lidar has no dependencies");
-    assert_eq!(stack.len(), 2, "stack should have master + lidar");
+    assert_eq!(stack.len(), 2, "stack should have daemon + lidar");
 
     // Adding brain should fail because it expects "uvc_camera", not "lidar"
     let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
@@ -838,7 +838,7 @@ fn dependency_fails_when_node_name_mismatches() {
     assert_eq!(
         stack.len(),
         2,
-        "stack should still only have master + lidar"
+        "stack should still only have daemon + lidar"
     );
 }
 
@@ -902,13 +902,13 @@ fn dependency_fails_when_node_tag_mismatches() {
     )
     .expect("valid dependency node config");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
 
     // Add lidar with tag "2.0.0" (NOT the expected tag "1.0.0")
     stack
         .push_config(wrong_tag_dependency, false, PathBuf::from("/tmp"))
         .expect("lidar has no dependencies");
-    assert_eq!(stack.len(), 2, "stack should have master + lidar");
+    assert_eq!(stack.len(), 2, "stack should have daemon + lidar");
 
     // Adding brain should fail because it expects lidar with tag "1.0.0", not "2.0.0"
     let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
@@ -925,7 +925,7 @@ fn dependency_fails_when_node_tag_mismatches() {
     assert_eq!(
         stack.len(),
         2,
-        "stack should still only have master + lidar"
+        "stack should still only have daemon + lidar"
     );
 }
 
@@ -996,7 +996,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
     )
     .expect("valid dependency node config");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
 
     stack
         .push_config(dependency_v1, false, PathBuf::from("/tmp/lidar_v1"))
@@ -1022,7 +1022,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
     assert_eq!(
         stack.len(),
         3,
-        "stack should still have master + lidar + brain"
+        "stack should still have daemon + lidar + brain"
     );
 
     let entity = stack.find("lidar", "1.0.0").expect("entity should exist");

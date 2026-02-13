@@ -12,7 +12,7 @@ async def main():
     # Create a messenger for the sending node.
     host = "127.0.0.1"
     port = DEFAULT_MESSAGING_PORT
-    master_node = f"{generate_name()}_master"
+    daemon_node = f"{generate_name()}_daemon"
     instance_id = f"{generate_name()}_caller"
 
     try:
@@ -27,15 +27,15 @@ async def main():
 
     print(
         f"Sending service request as instance_id {instance_id} "
-        f"and master node {master_node}..."
+        f"and daemon node {daemon_node}..."
     )
     response = await ServiceMessenger.poll(
         sender_handle,
-        master_node,
+        daemon_node,
         instance_id,
         NODE_NAME,
         SERVICE_NAME,
-        None,  # target_master_node - not needed
+        None,  # target_daemon_node - not needed
         None,  # target_instance_id - any instance would work
         request_payload,
         3.0,  # response_timeout_secs

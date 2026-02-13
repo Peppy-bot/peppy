@@ -5,7 +5,7 @@ use node_stack::{LaunchPlan, NodeStackError};
 use tempfile::{TempDir, tempdir};
 
 use crate::helpers::config_common::{
-    deployment, master_node_config, write_config, write_config_str,
+    daemon_node_config, deployment, write_config, write_config_str,
 };
 use crate::helpers::git::{create_simple_git_repo, push_git_commit};
 
@@ -31,11 +31,11 @@ fn git_repo_is_cloned_and_resolved() {
         launcher_config,
     );
 
-    let plan = LaunchPlan::from_launch_file(master_node_config(), &launch_file).expect("plan");
+    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file).expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
-    assert_eq!(stack.len(), 2, "master + uvc_camera");
+    assert_eq!(stack.len(), 2, "daemon + uvc_camera");
     assert!(stack.contains("uvc_camera", "1.2.3"));
 
     let deployment = report
@@ -80,14 +80,14 @@ fn git_repo_missing_tag_is_unresolvable() {
     let launch_file =
         write_config_str(project_root.join("peppy_launcher.json5"), &launcher_content);
 
-    let plan = LaunchPlan::from_launch_file(master_node_config(), launch_file).expect("plan");
+    let plan = LaunchPlan::from_launch_file(daemon_node_config(), launch_file).expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
     assert_eq!(
         stack.len(),
         1,
-        "node stack should contain only the master node"
+        "node stack should contain only the daemon node"
     );
 
     let lidar_deployment = report
@@ -147,8 +147,8 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
         launcher_config,
     );
 
-    let plan = LaunchPlan::from_launch_file(master_node_config(), &launch_file).expect("plan");
-    assert_eq!(plan.node_stack().len(), 2, "master + uvc_camera");
+    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file).expect("plan");
+    assert_eq!(plan.node_stack().len(), 2, "daemon + uvc_camera");
     let deployment = plan
         .report()
         .find_deployment_by_name("uvc_camera")
@@ -183,8 +183,8 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
     repo.tag("1.0.0", &commit, &signature, "tag", true)
         .expect("retag commit");
 
-    let plan = LaunchPlan::from_launch_file(master_node_config(), &launch_file).expect("plan");
-    assert_eq!(plan.node_stack().len(), 2, "master + uvc_camera");
+    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file).expect("plan");
+    assert_eq!(plan.node_stack().len(), 2, "daemon + uvc_camera");
     let deployment = plan
         .report()
         .find_deployment_by_name("uvc_camera")

@@ -2,7 +2,7 @@ use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
-use master_node::encoding::{NodeListRequest, NodeRemoveRequest};
+use daemon_node::encoding::{NodeListRequest, NodeRemoveRequest};
 use node_stack::SerializedNodeGraph;
 use tracing::info;
 
@@ -41,7 +41,7 @@ async fn remove_node_async(
             e
         ))
     })?;
-    let master_node_name = daemon_state.master_node_name;
+    let daemon_node_name = daemon_state.daemon_node_name;
 
     ctx.connect().await?;
     let messenger_handle = ctx
@@ -54,7 +54,7 @@ async fn remove_node_async(
     }
     if !stop_instances {
         let instance_ids =
-            fetch_instance_ids(messenger_handle, &master_node_name, &node_name, &tag).await?;
+            fetch_instance_ids(messenger_handle, &daemon_node_name, &node_name, &tag).await?;
 
         if !instance_ids.is_empty() {
             let confirm = confirm_removal(&node_name, &tag, &instance_ids)?;
@@ -68,8 +68,8 @@ async fn remove_node_async(
     }
 
     info!(
-        "Calling node_remove for '{}:{}' on master '{}' (stop_instances={})...",
-        node_name, tag, master_node_name, stop_instances
+        "Calling node_remove for '{}:{}' on daemon '{}' (stop_instances={})...",
+        node_name, tag, daemon_node_name, stop_instances
     );
 
     let remove_request =
@@ -77,9 +77,9 @@ async fn remove_node_async(
     let remove_response = remove_request
         .poll(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &daemon_node_name,
             REQUEST_TIMEOUT,
         )
         .await
@@ -101,16 +101,16 @@ async fn remove_node_async(
 
 async fn fetch_instance_ids(
     messenger: &peppylib::MessengerHandle,
-    master_node_name: &str,
+    daemon_node_name: &str,
     node_name: &str,
     tag: &str,
 ) -> Result<Vec<String>> {
     let response = NodeListRequest::new(false)
         .poll(
             messenger,
-            master_node_name,
+            daemon_node_name,
             CALLER_INSTANCE_ID,
-            master_node_name,
+            daemon_node_name,
             REQUEST_TIMEOUT,
         )
         .await

@@ -1,5 +1,5 @@
 mod builder;
-mod master_node;
+mod daemon_node;
 mod messaging_router;
 
 pub mod install;
@@ -19,13 +19,13 @@ pub enum ServiceCommands {
         /// Messaging engine to use (zenoh by default)
         #[arg(long, default_value = "zenoh")]
         messaging_engine: String,
-        /// Optional name for the master node
+        /// Optional name for the daemon node
         #[arg(long)]
-        master_name: Option<String>,
+        daemon_name: Option<String>,
     },
     /// Install the peppy daemon as a background service (user-level by default; run with sudo for system-wide).
     Install {},
-    /// Reset the current master node stack (clears all nodes except the master).
+    /// Reset the current daemon node stack (clears all nodes except the daemon).
     Reset {},
 }
 
@@ -38,10 +38,10 @@ impl Command for ServiceCommand {
         match self.command {
             ServiceCommands::Serve {
                 messaging_engine,
-                master_name,
+                daemon_name,
             } => serve::ServeCommand {
                 messaging_engine,
-                master_name,
+                daemon_name,
                 shutdown_token: None,
             }
             .execute(app_ctx),

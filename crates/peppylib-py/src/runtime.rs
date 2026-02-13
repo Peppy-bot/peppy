@@ -48,9 +48,9 @@ impl PyNodeRunner {
         }
     }
 
-    /// Get the master node this instance is bound to.
-    fn bound_master_node(&self) -> &str {
-        self.inner.processor().bound_master_node()
+    /// Get the daemon node this instance is bound to.
+    fn bound_daemon_node(&self) -> &str {
+        self.inner.processor().bound_daemon_node()
     }
 
     /// Get the instance ID this node is bound to.

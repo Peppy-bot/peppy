@@ -697,6 +697,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "daemon-node"
+version = "0.0.1"
+dependencies = [
+ "askama",
+ "bytes",
+ "capnp",
+ "capnpc",
+ "chrono",
+ "config",
+ "futures",
+ "generator",
+ "git2",
+ "gix-url",
+ "hostname",
+ "names-generator2",
+ "node-stack",
+ "peppylib",
+ "pmi",
+ "rand 0.10.0",
+ "rust-embed",
+ "serde_json",
+ "serde_json5",
+ "sysinfo",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "ureq",
+ "url",
+ "zstd",
+]
+
+[[package]]
 name = "darling"
 version = "0.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2061,40 +2095,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3d25b0e0b648a86960ac23b7ad4abb9717601dec6f66c165f5b037f3f03065f"
 
 [[package]]
-name = "master-node"
-version = "0.0.1"
-dependencies = [
- "askama",
- "bytes",
- "capnp",
- "capnpc",
- "chrono",
- "config",
- "futures",
- "generator",
- "git2",
- "gix-url",
- "hostname",
- "names-generator2",
- "node-stack",
- "peppylib",
- "pmi",
- "rand 0.10.0",
- "rust-embed",
- "serde_json",
- "serde_json5",
- "sysinfo",
- "tar",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "ureq",
- "url",
- "zstd",
-]
-
-[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2568,12 +2568,12 @@ dependencies = [
  "clap",
  "config",
  "crossterm",
+ "daemon-node",
  "derive_more",
  "dirs 6.0.0",
  "gix-url",
  "ipnet",
  "libc",
- "master-node",
  "names-generator2",
  "netdev",
  "node-stack",
