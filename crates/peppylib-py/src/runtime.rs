@@ -61,10 +61,7 @@ fn take_python_error(error_slot: &SharedPyError) -> Option<PyErr> {
 fn format_python_traceback(py: Python<'_>, err: &PyErr) -> String {
     let formatted = (|| -> PyResult<String> {
         let traceback = py.import("traceback")?;
-        let lines = traceback.call_method1(
-            "format_exception",
-            (err.get_type(py), err.value(py), err.traceback(py)),
-        )?;
+        let lines = traceback.call_method1("format_exception", (err.value(py),))?;
         let joined = PyString::new(py, "").call_method1("join", (lines,))?;
         joined.extract::<String>()
     })();
