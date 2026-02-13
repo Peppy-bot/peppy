@@ -22,7 +22,7 @@ async fn node_runtime_config_command_outputs_valid_config() {
     let node_name = "test_runtime_config_node";
 
     let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -129,7 +129,7 @@ async fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
     let node_name = "test_runtime_config_json5_node";
 
     let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 

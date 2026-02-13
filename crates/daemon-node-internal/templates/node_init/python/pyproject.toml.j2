@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "{{ node_name }}"
 version = "0.1.0"
 description = "{{ node_name }} peppy node"
-requires-python = ">={{ python_min_version }}"
+requires-python = ">={{ python_min_version }},<{{ python_max_version }}"
 dependencies = ["peppygen"]
 
 [project.scripts]

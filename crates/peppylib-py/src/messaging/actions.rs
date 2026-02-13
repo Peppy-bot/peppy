@@ -2,11 +2,10 @@ use bytes::Bytes;
 use peppylib::messaging::{ActionGoalHandle, ActionMessenger, ServiceEndpoint, TopicPublisher};
 use pyo3::prelude::*;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::Mutex;
 
 use super::services::PyServiceEndpoint;
-use super::{PyMessengerHandle, PyTopicMessage, to_py_err};
+use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err};
 use crate::config::PyQoSProfile;
 
 // ---------------------------------------------------------------------------
@@ -39,10 +38,19 @@ impl PyTopicPublisher {
 // ---------------------------------------------------------------------------
 
 /// Python wrapper for a client-side goal handle returned by `send_goal`.
+///
+/// Immutable identifying fields are cached at construction so that
+/// `cancel_goal` and `request_result` can proceed without locking the mutex,
+/// which is only needed by `on_next_feedback` (mutates the subscription).
 #[pyclass(name = "ActionGoalHandle")]
 pub struct PyActionGoalHandle {
     pub(crate) inner: Arc<Mutex<ActionGoalHandle>>,
     goal_response_cache: PyTopicMessage,
+    daemon_node: String,
+    instance_id: String,
+    node_name: String,
+    action_name: String,
+    target_instance_id: Option<String>,
 }
 
 #[pymethods]
@@ -128,9 +136,8 @@ impl PyActionMessenger {
         as_node_name: String,
         as_action_name: String,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&messenger.inner);
+        let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = inner.lock().await;
             let creation = ActionMessenger::expose(
                 &handle,
                 &as_daemon_node,
@@ -167,9 +174,9 @@ impl PyActionMessenger {
         feedback_qos: PyQoSProfile,
         goal_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&messenger.inner);
+        let goal_timeout = duration_from_secs_f64("goal_timeout_secs", goal_timeout_secs)?;
+        let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = inner.lock().await;
             let goal_handle = ActionMessenger::send_goal(
                 &handle,
                 &as_daemon_node,
@@ -180,12 +187,13 @@ impl PyActionMessenger {
                 target_instance_id.as_deref(),
                 Bytes::from(goal_payload),
                 feedback_qos.into(),
-                Duration::from_secs_f64(goal_timeout_secs),
+                goal_timeout,
             )
             .await
             .map_err(to_py_err)?;
 
-            // Cache goal_response data before moving handle into Arc<Mutex<>>
+            // Cache goal_response and identifying fields before wrapping in
+            // Arc<Mutex<>> so cancel_goal/request_result never need the lock.
             let resp = goal_handle.goal_response();
             let goal_response_cache = PyTopicMessage {
                 key_expr: resp.key_expr().to_string(),
@@ -197,11 +205,19 @@ impl PyActionMessenger {
             Ok(PyActionGoalHandle {
                 inner: Arc::new(Mutex::new(goal_handle)),
                 goal_response_cache,
+                daemon_node: as_daemon_node,
+                instance_id: as_instance_id,
+                node_name: to_node_name,
+                action_name: to_action_name,
+                target_instance_id,
             })
         })
     }
 
     /// Cancel an active goal.
+    ///
+    /// Does not acquire the goal handle mutex, so this can run concurrently
+    /// with `on_next_feedback` without blocking.
     #[staticmethod]
     fn cancel_goal<'py>(
         py: Python<'py>,
@@ -209,15 +225,22 @@ impl PyActionMessenger {
         goal_handle: &PyActionGoalHandle,
         cancel_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let messenger_inner = Arc::clone(&messenger.inner);
-        let goal_inner = Arc::clone(&goal_handle.inner);
+        let cancel_timeout = duration_from_secs_f64("cancel_timeout_secs", cancel_timeout_secs)?;
+        let handle = messenger.inner.clone();
+        let daemon_node = goal_handle.daemon_node.clone();
+        let instance_id = goal_handle.instance_id.clone();
+        let node_name = goal_handle.node_name.clone();
+        let action_name = goal_handle.action_name.clone();
+        let target_instance_id = goal_handle.target_instance_id.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = messenger_inner.lock().await;
-            let goal = goal_inner.lock().await;
-            let response = ActionMessenger::cancel_goal(
+            let response = ActionMessenger::cancel_goal_with(
                 &handle,
-                &goal,
-                Duration::from_secs_f64(cancel_timeout_secs),
+                &daemon_node,
+                &instance_id,
+                &node_name,
+                &action_name,
+                target_instance_id.as_deref(),
+                cancel_timeout,
             )
             .await
             .map_err(to_py_err)?;
@@ -226,6 +249,9 @@ impl PyActionMessenger {
     }
 
     /// Request the final result of a completed goal.
+    ///
+    /// Does not acquire the goal handle mutex, so this can run concurrently
+    /// with `on_next_feedback` without blocking.
     #[staticmethod]
     fn request_result<'py>(
         py: Python<'py>,
@@ -233,15 +259,22 @@ impl PyActionMessenger {
         goal_handle: &PyActionGoalHandle,
         result_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let messenger_inner = Arc::clone(&messenger.inner);
-        let goal_inner = Arc::clone(&goal_handle.inner);
+        let result_timeout = duration_from_secs_f64("result_timeout_secs", result_timeout_secs)?;
+        let handle = messenger.inner.clone();
+        let daemon_node = goal_handle.daemon_node.clone();
+        let instance_id = goal_handle.instance_id.clone();
+        let node_name = goal_handle.node_name.clone();
+        let action_name = goal_handle.action_name.clone();
+        let target_instance_id = goal_handle.target_instance_id.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = messenger_inner.lock().await;
-            let goal = goal_inner.lock().await;
-            let response = ActionMessenger::request_result(
+            let response = ActionMessenger::request_result_with(
                 &handle,
-                &goal,
-                Duration::from_secs_f64(result_timeout_secs),
+                &daemon_node,
+                &instance_id,
+                &node_name,
+                &action_name,
+                target_instance_id.as_deref(),
+                result_timeout,
             )
             .await
             .map_err(to_py_err)?;
@@ -263,9 +296,8 @@ impl PyActionMessenger {
         target_daemon_node: Option<String>,
         target_instance_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&messenger.inner);
+        let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = inner.lock().await;
             let reachable = ActionMessenger::is_reachable(
                 &handle,
                 &bound_daemon_node,

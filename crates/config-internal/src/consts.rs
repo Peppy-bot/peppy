@@ -23,7 +23,7 @@ pub const ALLOWED_CONFIG_CHARS: &str =
 pub const PYTHON_MIN_VERSION: &str = "3.11";
 
 /// Maximum Python version supported (exclusive, e.g. "3.14").
-/// Driven by pycapnp wheel availability.
+/// Driven by pycapnp wheel availability (wheels not yet available for Python 3.14 as of Feb 2026).
 pub const PYTHON_MAX_VERSION: &str = "3.14";
 
 // Application runtime environment (dev/prod) tracked internally.
@@ -115,19 +115,37 @@ mod tests {
     use super::*;
 
     /// Ensures that static files in peppylib-py/ that cannot be programmatically
-    /// templated stay in sync with the canonical PYTHON_MIN_VERSION constant.
+    /// templated stay in sync with the canonical PYTHON_MIN_VERSION/PYTHON_MAX_VERSION constants.
     #[test]
     fn python_version_consistency_in_static_files() {
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let peppylib_py_dir = manifest_dir.join("../peppylib-py");
 
+        let pyproject_path = peppylib_py_dir.join("pyproject.toml");
+        let pyproject_contents = std::fs::read_to_string(&pyproject_path)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", pyproject_path.display(), e));
+        let min_spec_ok = pyproject_contents.contains(format!(">={}", PYTHON_MIN_VERSION).as_str())
+            || pyproject_contents.contains(format!(">= {}", PYTHON_MIN_VERSION).as_str());
+        let max_spec_ok = pyproject_contents.contains(format!("<{}", PYTHON_MAX_VERSION).as_str())
+            || pyproject_contents.contains(format!("< {}", PYTHON_MAX_VERSION).as_str());
+        assert!(
+            pyproject_contents.contains("requires-python") && min_spec_ok && max_spec_ok,
+            "File {} must declare requires-python with both min and max constraints: \
+             expected >= {} and < {}",
+            pyproject_path.display(),
+            PYTHON_MIN_VERSION,
+            PYTHON_MAX_VERSION,
+        );
+
         let files_and_patterns: &[(&str, String)] = &[
-            (
-                "pyproject.toml",
-                format!("requires-python = \">= {}\"", PYTHON_MIN_VERSION),
-            ),
             ("Readme.md", format!("Python >= {}", PYTHON_MIN_VERSION)),
-            ("pixi.toml", format!("python = \">={}", PYTHON_MIN_VERSION)),
+            (
+                "pixi.toml",
+                format!(
+                    "python = \">={},<{}\"",
+                    PYTHON_MIN_VERSION, PYTHON_MAX_VERSION
+                ),
+            ),
             (
                 "Cargo.toml",
                 format!("abi3-py{}", PYTHON_MIN_VERSION.replace('.', "")),
@@ -141,10 +159,11 @@ mod tests {
             assert!(
                 contents.contains(expected_pattern.as_str()),
                 "File {} does not contain expected pattern '{}'. \
-                 Update this file to match config::consts::PYTHON_MIN_VERSION = \"{}\"",
+                 Update this file to match PYTHON_MIN_VERSION = \"{}\" / PYTHON_MAX_VERSION = \"{}\"",
                 file_path.display(),
                 expected_pattern,
                 PYTHON_MIN_VERSION,
+                PYTHON_MAX_VERSION,
             );
         }
     }

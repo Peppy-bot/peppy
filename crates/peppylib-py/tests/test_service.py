@@ -63,3 +63,23 @@ async def test_service_messenger_communication():
         assert response.payload == RESPONSE_PAYLOAD
         assert response.instance_id == INSTANCE_ID
         assert response.daemon_node == DAEMON_NODE
+
+
+@pytest.mark.asyncio
+async def test_service_poll_rejects_invalid_timeout():
+    """poll validates timeout input and raises ValueError for invalid values."""
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        client_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        with pytest.raises(ValueError, match="response_timeout_secs"):
+            await ServiceMessenger.poll(
+                client_handle,
+                DAEMON_NODE,
+                INSTANCE_ID,
+                NODE_NAME,
+                SERVICE_NAME,
+                DAEMON_NODE,
+                INSTANCE_ID,
+                REQUEST_PAYLOAD,
+                -1.0,
+            )

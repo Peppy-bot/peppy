@@ -59,7 +59,7 @@ impl<'a> MakeWriter<'a> for LogCapture {
 
     fn make_writer(&'a self) -> Self::Writer {
         LogCaptureWriter {
-            buffer: self.buffer.clone(),
+            buffer: Arc::clone(&self.buffer),
         }
     }
 }
@@ -165,7 +165,7 @@ impl ServeCommandEmulation {
     }
 
     pub fn messenger(&self) -> Arc<TokioMutex<Messenger>> {
-        self.shared_messenger.clone()
+        Arc::clone(&self.shared_messenger)
     }
 
     pub fn temp_dir(&self) -> &Path {
