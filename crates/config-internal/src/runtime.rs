@@ -50,7 +50,7 @@ pub struct RuntimeConfig {
     pub messaging_host: String,
     pub messaging_port: u16,
     pub node_name: Name,
-    pub bound_master_node: Name,
+    pub bound_daemon_node: Name,
     pub node_instance: NodeInstance,
 }
 
@@ -60,14 +60,14 @@ impl RuntimeConfig {
         messaging_port: u16,
         node_instance: NodeInstance,
         node_name: impl Into<String>,
-        bound_master_node: impl Into<String>,
+        bound_daemon_node: impl Into<String>,
     ) -> Result<Self> {
         Ok(Self {
             messaging_host: messaging_host.to_owned(),
             messaging_port,
             node_instance,
             node_name: Name::new(node_name.into())?,
-            bound_master_node: Name::new(bound_master_node.into())?,
+            bound_daemon_node: Name::new(bound_daemon_node.into())?,
         })
     }
 
@@ -108,7 +108,7 @@ mod tests {
                 instance_id: "$INSTANCE_ID"
             },
             node_name: "camera",
-            bound_master_node: "master_node"
+            bound_daemon_node: "daemon_node"
         }"#;
 
         let populated = json
@@ -135,7 +135,7 @@ mod tests {
         assert_eq!(returned, path);
         assert_eq!(parsed.node_name, "camera");
         assert_eq!(parsed.node_instance.instance_id, "camera_front");
-        assert_eq!(parsed.bound_master_node, "master_node");
+        assert_eq!(parsed.bound_daemon_node, "daemon_node");
         assert_eq!(
             parsed.node_instance.instance_id,
             config.node_instance.instance_id

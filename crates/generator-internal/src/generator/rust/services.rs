@@ -220,7 +220,7 @@ pub fn build_exposed_service_method(
         let mut helper_params: Vec<TokenStream> = vec![quote!(payload: &[u8]), quote!(handler: &F)];
 
         if use_service_name_const {
-            helper_params.push(quote!(master_node: String));
+            helper_params.push(quote!(daemon_node: String));
             helper_params.push(quote!(instance_id: String));
         } else if instance_from_request_context {
             let instance_ident =
@@ -240,9 +240,9 @@ pub fn build_exposed_service_method(
 
         let helper_fn = if use_service_name_const {
             let request_construction = if request_data_struct.is_some() {
-                quote!(let request = Request { instance_id, master_node, data: request_data };)
+                quote!(let request = Request { instance_id, daemon_node, data: request_data };)
             } else {
-                quote!(let request = Request { instance_id, master_node };)
+                quote!(let request = Request { instance_id, daemon_node };)
             };
             quote! {
                 fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<bytes::Bytes>
@@ -276,7 +276,7 @@ pub fn build_exposed_service_method(
         let mut helper_params: Vec<TokenStream> = vec![quote!(handler: &F)];
 
         if use_service_name_const {
-            helper_params.push(quote!(master_node: String));
+            helper_params.push(quote!(daemon_node: String));
             helper_params.push(quote!(instance_id: String));
         } else if instance_from_request_context {
             let instance_ident =
@@ -300,7 +300,7 @@ pub fn build_exposed_service_method(
                 where
                     F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
                 {
-                    let request = Request { instance_id, master_node };
+                    let request = Request { instance_id, daemon_node };
 
                     let response_payload = #response_serialization;
 
@@ -333,7 +333,7 @@ pub fn build_exposed_service_method(
             let mut helper_args: Vec<TokenStream> = vec![
                 quote!(payload.as_ref()),
                 quote!(&handler),
-                quote!(master_node),
+                quote!(daemon_node),
                 quote!(instance_id),
             ];
 
@@ -344,13 +344,13 @@ pub fn build_exposed_service_method(
             quote!({
                 let message = #request_context_ident.message();
                 let payload = message.payload().as_bytes();
-                let master_node = message.master_node().to_string();
+                let daemon_node = message.daemon_node().to_string();
                 let instance_id = message.instance_id().to_string();
                 #handler_helper_name(#(#helper_args),*)
             })
         } else {
             let mut helper_args: Vec<TokenStream> =
-                vec![quote!(&handler), quote!(master_node), quote!(instance_id)];
+                vec![quote!(&handler), quote!(daemon_node), quote!(instance_id)];
 
             if let Some(arg) = service_instance_call_arg.clone() {
                 helper_args.push(arg);
@@ -358,7 +358,7 @@ pub fn build_exposed_service_method(
 
             quote!({
                 let message = #request_context_ident.message();
-                let master_node = message.master_node().to_string();
+                let daemon_node = message.daemon_node().to_string();
                 let instance_id = message.instance_id().to_string();
                 #handler_helper_name(#(#helper_args),*)
             })
@@ -427,7 +427,7 @@ pub fn build_exposed_service_method(
             {
                 let mut service = peppylib::ServiceMessenger::listen(
                     node_runner.messenger(),
-                    node_runner.processor().bound_master_node(),
+                    node_runner.processor().bound_daemon_node(),
                     node_runner.processor().bound_instance_id(),
                     node_runner.processor().node_name(),
                     #service_name_ref,
@@ -478,7 +478,7 @@ pub fn build_exposed_service_method(
 
                 let mut service = peppylib::ServiceMessenger::listen(
                     node_runner.messenger(),
-                    node_runner.master_node(),
+                    node_runner.daemon_node(),
                     service_instance_id.as_str(),
                     node_name,
                     service_name,

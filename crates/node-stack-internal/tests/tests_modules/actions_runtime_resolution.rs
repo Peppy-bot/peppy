@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use node_stack::{NodeStack, NodeStackError};
 
-use crate::helpers::config_common::master_node_config;
+use crate::helpers::config_common::daemon_node_config;
 
 #[test]
 fn action_dependency_resolved_when_dependency_added_first() {
@@ -85,13 +85,13 @@ fn action_dependency_resolved_when_dependency_added_first() {
     )
     .expect("valid dependency node config");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
 
     // Add the dependency first
     stack
         .push_config(dependency, false, PathBuf::from("/tmp"))
         .expect("dependency node has no dependencies");
-    assert_eq!(stack.len(), 2, "stack should have master + dependency node");
+    assert_eq!(stack.len(), 2, "stack should have daemon + dependency node");
 
     // Now add the dependent node
     stack
@@ -154,7 +154,7 @@ fn action_dependency_fails_when_dependency_is_missing() {
     )
     .expect("valid dependent node config");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
 
     // Adding a node that depends on a non-existent action provider should fail
     let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
@@ -168,7 +168,7 @@ fn action_dependency_fails_when_dependency_is_missing() {
     };
     assert_eq!(dependency, "controller");
     assert_eq!(dependency_tag, "1.0.0");
-    assert_eq!(stack.len(), 1, "stack should only have master node");
+    assert_eq!(stack.len(), 1, "stack should only have daemon node");
 }
 
 #[test]
@@ -255,13 +255,13 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
     )
     .expect("valid dependency node config with wrong action");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
 
     // Add the node with the correct name but wrong action
     stack
         .push_config(dependency_wrong_action, false, PathBuf::from("/tmp"))
         .expect("controller has no dependencies");
-    assert_eq!(stack.len(), 2, "stack should have master + controller");
+    assert_eq!(stack.len(), 2, "stack should have daemon + controller");
 
     // Adding brain should fail because controller doesn't expose "move_right_arm"
     let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
@@ -282,6 +282,6 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
     assert_eq!(
         stack.len(),
         2,
-        "stack should still only have master + controller"
+        "stack should still only have daemon + controller"
     );
 }

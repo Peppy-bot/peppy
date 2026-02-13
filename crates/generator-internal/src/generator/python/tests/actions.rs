@@ -226,7 +226,7 @@ fn exposed_action() {
         &[
             "class GoalRequest:",
             "instance_id: str",
-            "master_node: str",
+            "daemon_node: str",
             "data: GoalRequestData",
         ],
     );
@@ -301,9 +301,9 @@ fn exposed_action() {
     assert_contains_all(
         &rendered,
         &[
-            "async def _handle_goal_payload(payload: bytes, handler: Callable[[GoalRequest], GoalResponse], master_node: str, instance_id: str) -> bytes:",
+            "async def _handle_goal_payload(payload: bytes, handler: Callable[[GoalRequest], GoalResponse], daemon_node: str, instance_id: str) -> bytes:",
             "request_data = _deserialize_goal_request(payload)",
-            "request = GoalRequest(instance_id=instance_id, master_node=master_node, data=request_data)",
+            "request = GoalRequest(instance_id=instance_id, daemon_node=daemon_node, data=request_data)",
             "response = handler(request)",
             "if hasattr(response, \"__await__\"):",
             "response = await response",
@@ -317,7 +317,7 @@ fn exposed_action() {
         &[
             "async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalResponse]) -> None:",
             "async def _on_request(request_context):",
-            "return await _handle_goal_payload(payload, handler, master_node, instance_id)",
+            "return await _handle_goal_payload(payload, handler, daemon_node, instance_id)",
             "await self.goal_service.handle_next_request(_on_request)",
         ],
     );
@@ -326,8 +326,8 @@ fn exposed_action() {
     assert_contains_all(
         &rendered,
         &[
-            "async def _handle_cancel_payload(handler: Callable[[CancelRequest], CancelResponse], master_node: str, instance_id: str) -> bytes:",
-            "request = CancelRequest(instance_id=instance_id, master_node=master_node)",
+            "async def _handle_cancel_payload(handler: Callable[[CancelRequest], CancelResponse], daemon_node: str, instance_id: str) -> bytes:",
+            "request = CancelRequest(instance_id=instance_id, daemon_node=daemon_node)",
             "response = handler(request)",
             "if hasattr(response, \"__await__\"):",
             "response = await response",
@@ -339,7 +339,7 @@ fn exposed_action() {
         &rendered,
         &[
             "async def handle_cancel_next_request(self, handler: Callable[[CancelRequest], CancelResponse]) -> None:",
-            "return await _handle_cancel_payload(handler, master_node, instance_id)",
+            "return await _handle_cancel_payload(handler, daemon_node, instance_id)",
             "await self.cancel_service.handle_next_request(_on_request)",
         ],
     );
@@ -348,8 +348,8 @@ fn exposed_action() {
     assert_contains_all(
         &rendered,
         &[
-            "async def _handle_result_payload(handler: Callable[[ResultRequest], ResultResponse], master_node: str, instance_id: str) -> bytes:",
-            "request = ResultRequest(instance_id=instance_id, master_node=master_node)",
+            "async def _handle_result_payload(handler: Callable[[ResultRequest], ResultResponse], daemon_node: str, instance_id: str) -> bytes:",
+            "request = ResultRequest(instance_id=instance_id, daemon_node=daemon_node)",
         ],
     );
 
@@ -358,7 +358,7 @@ fn exposed_action() {
         &rendered,
         &[
             "async def handle_result_next_request(self, handler: Callable[[ResultRequest], ResultResponse]) -> None:",
-            "return await _handle_result_payload(handler, master_node, instance_id)",
+            "return await _handle_result_payload(handler, daemon_node, instance_id)",
             "await self.result_service.handle_next_request(_on_request)",
         ],
     );
@@ -406,8 +406,8 @@ fn expose_action_without_request_body() {
     assert_contains_all(
         &rendered,
         &[
-            "async def _handle_goal_payload(handler: Callable[[GoalRequest], GoalResponse], master_node: str, instance_id: str) -> bytes:",
-            "request = GoalRequest(instance_id=instance_id, master_node=master_node)",
+            "async def _handle_goal_payload(handler: Callable[[GoalRequest], GoalResponse], daemon_node: str, instance_id: str) -> bytes:",
+            "request = GoalRequest(instance_id=instance_id, daemon_node=daemon_node)",
         ],
     );
 
@@ -415,7 +415,7 @@ fn expose_action_without_request_body() {
     assert_contains_all(
         &rendered,
         &[
-            "return await _handle_goal_payload(handler, master_node, instance_id)",
+            "return await _handle_goal_payload(handler, daemon_node, instance_id)",
             "await self.goal_service.handle_next_request(_on_request)",
         ],
     );
@@ -646,7 +646,7 @@ fn subscribed_to_action() {
             "class ResultResponseData:",
             "final_position: list[int]",
             "class ResultResponse:",
-            "master_node: str",
+            "daemon_node: str",
             "instance_id: str",
         ],
     );
@@ -695,7 +695,7 @@ fn subscribed_to_action() {
             "request: GoalRequest",
             "timeout: float",
             "feedback_qos: peppylib.QoSProfile",
-            "target_master_node: Optional[str] = None",
+            "target_daemon_node: Optional[str] = None",
             "target_instance_id: Optional[str] = None",
             ") -> Self:",
             "goal_payload = capnp_msg.to_bytes()",
@@ -978,7 +978,7 @@ fn subscribed_action_without_response_payload() {
     assert_contains_all(
         &rendered,
         &[
-            "return ResultResponse(master_node=response.master_node, instance_id=response.instance_id)",
+            "return ResultResponse(daemon_node=response.daemon_node, instance_id=response.instance_id)",
         ],
     );
 }

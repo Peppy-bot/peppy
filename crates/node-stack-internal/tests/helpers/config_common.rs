@@ -13,22 +13,22 @@ fn init_test_data_dir() {
     config::consts::set_peppy_data_dir_override(dir.path().to_path_buf());
 }
 
-/// Returns a minimal master/root node configuration for tests.
-/// The master node is the required root of every NodeStack.
-pub fn master_node_config() -> NodeConfig {
+/// Returns a minimal daemon/root node configuration for tests.
+/// The daemon node is the required root of every NodeStack.
+pub fn daemon_node_config() -> NodeConfig {
     init_test_data_dir();
     NodeConfigParser::from_content(
         r#"{
             schema_version: 1,
             manifest: {
-                name: "master",
+                name: "daemon",
                 tag: "1.0.0",
                 language: "rust",
-                start_cmd: ["master"]
+                start_cmd: ["daemon"]
             }
         }"#,
     )
-    .expect("parse master node config")
+    .expect("parse daemon node config")
 }
 
 pub fn deployment(source: DeploymentSource) -> Deployment {

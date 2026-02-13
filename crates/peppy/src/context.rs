@@ -36,8 +36,8 @@ impl AppContext {
         }
     }
 
-    pub fn master_node_name(&self) -> std::io::Result<String> {
-        Ok(self.read_daemon_state()?.master_node_name)
+    pub fn daemon_node_name(&self) -> std::io::Result<String> {
+        Ok(self.read_daemon_state()?.daemon_node_name)
     }
 
     pub fn messaging_port(&self) -> std::io::Result<u16> {

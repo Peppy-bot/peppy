@@ -12,10 +12,10 @@ async fn node_runtime_config_command_outputs_valid_config() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.master_node_name().to_string();
+    let daemon_node_name = serve.daemon_node_name().to_string();
     assert!(
-        !master_node_name.is_empty(),
-        "master_node_name should not be empty"
+        !daemon_node_name.is_empty(),
+        "daemon_node_name should not be empty"
     );
 
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
@@ -102,7 +102,7 @@ async fn node_runtime_config_command_outputs_valid_config() {
         config::consts::DEFAULT_MESSAGING_PORT
     );
     assert_eq!(runtime_config.node_name, node_name);
-    assert_eq!(runtime_config.bound_master_node, master_node_name.as_str());
+    assert_eq!(runtime_config.bound_daemon_node, daemon_node_name.as_str());
     assert!(
         runtime_config.node_instance.arguments.is_empty(),
         "node_instance.arguments should be empty"
@@ -119,10 +119,10 @@ async fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.master_node_name().to_string();
+    let daemon_node_name = serve.daemon_node_name().to_string();
     assert!(
-        !master_node_name.is_empty(),
-        "master_node_name should not be empty"
+        !daemon_node_name.is_empty(),
+        "daemon_node_name should not be empty"
     );
 
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
@@ -210,5 +210,5 @@ async fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
         config::consts::DEFAULT_MESSAGING_PORT
     );
     assert_eq!(runtime_config.node_name, node_name);
-    assert_eq!(runtime_config.bound_master_node, master_node_name.as_str());
+    assert_eq!(runtime_config.bound_daemon_node, daemon_node_name.as_str());
 }

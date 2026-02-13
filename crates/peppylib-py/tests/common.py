@@ -46,7 +46,7 @@ def create_runtime_config(
     host: str,
     port: int,
     node_name: str,
-    master_node: str,
+    daemon_node: str,
     instance_id: str,
     arguments: dict,
 ) -> None:
@@ -55,7 +55,7 @@ def create_runtime_config(
         "messaging_host": host,
         "messaging_port": port,
         "node_name": node_name,
-        "bound_master_node": master_node,
+        "bound_daemon_node": daemon_node,
         "node_instance": {
             "instance_id": instance_id,
             "arguments": arguments,
@@ -67,10 +67,10 @@ def create_runtime_config(
 async def wait_for_service(
     messenger,
     service_name: str,
-    bound_master_node: str,
+    bound_daemon_node: str,
     as_instance_id: str,
     target_node_name: str,
-    target_master_node: str,
+    target_daemon_node: str,
     target_instance_id: str,
     runner_thread: threading.Thread,
     error_queue: queue.Queue,
@@ -85,11 +85,11 @@ async def wait_for_service(
 
         if await ServiceMessenger.is_reachable(
             messenger,
-            bound_master_node,
+            bound_daemon_node,
             as_instance_id,
             target_node_name,
             service_name,
-            target_master_node,
+            target_daemon_node,
             target_instance_id,
         ):
             return

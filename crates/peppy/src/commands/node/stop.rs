@@ -1,4 +1,4 @@
-use master_node::encoding::NodeStopRequest;
+use daemon_node::encoding::NodeStopRequest;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
@@ -20,11 +20,11 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
             e
         ))
     })?;
-    let master_node_name = daemon_state.master_node_name;
+    let daemon_node_name = daemon_state.daemon_node_name;
 
     info!(
-        "Calling node_stop for instance_id '{}' on master '{}'...",
-        instance_id, master_node_name
+        "Calling node_stop for instance_id '{}' on daemon '{}'...",
+        instance_id, daemon_node_name
     );
 
     ctx.connect().await?;
@@ -36,10 +36,10 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
     let stop_response = stop_request
         .poll(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
-            &master_node_name,
+            &daemon_node_name,
+            &daemon_node_name,
             REQUEST_TIMEOUT,
         )
         .await
