@@ -38,108 +38,12 @@ pub(crate) fn sanitize_component(raw: &str) -> String {
     out
 }
 
-/// Returns true when `ident` is a Rust keyword/reserved word.
-pub(crate) fn is_rust_keyword(ident: &str) -> bool {
-    matches!(
-        ident,
-        "as" | "break"
-            | "const"
-            | "continue"
-            | "crate"
-            | "else"
-            | "enum"
-            | "extern"
-            | "false"
-            | "fn"
-            | "for"
-            | "if"
-            | "impl"
-            | "in"
-            | "let"
-            | "loop"
-            | "match"
-            | "mod"
-            | "move"
-            | "mut"
-            | "pub"
-            | "ref"
-            | "return"
-            | "self"
-            | "static"
-            | "struct"
-            | "super"
-            | "trait"
-            | "true"
-            | "type"
-            | "unsafe"
-            | "use"
-            | "where"
-            | "while"
-            | "async"
-            | "await"
-            | "dyn"
-            | "abstract"
-            | "become"
-            | "box"
-            | "do"
-            | "final"
-            | "macro"
-            | "override"
-            | "priv"
-            | "try"
-            | "typeof"
-            | "unsized"
-            | "virtual"
-            | "yield"
-            | "union"
-    )
-}
-
-/// Converts a raw string into a Rust identifier-safe component.
-///
-/// This is like [`sanitize_component`] but appends `_` when the result is a
-/// Rust keyword (e.g. `type` -> `type_`).
-pub(crate) fn sanitize_rust_identifier(raw: &str) -> String {
-    let mut ident = sanitize_component(raw);
-    if is_rust_keyword(&ident) {
-        ident.push('_');
-    }
-    ident
-}
-
 /// Returns `None` when the trimmed string is empty, otherwise `Some(value)`.
 pub(crate) fn non_empty_str(value: &str) -> Option<&str> {
     if value.trim().is_empty() {
         None
     } else {
         Some(value)
-    }
-}
-
-/// Builds a prefixed name from an optional candidate, falling back to `fallback`.
-pub(crate) fn prefixed_name(prefix: &str, candidate: Option<&str>, fallback: &str) -> String {
-    let fallback_component = match sanitize_rust_identifier(fallback) {
-        component if component.is_empty() => "item".to_string(),
-        component => component,
-    };
-
-    let maybe_component = candidate.and_then(|value| {
-        let sanitized = sanitize_rust_identifier(value);
-        if sanitized.is_empty() {
-            None
-        } else {
-            Some(sanitized)
-        }
-    });
-
-    let component = maybe_component
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| fallback_component.clone());
-
-    if prefix.is_empty() {
-        component
-    } else {
-        format!("{prefix}_{component}")
     }
 }
 
@@ -239,20 +143,88 @@ pub(crate) fn to_camel_case(raw: &str) -> String {
     out
 }
 
+/// Converts a field name to camelCase for Cap'n Proto field access.
+///
+/// Splits on non-alphanumeric characters, builds PascalCase, then lowercases
+/// the first character. E.g., `frame_id` -> `frameId`, `sample_rate` -> `sampleRate`.
+pub fn sanitize_capnp_field_name(input: &str) -> String {
+    let mut pascal = String::new();
+    for segment in input
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|s| !s.is_empty())
+    {
+        let mut chars = segment.chars();
+        if let Some(first) = chars.next() {
+            pascal.push(first.to_ascii_uppercase());
+            for ch in chars {
+                pascal.push(ch.to_ascii_lowercase());
+            }
+        }
+    }
+
+    if pascal.is_empty() {
+        return "_field".to_string();
+    }
+
+    let mut camel = String::with_capacity(pascal.len());
+    let mut chars = pascal.chars();
+    if let Some(first) = chars.next() {
+        camel.push(first.to_ascii_lowercase());
+        camel.extend(chars);
+    }
+
+    if camel.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
+        camel.insert(0, '_');
+    }
+
+    if camel.is_empty() {
+        "_field".to_string()
+    } else {
+        camel
+    }
+}
+
+/// Generates a unique module name by appending a numeric suffix on collision.
+///
+/// `sanitize_fn` converts the raw name into a valid module name for the target language.
+/// On the first occurrence the name is used as-is; subsequent duplicates get `_1`, `_2`, etc.
+pub fn unique_module_name(
+    original: &str,
+    counts: &mut std::collections::HashMap<String, usize>,
+    sanitize_fn: fn(&str) -> String,
+) -> String {
+    let base = sanitize_fn(original);
+    let counter = counts.entry(base.clone()).or_insert(0);
+    let name = if *counter == 0 {
+        base
+    } else {
+        format!("{base}_{counter}")
+    };
+    *counter += 1;
+    name
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn rust_keywords_are_escaped() {
-        assert_eq!(sanitize_rust_identifier("type"), "type_");
-        assert_eq!(sanitize_rust_identifier("match"), "match_");
-        assert_eq!(sanitize_rust_identifier("mod"), "mod_");
+    fn capnp_field_name_camel_cases() {
+        assert_eq!(sanitize_capnp_field_name("frame_id"), "frameId");
+        assert_eq!(sanitize_capnp_field_name("sample_rate"), "sampleRate");
+        assert_eq!(sanitize_capnp_field_name("encoding"), "encoding");
+        assert_eq!(sanitize_capnp_field_name("x"), "x");
+        assert_eq!(sanitize_capnp_field_name("return_type"), "returnType");
     }
 
     #[test]
-    fn non_keywords_are_unchanged() {
-        assert_eq!(sanitize_rust_identifier("frame_id"), "frame_id");
-        assert_eq!(sanitize_rust_identifier("video-stream"), "video_stream");
+    fn unique_module_name_deduplicates() {
+        fn identity(s: &str) -> String {
+            s.to_string()
+        }
+        let mut counts = std::collections::HashMap::new();
+        assert_eq!(unique_module_name("foo", &mut counts, identity), "foo");
+        assert_eq!(unique_module_name("foo", &mut counts, identity), "foo_1");
+        assert_eq!(unique_module_name("foo", &mut counts, identity), "foo_2");
     }
 }

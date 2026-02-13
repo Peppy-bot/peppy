@@ -1,8 +1,9 @@
+use super::identifiers::is_rust_keyword;
 use crate::{
     error::{Error, Result},
     generator::{
         common::{WorkspacePackageMetadata, copy_embedded_crate},
-        naming::is_rust_keyword,
+        naming::{sanitize_component, unique_module_name},
         types::{CapnpSchema, InterfaceArtifact, InterfaceKind},
     },
 };
@@ -278,7 +279,8 @@ fn write_category_modules(
     let mut counts: HashMap<String, usize> = HashMap::new();
 
     for (original_name, artifacts) in nodes {
-        let module_name = unique_module_name(&original_name, &mut counts);
+        let module_name =
+            unique_module_name(&original_name, &mut counts, sanitize_rust_module_name);
         write_node_module(
             category_dir,
             &module_name,
@@ -327,7 +329,8 @@ fn write_node_module(
 
     for artifact in artifacts {
         if let Some(submodule) = &artifact.submodule {
-            let submodule_name = unique_module_name(submodule, &mut submodule_counts);
+            let submodule_name =
+                unique_module_name(submodule, &mut submodule_counts, sanitize_rust_module_name);
             fs::create_dir_all(&module_dir)?;
             let submodule_path = module_dir.join(format!("{submodule_name}.rs"));
             let mut contents = artifact.code_output;
@@ -376,54 +379,6 @@ fn write_node_module(
 
     fs::write(base_dir.join(format!("{module_name}.rs")), rendered)?;
     Ok(())
-}
-
-fn unique_module_name(original: &str, counts: &mut HashMap<String, usize>) -> String {
-    let base = sanitize_module_name(original);
-    let counter = counts.entry(base.clone()).or_insert(0);
-    let name = if *counter == 0 {
-        base.clone()
-    } else {
-        format!("{base}_{}", counter)
-    };
-    *counter += 1;
-    name
-}
-
-fn sanitize_module_name(raw: &str) -> String {
-    let mut out = String::new();
-    let mut last_was_underscore = false;
-
-    for ch in raw.chars() {
-        let lower = ch.to_ascii_lowercase();
-        if lower.is_ascii_alphanumeric() {
-            out.push(lower);
-            last_was_underscore = false;
-        } else if !out.is_empty() && !last_was_underscore {
-            out.push('_');
-            last_was_underscore = true;
-        } else if out.is_empty() {
-            last_was_underscore = true;
-        }
-    }
-
-    while out.ends_with('_') {
-        out.pop();
-    }
-
-    if out.is_empty() {
-        return "node".to_string();
-    }
-
-    if matches!(out.chars().next(), Some(ch) if ch.is_ascii_digit()) {
-        out.insert(0, '_');
-    }
-
-    if is_rust_keyword(&out) {
-        out.push('_');
-    }
-
-    out
 }
 
 fn render_module_file(module_file: File) -> String {
@@ -525,13 +480,24 @@ fn as_function_item(item: ImplItem) -> Option<Item> {
     }))
 }
 
+fn sanitize_rust_module_name(raw: &str) -> String {
+    let mut out = sanitize_component(raw);
+    if out.is_empty() {
+        return "node".to_string();
+    }
+    if is_rust_keyword(&out) {
+        out.push('_');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn sanitize_module_name_escapes_rust_keywords() {
-        assert_eq!(sanitize_module_name("mod"), "mod_");
-        assert_eq!(sanitize_module_name("type"), "type_");
+        assert_eq!(sanitize_rust_module_name("mod"), "mod_");
+        assert_eq!(sanitize_rust_module_name("type"), "type_");
     }
 }

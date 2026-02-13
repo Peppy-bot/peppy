@@ -1,6 +1,7 @@
+use super::identifiers::sanitize_rust_identifier;
 use super::type_mapping::render_tokens;
 use crate::error::{Error, Result};
-use crate::generator::naming::{sanitize_rust_identifier, to_camel_case};
+use crate::generator::naming::to_camel_case;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 

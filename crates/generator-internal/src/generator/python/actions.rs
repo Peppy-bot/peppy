@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use crate::generator::types::{
     SubscribedActionMessage, cancel_action_response_format, non_empty_message_format,
 };
-use config::node::{ExposedAction, SubscribedAction};
+use config::node::{ExposedAction, MessageFormat, SubscribedAction};
 
 // ---------------------------------------------------------------------------
 // Exposed actions
@@ -215,31 +215,13 @@ pub fn build_exposed_action(
             builder.line("request = GoalRequest(instance_id=instance_id, master_node=master_node)");
         }
 
-        if let Some((resp_fmt, resp_info)) = goal
-            .response_message_format
-            .as_ref()
-            .filter(|f| !f.0.is_empty())
-            .zip(goal_response_schema_info)
-        {
-            builder.line("response = handler(request)");
-            let loader_fn_name = capnp_loader_fn_name(resp_info);
-            builder.line(&format!(
-                "capnp_msg = {loader_fn_name}().{}.new_message()",
-                resp_info.struct_name
-            ));
-            let mut counter = 0u32;
-            serialization::emit_capnp_assignments(
-                &mut builder,
-                "capnp_msg",
-                resp_fmt,
-                "response",
-                &mut counter,
-            );
-            builder.line("return capnp_msg.to_bytes()");
-        } else {
-            builder.line("handler(request)");
-            builder.line("return b\"\"");
-        }
+        emit_handler_response_body(
+            &mut builder,
+            goal.response_message_format
+                .as_ref()
+                .filter(|f| !f.0.is_empty())
+                .zip(goal_response_schema_info),
+        );
         builder.dedent();
         builder.blank_line();
 
@@ -252,26 +234,10 @@ pub fn build_exposed_action(
         builder.indent();
         builder.line("request = CancelRequest(instance_id=instance_id, master_node=master_node)");
 
-        if let Some(cancel_info) = cancel_response_schema_info {
-            builder.line("response = handler(request)");
-            let loader_fn_name = capnp_loader_fn_name(cancel_info);
-            builder.line(&format!(
-                "capnp_msg = {loader_fn_name}().{}.new_message()",
-                cancel_info.struct_name
-            ));
-            let mut counter = 0u32;
-            serialization::emit_capnp_assignments(
-                &mut builder,
-                "capnp_msg",
-                &cancel_format,
-                "response",
-                &mut counter,
-            );
-            builder.line("return capnp_msg.to_bytes()");
-        } else {
-            builder.line("handler(request)");
-            builder.line("return b\"\"");
-        }
+        emit_handler_response_body(
+            &mut builder,
+            cancel_response_schema_info.map(|info| (&cancel_format as &MessageFormat, info)),
+        );
         builder.dedent();
         builder.blank_line();
     }
@@ -291,31 +257,14 @@ pub fn build_exposed_action(
         builder.indent();
         builder.line("request = ResultRequest(instance_id=instance_id, master_node=master_node)");
 
-        if let Some((resp_fmt, resp_info)) = result
-            .response_message_format
-            .as_ref()
-            .filter(|f| !f.0.is_empty())
-            .zip(result_response_schema_info)
-        {
-            builder.line("response = handler(request)");
-            let loader_fn_name = capnp_loader_fn_name(resp_info);
-            builder.line(&format!(
-                "capnp_msg = {loader_fn_name}().{}.new_message()",
-                resp_info.struct_name
-            ));
-            let mut counter = 0u32;
-            serialization::emit_capnp_assignments(
-                &mut builder,
-                "capnp_msg",
-                resp_fmt,
-                "response",
-                &mut counter,
-            );
-            builder.line("return capnp_msg.to_bytes()");
-        } else {
-            builder.line("handler(request)");
-            builder.line("return b\"\"");
-        }
+        emit_handler_response_body(
+            &mut builder,
+            result
+                .response_message_format
+                .as_ref()
+                .filter(|f| !f.0.is_empty())
+                .zip(result_response_schema_info),
+        );
         builder.dedent();
         builder.blank_line();
     }
@@ -464,6 +413,37 @@ pub fn build_exposed_action(
     builder.dedent(); // end of class ActionHandle
 
     Ok(builder.build())
+}
+
+/// Emits the handler-call + response-serialization block that appears in
+/// `_handle_goal_payload`, `_handle_cancel_payload`, and `_handle_result_payload`.
+///
+/// When `response_info` is `Some`, the handler result is serialized via Cap'n Proto;
+/// otherwise the handler is called for its side-effect and `b""` is returned.
+fn emit_handler_response_body(
+    builder: &mut PythonCodeBuilder,
+    response_info: Option<(&MessageFormat, &PythonSchemaInfo)>,
+) {
+    if let Some((resp_fmt, resp_info)) = response_info {
+        builder.line("response = handler(request)");
+        let loader_fn_name = capnp_loader_fn_name(resp_info);
+        builder.line(&format!(
+            "capnp_msg = {loader_fn_name}().{}.new_message()",
+            resp_info.struct_name
+        ));
+        let mut counter = 0u32;
+        serialization::emit_capnp_assignments(
+            builder,
+            "capnp_msg",
+            resp_fmt,
+            "response",
+            &mut counter,
+        );
+        builder.line("return capnp_msg.to_bytes()");
+    } else {
+        builder.line("handler(request)");
+        builder.line("return b\"\"");
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -229,6 +229,7 @@ pub fn build_subscribed_service(
 
     // poll async function
     builder.add_import("import peppylib");
+    // Always needed: poll() signature uses Optional[str] for target_master_node/target_instance_id
     builder.add_import("from typing import Optional");
     builder.blank_line();
 

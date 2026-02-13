@@ -1,6 +1,6 @@
 use super::identifiers::is_python_keyword;
 use crate::error::Result;
-use crate::generator::naming::sanitize_component;
+use crate::generator::naming::{sanitize_component, unique_module_name};
 use crate::generator::types::{CapnpSchema, InterfaceArtifact, InterfaceKind};
 use rust_embed::Embed;
 use std::collections::{BTreeMap, HashMap};
@@ -96,7 +96,11 @@ fn write_category(category_dir: &Path, artifacts: Vec<InterfaceArtifact>) -> Res
     let mut counts: HashMap<String, usize> = HashMap::new();
 
     for artifact in artifacts {
-        let module_name = unique_module_name(&artifact.node_name, &mut counts);
+        let module_name = unique_module_name(
+            &artifact.node_name,
+            &mut counts,
+            sanitize_python_module_name,
+        );
         let module_file = category_dir.join(format!("{module_name}.py"));
         let mut code = artifact.code_output;
         if !code.ends_with('\n') {
@@ -115,19 +119,7 @@ fn write_category(category_dir: &Path, artifacts: Vec<InterfaceArtifact>) -> Res
     Ok(())
 }
 
-fn unique_module_name(original: &str, counts: &mut HashMap<String, usize>) -> String {
-    let base = sanitize_module_name(original);
-    let counter = counts.entry(base.clone()).or_insert(0);
-    let name = if *counter == 0 {
-        base.clone()
-    } else {
-        format!("{base}_{counter}")
-    };
-    *counter += 1;
-    name
-}
-
-fn sanitize_module_name(raw: &str) -> String {
+fn sanitize_python_module_name(raw: &str) -> String {
     let mut out = sanitize_component(raw);
     if out.is_empty() {
         return "module".to_string();
@@ -188,8 +180,8 @@ mod tests {
 
     #[test]
     fn sanitize_module_name_escapes_python_keywords() {
-        assert_eq!(sanitize_module_name("class"), "class_");
-        assert_eq!(sanitize_module_name("from"), "from_");
+        assert_eq!(sanitize_python_module_name("class"), "class_");
+        assert_eq!(sanitize_python_module_name("from"), "from_");
     }
 
     #[test]

@@ -1,6 +1,7 @@
-use super::type_mapping::{sanitize_capnp_field_name, schema_type_to_tokens};
+use super::identifiers::sanitize_rust_identifier;
+use super::type_mapping::schema_type_to_tokens;
 use crate::error::{Error, Result};
-use crate::generator::naming::sanitize_rust_identifier;
+use crate::generator::naming::sanitize_capnp_field_name;
 use crate::generator::types::{
     validate_fixed_length_array_items, validate_message_format_field_names,
 };
@@ -140,7 +141,7 @@ pub fn collect_function_params(
                 Span::call_site(),
             );
             let field_ty =
-                schema_type_to_tokens(schema, &response_struct_name, field_name, context);
+                schema_type_to_tokens(schema, &response_struct_name, field_name, context)?;
             let ctor_ident = field_ident.clone();
             let ctor_ty = field_ty.clone();
             ctor_params.push(quote!(#ctor_ident: #ctor_ty));
@@ -188,7 +189,7 @@ pub fn collect_function_params(
         let (original_name, schema) = schema_lookup.get(&key)?;
 
         let ident = Ident::new(&sanitize_rust_identifier(original_name), Span::call_site());
-        let ty = schema_type_to_tokens(schema, struct_prefix, original_name, context);
+        let ty = schema_type_to_tokens(schema, struct_prefix, original_name, context)?;
 
         params.push(FunctionParam::new(ident, ty));
     }

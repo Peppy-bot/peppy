@@ -5,6 +5,7 @@ mod actions;
 mod build;
 mod context;
 mod deserialization;
+mod identifiers;
 pub mod parameters;
 mod serialization;
 mod services;
@@ -221,7 +222,7 @@ impl RustGenerator {
                 TARGET_NODE_NAME, TARGET_ACTION_NAME
             ));
             let (response_statements, response_inits, _) =
-                deserialize_format_fields(response_format, "GoalResponseData", &context_expr);
+                deserialize_format_fields(response_format, "GoalResponseData", &context_expr)?;
 
             let deserialize_helper = build_deserialize_fn(
                 &Ident::new("deserialize_goal_response", Span::call_site()),
@@ -329,7 +330,7 @@ impl RustGenerator {
             TARGET_NODE_NAME, TARGET_ACTION_NAME
         ));
         let (response_statements, response_inits, _) =
-            deserialize_format_fields(response_format, "CancelResponseData", &context_expr);
+            deserialize_format_fields(response_format, "CancelResponseData", &context_expr)?;
 
         let deserialize_helper = build_deserialize_fn(
             &Ident::new("deserialize_cancel_response", Span::call_site()),
@@ -495,7 +496,7 @@ impl RustGenerator {
                 TARGET_NODE_NAME, TARGET_ACTION_NAME
             ));
             let (response_statements, response_inits, _) =
-                deserialize_format_fields(response_format, "ResultResponseData", &context_expr);
+                deserialize_format_fields(response_format, "ResultResponseData", &context_expr)?;
 
             let deserialize_helper = build_deserialize_fn(
                 &Ident::new("deserialize_result_response", Span::call_site()),
@@ -1308,7 +1309,7 @@ impl LanguageGenerator for RustGenerator {
                     response_format,
                     &response_struct_name,
                     &field_context_expr,
-                );
+                )?;
 
                 let poll_tokens = quote! {
                     let response_message = #poll_call.await?;
@@ -1540,7 +1541,7 @@ impl LanguageGenerator for RustGenerator {
 }
 
 fn prefixed_ident(prefix: &str, candidate: Option<&str>, fallback: &str) -> Ident {
-    let name = crate::generator::naming::prefixed_name(prefix, candidate, fallback);
+    let name = identifiers::prefixed_name(prefix, candidate, fallback);
     Ident::new(&name, Span::call_site())
 }
 
