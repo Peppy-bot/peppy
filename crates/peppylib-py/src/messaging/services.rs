@@ -114,8 +114,12 @@ impl PyServiceEndpoint {
             let response_bytes = if let Some(future) = maybe_future {
                 let py_result = future.await?;
                 Python::attach(|py| py_result.extract::<Vec<u8>>(py))?
+            } else if let Some(sync_bytes) = sync_bytes {
+                sync_bytes
             } else {
-                sync_bytes.unwrap()
+                return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    "internal error: missing synchronous handler response bytes",
+                ));
             };
 
             // Phase 3: send response (pure Rust)

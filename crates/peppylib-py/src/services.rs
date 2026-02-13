@@ -24,19 +24,22 @@ impl PyServiceTask {
 #[pymethods]
 impl PyServiceTask {
     /// Returns true if the service task has finished.
-    fn is_finished(&self) -> bool {
-        self.inner
-            .lock()
-            .unwrap()
-            .as_ref()
-            .is_none_or(|h| h.is_finished())
+    fn is_finished(&self) -> PyResult<bool> {
+        let guard = self.inner.lock().map_err(|_| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("service task mutex poisoned")
+        })?;
+        Ok(guard.as_ref().is_none_or(|h| h.is_finished()))
     }
 
     /// Abort the service task.
-    fn abort(&self) {
-        if let Some(h) = self.inner.lock().unwrap().take() {
+    fn abort(&self) -> PyResult<()> {
+        let mut guard = self.inner.lock().map_err(|_| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("service task mutex poisoned")
+        })?;
+        if let Some(h) = guard.take() {
             h.abort();
         }
+        Ok(())
     }
 }
 
