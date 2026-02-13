@@ -4,7 +4,6 @@ use pyo3::prelude::*;
 use pythonize::{depythonize, pythonize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 /// Python wrapper for CancellationToken.
@@ -30,6 +29,21 @@ impl PyCancellationToken {
 #[pyclass(name = "NodeRunner")]
 pub struct PyNodeRunner {
     inner: Arc<NodeRunner>,
+    /// Cached messenger handle — cloning `MessengerHandle` is a cheap `Arc`
+    /// bump, but we avoid re-wrapping it on every `messenger()` call.
+    cached_messenger: PyMessengerHandle,
+}
+
+impl PyNodeRunner {
+    fn new(node_runner: Arc<NodeRunner>) -> Self {
+        let cached_messenger = PyMessengerHandle {
+            inner: node_runner.messenger().clone(),
+        };
+        Self {
+            inner: node_runner,
+            cached_messenger,
+        }
+    }
 }
 
 #[pymethods]
@@ -43,9 +57,7 @@ impl PyNodeRunner {
 
     /// Get the messenger handle for pub/sub and service communication.
     fn messenger(&self) -> PyMessengerHandle {
-        PyMessengerHandle {
-            inner: Arc::new(Mutex::new(self.inner.messenger().clone())),
-        }
+        self.cached_messenger.clone()
     }
 
     /// Get the daemon node this instance is bound to.
@@ -179,12 +191,52 @@ impl PyNodeBuilder {
                                     )))
                                 })?
                                 .unbind();
-                            let py_runner = Py::new(py, PyNodeRunner { inner: node_runner })
-                                .map_err(|e| {
-                                    peppylib::PeppyError::Io(std::io::Error::other(format!(
-                                        "failed to create PyNodeRunner: {e}"
-                                    )))
-                                })?;
+                            let py_runner =
+                                Py::new(py, PyNodeRunner::new(Arc::clone(&node_runner)))
+                                    .map_err(|e| {
+                                        peppylib::PeppyError::Io(std::io::Error::other(format!(
+                                            "failed to create PyNodeRunner: {e}"
+                                        )))
+                                    })?;
+                            let py_cancel = Py::new(
+                                py,
+                                PyCancellationToken {
+                                    inner: node_runner.cancellation_token().clone(),
+                                },
+                            )
+                            .map_err(|e| {
+                                peppylib::PeppyError::Io(std::io::Error::other(format!(
+                                    "failed to create cancel token: {e}"
+                                )))
+                            })?;
+
+                            // Create a wrapper that catches exceptions from the
+                            // setup function. On failure the wrapper prints the
+                            // traceback and cancels the node so it does not keep
+                            // running in a broken state.
+                            let helper = PyModule::from_code(
+                                py,
+                                c"
+def make_target(setup_fn, cancel_token, params, runner):
+    def target():
+        try:
+            setup_fn(params, runner)
+        except BaseException:
+            import sys, traceback
+            print('peppy: setup function raised an exception, shutting down node', file=sys.stderr)
+            traceback.print_exc()
+            cancel_token.cancel()
+    return target
+",
+                                c"_peppy_setup_helper",
+                                c"_peppy_setup_helper",
+                            )
+                            .map_err(&io_err)?;
+                            let target = helper
+                                .getattr("make_target")
+                                .map_err(&io_err)?
+                                .call1((&setup_fn, py_cancel, py_params, py_runner))
+                                .map_err(&io_err)?;
 
                             // Spawn setup in a Python threading.Thread so it
                             // can block freely (e.g. asyncio.run with
@@ -193,10 +245,7 @@ impl PyNodeBuilder {
                             // (rather than std::thread) ensures debuggers can
                             // attach to the thread and hit breakpoints.
                             let kwargs = pyo3::types::PyDict::new(py);
-                            kwargs.set_item("target", &setup_fn).map_err(&io_err)?;
-                            kwargs
-                                .set_item("args", (py_params, py_runner))
-                                .map_err(&io_err)?;
+                            kwargs.set_item("target", target).map_err(&io_err)?;
                             kwargs.set_item("daemon", true).map_err(&io_err)?;
                             let threading = py.import("threading").map_err(&io_err)?;
                             let thread = threading

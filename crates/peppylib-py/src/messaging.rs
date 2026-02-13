@@ -115,10 +115,14 @@ impl PyZenohdInstance {
     }
 }
 
-/// Python wrapper for MessengerHandle
-#[pyclass(name = "MessengerHandle")]
+/// Python wrapper for MessengerHandle.
+///
+/// `MessengerHandle` already manages its own internal `Arc<Mutex<Messenger>>`,
+/// so no additional outer lock is needed here. Cloning is a cheap `Arc` bump.
+#[pyclass(name = "MessengerHandle", from_py_object)]
+#[derive(Clone)]
 pub struct PyMessengerHandle {
-    pub(crate) inner: Arc<Mutex<MessengerHandle>>,
+    pub(crate) inner: MessengerHandle,
 }
 
 #[pymethods]
@@ -134,26 +138,22 @@ impl PyMessengerHandle {
             let handle = MessengerHandle::from_host_port(&host, port)
                 .await
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-            Ok(PyMessengerHandle {
-                inner: Arc::new(Mutex::new(handle)),
-            })
+            Ok(PyMessengerHandle { inner: handle })
         })
     }
 
     /// Get the messaging port.
     fn messaging_port<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&self.inner);
+        let handle = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = inner.lock().await;
             Ok(handle.messaging_port().await)
         })
     }
 
     /// Get the messaging endpoint as (host, port) tuple, or None if unavailable.
     fn messaging_endpoint<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&self.inner);
+        let handle = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = inner.lock().await;
             Ok(handle.messaging_endpoint().await)
         })
     }
