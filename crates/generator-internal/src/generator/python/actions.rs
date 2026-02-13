@@ -197,11 +197,11 @@ pub fn build_exposed_action(
         builder.blank_line();
         if has_goal_request {
             builder.line(&format!(
-                "def _handle_goal_payload(payload: bytes, handler: {ght}, master_node: str, instance_id: str) -> bytes:"
+                "async def _handle_goal_payload(payload: bytes, handler: {ght}, master_node: str, instance_id: str) -> bytes:"
             ));
         } else {
             builder.line(&format!(
-                "def _handle_goal_payload(handler: {ght}, master_node: str, instance_id: str) -> bytes:"
+                "async def _handle_goal_payload(handler: {ght}, master_node: str, instance_id: str) -> bytes:"
             ));
         }
         builder.indent();
@@ -229,7 +229,7 @@ pub fn build_exposed_action(
         let cancel_format = cancel_action_response_format();
         let cancel_handler_type = "Callable[[CancelRequest], CancelResponse]";
         builder.line(&format!(
-            "def _handle_cancel_payload(handler: {cancel_handler_type}, master_node: str, instance_id: str) -> bytes:"
+            "async def _handle_cancel_payload(handler: {cancel_handler_type}, master_node: str, instance_id: str) -> bytes:"
         ));
         builder.indent();
         builder.line("request = CancelRequest(instance_id=instance_id, master_node=master_node)");
@@ -252,7 +252,7 @@ pub fn build_exposed_action(
                 ),
             })?;
         builder.line(&format!(
-            "def _handle_result_payload(handler: {rht}, master_node: str, instance_id: str) -> bytes:"
+            "async def _handle_result_payload(handler: {rht}, master_node: str, instance_id: str) -> bytes:"
         ));
         builder.indent();
         builder.line("request = ResultRequest(instance_id=instance_id, master_node=master_node)");
@@ -320,7 +320,7 @@ pub fn build_exposed_action(
             "async def handle_goal_next_request(self, handler: {ght}) -> None:"
         ));
         builder.indent();
-        builder.line("def _on_request(request_context):");
+        builder.line("async def _on_request(request_context):");
         builder.indent();
         builder.line("message = request_context.message");
         if has_goal_request {
@@ -329,9 +329,11 @@ pub fn build_exposed_action(
         builder.line("master_node = message.master_node");
         builder.line("instance_id = message.instance_id");
         if has_goal_request {
-            builder.line("return _handle_goal_payload(payload, handler, master_node, instance_id)");
+            builder.line(
+                "return await _handle_goal_payload(payload, handler, master_node, instance_id)",
+            );
         } else {
-            builder.line("return _handle_goal_payload(handler, master_node, instance_id)");
+            builder.line("return await _handle_goal_payload(handler, master_node, instance_id)");
         }
         builder.dedent();
         builder.line("await self.goal_service.handle_next_request(_on_request)");
@@ -344,12 +346,12 @@ pub fn build_exposed_action(
             "async def handle_cancel_next_request(self, handler: {cancel_handler_type}) -> None:"
         ));
         builder.indent();
-        builder.line("def _on_request(request_context):");
+        builder.line("async def _on_request(request_context):");
         builder.indent();
         builder.line("message = request_context.message");
         builder.line("master_node = message.master_node");
         builder.line("instance_id = message.instance_id");
-        builder.line("return _handle_cancel_payload(handler, master_node, instance_id)");
+        builder.line("return await _handle_cancel_payload(handler, master_node, instance_id)");
         builder.dedent();
         builder.line("await self.cancel_service.handle_next_request(_on_request)");
         builder.dedent();
@@ -370,12 +372,12 @@ pub fn build_exposed_action(
             "async def handle_result_next_request(self, handler: {rht}) -> None:"
         ));
         builder.indent();
-        builder.line("def _on_request(request_context):");
+        builder.line("async def _on_request(request_context):");
         builder.indent();
         builder.line("message = request_context.message");
         builder.line("master_node = message.master_node");
         builder.line("instance_id = message.instance_id");
-        builder.line("return _handle_result_payload(handler, master_node, instance_id)");
+        builder.line("return await _handle_result_payload(handler, master_node, instance_id)");
         builder.dedent();
         builder.line("await self.result_service.handle_next_request(_on_request)");
         builder.dedent();
@@ -426,6 +428,10 @@ fn emit_handler_response_body(
 ) {
     if let Some((resp_fmt, resp_info)) = response_info {
         builder.line("response = handler(request)");
+        builder.line("if hasattr(response, \"__await__\"):");
+        builder.indent();
+        builder.line("response = await response");
+        builder.dedent();
         let loader_fn_name = capnp_loader_fn_name(resp_info);
         builder.line(&format!(
             "capnp_msg = {loader_fn_name}().{}.new_message()",
@@ -441,7 +447,11 @@ fn emit_handler_response_body(
         );
         builder.line("return capnp_msg.to_bytes()");
     } else {
-        builder.line("handler(request)");
+        builder.line("maybe_response = handler(request)");
+        builder.line("if hasattr(maybe_response, \"__await__\"):");
+        builder.indent();
+        builder.line("await maybe_response");
+        builder.dedent();
         builder.line("return b\"\"");
     }
 }

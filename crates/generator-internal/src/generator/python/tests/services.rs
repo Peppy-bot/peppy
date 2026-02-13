@@ -177,10 +177,12 @@ fn expose_service() {
     assert_contains_all(
         &rendered,
         &[
-            "def _handle_request_payload(payload: bytes, handler: Callable[[Request], Response], master_node: str, instance_id: str) -> bytes:",
+            "async def _handle_request_payload(payload: bytes, handler: Callable[[Request], Response], master_node: str, instance_id: str) -> bytes:",
             "request_data = _deserialize_request(payload)",
             "request = Request(instance_id=instance_id, master_node=master_node, data=request_data)",
             "response = handler(request)",
+            "if hasattr(response, \"__await__\"):",
+            "response = await response",
             "return capnp_msg.to_bytes()",
         ],
     );
@@ -190,7 +192,7 @@ fn expose_service() {
         &rendered,
         &[
             "async def _on_request(request_context):",
-            "return _handle_request_payload(payload, handler, master_node, instance_id)",
+            "return await _handle_request_payload(payload, handler, master_node, instance_id)",
             "await endpoint.handle_next_request(_on_request)",
         ],
     );
@@ -231,7 +233,7 @@ fn expose_service_without_request_body() {
     assert_contains_all(
         &rendered,
         &[
-            "def _handle_request_payload(handler: Callable[[Request], Response], master_node: str, instance_id: str) -> bytes:",
+            "async def _handle_request_payload(handler: Callable[[Request], Response], master_node: str, instance_id: str) -> bytes:",
             "request = Request(instance_id=instance_id, master_node=master_node)",
         ],
     );
@@ -251,7 +253,7 @@ fn expose_service_without_request_body() {
         &rendered,
         &[
             "async def _on_request(request_context):",
-            "return _handle_request_payload(handler, master_node, instance_id)",
+            "return await _handle_request_payload(handler, master_node, instance_id)",
             "await endpoint.handle_next_request(_on_request)",
         ],
     );
