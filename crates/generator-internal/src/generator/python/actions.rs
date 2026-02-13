@@ -681,13 +681,9 @@ pub fn build_subscribed_action(
     builder.dedent();
     builder.line(")");
 
-    if cancel_response_schema_info.is_some() {
-        builder.line("payload = response.payload");
-        builder.line("cancel_response_data = _deserialize_cancel_response(payload)");
-        builder.line("return CancelResponse(master_node=response.master_node, instance_id=response.instance_id, data=cancel_response_data)");
-    } else {
-        builder.line("return CancelResponse(master_node=response.master_node, instance_id=response.instance_id)");
-    }
+    builder.line("payload = response.payload");
+    builder.line("cancel_response_data = _deserialize_cancel_response(payload)");
+    builder.line("return CancelResponse(master_node=response.master_node, instance_id=response.instance_id, data=cancel_response_data)");
 
     builder.dedent();
     builder.blank_line();

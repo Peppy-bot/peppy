@@ -395,11 +395,8 @@ fn render_module_file(module_file: File) -> String {
             attrs: module_file.attrs,
             items: Vec::new(),
         };
-        let mut rendered_attrs = prettyplease::unparse(&attr_file);
-        while rendered_attrs.ends_with('\n') {
-            rendered_attrs.pop();
-        }
-        output.push_str(&rendered_attrs);
+        let rendered_attrs = prettyplease::unparse(&attr_file);
+        output.push_str(rendered_attrs.trim_end_matches('\n'));
         output.push('\n');
     }
 
@@ -410,11 +407,8 @@ fn render_module_file(module_file: File) -> String {
             attrs: Vec::new(),
             items: vec![item],
         };
-        let mut rendered_item = prettyplease::unparse(&item_file);
-        while rendered_item.ends_with('\n') {
-            rendered_item.pop();
-        }
-        output.push_str(&rendered_item);
+        let rendered_item = prettyplease::unparse(&item_file);
+        output.push_str(rendered_item.trim_end_matches('\n'));
         output.push('\n');
 
         if items_iter.peek().is_some() {

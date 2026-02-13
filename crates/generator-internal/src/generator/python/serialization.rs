@@ -112,11 +112,9 @@ fn emit_time_assignment(
     let idx = *counter;
     *counter += 1;
     let ts_var = format!("timestamp_{idx}");
-    let ts_builder = format!("builder_{}", {
-        let i = *counter;
-        *counter += 1;
-        i
-    });
+    let idx2 = *counter;
+    *counter += 1;
+    let ts_builder = format!("builder_{idx2}");
     builder.line(&format!(
         "{ts_var} = peppylib.encoding.convert_time({value_expr})"
     ));
