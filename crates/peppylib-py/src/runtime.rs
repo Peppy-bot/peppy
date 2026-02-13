@@ -2,21 +2,16 @@ use crate::messaging::PyMessengerHandle;
 use peppylib::runtime::{NodeBuilder, NodeRunner, StandaloneConfig};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::sync::PyOnceLock;
-use pyo3::types::PyDict;
+use pyo3::types::{PyCFunction, PyDict, PyString};
 use pythonize::{depythonize, pythonize};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
-static SPAWN_TARGET_FACTORY: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+type SharedPyError = Arc<Mutex<Option<PyErr>>>;
 
 fn peppy_io_err(message: impl Into<String>) -> peppylib::PeppyError {
     peppylib::PeppyError::Io(std::io::Error::other(message.into()))
-}
-
-fn py_err_to_peppy(context: &str, err: PyErr) -> peppylib::PeppyError {
-    peppy_io_err(format!("{context}: {err}"))
 }
 
 fn call_setup_function(
@@ -24,77 +19,57 @@ fn call_setup_function(
     setup_fn: &Py<PyAny>,
     params: &serde_json::Value,
     node_runner: &Arc<NodeRunner>,
-) -> Result<Py<PyAny>, peppylib::PeppyError> {
+) -> PyResult<Py<PyAny>> {
     let py_params = pythonize(py, params)
-        .map_err(|e| peppy_io_err(format!("failed to convert params to Python: {e}")))?
+        .map_err(|e| PyRuntimeError::new_err(format!("failed to convert params to Python: {e}")))?
         .unbind();
-    let py_runner = Py::new(py, PyNodeRunner::new(Arc::clone(node_runner)))
-        .map_err(|e| peppy_io_err(format!("failed to create PyNodeRunner: {e}")))?;
-
-    setup_fn
-        .call1(py, (py_params, py_runner))
-        .map_err(|e| py_err_to_peppy("setup function raised an exception", e))
+    let py_runner = Py::new(py, PyNodeRunner::new(Arc::clone(node_runner))).map_err(|e| {
+        PyRuntimeError::new_err(format!("failed to create NodeRunner Python wrapper: {e}"))
+    })?;
+    setup_fn.call1(py, (py_params, py_runner))
 }
 
-fn is_awaitable(value: &Bound<'_, PyAny>) -> Result<bool, peppylib::PeppyError> {
-    value
-        .hasattr("__await__")
-        .map_err(|e| py_err_to_peppy("failed to inspect setup return value for awaitability", e))
+fn is_awaitable(value: &Bound<'_, PyAny>) -> PyResult<bool> {
+    value.hasattr("__await__")
 }
 
-fn run_python_awaitable(
-    py: Python<'_>,
-    awaitable: &Bound<'_, PyAny>,
-) -> Result<(), peppylib::PeppyError> {
-    let asyncio = py
-        .import("asyncio")
-        .map_err(|e| py_err_to_peppy("failed to import asyncio", e))?;
-
-    asyncio
-        .call_method1("run", (awaitable,))
-        .map_err(|e| py_err_to_peppy("setup awaitable raised an exception", e))?;
-
+fn run_python_awaitable(py: Python<'_>, awaitable: &Bound<'_, PyAny>) -> PyResult<()> {
+    let awaitable = awaitable.clone().unbind();
+    pyo3_async_runtimes::tokio::run(py, async move {
+        let future = Python::try_attach(|py| {
+            pyo3_async_runtimes::tokio::into_future(awaitable.bind(py).clone())
+        })
+        .ok_or_else(|| PyRuntimeError::new_err("failed to attach to Python GIL"))??;
+        future.await?;
+        Ok(())
+    })?;
     Ok(())
 }
 
-fn spawn_target_factory<'py>(py: Python<'py>) -> PyResult<&'py Bound<'py, PyAny>> {
-    SPAWN_TARGET_FACTORY
-        .get_or_try_init(py, || {
-            let helper = PyModule::from_code(
-                py,
-                c"
-def make_target(task_name, task_fn, cancel_token, cancel_on_error, state):
-    def target():
-        try:
-            import asyncio
+fn store_python_error(error_slot: &SharedPyError, err: PyErr) {
+    if let Ok(mut guard) = error_slot.lock()
+        && guard.is_none()
+    {
+        *guard = Some(err);
+    }
+}
 
-            if not callable(task_fn):
-                raise TypeError(
-                    f\"{task_name}: expected callable returning awaitable, got {type(task_fn)!r}\"
-                )
-            maybe_awaitable = task_fn()
-            if not hasattr(maybe_awaitable, '__await__'):
-                raise TypeError(
-                    f\"{task_name}: callable must return an awaitable, got {type(maybe_awaitable)!r}\"
-                )
+fn take_python_error(error_slot: &SharedPyError) -> Option<PyErr> {
+    error_slot.lock().ok().and_then(|mut guard| guard.take())
+}
 
-            asyncio.run(maybe_awaitable)
-        except Exception:
-            import traceback
-            state['error'] = traceback.format_exc()
-            if cancel_on_error:
-                cancel_token.cancel()
-            raise
+fn format_python_traceback(py: Python<'_>, err: &PyErr) -> String {
+    let formatted = (|| -> PyResult<String> {
+        let traceback = py.import("traceback")?;
+        let lines = traceback.call_method1(
+            "format_exception",
+            (err.get_type(py), err.value(py), err.traceback(py)),
+        )?;
+        let joined = PyString::new(py, "").call_method1("join", (lines,))?;
+        joined.extract::<String>()
+    })();
 
-    return target
-",
-                c"_peppy_spawn_async_helper",
-                c"_peppy_spawn_async_helper",
-            )?;
-
-            Ok(helper.getattr("make_target")?.unbind())
-        })
-        .map(|factory| factory.bind(py))
+    formatted.unwrap_or_else(|_| err.to_string())
 }
 
 /// Python wrapper for CancellationToken.
@@ -171,12 +146,15 @@ impl PyNodeRunner {
     /// `async_fn` must be a zero-arg callable returning an awaitable
     /// (e.g. `lambda: my_coro(...)` or a bare `async def` with no parameters).
     ///
+    /// Threads are daemonized by default so forgotten task handles do not block
+    /// process exit. Set `daemon=False` if you need strict join semantics.
+    ///
     /// If the task raises, the traceback is always printed. When
     /// `cancel_on_error` is `True` (the default), the node cancellation token
     /// is also triggered to shut down the runner. The exception is re-raised
     /// on the task thread, so debuggers and `threading.excepthook` can observe
     /// uncaught failures.
-    #[pyo3(signature = (name, async_fn, *, cancel_on_error = true, daemon = false))]
+    #[pyo3(signature = (name, async_fn, *, cancel_on_error = true, daemon = true))]
     fn spawn_async(
         &self,
         py: Python<'_>,
@@ -198,10 +176,50 @@ impl PyNodeRunner {
         let state = PyDict::new(py);
         state.set_item("error", py.None()).map_err(&io_err)?;
 
-        let target = spawn_target_factory(py)
-            .map_err(&io_err)?
-            .call1((&name, async_fn, py_cancel, cancel_on_error, &state))
-            .map_err(&io_err)?;
+        let task_name = name.clone();
+        let task_fn = async_fn;
+        let task_state = state.unbind();
+        let task_state_for_target = task_state.clone_ref(py);
+        let cancel_token = py_cancel.into_any();
+        let target = PyCFunction::new_closure(
+            py,
+            Some(c"_peppy_spawn_async_target"),
+            None,
+            move |args, _kwargs| {
+                let py = args.py();
+                let run_result = (|| -> PyResult<()> {
+                    if !task_fn.bind(py).is_callable() {
+                        return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
+                            "{task_name}: expected callable returning awaitable, got {:?}",
+                            task_fn.bind(py).get_type()
+                        )));
+                    }
+
+                    let maybe_awaitable = task_fn.call0(py)?;
+                    if !is_awaitable(maybe_awaitable.bind(py))? {
+                        return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
+                            "{task_name}: callable must return an awaitable, got {:?}",
+                            maybe_awaitable.bind(py).get_type()
+                        )));
+                    }
+
+                    run_python_awaitable(py, maybe_awaitable.bind(py))?;
+                    Ok(())
+                })();
+
+                if let Err(err) = run_result {
+                    let traceback = format_python_traceback(py, &err);
+                    let _ = task_state_for_target.bind(py).set_item("error", traceback);
+                    if cancel_on_error {
+                        let _ = cancel_token.bind(py).call_method0("cancel");
+                    }
+                    return Err(err);
+                }
+
+                Ok(())
+            },
+        )
+        .map_err(&io_err)?;
 
         let kwargs = pyo3::types::PyDict::new(py);
         kwargs.set_item("target", target).map_err(&io_err)?;
@@ -216,7 +234,7 @@ impl PyNodeRunner {
 
         Ok(PySpawnedAsyncTask {
             thread: thread.unbind(),
-            state: state.unbind(),
+            state: task_state,
         })
     }
 }
@@ -367,6 +385,8 @@ impl PyNodeBuilder {
     fn run(&self, py: Python<'_>, setup_fn: Py<PyAny>) -> PyResult<()> {
         let standalone_config = self.standalone_config.clone();
         let config_path = self.config_path.clone();
+        let setup_error: SharedPyError = Arc::new(Mutex::new(None));
+        let setup_error_for_run = Arc::clone(&setup_error);
 
         // Release the GIL while blocking so other Python threads can proceed
         py.detach(|| {
@@ -379,11 +399,11 @@ impl PyNodeBuilder {
                 builder = builder.with_config_path(path);
             }
 
-            builder
-                .run(
-                    move |params: serde_json::Value, node_runner: Arc<NodeRunner>| async move {
-                        // Reacquire the GIL to prepare Python arguments and run setup.
-                        Python::try_attach(|py| {
+            let run_result = builder.run(
+                move |params: serde_json::Value, node_runner: Arc<NodeRunner>| {
+                    let setup_error = Arc::clone(&setup_error_for_run);
+                    async move {
+                        match Python::try_attach(|py| -> PyResult<()> {
                             let setup_result =
                                 call_setup_function(py, &setup_fn, &params, &node_runner)?;
                             let setup_bound = setup_result.bind(py);
@@ -391,20 +411,30 @@ impl PyNodeBuilder {
                             if is_awaitable(setup_bound)? {
                                 // Close the coroutine object to avoid un-awaited coroutine warnings.
                                 let _ = setup_bound.call_method0("close");
-                                return Err(peppy_io_err(
+                                return Err(PyRuntimeError::new_err(
                                     "NodeBuilder.run setup callback must be synchronous; \
                                      use NodeBuilder.run_async for async setup callbacks",
                                 ));
                             }
 
-                            Ok::<_, peppylib::PeppyError>(())
-                        })
-                        .ok_or_else(|| peppy_io_err("failed to attach to Python GIL"))??;
+                            Ok(())
+                        }) {
+                            Some(Ok(())) => Ok(()),
+                            Some(Err(err)) => {
+                                store_python_error(&setup_error, err);
+                                Err(peppy_io_err("setup callback raised an exception"))
+                            }
+                            None => Err(peppy_io_err("failed to attach to Python GIL")),
+                        }
+                    }
+                },
+            );
 
-                        Ok(())
-                    },
-                )
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))
+            if let Some(err) = take_python_error(&setup_error) {
+                return Err(err);
+            }
+
+            run_result.map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))
         })
     }
 
@@ -418,6 +448,8 @@ impl PyNodeBuilder {
     fn run_async(&self, py: Python<'_>, setup_fn: Py<PyAny>) -> PyResult<()> {
         let standalone_config = self.standalone_config.clone();
         let config_path = self.config_path.clone();
+        let setup_error: SharedPyError = Arc::new(Mutex::new(None));
+        let setup_error_for_run = Arc::clone(&setup_error);
 
         // Release the GIL while blocking so other Python threads can proceed
         py.detach(|| {
@@ -430,30 +462,40 @@ impl PyNodeBuilder {
                 builder = builder.with_config_path(path);
             }
 
-            builder
-                .run(
-                    move |params: serde_json::Value, node_runner: Arc<NodeRunner>| async move {
-                        Python::try_attach(|py| {
+            let run_result = builder.run(
+                move |params: serde_json::Value, node_runner: Arc<NodeRunner>| {
+                    let setup_error = Arc::clone(&setup_error_for_run);
+                    async move {
+                        match Python::try_attach(|py| -> PyResult<()> {
                             let setup_result =
                                 call_setup_function(py, &setup_fn, &params, &node_runner)?;
                             let setup_bound = setup_result.bind(py);
 
                             if !is_awaitable(setup_bound)? {
-                                return Err(peppy_io_err(
+                                return Err(PyRuntimeError::new_err(
                                     "NodeBuilder.run_async setup callback must return an awaitable",
                                 ));
                             }
 
                             run_python_awaitable(py, setup_bound)?;
+                            Ok(())
+                        }) {
+                            Some(Ok(())) => Ok(()),
+                            Some(Err(err)) => {
+                                store_python_error(&setup_error, err);
+                                Err(peppy_io_err("setup callback raised an exception"))
+                            }
+                            None => Err(peppy_io_err("failed to attach to Python GIL")),
+                        }
+                    }
+                },
+            );
 
-                            Ok::<_, peppylib::PeppyError>(())
-                        })
-                        .ok_or_else(|| peppy_io_err("failed to attach to Python GIL"))??;
+            if let Some(err) = take_python_error(&setup_error) {
+                return Err(err);
+            }
 
-                        Ok(())
-                    },
-                )
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))
+            run_result.map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))
         })
     }
 }

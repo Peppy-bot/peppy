@@ -19,7 +19,6 @@ sys.modules["peppylib._peppylib.messaging.actions"] = _peppylib.messaging.action
 sys.modules["peppylib._peppylib.services"] = _peppylib.services
 
 # Re-export the Rust-implemented functions/types from the native module
-from ._peppylib import sum_as_string  # noqa: E402  # type: ignore[import-not-found]
 from ._peppylib.messaging import MessengerHandle, TopicMessenger, ZenohdInstance  # noqa: E402  # type: ignore[import-not-found]
 from ._peppylib.config import QoSProfile  # noqa: E402  # type: ignore[import-not-found]
 from ._peppylib.messaging.services import ServiceMessenger  # noqa: E402  # type: ignore[import-not-found]
@@ -33,7 +32,6 @@ from ._peppylib.runtime import (  # noqa: E402  # type: ignore[import-not-found]
 )
 
 __all__ = [
-    "sum_as_string",
     "MessengerHandle",
     "TopicMessenger",
     "ZenohdInstance",
