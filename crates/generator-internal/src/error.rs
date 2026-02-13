@@ -61,4 +61,12 @@ This field name is reserved by peppy transport metadata and cannot be used insid
         field: String,
         item: &'static str,
     },
+    #[error(
+        "unsupported optional scalar type `{item}` in field `{field}` for `{language:?}` generator"
+    )]
+    UnsupportedOptionalScalarType {
+        language: PeppygenLanguage,
+        field: String,
+        item: &'static str,
+    },
 }
