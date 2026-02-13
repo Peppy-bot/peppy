@@ -82,11 +82,11 @@ pub fn build_exposed_service(
     builder.blank_line();
     if has_request {
         builder.line(&format!(
-            "def _handle_request_payload(payload: bytes, handler: {handler_type}, master_node: str, instance_id: str) -> bytes:"
+            "async def _handle_request_payload(payload: bytes, handler: {handler_type}, master_node: str, instance_id: str) -> bytes:"
         ));
     } else {
         builder.line(&format!(
-            "def _handle_request_payload(handler: {handler_type}, master_node: str, instance_id: str) -> bytes:"
+            "async def _handle_request_payload(handler: {handler_type}, master_node: str, instance_id: str) -> bytes:"
         ));
     }
     builder.indent();
@@ -107,6 +107,10 @@ pub fn build_exposed_service(
         .zip(response_schema_info)
     {
         builder.line("response = handler(request)");
+        builder.line("if hasattr(response, \"__await__\"):");
+        builder.indent();
+        builder.line("response = await response");
+        builder.dedent();
         let loader_fn_name = capnp_loader_fn_name(resp_info);
         builder.line(&format!(
             "capnp_msg = {loader_fn_name}().{}.new_message()",
@@ -122,7 +126,11 @@ pub fn build_exposed_service(
         );
         builder.line("return capnp_msg.to_bytes()");
     } else {
-        builder.line("handler(request)");
+        builder.line("maybe_response = handler(request)");
+        builder.line("if hasattr(maybe_response, \"__await__\"):");
+        builder.indent();
+        builder.line("await maybe_response");
+        builder.dedent();
         builder.line("return b\"\"");
     }
     builder.dedent();
@@ -154,9 +162,11 @@ pub fn build_exposed_service(
     builder.line("master_node = message.master_node");
     builder.line("instance_id = message.instance_id");
     if has_request {
-        builder.line("return _handle_request_payload(payload, handler, master_node, instance_id)");
+        builder.line(
+            "return await _handle_request_payload(payload, handler, master_node, instance_id)",
+        );
     } else {
-        builder.line("return _handle_request_payload(handler, master_node, instance_id)");
+        builder.line("return await _handle_request_payload(handler, master_node, instance_id)");
     }
     builder.dedent();
 
