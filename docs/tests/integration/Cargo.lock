@@ -2139,11 +2139,11 @@ dependencies = [
 
 [[package]]
 name = "names-generator2"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46a13b38887b58405b12645dc3ec9f6a28dfc89c39485effb1e0755f2ddf2196"
+checksum = "980249d06e11bc023ff3b555de7161d6b211ab3e3b146a42102d83ea30d373ae"
 dependencies = [
- "rand_core 0.9.5",
+ "rand_core 0.10.0",
 ]
 
 [[package]]
