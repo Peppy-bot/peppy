@@ -6,7 +6,7 @@ use crate::generator::types::{
     validate_fixed_length_array_items, validate_message_format_field_names,
 };
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam, MessageFormatMapper};
-use config::node::{MessageFormat, PeppygenLanguage, SchemaType};
+use config::node::{MessageFormat, PeppygenLanguage, SchemaType, TypeToken};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 use std::collections::HashMap;
@@ -83,6 +83,7 @@ pub fn map_message_format(format: Option<&MessageFormat>) -> Result<Option<Capnp
         Some(format) => {
             validate_message_format_field_names(format, "message_format")?;
             validate_fixed_length_array_items(format, PeppygenLanguage::Rust)?;
+            validate_optional_scalar_fields_for_rust(format)?;
             MessageFormatMapper::new(format.clone())
                 .map_message_format_to_capnpn()
                 .map(Some)
@@ -90,6 +91,75 @@ pub fn map_message_format(format: Option<&MessageFormat>) -> Result<Option<Capnp
         }
         None => Ok(None),
     }
+}
+
+fn type_token_name(token: &TypeToken) -> &'static str {
+    match token {
+        TypeToken::Bool => "bool",
+        TypeToken::String => "string",
+        TypeToken::Bytes => "bytes",
+        TypeToken::Time => "time",
+        TypeToken::U8 => "u8",
+        TypeToken::U16 => "u16",
+        TypeToken::U32 => "u32",
+        TypeToken::U64 => "u64",
+        TypeToken::I8 => "i8",
+        TypeToken::I16 => "i16",
+        TypeToken::I32 => "i32",
+        TypeToken::I64 => "i64",
+        TypeToken::F32 => "f32",
+        TypeToken::F64 => "f64",
+    }
+}
+
+fn is_optional_scalar_without_presence(token: &TypeToken) -> bool {
+    matches!(
+        token,
+        TypeToken::Bool
+            | TypeToken::U8
+            | TypeToken::U16
+            | TypeToken::U32
+            | TypeToken::U64
+            | TypeToken::I8
+            | TypeToken::I16
+            | TypeToken::I32
+            | TypeToken::I64
+            | TypeToken::F32
+            | TypeToken::F64
+    )
+}
+
+fn validate_optional_scalar_schema_for_rust(schema: &SchemaType, path: &str) -> Result<()> {
+    match schema {
+        SchemaType::Primitive(primitive) => {
+            if primitive.optional && is_optional_scalar_without_presence(&primitive.kind) {
+                return Err(Error::UnsupportedOptionalScalarType {
+                    language: PeppygenLanguage::Rust,
+                    field: path.to_string(),
+                    item: type_token_name(&primitive.kind),
+                });
+            }
+            Ok(())
+        }
+        SchemaType::Array(array) => {
+            validate_optional_scalar_schema_for_rust(array.items.as_ref(), &format!("{path}[]"))
+        }
+        SchemaType::Object(object) => {
+            for (field_name, nested) in &object.fields {
+                let nested_path = format!("{path}.{field_name}");
+                validate_optional_scalar_schema_for_rust(nested, &nested_path)?;
+            }
+            Ok(())
+        }
+        SchemaType::Type(_) => Ok(()),
+    }
+}
+
+fn validate_optional_scalar_fields_for_rust(format: &MessageFormat) -> Result<()> {
+    for (field_name, schema) in &format.0 {
+        validate_optional_scalar_schema_for_rust(schema, field_name)?;
+    }
+    Ok(())
 }
 
 pub struct SchemaFieldLookup<'a> {
@@ -195,4 +265,87 @@ pub fn collect_function_params(
     }
 
     Ok(params)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reject_optional_scalar_for_rust() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+                maybe_code: {
+                    $type: "u32",
+                    $optional: true
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = validate_optional_scalar_fields_for_rust(&format).unwrap_err();
+        match err {
+            Error::UnsupportedOptionalScalarType {
+                language,
+                field,
+                item,
+            } => {
+                assert_eq!(language, PeppygenLanguage::Rust);
+                assert_eq!(field, "maybe_code");
+                assert_eq!(item, "u32");
+            }
+            other => panic!("expected UnsupportedOptionalScalarType, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reject_optional_nested_scalar_for_rust() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+                status: {
+                    $type: "object",
+                    healthy: {
+                        $type: "bool",
+                        $optional: true
+                    }
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = validate_optional_scalar_fields_for_rust(&format).unwrap_err();
+        match err {
+            Error::UnsupportedOptionalScalarType { field, item, .. } => {
+                assert_eq!(field, "status.healthy");
+                assert_eq!(item, "bool");
+            }
+            other => panic!("expected UnsupportedOptionalScalarType, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn allow_optional_pointer_types_for_rust() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+                maybe_text: {
+                    $type: "string",
+                    $optional: true
+                },
+                maybe_payload: {
+                    $type: "bytes",
+                    $optional: true
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        validate_optional_scalar_fields_for_rust(&format)
+            .expect("optional string/bytes should remain supported for Rust");
+    }
 }

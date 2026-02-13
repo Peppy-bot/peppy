@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use super::*;
-use config::node::{ExposedService, SubscribedService};
+use config::node::{ExposedService, PeppygenLanguage, SubscribedService};
 
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {
@@ -63,6 +63,15 @@ const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1: &str = r#"
     $type: "string",
     $optional: true
   },
+}
+"#;
+
+const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_SCALAR: &str = r#"
+{
+  maybe_code: {
+    $type: "u32",
+    $optional: true
+  }
 }
 "#;
 
@@ -356,6 +365,34 @@ fn subscribed_service_without_response_payload() {
     );
 
     assert_artifact_contains(&artifacts, "let _ = peppylib::ServiceMessenger::poll(");
+}
+
+#[test]
+fn subscribed_service_rejects_optional_scalar_response_field() {
+    use crate::error::Error;
+
+    let service: SubscribedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
+    let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
+    let response_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_SCALAR).unwrap();
+
+    let mut generator = RustGenerator::new();
+    let err = generator
+        .add_subscribed_service(&service, &empty_format, &response_format)
+        .unwrap_err();
+
+    match err {
+        Error::UnsupportedOptionalScalarType {
+            language,
+            field,
+            item,
+        } => {
+            assert_eq!(language, PeppygenLanguage::Rust);
+            assert_eq!(field, "maybe_code");
+            assert_eq!(item, "u32");
+        }
+        other => panic!("expected UnsupportedOptionalScalarType, got: {other:?}"),
+    }
 }
 
 /// Checks for clippy warnings when there is only one exposed service without a request body.
