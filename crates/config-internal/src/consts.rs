@@ -23,7 +23,7 @@ pub const ALLOWED_CONFIG_CHARS: &str =
 pub const PYTHON_MIN_VERSION: &str = "3.11";
 
 /// Maximum Python version supported (exclusive, e.g. "3.14").
-/// Driven by pycapnp wheel availability.
+/// Driven by pycapnp wheel availability (wheels not yet available for Python 3.14 as of Feb 2026).
 pub const PYTHON_MAX_VERSION: &str = "3.14";
 
 // Application runtime environment (dev/prod) tracked internally.
@@ -127,7 +127,13 @@ mod tests {
                 format!("requires-python = \">= {}\"", PYTHON_MIN_VERSION),
             ),
             ("Readme.md", format!("Python >= {}", PYTHON_MIN_VERSION)),
-            ("pixi.toml", format!("python = \">={}", PYTHON_MIN_VERSION)),
+            (
+                "pixi.toml",
+                format!(
+                    "python = \">={},<{}\"",
+                    PYTHON_MIN_VERSION, PYTHON_MAX_VERSION
+                ),
+            ),
             (
                 "Cargo.toml",
                 format!("abi3-py{}", PYTHON_MIN_VERSION.replace('.', "")),
@@ -141,10 +147,11 @@ mod tests {
             assert!(
                 contents.contains(expected_pattern.as_str()),
                 "File {} does not contain expected pattern '{}'. \
-                 Update this file to match config::consts::PYTHON_MIN_VERSION = \"{}\"",
+                 Update this file to match PYTHON_MIN_VERSION = \"{}\" / PYTHON_MAX_VERSION = \"{}\"",
                 file_path.display(),
                 expected_pattern,
                 PYTHON_MIN_VERSION,
+                PYTHON_MAX_VERSION,
             );
         }
     }

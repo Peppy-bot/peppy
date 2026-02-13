@@ -14,5 +14,20 @@
       "hello_world_param"
     ]
   },
-  interfaces: {}
+  parameters: {
+    name: "string",
+  },
+  interfaces: {
+    exposes: {
+      topics: [
+        {
+          name: "message_stream",
+          qos_profile: "sensor_data",
+          message_format: {
+            message: "string"
+          },
+        }
+      ],
+    }
+  }
 }
