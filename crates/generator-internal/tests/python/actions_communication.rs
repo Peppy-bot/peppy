@@ -17,7 +17,7 @@ use std::{fs, time::Duration};
 use tempfile::TempDir;
 
 // --- Common test constants
-const TEST_MASTER_NODE: &str = "test_master";
+const TEST_DAEMON_NODE: &str = "test_daemon";
 const SUBSCRIBER_NODE_NAME: &str = "subscriber_node";
 const SUBSCRIBER_INSTANCE_ID: &str = "subscriber_instance";
 const EXPOSER_INSTANCE_ID: &str = "exposer_instance";
@@ -166,7 +166,7 @@ async fn actions_communication() {
             arguments: Default::default(),
         },
         SUBSCRIBER_NODE_NAME,
-        TEST_MASTER_NODE,
+        TEST_DAEMON_NODE,
     )
     .unwrap();
     let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
@@ -198,11 +198,11 @@ async def run_subscriber(node_runner):
     feedback_task = asyncio.create_task(goal.on_next_feedback_message())
     await peppylib.ServiceMessenger.poll(
         node_runner.messenger(),
-        node_runner.bound_master_node(),
+        node_runner.bound_daemon_node(),
         node_runner.bound_instance_id(),
         TARGET_NODE_NAME,
         FEEDBACK_READY_SERVICE,
-        node_runner.bound_master_node(),
+        node_runner.bound_daemon_node(),
         TARGET_INSTANCE_ID,
         b"",
         5.0,
@@ -213,11 +213,11 @@ async def run_subscriber(node_runner):
 
     await peppylib.ServiceMessenger.poll(
         node_runner.messenger(),
-        node_runner.bound_master_node(),
+        node_runner.bound_daemon_node(),
         node_runner.bound_instance_id(),
         TARGET_NODE_NAME,
         FEEDBACK_RECEIVED_SERVICE,
-        node_runner.bound_master_node(),
+        node_runner.bound_daemon_node(),
         TARGET_INSTANCE_ID,
         b"",
         5.0,
@@ -269,7 +269,7 @@ if __name__ == "__main__":
             arguments: Default::default(),
         },
         BRAIN_NODE_NAME, // Must match the node name expected by the subscriber
-        TEST_MASTER_NODE,
+        TEST_DAEMON_NODE,
     )
     .unwrap();
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
@@ -303,7 +303,7 @@ async def run_exposer(node_runner):
 
     feedback_ready_service = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
-        node_runner.bound_master_node(),
+        node_runner.bound_daemon_node(),
         node_runner.bound_instance_id(),
         node_runner.node_name(),
         FEEDBACK_READY_SERVICE,
@@ -313,7 +313,7 @@ async def run_exposer(node_runner):
 
     feedback_received_service = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
-        node_runner.bound_master_node(),
+        node_runner.bound_daemon_node(),
         node_runner.bound_instance_id(),
         node_runner.node_name(),
         FEEDBACK_RECEIVED_SERVICE,
@@ -394,9 +394,9 @@ if __name__ == "__main__":
 
     let action_ctx = WaitContext {
         messenger: &messenger,
-        bound_master_node: TEST_MASTER_NODE,
+        bound_daemon_node: TEST_DAEMON_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_master_node: None,
+        target_daemon_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -415,9 +415,9 @@ if __name__ == "__main__":
 
     let ctx = WaitContext {
         messenger: &messenger,
-        bound_master_node: TEST_MASTER_NODE,
+        bound_daemon_node: TEST_DAEMON_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_master_node: Some(TEST_MASTER_NODE),
+        target_daemon_node: Some(TEST_DAEMON_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -438,20 +438,20 @@ if __name__ == "__main__":
 
     send_shutdown(
         &messenger,
-        TEST_MASTER_NODE,
+        TEST_DAEMON_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         SUBSCRIBER_NODE_NAME,
-        Some(TEST_MASTER_NODE),
+        Some(TEST_DAEMON_NODE),
         subscriber_instance_id,
         Duration::from_secs(5),
     )
     .await;
     send_shutdown(
         &messenger,
-        TEST_MASTER_NODE,
+        TEST_DAEMON_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         BRAIN_NODE_NAME,
-        Some(TEST_MASTER_NODE),
+        Some(TEST_DAEMON_NODE),
         exposer_instance_id,
         Duration::from_secs(5),
     )
@@ -556,7 +556,7 @@ async fn actions_communication_cancel_goal() {
             arguments: Default::default(),
         },
         SUBSCRIBER_NODE_NAME,
-        TEST_MASTER_NODE,
+        TEST_DAEMON_NODE,
     )
     .unwrap();
     let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
@@ -627,7 +627,7 @@ if __name__ == "__main__":
             arguments: Default::default(),
         },
         BRAIN_NODE_NAME, // Must match the node name expected by the subscriber
-        TEST_MASTER_NODE,
+        TEST_DAEMON_NODE,
     )
     .unwrap();
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
@@ -703,9 +703,9 @@ if __name__ == "__main__":
 
     let action_ctx = WaitContext {
         messenger: &messenger,
-        bound_master_node: TEST_MASTER_NODE,
+        bound_daemon_node: TEST_DAEMON_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_master_node: None,
+        target_daemon_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -724,9 +724,9 @@ if __name__ == "__main__":
 
     let ctx = WaitContext {
         messenger: &messenger,
-        bound_master_node: TEST_MASTER_NODE,
+        bound_daemon_node: TEST_DAEMON_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_master_node: Some(TEST_MASTER_NODE),
+        target_daemon_node: Some(TEST_DAEMON_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -747,20 +747,20 @@ if __name__ == "__main__":
 
     send_shutdown(
         &messenger,
-        TEST_MASTER_NODE,
+        TEST_DAEMON_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         SUBSCRIBER_NODE_NAME,
-        Some(TEST_MASTER_NODE),
+        Some(TEST_DAEMON_NODE),
         subscriber_instance_id,
         Duration::from_secs(5),
     )
     .await;
     send_shutdown(
         &messenger,
-        TEST_MASTER_NODE,
+        TEST_DAEMON_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         BRAIN_NODE_NAME,
-        Some(TEST_MASTER_NODE),
+        Some(TEST_DAEMON_NODE),
         exposer_instance_id,
         Duration::from_secs(5),
     )

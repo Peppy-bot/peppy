@@ -1,7 +1,7 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, TEST_INSTANCE_ID, TEST_MASTER_NODE_NAME, TEST_NODE_NAME, get_client_server,
+    CALLER_INSTANCE_ID, TEST_DAEMON_NODE_NAME, TEST_INSTANCE_ID, TEST_NODE_NAME, get_client_server,
 };
 use peppylib::{
     encoding::health::{NodeHealthRequest, NodeHealthResponse},
@@ -20,7 +20,7 @@ async fn node_health_request_response_roundtrip() {
 
     let _health_task = listen_for_node_health(
         &server_handle,
-        TEST_MASTER_NODE_NAME,
+        TEST_DAEMON_NODE_NAME,
         TEST_INSTANCE_ID,
         TEST_NODE_NAME,
     )
@@ -37,11 +37,11 @@ async fn node_health_request_response_roundtrip() {
     // Client sends a health request and receives the response
     let response = ServiceMessenger::poll(
         &client.caller_handle,
-        &client.master_node_name,
+        &client.daemon_node_name,
         CALLER_INSTANCE_ID,
         TEST_NODE_NAME,
         peppylib::messaging::NODE_HEALTH_SERVICE,
-        Some(&client.master_node_name),
+        Some(&client.daemon_node_name),
         Some(&client.instance_id),
         request_payload,
         Duration::from_secs(2),

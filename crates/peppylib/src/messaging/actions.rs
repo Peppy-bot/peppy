@@ -10,7 +10,7 @@ use tokio::time::Duration;
 pub struct ActionMessenger;
 
 pub struct ActionGoalHandle {
-    master_node: String,
+    daemon_node: String,
     instance_id: String,
     node_name: String,
     action_name: String,
@@ -22,7 +22,7 @@ pub struct ActionGoalHandle {
 impl std::fmt::Debug for ActionGoalHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ActionGoalHandle")
-            .field("master_node", &self.master_node)
+            .field("daemon_node", &self.daemon_node)
             .field("instance_id", &self.instance_id)
             .field("node_name", &self.node_name)
             .field("action_name", &self.action_name)
@@ -67,14 +67,14 @@ pub struct ActionCreation {
 impl ActionMessenger {
     pub async fn expose(
         messenger: &MessengerHandle,
-        bound_master_node: &str,
+        bound_daemon_node: &str,
         as_instance_id: &str,
         as_node_name: &str,
         as_action_name: &str,
     ) -> Result<ActionCreation> {
         messenger
             .expose_action(
-                bound_master_node,
+                bound_daemon_node,
                 as_node_name,
                 as_action_name,
                 as_instance_id,
@@ -86,21 +86,21 @@ impl ActionMessenger {
     #[allow(clippy::too_many_arguments)]
     pub async fn is_reachable(
         messenger: &MessengerHandle,
-        bound_master_node: &str,
+        bound_daemon_node: &str,
         as_instance_id: &str,
         target_node_name: &str,
         target_action_name: &str,
-        target_master_node: Option<&str>,
+        target_daemon_node: Option<&str>,
         target_instance_id: Option<&str>,
     ) -> Result<bool> {
         match messenger
             .poll_service(
                 "action",
-                bound_master_node,
+                bound_daemon_node,
                 as_instance_id,
                 target_node_name,
                 target_action_name,
-                target_master_node,
+                target_daemon_node,
                 target_instance_id,
                 Bytes::from_static(SERVICE_PROBE_PAYLOAD),
                 PROBE_TIMEOUT,
@@ -117,26 +117,26 @@ impl ActionMessenger {
     #[allow(clippy::too_many_arguments)]
     pub async fn send_goal(
         messenger: &MessengerHandle,
-        as_master_node: &str,
+        as_daemon_node: &str,
         as_instance_id: &str,
         to_node_name: &str,
         to_action_name: &str,
-        target_master_node: Option<&str>,
+        target_daemon_node: Option<&str>,
         target_instance_id: Option<&str>,
         goal_payload: Bytes,
         feedback_qos: QoSProfile,
         goal_timeout: Duration,
     ) -> Result<ActionGoalHandle> {
         let feedback_topic = {
-            let sender_master = target_master_node.unwrap_or("*");
+            let sender_daemon = target_daemon_node.unwrap_or("*");
             match target_instance_id {
                 Some(target_instance_id) => {
                     format!(
-                        "{as_master_node}/{sender_master}/{as_instance_id}/{target_instance_id}/action/{to_node_name}/{to_action_name}/feedback/{target_instance_id}"
+                        "{as_daemon_node}/{sender_daemon}/{as_instance_id}/{target_instance_id}/action/{to_node_name}/{to_action_name}/feedback/{target_instance_id}"
                     )
                 }
                 None => format!(
-                    "{as_master_node}/*/{as_instance_id}/*/action/{to_node_name}/{to_action_name}/feedback/*"
+                    "{as_daemon_node}/*/{as_instance_id}/*/action/{to_node_name}/{to_action_name}/feedback/*"
                 ),
             }
         };
@@ -153,7 +153,7 @@ impl ActionMessenger {
         let goal_response = messenger
             .poll_service(
                 "action",
-                as_master_node,
+                as_daemon_node,
                 as_instance_id,
                 to_node_name,
                 &goal_service_name,
@@ -165,7 +165,7 @@ impl ActionMessenger {
             .await?;
 
         Ok(ActionGoalHandle {
-            master_node: as_master_node.to_string(),
+            daemon_node: as_daemon_node.to_string(),
             instance_id: as_instance_id.to_string(),
             node_name: to_node_name.to_string(),
             action_name: to_action_name.to_string(),
@@ -185,7 +185,7 @@ impl ActionMessenger {
         messenger_handle
             .poll_service(
                 "action",
-                &action_handle.master_node,
+                &action_handle.daemon_node,
                 &action_handle.instance_id,
                 &action_handle.node_name,
                 &cancel_service_name,
@@ -207,7 +207,7 @@ impl ActionMessenger {
         messenger_handle
             .poll_service(
                 "action",
-                &action_handle.master_node,
+                &action_handle.daemon_node,
                 &action_handle.instance_id,
                 &action_handle.node_name,
                 &result_service_name,

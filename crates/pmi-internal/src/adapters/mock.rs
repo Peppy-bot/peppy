@@ -259,20 +259,20 @@ mod tests {
     use crate::types::{MessengerAdapter, PublisherQoS, SubscriberQoS};
     use crate::{Message, Messenger, MessengerBackend};
 
-    // Key expression format: target_master/caller_master/target_instance/caller_instance/...
+    // Key expression format: target_daemon/caller_daemon/target_instance/caller_instance/...
     // Instance ID is extracted from segment index 3 (caller_instance)
-    // Master node is extracted from segment index 1 (caller_master)
+    // Daemon node is extracted from segment index 1 (caller_daemon)
     const INSTANCE_ID: &str = "test_instance";
-    const MASTER_NODE: &str = "test_master";
+    const DAEMON_NODE: &str = "test_daemon";
 
     /// Creates a valid key expression with the expected format for TopicMessage
     fn make_key_expr(topic: &str) -> String {
-        // Format: target_master/caller_master/target_instance/caller_instance/topic
-        // Segments: 0=target_master, 1=caller_master, 2=target_instance, 3=caller_instance
-        // TopicMessage extracts: instance_id from index 3, master_node from index 1
+        // Format: target_daemon/caller_daemon/target_instance/caller_instance/topic
+        // Segments: 0=target_daemon, 1=caller_daemon, 2=target_instance, 3=caller_instance
+        // TopicMessage extracts: instance_id from index 3, daemon_node from index 1
         format!(
-            "target_master/{}/target_instance/{}/{}",
-            MASTER_NODE, INSTANCE_ID, topic
+            "target_daemon/{}/target_instance/{}/{}",
+            DAEMON_NODE, INSTANCE_ID, topic
         )
     }
 
@@ -338,7 +338,7 @@ mod tests {
         assert!(messenger.start_session().await.is_ok());
 
         // Test subscribe first - pattern must match the key format from make_key_expr
-        // make_key_expr("test/topic/data") = "target_master/test_master/target_instance/test_instance/test/topic/data"
+        // make_key_expr("test/topic/data") = "target_daemon/test_daemon/target_instance/test_instance/test/topic/data"
         // Pattern uses wildcards for first 4 segments and matches rest literally
         let subscription = messenger
             .subscribe("*/*/*/*/test/topic/**", SubscriberQoS::Standard)
@@ -361,7 +361,7 @@ mod tests {
         assert!(received.is_some());
         let received_msg = received.unwrap();
         assert_eq!(received_msg.instance_id(), INSTANCE_ID);
-        assert_eq!(received_msg.master_node(), MASTER_NODE);
+        assert_eq!(received_msg.daemon_node(), DAEMON_NODE);
         assert_eq!(received_msg.payload(), message.payload());
 
         // Test shutdown
@@ -535,38 +535,38 @@ mod tests {
         assert!(!MockAdapter::topic_matches("a/*/c/**", "a/b/d"));
         assert!(MockAdapter::topic_matches(
             "*/*/service/**",
-            "master/caller/service/ping/request/123"
+            "daemon/caller/service/ping/request/123"
         ));
     }
 
     #[test]
     fn test_topic_matches_service_patterns() {
         // Real patterns from the service messenger
-        // Subscription pattern: {bound_master_node}/*/{as_instance_id}/*/{service_root}/request/**
-        // Request topic: {target_master}/{caller_master}/{target_instance}/{caller_instance}/{service_root}/request/{request_id}
+        // Subscription pattern: {bound_daemon_node}/*/{as_instance_id}/*/{service_root}/request/**
+        // Request topic: {target_daemon}/{caller_daemon}/{target_instance}/{caller_instance}/{service_root}/request/{request_id}
 
-        // Pattern 1: Specific master, specific instance
-        // Service bound to master "listener_master" with instance "listener_instance"
-        let pattern = "listener_master/*/listener_instance/*/service/node/ping/request/**";
+        // Pattern 1: Specific daemon, specific instance
+        // Service bound to daemon "listener_daemon" with instance "listener_instance"
+        let pattern = "listener_daemon/*/listener_instance/*/service/node/ping/request/**";
         // Request targeting the specific instance
-        let topic = "listener_master/caller_master/listener_instance/caller_instance/service/node/ping/request/12345";
+        let topic = "listener_daemon/caller_daemon/listener_instance/caller_instance/service/node/ping/request/12345";
         assert!(MockAdapter::topic_matches(pattern, topic));
 
-        // Pattern 3: Broadcast master (_any_), specific instance
+        // Pattern 3: Broadcast daemon (_any_), specific instance
         let pattern = "_any_/*/listener_instance/*/service/node/ping/request/**";
         let topic =
-            "_any_/caller_master/listener_instance/caller_instance/service/node/ping/request/12345";
+            "_any_/caller_daemon/listener_instance/caller_instance/service/node/ping/request/12345";
         assert!(MockAdapter::topic_matches(pattern, topic));
 
-        // Pattern 4: Broadcast master, broadcast instance
+        // Pattern 4: Broadcast daemon, broadcast instance
         let pattern = "_any_/*/_any_/*/service/node/ping/request/**";
-        let topic = "_any_/caller_master/_any_/caller_instance/service/node/ping/request/12345";
+        let topic = "_any_/caller_daemon/_any_/caller_instance/service/node/ping/request/12345";
         assert!(MockAdapter::topic_matches(pattern, topic));
 
-        // MasterNode uses its own name as the bound master (e.g., "master_node")
-        // This allows targeted requests to reach the master node specifically
-        let pattern = "master_node/*/listener_instance/*/service/node/ping/request/**";
-        let topic = "master_node/caller_master/listener_instance/caller_instance/service/node/ping/request/12345";
+        // DaemonNode uses its own name as the bound daemon (e.g., "daemon_node")
+        // This allows targeted requests to reach the daemon node specifically
+        let pattern = "daemon_node/*/listener_instance/*/service/node/ping/request/**";
+        let topic = "daemon_node/caller_daemon/listener_instance/caller_instance/service/node/ping/request/12345";
         assert!(MockAdapter::topic_matches(pattern, topic));
     }
 }

@@ -8,7 +8,7 @@ autotests = false
 pmi = { path = "../pmi-internal", features = ["zenoh"] }
 config = { path = "../config-internal" }
 peppylib = { path = "../peppylib" }
-master-node = { path = "../master-node-internal" }
+daemon-node = { path = "../daemon-node-internal" }
 node-stack = { path = "../node-stack-internal" }
 bytes = "1"
 serde = { version = "1", features = ["derive"] }

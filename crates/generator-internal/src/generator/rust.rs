@@ -256,7 +256,7 @@ impl RustGenerator {
             pub async fn fire_goal(
                 node_runner: &crate::NodeRunner,
                 timeout: std::time::Duration,
-                target_master_node: Option<&str>,
+                target_daemon_node: Option<&str>,
                 target_instance_id: Option<&str>,
                 #request_param
                 feedback_qos: peppylib::config::QoSProfile,
@@ -265,11 +265,11 @@ impl RustGenerator {
 
                 let action_handle = peppylib::ActionMessenger::send_goal(
                     node_runner.messenger(),
-                    node_runner.processor().bound_master_node(),
+                    node_runner.processor().bound_daemon_node(),
                     node_runner.processor().bound_instance_id(),
                     TARGET_NODE_NAME,
                     TARGET_ACTION_NAME,
-                    target_master_node,
+                    target_daemon_node,
                     target_instance_id,
                     goal_payload,
                     feedback_qos,
@@ -307,7 +307,7 @@ impl RustGenerator {
         )?;
 
         let cancel_response_fields = vec![
-            (Ident::new("master_node", Span::call_site()), quote!(String)),
+            (Ident::new("daemon_node", Span::call_site()), quote!(String)),
             (Ident::new("instance_id", Span::call_site()), quote!(String)),
             (
                 Ident::new("data", Span::call_site()),
@@ -356,7 +356,7 @@ impl RustGenerator {
                 let payload = response.payload().as_bytes();
                 let response_data = deserialize_cancel_response(payload.as_ref())?;
                 Ok(#cancel_response_ident {
-                    master_node: response.master_node().to_string(),
+                    daemon_node: response.daemon_node().to_string(),
                     instance_id: response.instance_id().to_string(),
                     data: response_data,
                 })
@@ -473,7 +473,7 @@ impl RustGenerator {
             )?;
 
             let result_response_fields = vec![
-                (Ident::new("master_node", Span::call_site()), quote!(String)),
+                (Ident::new("daemon_node", Span::call_site()), quote!(String)),
                 (Ident::new("instance_id", Span::call_site()), quote!(String)),
                 (
                     Ident::new("data", Span::call_site()),
@@ -523,7 +523,7 @@ impl RustGenerator {
                     let payload = response.payload().as_bytes();
                     let response_data = deserialize_result_response(payload.as_ref())?;
                     Ok(#result_response_ident {
-                        master_node: response.master_node().to_string(),
+                        daemon_node: response.daemon_node().to_string(),
                         instance_id: response.instance_id().to_string(),
                         data: response_data,
                     })
@@ -531,7 +531,7 @@ impl RustGenerator {
             }
         } else {
             let result_response_fields = vec![
-                (Ident::new("master_node", Span::call_site()), quote!(String)),
+                (Ident::new("daemon_node", Span::call_site()), quote!(String)),
                 (Ident::new("instance_id", Span::call_site()), quote!(String)),
             ];
             context.add_struct(result_response_ident.clone(), result_response_fields);
@@ -549,7 +549,7 @@ impl RustGenerator {
                     .await?;
 
                     Ok(#result_response_ident {
-                        master_node: response.master_node().to_string(),
+                        daemon_node: response.daemon_node().to_string(),
                         instance_id: response.instance_id().to_string(),
                     })
                 }
@@ -683,7 +683,7 @@ impl LanguageGenerator for RustGenerator {
                 #[allow(dead_code)]
                 pub struct Request {
                     pub instance_id: String,
-                    pub master_node: String,
+                    pub daemon_node: String,
                     pub data: #data_ident,
                 }
             }
@@ -693,7 +693,7 @@ impl LanguageGenerator for RustGenerator {
                 #[allow(dead_code)]
                 pub struct Request {
                     pub instance_id: String,
-                    pub master_node: String,
+                    pub daemon_node: String,
                 }
             }
         };
@@ -808,7 +808,7 @@ impl LanguageGenerator for RustGenerator {
                     #[allow(dead_code)]
                     pub struct GoalRequest {
                         pub instance_id: String,
-                        pub master_node: String,
+                        pub daemon_node: String,
                         pub data: #data_ident,
                     }
                 }
@@ -818,7 +818,7 @@ impl LanguageGenerator for RustGenerator {
                     #[allow(dead_code)]
                     pub struct GoalRequest {
                         pub instance_id: String,
-                        pub master_node: String,
+                        pub daemon_node: String,
                     }
                 }
             };
@@ -891,7 +891,7 @@ impl LanguageGenerator for RustGenerator {
                 #[allow(dead_code)]
                 pub struct CancelRequest {
                     pub instance_id: String,
-                    pub master_node: String,
+                    pub daemon_node: String,
                 }
             });
 
@@ -953,7 +953,7 @@ impl LanguageGenerator for RustGenerator {
                 #[allow(dead_code)]
                 pub struct ResultRequest {
                     pub instance_id: String,
-                    pub master_node: String,
+                    pub daemon_node: String,
                 }
             });
 
@@ -1276,11 +1276,11 @@ impl LanguageGenerator for RustGenerator {
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 node_runner.messenger(),
-                node_runner.processor().bound_master_node(),
+                node_runner.processor().bound_daemon_node(),
                 node_runner.processor().bound_instance_id(),
                 NODE_NAME,
                 SERVICE_NAME,
-                target_master_node,
+                target_daemon_node,
                 target_instance_id,
                 request_payload,
                 timeout,
@@ -1316,7 +1316,7 @@ impl LanguageGenerator for RustGenerator {
                 let response_struct_tokens = quote! {
                     #[derive(Debug, Clone)]
                     pub struct #response_struct_ident {
-                        pub master_node: String,
+                        pub daemon_node: String,
                         pub instance_id: String,
                         pub data: #response_data_ident,
                     }
@@ -1327,7 +1327,7 @@ impl LanguageGenerator for RustGenerator {
                     let payload = response_message.payload().as_bytes();
                     let response_data = deserialize_response(&payload)?;
                     Ok(#response_struct_ident {
-                        master_node: response_message.master_node().to_string(),
+                        daemon_node: response_message.daemon_node().to_string(),
                         instance_id: response_message.instance_id().to_string(),
                         data: response_data,
                     })
@@ -1368,7 +1368,7 @@ impl LanguageGenerator for RustGenerator {
         let mut fn_param_tokens = vec![
             quote!(node_runner: &crate::NodeRunner),
             quote!(timeout: std::time::Duration),
-            quote!(target_master_node: Option<&str>),
+            quote!(target_daemon_node: Option<&str>),
             quote!(target_instance_id: Option<&str>),
         ];
         if !request_struct_params.is_empty() {

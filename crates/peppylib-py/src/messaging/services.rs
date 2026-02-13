@@ -15,7 +15,7 @@ pub struct PyServiceRequestContext {
     request_id: String,
     payload: Vec<u8>,
     instance_id: String,
-    master_node: String,
+    daemon_node: String,
 }
 
 #[pymethods]
@@ -36,8 +36,8 @@ impl PyServiceRequestContext {
     }
 
     #[getter]
-    fn master_node(&self) -> &str {
-        &self.master_node
+    fn daemon_node(&self) -> &str {
+        &self.daemon_node
     }
 
     /// Returns the underlying message as a `TopicMessage`.
@@ -47,7 +47,7 @@ impl PyServiceRequestContext {
             key_expr: String::new(),
             payload: self.payload.clone(),
             instance_id: self.instance_id.clone(),
-            master_node: self.master_node.clone(),
+            daemon_node: self.daemon_node.clone(),
         }
     }
 }
@@ -60,7 +60,7 @@ impl From<ServiceRequestContext> for PyServiceRequestContext {
             request_id,
             payload: message.payload().to_bytes().to_vec(),
             instance_id: message.instance_id().to_string(),
-            master_node: message.master_node().to_string(),
+            daemon_node: message.daemon_node().to_string(),
         }
     }
 }
@@ -140,7 +140,7 @@ impl PyServiceMessenger {
     fn listen<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
-        as_master_node: String,
+        as_daemon_node: String,
         as_instance_id: String,
         as_node_name: String,
         as_service_name: String,
@@ -150,7 +150,7 @@ impl PyServiceMessenger {
             let handle = inner.lock().await;
             let endpoint = ServiceMessenger::listen(
                 &handle,
-                &as_master_node,
+                &as_daemon_node,
                 &as_instance_id,
                 &as_node_name,
                 &as_service_name,
@@ -165,16 +165,16 @@ impl PyServiceMessenger {
 
     /// Check if a service has active subscribers.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_master_node, as_instance_id, target_node_name, target_service_name, target_master_node=None, target_instance_id=None))]
+    #[pyo3(signature = (messenger, bound_daemon_node, as_instance_id, target_node_name, target_service_name, target_daemon_node=None, target_instance_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn is_reachable<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
-        bound_master_node: String,
+        bound_daemon_node: String,
         as_instance_id: String,
         target_node_name: String,
         target_service_name: String,
-        target_master_node: Option<String>,
+        target_daemon_node: Option<String>,
         target_instance_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&messenger.inner);
@@ -182,11 +182,11 @@ impl PyServiceMessenger {
             let handle = inner.lock().await;
             let reachable = ServiceMessenger::is_reachable(
                 &handle,
-                &bound_master_node,
+                &bound_daemon_node,
                 &as_instance_id,
                 &target_node_name,
                 &target_service_name,
-                target_master_node.as_deref(),
+                target_daemon_node.as_deref(),
                 target_instance_id.as_deref(),
             )
             .await
@@ -197,16 +197,16 @@ impl PyServiceMessenger {
 
     /// Send a request to a service and wait for a response.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_master_node, as_instance_id, target_node_name, target_service_name, target_master_node=None, target_instance_id=None, request_payload=vec![], response_timeout_secs=2.0))]
+    #[pyo3(signature = (messenger, bound_daemon_node, as_instance_id, target_node_name, target_service_name, target_daemon_node=None, target_instance_id=None, request_payload=vec![], response_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn poll<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
-        bound_master_node: String,
+        bound_daemon_node: String,
         as_instance_id: String,
         target_node_name: String,
         target_service_name: String,
-        target_master_node: Option<String>,
+        target_daemon_node: Option<String>,
         target_instance_id: Option<String>,
         request_payload: Vec<u8>,
         response_timeout_secs: f64,
@@ -216,11 +216,11 @@ impl PyServiceMessenger {
             let handle = inner.lock().await;
             let response = ServiceMessenger::poll(
                 &handle,
-                &bound_master_node,
+                &bound_daemon_node,
                 &as_instance_id,
                 &target_node_name,
                 &target_service_name,
-                target_master_node.as_deref(),
+                target_daemon_node.as_deref(),
                 target_instance_id.as_deref(),
                 Bytes::from(request_payload),
                 Duration::from_secs_f64(response_timeout_secs),

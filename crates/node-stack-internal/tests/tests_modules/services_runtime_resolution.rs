@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use node_stack::{NodeStack, NodeStackError};
 
-use crate::helpers::config_common::master_node_config;
+use crate::helpers::config_common::daemon_node_config;
 
 #[test]
 fn service_dependency_resolved_when_dependency_added_first() {
@@ -63,13 +63,13 @@ fn service_dependency_resolved_when_dependency_added_first() {
     )
     .expect("valid dependency node config");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
 
     // Add the dependency first
     stack
         .push_config(dependency, false, PathBuf::from("/tmp"))
         .expect("dependency node has no dependencies");
-    assert_eq!(stack.len(), 2, "stack should have master + dependency node");
+    assert_eq!(stack.len(), 2, "stack should have daemon + dependency node");
 
     // Now add the dependent node
     stack
@@ -132,7 +132,7 @@ fn service_dependency_fails_when_dependency_is_missing() {
     )
     .expect("valid dependent node config");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
 
     // Adding a node that depends on a non-existent service provider should fail
     let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
@@ -146,7 +146,7 @@ fn service_dependency_fails_when_dependency_is_missing() {
     };
     assert_eq!(dependency, "lidar");
     assert_eq!(dependency_tag, "1.0.0");
-    assert_eq!(stack.len(), 1, "stack should only have master node");
+    assert_eq!(stack.len(), 1, "stack should only have daemon node");
 }
 
 #[test]
@@ -207,13 +207,13 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
     )
     .expect("valid dependency node config with wrong service");
 
-    let stack = NodeStack::new(master_node_config(), None, PathBuf::from("/tmp"));
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
 
     // Add the node with the correct name but wrong service
     stack
         .push_config(dependency_wrong_service, false, PathBuf::from("/tmp"))
         .expect("lidar has no dependencies");
-    assert_eq!(stack.len(), 2, "stack should have master + lidar");
+    assert_eq!(stack.len(), 2, "stack should have daemon + lidar");
 
     // Adding brain should fail because lidar doesn't expose "reset_sensor"
     let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
@@ -234,6 +234,6 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
     assert_eq!(
         stack.len(),
         2,
-        "stack should still only have master + lidar"
+        "stack should still only have daemon + lidar"
     );
 }

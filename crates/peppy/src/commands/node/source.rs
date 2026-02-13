@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
+use daemon_node::encoding::NodeSource;
 use gix_url::Url as GitUrl;
-use master_node::encoding::NodeSource;
 
 use crate::error::{Error, Result};
 

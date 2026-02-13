@@ -155,7 +155,7 @@ fn main() -> Result<()> {
 
 The `GoalRequest` contains:
 - `instance_id` — the instance that sent the goal.
-- `master_node` — the master node of the caller.
+- `daemon_node` — the daemon node of the caller.
 - `data` — the deserialized goal parameters (only present when `request_message_format` is defined).
 
 ### Handling cancellation
@@ -258,7 +258,7 @@ fn main() -> Result<()> {
         let mut goal = brain_move_arm::fire_goal(
             &node_runner,
             Duration::from_secs(5),       // timeout
-            None,                          // target_master_node (None = any)
+            None,                          // target_daemon_node (None = any)
             None,                          // target_instance_id (None = any)
             request,
             QoSProfile::SensorData,        // QoS for the feedback topic

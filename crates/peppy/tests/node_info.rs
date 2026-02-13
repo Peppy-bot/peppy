@@ -1,4 +1,4 @@
-use master_node::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
+use daemon_node::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
 use peppy::test_support::ServeCommandEmulation;
 use peppylib::ServiceMessenger;
 use peppylib::messaging::MessengerHandle;
@@ -23,7 +23,7 @@ async fn node_info_shows_dependencies_from_subscribed_interfaces() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let master_node_name = serve.master_node_name().to_string();
+    let daemon_node_name = serve.daemon_node_name().to_string();
 
     // Create a node directory with dependencies (subscribes_to interfaces)
     let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
@@ -55,7 +55,7 @@ async fn node_info_shows_dependencies_from_subscribed_interfaces() {
     );
     write_peppy_json5(node_dir.path(), &peppy_json5);
 
-    // Send NodeInfoRequest to the master node
+    // Send NodeInfoRequest to the daemon node
     let caller_handle = MessengerHandle::from_shared(serve.messenger());
 
     let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
@@ -63,11 +63,11 @@ async fn node_info_shows_dependencies_from_subscribed_interfaces() {
 
     let response = ServiceMessenger::poll(
         &caller_handle,
-        &master_node_name,
+        &daemon_node_name,
         CALLER_INSTANCE_ID,
-        &master_node_name,
-        master_node::names::NODE_INFO,
-        Some(&master_node_name),
+        &daemon_node_name,
+        daemon_node::names::NODE_INFO,
+        Some(&daemon_node_name),
         None,
         request_payload,
         Duration::from_secs(10),
@@ -157,7 +157,7 @@ async fn node_info_no_dependencies_when_no_subscribes() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let master_node_name = serve.master_node_name().to_string();
+    let daemon_node_name = serve.daemon_node_name().to_string();
 
     // Create a node with no dependencies (only exposes interfaces, doesn't subscribe)
     let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
@@ -189,11 +189,11 @@ async fn node_info_no_dependencies_when_no_subscribes() {
 
     let response = ServiceMessenger::poll(
         &caller_handle,
-        &master_node_name,
+        &daemon_node_name,
         CALLER_INSTANCE_ID,
-        &master_node_name,
-        master_node::names::NODE_INFO,
-        Some(&master_node_name),
+        &daemon_node_name,
+        daemon_node::names::NODE_INFO,
+        Some(&daemon_node_name),
         None,
         request_payload,
         Duration::from_secs(10),

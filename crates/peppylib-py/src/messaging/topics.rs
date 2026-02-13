@@ -15,7 +15,7 @@ pub struct PyTopicMessage {
     pub(crate) key_expr: String,
     pub(crate) payload: Vec<u8>,
     pub(crate) instance_id: String,
-    pub(crate) master_node: String,
+    pub(crate) daemon_node: String,
 }
 
 #[pymethods]
@@ -36,8 +36,8 @@ impl PyTopicMessage {
     }
 
     #[getter]
-    fn master_node(&self) -> &str {
-        &self.master_node
+    fn daemon_node(&self) -> &str {
+        &self.daemon_node
     }
 }
 
@@ -47,7 +47,7 @@ impl From<TopicMessage> for PyTopicMessage {
             key_expr: msg.key_expr().to_string(),
             payload: msg.payload().to_bytes().to_vec(),
             instance_id: msg.instance_id().to_string(),
-            master_node: msg.master_node().to_string(),
+            daemon_node: msg.daemon_node().to_string(),
         }
     }
 }
@@ -81,16 +81,16 @@ pub struct PyTopicMessenger;
 impl PyTopicMessenger {
     /// Subscribe to a topic.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_master_node, as_instance_id, to_node_name, to_topic, to_master_node, to_instance_id, qos))]
+    #[pyo3(signature = (messenger, as_daemon_node, as_instance_id, to_node_name, to_topic, to_daemon_node, to_instance_id, qos))]
     #[allow(clippy::too_many_arguments)]
     fn subscribe<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
-        as_master_node: String,
+        as_daemon_node: String,
         as_instance_id: String,
         to_node_name: String,
         to_topic: String,
-        to_master_node: Option<String>,
+        to_daemon_node: Option<String>,
         to_instance_id: Option<String>,
         qos: PyQoSProfile,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -99,11 +99,11 @@ impl PyTopicMessenger {
             let handle = inner.lock().await;
             let subscription = TopicMessenger::subscribe(
                 &handle,
-                &as_master_node,
+                &as_daemon_node,
                 &as_instance_id,
                 &to_node_name,
                 &to_topic,
-                to_master_node.as_deref(),
+                to_daemon_node.as_deref(),
                 to_instance_id.as_deref(),
                 qos.into(),
             )
@@ -122,7 +122,7 @@ impl PyTopicMessenger {
     fn emit<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
-        as_master_node: String,
+        as_daemon_node: String,
         as_instance_id: String,
         as_node_name: String,
         as_topic_name: String,
@@ -134,7 +134,7 @@ impl PyTopicMessenger {
             let handle = inner.lock().await;
             TopicMessenger::emit(
                 &handle,
-                &as_master_node,
+                &as_daemon_node,
                 &as_instance_id,
                 &as_node_name,
                 &as_topic_name,

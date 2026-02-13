@@ -28,7 +28,7 @@ fn serve_command() {
 
     ServeCommand {
         messaging_engine: "mock".to_string(),
-        master_name: Some("master-node".to_string()),
+        daemon_name: Some("daemon-node".to_string()),
         shutdown_token: Some(shutdown_token),
     }
     .execute(&ctx)
@@ -38,12 +38,12 @@ fn serve_command() {
         .join()
         .expect("shutdown thread should complete without panic");
 
-    let master_node_name = ctx
-        .master_node_name()
-        .expect("daemon state master node name should be readable");
+    let daemon_node_name = ctx
+        .daemon_node_name()
+        .expect("daemon state daemon node name should be readable");
     assert_eq!(
-        master_node_name, "master-node",
-        "daemon state should use the configured master name"
+        daemon_node_name, "daemon-node",
+        "daemon state should use the configured daemon name"
     );
 
     let logs = log_capture.logs();

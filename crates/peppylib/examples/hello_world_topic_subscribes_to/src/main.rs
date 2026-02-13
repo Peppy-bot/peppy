@@ -12,7 +12,7 @@ async fn main() {
 
     // Those properties are found in the peppy_launcher.json5 `deployments` array
     let node_name = "hello_node";
-    let master_node = format!("{}_master", get_random(rng()));
+    let daemon_node = format!("{}_daemon", get_random(rng()));
     let instance_id = format!("{}_receiver", get_random(rng()));
 
     // Create a messenger for the receiving node.
@@ -26,7 +26,7 @@ async fn main() {
 
     let mut subscription = TopicMessenger::subscribe(
         &receiver_handle,
-        &master_node,
+        &daemon_node,
         &instance_id,
         node_name,
         topic_name,
@@ -52,9 +52,9 @@ async fn main() {
                         let payload = String::from_utf8_lossy(payload_bytes.as_ref());
                         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
                         println!(
-                            "[{timestamp}] Received `{payload}` from instance_id `{}` and master_node `{}` with key_expr `{}`",
+                            "[{timestamp}] Received `{payload}` from instance_id `{}` and daemon_node `{}` with key_expr `{}`",
                             received.instance_id(),
-                            received.master_node(),
+                            received.daemon_node(),
                             received.key_expr()
                         );
                     }

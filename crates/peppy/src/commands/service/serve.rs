@@ -79,7 +79,7 @@ pub struct Serve {
 /// It operates as follow:
 /// 1. Starts a zenohd separate process
 /// 2. Creates an internal "node stack" (a graph of nodes that depends on each other)
-/// 3. Starts a "master node" that listen for incoming commands
+/// 3. Starts a "daemon node" that listen for incoming commands
 impl Serve {
     fn log_task_result(result: std::result::Result<Result<()>, JoinError>) {
         match result {
@@ -196,7 +196,7 @@ impl Serve {
 
 pub struct ServeCommand {
     pub messaging_engine: String,
-    pub master_name: Option<String>,
+    pub daemon_name: Option<String>,
     pub shutdown_token: Option<CancellationToken>,
 }
 
@@ -204,7 +204,7 @@ impl Command for ServeCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
         let mut builder = ServeCommandBuilder::new(&ctx.root_dir)?
             .with_messaging_router(self.messaging_engine)?
-            .with_master_node(self.master_name)?;
+            .with_daemon_node(self.daemon_name)?;
 
         if let Some(token) = self.shutdown_token {
             builder = builder.with_shutdown_token(token);

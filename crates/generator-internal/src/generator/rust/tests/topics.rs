@@ -348,7 +348,7 @@ fn subscribed_to_topic() {
         &rendered,
         &[
             "pub async fn on_next_message_received(",
-            "master_node_target: Option<&str>",
+            "daemon_node_target: Option<&str>",
             "instance_id_target: Option<&str>",
             "-> crate::Result<(String, Message)>",
         ],
