@@ -11,13 +11,14 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct NodeInitBuilder {
     ctx: Arc<AppContext>,
     to_dir: PathBuf,
     node_name: NodeName,
     toolchain: Toolchain,
+    timeout: Option<Duration>,
 }
 
 impl NodeInitBuilder {
@@ -27,12 +28,18 @@ impl NodeInitBuilder {
             to_dir: ctx.root_dir.clone(),
             node_name,
             toolchain,
+            timeout: Some(REQUEST_TIMEOUT),
         }
     }
 
     #[allow(clippy::wrong_self_convention)]
     pub fn to_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.to_dir = dir.into();
+        self
+    }
+
+    pub fn with_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
+        self.timeout = timeout.into();
         self
     }
 
@@ -79,7 +86,7 @@ impl NodeInitBuilder {
                 master_node_name,
                 CALLER_INSTANCE_ID,
                 master_node_name,
-                REQUEST_TIMEOUT,
+                self.timeout,
             )
             .await
             .map_err(|e| {

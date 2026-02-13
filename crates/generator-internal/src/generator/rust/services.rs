@@ -1,9 +1,10 @@
 use super::context::SchemaFieldLookup;
 use super::deserialization::{build_deserialize_fn, generate_field_reader_statements};
+use super::identifiers::sanitize_rust_identifier;
 use super::serialization::{
     MessageEncodingSpec, NameGenerator, build_serialize_payload, generate_field_assignment,
 };
-use crate::generator::naming::sanitize_component;
+use crate::error::{Error, Result};
 use config::encoding::FunctionParam;
 use config::node::MessageFormat;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -38,7 +39,7 @@ pub struct ExposedServiceMethodSpec<'a> {
 
 pub fn build_exposed_service_method(
     spec: &ExposedServiceMethodSpec,
-) -> (TokenStream, Vec<TokenStream>) {
+) -> Result<(TokenStream, Vec<TokenStream>)> {
     let ExposedServiceMethodSpec {
         fn_name,
         handler_fn_name_override,
@@ -155,7 +156,7 @@ pub fn build_exposed_service_method(
         &callback_call,
         service_instance_param_ident.as_ref(),
         use_service_name_const,
-    );
+    )?;
     let handler_helper_name = handler_helper_name_override.cloned().unwrap_or_else(|| {
         Ident::new(
             &format!("{}_handle_request_payload", fn_name),
@@ -175,8 +176,9 @@ pub fn build_exposed_service_method(
     let mut helper_tokens = Vec::new();
 
     if let Some(request_spec) = encoding {
-        let request_format =
-            request_format.expect("request format should exist when encoding is present");
+        let request_format = request_format.ok_or_else(|| Error::InvariantViolation {
+            context: String::from("request format should exist when encoding is present"),
+        })?;
 
         let deserializer_struct = if use_service_name_const {
             request_data_struct
@@ -199,7 +201,7 @@ pub fn build_exposed_service_method(
             request_struct: deserializer_struct,
             instance_id_param: instance_id_for_deserializer,
             use_service_name_const,
-        });
+        })?;
         helper_tokens.push(request_deserializer);
 
         let deserializer_pattern = if use_service_name_const {
@@ -221,9 +223,14 @@ pub fn build_exposed_service_method(
             helper_params.push(quote!(master_node: String));
             helper_params.push(quote!(instance_id: String));
         } else if instance_from_request_context {
-            let instance_ident = instance_binding_ident
-                .as_ref()
-                .expect("instance_id param should exist when provided from context");
+            let instance_ident =
+                instance_binding_ident
+                    .as_ref()
+                    .ok_or_else(|| Error::InvariantViolation {
+                        context: String::from(
+                            "instance_id param should exist when provided from context",
+                        ),
+                    })?;
             helper_params.push(quote!(#instance_ident: String));
         }
 
@@ -272,9 +279,14 @@ pub fn build_exposed_service_method(
             helper_params.push(quote!(master_node: String));
             helper_params.push(quote!(instance_id: String));
         } else if instance_from_request_context {
-            let instance_ident = instance_binding_ident
-                .as_ref()
-                .expect("instance_id param should exist when provided from context");
+            let instance_ident =
+                instance_binding_ident
+                    .as_ref()
+                    .ok_or_else(|| Error::InvariantViolation {
+                        context: String::from(
+                            "instance_id param should exist when provided from context",
+                        ),
+                    })?;
             helper_params.push(quote!(#instance_ident: String));
         }
 
@@ -489,7 +501,7 @@ pub fn build_exposed_service_method(
         }
     };
 
-    (method, helper_tokens)
+    Ok((method, helper_tokens))
 }
 
 pub fn build_request_struct_with_name_and_impl(
@@ -569,7 +581,7 @@ pub struct RequestDeserializerSpec<'a> {
     pub use_service_name_const: bool,
 }
 
-pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> TokenStream {
+pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> Result<TokenStream> {
     let RequestDeserializerSpec {
         deserializer_fn_name,
         request_spec,
@@ -596,7 +608,7 @@ pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> TokenStream
         let request_return_ty = build_return_type_from_params(handler_params, request_struct);
         let return_ty = quote!((#instance_ty, #request_return_ty));
 
-        let schema_lookup = SchemaFieldLookup::new(request_format);
+        let schema_lookup = SchemaFieldLookup::new(request_format)?;
         let mut names = NameGenerator::new();
         let mut field_statements = Vec::new();
         let mut handler_value_map: HashMap<String, Ident> = HashMap::new();
@@ -605,7 +617,7 @@ pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> TokenStream
 
         for param in wire_params {
             let field_key = param.ident.to_string();
-            let (original_name, schema) = schema_lookup.get(&field_key);
+            let (original_name, schema) = schema_lookup.get(&field_key)?;
 
             let (mut statements, value_ident) = generate_field_reader_statements(
                 &quote!(root),
@@ -614,7 +626,7 @@ pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> TokenStream
                 label,
                 &field_context_expr,
                 &mut names,
-            );
+            )?;
             field_statements.append(&mut statements);
 
             if field_key == instance_field_key {
@@ -625,46 +637,54 @@ pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> TokenStream
         }
 
         let instance_value_ident =
-            instance_value_ident.expect("instance_id should be present in service requests");
+            instance_value_ident.ok_or_else(|| Error::InvariantViolation {
+                context: String::from("instance_id should be present in service requests"),
+            })?;
 
-        let ordered_request_values: Vec<Ident> = handler_params
-            .iter()
-            .map(|param| {
-                let key = param.ident.to_string();
+        let mut ordered_request_values: Vec<Ident> = Vec::with_capacity(handler_params.len());
+        for param in handler_params {
+            let key = param.ident.to_string();
+            let value_ident =
                 handler_value_map
                     .get(&key)
-                    .unwrap_or_else(|| panic!("missing field `{key}` in request payload"))
-                    .clone()
-            })
-            .collect();
+                    .cloned()
+                    .ok_or_else(|| Error::InvariantViolation {
+                        context: format!("missing field `{key}` in request payload"),
+                    })?;
+            ordered_request_values.push(value_ident);
+        }
 
         let request_expr =
             build_result_expr_from_values(handler_params, &ordered_request_values, request_struct);
         let result_expr = quote!((#instance_value_ident, #request_expr));
 
-        build_deserialize_fn(
+        Ok(build_deserialize_fn(
             deserializer_fn_name,
             reader_type,
             &field_context_expr,
             &return_ty,
             &field_statements,
             &result_expr,
-        )
+        ))
     } else {
         let return_ty = build_return_type_from_params(handler_params, request_struct);
-        let (field_statements, value_idents) =
-            deserialize_fields_from_format(request_format, wire_params, label, &field_context_expr);
+        let (field_statements, value_idents) = deserialize_fields_from_format(
+            request_format,
+            wire_params,
+            label,
+            &field_context_expr,
+        )?;
         let request_expr =
             build_result_expr_from_values(handler_params, &value_idents, request_struct);
 
-        build_deserialize_fn(
+        Ok(build_deserialize_fn(
             deserializer_fn_name,
             reader_type,
             &field_context_expr,
             &return_ty,
             &field_statements,
             &request_expr,
-        )
+        ))
     }
 }
 
@@ -674,12 +694,12 @@ pub fn build_response_serialization_code(
     callback_call: &TokenStream,
     service_instance_ident: Option<&Ident>,
     use_service_name_const: bool,
-) -> TokenStream {
+) -> Result<TokenStream> {
     let Some(spec) = response_spec else {
-        return quote!({
+        return Ok(quote!({
             #callback_call?;
             bytes::Bytes::new()
-        });
+        }));
     };
 
     let error_context = if use_service_name_const {
@@ -694,7 +714,7 @@ pub fn build_response_serialization_code(
         &response_ident,
         &error_context,
         service_instance_ident,
-    );
+    )?;
 
     let uses_response_data = spec.format.0.iter().any(|(field_name, _)| {
         !(spec.include_service_instance_id && field_name.as_str() == "instance_id")
@@ -705,10 +725,10 @@ pub fn build_response_serialization_code(
         quote!(let _ = #callback_call?;)
     };
 
-    quote!({
+    Ok(quote!({
         #response_stmt
         #serialization
-    })
+    }))
 }
 
 pub fn build_return_type_from_params(
@@ -733,15 +753,15 @@ pub fn deserialize_fields_from_format(
     params: &[FunctionParam],
     label: &str,
     context_expr: &TokenStream,
-) -> (Vec<TokenStream>, Vec<Ident>) {
-    let schema_lookup = SchemaFieldLookup::new(request_format);
+) -> Result<(Vec<TokenStream>, Vec<Ident>)> {
+    let schema_lookup = SchemaFieldLookup::new(request_format)?;
     let mut names = NameGenerator::new();
     let mut field_statements = Vec::new();
     let mut value_idents = Vec::new();
 
     for param in params {
         let field_key = param.ident.to_string();
-        let (original_name, schema) = schema_lookup.get(&field_key);
+        let (original_name, schema) = schema_lookup.get(&field_key)?;
 
         let (mut statements, value_ident) = generate_field_reader_statements(
             &quote!(root),
@@ -750,12 +770,12 @@ pub fn deserialize_fields_from_format(
             label,
             context_expr,
             &mut names,
-        );
+        )?;
         field_statements.append(&mut statements);
         value_idents.push(value_ident);
     }
 
-    (field_statements, value_idents)
+    Ok((field_statements, value_idents))
 }
 
 pub fn build_result_expr_from_values(
@@ -788,7 +808,7 @@ pub fn build_response_payload_tokens(
     response_ident: &Ident,
     error_context: &TokenStream,
     service_instance_ident: Option<&Ident>,
-) -> TokenStream {
+) -> Result<TokenStream> {
     let format = spec.format;
     let builder_ident = Ident::new("root", Span::call_site());
 
@@ -797,13 +817,20 @@ pub fn build_response_payload_tokens(
 
     for (field_name, schema) in &format.0 {
         if spec.include_service_instance_id && field_name == "instance_id" {
-            let instance_ident = service_instance_ident
-                .expect("service instance identifier should be available when required");
+            let instance_ident =
+                service_instance_ident.ok_or_else(|| Error::InvariantViolation {
+                    context: String::from(
+                        "service instance identifier should be available when required",
+                    ),
+                })?;
             assignments.push(quote!(#builder_ident.set_instance_id(#instance_ident);));
             continue;
         }
 
-        let field_ident = Ident::new(&sanitize_component(field_name.as_str()), Span::call_site());
+        let field_ident = Ident::new(
+            &sanitize_rust_identifier(field_name.as_str()),
+            Span::call_site(),
+        );
         let value_expr = quote!(#response_ident.#field_ident);
         assignments.push(generate_field_assignment(
             &quote!(#builder_ident),
@@ -811,8 +838,13 @@ pub fn build_response_payload_tokens(
             schema,
             &value_expr,
             &mut names,
-        ));
+        )?);
     }
 
-    build_serialize_payload(&spec.builder_type, &[], &assignments, error_context)
+    Ok(build_serialize_payload(
+        &spec.builder_type,
+        &[],
+        &assignments,
+        error_context,
+    ))
 }

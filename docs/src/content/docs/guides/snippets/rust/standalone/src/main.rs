@@ -2,7 +2,7 @@ use peppygen::{
     NodeBuilder, Parameters, Result,
     parameters::{
         device::Device,
-        video::{Resolution, Video},
+        video::{Video, VideoResolution},
     },
 };
 use peppylib::runtime::StandaloneConfig;
@@ -17,7 +17,7 @@ fn main() -> Result<()> {
         },
         video: Video {
             frame_rate: 30,
-            resolution: Resolution {
+            resolution: VideoResolution {
                 width: 1920,
                 height: 1080,
             },

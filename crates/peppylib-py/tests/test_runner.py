@@ -21,7 +21,12 @@ from peppylib.config import (
     RUNTIME_CONFIG_VAR_NAME,
     SHUTDOWN_SERVICE,
 )
-from peppylib.runtime import CancellationToken, NodeBuilder, StandaloneConfig
+from peppylib.runtime import (
+    CancellationToken,
+    NodeBuilder,
+    NodeRunner,
+    StandaloneConfig,
+)
 
 from common import (
     PEPPY_CONFIG,
@@ -158,7 +163,7 @@ async def test_standalone_runner_succeed(monkeypatch):
 
             standalone_config = (
                 StandaloneConfig()
-                .with_parameters_json({"frequency_hz": TEST_FREQUENCY_HZ})
+                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
                 .with_messaging(router.host, router.port)
                 .with_instance_id(TEST_INSTANCE_ID)
             )
@@ -429,4 +434,69 @@ async def test_daemon_cancellation_token_cancelled_on_shutdown(monkeypatch):
     assert cancellation_token.is_cancelled(), (
         "Cancellation token should be cancelled after shutdown"
     )
+    assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"
+
+
+@pytest.mark.asyncio
+async def test_node_runner_exposes_messenger_and_metadata(monkeypatch):
+    """NodeRunner exposes messenger(), bound_master_node(), bound_instance_id(), node_name()."""
+    monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
+            Path(peppy_config_path).write_text(PEPPY_CONFIG)
+
+            standalone_config = (
+                StandaloneConfig()
+                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
+                .with_messaging(router.host, router.port)
+                .with_instance_id(TEST_INSTANCE_ID)
+                .with_node_name(TEST_NODE_NAME)
+            )
+
+            result_queue: queue.Queue = queue.Queue()
+            error_queue: queue.Queue = queue.Queue()
+
+            def run_node():
+                try:
+
+                    def setup_fn(_params, node_runner: NodeRunner):
+                        result_queue.put(
+                            {
+                                "messenger": node_runner.messenger(),
+                                "bound_master_node": node_runner.bound_master_node(),
+                                "bound_instance_id": node_runner.bound_instance_id(),
+                                "node_name": node_runner.node_name(),
+                                "token": node_runner.cancellation_token(),
+                            }
+                        )
+
+                    (
+                        NodeBuilder()
+                        .with_config_path(peppy_config_path)
+                        .standalone(standalone_config)
+                        .run(setup_fn)
+                    )
+                except Exception as e:
+                    error_queue.put(e)
+
+            runner_thread = threading.Thread(target=run_node, daemon=True)
+            runner_thread.start()
+
+            result = await asyncio.to_thread(result_queue.get, timeout=5.0)
+
+            assert result["bound_master_node"] == "standalone-master"
+            assert result["bound_instance_id"] == TEST_INSTANCE_ID
+            assert result["node_name"] == TEST_NODE_NAME
+
+            messenger = result["messenger"]
+            assert isinstance(messenger, MessengerHandle)
+            port = await messenger.messaging_port()
+            assert port == router.port
+
+            # Shut down the runner
+            result["token"].cancel()
+            runner_thread.join(timeout=10.0)
+
+    assert not runner_thread.is_alive(), "Runner should have exited"
     assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"

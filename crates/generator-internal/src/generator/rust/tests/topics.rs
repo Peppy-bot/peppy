@@ -1,5 +1,5 @@
 use super::*;
-use config::node::{ExposedTopic, MessageFormat, SubscribedTopic};
+use config::node::{ExposedTopic, MessageFormat, PeppygenLanguage, SubscribedTopic};
 use std::process::Command;
 
 const EXPOSED_TOPIC_EXAMPLE: &str = r#"
@@ -51,6 +51,42 @@ const EXPOSED_TOPIC_EXAMPLE2: &str = r#"
 }
 "#;
 
+const EXPOSED_TOPIC_KEYWORD_FIELDS_EXAMPLE: &str = r#"
+{
+  name: "keyword_topic",
+  qos_profile: "standard",
+  message_format: {
+    "type": "u32",
+    "match": "string"
+  }
+}
+"#;
+
+const EXPOSED_TOPIC_RESERVED_FIELD_EXAMPLE: &str = r#"
+{
+  name: "robot_state",
+  qos_profile: "standard",
+  message_format: {
+    instance_id: "string",
+    status: "u8"
+  }
+}
+"#;
+
+const EXPOSED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE: &str = r#"
+{
+  name: "labels",
+  qos_profile: "standard",
+  message_format: {
+    labels: {
+      $type: "array",
+      $items: "string",
+      $length: 3
+    }
+  }
+}
+"#;
+
 const SUBSCRIBED_TOPIC_EXAMPLE1: &str = r#"
 {
     id: "video_stream",
@@ -86,6 +122,15 @@ const SUBSCRIBED_TOPIC_EXAMPLE2: &str = r#"
 }
 "#;
 
+const SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS: &str = r#"
+{
+    id: "keyword_topic",
+    node: "keyword_source",
+    name: "keyword_topic",
+    tag: "0.1.0"
+}
+"#;
+
 const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2: &str = r#"
 {
   header: {
@@ -101,6 +146,13 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2: &str = r#"
     $type: "array",
     $items: "u8",              // raw bytes; interpret per 'encoding'
   }
+}
+"#;
+
+const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS: &str = r#"
+{
+    "type": "u32",
+    "match": "string"
 }
 "#;
 
@@ -123,7 +175,7 @@ fn expose_topic() {
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_topic(&topic).unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         1,
@@ -181,7 +233,7 @@ fn expose_two_topics() {
     let mut generator = RustGenerator::new();
     generator.add_exposed_topic(&topic1).unwrap();
     generator.add_exposed_topic(&topic2).unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         2,
@@ -194,6 +246,75 @@ fn expose_two_topics() {
     assert_artifact_contains(&artifacts, "push_lidar_object_message_capnp");
 }
 
+#[test]
+fn expose_topic_escapes_rust_keyword_fields() {
+    let topic = parse_exposed_topic(EXPOSED_TOPIC_KEYWORD_FIELDS_EXAMPLE);
+
+    let mut generator = RustGenerator::new();
+    generator.add_exposed_topic(&topic).unwrap();
+    let rendered = render_artifacts(generator.into_artifacts())
+        .into_iter()
+        .next()
+        .expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &[
+            "pub async fn emit(",
+            "type_: u32",
+            "match_: String",
+            "root.set_type(type_);",
+            "root.set_match(match_.as_str());",
+        ],
+    );
+}
+
+#[test]
+fn expose_topic_rejects_reserved_message_field_name() {
+    use crate::error::Error;
+
+    let topic = parse_exposed_topic(EXPOSED_TOPIC_RESERVED_FIELD_EXAMPLE);
+    let mut generator = RustGenerator::new();
+
+    let err = generator.add_exposed_topic(&topic).unwrap_err();
+
+    match err {
+        Error::UnauthorizedMessageFieldName {
+            field,
+            path,
+            context,
+        } => {
+            assert_eq!(field, "instance_id");
+            assert_eq!(path, "instance_id");
+            assert_eq!(context, "message_format");
+        }
+        other => panic!("expected UnauthorizedMessageFieldName, got: {other:?}"),
+    }
+}
+
+#[test]
+fn expose_topic_rejects_fixed_string_array() {
+    use crate::error::Error;
+
+    let topic = parse_exposed_topic(EXPOSED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE);
+    let mut generator = RustGenerator::new();
+
+    let err = generator.add_exposed_topic(&topic).unwrap_err();
+
+    match err {
+        Error::UnsupportedFixedArrayItemType {
+            language,
+            field,
+            item,
+        } => {
+            assert_eq!(language, PeppygenLanguage::Rust);
+            assert_eq!(field, "labels");
+            assert_eq!(item, "string");
+        }
+        other => panic!("expected UnsupportedFixedArrayItemType, got: {other:?}"),
+    }
+}
+
 /// In the case of a topic, a "subscribed" topic is an entity expects to receive messages from another entity
 #[test]
 fn subscribed_to_topic() {
@@ -202,7 +323,7 @@ fn subscribed_to_topic() {
 
     let mut generator = RustGenerator::new();
     generator.add_subscribed_topic(&topic, format).unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         1,
@@ -259,6 +380,30 @@ fn subscribed_to_topic() {
 }
 
 #[test]
+fn subscribed_topic_escapes_rust_keyword_fields() {
+    let topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS);
+    let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS);
+
+    let mut generator = RustGenerator::new();
+    generator.add_subscribed_topic(&topic, format).unwrap();
+    let rendered = render_artifacts(generator.into_artifacts())
+        .into_iter()
+        .next()
+        .expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &[
+            "pub struct Message",
+            "pub type_: u32",
+            "pub match_: String",
+            ".get_type()",
+            ".get_match()",
+        ],
+    );
+}
+
+#[test]
 fn subscribed_to_two_topics_same_node() {
     let video_topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let video_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
@@ -273,7 +418,7 @@ fn subscribed_to_two_topics_same_node() {
     generator
         .add_subscribed_topic(&sound_topic, sound_format)
         .unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         2,
@@ -329,7 +474,7 @@ fn clippy_single_exposed_topic_empty_format() {
         result_response: None,
     };
 
-    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_exposed_topic(&exposed_topic).unwrap();
     generator
         .add_subscribed_action(&subscribed_action1, &action_messages)
@@ -388,7 +533,7 @@ fn compile_lib_with_exposed_and_subscribed_topics() {
     let subscribed_topic2 = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
     let subscribed_format2 = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2);
 
-    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_exposed_topic(&exposed_topic1).unwrap();
     generator.add_exposed_topic(&exposed_topic2).unwrap();
     generator

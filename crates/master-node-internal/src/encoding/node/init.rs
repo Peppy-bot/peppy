@@ -65,7 +65,7 @@ impl NodeInitRequest {
         bound_master_node: &str,
         as_instance_id: &str,
         target_master_node: &str,
-        response_timeout: Duration,
+        response_timeout: impl Into<Option<Duration>>,
     ) -> Result<NodeInitResponse> {
         let request_payload = self.encode()?;
         let response = ServiceMessenger::poll(
