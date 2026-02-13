@@ -204,6 +204,63 @@ async def test_standalone_runner_succeed(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_spawn_async_runs_background_task(monkeypatch):
+    """NodeRunner.spawn_async starts an async task and runner exits on cancellation."""
+    monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
+            Path(peppy_config_path).write_text(PEPPY_CONFIG)
+
+            standalone_config = (
+                StandaloneConfig()
+                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
+                .with_messaging(router.host, router.port)
+                .with_instance_id(TEST_INSTANCE_ID)
+            )
+
+            token_queue: queue.Queue = queue.Queue()
+            started_queue: queue.Queue = queue.Queue()
+            error_queue: queue.Queue = queue.Queue()
+
+            def run_node():
+                try:
+
+                    def setup_fn(_params, node_runner):
+                        token_queue.put(node_runner.cancellation_token())
+
+                        async def background_task():
+                            started_queue.put("started")
+                            while not node_runner.cancellation_token().is_cancelled():
+                                await asyncio.sleep(0.05)
+
+                        node_runner.spawn_async("background-task", background_task)
+
+                    (
+                        NodeBuilder()
+                        .with_config_path(peppy_config_path)
+                        .standalone(standalone_config)
+                        .run(setup_fn)
+                    )
+                except Exception as e:
+                    error_queue.put(e)
+
+            runner_thread = threading.Thread(target=run_node, daemon=True)
+            runner_thread.start()
+
+            await asyncio.to_thread(started_queue.get, timeout=5.0)
+            cancellation_token: CancellationToken = await asyncio.to_thread(
+                token_queue.get, timeout=5.0
+            )
+
+            cancellation_token.cancel()
+            runner_thread.join(timeout=10.0)
+
+    assert not runner_thread.is_alive(), "Runner should have exited"
+    assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"
+
+
+@pytest.mark.asyncio
 async def test_node_ready_but_not_healthy(monkeypatch):
     """Ready service available before setup completes; health service only after."""
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
