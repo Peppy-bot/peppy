@@ -13,6 +13,7 @@ use super::{PyMessengerHandle, PyTopicMessage, to_py_err};
 #[pyclass(name = "ServiceRequestContext")]
 pub struct PyServiceRequestContext {
     request_id: String,
+    key_expr: String,
     payload: Vec<u8>,
     instance_id: String,
     daemon_node: String,
@@ -44,7 +45,7 @@ impl PyServiceRequestContext {
     #[getter]
     fn message(&self) -> PyTopicMessage {
         PyTopicMessage {
-            key_expr: String::new(),
+            key_expr: self.key_expr.clone(),
             payload: self.payload.clone(),
             instance_id: self.instance_id.clone(),
             daemon_node: self.daemon_node.clone(),
@@ -58,6 +59,7 @@ impl From<ServiceRequestContext> for PyServiceRequestContext {
         let message = ctx.message();
         Self {
             request_id,
+            key_expr: message.key_expr().to_string(),
             payload: message.payload().to_bytes().to_vec(),
             instance_id: message.instance_id().to_string(),
             daemon_node: message.daemon_node().to_string(),
@@ -145,9 +147,8 @@ impl PyServiceMessenger {
         as_node_name: String,
         as_service_name: String,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&messenger.inner);
+        let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = inner.lock().await;
             let endpoint = ServiceMessenger::listen(
                 &handle,
                 &as_daemon_node,
@@ -177,9 +178,8 @@ impl PyServiceMessenger {
         target_daemon_node: Option<String>,
         target_instance_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&messenger.inner);
+        let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = inner.lock().await;
             let reachable = ServiceMessenger::is_reachable(
                 &handle,
                 &bound_daemon_node,
@@ -211,9 +211,8 @@ impl PyServiceMessenger {
         request_payload: Vec<u8>,
         response_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&messenger.inner);
+        let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = inner.lock().await;
             let response = ServiceMessenger::poll(
                 &handle,
                 &bound_daemon_node,

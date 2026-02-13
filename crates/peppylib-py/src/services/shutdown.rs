@@ -1,6 +1,5 @@
 use peppylib::services::shutdown::listen_for_shutdown;
 use pyo3::prelude::*;
-use std::sync::Arc;
 
 use super::PyServiceTask;
 use crate::messaging::{PyMessengerHandle, to_py_err};
@@ -49,9 +48,8 @@ impl PyShutdownService {
         instance_id: String,
         node_name: String,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&messenger.inner);
+        let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = inner.lock().await;
             let (join_handle, shutdown_rx) =
                 listen_for_shutdown(&handle, &daemon_node, &instance_id, &node_name)
                     .await

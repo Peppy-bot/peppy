@@ -128,9 +128,8 @@ impl PyActionMessenger {
         as_node_name: String,
         as_action_name: String,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&messenger.inner);
+        let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = inner.lock().await;
             let creation = ActionMessenger::expose(
                 &handle,
                 &as_daemon_node,
@@ -167,9 +166,8 @@ impl PyActionMessenger {
         feedback_qos: PyQoSProfile,
         goal_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&messenger.inner);
+        let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = inner.lock().await;
             let goal_handle = ActionMessenger::send_goal(
                 &handle,
                 &as_daemon_node,
@@ -209,10 +207,9 @@ impl PyActionMessenger {
         goal_handle: &PyActionGoalHandle,
         cancel_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let messenger_inner = Arc::clone(&messenger.inner);
+        let handle = messenger.inner.clone();
         let goal_inner = Arc::clone(&goal_handle.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = messenger_inner.lock().await;
             let goal = goal_inner.lock().await;
             let response = ActionMessenger::cancel_goal(
                 &handle,
@@ -233,10 +230,9 @@ impl PyActionMessenger {
         goal_handle: &PyActionGoalHandle,
         result_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let messenger_inner = Arc::clone(&messenger.inner);
+        let handle = messenger.inner.clone();
         let goal_inner = Arc::clone(&goal_handle.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = messenger_inner.lock().await;
             let goal = goal_inner.lock().await;
             let response = ActionMessenger::request_result(
                 &handle,
@@ -263,9 +259,8 @@ impl PyActionMessenger {
         target_daemon_node: Option<String>,
         target_instance_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&messenger.inner);
+        let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = inner.lock().await;
             let reachable = ActionMessenger::is_reachable(
                 &handle,
                 &bound_daemon_node,
