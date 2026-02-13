@@ -1,11 +1,10 @@
+use crate::{peppy_binary, workspace_root};
 use config::node::NodeConfigParser;
-use docs_integration_tests::{peppy_binary, workspace_root};
 use peppy::test_support::ServeCommandEmulation;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const DAEMON_STATE_ENV: &str = "PEPPY_DAEMON_STATE_FILE";
-const SNIPPETS_ROOT: &str = "docs/src/content/docs/guides/snippets/rust";
 
 struct NodeSetup {
     daemon_state_path: PathBuf,
@@ -15,8 +14,8 @@ struct NodeSetup {
     _serve: ServeCommandEmulation,
 }
 
-fn snippet_dir(snippet_name: &str) -> PathBuf {
-    workspace_root().join(SNIPPETS_ROOT).join(snippet_name)
+fn snippet_dir(snippets_root: &str, snippet_name: &str) -> PathBuf {
+    workspace_root().join(snippets_root).join(snippet_name)
 }
 
 fn assert_success(output: &Output, context: &str) {
@@ -90,21 +89,26 @@ fn sync_and_add_node(peppy: &Path, daemon_state_path: &Path, node_dir: &Path, co
     assert_success(&add_output, &format!("peppy node add . for {context}"));
 }
 
-fn run_snippet(snippet_name: &str, start_args: &[&str]) {
-    run_snippet_with_deps(snippet_name, start_args, &[]);
+pub fn run_snippet(snippets_root: &str, snippet_name: &str, start_args: &[&str]) {
+    run_snippet_with_deps(snippets_root, snippet_name, start_args, &[]);
 }
 
 /// Run a snippet that depends on other snippets being added first.
 /// Dependencies are added to the node stack but not started.
-fn run_snippet_with_deps(snippet_name: &str, start_args: &[&str], deps: &[&str]) {
+pub fn run_snippet_with_deps(
+    snippets_root: &str,
+    snippet_name: &str,
+    start_args: &[&str],
+    deps: &[&str],
+) {
     let peppy = peppy_binary();
-    let node_dir = snippet_dir(snippet_name);
+    let node_dir = snippet_dir(snippets_root, snippet_name);
 
     let setup = setup_env(peppy, &node_dir);
 
     // Add dependencies first (must happen before syncing the main node)
     for dep in deps {
-        let dep_dir = snippet_dir(dep);
+        let dep_dir = snippet_dir(snippets_root, dep);
         sync_and_add_node(peppy, &setup.daemon_state_path, &dep_dir, dep);
     }
 
@@ -119,36 +123,4 @@ fn run_snippet_with_deps(snippet_name: &str, start_args: &[&str], deps: &[&str])
         &start_output,
         &format!("peppy node start {}", setup.node_ref),
     );
-}
-
-#[test]
-fn hello_world() {
-    run_snippet("hello_world", &[]);
-}
-
-#[test]
-fn first_node() {
-    run_snippet("first_node", &[]);
-}
-
-#[test]
-fn standalone_node() {
-    run_snippet(
-        "standalone",
-        &[
-            "device.physical=/dev/device1",
-            "device.sim=the_camera",
-            "device.priority=physical",
-            "video.encoding=rgb",
-            "video.frame_rate=30",
-            "video.resolution.width=1280",
-            "video.resolution.height=720",
-        ],
-    );
-}
-
-// Combine both tests into one since they depend on each other and doing so avoids parallelism issues
-#[test]
-fn hello_world_param_and_hello_receiver() {
-    run_snippet_with_deps("hello_receiver", &[], &["hello_world_param"]);
 }

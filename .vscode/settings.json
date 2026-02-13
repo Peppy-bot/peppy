@@ -12,9 +12,19 @@
   "debug.inlineValues": "on",
   "debug.allowBreakpointsEverywhere": true,
   "python.autoComplete.extraPaths": [
-    "crates/peppylib-py/tests"
+    "crates/peppylib-py/tests",
+    "docs/src/content/docs/guides/snippets/python/first_node/.peppy/libs/peppygen",
+    "docs/src/content/docs/guides/snippets/python/hello_receiver/.peppy/libs/peppygen",
+    "docs/src/content/docs/guides/snippets/python/hello_world/.peppy/libs/peppygen",
+    "docs/src/content/docs/guides/snippets/python/hello_world_param/.peppy/libs/peppygen",
+    "docs/src/content/docs/guides/snippets/python/standalone/.peppy/libs/peppygen"
   ],
   "python.analysis.extraPaths": [
-    "crates/peppylib-py/tests"
+    "crates/peppylib-py/tests",
+    "docs/src/content/docs/guides/snippets/python/first_node/.peppy/libs/peppygen",
+    "docs/src/content/docs/guides/snippets/python/hello_receiver/.peppy/libs/peppygen",
+    "docs/src/content/docs/guides/snippets/python/hello_world/.peppy/libs/peppygen",
+    "docs/src/content/docs/guides/snippets/python/hello_world_param/.peppy/libs/peppygen",
+    "docs/src/content/docs/guides/snippets/python/standalone/.peppy/libs/peppygen"
   ]
 }
