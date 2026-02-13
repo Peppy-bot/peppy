@@ -166,13 +166,19 @@ impl PyNodeBuilder {
             builder
                 .run(
                     move |params: serde_json::Value, node_runner: Arc<NodeRunner>| async move {
-                        // Reacquire the GIL to call the Python setup function
+                        // Reacquire the GIL to prepare Python arguments
                         Python::try_attach(|py| {
-                            let py_params = pythonize(py, &params).map_err(|e| {
-                                peppylib::PeppyError::Io(std::io::Error::other(format!(
-                                    "failed to convert params to Python: {e}"
-                                )))
-                            })?;
+                            let io_err = |e: PyErr| {
+                                peppylib::PeppyError::Io(std::io::Error::other(e.to_string()))
+                            };
+
+                            let py_params = pythonize(py, &params)
+                                .map_err(|e| {
+                                    peppylib::PeppyError::Io(std::io::Error::other(format!(
+                                        "failed to convert params to Python: {e}"
+                                    )))
+                                })?
+                                .unbind();
                             let py_runner = Py::new(py, PyNodeRunner { inner: node_runner })
                                 .map_err(|e| {
                                     peppylib::PeppyError::Io(std::io::Error::other(format!(
@@ -180,11 +186,24 @@ impl PyNodeBuilder {
                                     )))
                                 })?;
 
-                            setup_fn.call1(py, (py_params, py_runner)).map_err(|e| {
-                                peppylib::PeppyError::Io(std::io::Error::other(format!(
-                                    "Python setup function error: {e}"
-                                )))
-                            })?;
+                            // Spawn setup in a Python threading.Thread so it
+                            // can block freely (e.g. asyncio.run with
+                            // long-running coroutines), mirroring tokio::spawn
+                            // in Rust nodes. Using Python's threading module
+                            // (rather than std::thread) ensures debuggers can
+                            // attach to the thread and hit breakpoints.
+                            let kwargs = pyo3::types::PyDict::new(py);
+                            kwargs.set_item("target", &setup_fn).map_err(&io_err)?;
+                            kwargs
+                                .set_item("args", (py_params, py_runner))
+                                .map_err(&io_err)?;
+                            kwargs.set_item("daemon", true).map_err(&io_err)?;
+                            let threading = py.import("threading").map_err(&io_err)?;
+                            let thread = threading
+                                .call_method("Thread", (), Some(&kwargs))
+                                .map_err(&io_err)?;
+                            thread.call_method0("start").map_err(&io_err)?;
+
                             Ok::<_, peppylib::PeppyError>(())
                         })
                         .ok_or_else(|| {
