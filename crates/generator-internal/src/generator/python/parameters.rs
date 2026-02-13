@@ -1,9 +1,9 @@
 use super::code_builder::PythonCodeBuilder;
 use super::identifiers::sanitize_python_identifier;
 use super::type_mapping::type_name_to_python;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::generator::naming::to_camel_case;
-use crate::generator::rust::generate_parameters_struct as validate_parameters;
+use crate::generator::rust::validate_parameter_schema as validate_parameters;
 use config::AnyType;
 
 /// Generates a Python `parameters.py` file from node parameters configuration.
@@ -25,14 +25,19 @@ pub fn generate_python_parameters(parameters: &config::NodeArguments) -> Result<
                 let struct_name = to_camel_case(field_name);
                 let field_ident = sanitize_python_identifier(field_name);
                 main_fields.push((field_ident, struct_name.clone()));
-                emit_nested_parameter_class(&mut builder, type_spec, &struct_name);
+                emit_nested_parameter_class(&mut builder, type_spec, &struct_name, field_name)?;
             }
             AnyType::String(type_name) => {
                 let field_ident = sanitize_python_identifier(field_name);
-                let python_type = type_name_to_python(type_name);
+                let python_type = type_name_to_python(type_name, field_name)?;
                 main_fields.push((field_ident, python_type.to_string()));
             }
-            _ => {}
+            _ => {
+                return Err(Error::UnsupportedParameterSpecType {
+                    path: field_name.clone(),
+                    kind: type_spec.type_name(),
+                });
+            }
         }
     }
 
@@ -50,38 +55,52 @@ fn emit_nested_parameter_class(
     builder: &mut PythonCodeBuilder,
     type_spec: &AnyType,
     class_name: &str,
-) {
-    if let AnyType::Object(fields) = type_spec {
-        // Recurse into nested objects first (so they're defined before referenced)
-        for (field_name, field_spec) in fields {
-            if let AnyType::Object(_) = field_spec {
-                let nested_name = nested_class_name(class_name, field_name);
-                emit_nested_parameter_class(builder, field_spec, &nested_name);
-            }
-        }
+    path: &str,
+) -> Result<()> {
+    let AnyType::Object(fields) = type_spec else {
+        return Err(Error::UnsupportedParameterSpecType {
+            path: path.to_string(),
+            kind: type_spec.type_name(),
+        });
+    };
 
-        let mut class_fields: Vec<(String, String)> = Vec::new();
-        for (field_name, field_spec) in fields {
-            let field_ident = sanitize_python_identifier(field_name);
-            match field_spec {
-                AnyType::String(type_name) => {
-                    let py_type = type_name_to_python(type_name);
-                    class_fields.push((field_ident, py_type.to_string()));
-                }
-                AnyType::Object(_) => {
-                    let nested_name = nested_class_name(class_name, field_name);
-                    class_fields.push((field_ident, nested_name));
-                }
-                _ => {}
-            }
+    // Recurse into nested objects first (so they're defined before referenced)
+    for (field_name, field_spec) in fields {
+        if let AnyType::Object(_) = field_spec {
+            let nested_name = nested_class_name(class_name, field_name);
+            let nested_path = format!("{path}.{field_name}");
+            emit_nested_parameter_class(builder, field_spec, &nested_name, &nested_path)?;
         }
-
-        let field_refs: Vec<(&str, &str)> = class_fields
-            .iter()
-            .map(|(name, ty)| (name.as_str(), ty.as_str()))
-            .collect();
-        builder.dataclass(class_name, &field_refs);
     }
+
+    let mut class_fields: Vec<(String, String)> = Vec::new();
+    for (field_name, field_spec) in fields {
+        let field_ident = sanitize_python_identifier(field_name);
+        let field_path = format!("{path}.{field_name}");
+        match field_spec {
+            AnyType::String(type_name) => {
+                let py_type = type_name_to_python(type_name, &field_path)?;
+                class_fields.push((field_ident, py_type.to_string()));
+            }
+            AnyType::Object(_) => {
+                let nested_name = nested_class_name(class_name, field_name);
+                class_fields.push((field_ident, nested_name));
+            }
+            _ => {
+                return Err(Error::UnsupportedParameterSpecType {
+                    path: field_path,
+                    kind: field_spec.type_name(),
+                });
+            }
+        }
+    }
+
+    let field_refs: Vec<(&str, &str)> = class_fields
+        .iter()
+        .map(|(name, ty)| (name.as_str(), ty.as_str()))
+        .collect();
+    builder.dataclass(class_name, &field_refs);
+    Ok(())
 }
 
 fn nested_class_name(parent_class: &str, field_name: &str) -> String {

@@ -41,6 +41,12 @@ pub enum Error {
     )]
     InvalidParameterFieldName { name: String, allowed: &'static str },
     #[error(
+        "unsupported parameter specification type `{kind}` at `{path}`. Expected a type string or object."
+    )]
+    UnsupportedParameterSpecType { path: String, kind: &'static str },
+    #[error("unsupported parameter type name `{type_name}` at `{path}`")]
+    UnsupportedParameterTypeName { path: String, type_name: String },
+    #[error(
         "Unauthorized message field name `{field}` at `{path}` in `{context}`. \
 This field name is reserved by peppy transport metadata and cannot be used inside `message_format`."
     )]
