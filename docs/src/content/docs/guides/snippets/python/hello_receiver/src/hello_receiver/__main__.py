@@ -9,22 +9,17 @@ def setup(_params: Parameters, node_runner: NodeRunner):
     node_runner.spawn_async(
         "hello-receiver",
         lambda: receive_messages(node_runner),
+        cancel_on_error=True,
     )
 
 
 async def receive_messages(node_runner: NodeRunner):
     while True:
-        try:
-            (
-                instance_id,
-                message,
-            ) = await hello_world_param_message_stream.on_next_message_received(
-                node_runner
-            )
-            print(f"Received from {instance_id}: {message.message}")
-        except Exception as e:
-            print(f"Error receiving message: {e}", flush=True)
-            break
+        (
+            instance_id,
+            message,
+        ) = await hello_world_param_message_stream.on_next_message_received(node_runner)
+        print(f"Received from {instance_id}: {message.message}")
 
 
 def main():
