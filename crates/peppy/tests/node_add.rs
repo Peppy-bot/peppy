@@ -35,7 +35,7 @@ fn node_add_command_succeeds() {
 
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -156,7 +156,7 @@ fn node_add_command_with_run_arg_succeeds() {
 
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -192,7 +192,7 @@ fn node_add_command_with_run_arg_succeeds() {
     // Avoid spawning a real node binary; provide `node_ready` + `node_health` in-process.
     peppy::test_support::override_start_cmd(&peppy_json5_path);
 
-    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle = rt
         .block_on(listen_for_node_ready(
             &node_messenger,
@@ -300,7 +300,7 @@ fn node_add_after_failed_sync_succeeds() {
 
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -369,7 +369,7 @@ fn node_add_after_failed_sync_succeeds() {
     // 4. Run `node sync` on that node to update the `.peppy/git.hash` of the node
     // Create a context for the node directory (sync runs from within the node dir)
     let sync_ctx = Arc::new(
-        AppContext::with_messenger(&node_path, shared_messenger.clone())
+        AppContext::with_messenger(&node_path, Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -465,7 +465,7 @@ fn node_add_same_node_shutdown_existing_instances() {
 
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -501,7 +501,7 @@ fn node_add_same_node_shutdown_existing_instances() {
     // Avoid spawning a real node binary; provide `node_ready` + `node_health` in-process.
     peppy::test_support::override_start_cmd(&peppy_json5_path);
 
-    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle = rt
         .block_on(listen_for_node_ready(
             &node_messenger,

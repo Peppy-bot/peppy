@@ -1,6 +1,5 @@
 use peppylib::services::shutdown::listen_for_shutdown;
 use pyo3::prelude::*;
-use std::sync::Arc;
 
 use super::PyServiceTask;
 use crate::messaging::{PyMessengerHandle, to_py_err};
@@ -20,7 +19,10 @@ impl PyShutdownReceiver {
     /// Returns `True` when a shutdown request is received, or `False` if the
     /// sender was dropped without sending.
     fn wait<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let rx = self.inner.lock().unwrap().take().ok_or_else(|| {
+        let mut guard = self.inner.lock().map_err(|_| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("shutdown receiver mutex poisoned")
+        })?;
+        let rx = guard.take().ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("shutdown receiver already consumed")
         })?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -49,9 +51,8 @@ impl PyShutdownService {
         instance_id: String,
         node_name: String,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&messenger.inner);
+        let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = inner.lock().await;
             let (join_handle, shutdown_rx) =
                 listen_for_shutdown(&handle, &daemon_node, &instance_id, &node_name)
                     .await

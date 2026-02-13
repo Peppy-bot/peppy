@@ -94,9 +94,8 @@ impl PyTopicMessenger {
         to_instance_id: Option<String>,
         qos: PyQoSProfile,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&messenger.inner);
+        let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = inner.lock().await;
             let subscription = TopicMessenger::subscribe(
                 &handle,
                 &as_daemon_node,
@@ -129,9 +128,8 @@ impl PyTopicMessenger {
         qos: PyQoSProfile,
         payload: Vec<u8>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&messenger.inner);
+        let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = inner.lock().await;
             TopicMessenger::emit(
                 &handle,
                 &as_daemon_node,

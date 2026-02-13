@@ -93,7 +93,7 @@ async fn service_reset_command_resets_node_stack() {
     );
 
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 

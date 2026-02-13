@@ -4,15 +4,15 @@ use peppylib::messaging::{ServiceEndpoint, ServiceRequestContext};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::Mutex;
 
-use super::{PyMessengerHandle, PyTopicMessage, to_py_err};
+use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err};
 
 /// Python wrapper for a service request received by a listener.
 #[pyclass(name = "ServiceRequestContext")]
 pub struct PyServiceRequestContext {
     request_id: String,
+    key_expr: String,
     payload: Vec<u8>,
     instance_id: String,
     daemon_node: String,
@@ -44,7 +44,7 @@ impl PyServiceRequestContext {
     #[getter]
     fn message(&self) -> PyTopicMessage {
         PyTopicMessage {
-            key_expr: String::new(),
+            key_expr: self.key_expr.clone(),
             payload: self.payload.clone(),
             instance_id: self.instance_id.clone(),
             daemon_node: self.daemon_node.clone(),
@@ -58,6 +58,7 @@ impl From<ServiceRequestContext> for PyServiceRequestContext {
         let message = ctx.message();
         Self {
             request_id,
+            key_expr: message.key_expr().to_string(),
             payload: message.payload().to_bytes().to_vec(),
             instance_id: message.instance_id().to_string(),
             daemon_node: message.daemon_node().to_string(),
@@ -112,8 +113,12 @@ impl PyServiceEndpoint {
             let response_bytes = if let Some(future) = maybe_future {
                 let py_result = future.await?;
                 Python::attach(|py| py_result.extract::<Vec<u8>>(py))?
+            } else if let Some(sync_bytes) = sync_bytes {
+                sync_bytes
             } else {
-                sync_bytes.unwrap()
+                return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    "internal error: missing synchronous handler response bytes",
+                ));
             };
 
             // Phase 3: send response (pure Rust)
@@ -145,9 +150,8 @@ impl PyServiceMessenger {
         as_node_name: String,
         as_service_name: String,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&messenger.inner);
+        let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = inner.lock().await;
             let endpoint = ServiceMessenger::listen(
                 &handle,
                 &as_daemon_node,
@@ -177,9 +181,8 @@ impl PyServiceMessenger {
         target_daemon_node: Option<String>,
         target_instance_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&messenger.inner);
+        let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = inner.lock().await;
             let reachable = ServiceMessenger::is_reachable(
                 &handle,
                 &bound_daemon_node,
@@ -211,9 +214,10 @@ impl PyServiceMessenger {
         request_payload: Vec<u8>,
         response_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&messenger.inner);
+        let response_timeout =
+            duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
+        let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handle = inner.lock().await;
             let response = ServiceMessenger::poll(
                 &handle,
                 &bound_daemon_node,
@@ -223,7 +227,7 @@ impl PyServiceMessenger {
                 target_daemon_node.as_deref(),
                 target_instance_id.as_deref(),
                 Bytes::from(request_payload),
-                Duration::from_secs_f64(response_timeout_secs),
+                response_timeout,
             )
             .await
             .map_err(to_py_err)?;

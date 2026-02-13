@@ -41,7 +41,7 @@ pub async fn listen_for_node_remove(
                     messenger.clone(),
                     daemon_node_node.clone(),
                     daemon_instance_id.clone(),
-                    node_stack.clone(),
+                    Arc::clone(&node_stack),
                 )
             })
             .await

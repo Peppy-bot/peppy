@@ -12,6 +12,7 @@ use peppylib::services::ready::listen_for_node_ready;
 use peppylib::{ActionMessenger, PeppyError};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use tempfile::tempdir;
 
@@ -389,7 +390,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
 
     let started_daemon = start_daemon_node_with_mock_messenger().await;
     let node_stack = started_daemon.node_stack.clone();
-    let node_messenger = MessengerHandle::from_shared(started_daemon.shared_messenger.clone());
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started_daemon.shared_messenger));
 
     // Copy launch assets to a temp directory. The stack_launch process will generate
     // peppygen files (including git.hash) automatically using the "stack-launch" marker.
@@ -566,7 +567,7 @@ async fn listen_for_launch_configuration_succeed() {
     );
 
     // Set up ready/health responders for all instances in LAUNCHER_EXAMPLE1.
-    let node_messenger = MessengerHandle::from_shared(started_daemon.shared_messenger.clone());
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started_daemon.shared_messenger));
     let _ready_front = AbortOnDrop(
         listen_for_node_ready(
             &node_messenger,
@@ -929,7 +930,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
         false,
     );
 
-    let node_messenger = MessengerHandle::from_shared(started_daemon.shared_messenger.clone());
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started_daemon.shared_messenger));
     let _ready_a = AbortOnDrop(
         listen_for_node_ready(
             &node_messenger,
@@ -1053,7 +1054,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     );
 
     // Set up ONLY the ready responder. Do not set up health responder so it times out.
-    let node_messenger = MessengerHandle::from_shared(started_daemon.shared_messenger.clone());
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started_daemon.shared_messenger));
     let _ready_b = AbortOnDrop(
         listen_for_node_ready(
             &node_messenger,
@@ -1227,7 +1228,7 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
     }
 
     // Set up ready/health responders for the instance
-    let node_messenger = MessengerHandle::from_shared(started_daemon.shared_messenger.clone());
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started_daemon.shared_messenger));
     let _ready = AbortOnDrop(
         listen_for_node_ready(
             &node_messenger,
