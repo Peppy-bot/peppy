@@ -40,8 +40,15 @@ mod capnp_build {
 
         println!("cargo:rerun-if-changed=build.rs");
 
+        let profile = env::var("PROFILE").unwrap();
+        let cmake_build_type = if profile == "release" {
+            "Release"
+        } else {
+            "Debug"
+        };
+
         let cache_dir = get_temp_cache_dir("capnp");
-        let cache_key = format!("capnp-{release_tag}");
+        let cache_key = format!("capnp-{release_tag}-{profile}");
         let cached_capnp_path = cache_dir.join(&cache_key);
 
         let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is not set"));
@@ -96,7 +103,7 @@ mod capnp_build {
                 .arg("c++")
                 .arg("-B")
                 .arg("build")
-                .arg("-DCMAKE_BUILD_TYPE=Release");
+                .arg(format!("-DCMAKE_BUILD_TYPE={cmake_build_type}"));
             if !run_command(&mut configure, "configure capnp build") {
                 return;
             }
@@ -109,7 +116,7 @@ mod capnp_build {
                 .arg("--target")
                 .arg("capnp")
                 .arg("--config")
-                .arg("Release");
+                .arg(cmake_build_type);
             if !run_command(&mut build, "compile capnp binary") {
                 return;
             }

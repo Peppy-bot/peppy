@@ -1,6 +1,11 @@
-use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use generator::RustGenerator;
-use peppylib::messaging::{NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
+#![allow(dead_code)]
+
+use config::consts::{
+    NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION,
+};
+use config::node::PeppygenLanguage;
+use generator::generate_peppygen_lib;
+use peppylib::messaging::{ActionMessenger, NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::{MessengerHandle, ServiceMessenger};
 use std::io::Read;
 use std::path::Path;
@@ -33,21 +38,18 @@ pub fn prepare_directories(
     (output_dir, user_node, peppy_node_config)
 }
 
-pub fn init_test_env(
+pub fn init_test_env<G: Default>(
     temp_dir: &TempDir,
+    node_config: &str,
 ) -> (
-    RustGenerator,
+    G,
     std::path::PathBuf,
     std::path::PathBuf,
     std::path::PathBuf,
 ) {
     let (output_dir, user_node, peppy_node_config_path) = prepare_directories(temp_dir);
-    (
-        RustGenerator::new(),
-        output_dir,
-        user_node,
-        peppy_node_config_path,
-    )
+    fs::write(&peppy_node_config_path, node_config).unwrap();
+    (G::default(), output_dir, user_node, peppy_node_config_path)
 }
 
 pub fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> std::path::PathBuf {
@@ -168,7 +170,6 @@ pub fn wait_for_child(
     }
 }
 
-#[warn(dead_code)]
 pub fn compile_project(dir: impl AsRef<Path>) {
     let cargo_output = Command::new("cargo")
         .arg("build")
@@ -214,6 +215,50 @@ pub fn insert_dependency_line(contents: &str, dependency_line: &str) -> String {
     }
 }
 
+pub fn run_generate_peppygen_lib_test(
+    language: PeppygenLanguage,
+    json_config_content: &str,
+) -> (TempDir, std::path::PathBuf) {
+    let temp_dir = TempDir::new().expect("failed to create temp directory");
+    let node_dir = temp_dir.path();
+
+    // Write the peppy.json5 config
+    let config_path = node_dir.join(config::consts::NODE_CONFIG_FILE);
+    fs::write(&config_path, json_config_content).expect("failed to write peppy.json5");
+
+    // Generate the library
+    generate_peppygen_lib(language, node_dir, Vec::new(), "test-hash")
+        .expect("failed to generate library");
+
+    // Verify the generated library structure exists
+    let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        peppygen_dir.exists(),
+        "peppygen directory should exist at {}",
+        peppygen_dir.display()
+    );
+
+    // Check that the fingerprint was created
+    let config_path = node_dir.join(NODE_CONFIG_FILE);
+    let fingerprint =
+        config::fingerprint::read_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
+            .expect("fingerprint file should exist in peppygen directory");
+    assert!(!fingerprint.is_empty(), "fingerprint should not be empty");
+
+    // Check that the git.hash was created
+    let git_hash_path = node_dir
+        .join(config::consts::PEPPY_OUTPUT_DIR)
+        .join("git.hash");
+    let git_hash_content =
+        fs::read_to_string(&git_hash_path).expect("git.hash file should exist in .peppy directory");
+    assert_eq!(
+        git_hash_content, "test-hash",
+        "git.hash should contain the expected hash value"
+    );
+
+    (temp_dir, peppygen_dir)
+}
+
 /// Context for waiting on service reachability in tests.
 pub struct WaitContext<'a> {
     pub messenger: &'a MessengerHandle,
@@ -229,9 +274,7 @@ pub async fn wait_for_service_reachable_or_exit(
     target_instance_id: Option<&str>,
     child: &mut std::process::Child,
     dir: &std::path::Path,
-    timeout: Duration,
 ) {
-    let start = Instant::now();
     loop {
         if let Some(status) = child
             .try_wait()
@@ -275,29 +318,71 @@ pub async fn wait_for_service_reachable_or_exit(
             return;
         }
 
-        if start.elapsed() > timeout {
+        sleep(Duration::from_millis(50)).await;
+    }
+}
+
+pub async fn wait_for_action_service_reachable_or_exit(
+    ctx: &WaitContext<'_>,
+    target_node_name: &str,
+    target_service_name: &str,
+    target_instance_id: Option<&str>,
+    child: &mut std::process::Child,
+    dir: &std::path::Path,
+) {
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .expect("failed to poll process status for generated project")
+        {
+            let output = wait_for_child(child, None, dir);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
             panic!(
-                "timed out after {:?} waiting for `{}` to become reachable (node={}, instance={:?}) for project at {}",
-                timeout,
+                "process exited before action `{}` became reachable (status: {:?}) for project at {}\nstdout:\n{}\nstderr:\n{}",
+                target_service_name,
+                status.code(),
+                dir.display(),
+                stdout,
+                stderr
+            );
+        }
+
+        let reachable = ActionMessenger::is_reachable(
+            ctx.messenger,
+            ctx.bound_master_node,
+            ctx.caller_instance_id,
+            target_node_name,
+            target_service_name,
+            ctx.target_master_node,
+            target_instance_id,
+        )
+        .await
+        .unwrap_or_else(|err| {
+            panic!(
+                "failed to check reachability for action `{}` (node={}, instance={:?}) for project at {}: {}",
                 target_service_name,
                 target_node_name,
                 target_instance_id,
-                dir.display()
-            );
+                dir.display(),
+                err
+            )
+        });
+
+        if reachable {
+            break;
         }
 
         sleep(Duration::from_millis(50)).await;
     }
 }
 
-#[allow(dead_code)]
 pub async fn wait_for_shutdown_service_reachable_or_exit(
     ctx: &WaitContext<'_>,
     target_node_name: &str,
     target_instance_id: &str,
     child: &mut std::process::Child,
     dir: &std::path::Path,
-    timeout: Duration,
 ) {
     wait_for_service_reachable_or_exit(
         ctx,
@@ -306,7 +391,6 @@ pub async fn wait_for_shutdown_service_reachable_or_exit(
         Some(target_instance_id),
         child,
         dir,
-        timeout,
     )
     .await;
 }
@@ -317,7 +401,6 @@ pub async fn wait_for_health_service_reachable_or_exit(
     target_instance_id: &str,
     child: &mut std::process::Child,
     dir: &std::path::Path,
-    timeout: Duration,
 ) {
     wait_for_service_reachable_or_exit(
         ctx,
@@ -326,7 +409,6 @@ pub async fn wait_for_health_service_reachable_or_exit(
         Some(target_instance_id),
         child,
         dir,
-        timeout,
     )
     .await;
 }
@@ -363,7 +445,6 @@ pub async fn send_shutdown(
 
 /// Like `send_shutdown` but doesn't panic if the service is unreachable
 /// (e.g., the process has already exited).
-#[allow(dead_code)]
 pub async fn try_send_shutdown(
     messenger: &MessengerHandle,
     bound_master_node: &str,
@@ -386,4 +467,75 @@ pub async fn try_send_shutdown(
         timeout,
     )
     .await;
+}
+
+// ---------------------------------------------------------------------------
+// Python-specific helpers
+// ---------------------------------------------------------------------------
+
+pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
+  schema_version: 1,
+  manifest: {
+    name: "generated_node",
+    tag: "0.1.0",
+    language: "python",
+    start_cmd: ["uv", "run", "python", "main.py"]
+  }
+}
+"#;
+
+/// Initialises a Python user-node project at `to_dir`.
+///
+/// Creates a minimal `pyproject.toml` that depends on the generated `peppygen`
+/// package (located at [`PEPPYGEN_OUTPUT_PATH`] relative to the project root).
+pub fn init_python_user_node(to_dir: impl AsRef<Path>) {
+    let project_dir = to_dir.as_ref();
+    fs::create_dir_all(project_dir).expect("failed to create Python user node directory");
+
+    let pyproject = format!(
+        r#"[project]
+name = "user_node"
+version = "0.1.0"
+requires-python = ">= {PYTHON_MIN_VERSION}, < {PYTHON_MAX_VERSION}"
+dependencies = ["peppygen"]
+
+[tool.uv.sources]
+peppygen = {{ path = "{}" }}
+"#,
+        PEPPYGEN_OUTPUT_PATH
+    );
+    fs::write(project_dir.join("pyproject.toml"), pyproject)
+        .expect("failed to write Python user node pyproject.toml");
+}
+
+/// Resolves and installs dependencies for the Python project via `uv sync`.
+pub fn init_python_project_venv(dir: impl AsRef<Path>) {
+    let output = Command::new("uv")
+        .arg("sync")
+        .current_dir(dir.as_ref())
+        .output()
+        .expect("failed to invoke uv sync on Python project");
+    assert!(
+        output.status.success(),
+        "uv sync failed for Python project with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Spawns `uv run python main.py` inside the given project directory.
+pub fn spawn_python_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std::process::Child {
+    let mut command = Command::new("uv");
+    command
+        .args(["run", "python", "main.py"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .current_dir(dir);
+
+    for &(key, value) in env_vars {
+        command.env(key, value);
+    }
+
+    command.spawn().expect("failed to spawn uv run python")
 }

@@ -1,8 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "{{ node_name }}"
 version = "0.1.0"
 description = "{{ node_name }} peppy node"
-requires-python = ">=3.10"
+requires-python = ">={{ python_min_version }}"
+dependencies = ["peppygen"]
 
-[tool.uv]
-dev-dependencies = []
+[project.scripts]
+{{ node_name }} = "{{ node_name }}.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/{{ node_name }}"]
+
+[dependency-groups]
+dev = []
+
+[tool.uv.sources]
+peppygen = { path = "{{ pepygen_path }}" }

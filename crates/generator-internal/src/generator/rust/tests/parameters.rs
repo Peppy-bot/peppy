@@ -80,13 +80,126 @@ const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
 }
 "#;
 
+const NESTED_STRUCT_COLLISION_NODE_EXAMPLE: &str = r#"
+{
+  schema_version: 1,
+  manifest: {
+    name: "uvc_camera",
+    tag: "0.1.0",
+    language: "rust",
+    labels: [
+      "uvc",
+      "camera",
+      "usb",
+    ],
+    start_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
+  parameters: {
+    control: {
+      left: {
+        config: {
+          threshold: "u16"
+        }
+      },
+      right: {
+        config: {
+          enabled: "bool"
+        }
+      }
+    }
+  },
+  interfaces: {}
+}
+"#;
+
+const UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE: &str = r#"
+{
+  schema_version: 1,
+  manifest: {
+    name: "uvc_camera",
+    tag: "0.1.0",
+    language: "rust",
+    labels: [
+      "uvc",
+      "camera",
+      "usb",
+    ],
+    start_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
+  parameters: {
+    device: {
+      enabled: true
+    }
+  },
+  interfaces: {}
+}
+"#;
+
+const UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE: &str = r#"
+{
+  schema_version: 1,
+  manifest: {
+    name: "uvc_camera",
+    tag: "0.1.0",
+    language: "rust",
+    labels: [
+      "uvc",
+      "camera",
+      "usb",
+    ],
+    start_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
+  parameters: {
+    device: "uuid"
+  },
+  interfaces: {}
+}
+"#;
+
+const UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE: &str = r#"
+{
+  schema_version: 1,
+  manifest: {
+    name: "uvc_camera",
+    tag: "0.1.0",
+    language: "rust",
+    labels: [
+      "uvc",
+      "camera",
+      "usb",
+    ],
+    start_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
+  parameters: {
+    enabled: true
+  },
+  interfaces: {}
+}
+"#;
+
 #[test]
 fn generate_parameters_struct() {
     let temp_dir = TempDir::new().unwrap();
     let node_config: NodeConfig =
         serde_json5::from_str(NODE_EXAMPLE).expect("failed to parse NODE_EXAMPLE into NodeConfig");
 
-    let (mut generator, output_dir, _, _) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.set_parameters(node_config.parameters);
     generator.build(&output_dir).unwrap();
 
@@ -125,15 +238,19 @@ fn generate_parameters_struct() {
             "pub mod video",
             "pub struct Video",
             "pub frame_rate: u16",
-            "pub resolution: Resolution",
+            "pub resolution: VideoResolution",
             "pub encoding: String",
         ],
     );
 
-    // Verify nested Resolution struct (simple name, no prefix)
+    // Verify nested VideoResolution struct
     assert_contains_all(
         &generated,
-        &["pub struct Resolution", "pub width: u16", "pub height: u16"],
+        &[
+            "pub struct VideoResolution",
+            "pub width: u16",
+            "pub height: u16",
+        ],
     );
 
     // Verify derive attributes
@@ -147,7 +264,7 @@ fn generate_parameters_struct() {
 fn generate_empty_parameters_struct() {
     let temp_dir = TempDir::new().unwrap();
 
-    let (generator, output_dir, _, _) = init_test_env(&temp_dir);
+    let (generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
     // Don't set any parameters - use the default empty parameters
     generator.build(&output_dir).unwrap();
 
@@ -166,6 +283,50 @@ fn generate_empty_parameters_struct() {
             "#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]",
             "pub struct Parameters",
         ],
+    );
+}
+
+#[test]
+fn generate_parameters_struct_avoids_nested_struct_name_collisions() {
+    let temp_dir = TempDir::new().unwrap();
+    let node_config: NodeConfig = serde_json5::from_str(NESTED_STRUCT_COLLISION_NODE_EXAMPLE)
+        .expect("failed to parse NESTED_STRUCT_COLLISION_NODE_EXAMPLE into NodeConfig");
+
+    let (mut generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
+    generator.set_parameters(node_config.parameters);
+    generator.build(&output_dir).unwrap();
+
+    let parameters_file = output_dir.join("src/parameters.rs");
+    assert!(
+        parameters_file.exists(),
+        "Expected parameters.rs to be generated"
+    );
+
+    let generated = fs::read_to_string(&parameters_file).expect("failed to read parameters.rs");
+    assert_contains_all(
+        &generated,
+        &[
+            "pub struct Parameters",
+            "pub control: control::Control",
+            "pub mod control",
+            "pub struct Control",
+            "pub left: ControlLeft",
+            "pub right: ControlRight",
+            "pub struct ControlLeft",
+            "pub config: ControlLeftConfig",
+            "pub struct ControlRight",
+            "pub config: ControlRightConfig",
+            "pub struct ControlLeftConfig",
+            "pub threshold: u16",
+            "pub struct ControlRightConfig",
+            "pub enabled: bool",
+        ],
+    );
+
+    assert_rendered!(
+        !generated.contains("pub struct Config"),
+        &generated,
+        "expected no ambiguous shared nested struct name"
     );
 }
 
@@ -196,5 +357,62 @@ fn reject_parameters_with_invalid_field_names() {
             assert_eq!(allowed, ALLOWED_CONFIG_CHARS);
         }
         _ => panic!("Expected InvalidParameterFieldName error, got: {:?}", err),
+    }
+}
+
+#[test]
+fn reject_parameters_with_unsupported_spec_type() {
+    use crate::error::Error;
+    use crate::generator::rust::generate_parameters_struct;
+
+    let node_config: NodeConfig =
+        serde_json5::from_str(UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE)
+            .expect("failed to parse UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE into NodeConfig");
+
+    let err = generate_parameters_struct(&node_config.parameters).unwrap_err();
+    match err {
+        Error::UnsupportedParameterSpecType { path, kind } => {
+            assert_eq!(path, "device.enabled");
+            assert_eq!(kind, "bool");
+        }
+        other => panic!("Expected UnsupportedParameterSpecType error, got: {other:?}"),
+    }
+}
+
+#[test]
+fn reject_parameters_with_top_level_unsupported_spec_type() {
+    use crate::error::Error;
+    use crate::generator::rust::generate_parameters_struct;
+
+    let node_config: NodeConfig = serde_json5::from_str(
+        UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE,
+    )
+    .expect("failed to parse UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE into NodeConfig");
+
+    let err = generate_parameters_struct(&node_config.parameters).unwrap_err();
+    match err {
+        Error::UnsupportedParameterSpecType { path, kind } => {
+            assert_eq!(path, "enabled");
+            assert_eq!(kind, "bool");
+        }
+        other => panic!("Expected UnsupportedParameterSpecType error, got: {other:?}"),
+    }
+}
+
+#[test]
+fn reject_parameters_with_unknown_type_name() {
+    use crate::error::Error;
+    use crate::generator::rust::generate_parameters_struct;
+
+    let node_config: NodeConfig = serde_json5::from_str(UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE)
+        .expect("failed to parse UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE into NodeConfig");
+
+    let err = generate_parameters_struct(&node_config.parameters).unwrap_err();
+    match err {
+        Error::UnsupportedParameterTypeName { path, type_name } => {
+            assert_eq!(path, "device");
+            assert_eq!(type_name, "uuid");
+        }
+        other => panic!("Expected UnsupportedParameterTypeName error, got: {other:?}"),
     }
 }

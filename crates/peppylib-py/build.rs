@@ -10,14 +10,20 @@ fn main() {
     }
     println!("cargo:rerun-if-env-changed=PEPPY_GIT_TAG");
 
+    check_pixi_installed();
+    // pixi is installed, configure Python path if not already set
+    configure_python_from_pixi();
+    check_uv_installed();
+
+    pyo3_build_config::add_extension_module_link_args();
+}
+
+fn check_pixi_installed() {
     // Check if pixi is installed
     let pixi_check = Command::new("pixi").arg("--version").output();
 
     match pixi_check {
-        Ok(output) if output.status.success() => {
-            // pixi is installed, configure Python path if not already set
-            configure_python_from_pixi();
-        }
+        Ok(output) if output.status.success() => {}
         _ => {
             panic!(
                 r#"
@@ -40,8 +46,36 @@ For more information, visit: https://pixi.sh
             );
         }
     }
+}
 
-    pyo3_build_config::add_extension_module_link_args();
+fn check_uv_installed() {
+    // Check if uv is installed
+    let uv_check = Command::new("uv").arg("--version").output();
+
+    match uv_check {
+        Ok(output) if output.status.success() => {}
+        _ => {
+            panic!(
+                r#"
+================================================================================
+ERROR: uv is not installed or not found in PATH
+
+uv is required to build the Python bindings for peppylib.
+
+To install uv, run one of the following commands:
+
+  Linux/macOS:
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+
+  Windows:
+    powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+For more information, visit: https://docs.astral.sh/uv/
+================================================================================
+"#
+            );
+        }
+    }
 }
 
 fn configure_python_from_pixi() {

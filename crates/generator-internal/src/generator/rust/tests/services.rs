@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use super::*;
-use config::node::{ExposedService, SubscribedService};
+use config::node::{ExposedService, PeppygenLanguage, SubscribedService};
 
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {
@@ -66,6 +66,15 @@ const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1: &str = r#"
 }
 "#;
 
+const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_SCALAR: &str = r#"
+{
+  maybe_code: {
+    $type: "u32",
+    $optional: true
+  }
+}
+"#;
+
 const SUBSCRIBED_SERVICE_EXAMPLE2: &str = r#"
 {
     id: "uvc_camera_get_camera_info",
@@ -92,7 +101,7 @@ fn expose_service() {
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_service(&service).unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         1,
@@ -157,7 +166,7 @@ fn expose_service_without_request_body() {
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_service(&service).unwrap();
-    let rendered = render_artifacts(generator)
+    let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
         .expect("artifact is present");
@@ -201,7 +210,7 @@ fn expose_two_services() {
     generator.add_exposed_service(&service1).unwrap();
     generator.add_exposed_service(&service2).unwrap();
 
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         2,
@@ -231,7 +240,7 @@ fn subscribed_to_service() {
     generator
         .add_subscribed_service(&service, &request_format, &response_format)
         .unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         1,
@@ -305,7 +314,7 @@ fn subscribed_to_two_services_same_node() {
     generator
         .add_subscribed_service(&service2, &empty_format, &response_format2)
         .unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         2,
@@ -347,7 +356,7 @@ fn subscribed_service_without_response_payload() {
         .add_subscribed_service(&service, &empty_format, &empty_format)
         .expect("generator should allow services without response format");
 
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         1,
@@ -356,6 +365,34 @@ fn subscribed_service_without_response_payload() {
     );
 
     assert_artifact_contains(&artifacts, "let _ = peppylib::ServiceMessenger::poll(");
+}
+
+#[test]
+fn subscribed_service_rejects_optional_scalar_response_field() {
+    use crate::error::Error;
+
+    let service: SubscribedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
+    let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
+    let response_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_SCALAR).unwrap();
+
+    let mut generator = RustGenerator::new();
+    let err = generator
+        .add_subscribed_service(&service, &empty_format, &response_format)
+        .unwrap_err();
+
+    match err {
+        Error::UnsupportedOptionalScalarType {
+            language,
+            field,
+            item,
+        } => {
+            assert_eq!(language, PeppygenLanguage::Rust);
+            assert_eq!(field, "maybe_code");
+            assert_eq!(item, "u32");
+        }
+        other => panic!("expected UnsupportedOptionalScalarType, got: {other:?}"),
+    }
 }
 
 /// Checks for clippy warnings when there is only one exposed service without a request body.
@@ -396,7 +433,7 @@ fn clippy_single_exposed_service_without_request_body() {
         result_response: None,
     };
 
-    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_exposed_service(&exposed_service).unwrap();
     generator
         .add_subscribed_action(&subscribed_action1, &action_messages)
@@ -468,7 +505,7 @@ fn compile_lib_with_exposed_and_subscribed_services() {
 
     let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
 
-    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_exposed_service(&exposed_service1).unwrap();
     generator.add_exposed_service(&exposed_service2).unwrap();
     generator
@@ -586,7 +623,7 @@ fn clippy_subscribed_service_empty_request_format() {
     let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
     let response_format: MessageFormat = serde_json5::from_str(r#"{ status: "string" }"#).unwrap();
 
-    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator
         .add_subscribed_service(&subscribed_service, &empty_format, &response_format)
         .unwrap();
@@ -634,7 +671,7 @@ fn clippy_subscribed_service_empty_response_format() {
     let request_format: MessageFormat = serde_json5::from_str(r#"{ action_id: "u32" }"#).unwrap();
     let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
 
-    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator
         .add_subscribed_service(&subscribed_service, &request_format, &empty_format)
         .unwrap();

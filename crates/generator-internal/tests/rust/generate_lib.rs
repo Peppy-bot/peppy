@@ -7,6 +7,8 @@ use generator::{DeploymentInterface, InterfaceVariant, SubscribedActionMessage};
 use std::fs;
 use tempfile::TempDir;
 
+use crate::helpers;
+
 const PEPPY_JSON5_CONFIG: &str = r#"{
   schema_version: 1,
   manifest: {
@@ -43,47 +45,6 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
   }
 }"#;
 
-fn run_generate_peppygen_lib_test(language: PeppygenLanguage) -> (TempDir, std::path::PathBuf) {
-    let temp_dir = TempDir::new().expect("failed to create temp directory");
-    let node_dir = temp_dir.path();
-
-    // Write the peppy.json5 config
-    let config_path = node_dir.join(config::consts::NODE_CONFIG_FILE);
-    fs::write(&config_path, PEPPY_JSON5_CONFIG).expect("failed to write peppy.json5");
-
-    // Generate the library
-    generate_peppygen_lib(language, node_dir, Vec::new(), "test-hash")
-        .expect("failed to generate library");
-
-    // Verify the generated library structure exists
-    let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
-    assert!(
-        peppygen_dir.exists(),
-        "peppygen directory should exist at {}",
-        peppygen_dir.display()
-    );
-
-    // Check that the fingerprint was created
-    let config_path = node_dir.join(NODE_CONFIG_FILE);
-    let fingerprint =
-        config::fingerprint::read_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
-            .expect("fingerprint file should exist in peppygen directory");
-    assert!(!fingerprint.is_empty(), "fingerprint should not be empty");
-
-    // Check that the git.hash was created
-    let git_hash_path = node_dir
-        .join(config::consts::PEPPY_OUTPUT_DIR)
-        .join("git.hash");
-    let git_hash_content =
-        fs::read_to_string(&git_hash_path).expect("git.hash file should exist in .peppy directory");
-    assert_eq!(
-        git_hash_content, "test-hash",
-        "git.hash should contain the expected hash value"
-    );
-
-    (temp_dir, peppygen_dir)
-}
-
 #[test]
 fn generate_peppygen_lib_minimal_config() {
     let temp_dir = TempDir::new().expect("failed to create temp directory");
@@ -114,7 +75,8 @@ fn generate_peppygen_lib_minimal_config() {
 
 #[test]
 fn generate_peppygen_lib_cargo() {
-    let (temp_dir, peppygen_dir) = run_generate_peppygen_lib_test(PeppygenLanguage::Rust);
+    let (temp_dir, peppygen_dir) =
+        helpers::run_generate_peppygen_lib_test(PeppygenLanguage::Rust, PEPPY_JSON5_CONFIG);
     let node_dir = temp_dir.path();
 
     // Check that Cargo.toml was generated
@@ -185,28 +147,6 @@ fn generate_peppygen_lib_cargo() {
     assert_eq!(
         peppygen_path, PEPPYGEN_OUTPUT_PATH,
         "peppygen dependency path should point to {PEPPYGEN_OUTPUT_PATH}"
-    );
-}
-
-#[test]
-#[ignore = "Python generator not yet implemented"]
-fn generate_peppygen_lib_uv() {
-    let (_temp_dir, peppygen_dir) = run_generate_peppygen_lib_test(PeppygenLanguage::Python);
-
-    // Check that pyproject.toml was generated
-    let pyproject_toml = peppygen_dir.join("pyproject.toml");
-    assert!(
-        pyproject_toml.exists(),
-        "pyproject.toml should exist at {}",
-        pyproject_toml.display()
-    );
-
-    // Check that peppygen/__init__.py was generated
-    let init_py = peppygen_dir.join("peppygen/__init__.py");
-    assert!(
-        init_py.exists(),
-        "peppygen/__init__.py should exist at {}",
-        init_py.display()
     );
 }
 

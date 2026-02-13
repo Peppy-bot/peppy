@@ -1,5 +1,8 @@
-mod helpers;
-
+use crate::helpers::{
+    STUB_PYTHON_NODE_CONFIG, WaitContext, copy_config_to_output, init_python_project_venv,
+    init_python_user_node, init_test_env, send_shutdown, spawn_python_run, wait_for_child,
+    wait_for_health_service_reachable_or_exit,
+};
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
 use config::{
@@ -8,10 +11,6 @@ use config::{
     runtime::RuntimeConfig,
 };
 use generator::LanguageGenerator;
-use helpers::{
-    WaitContext, compile_project, copy_config_to_output, init_cargo_user_node, init_test_env,
-    send_shutdown, spawn_cargo_run, wait_for_child, wait_for_health_service_reachable_or_exit,
-};
 use std::path::Path;
 use std::{fs, time::Duration};
 use tempfile::TempDir;
@@ -72,7 +71,7 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
 }
 "#;
 
-/// Creates 2 projects in separate directory and check if they can send/receive topics
+/// Creates 2 Python projects in separate directories and checks if they can send/receive topics.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn topics_communication() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
@@ -88,7 +87,7 @@ async fn topics_communication() {
     let subscribed_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
     let (mut generator, subscriber_dir, user_node_subscriber, peppy_node_config_path) =
-        init_test_env(&temp_dir_proj2);
+        init_test_env::<generator::PythonGenerator>(&temp_dir_proj2, STUB_PYTHON_NODE_CONFIG);
     generator
         .add_subscribed_topic(&subscribed_topic, subscribed_format)
         .unwrap();
@@ -116,33 +115,44 @@ async fn topics_communication() {
         .save_json5_launch_config(&subscriber_runtime_config_path)
         .unwrap();
 
-    init_cargo_user_node(&user_node_subscriber);
-    // TODO: An exit signal should be sent to the subscriber to terminate the process
+    init_python_user_node(&user_node_subscriber);
     let subscriber_main = r#"
-use peppygen::NodeBuilder;
-use peppygen::subscribed_topics::uvc_camera_video_stream::on_next_message_received;
-use peppygen::Result;
+import asyncio
+import sys
+import traceback
+from peppygen import NodeBuilder
+from peppygen.subscribed_topics import uvc_camera_video_stream
 
-fn main() -> Result<()> {
-    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
-        let (instance_id, frame) = on_next_message_received(&node_runner, None, None).await?;
-        println!(
-            "got {}x{} frame encoded as {} from {}",
-            frame.width, frame.height, frame.encoding, &instance_id
-        );
-        Ok(())
-    })
-    }
- "#;
-    let main_file = user_node_subscriber.join("src").join("main.rs");
-    fs::write(main_file, subscriber_main).expect("failed to write main file");
+def setup(parameters, node_runner):
+    try:
+        print("subscriber: about to subscribe", flush=True)
+        instance_id, frame = asyncio.run(
+            uvc_camera_video_stream.on_next_message_received(node_runner)
+        )
+        print(
+            f"got {frame.width}x{frame.height} frame encoded as {frame.encoding} from {instance_id}",
+            flush=True,
+        )
+    except Exception as e:
+        print(f"subscriber error: {e}", flush=True)
+        traceback.print_exc()
+        raise
+
+def main():
+    NodeBuilder().run(setup)
+
+if __name__ == "__main__":
+    main()
+"#;
+    let main_file = user_node_subscriber.join("main.py");
+    fs::write(main_file, subscriber_main).expect("failed to write main.py");
 
     // --- Exposer project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_proj1 = TempDir::new().unwrap();
     let exposed_topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
     let (mut generator, exposer_dir, user_node_exposer, peppy_node_config_path) =
-        init_test_env(&temp_dir_proj1);
+        init_test_env::<generator::PythonGenerator>(&temp_dir_proj1, STUB_PYTHON_NODE_CONFIG);
     let exposer_parameters: config::NodeArguments =
         serde_json5::from_str(r#"{ frequency: "f64" }"#).unwrap();
     generator.set_parameters(exposer_parameters.clone());
@@ -181,63 +191,80 @@ fn main() -> Result<()> {
         .save_json5_launch_config(&exposer_runtime_config_path)
         .unwrap();
 
-    init_cargo_user_node(&user_node_exposer);
-    // TODO: An exit signal should be sent to the exposer to terminate the process
+    init_python_user_node(&user_node_exposer);
     let exposer_main = r#"
-use peppygen::exposed_topics::video_stream;
-use peppygen::NodeBuilder;
-use peppygen::Result;
-use std::time::Duration;
+import asyncio
+import time
+import sys
+import traceback
+import threading
+from peppygen import NodeBuilder
+from peppygen.exposed_topics import video_stream
 
-fn main() -> Result<()> {
-    NodeBuilder::new().run(|parameters: peppygen::Parameters, node_runner| async move {
-        let frequency_hz: f64 = parameters.frequency;
-        let interval = Duration::from_secs_f64(1.0 / frequency_hz);
+def setup(parameters, node_runner):
+    frequency_hz = parameters["frequency"]
+    interval = 1.0 / frequency_hz
 
-        let node_runner_clone = node_runner.clone();
-        tokio::spawn(async move {
-            let mut frame_id = 0u32;
-            loop {
-                let _ = video_stream::emit(
-                    &node_runner_clone,
-                    video_stream::MessageHeader {
-                        stamp: std::time::SystemTime::now(),
-                        frame_id,
-                    },
-                    "rgb8".to_owned(),
+    async def emit_loop():
+        frame_id = 0
+        print(f"exposer: starting emit loop with interval={interval}", flush=True)
+        while True:
+            try:
+                await video_stream.emit(
+                    node_runner,
+                    video_stream.MessageHeader(stamp=time.time(), frame_id=frame_id),
+                    "rgb8",
                     640,
                     480,
-                    vec![1, 2, 3],
+                    bytes([1, 2, 3]),
                 )
-                .await;
+                if frame_id == 0:
+                    print("exposer: first emit succeeded", flush=True)
+            except Exception as e:
+                print(f"exposer emit error: {e}", flush=True)
+                traceback.print_exc()
+                raise
+            frame_id = (frame_id + 1) % (2**32)
+            await asyncio.sleep(interval)
 
-                frame_id = frame_id.wrapping_add(1);
-                tokio::time::sleep(interval).await;
-            }
-        });
+    threading.Thread(target=lambda: asyncio.run(emit_loop()), daemon=True).start()
+    print("exposer: daemon thread started", flush=True)
 
-        Ok(())
-    })
-    }
- "#;
+def main():
+    NodeBuilder().run(setup)
 
-    let main_file = user_node_exposer.join("src").join("main.rs");
-    fs::write(main_file, exposer_main).expect("failed to write main file");
+if __name__ == "__main__":
+    main()
+"#;
+
+    let main_file = user_node_exposer.join("main.py");
+    fs::write(main_file, exposer_main).expect("failed to write main.py");
 
     let user_node_subscriber_config_str =
         subscriber_runtime_config_path.to_str().unwrap().to_owned();
     let user_node_exposer_runtime_config_str =
         exposer_runtime_config_path.to_str().unwrap().to_owned();
 
-    compile_project(&user_node_subscriber);
-    compile_project(&user_node_exposer);
+    println!(
+        "User node subscriber PEPPY_RUNTIME_CONFIG=\"{}\"",
+        &subscriber_runtime_config_path.display()
+    );
+    println!("User node subscriber = {}", user_node_subscriber.display());
+    println!(
+        "User node exposer PEPPY_RUNTIME_CONFIG=\"{}\"",
+        &exposer_runtime_config_path.display()
+    );
+    println!("User node exposer = {}", user_node_exposer.display());
+
+    init_python_project_venv(&user_node_subscriber);
+    init_python_project_venv(&user_node_exposer);
 
     // Spawn both processes
-    let mut subscriber_child = spawn_cargo_run(
+    let mut subscriber_child = spawn_python_run(
         &user_node_subscriber,
         &[(RUNTIME_CONFIG_VAR_NAME, &user_node_subscriber_config_str)],
     );
-    let mut exposer_child = spawn_cargo_run(
+    let mut exposer_child = spawn_python_run(
         &user_node_exposer,
         &[(
             RUNTIME_CONFIG_VAR_NAME,
@@ -256,24 +283,74 @@ fn main() -> Result<()> {
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
         target_master_node: Some(TEST_MASTER_NODE),
     };
-    wait_for_health_service_reachable_or_exit(
-        &ctx,
-        SUBSCRIBER_NODE_NAME,
-        subscriber_instance_id,
-        &mut subscriber_child,
-        &user_node_subscriber,
-        Duration::from_secs(10),
-    )
-    .await;
+
+    // First wait for the exposer health to ensure it's running
     wait_for_health_service_reachable_or_exit(
         &ctx,
         UVC_CAMERA_NODE_NAME,
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
-        Duration::from_secs(10),
     )
     .await;
+
+    // Now wait for subscriber (which blocks until it receives a message)
+    let subscriber_timeout = Duration::from_secs(20);
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(status) = subscriber_child
+            .try_wait()
+            .expect("failed to poll subscriber")
+        {
+            let output = wait_for_child(&mut subscriber_child, None, &user_node_subscriber);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            panic!(
+                "subscriber exited before health became reachable (status: {:?})\nstdout:\n{}\nstderr:\n{}",
+                status.code(),
+                stdout,
+                stderr
+            );
+        }
+
+        let reachable = tokio::time::timeout(
+            Duration::from_secs(2),
+            peppylib::ServiceMessenger::is_reachable(
+                &messenger,
+                TEST_MASTER_NODE,
+                SHUTDOWN_SENDER_INSTANCE_ID,
+                SUBSCRIBER_NODE_NAME,
+                peppylib::messaging::NODE_HEALTH_SERVICE,
+                Some(TEST_MASTER_NODE),
+                Some(subscriber_instance_id),
+            ),
+        )
+        .await
+        .unwrap_or(Ok(false))
+        .unwrap_or(false);
+
+        if reachable {
+            break;
+        }
+
+        if start.elapsed() > subscriber_timeout {
+            // Kill both processes and dump output for debugging
+            let _ = subscriber_child.kill();
+            let _ = exposer_child.kill();
+            let sub_out = wait_for_child(&mut subscriber_child, None, &user_node_subscriber);
+            let exp_out = wait_for_child(&mut exposer_child, None, &user_node_exposer);
+            panic!(
+                "subscriber timed out after {:?}\n\n--- SUBSCRIBER stdout ---\n{}\n--- SUBSCRIBER stderr ---\n{}\n\n--- EXPOSER stdout ---\n{}\n--- EXPOSER stderr ---\n{}",
+                subscriber_timeout,
+                String::from_utf8_lossy(&sub_out.stdout),
+                String::from_utf8_lossy(&sub_out.stderr),
+                String::from_utf8_lossy(&exp_out.stdout),
+                String::from_utf8_lossy(&exp_out.stderr),
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 
     send_shutdown(
         &messenger,

@@ -20,8 +20,8 @@ pub enum PeppygenLanguage {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum Toolchain {
-    #[default]
     Cargo,
+    #[default]
     Uv,
 }
 

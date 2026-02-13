@@ -272,8 +272,9 @@ impl MessengerHandle {
         target_master_node: Option<&str>,
         target_instance_id: Option<&str>,
         request_payload: Bytes,
-        response_timeout: Duration,
+        response_timeout: impl Into<Option<Duration>>,
     ) -> Result<TopicMessage> {
+        let response_timeout: Option<Duration> = response_timeout.into();
         let service_root = format!(
             "{}/{}/{}",
             message_type, target_node_name, target_service_name
@@ -350,59 +351,75 @@ impl MessengerHandle {
                 .map_err(Error::PeppyMessagingInterface)?;
         }
 
-        // Wait for the response using a deadline-based loop that tracks service acks.
+        // Wait for the response, filtering out service acks.
         // The service sends an ack immediately upon receiving the request (before the
-        // handler runs). If we receive the ack but no response, the service is alive
-        // but slow (ServiceTimeout). If we receive nothing, nobody is listening
-        // (ServiceUnreachable).
-        let deadline = Instant::now() + response_timeout;
-        let mut received_ack = false;
+        // handler runs). With a timeout, if we receive the ack but no response, the
+        // service is alive but slow (ServiceTimeout). If we receive nothing, nobody is
+        // listening (ServiceUnreachable). With no timeout (None), we wait indefinitely
+        // for the response signal — used in tests to avoid wall-clock dependencies.
+        let channel_closed_err = || {
+            Error::PeppyMessagingInterface(PeppyMessagingInterfaceError::BackendError(
+                "service response channel closed".to_string(),
+            ))
+        };
 
-        let response = loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                if received_ack {
-                    return Err(Error::ServiceTimeout {
-                        instance_id: target_instance_id,
-                        service_name: target_service_name.to_string(),
-                    });
-                } else {
-                    return Err(Error::ServiceUnreachable {
-                        instance_id: target_instance_id,
-                        service_name: target_service_name.to_string(),
-                    });
+        let response = match response_timeout {
+            Some(response_timeout) => {
+                let deadline = Instant::now() + response_timeout;
+                let mut received_ack = false;
+
+                loop {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        if received_ack {
+                            return Err(Error::ServiceTimeout {
+                                instance_id: target_instance_id,
+                                service_name: target_service_name.to_string(),
+                            });
+                        } else {
+                            return Err(Error::ServiceUnreachable {
+                                instance_id: target_instance_id,
+                                service_name: target_service_name.to_string(),
+                            });
+                        }
+                    }
+
+                    match timeout(remaining, response_subscription.rx.recv()).await {
+                        Ok(Some(message)) => {
+                            if is_service_ack_payload(&message.payload().as_bytes()) {
+                                received_ack = true;
+                                continue;
+                            }
+                            break message;
+                        }
+                        Ok(None) => return Err(channel_closed_err()),
+                        Err(_) => {
+                            if received_ack {
+                                return Err(Error::ServiceTimeout {
+                                    instance_id: target_instance_id,
+                                    service_name: target_service_name.to_string(),
+                                });
+                            } else {
+                                return Err(Error::ServiceUnreachable {
+                                    instance_id: target_instance_id,
+                                    service_name: target_service_name.to_string(),
+                                });
+                            }
+                        }
+                    }
                 }
             }
-
-            match timeout(remaining, response_subscription.rx.recv()).await {
-                Ok(Some(message)) => {
-                    if is_service_ack_payload(&message.payload().as_bytes()) {
-                        received_ack = true;
-                        continue;
+            None => loop {
+                match response_subscription.rx.recv().await {
+                    Some(message) => {
+                        if is_service_ack_payload(&message.payload().as_bytes()) {
+                            continue;
+                        }
+                        break message;
                     }
-                    break message;
+                    None => return Err(channel_closed_err()),
                 }
-                Ok(None) => {
-                    return Err(Error::PeppyMessagingInterface(
-                        PeppyMessagingInterfaceError::BackendError(
-                            "service response channel closed".to_string(),
-                        ),
-                    ));
-                }
-                Err(_) => {
-                    if received_ack {
-                        return Err(Error::ServiceTimeout {
-                            instance_id: target_instance_id,
-                            service_name: target_service_name.to_string(),
-                        });
-                    } else {
-                        return Err(Error::ServiceUnreachable {
-                            instance_id: target_instance_id,
-                            service_name: target_service_name.to_string(),
-                        });
-                    }
-                }
-            }
+            },
         };
 
         let response_payload = response.payload().to_bytes();

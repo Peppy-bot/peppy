@@ -4,6 +4,7 @@ use super::services::{
     ServiceResponseSpec, build_response_payload_tokens, build_result_expr_from_values,
     build_return_type_from_params, deserialize_fields_from_format,
 };
+use crate::error::Result;
 use config::encoding::FunctionParam;
 use config::node::MessageFormat;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -36,7 +37,26 @@ pub fn build_action_handle_struct(
     }
 }
 
-pub fn build_action_expose_method() -> TokenStream {
+pub fn build_action_expose_method(
+    has_goal: bool,
+    has_feedback: bool,
+    has_result: bool,
+) -> TokenStream {
+    let mut init_fields = Vec::new();
+
+    if has_goal {
+        init_fields.push(quote!(goal_service: action.goal_service));
+        init_fields.push(quote!(cancel_service: action.cancel_service));
+    }
+
+    if has_result {
+        init_fields.push(quote!(result_service: action.result_service));
+    }
+
+    if has_feedback {
+        init_fields.push(quote!(feedback_publisher: action.feedback_publisher));
+    }
+
     quote! {
         pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self> {
             let action = peppylib::ActionMessenger::expose(
@@ -49,10 +69,7 @@ pub fn build_action_expose_method() -> TokenStream {
             .await?;
 
             Ok(Self {
-                goal_service: action.goal_service,
-                cancel_service: action.cancel_service,
-                result_service: action.result_service,
-                feedback_publisher: action.feedback_publisher,
+                #( #init_fields ),*
             })
         }
     }
@@ -122,7 +139,7 @@ pub fn build_action_payload_handler(
     request_data_struct: Option<&Ident>,
     response_spec: Option<&ServiceResponseSpec>,
     has_payload: bool,
-) -> TokenStream {
+) -> Result<TokenStream> {
     let response_ty = response_spec
         .as_ref()
         .map(|spec| {
@@ -141,7 +158,7 @@ pub fn build_action_payload_handler(
         let response_ident = Ident::new("response", Span::call_site());
         let error_context = quote!(format!("{} {}", stringify!(#handler_name), ACTION_NAME));
         let serialization =
-            build_response_payload_tokens(spec, &response_ident, &error_context, None);
+            build_response_payload_tokens(spec, &response_ident, &error_context, None)?;
         let uses_response_data = spec.format.0.iter().any(|(field_name, _)| {
             !(spec.include_service_instance_id && field_name.as_str() == "instance_id")
         });
@@ -168,7 +185,7 @@ pub fn build_action_payload_handler(
         } else {
             quote!(let () = #deserializer_name(payload)?;)
         };
-        quote! {
+        Ok(quote! {
             fn #handler_name<F>(
                 payload: &[u8],
                 handler: &F,
@@ -185,9 +202,9 @@ pub fn build_action_payload_handler(
 
                 Ok(response_payload)
             }
-        }
+        })
     } else {
-        quote! {
+        Ok(quote! {
             fn #handler_name<F>(
                 handler: &F,
                 master_node: String,
@@ -202,7 +219,7 @@ pub fn build_action_payload_handler(
 
                 Ok(response_payload)
             }
-        }
+        })
     }
 }
 
@@ -213,7 +230,7 @@ pub fn build_action_request_deserializer(
     params: &[FunctionParam],
     label: &str,
     request_struct: Option<&Ident>,
-) -> TokenStream {
+) -> Result<TokenStream> {
     let reader_type = &request_spec.reader_type;
     let return_ty = build_return_type_from_params(params, request_struct);
     let context_expr = quote!(format!(
@@ -223,18 +240,18 @@ pub fn build_action_request_deserializer(
     ));
 
     let (field_statements, value_idents) =
-        deserialize_fields_from_format(request_format, params, label, &context_expr);
+        deserialize_fields_from_format(request_format, params, label, &context_expr)?;
 
     let request_expr = build_result_expr_from_values(params, &value_idents, request_struct);
 
-    build_deserialize_fn(
+    Ok(build_deserialize_fn(
         deserializer_fn_name,
         reader_type,
         &context_expr,
         &return_ty,
         &field_statements,
         &request_expr,
-    )
+    ))
 }
 
 pub fn build_action_feedback_emit(

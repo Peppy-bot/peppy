@@ -19,7 +19,7 @@ use peppylib::messaging::{
     ActionCreation, SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext, TopicPublisher,
 };
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
-use rand::Rng;
+use rand::RngExt;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};

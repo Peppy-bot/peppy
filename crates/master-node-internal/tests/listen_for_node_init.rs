@@ -102,7 +102,6 @@ async fn listen_for_node_init_rust_success() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Python node generation is not yet implemented"]
 async fn listen_for_node_init_python_success() {
     const NODE_NAME: &str = "example_node";
 
@@ -116,7 +115,7 @@ async fn listen_for_node_init_python_success() {
             &started_master.master_node_name,
             CALLER_INSTANCE_ID,
             &started_master.master_node_name,
-            Duration::from_secs(10),
+            None::<Duration>,
         )
         .await
         .expect("node_init request should complete");
@@ -134,6 +133,13 @@ async fn listen_for_node_init_python_success() {
         node_dir.display()
     );
 
+    let git_hash_file = node_dir.join(PEPPY_OUTPUT_DIR).join("git.hash");
+    assert!(
+        git_hash_file.exists(),
+        "git.hash file should exist at {}",
+        git_hash_file.display()
+    );
+
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
     assert!(
         node_config_path.exists(),
@@ -147,11 +153,32 @@ async fn listen_for_node_init_python_success() {
         "pyproject.toml should exist at {}",
         pyproject_toml_path.display()
     );
+    let pyproject_toml =
+        fs::read_to_string(&pyproject_toml_path).expect("failed to read generated pyproject.toml");
+    assert!(
+        pyproject_toml.contains("peppygen"),
+        "pyproject.toml should contain peppygen dependency, got:\n{}",
+        pyproject_toml
+    );
+    assert!(
+        pyproject_toml.contains(PEPPYGEN_OUTPUT_PATH),
+        "pyproject.toml should reference generated peppygen path, got:\n{}",
+        pyproject_toml
+    );
 
-    let main_py_path = node_dir.join("src/main.py");
+    let init_py_path = node_dir.join(format!("src/{NODE_NAME}/__init__.py"));
+    assert!(
+        init_py_path.exists(),
+        "src/{}/__init__.py should exist at {}",
+        NODE_NAME,
+        init_py_path.display()
+    );
+
+    let main_py_path = node_dir.join(format!("src/{NODE_NAME}/__main__.py"));
     assert!(
         main_py_path.exists(),
-        "src/main.py should exist at {}",
+        "src/{}/__main__.py should exist at {}",
+        NODE_NAME,
         main_py_path.display()
     );
 

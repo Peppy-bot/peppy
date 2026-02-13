@@ -1,6 +1,7 @@
 use super::deserialization::build_deserialize_fn;
 use super::serialization::{MessageEncodingSpec, build_serialize_payload};
 use super::services::deserialize_fields_from_format;
+use crate::error::Result;
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam};
 use config::node::{ExposedTopic, QoSProfile, SubscribedTopic};
 use proc_macro2::{Ident, Literal, TokenStream};
@@ -97,7 +98,7 @@ pub fn build_topic_emit(
     }
 }
 
-pub fn build_subscribed_topic_callback(spec: SubscribedTopicCallbackSpec) -> TokenStream {
+pub fn build_subscribed_topic_callback(spec: SubscribedTopicCallbackSpec) -> Result<TokenStream> {
     let SubscribedTopicCallbackSpec {
         fn_name,
         helper_fn_ident,
@@ -119,7 +120,7 @@ pub fn build_subscribed_topic_callback(spec: SubscribedTopicCallbackSpec) -> Tok
         params,
         struct_prefix,
         &context_expr,
-    );
+    )?;
     let field_inits: Vec<TokenStream> = params
         .iter()
         .zip(value_idents.iter())
@@ -138,7 +139,7 @@ pub fn build_subscribed_topic_callback(spec: SubscribedTopicCallbackSpec) -> Tok
         &quote!(#args_struct_ident { #( #field_inits ),* }),
     );
 
-    quote! {
+    Ok(quote! {
         pub async fn #fn_name(
             node_runner: &crate::NodeRunner,
             master_node_target: Option<&str>,
@@ -181,7 +182,7 @@ pub fn build_subscribed_topic_callback(spec: SubscribedTopicCallbackSpec) -> Tok
         }
 
         #helper_fn_tokens
-    }
+    })
 }
 
 pub fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {

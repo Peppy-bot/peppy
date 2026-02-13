@@ -1,4 +1,6 @@
+use super::identifiers::sanitize_rust_identifier;
 use crate::generator::naming::sanitize_component;
+use crate::{error::Error, error::Result};
 use config::encoding::FunctionParam;
 use config::node::{MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
@@ -23,7 +25,7 @@ impl NameGenerator {
     }
 
     pub fn next(&mut self, hint: &str) -> Ident {
-        let sanitized = sanitize_component(hint);
+        let sanitized = sanitize_rust_identifier(hint);
         let suffix = self.counter;
         self.counter += 1;
         let base = if sanitized.is_empty() {
@@ -39,7 +41,7 @@ pub fn generate_assignments_for_format(
     builder_ident: &Ident,
     format: &MessageFormat,
     params: &[FunctionParam],
-) -> Vec<TokenStream> {
+) -> Result<Vec<TokenStream>> {
     let mut param_lookup: HashMap<String, Ident> = HashMap::new();
     for param in params {
         param_lookup.insert(param.ident.to_string(), param.ident.clone());
@@ -50,11 +52,14 @@ pub fn generate_assignments_for_format(
     let builder_expr = quote!(#builder_ident);
 
     for (field_name, schema) in &format.0 {
-        let sanitized = sanitize_component(field_name);
-        let param_ident = param_lookup
-            .get(&sanitized)
-            .unwrap_or_else(|| panic!("missing parameter for field `{field_name}`"))
-            .clone();
+        let sanitized = sanitize_rust_identifier(field_name);
+        let param_ident =
+            param_lookup
+                .get(&sanitized)
+                .cloned()
+                .ok_or_else(|| Error::InvariantViolation {
+                    context: format!("missing parameter for field `{field_name}`"),
+                })?;
         let value_expr = quote!(#param_ident);
         assignments.push(generate_field_assignment(
             &builder_expr,
@@ -62,23 +67,23 @@ pub fn generate_assignments_for_format(
             schema,
             &value_expr,
             &mut name_gen,
-        ));
+        )?);
     }
 
-    assignments
+    Ok(assignments)
 }
 
 pub fn generate_assignments_from_struct(
     builder_ident: &Ident,
     format: &MessageFormat,
     struct_ident: &Ident,
-) -> Vec<TokenStream> {
+) -> Result<Vec<TokenStream>> {
     let mut assignments = Vec::with_capacity(format.0.len());
     let mut name_gen = NameGenerator::new();
     let builder_expr = quote!(#builder_ident);
 
     for (field_name, schema) in &format.0 {
-        let field_ident = Ident::new(&sanitize_component(field_name), Span::call_site());
+        let field_ident = Ident::new(&sanitize_rust_identifier(field_name), Span::call_site());
         let value_expr = quote!(#struct_ident.#field_ident);
         assignments.push(generate_field_assignment(
             &builder_expr,
@@ -86,10 +91,10 @@ pub fn generate_assignments_from_struct(
             schema,
             &value_expr,
             &mut name_gen,
-        ));
+        )?);
     }
 
-    assignments
+    Ok(assignments)
 }
 
 pub fn generate_field_assignment(
@@ -98,7 +103,7 @@ pub fn generate_field_assignment(
     schema: &SchemaType,
     value_expr: &TokenStream,
     names: &mut NameGenerator,
-) -> TokenStream {
+) -> Result<TokenStream> {
     generate_field_assignment_inner(
         builder_expr,
         field_name,
@@ -118,7 +123,7 @@ fn generate_field_assignment_inner(
     names: &mut NameGenerator,
     handle_optional: bool,
     value_is_ref: bool,
-) -> TokenStream {
+) -> Result<TokenStream> {
     if handle_optional && schema.is_optional() {
         match schema {
             SchemaType::Object(_) => {
@@ -131,13 +136,13 @@ fn generate_field_assignment_inner(
                     &inner_expr,
                     names,
                     false,
-                    false,
-                );
-                return quote! {
-                    if let Some(#binding) = (#value_expr).cloned() {
+                    true,
+                )?;
+                return Ok(quote! {
+                    if let Some(#binding) = (#value_expr).as_ref() {
                         #inner
                     }
-                };
+                });
             }
             _ => {
                 let binding = names.next("value");
@@ -150,12 +155,12 @@ fn generate_field_assignment_inner(
                     names,
                     false,
                     true,
-                );
-                return quote! {
+                )?;
+                return Ok(quote! {
                     if let Some(#binding) = (#value_expr).as_ref() {
                         #inner
                     }
-                };
+                });
             }
         }
     }
@@ -165,7 +170,7 @@ fn generate_field_assignment_inner(
     let init_method = Ident::new(&format!("init_{method_component}"), Span::call_site());
 
     match schema {
-        SchemaType::Type(token) => primitive_field_assignment(
+        SchemaType::Type(token) => Ok(primitive_field_assignment(
             builder_expr,
             &set_method,
             &init_method,
@@ -173,8 +178,8 @@ fn generate_field_assignment_inner(
             names,
             value_is_ref,
             token,
-        ),
-        SchemaType::Primitive(primitive) => primitive_field_assignment(
+        )),
+        SchemaType::Primitive(primitive) => Ok(primitive_field_assignment(
             builder_expr,
             &set_method,
             &init_method,
@@ -182,22 +187,25 @@ fn generate_field_assignment_inner(
             names,
             value_is_ref,
             &primitive.kind,
-        ),
+        )),
         SchemaType::Array(array) => {
             let item_token = array.items.as_ref().as_type_token();
             if matches!(item_token, Some(TypeToken::U8)) {
-                quote!(#builder_expr.#set_method(#value_expr.as_ref());)
+                Ok(quote!(#builder_expr.#set_method(#value_expr.as_ref());))
             } else if let Some(token) = item_token {
                 generate_list_assignment(
                     builder_expr,
                     &init_method,
                     value_expr,
+                    field_name,
                     array.length,
                     token,
                     names,
                 )
             } else {
-                panic!("unsupported nested schema type in array `{field_name}`");
+                Err(Error::UnsupportedArrayItemSchema {
+                    field: field_name.to_string(),
+                })
             }
         }
         SchemaType::Object(object) => generate_object_assignment(
@@ -205,6 +213,7 @@ fn generate_field_assignment_inner(
             &init_method,
             value_expr,
             &object.fields,
+            value_is_ref,
             names,
         ),
     }
@@ -276,20 +285,25 @@ fn generate_list_assignment(
     builder_expr: &TokenStream,
     init_method: &Ident,
     value_expr: &TokenStream,
+    field_name: &str,
     length: Option<usize>,
     token: &TypeToken,
     names: &mut NameGenerator,
-) -> TokenStream {
+) -> Result<TokenStream> {
     let list_ident = names.next("list");
     let idx_ident = names.next("idx");
     let element_ident = names.next("value");
 
     let length_expr = match length {
         Some(len) => {
-            let len_lit = Literal::u32_unsuffixed(len as u32);
+            let len_lit = Literal::u32_unsuffixed(u32::try_from(len).map_err(|_| {
+                Error::InvariantViolation {
+                    context: format!("list length {len} for field `{field_name}` exceeds u32::MAX"),
+                }
+            })?);
             quote!(#len_lit)
         }
-        None => quote!((#value_expr).len() as u32),
+        None => quote!(u32::try_from((#value_expr).len()).expect("list length exceeds u32::MAX")),
     };
 
     let element_setter = match token {
@@ -306,15 +320,19 @@ fn generate_list_assignment(
         | TypeToken::I64
         | TypeToken::F32
         | TypeToken::F64 => quote!(#list_ident.set(#idx_ident as u32, *#element_ident);),
-        TypeToken::Time => panic!("time arrays are not supported"),
+        TypeToken::Time => {
+            return Err(Error::InvariantViolation {
+                context: format!("time arrays are not supported for field `{field_name}`"),
+            });
+        }
     };
 
-    quote! {
+    Ok(quote! {
         let mut #list_ident = #builder_expr.reborrow().#init_method(#length_expr);
         for (#idx_ident, #element_ident) in (#value_expr).iter().enumerate() {
             #element_setter
         }
-    }
+    })
 }
 
 fn generate_object_assignment(
@@ -322,27 +340,37 @@ fn generate_object_assignment(
     init_method: &Ident,
     value_expr: &TokenStream,
     fields: &IndexMap<String, SchemaType>,
+    value_is_ref: bool,
     names: &mut NameGenerator,
-) -> TokenStream {
+) -> Result<TokenStream> {
     let builder_ident = names.next("builder");
     let mut nested = Vec::with_capacity(fields.len());
 
     for (nested_name, nested_schema) in fields {
-        let nested_ident = Ident::new(&sanitize_component(nested_name.as_str()), Span::call_site());
-        let nested_value_expr = quote!(#value_expr.#nested_ident);
-        nested.push(generate_field_assignment(
+        let nested_ident = Ident::new(
+            &sanitize_rust_identifier(nested_name.as_str()),
+            Span::call_site(),
+        );
+        let nested_value_expr = if value_is_ref {
+            quote!(&(#value_expr).#nested_ident)
+        } else {
+            quote!((#value_expr).#nested_ident)
+        };
+        nested.push(generate_field_assignment_inner(
             &quote!(#builder_ident),
             nested_name,
             nested_schema,
             &nested_value_expr,
             names,
-        ));
+            true,
+            value_is_ref,
+        )?);
     }
 
-    quote! {
+    Ok(quote! {
         let mut #builder_ident = #builder_expr.reborrow().#init_method();
         #(#nested)*
-    }
+    })
 }
 
 /// Generates a block expression that serializes fields into a Cap'n Proto message
