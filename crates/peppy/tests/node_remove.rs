@@ -33,7 +33,7 @@ fn node_remove_command_succeeds() {
     let node_tag = "0.1.0";
 
     let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -166,7 +166,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
     let instance_id = "test_remove_running_instance";
 
     let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -201,7 +201,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
     peppy::test_support::override_start_cmd(&peppy_json5_path);
 
     // Start in-process node services for health/shutdown so node_run can succeed.
-    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle = rt
         .block_on(listen_for_node_ready(
             &node_messenger,
@@ -305,7 +305,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
     let instance_id = "test_remove_stop_instances_instance";
 
     let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -337,7 +337,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
 
     peppy::test_support::override_start_cmd(&peppy_json5_path);
 
-    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
 
     let _node_ready_handle = rt
         .block_on(listen_for_node_ready(

@@ -27,7 +27,7 @@ pub async fn listen_for_stack_reset(
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(|context| handle_stack_reset_request(context, node_stack.clone()))
+            .handle_requests(|context| handle_stack_reset_request(context, Arc::clone(&node_stack)))
             .await
             .map_err(Into::into)
     });
