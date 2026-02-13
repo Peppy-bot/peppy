@@ -322,7 +322,7 @@ async def test_spawn_async_returns_task_handle_and_failure(monkeypatch):
                 task_handle: SpawnedAsyncTask = await asyncio.to_thread(
                     task_queue.get, timeout=5.0
                 )
-                assert task_handle.thread.daemon is False
+                assert task_handle.thread.daemon is True
 
                 finished = await asyncio.to_thread(task_handle.join, 5.0)
                 assert finished, "spawned task should complete"
