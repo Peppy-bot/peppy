@@ -12,7 +12,7 @@ mod services;
 mod topics;
 mod type_mapping;
 
-pub use parameters::generate_parameters_struct;
+pub use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{
     CapnpSchema, InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage,

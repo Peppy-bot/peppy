@@ -126,15 +126,18 @@ pub fn qos_profile_python(profile: &QoSProfile) -> &'static str {
 }
 
 /// Maps a config type name string to a Python type string (for parameters).
-pub fn type_name_to_python(type_name: &str) -> &'static str {
+pub fn type_name_to_python(type_name: &str, path: &str) -> Result<&'static str> {
     match type_name {
-        "bool" => "bool",
-        "string" | "str" => "str",
-        "bytes" => "bytes",
-        "time" => "float",
-        "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" => "int",
-        "f32" | "float" | "f64" | "double" => "float",
-        _ => "str",
+        "bool" => Ok("bool"),
+        "string" | "str" => Ok("str"),
+        "bytes" => Ok("bytes"),
+        "time" => Ok("float"),
+        "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" => Ok("int"),
+        "f32" | "float" | "f64" | "double" => Ok("float"),
+        _ => Err(Error::UnsupportedParameterTypeName {
+            path: path.to_string(),
+            type_name: type_name.to_string(),
+        }),
     }
 }
 
