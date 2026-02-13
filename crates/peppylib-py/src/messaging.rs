@@ -5,8 +5,10 @@ mod topics;
 use peppylib::PeppyError;
 use peppylib::messaging::MessengerHandle;
 use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 pub use topics::{PySubscription, PyTopicMessage, PyTopicMessenger};
 
@@ -24,6 +26,14 @@ pub(crate) fn to_py_err(err: PeppyError) -> PyErr {
         }
         _ => PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(err.to_string()),
     }
+}
+
+pub(crate) fn duration_from_secs_f64(arg_name: &str, secs: f64) -> PyResult<Duration> {
+    Duration::try_from_secs_f64(secs).map_err(|_| {
+        PyErr::new::<PyValueError, _>(format!(
+            "{arg_name} must be a finite, non-negative number of seconds, got {secs}"
+        ))
+    })
 }
 
 /// Python wrapper for ZenohdInstance - an ephemeral zenohd router for testing.
