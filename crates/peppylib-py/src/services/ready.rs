@@ -18,7 +18,7 @@ impl PyNodeReadyService {
     fn listen<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
-        master_node: String,
+        daemon_node: String,
         instance_id: String,
         node_name: String,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -26,7 +26,7 @@ impl PyNodeReadyService {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let handle = inner.lock().await;
             let join_handle =
-                listen_for_node_ready(&handle, &master_node, &instance_id, &node_name)
+                listen_for_node_ready(&handle, &daemon_node, &instance_id, &node_name)
                     .await
                     .map_err(to_py_err)?;
             Ok(PyServiceTask::new(join_handle))

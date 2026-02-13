@@ -3,7 +3,7 @@ use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 use std::time::Duration;
 
-use master_node::encoding::NodeListRequest;
+use daemon_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
@@ -22,10 +22,10 @@ async fn node_stop_command_succeeds() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.master_node_name().to_string();
+    let daemon_node_name = serve.daemon_node_name().to_string();
     assert!(
-        !master_node_name.is_empty(),
-        "master_node_name should not be empty"
+        !daemon_node_name.is_empty(),
+        "daemon_node_name should not be empty"
     );
 
     // Create a temp directory for the node
@@ -94,16 +94,16 @@ async fn node_stop_command_succeeds() {
     // Start in-process node services for health/shutdown so node_start can succeed.
     let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
     let _node_ready_handle =
-        listen_for_node_ready(&node_messenger, &master_node_name, instance_id, node_name)
+        listen_for_node_ready(&node_messenger, &daemon_node_name, instance_id, node_name)
             .await
             .expect("node ready service should start");
     let _node_health_handle =
-        listen_for_node_health(&node_messenger, &master_node_name, instance_id, node_name)
+        listen_for_node_health(&node_messenger, &daemon_node_name, instance_id, node_name)
             .await
             .expect("node health service should start");
 
     let (_node_shutdown_handle, node_shutdown_rx) =
-        listen_for_shutdown(&node_messenger, &master_node_name, instance_id, node_name)
+        listen_for_shutdown(&node_messenger, &daemon_node_name, instance_id, node_name)
             .await
             .expect("node shutdown service should start");
 
@@ -111,9 +111,9 @@ async fn node_stop_command_succeeds() {
     let response = NodeListRequest::new(false)
         .poll(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &daemon_node_name,
             Duration::from_secs(5),
         )
         .await
@@ -160,9 +160,9 @@ async fn node_stop_command_succeeds() {
     let response = NodeListRequest::new(false)
         .poll(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &daemon_node_name,
             Duration::from_secs(5),
         )
         .await
@@ -210,9 +210,9 @@ async fn node_stop_command_succeeds() {
     let response = NodeListRequest::new(false)
         .poll(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &daemon_node_name,
             Duration::from_secs(5),
         )
         .await

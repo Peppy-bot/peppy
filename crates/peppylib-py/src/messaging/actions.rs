@@ -123,7 +123,7 @@ impl PyActionMessenger {
     fn expose<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
-        as_master_node: String,
+        as_daemon_node: String,
         as_instance_id: String,
         as_node_name: String,
         as_action_name: String,
@@ -133,7 +133,7 @@ impl PyActionMessenger {
             let handle = inner.lock().await;
             let creation = ActionMessenger::expose(
                 &handle,
-                &as_master_node,
+                &as_daemon_node,
                 &as_instance_id,
                 &as_node_name,
                 &as_action_name,
@@ -152,16 +152,16 @@ impl PyActionMessenger {
 
     /// Send a goal to an action server.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_master_node, as_instance_id, to_node_name, to_action_name, target_master_node=None, target_instance_id=None, goal_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
+    #[pyo3(signature = (messenger, as_daemon_node, as_instance_id, to_node_name, to_action_name, target_daemon_node=None, target_instance_id=None, goal_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn send_goal<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
-        as_master_node: String,
+        as_daemon_node: String,
         as_instance_id: String,
         to_node_name: String,
         to_action_name: String,
-        target_master_node: Option<String>,
+        target_daemon_node: Option<String>,
         target_instance_id: Option<String>,
         goal_payload: Vec<u8>,
         feedback_qos: PyQoSProfile,
@@ -172,11 +172,11 @@ impl PyActionMessenger {
             let handle = inner.lock().await;
             let goal_handle = ActionMessenger::send_goal(
                 &handle,
-                &as_master_node,
+                &as_daemon_node,
                 &as_instance_id,
                 &to_node_name,
                 &to_action_name,
-                target_master_node.as_deref(),
+                target_daemon_node.as_deref(),
                 target_instance_id.as_deref(),
                 Bytes::from(goal_payload),
                 feedback_qos.into(),
@@ -191,7 +191,7 @@ impl PyActionMessenger {
                 key_expr: resp.key_expr().to_string(),
                 payload: resp.payload().to_bytes().to_vec(),
                 instance_id: resp.instance_id().to_string(),
-                master_node: resp.master_node().to_string(),
+                daemon_node: resp.daemon_node().to_string(),
             };
 
             Ok(PyActionGoalHandle {
@@ -251,16 +251,16 @@ impl PyActionMessenger {
 
     /// Check whether an action server is reachable.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_master_node, as_instance_id, target_node_name, target_action_name, target_master_node=None, target_instance_id=None))]
+    #[pyo3(signature = (messenger, bound_daemon_node, as_instance_id, target_node_name, target_action_name, target_daemon_node=None, target_instance_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn is_reachable<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
-        bound_master_node: String,
+        bound_daemon_node: String,
         as_instance_id: String,
         target_node_name: String,
         target_action_name: String,
-        target_master_node: Option<String>,
+        target_daemon_node: Option<String>,
         target_instance_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&messenger.inner);
@@ -268,11 +268,11 @@ impl PyActionMessenger {
             let handle = inner.lock().await;
             let reachable = ActionMessenger::is_reachable(
                 &handle,
-                &bound_master_node,
+                &bound_daemon_node,
                 &as_instance_id,
                 &target_node_name,
                 &target_action_name,
-                target_master_node.as_deref(),
+                target_daemon_node.as_deref(),
                 target_instance_id.as_deref(),
             )
             .await

@@ -118,7 +118,7 @@ pub struct LaunchPlan {
 impl LaunchPlan {
     // TODO Might not be needed, we might always just want to use `from_config`
     pub fn from_launch_file(
-        master_node: NodeConfig,
+        daemon_node: NodeConfig,
         launch_file: impl AsRef<Path>,
     ) -> Result<Self> {
         let launch_file = PathBuf::from(launch_file.as_ref());
@@ -135,7 +135,7 @@ impl LaunchPlan {
 
         let peppy_launcher = load_peppy_launcher(&launch_file)?;
 
-        Self::from_config(master_node, peppy_launcher, &root_dir)
+        Self::from_config(daemon_node, peppy_launcher, &root_dir)
     }
 
     /// Creates a launch plan from an already-parsed launcher configuration.
@@ -143,7 +143,7 @@ impl LaunchPlan {
     /// This is useful when the launcher config has been received over the wire
     /// (e.g., via RPC) rather than read from a local file.
     pub fn from_config(
-        master_node: NodeConfig,
+        daemon_node: NodeConfig,
         peppy_launcher: PeppyLauncher,
         nodes_directory: impl AsRef<Path>,
     ) -> Result<Self> {
@@ -153,7 +153,7 @@ impl LaunchPlan {
             return Err(Error::FileNotFound(nodes_directory.to_path_buf()));
         }
 
-        let node_stack = load_nodes_from_fs(nodes_directory, master_node)?;
+        let node_stack = load_nodes_from_fs(nodes_directory, daemon_node)?;
 
         Ok(build_launch_plan(peppy_launcher, node_stack))
     }
@@ -185,7 +185,7 @@ fn load_peppy_launcher(launch_file: &Path) -> Result<PeppyLauncher> {
     PeppyLauncherParser::from_path(launch_file).map_err(Error::Config)
 }
 
-fn load_nodes_from_fs(root_dir: &Path, master_node: NodeConfig) -> Result<NodeStack> {
+fn load_nodes_from_fs(root_dir: &Path, daemon_node: NodeConfig) -> Result<NodeStack> {
     let state_snapshot = FSNodeConfigIndex::new(root_dir)?.into_state();
 
     let local_nodes: Vec<(PathBuf, NodeConfig)> = state_snapshot
@@ -193,7 +193,7 @@ fn load_nodes_from_fs(root_dir: &Path, master_node: NodeConfig) -> Result<NodeSt
         .filter_map(|(path, result)| result.ok().map(|config| (path, config)))
         .collect();
 
-    let stack = NodeStack::new(master_node, None, root_dir);
+    let stack = NodeStack::new(daemon_node, None, root_dir);
     let mut pending = topological_sort_local_nodes(local_nodes);
 
     loop {
@@ -327,8 +327,8 @@ fn build_launch_plan(peppy_launcher: PeppyLauncher, source_stack: NodeStack) -> 
     let nodes_cache_dir = config::consts::nodes_cache_dir();
     let base_dir = source_stack.root().root_path().to_path_buf();
 
-    let master_config = source_stack.root().config().clone();
-    let stack = NodeStack::new(master_config, None, &nodes_cache_dir);
+    let daemon_config = source_stack.root().config().clone();
+    let stack = NodeStack::new(daemon_config, None, &nodes_cache_dir);
 
     let mut planned = Vec::with_capacity(deployments.len());
 

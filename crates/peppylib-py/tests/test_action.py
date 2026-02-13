@@ -11,7 +11,7 @@ import pytest
 
 from peppylib import ActionMessenger, MessengerHandle, QoSProfile, ZenohdInstance
 
-MASTER_NODE = "test_master"
+DAEMON_NODE = "test_daemon"
 INSTANCE_ID = "test_instance"
 NODE_NAME = "test_node"
 ACTION_NAME = "test_action"
@@ -32,7 +32,7 @@ async def test_action_messenger_communication():
         # Expose the action server
         action = await ActionMessenger.expose(
             server_handle,
-            MASTER_NODE,
+            DAEMON_NODE,
             INSTANCE_ID,
             NODE_NAME,
             ACTION_NAME,
@@ -59,11 +59,11 @@ async def test_action_messenger_communication():
         # Client: send goal
         goal_handle = await ActionMessenger.send_goal(
             client_handle,
-            MASTER_NODE,
+            DAEMON_NODE,
             INSTANCE_ID,
             NODE_NAME,
             ACTION_NAME,
-            MASTER_NODE,
+            DAEMON_NODE,
             INSTANCE_ID,
             GOAL_PAYLOAD,
             QoSProfile.Reliable,

@@ -61,7 +61,7 @@ pub fn build_action_expose_method(
         pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self> {
             let action = peppylib::ActionMessenger::expose(
                 node_runner.messenger(),
-                node_runner.processor().bound_master_node(),
+                node_runner.processor().bound_daemon_node(),
                 node_runner.processor().bound_instance_id(),
                 node_runner.processor().node_name(),
                 ACTION_NAME,
@@ -87,21 +87,21 @@ pub fn build_action_handle_method(
         quote! {
             let message = request_context.message();
             let payload = message.payload().as_bytes();
-            let master_node = message.master_node().to_string();
+            let daemon_node = message.daemon_node().to_string();
             let instance_id = message.instance_id().to_string();
             #helper_name(
                 payload.as_ref(),
                 &handler,
-                master_node,
+                daemon_node,
                 instance_id,
             )
         }
     } else {
         quote! {
             let message = request_context.message();
-            let master_node = message.master_node().to_string();
+            let daemon_node = message.daemon_node().to_string();
             let instance_id = message.instance_id().to_string();
-            #helper_name(&handler, master_node, instance_id)
+            #helper_name(&handler, daemon_node, instance_id)
         }
     };
 
@@ -149,9 +149,9 @@ pub fn build_action_payload_handler(
         .unwrap_or_else(|| quote!(()));
 
     let request_construction = if request_data_struct.is_some() {
-        quote!(let request = #request_struct { instance_id, master_node, data: request_data };)
+        quote!(let request = #request_struct { instance_id, daemon_node, data: request_data };)
     } else {
-        quote!(let request = #request_struct { instance_id, master_node };)
+        quote!(let request = #request_struct { instance_id, daemon_node };)
     };
 
     let response_serialization = if let Some(spec) = response_spec {
@@ -189,7 +189,7 @@ pub fn build_action_payload_handler(
             fn #handler_name<F>(
                 payload: &[u8],
                 handler: &F,
-                master_node: String,
+                daemon_node: String,
                 instance_id: String,
             ) -> crate::Result<bytes::Bytes>
             where
@@ -207,7 +207,7 @@ pub fn build_action_payload_handler(
         Ok(quote! {
             fn #handler_name<F>(
                 handler: &F,
-                master_node: String,
+                daemon_node: String,
                 instance_id: String,
             ) -> crate::Result<bytes::Bytes>
             where

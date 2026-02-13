@@ -5,16 +5,16 @@ use tracing::debug;
 use crate::messaging::ServiceRequestContext;
 use crate::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 
-/// This request is exposed by each Node instance to notify the master node that the node is still alive
+/// This request is exposed by each Node instance to notify the daemon node that the node is still alive
 pub async fn listen_for_node_health(
     messenger: &MessengerHandle,
-    master_node_node: &str,
+    daemon_node_node: &str,
     instance_id: &str,
     node_name: &str,
 ) -> PeppyResult<JoinHandle<PeppyResult<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
-        master_node_node,
+        daemon_node_node,
         instance_id,
         node_name,
         super::super::messaging::NODE_HEALTH_SERVICE,

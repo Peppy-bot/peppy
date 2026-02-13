@@ -14,12 +14,12 @@ pub struct ServiceMessenger;
 pub struct ServiceEndpoint {
     messenger: Arc<Mutex<Messenger>>,
     /// Subscriptions to service requests. Four patterns are needed to match:
-    /// - [0] Requests targeting this specific master node and instance
-    /// - [1] Requests targeting this specific master node with broadcast instance
-    /// - [2] Broadcast requests (any master) targeting this specific instance
-    /// - [3] Full broadcast requests (any master, any instance)
+    /// - [0] Requests targeting this specific daemon node and instance
+    /// - [1] Requests targeting this specific daemon node with broadcast instance
+    /// - [2] Broadcast requests (any daemon) targeting this specific instance
+    /// - [3] Full broadcast requests (any daemon, any instance)
     subscriptions: [Subscription; 4],
-    bound_master_node: String,
+    bound_daemon_node: String,
     service_root: String,
     instance_id: String,
 }
@@ -28,14 +28,14 @@ impl ServiceEndpoint {
     pub(super) fn new(
         messenger: Arc<Mutex<Messenger>>,
         subscriptions: [Subscription; 4],
-        bound_master_node: String,
+        bound_daemon_node: String,
         service_root: String,
         instance_id: String,
     ) -> Self {
         Self {
             messenger,
             subscriptions,
-            bound_master_node,
+            bound_daemon_node,
             service_root,
             instance_id,
         }
@@ -197,20 +197,20 @@ impl ServiceEndpoint {
         &self,
         request: TopicMessage,
     ) -> Result<(ServiceRequestContext, String)> {
-        // Format: target_master/caller_master/target_instance/caller_instance/service_root/request/id
+        // Format: target_daemon/caller_daemon/target_instance/caller_instance/service_root/request/id
         let identifier = request.key_expr().to_string();
         let mut parts = identifier.split('/').filter(|segment| !segment.is_empty());
 
-        // Parse target_master (first segment)
-        let target_master_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
+        // Parse target_daemon (first segment)
+        let target_daemon_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
             identifier: identifier.clone(),
-            reason: "missing target master node segment in request".to_string(),
+            reason: "missing target daemon node segment in request".to_string(),
         })?;
 
-        // Parse caller_master (second segment)
-        let caller_master_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
+        // Parse caller_daemon (second segment)
+        let caller_daemon_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
             identifier: identifier.clone(),
-            reason: "missing caller master node segment in request".to_string(),
+            reason: "missing caller daemon node segment in request".to_string(),
         })?;
 
         // Parse target_instance (third segment)
@@ -290,19 +290,19 @@ impl ServiceEndpoint {
         // This ensures all listeners receiving a broadcast see the same key_expr
         let message_identifier = format!(
             "{}/{}/{}/{}/{}/request/{request_id}",
-            target_master_segment,
-            caller_master_segment,
+            target_daemon_segment,
+            caller_daemon_segment,
             target_instance_segment,
             caller_instance_segment,
             self.service_root
         );
 
-        // Response topic format: caller_master/responder_master/caller_instance/responder_instance/service_root/response/request_id
-        // This ensures master_node() returns responder's master (position 1) and instance_id() returns responder's instance (position 3)
+        // Response topic format: caller_daemon/responder_daemon/caller_instance/responder_instance/service_root/response/request_id
+        // This ensures daemon_node() returns responder's daemon (position 1) and instance_id() returns responder's instance (position 3)
         let response_topic = format!(
             "{}/{}/{}/{}/{}/response/{request_id}",
-            caller_master_segment,
-            self.bound_master_node,
+            caller_daemon_segment,
+            self.bound_daemon_node,
             caller_instance_segment,
             response_target_instance_segment,
             self.service_root
@@ -377,14 +377,14 @@ impl ServiceMessenger {
     /// Listening as a service is a 2 way stream, so the process that exposes the service needs to provide its instance_id
     pub async fn listen(
         messenger: &MessengerHandle,
-        as_master_node: &str,
+        as_daemon_node: &str,
         as_instance_id: &str,
         as_node_name: &str,
         as_service_name: &str,
     ) -> Result<ServiceEndpoint> {
         messenger
             .expose_service(
-                as_master_node,
+                as_daemon_node,
                 as_instance_id,
                 as_node_name,
                 as_service_name,
@@ -396,11 +396,11 @@ impl ServiceMessenger {
     #[allow(clippy::too_many_arguments)]
     pub async fn poll(
         messenger: &MessengerHandle,
-        bound_master_node: &str,
+        bound_daemon_node: &str,
         as_instance_id: &str,
         target_node_name: &str,
         target_service_name: &str,
-        target_master_node: Option<&str>,
+        target_daemon_node: Option<&str>,
         target_instance_id: Option<&str>,
         request_payload: Bytes,
         response_timeout: impl Into<Option<Duration>>,
@@ -408,11 +408,11 @@ impl ServiceMessenger {
         messenger
             .poll_service(
                 "service",
-                bound_master_node,
+                bound_daemon_node,
                 as_instance_id,
                 target_node_name,
                 target_service_name,
-                target_master_node,
+                target_daemon_node,
                 target_instance_id,
                 request_payload,
                 response_timeout,
@@ -428,21 +428,21 @@ impl ServiceMessenger {
     #[allow(clippy::too_many_arguments)]
     pub async fn is_reachable(
         messenger: &MessengerHandle,
-        bound_master_node: &str,
+        bound_daemon_node: &str,
         as_instance_id: &str,
         target_node_name: &str,
         target_service_name: &str,
-        target_master_node: Option<&str>,
+        target_daemon_node: Option<&str>,
         target_instance_id: Option<&str>,
     ) -> Result<bool> {
         match messenger
             .poll_service(
                 "service",
-                bound_master_node,
+                bound_daemon_node,
                 as_instance_id,
                 target_node_name,
                 target_service_name,
-                target_master_node,
+                target_daemon_node,
                 target_instance_id,
                 Bytes::from_static(SERVICE_PROBE_PAYLOAD),
                 PROBE_TIMEOUT,

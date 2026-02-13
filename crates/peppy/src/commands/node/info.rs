@@ -1,5 +1,5 @@
 use config::AnyType;
-use master_node::encoding::{NodeInfoRequest, NodeInfoResponse};
+use daemon_node::encoding::{NodeInfoRequest, NodeInfoResponse};
 use peppylib::MessengerHandle;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -27,7 +27,7 @@ async fn node_info_async(
             e
         ))
     })?;
-    let master_node_name = daemon_state.master_node_name.clone();
+    let daemon_node_name = daemon_state.daemon_node_name.clone();
 
     let node_source = parse_node_source(&source, git_ref)?;
 
@@ -42,9 +42,9 @@ async fn node_info_async(
     let response = request
         .poll(
             &messenger,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &daemon_node_name,
             REQUEST_TIMEOUT,
         )
         .await

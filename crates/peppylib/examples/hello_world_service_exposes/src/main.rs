@@ -33,10 +33,10 @@ fn payload_as_text(request: &ServiceRequestContext) -> String {
 async fn handle_request(request: ServiceRequestContext) -> PeppyResult<Bytes> {
     let payload_text = payload_as_text(&request);
     let instance_id = request.message().instance_id();
-    let master_node = request.message().master_node();
+    let daemon_node = request.message().daemon_node();
 
     println!(
-        "[{}] Received request with payload `{payload_text}` from `{instance_id}` and master node `{master_node}`",
+        "[{}] Received request with payload `{payload_text}` from `{instance_id}` and daemon node `{daemon_node}`",
         current_timestamp()
     );
 
@@ -67,12 +67,12 @@ fn handle_service_result(result: PeppyResult<bool>) -> bool {
 async fn main() {
     // Create a messenger for the receiving node.
     let receiver_handle = connect_messenger("127.0.0.1", DEFAULT_MESSAGING_PORT).await;
-    let master_node = format!("{}_master", get_random(rng()));
+    let daemon_node = format!("{}_daemon", get_random(rng()));
     let instance_id = format!("{}_listener", get_random(rng()));
 
     let mut service = ServiceMessenger::listen(
         &receiver_handle,
-        &master_node,
+        &daemon_node,
         &instance_id,
         NODE_NAME,
         SERVICE_NAME,

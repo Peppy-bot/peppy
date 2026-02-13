@@ -17,8 +17,8 @@ fn node_cargo_init_command_success() {
 
     // Verify the daemon state
     assert!(
-        !serve.master_node_name().is_empty(),
-        "master_node_name should not be empty"
+        !serve.daemon_node_name().is_empty(),
+        "daemon_node_name should not be empty"
     );
 
     // Create a temp directory for the node
@@ -100,8 +100,8 @@ fn node_uv_init_command_success() {
         .expect("failed to start mock serve emulation");
 
     assert!(
-        !serve.master_node_name().is_empty(),
-        "master_node_name should not be empty"
+        !serve.daemon_node_name().is_empty(),
+        "daemon_node_name should not be empty"
     );
 
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");

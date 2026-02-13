@@ -11,7 +11,7 @@ async fn topic_messenger_communication() {
         .expect("failed to start zenoh router for test");
     let (host, port) = (instance.host.clone(), instance.port);
 
-    let master_node = "test_master";
+    let daemon_node = "test_daemon";
     let instance_id = "test_instance";
     let node_name = "test_node";
     let topic_name = "test_topic";
@@ -27,11 +27,11 @@ async fn topic_messenger_communication() {
     // Subscribe to the topic first
     let mut subscription = TopicMessenger::subscribe(
         &receiver_handle,
-        master_node,
+        daemon_node,
         instance_id,
         node_name,
         topic_name,
-        None, // Accept messages from any master node
+        None, // Accept messages from any daemon node
         None, // Accept messages from any instance
         QoSProfile::Reliable,
     )
@@ -44,7 +44,7 @@ async fn topic_messenger_communication() {
     // Emit a message
     TopicMessenger::emit(
         &sender_handle,
-        master_node,
+        daemon_node,
         instance_id,
         node_name,
         topic_name,
@@ -62,5 +62,5 @@ async fn topic_messenger_communication() {
 
     assert_eq!(message.payload().to_bytes(), payload);
     assert_eq!(message.instance_id(), instance_id);
-    assert_eq!(message.master_node(), master_node);
+    assert_eq!(message.daemon_node(), daemon_node);
 }

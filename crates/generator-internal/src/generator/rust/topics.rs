@@ -59,11 +59,11 @@ pub fn build_topic_emit(
                     let as_topic = #topic_literal;
                     let as_node_name = node_runner.processor().node_name();
                     let as_instance_id = node_runner.processor().bound_instance_id();
-                    let with_master_node = node_runner.processor().bound_master_node();
+                    let with_daemon_node = node_runner.processor().bound_daemon_node();
 
                     peppylib::TopicMessenger::emit(
                         node_runner.messenger(),
-                        with_master_node,
+                        with_daemon_node,
                         as_instance_id,
                         as_node_name,
                         as_topic,
@@ -142,7 +142,7 @@ pub fn build_subscribed_topic_callback(spec: SubscribedTopicCallbackSpec) -> Res
     Ok(quote! {
         pub async fn #fn_name(
             node_runner: &crate::NodeRunner,
-            master_node_target: Option<&str>,
+            daemon_node_target: Option<&str>,
             instance_id_target: Option<&str>,
         ) -> crate::Result<(String, #args_struct_ident)> {
             let topic_name = #topic_literal;
@@ -152,11 +152,11 @@ pub fn build_subscribed_topic_callback(spec: SubscribedTopicCallbackSpec) -> Res
             let message = {
                 let subscription_future = peppylib::TopicMessenger::subscribe(
                     node_runner.messenger(),
-                    node_runner.processor().bound_master_node(),
+                    node_runner.processor().bound_daemon_node(),
                     node_runner.processor().bound_instance_id(),
                     node_name,
                     topic_name,
-                    master_node_target,
+                    daemon_node_target,
                     instance_id_target,
                     qos,
                 );

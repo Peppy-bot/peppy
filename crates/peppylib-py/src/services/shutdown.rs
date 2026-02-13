@@ -45,7 +45,7 @@ impl PyShutdownService {
     fn listen<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
-        master_node: String,
+        daemon_node: String,
         instance_id: String,
         node_name: String,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -53,7 +53,7 @@ impl PyShutdownService {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let handle = inner.lock().await;
             let (join_handle, shutdown_rx) =
-                listen_for_shutdown(&handle, &master_node, &instance_id, &node_name)
+                listen_for_shutdown(&handle, &daemon_node, &instance_id, &node_name)
                     .await
                     .map_err(to_py_err)?;
 
