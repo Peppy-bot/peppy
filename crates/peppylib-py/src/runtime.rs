@@ -77,13 +77,20 @@ impl PyNodeRunner {
 
     /// Spawn an async task in a dedicated Python daemon thread.
     ///
-    /// `task` can be:
-    /// - an awaitable object (e.g. `my_coro(...)`)
-    /// - a zero-arg callable returning an awaitable
+    /// `async_fn` must be a zero-arg callable returning an awaitable
+    /// (e.g. `lambda: my_coro(...)` or a bare `async def` with no parameters).
     ///
-    /// If the task raises, the traceback is printed and the node cancellation
-    /// token is triggered to shut down the runner.
-    fn spawn_async(&self, py: Python<'_>, name: String, task: Py<PyAny>) -> PyResult<Py<PyAny>> {
+    /// If the task raises, the traceback is always printed. When
+    /// `cancel_on_error` is `True` (the default), the node cancellation token
+    /// is also triggered to shut down the runner.
+    #[pyo3(signature = (name, async_fn, *, cancel_on_error = true))]
+    fn spawn_async(
+        &self,
+        py: Python<'_>,
+        name: String,
+        async_fn: Py<PyAny>,
+        cancel_on_error: bool,
+    ) -> PyResult<Py<PyAny>> {
         let io_err = |e: PyErr| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string());
 
         let py_cancel = Py::new(
@@ -97,26 +104,31 @@ impl PyNodeRunner {
         let helper = PyModule::from_code(
             py,
             c"
-def make_target(task_name, task_or_factory, cancel_token):
+def make_target(task_name, task_fn, cancel_token, cancel_on_error):
     def target():
         try:
             import asyncio
 
-            maybe_awaitable = task_or_factory() if callable(task_or_factory) else task_or_factory
+            if not callable(task_fn):
+                raise TypeError(
+                    f\"{task_name}: expected callable returning awaitable, got {type(task_fn)!r}\"
+                )
+            maybe_awaitable = task_fn()
             if not hasattr(maybe_awaitable, '__await__'):
                 raise TypeError(
-                    f\"{task_name}: expected awaitable or callable returning awaitable, got {type(maybe_awaitable)!r}\"
+                    f\"{task_name}: callable must return an awaitable, got {type(maybe_awaitable)!r}\"
                 )
 
             asyncio.run(maybe_awaitable)
         except BaseException:
             import sys, traceback
             print(
-                f\"peppy: async task '{task_name}' raised an exception, shutting down node\",
+                f\"peppy: async task '{task_name}' raised an exception\",
                 file=sys.stderr,
             )
             traceback.print_exc()
-            cancel_token.cancel()
+            if cancel_on_error:
+                cancel_token.cancel()
 
     return target
 ",
@@ -128,7 +140,7 @@ def make_target(task_name, task_or_factory, cancel_token):
         let target = helper
             .getattr("make_target")
             .map_err(&io_err)?
-            .call1((&name, task, py_cancel))
+            .call1((&name, async_fn, py_cancel, cancel_on_error))
             .map_err(&io_err)?;
 
         let kwargs = pyo3::types::PyDict::new(py);
