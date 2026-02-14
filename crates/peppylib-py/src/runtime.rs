@@ -139,12 +139,11 @@ fn start_async_setup(
     // 5. Schedule shutdown monitor: stop the event loop when the node shuts down
     let loop_for_shutdown = event_loop.unbind();
     let cancel_for_shutdown = node_runner.cancellation_token().clone();
+    let rt_handle = tokio::runtime::Handle::current();
     std::thread::Builder::new()
         .name("peppy-asyncio-shutdown".to_string())
         .spawn(move || {
-            while !cancel_for_shutdown.is_cancelled() {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
+            rt_handle.block_on(cancel_for_shutdown.cancelled());
             let _ = Python::try_attach(|py| -> PyResult<()> {
                 let loop_ = loop_for_shutdown.bind(py);
                 let stop = loop_.getattr("stop")?;
@@ -240,7 +239,7 @@ impl PyNodeRunner {
 }
 
 /// Python wrapper for StandaloneConfig.
-#[pyclass(name = "StandaloneConfig", from_py_object)]
+#[pyclass(name = "StandaloneConfig", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyStandaloneConfig {
     inner: StandaloneConfig,
