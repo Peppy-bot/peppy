@@ -30,7 +30,7 @@ netdev = "0.40"
 libc = "0.2"
 dirs = "6"
 names-generator2 = "0.2.0"
-rand = "0.9"
+rand = "0.10"
 crossterm = "0.29"
 tempfile = { version = "3.8", optional = true }
 
