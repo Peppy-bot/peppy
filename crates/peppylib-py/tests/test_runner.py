@@ -25,7 +25,6 @@ from peppylib.runtime import (
     CancellationToken,
     NodeBuilder,
     NodeRunner,
-    SpawnedAsyncTask,
     StandaloneConfig,
 )
 
@@ -205,8 +204,8 @@ async def test_standalone_runner_succeed(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_spawn_async_runs_background_task(monkeypatch):
-    """NodeRunner.spawn_async starts an async task and runner exits on cancellation."""
+async def test_async_setup_with_background_task(monkeypatch):
+    """Async setup with asyncio.create_task() background task survives after setup returns."""
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -227,7 +226,7 @@ async def test_spawn_async_runs_background_task(monkeypatch):
             def run_node():
                 try:
 
-                    def setup_fn(_params, node_runner):
+                    async def setup_fn(_params, node_runner):
                         token_queue.put(node_runner.cancellation_token())
 
                         async def background_task():
@@ -235,7 +234,7 @@ async def test_spawn_async_runs_background_task(monkeypatch):
                             while not node_runner.cancellation_token().is_cancelled():
                                 await asyncio.sleep(0.05)
 
-                        node_runner.spawn_async("background-task", background_task)
+                        asyncio.create_task(background_task())
 
                     (
                         NodeBuilder()
@@ -256,98 +255,6 @@ async def test_spawn_async_runs_background_task(monkeypatch):
 
             cancellation_token.cancel()
             runner_thread.join(timeout=10.0)
-
-    assert not runner_thread.is_alive(), "Runner should have exited"
-    assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"
-
-
-@pytest.mark.asyncio
-async def test_spawn_async_returns_task_handle_and_failure(monkeypatch):
-    """spawn_async returns a handle and propagates uncaught task errors to excepthook."""
-    monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
-    hook_queue: queue.Queue = queue.Queue()
-    original_excepthook = threading.excepthook
-
-    def recording_excepthook(args):
-        hook_queue.put((args.exc_type, str(args.exc_value), args.thread.name))
-
-    threading.excepthook = recording_excepthook
-    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
-        try:
-            with tempfile.TemporaryDirectory() as temp_dir:
-                peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
-                Path(peppy_config_path).write_text(PEPPY_CONFIG)
-
-                standalone_config = (
-                    StandaloneConfig()
-                    .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
-                    .with_messaging(router.host, router.port)
-                    .with_instance_id(TEST_INSTANCE_ID)
-                )
-
-                token_queue: queue.Queue = queue.Queue()
-                task_queue: queue.Queue = queue.Queue()
-                error_queue: queue.Queue = queue.Queue()
-
-                def run_node():
-                    try:
-
-                        def setup_fn(_params, node_runner):
-                            token_queue.put(node_runner.cancellation_token())
-
-                            async def failing_task():
-                                await asyncio.sleep(0.01)
-                                raise RuntimeError("spawned task boom")
-
-                            task_queue.put(
-                                node_runner.spawn_async(
-                                    "failing-task",
-                                    failing_task,
-                                    cancel_on_error=False,
-                                )
-                            )
-
-                        (
-                            NodeBuilder()
-                            .with_config_path(peppy_config_path)
-                            .standalone(standalone_config)
-                            .run(setup_fn)
-                        )
-                    except Exception as e:
-                        error_queue.put(e)
-
-                runner_thread = threading.Thread(target=run_node, daemon=True)
-                runner_thread.start()
-
-                task_handle: SpawnedAsyncTask = await asyncio.to_thread(
-                    task_queue.get, timeout=5.0
-                )
-                assert task_handle.thread.daemon is True
-
-                finished = await asyncio.to_thread(task_handle.join, 5.0)
-                assert finished, "spawned task should complete"
-                assert not task_handle.is_alive()
-
-                traceback_text = task_handle.exception()
-                assert traceback_text is not None
-                assert "RuntimeError: spawned task boom" in traceback_text
-                with pytest.raises(RuntimeError):
-                    task_handle.raise_if_failed()
-
-                exc_type, exc_message, thread_name = await asyncio.to_thread(
-                    hook_queue.get, timeout=5.0
-                )
-                assert exc_type is RuntimeError
-                assert "spawned task boom" in exc_message
-                assert thread_name == "failing-task"
-
-                cancellation_token: CancellationToken = await asyncio.to_thread(
-                    token_queue.get, timeout=5.0
-                )
-                cancellation_token.cancel()
-                runner_thread.join(timeout=10.0)
-        finally:
-            threading.excepthook = original_excepthook
 
     assert not runner_thread.is_alive(), "Runner should have exited"
     assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"
@@ -398,52 +305,8 @@ async def test_setup_exception_propagates_to_run(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_async_setup_requires_run_async(monkeypatch):
-    """NodeBuilder.run rejects async setup callbacks and points to run_async."""
-    monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
-    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
-            Path(peppy_config_path).write_text(PEPPY_CONFIG)
-
-            standalone_config = (
-                StandaloneConfig()
-                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
-                .with_messaging(router.host, router.port)
-                .with_instance_id(TEST_INSTANCE_ID)
-            )
-
-            error_queue: queue.Queue = queue.Queue()
-
-            def run_node():
-                try:
-
-                    async def setup_fn(_params, _node_runner):
-                        await asyncio.sleep(0)
-
-                    (
-                        NodeBuilder()
-                        .with_config_path(peppy_config_path)
-                        .standalone(standalone_config)
-                        .run(setup_fn)
-                    )
-                except Exception as e:
-                    error_queue.put(e)
-
-            runner_thread = threading.Thread(target=run_node, daemon=True)
-            runner_thread.start()
-
-            error = await asyncio.to_thread(error_queue.get, timeout=5.0)
-            assert isinstance(error, RuntimeError)
-            assert "run_async" in str(error)
-            runner_thread.join(timeout=10.0)
-
-    assert not runner_thread.is_alive(), "Runner should have exited"
-
-
-@pytest.mark.asyncio
-async def test_run_async_accepts_async_setup(monkeypatch):
-    """NodeBuilder.run_async supports async setup callbacks."""
+async def test_run_accepts_async_setup(monkeypatch):
+    """NodeBuilder.run auto-detects and supports async setup callbacks."""
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -472,7 +335,7 @@ async def test_run_async_accepts_async_setup(monkeypatch):
                         NodeBuilder()
                         .with_config_path(peppy_config_path)
                         .standalone(standalone_config)
-                        .run_async(setup_fn)
+                        .run(setup_fn)
                     )
                 except Exception as e:
                     error_queue.put(e)

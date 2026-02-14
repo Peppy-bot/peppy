@@ -123,12 +123,10 @@ import traceback
 from peppygen import NodeBuilder
 from peppygen.subscribed_topics import uvc_camera_video_stream
 
-def setup(parameters, node_runner):
+async def receive_frames(node_runner):
     try:
         print("subscriber: about to subscribe", flush=True)
-        instance_id, frame = asyncio.run(
-            uvc_camera_video_stream.on_next_message_received(node_runner)
-        )
+        instance_id, frame = await uvc_camera_video_stream.on_next_message_received(node_runner)
         print(
             f"got {frame.width}x{frame.height} frame encoded as {frame.encoding} from {instance_id}",
             flush=True,
@@ -137,6 +135,9 @@ def setup(parameters, node_runner):
         print(f"subscriber error: {e}", flush=True)
         traceback.print_exc()
         raise
+
+async def setup(parameters, node_runner):
+    asyncio.create_task(receive_frames(node_runner))
 
 def main():
     NodeBuilder().run(setup)
@@ -197,11 +198,10 @@ import asyncio
 import time
 import sys
 import traceback
-import threading
 from peppygen import NodeBuilder
 from peppygen.exposed_topics import video_stream
 
-def setup(parameters, node_runner):
+async def setup(parameters, node_runner):
     frequency_hz = parameters["frequency"]
     interval = 1.0 / frequency_hz
 
@@ -227,8 +227,8 @@ def setup(parameters, node_runner):
             frame_id = (frame_id + 1) % (2**32)
             await asyncio.sleep(interval)
 
-    threading.Thread(target=lambda: asyncio.run(emit_loop()), daemon=True).start()
-    print("exposer: daemon thread started", flush=True)
+    asyncio.create_task(emit_loop())
+    print("exposer: background task started", flush=True)
 
 def main():
     NodeBuilder().run(setup)
