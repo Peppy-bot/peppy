@@ -83,3 +83,42 @@ async def test_service_poll_rejects_invalid_timeout():
                 REQUEST_PAYLOAD,
                 -1.0,
             )
+
+
+@pytest.mark.asyncio
+async def test_service_handler_exception_returns_service_error():
+    """Handler exceptions should be returned as protocol service errors, not timeouts."""
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        server_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        client_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        service = await ServiceMessenger.listen(
+            server_handle,
+            DAEMON_NODE,
+            INSTANCE_ID,
+            NODE_NAME,
+            SERVICE_NAME,
+        )
+
+        await asyncio.sleep(0.05)
+
+        def failing_handler(_request):
+            raise RuntimeError("handler boom")
+
+        handler = asyncio.ensure_future(service.handle_next_request(failing_handler))
+
+        with pytest.raises(RuntimeError, match="handler boom"):
+            await ServiceMessenger.poll(
+                client_handle,
+                DAEMON_NODE,
+                INSTANCE_ID,
+                NODE_NAME,
+                SERVICE_NAME,
+                DAEMON_NODE,
+                INSTANCE_ID,
+                REQUEST_PAYLOAD,
+                2.0,
+            )
+
+        handled = await asyncio.wait_for(handler, timeout=2.0)
+        assert handled is True

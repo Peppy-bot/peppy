@@ -14,6 +14,7 @@ pub struct ActionGoalHandle {
     instance_id: String,
     node_name: String,
     action_name: String,
+    target_daemon_node: Option<String>,
     target_instance_id: Option<String>,
     goal_response: TopicMessage,
     feedback: Subscription,
@@ -26,6 +27,7 @@ impl std::fmt::Debug for ActionGoalHandle {
             .field("instance_id", &self.instance_id)
             .field("node_name", &self.node_name)
             .field("action_name", &self.action_name)
+            .field("target_daemon_node", &self.target_daemon_node)
             .field("target_instance_id", &self.target_instance_id)
             .finish_non_exhaustive()
     }
@@ -157,7 +159,7 @@ impl ActionMessenger {
                 as_instance_id,
                 to_node_name,
                 &goal_service_name,
-                None,
+                target_daemon_node,
                 target_instance_id,
                 goal_payload,
                 goal_timeout,
@@ -169,6 +171,7 @@ impl ActionMessenger {
             instance_id: as_instance_id.to_string(),
             node_name: to_node_name.to_string(),
             action_name: to_action_name.to_string(),
+            target_daemon_node: target_daemon_node.map(|daemon| daemon.to_string()),
             target_instance_id: target_instance_id.map(|id| id.to_string()),
             goal_response,
             feedback: feedback_subscription,
@@ -186,6 +189,7 @@ impl ActionMessenger {
             &action_handle.instance_id,
             &action_handle.node_name,
             &action_handle.action_name,
+            action_handle.target_daemon_node.as_deref(),
             action_handle.target_instance_id.as_deref(),
             cancel_timeout,
         )
@@ -202,6 +206,7 @@ impl ActionMessenger {
         instance_id: &str,
         node_name: &str,
         action_name: &str,
+        target_daemon_node: Option<&str>,
         target_instance_id: Option<&str>,
         cancel_timeout: Duration,
     ) -> Result<TopicMessage> {
@@ -214,7 +219,7 @@ impl ActionMessenger {
                 instance_id,
                 node_name,
                 &cancel_service_name,
-                None,
+                target_daemon_node,
                 target_instance_id,
                 Bytes::new(),
                 cancel_timeout,
@@ -233,6 +238,7 @@ impl ActionMessenger {
             &action_handle.instance_id,
             &action_handle.node_name,
             &action_handle.action_name,
+            action_handle.target_daemon_node.as_deref(),
             action_handle.target_instance_id.as_deref(),
             result_timeout,
         )
@@ -249,6 +255,7 @@ impl ActionMessenger {
         instance_id: &str,
         node_name: &str,
         action_name: &str,
+        target_daemon_node: Option<&str>,
         target_instance_id: Option<&str>,
         result_timeout: Duration,
     ) -> Result<TopicMessage> {
@@ -261,7 +268,7 @@ impl ActionMessenger {
                 instance_id,
                 node_name,
                 &result_service_name,
-                None,
+                target_daemon_node,
                 target_instance_id,
                 Bytes::new(),
                 result_timeout,

@@ -172,3 +172,35 @@ async def test_send_goal_rejects_invalid_timeout():
                 QoSProfile.Reliable,
                 -1.0,
             )
+
+
+@pytest.mark.asyncio
+async def test_send_goal_honors_target_daemon_node():
+    """send_goal should route to the explicit target daemon when provided."""
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        server_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        client_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        await ActionMessenger.expose(
+            server_handle,
+            DAEMON_NODE,
+            INSTANCE_ID,
+            NODE_NAME,
+            ACTION_NAME,
+        )
+
+        await asyncio.sleep(0.05)
+
+        with pytest.raises(ConnectionError):
+            await ActionMessenger.send_goal(
+                client_handle,
+                DAEMON_NODE,
+                INSTANCE_ID,
+                NODE_NAME,
+                ACTION_NAME,
+                "wrong_daemon",
+                INSTANCE_ID,
+                GOAL_PAYLOAD,
+                QoSProfile.Reliable,
+                0.5,
+            )
