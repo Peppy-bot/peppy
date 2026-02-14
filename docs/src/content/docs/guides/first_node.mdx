@@ -35,12 +35,22 @@ Run:
     peppy node init --toolchain uv my_first_node
     cd my_first_node
     ```
+    :::note
+    [`uv`](https://docs.astral.sh/uv/) is the default Python toolchain in PeppyOS, but you can use any toolchain you prefer ([`pixi`](https://prefix.dev/), [`poetry`](https://python-poetry.org/), [`pip`](https://pip.pypa.io/en/stable), etc.). 
+    To do so, first initialize the node with `peppy node init --toolchain uv`, then add `peppygen = { path = ".peppy/libs/peppygen" }` as a dependency in your toolchain's configuration, 
+    and update `add_cmd` and `start_cmd` in `peppy.json5` to match your toolchain's commands. PeppyOS is designed to work with whichever tools you prefer.
+    :::
   </TabItem>
   <TabItem label="Rust">
     ```sh
     peppy node init --toolchain cargo my_first_node
     cd my_first_node
     ```
+    :::note
+    [`cargo`](https://doc.rust-lang.org/cargo/) is the default Rust toolchain in PeppyOS, but you can use any build system you prefer.
+    To do so, first initialize the node with `peppy node init --toolchain cargo`, then add `peppygen = { path = ".peppy/libs/peppygen" }` as a dependency in your build configuration,
+    and update `add_cmd` and `start_cmd` in `peppy.json5` to match your build system's commands. PeppyOS is designed to work with whichever tools you prefer.
+    :::
   </TabItem>
 </Tabs>
 
@@ -48,10 +58,6 @@ In the node folder, you'll find the following:
  - A `peppy.json5` file
  - A `.peppy` folder local to your node
  - Your project scaffolding based on the selected toolchain
-
-:::note
-PeppyOS doesn't force you into a specific toolchain. While project initialization is currently limited to tools like `cargo` or `uv`, you're free to use any toolchain as long as your project can consume the `peppygen` library generated in the `.peppy` directory.
-:::
 
 ## Exploring the `peppy.json5` file
 This is the entry point and the single source of truth for every node. All node interfaces and communication are defined in the `peppy.json5` configuration file, regardless of the programming language used.
