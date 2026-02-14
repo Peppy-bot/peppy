@@ -7,8 +7,12 @@ sidebar:
 
 import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
 import firstNodeConfig from './snippets/rust/first_node/peppy.json5?raw';
+
+import helloWorldPython from '.snippets/python/first_node/src/first_node/__main__.py?raw';
+import helloWorldPythonConfig from './snippets/python/first_node/peppy.json5?raw';
+
 import helloWorldRust from './snippets/rust/hello_world/src/main.rs?raw';
-import helloWorldConfig from './snippets/rust/hello_world/peppy.json5?raw';
+import helloWorldRustConfig from './snippets/rust/hello_world/peppy.json5?raw';
 
 Now that you have PeppyOS installed, let's create your first node. A node is the fundamental unit of computation in PeppyOS - it represents a runnable application or service.
 In this guide, we'll explore how nodes work and how they communicate with each other.
@@ -32,9 +36,6 @@ Run:
     ```
   </TabItem>
   <TabItem label="Python">
-    :::caution
-    The Python toolchain is not yet available.
-    :::
     ```sh
     peppy node init --toolchain uv my_first_node
     cd my_first_node
@@ -72,7 +73,16 @@ Let's go through the different options:
 
 Let's modify this configuration file to expose a topic that sends a "hello world" message.
 
-<Code code={helloWorldConfig} lang="json5" title="peppy.json5" />
+<Tabs>
+  <TabItem label="Python">
+    <Code code={helloWorldPythonConfig} lang="json5" title="peppy.json5" />
+  </TabItem>
+  <TabItem label="Rust">
+    <Code code={helloWorldRustConfig} lang="json5" title="peppy.json5" />
+  </TabItem>
+</Tabs>
+
+
 
 To apply these changes, the node needs to synchronize with the cache in the `.peppy` folder. Run:
 ```sh
@@ -82,13 +92,11 @@ peppy node sync
 This command will generate the interfaces to use in our source code. We can now modify the code and access those interfaces:
 
 <Tabs>
+  <TabItem label="Python">
+    <Code code={helloWorldPython} lang="python" title="src/__main__.py" />
+  </TabItem>
   <TabItem label="Rust">
     <Code code={helloWorldRust} lang="rust" title="src/main.rs" />
-  </TabItem>
-  <TabItem label="Python">
-    :::caution
-    The Python toolchain is not yet available.
-    :::
   </TabItem>
 </Tabs>
 
