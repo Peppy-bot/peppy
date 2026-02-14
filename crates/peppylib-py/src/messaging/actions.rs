@@ -50,6 +50,7 @@ pub struct PyActionGoalHandle {
     instance_id: String,
     node_name: String,
     action_name: String,
+    target_daemon_node: Option<String>,
     target_instance_id: Option<String>,
 }
 
@@ -209,6 +210,7 @@ impl PyActionMessenger {
                 instance_id: as_instance_id,
                 node_name: to_node_name,
                 action_name: to_action_name,
+                target_daemon_node,
                 target_instance_id,
             })
         })
@@ -231,6 +233,7 @@ impl PyActionMessenger {
         let instance_id = goal_handle.instance_id.clone();
         let node_name = goal_handle.node_name.clone();
         let action_name = goal_handle.action_name.clone();
+        let target_daemon_node = goal_handle.target_daemon_node.clone();
         let target_instance_id = goal_handle.target_instance_id.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let response = ActionMessenger::cancel_goal_with(
@@ -239,6 +242,7 @@ impl PyActionMessenger {
                 &instance_id,
                 &node_name,
                 &action_name,
+                target_daemon_node.as_deref(),
                 target_instance_id.as_deref(),
                 cancel_timeout,
             )
@@ -265,6 +269,7 @@ impl PyActionMessenger {
         let instance_id = goal_handle.instance_id.clone();
         let node_name = goal_handle.node_name.clone();
         let action_name = goal_handle.action_name.clone();
+        let target_daemon_node = goal_handle.target_daemon_node.clone();
         let target_instance_id = goal_handle.target_instance_id.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let response = ActionMessenger::request_result_with(
@@ -273,6 +278,7 @@ impl PyActionMessenger {
                 &instance_id,
                 &node_name,
                 &action_name,
+                target_daemon_node.as_deref(),
                 target_instance_id.as_deref(),
                 result_timeout,
             )
