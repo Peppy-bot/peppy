@@ -33,21 +33,24 @@ fn is_awaitable(value: &Bound<'_, PyAny>) -> PyResult<bool> {
     value.hasattr("__await__")
 }
 
-/// Run an async setup function on a persistent Python event loop.
+/// Start an async setup function on a persistent Python event loop.
 ///
-/// Creates a dedicated asyncio event loop in a background thread, submits the
-/// setup coroutine, and waits for it to complete. The event loop stays alive
-/// after setup returns so that background tasks created via
-/// `asyncio.create_task()` continue running.
+/// Creates a dedicated asyncio event loop in a background thread and submits
+/// the setup coroutine. Returns a channel receiver and future handle so the
+/// caller can wait for completion **after releasing the GIL** — the event loop
+/// thread needs the GIL to run the coroutine.
+///
+/// The event loop stays alive after setup returns so that background tasks
+/// created via `asyncio.create_task()` continue running.
 ///
 /// On node shutdown (cancellation token triggered), the event loop is stopped
 /// and its thread exits. Uncaught exceptions in background tasks cancel the
 /// node via the event loop's exception handler.
-fn run_async_setup(
+fn start_async_setup(
     py: Python<'_>,
     setup_awaitable: &Bound<'_, PyAny>,
     node_runner: &Arc<NodeRunner>,
-) -> PyResult<()> {
+) -> PyResult<(std::sync::mpsc::Receiver<()>, Py<PyAny>)> {
     let asyncio = py.import("asyncio")?;
     let threading = py.import("threading")?;
 
@@ -73,10 +76,8 @@ fn run_async_setup(
             if let Ok(exception) = context.get_item("exception") {
                 if !exception.is_none() {
                     let traceback_mod = py.import("traceback")?;
-                    let lines =
-                        traceback_mod.call_method1("format_exception", (&exception,))?;
-                    let joined =
-                        PyString::new(py, "").call_method1("join", (lines,))?;
+                    let lines = traceback_mod.call_method1("format_exception", (&exception,))?;
+                    let joined = PyString::new(py, "").call_method1("join", (lines,))?;
                     let msg = joined.extract::<String>()?;
                     eprintln!("Unhandled exception in async task:\n{msg}");
                 }
@@ -117,14 +118,23 @@ fn run_async_setup(
     let thread = threading.call_method("Thread", (), Some(&thread_kwargs))?;
     thread.call_method0("start")?;
 
-    // 4. Submit the setup coroutine and wait for it to complete.
-    //    concurrent.futures.Future.result() releases the GIL while waiting
-    //    (via threading.Condition.wait), allowing the event loop thread to run.
-    let future = asyncio.call_method1(
-        "run_coroutine_threadsafe",
-        (setup_awaitable, &event_loop),
+    // 4. Submit the setup coroutine and register a done callback.
+    //    A Rust channel signals completion so the caller can release the GIL
+    //    before blocking — the event loop thread needs it to run the coroutine.
+    let future =
+        asyncio.call_method1("run_coroutine_threadsafe", (setup_awaitable, &event_loop))?;
+    let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
+    let done_cb = PyCFunction::new_closure(
+        py,
+        Some(c"_peppy_setup_done"),
+        None,
+        move |_args, _kwargs| {
+            let _ = tx.send(());
+            Ok::<(), PyErr>(())
+        },
     )?;
-    future.call_method0("result")?;
+    future.call_method1("add_done_callback", (done_cb,))?;
+    let future_ref = future.unbind();
 
     // 5. Schedule shutdown monitor: stop the event loop when the node shuts down
     let loop_for_shutdown = event_loop.unbind();
@@ -144,7 +154,7 @@ fn run_async_setup(
         })
         .map_err(|e| PyRuntimeError::new_err(format!("failed to start shutdown monitor: {e}")))?;
 
-    Ok(())
+    Ok((rx, future_ref))
 }
 
 fn store_python_error(error_slot: &SharedPyError, err: PyErr) {
@@ -341,18 +351,42 @@ impl PyNodeBuilder {
                 move |params: serde_json::Value, node_runner: Arc<NodeRunner>| {
                     let setup_error = Arc::clone(&setup_error_for_run);
                     async move {
-                        match Python::try_attach(|py| -> PyResult<()> {
-                            let setup_result =
-                                call_setup_function(py, &setup_fn, &params, &node_runner)?;
-                            let setup_bound = setup_result.bind(py);
+                        // Phase 1: call setup and start async event loop (holds GIL)
+                        let async_handle = Python::try_attach(
+                            |py| -> PyResult<Option<(std::sync::mpsc::Receiver<()>, Py<PyAny>)>> {
+                                let setup_result =
+                                    call_setup_function(py, &setup_fn, &params, &node_runner)?;
+                                let setup_bound = setup_result.bind(py);
 
-                            if is_awaitable(setup_bound)? {
-                                run_async_setup(py, setup_bound, &node_runner)?;
+                                if is_awaitable(setup_bound)? {
+                                    Ok(Some(start_async_setup(py, setup_bound, &node_runner)?))
+                                } else {
+                                    Ok(None)
+                                }
+                            },
+                        );
+
+                        match async_handle {
+                            Some(Ok(Some((rx, future_ref)))) => {
+                                // Phase 2: wait without GIL so event loop
+                                // thread can run the setup coroutine
+                                rx.recv()
+                                    .map_err(|_| peppy_io_err("async setup channel closed"))?;
+
+                                // Phase 3: check for exceptions (re-acquires GIL)
+                                match Python::try_attach(|py| -> PyResult<()> {
+                                    future_ref.bind(py).call_method0("result")?;
+                                    Ok(())
+                                }) {
+                                    Some(Ok(())) => Ok(()),
+                                    Some(Err(err)) => {
+                                        store_python_error(&setup_error, err);
+                                        Err(peppy_io_err("async setup raised an exception"))
+                                    }
+                                    None => Err(peppy_io_err("failed to attach to Python GIL")),
+                                }
                             }
-
-                            Ok(())
-                        }) {
-                            Some(Ok(())) => Ok(()),
+                            Some(Ok(None)) => Ok(()),
                             Some(Err(err)) => {
                                 store_python_error(&setup_error, err);
                                 Err(peppy_io_err("setup callback raised an exception"))

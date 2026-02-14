@@ -138,10 +138,20 @@ pub fn wait_for_child(
         {
             let _ = child.kill();
             let _ = child.wait();
+            let mut stdout = Vec::new();
+            if let Some(mut out) = child.stdout.take() {
+                let _ = out.read_to_end(&mut stdout);
+            }
+            let mut stderr = Vec::new();
+            if let Some(mut err) = child.stderr.take() {
+                let _ = err.read_to_end(&mut stderr);
+            }
             panic!(
-                "process timed out after {:?} for project at {}",
+                "process timed out after {:?} for project at {}\nstdout:\n{}\nstderr:\n{}",
                 limit,
-                dir.display()
+                dir.display(),
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr),
             );
         }
 

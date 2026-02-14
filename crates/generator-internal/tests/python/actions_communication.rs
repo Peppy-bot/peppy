@@ -2,7 +2,7 @@ use crate::helpers::{
     STUB_PYTHON_NODE_CONFIG, WaitContext, copy_config_to_output, init_python_project_venv,
     init_python_user_node, init_test_env, send_shutdown, spawn_python_run,
     wait_for_action_service_reachable_or_exit, wait_for_child,
-    wait_for_health_service_reachable_or_exit,
+    wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
@@ -23,6 +23,8 @@ const SUBSCRIBER_INSTANCE_ID: &str = "subscriber_instance";
 const EXPOSER_INSTANCE_ID: &str = "exposer_instance";
 const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const BRAIN_NODE_NAME: &str = "brain";
+const ACTION_FLOW_DONE_SERVICE: &str = "move_arm_flow_done";
+const ACTION_CANCEL_FLOW_DONE_SERVICE: &str = "move_arm_cancel_flow_done";
 
 const EXPOSED_ACTION_EXAMPLE: &str = r#"
 {
@@ -177,8 +179,6 @@ async fn actions_communication() {
     init_python_user_node(&user_node_subscriber);
     let subscriber_main = r#"
 import asyncio
-import sys
-import traceback
 import peppylib
 from peppygen import NodeBuilder
 from peppygen.subscribed_actions import brain_move_arm
@@ -187,6 +187,7 @@ TARGET_NODE_NAME = "brain"
 TARGET_INSTANCE_ID = "exposer_instance"
 FEEDBACK_READY_SERVICE = "move_arm_feedback_ready"
 FEEDBACK_RECEIVED_SERVICE = "move_arm_feedback_received"
+FLOW_DONE_SERVICE = "move_arm_flow_done"
 
 async def run_subscriber(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
@@ -228,14 +229,17 @@ async def run_subscriber(node_runner):
         f"result success={result.data.success} error={result.data.error_msg} final_position={result.data.final_position}",
         flush=True,
     )
+    done_service = await peppylib.ServiceMessenger.listen(
+        node_runner.messenger(),
+        node_runner.bound_daemon_node(),
+        node_runner.bound_instance_id(),
+        node_runner.node_name(),
+        FLOW_DONE_SERVICE,
+    )
+    await done_service.handle_next_request(lambda _request: b"ok")
 
-def setup(parameters, node_runner):
-    try:
-        asyncio.run(run_subscriber(node_runner))
-    except Exception as e:
-        print(f"subscriber error: {e}", flush=True)
-        traceback.print_exc()
-        raise
+async def setup(parameters, node_runner):
+    asyncio.create_task(run_subscriber(node_runner))
 
 def main():
     NodeBuilder().run(setup)
@@ -280,8 +284,6 @@ if __name__ == "__main__":
     init_python_user_node(&user_node_exposer);
     let exposer_main = r#"
 import asyncio
-import sys
-import traceback
 import peppylib
 from peppygen import NodeBuilder
 from peppygen.exposed_actions import move_arm
@@ -348,13 +350,8 @@ async def run_exposer(node_runner):
     await action.handle_result_next_request(result_handler)
     print(f"server handled result request. Final position sent: {final_position}", flush=True)
 
-def setup(parameters, node_runner):
-    try:
-        asyncio.run(run_exposer(node_runner))
-    except Exception as e:
-        print(f"exposer error: {e}", flush=True)
-        traceback.print_exc()
-        raise
+async def setup(parameters, node_runner):
+    asyncio.create_task(run_exposer(node_runner))
 
 def main():
     NodeBuilder().run(setup)
@@ -413,14 +410,14 @@ if __name__ == "__main__":
         &[(RUNTIME_CONFIG_VAR_NAME, &subscriber_runtime_config_str)],
     );
 
-    let ctx = WaitContext {
+    let health_ctx = WaitContext {
         messenger: &messenger,
         bound_daemon_node: TEST_DAEMON_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
         target_daemon_node: Some(TEST_DAEMON_NODE),
     };
     wait_for_health_service_reachable_or_exit(
-        &ctx,
+        &health_ctx,
         SUBSCRIBER_NODE_NAME,
         subscriber_instance_id,
         &mut subscriber_child,
@@ -428,11 +425,20 @@ if __name__ == "__main__":
     )
     .await;
     wait_for_health_service_reachable_or_exit(
-        &ctx,
+        &health_ctx,
         BRAIN_NODE_NAME,
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+    )
+    .await;
+    wait_for_service_reachable_or_exit(
+        &health_ctx,
+        SUBSCRIBER_NODE_NAME,
+        ACTION_FLOW_DONE_SERVICE,
+        Some(subscriber_instance_id),
+        &mut subscriber_child,
+        &user_node_subscriber,
     )
     .await;
 
@@ -457,7 +463,6 @@ if __name__ == "__main__":
     )
     .await;
 
-    // Wait for both processes to exit
     let subscriber_output = wait_for_child(
         &mut subscriber_child,
         Some(Duration::from_secs(10)),
@@ -567,11 +572,10 @@ async fn actions_communication_cancel_goal() {
     init_python_user_node(&user_node_subscriber);
     let subscriber_main = r#"
 import asyncio
-import sys
-import traceback
 import peppylib
 from peppygen import NodeBuilder
 from peppygen.subscribed_actions import brain_move_arm
+FLOW_DONE_SERVICE = "move_arm_cancel_flow_done"
 
 async def run_subscriber(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
@@ -586,14 +590,17 @@ async def run_subscriber(node_runner):
         f"cancel accepted={cancel_response.data.accepted} error={error_msg}",
         flush=True,
     )
+    done_service = await peppylib.ServiceMessenger.listen(
+        node_runner.messenger(),
+        node_runner.bound_daemon_node(),
+        node_runner.bound_instance_id(),
+        node_runner.node_name(),
+        FLOW_DONE_SERVICE,
+    )
+    await done_service.handle_next_request(lambda _request: b"ok")
 
-def setup(parameters, node_runner):
-    try:
-        asyncio.run(run_subscriber(node_runner))
-    except Exception as e:
-        print(f"subscriber error: {e}", flush=True)
-        traceback.print_exc()
-        raise
+async def setup(parameters, node_runner):
+    asyncio.create_task(run_subscriber(node_runner))
 
 def main():
     NodeBuilder().run(setup)
@@ -638,8 +645,6 @@ if __name__ == "__main__":
     init_python_user_node(&user_node_exposer);
     let exposer_main = r#"
 import asyncio
-import sys
-import traceback
 from peppygen import NodeBuilder
 from peppygen.exposed_actions import move_arm
 
@@ -668,13 +673,8 @@ async def run_exposer(node_runner):
     await action.handle_cancel_next_request(cancel_handler)
     print(f"server responded to cancel request error={cancel_error}", flush=True)
 
-def setup(parameters, node_runner):
-    try:
-        asyncio.run(run_exposer(node_runner))
-    except Exception as e:
-        print(f"exposer error: {e}", flush=True)
-        traceback.print_exc()
-        raise
+async def setup(parameters, node_runner):
+    asyncio.create_task(run_exposer(node_runner))
 
 def main():
     NodeBuilder().run(setup)
@@ -722,14 +722,14 @@ if __name__ == "__main__":
         &[(RUNTIME_CONFIG_VAR_NAME, &subscriber_runtime_config_str)],
     );
 
-    let ctx = WaitContext {
+    let health_ctx = WaitContext {
         messenger: &messenger,
         bound_daemon_node: TEST_DAEMON_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
         target_daemon_node: Some(TEST_DAEMON_NODE),
     };
     wait_for_health_service_reachable_or_exit(
-        &ctx,
+        &health_ctx,
         SUBSCRIBER_NODE_NAME,
         subscriber_instance_id,
         &mut subscriber_child,
@@ -737,11 +737,20 @@ if __name__ == "__main__":
     )
     .await;
     wait_for_health_service_reachable_or_exit(
-        &ctx,
+        &health_ctx,
         BRAIN_NODE_NAME,
         exposer_instance_id,
         &mut exposer_child,
         &user_node_exposer,
+    )
+    .await;
+    wait_for_service_reachable_or_exit(
+        &health_ctx,
+        SUBSCRIBER_NODE_NAME,
+        ACTION_CANCEL_FLOW_DONE_SERVICE,
+        Some(subscriber_instance_id),
+        &mut subscriber_child,
+        &user_node_subscriber,
     )
     .await;
 
@@ -766,7 +775,6 @@ if __name__ == "__main__":
     )
     .await;
 
-    // Wait for both processes to exit
     let subscriber_output = wait_for_child(
         &mut subscriber_child,
         Some(Duration::from_secs(10)),
