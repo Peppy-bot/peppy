@@ -61,16 +61,8 @@ impl TestRouterContext {
         (self.instance.host.clone(), self.instance.port)
     }
 
-    async fn topic_messenger(&self) -> MessengerHandle {
-        connect_topic_messenger(self.host(), self.port()).await
-    }
-
-    async fn service_messenger(&self) -> MessengerHandle {
-        connect_service_messenger(self.host(), self.port()).await
-    }
-
-    async fn action_messenger(&self) -> MessengerHandle {
-        connect_action_messenger(self.host(), self.port()).await
+    async fn messenger(&self) -> MessengerHandle {
+        connect_messenger(self.host(), self.port()).await
     }
 
     async fn shutdown(mut self) {
@@ -82,28 +74,27 @@ impl TestRouterContext {
     }
 }
 
-async fn connect_topic_messenger(host: &str, port: u16) -> MessengerHandle {
-    MessengerHandle::from_host_port(host, port)
-        .await
-        .unwrap_or_else(|error| {
-            panic!("failed to create topic messenger on {host}:{port}: {error:?}")
-        })
-}
+async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
+    const MAX_RETRIES: u32 = 5;
+    const RETRY_DELAY: Duration = Duration::from_millis(200);
 
-async fn connect_service_messenger(host: &str, port: u16) -> MessengerHandle {
-    MessengerHandle::from_host_port(host, port)
-        .await
-        .unwrap_or_else(|error| {
-            panic!("failed to create service messenger on {host}:{port}: {error:?}")
-        })
-}
+    let mut last_error = None;
+    for attempt in 0..MAX_RETRIES {
+        match MessengerHandle::from_host_port(host, port).await {
+            Ok(handle) => return handle,
+            Err(error) => {
+                last_error = Some(error);
+                if attempt + 1 < MAX_RETRIES {
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+            }
+        }
+    }
 
-async fn connect_action_messenger(host: &str, port: u16) -> MessengerHandle {
-    MessengerHandle::from_host_port(host, port)
-        .await
-        .unwrap_or_else(|error| {
-            panic!("failed to create action messenger on {host}:{port}: {error:?}")
-        })
+    panic!(
+        "failed to connect messenger to {host}:{port} after {MAX_RETRIES} attempts: {:?}",
+        last_error.unwrap()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -116,7 +107,7 @@ async fn topic_publish_subscribe_no_target_instance_id() {
     let payload = Bytes::from_static(b"A message");
 
     let subscriber_daemon_node = "daemon_node_subscribe";
-    let subscriber_handle = router.topic_messenger().await;
+    let subscriber_handle = router.messenger().await;
     let subscriber_instance_id = "subscriber_instance";
     let mut subscription = TopicMessenger::subscribe(
         &subscriber_handle,
@@ -136,7 +127,7 @@ async fn topic_publish_subscribe_no_target_instance_id() {
 
     let emitter_daemon_node = "daemon_node_emit";
     let emitter_instance_id = "emitter_instance";
-    let emitter_handle = router.topic_messenger().await;
+    let emitter_handle = router.messenger().await;
     TopicMessenger::emit(
         &emitter_handle,
         emitter_daemon_node,
@@ -187,7 +178,7 @@ async fn topic_publish_subscribe_with_target_instance_id() {
     let payload = Bytes::from_static(b"A message");
 
     let subscriber_daemon_node = "daemon_node_subscribe";
-    let subscriber_handle = router.topic_messenger().await;
+    let subscriber_handle = router.messenger().await;
 
     let subscriber_instance_id1 = "subscriber_instance1";
     let mut subscription1 = TopicMessenger::subscribe(
@@ -221,7 +212,7 @@ async fn topic_publish_subscribe_with_target_instance_id() {
     // Allow subscriptions to propagate before publishing
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let emitter_handle1 = router.topic_messenger().await;
+    let emitter_handle1 = router.messenger().await;
     TopicMessenger::emit(
         &emitter_handle1,
         emitter_daemon_node,
@@ -274,7 +265,7 @@ async fn topic_publish_subscribe_with_target_daemon_node() {
 
     // Same instance_id for every subscriber
     let subscriber_instance_id = "subscriber_instance";
-    let subscriber_handle = router.topic_messenger().await;
+    let subscriber_handle = router.messenger().await;
 
     let subscriber_daemon_node1 = "daemon_node_subscribe1";
     let mut subscription1 = TopicMessenger::subscribe(
@@ -308,7 +299,7 @@ async fn topic_publish_subscribe_with_target_daemon_node() {
     // Allow subscriptions to propagate before publishing
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let emitter_handle1 = router.topic_messenger().await;
+    let emitter_handle1 = router.messenger().await;
     TopicMessenger::emit(
         &emitter_handle1,
         emitter_daemon_node2,
@@ -350,8 +341,8 @@ async fn topic_publish_reliable_5000hz_messages() {
     let topic = "video_stream";
     let qos = QoSProfile::Reliable;
 
-    let sender_handle = router.topic_messenger().await;
-    let receiver_handle = router.topic_messenger().await;
+    let sender_handle = router.messenger().await;
+    let receiver_handle = router.messenger().await;
 
     let subscriber_daemon_node = "daemon_node_subscribe";
     let subscriber_instance_id = "subscriber_instance";
@@ -467,7 +458,7 @@ async fn service_communication_poll_no_instance_id_target() {
     let listener_instance_id1 = "listener_instance1";
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task1 = {
-        let service_expose_handle = router.service_messenger().await;
+        let service_expose_handle = router.messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
             listener_daemon_node1,
@@ -513,7 +504,7 @@ async fn service_communication_poll_no_instance_id_target() {
     let listener_daemon_node2 = "listener_daemon_node2";
     let listener_instance_id2 = "listener_instance2";
     let service_task2 = {
-        let service_expose_handle = router.service_messenger().await;
+        let service_expose_handle = router.messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
             listener_daemon_node2,
@@ -573,7 +564,7 @@ async fn service_communication_poll_no_instance_id_target() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        let caller_handle = router.service_messenger().await;
+        let caller_handle = router.messenger().await;
         let response = ServiceMessenger::poll(
             &caller_handle,
             CALLER_DAEMON_NODE,
@@ -645,7 +636,7 @@ async fn service_communication_poll_specific_instance_id() {
     let listener_daemon_node1 = "listener_daemon_node1";
     let listener_instance_id1 = "listener_instance1";
     let service_task1 = {
-        let service_expose_handle = router.service_messenger().await;
+        let service_expose_handle = router.messenger().await;
         // This listener is not supposed to receive any message
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
@@ -681,7 +672,7 @@ async fn service_communication_poll_specific_instance_id() {
     let listener_daemon_node2 = "listener_daemon_node2";
     let listener_instance_id2 = "listener_instance2";
     let service_task2 = {
-        let service_expose_handle = router.service_messenger().await;
+        let service_expose_handle = router.messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
             listener_daemon_node2,
@@ -739,7 +730,7 @@ async fn service_communication_poll_specific_instance_id() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        let caller_handle = router.service_messenger().await;
+        let caller_handle = router.messenger().await;
         let response = ServiceMessenger::poll(
             &caller_handle,
             CALLER_DAEMON_NODE,
@@ -808,7 +799,7 @@ async fn service_communication_poll_wrong_node() {
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task = {
-        let service_expose_handle = router.service_messenger().await;
+        let service_expose_handle = router.messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
             listener_daemon_node,
@@ -855,7 +846,7 @@ async fn service_communication_poll_wrong_node() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        let caller_handle = router.service_messenger().await;
+        let caller_handle = router.messenger().await;
         let err = {
             let result = ServiceMessenger::poll(
                 &caller_handle,
@@ -940,7 +931,7 @@ async fn service_communication_poll_wrong_daemon_node() {
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task = {
-        let service_expose_handle = router.service_messenger().await;
+        let service_expose_handle = router.messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
             listener_daemon_node,
@@ -987,7 +978,7 @@ async fn service_communication_poll_wrong_daemon_node() {
         // Allow the service to fully establish its listener
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let caller_handle = router.service_messenger().await;
+        let caller_handle = router.messenger().await;
         let result = ServiceMessenger::poll(
             &caller_handle,
             CALLER_DAEMON_NODE,
@@ -1047,7 +1038,7 @@ async fn service_communication_fails_service_not_started() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     let err = {
-        let caller_handle = router.service_messenger().await;
+        let caller_handle = router.messenger().await;
 
         let result = ServiceMessenger::poll(
             &caller_handle,
@@ -1112,7 +1103,7 @@ async fn service_communication_fails_service_timeouts() {
     let service_task = {
         let response_delay = Duration::from_millis(200);
 
-        let service_expose_handle = router.service_messenger().await;
+        let service_expose_handle = router.messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
             listener_daemon_node,
@@ -1172,7 +1163,7 @@ async fn service_communication_fails_service_timeouts() {
         let caller_success_timeout = Duration::from_millis(500);
         let caller_failure_timeout = Duration::from_millis(50);
 
-        let caller_handle = router.service_messenger().await;
+        let caller_handle = router.messenger().await;
 
         let success_response = ServiceMessenger::poll(
             &caller_handle,
@@ -1272,7 +1263,7 @@ async fn service_handle_request_processes_multiple_messages() {
     let host = host.clone();
 
     let service_task = {
-        let service_expose_handle = connect_service_messenger(&host, port).await;
+        let service_expose_handle = connect_messenger(&host, port).await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
             listener_daemon_node,
@@ -1310,7 +1301,7 @@ async fn service_handle_request_processes_multiple_messages() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        let caller_handle = router.service_messenger().await;
+        let caller_handle = router.messenger().await;
 
         for i in 0..expected_requests {
             let request_payload = Bytes::from(format!("enable=true;request={i}").into_bytes());
@@ -1374,7 +1365,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task: tokio::task::JoinHandle<Result<(), Error>> = {
-        let service_expose_handle = router.service_messenger().await;
+        let service_expose_handle = router.messenger().await;
 
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
@@ -1452,7 +1443,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
             requests.shuffle(&mut rng);
             let host = host.clone();
             let poll_service = tokio::spawn(async move {
-                let caller_handle = connect_service_messenger(&host, port).await;
+                let caller_handle = connect_messenger(&host, port).await;
 
                 let mut caller_results = Vec::with_capacity(requests.len());
                 for (request_idx, request_payload) in requests {
@@ -1553,7 +1544,7 @@ async fn action_communication_no_instance_id_target() {
         let feedback_payload_server = feedback_payload.clone();
         let result_payload_server = result_payload.clone();
 
-        let action_handle = router.action_messenger().await;
+        let action_handle = router.messenger().await;
 
         tokio::spawn(async move {
             let mut action = ActionMessenger::expose(
@@ -1633,7 +1624,7 @@ async fn action_communication_no_instance_id_target() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        let caller_handle = router.action_messenger().await;
+        let caller_handle = router.messenger().await;
 
         // Client sends the goal and obtains the handle carrying goal response + feedback sub.
         let mut goal_handle = ActionMessenger::send_goal(
@@ -1728,7 +1719,7 @@ async fn action_communication_with_instance_id_target() {
     let server_task1 = {
         let expected_goal_response_payload = goal_response_payload.clone();
 
-        let action_handle = router.action_messenger().await;
+        let action_handle = router.messenger().await;
 
         tokio::spawn(async move {
             let mut action = ActionMessenger::expose(
@@ -1775,7 +1766,7 @@ async fn action_communication_with_instance_id_target() {
         let feedback_payload_server = feedback_payload.clone();
         let result_payload_server = result_payload.clone();
 
-        let action_handle = router.action_messenger().await;
+        let action_handle = router.messenger().await;
 
         tokio::spawn(async move {
             let mut action = ActionMessenger::expose(
@@ -1855,7 +1846,7 @@ async fn action_communication_with_instance_id_target() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        let caller_handle = router.action_messenger().await;
+        let caller_handle = router.messenger().await;
 
         // Client sends the goal and obtains the handle carrying goal response + feedback sub.
         let mut goal_handle = ActionMessenger::send_goal(
@@ -1955,7 +1946,7 @@ async fn action_communication_goal_cancelled() {
         let goal_call_count = Arc::clone(&goal_call_count);
         let cancel_call_count = Arc::clone(&cancel_call_count);
 
-        let action_handle = router.action_messenger().await;
+        let action_handle = router.messenger().await;
 
         tokio::spawn(async move {
             let mut action = ActionMessenger::expose(
@@ -2058,7 +2049,7 @@ async fn action_communication_goal_cancelled() {
     // Allow the action server to fully establish its listeners
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let caller_handle = router.action_messenger().await;
+    let caller_handle = router.messenger().await;
 
     let mut goal_handle = ActionMessenger::send_goal(
         &caller_handle,
@@ -2196,7 +2187,7 @@ async fn single_action_communication_multiple_polls() {
 
     // Launch a background task that plays the role of the action server.
     let server_task = {
-        let action_handle = router.action_messenger().await;
+        let action_handle = router.messenger().await;
         let action_ready_tx = Some(action_ready_tx);
         let cases = Arc::clone(&cases);
 
@@ -2324,7 +2315,7 @@ async fn single_action_communication_multiple_polls() {
         let feedback_search_limit = total_clients;
 
         let handle = tokio::spawn(async move {
-            let caller_handle = connect_action_messenger(&host, port).await;
+            let caller_handle = connect_messenger(&host, port).await;
 
             let mut goal_handle = ActionMessenger::send_goal(
                 &caller_handle,
