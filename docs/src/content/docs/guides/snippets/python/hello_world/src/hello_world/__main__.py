@@ -1,5 +1,3 @@
-"""Main entry point for node."""
-
 import asyncio
 from peppygen import NodeBuilder, NodeRunner
 from peppygen.parameters import Parameters
