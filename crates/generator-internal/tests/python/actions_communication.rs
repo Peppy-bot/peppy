@@ -7,7 +7,7 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
 use config::{
-    node::{ExposedAction, MessageFormat, SubscribedAction},
+    node::{ExposedAction, ExposedService, MessageFormat, SubscribedAction},
     peppy_config::Name,
     runtime::RuntimeConfig,
 };
@@ -25,6 +25,16 @@ const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const BRAIN_NODE_NAME: &str = "brain";
 const ACTION_FLOW_DONE_SERVICE: &str = "move_arm_flow_done";
 const ACTION_CANCEL_FLOW_DONE_SERVICE: &str = "move_arm_cancel_flow_done";
+const EXPOSED_ACTION_FLOW_DONE_SERVICE_EXAMPLE: &str = r#"
+{
+  name: "move_arm_flow_done"
+}
+"#;
+const EXPOSED_ACTION_CANCEL_FLOW_DONE_SERVICE_EXAMPLE: &str = r#"
+{
+  name: "move_arm_cancel_flow_done"
+}
+"#;
 
 const EXPOSED_ACTION_EXAMPLE: &str = r#"
 {
@@ -149,9 +159,12 @@ async fn actions_communication() {
     };
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_subscriber, STUB_PYTHON_NODE_CONFIG);
+    let flow_done_service: ExposedService =
+        serde_json5::from_str(EXPOSED_ACTION_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
         .add_subscribed_action(&subscribed_action, &action_messages)
         .unwrap();
+    generator.add_exposed_service(&flow_done_service).unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
     fs::remove_file(output_config).unwrap();
@@ -179,64 +192,27 @@ async fn actions_communication() {
     init_python_user_node(&user_node_subscriber);
     let subscriber_main = r#"
 import asyncio
-import peppylib
-from peppygen import NodeBuilder
+from peppygen import NodeBuilder, QoSProfile
+from peppygen.exposed_services import move_arm_flow_done
 from peppygen.subscribed_actions import brain_move_arm
-
-TARGET_NODE_NAME = "brain"
-TARGET_INSTANCE_ID = "exposer_instance"
-FEEDBACK_READY_SERVICE = "move_arm_feedback_ready"
-FEEDBACK_RECEIVED_SERVICE = "move_arm_feedback_received"
-FLOW_DONE_SERVICE = "move_arm_flow_done"
 
 async def run_subscriber(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
     goal = await brain_move_arm.ActionHandle.fire_goal(
-        node_runner, request, 5.0, peppylib.QoSProfile.SensorData
+        node_runner, request, 5.0, QoSProfile.SensorData
     )
     print(f"goal accepted={goal.data.accepted}", flush=True)
 
-    feedback_task = asyncio.create_task(goal.on_next_feedback_message())
-    await peppylib.ServiceMessenger.poll(
-        node_runner.messenger(),
-        node_runner.bound_daemon_node(),
-        node_runner.bound_instance_id(),
-        TARGET_NODE_NAME,
-        FEEDBACK_READY_SERVICE,
-        node_runner.bound_daemon_node(),
-        TARGET_INSTANCE_ID,
-        b"",
-        5.0,
-    )
-    feedback = await feedback_task
+    feedback = await goal.on_next_feedback_message()
     assert feedback.new_position == [7, 31, 43], "unexpected feedback message"
     print(f"feedback message received new_position={feedback.new_position}", flush=True)
-
-    await peppylib.ServiceMessenger.poll(
-        node_runner.messenger(),
-        node_runner.bound_daemon_node(),
-        node_runner.bound_instance_id(),
-        TARGET_NODE_NAME,
-        FEEDBACK_RECEIVED_SERVICE,
-        node_runner.bound_daemon_node(),
-        TARGET_INSTANCE_ID,
-        b"",
-        5.0,
-    )
 
     result = await goal.get_result(5.0)
     print(
         f"result success={result.data.success} error={result.data.error_msg} final_position={result.data.final_position}",
         flush=True,
     )
-    done_service = await peppylib.ServiceMessenger.listen(
-        node_runner.messenger(),
-        node_runner.bound_daemon_node(),
-        node_runner.bound_instance_id(),
-        node_runner.node_name(),
-        FLOW_DONE_SERVICE,
-    )
-    await done_service.handle_next_request(lambda _request: b"ok")
+    await move_arm_flow_done.handle_next_request(node_runner, lambda _request: None)
 
 async def setup(parameters, node_runner):
     asyncio.create_task(run_subscriber(node_runner))
@@ -284,12 +260,8 @@ if __name__ == "__main__":
     init_python_user_node(&user_node_exposer);
     let exposer_main = r#"
 import asyncio
-import peppylib
 from peppygen import NodeBuilder
 from peppygen.exposed_actions import move_arm
-
-FEEDBACK_READY_SERVICE = "move_arm_feedback_ready"
-FEEDBACK_RECEIVED_SERVICE = "move_arm_feedback_received"
 
 async def run_exposer(node_runner):
     action = await move_arm.ActionHandle.expose(node_runner)
@@ -303,40 +275,9 @@ async def run_exposer(node_runner):
 
     await action.handle_goal_next_request(goal_handler)
 
-    feedback_ready_service = await peppylib.ServiceMessenger.listen(
-        node_runner.messenger(),
-        node_runner.bound_daemon_node(),
-        node_runner.bound_instance_id(),
-        node_runner.node_name(),
-        FEEDBACK_READY_SERVICE,
-    )
-    await feedback_ready_service.handle_next_request(lambda _request: b"")
-    print("server received feedback-ready handshake", flush=True)
-
-    feedback_received_service = await peppylib.ServiceMessenger.listen(
-        node_runner.messenger(),
-        node_runner.bound_daemon_node(),
-        node_runner.bound_instance_id(),
-        node_runner.node_name(),
-        FEEDBACK_RECEIVED_SERVICE,
-    )
-    feedback_received = asyncio.Event()
-
-    async def _wait_feedback_received():
-        await feedback_received_service.handle_next_request(lambda _request: b"")
-        feedback_received.set()
-
-    feedback_received_task = asyncio.create_task(_wait_feedback_received())
-
     feedback_message = [7, 31, 43]
-    feedback_logged = False
-    while not feedback_received.is_set():
-        await action.emit_feedback(feedback_message)
-        if not feedback_logged:
-            print(f"server emitted feedback message {feedback_message}", flush=True)
-            feedback_logged = True
-        await asyncio.sleep(0)
-    await feedback_received_task
+    await action.emit_feedback(feedback_message)
+    print(f"server emitted feedback message {feedback_message}", flush=True)
 
     final_position = [98, 4, 26]
     def result_handler(request):
@@ -542,9 +483,12 @@ async fn actions_communication_cancel_goal() {
     };
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_subscriber, STUB_PYTHON_NODE_CONFIG);
+    let flow_done_service: ExposedService =
+        serde_json5::from_str(EXPOSED_ACTION_CANCEL_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
         .add_subscribed_action(&subscribed_action, &action_messages)
         .unwrap();
+    generator.add_exposed_service(&flow_done_service).unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
     fs::remove_file(output_config).unwrap();
@@ -572,15 +516,14 @@ async fn actions_communication_cancel_goal() {
     init_python_user_node(&user_node_subscriber);
     let subscriber_main = r#"
 import asyncio
-import peppylib
-from peppygen import NodeBuilder
+from peppygen import NodeBuilder, QoSProfile
+from peppygen.exposed_services import move_arm_cancel_flow_done
 from peppygen.subscribed_actions import brain_move_arm
-FLOW_DONE_SERVICE = "move_arm_cancel_flow_done"
 
 async def run_subscriber(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
     goal = await brain_move_arm.ActionHandle.fire_goal(
-        node_runner, request, 5.0, peppylib.QoSProfile.SensorData
+        node_runner, request, 5.0, QoSProfile.SensorData
     )
     print(f"goal accepted={goal.data.accepted}", flush=True)
 
@@ -590,14 +533,7 @@ async def run_subscriber(node_runner):
         f"cancel accepted={cancel_response.data.accepted} error={error_msg}",
         flush=True,
     )
-    done_service = await peppylib.ServiceMessenger.listen(
-        node_runner.messenger(),
-        node_runner.bound_daemon_node(),
-        node_runner.bound_instance_id(),
-        node_runner.node_name(),
-        FLOW_DONE_SERVICE,
-    )
-    await done_service.handle_next_request(lambda _request: b"ok")
+    await move_arm_cancel_flow_done.handle_next_request(node_runner, lambda _request: None)
 
 async def setup(parameters, node_runner):
     asyncio.create_task(run_subscriber(node_runner))
