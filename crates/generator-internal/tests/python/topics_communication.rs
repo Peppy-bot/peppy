@@ -6,7 +6,7 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
 use config::{
-    node::{ExposedTopic, MessageFormat, SubscribedTopic},
+    node::{ExposedService, ExposedTopic, MessageFormat, SubscribedTopic},
     peppy_config::Name,
     runtime::RuntimeConfig,
 };
@@ -23,6 +23,11 @@ const EXPOSER_INSTANCE_ID: &str = "exposer_instance";
 const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const UVC_CAMERA_NODE_NAME: &str = "uvc_camera";
 const FRAME_RECEIVED_SERVICE: &str = "frame_received_ack";
+const EXPOSED_FRAME_RECEIVED_SERVICE_EXAMPLE: &str = r#"
+{
+  name: "frame_received_ack"
+}
+"#;
 
 // --- Topics exposes and its corresponding subscriber
 const EXPOSED_TOPIC_EXAMPLE: &str = r#"
@@ -87,10 +92,15 @@ async fn topics_communication() {
         serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
     let subscribed_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
+    let frame_received_service: ExposedService =
+        serde_json5::from_str(EXPOSED_FRAME_RECEIVED_SERVICE_EXAMPLE).unwrap();
     let (mut generator, subscriber_dir, user_node_subscriber, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_proj2, STUB_PYTHON_NODE_CONFIG);
     generator
         .add_subscribed_topic(&subscribed_topic, subscribed_format)
+        .unwrap();
+    generator
+        .add_exposed_service(&frame_received_service)
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &subscriber_dir);
     generator.build(&subscriber_dir).unwrap();
@@ -119,11 +129,9 @@ async fn topics_communication() {
     init_python_user_node(&user_node_subscriber);
     let subscriber_main = r#"
 import asyncio
-import peppylib
 from peppygen import NodeBuilder
+from peppygen.exposed_services import frame_received_ack
 from peppygen.subscribed_topics import uvc_camera_video_stream
-
-FRAME_RECEIVED_SERVICE = "frame_received_ack"
 
 async def receive_frames(node_runner, frame_received):
     print("subscriber: about to subscribe", flush=True)
@@ -136,14 +144,7 @@ async def receive_frames(node_runner, frame_received):
 
 async def expose_frame_received_ack(node_runner, frame_received):
     await frame_received.wait()
-    service = await peppylib.ServiceMessenger.listen(
-        node_runner.messenger(),
-        node_runner.bound_daemon_node(),
-        node_runner.bound_instance_id(),
-        node_runner.node_name(),
-        FRAME_RECEIVED_SERVICE,
-    )
-    await service.handle_next_request(lambda _request: b"ok")
+    await frame_received_ack.handle_next_request(node_runner, lambda _request: None)
 
 async def setup(parameters, node_runner):
     frame_received = asyncio.Event()
