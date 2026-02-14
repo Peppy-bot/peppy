@@ -23,7 +23,6 @@ pub async fn listen_for_node_health(
 
     let handle =
         tokio::spawn(async move { endpoint.handle_requests(handle_node_health_request).await });
-
     Ok(handle)
 }
 
