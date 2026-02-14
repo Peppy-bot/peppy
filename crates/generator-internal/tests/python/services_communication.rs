@@ -151,9 +151,7 @@ from peppygen.subscribed_services import uvc_camera_enable_camera
 def setup(parameters, node_runner):
     try:
         request = uvc_camera_enable_camera.Request(enable=True)
-        response = asyncio.run(
-            uvc_camera_enable_camera.poll(node_runner, request, 5.0, None, None)
-        )
+        response = asyncio.run(uvc_camera_enable_camera.poll(node_runner, request, 5.0, None, None))
         error_msg = response.data.error_msg if response.data.error_msg is not None else "<none>"
         print(
             f"enable_camera result: service_id={response.instance_id} enabled={response.data.enabled} error={error_msg}",
@@ -223,9 +221,7 @@ def setup(parameters, node_runner):
                 enabled=request.data.enable,
                 error_msg="handled",
             )
-        asyncio.run(
-            enable_camera.handle_next_request(node_runner, handler)
-        )
+        asyncio.run(enable_camera.handle_next_request(node_runner, handler))
         print("enable_camera handler finished", flush=True)
     except Exception as e:
         print(f"exposer error: {e}", flush=True)
@@ -448,9 +444,7 @@ from peppygen.subscribed_services import uvc_camera_get_system_status
 
 def setup(parameters, node_runner):
     try:
-        response = asyncio.run(
-            uvc_camera_get_system_status.poll(node_runner, 5.0, None, None)
-        )
+        response = asyncio.run(uvc_camera_get_system_status.poll(node_runner, 5.0, None, None))
         print(
             f"get_system_status result: service_id={response.instance_id} healthy={response.data.healthy}",
             flush=True,
@@ -517,9 +511,7 @@ def setup(parameters, node_runner):
                 flush=True,
             )
             return get_system_status.Response(healthy=True)
-        asyncio.run(
-            get_system_status.handle_next_request(node_runner, handler)
-        )
+        asyncio.run(get_system_status.handle_next_request(node_runner, handler))
         print("get_system_status handler finished", flush=True)
     except Exception as e:
         print(f"exposer error: {e}", flush=True)
@@ -797,9 +789,7 @@ def setup(parameters, node_runner):
                 enabled=request.data.enable,
                 error_msg="handled",
             )
-        asyncio.run(
-            enable_camera.handle_next_request(node_runner, handler)
-        )
+        asyncio.run(enable_camera.handle_next_request(node_runner, handler))
         print("enable_camera handler finished", flush=True)
     except Exception as e:
         print(f"exposer error: {e}", flush=True)
@@ -868,9 +858,7 @@ def setup(parameters, node_runner):
                 enabled=request.data.enable,
                 error_msg="handled_by_exposer2",
             )
-        asyncio.run(
-            enable_camera.handle_next_request(node_runner, handler)
-        )
+        asyncio.run(enable_camera.handle_next_request(node_runner, handler))
         print("enable_camera handler finished", flush=True)
     except Exception as e:
         print(f"exposer error: {e}", flush=True)

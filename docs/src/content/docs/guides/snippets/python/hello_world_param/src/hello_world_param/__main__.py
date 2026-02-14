@@ -3,7 +3,7 @@
 from peppygen import NodeBuilder, NodeRunner
 from peppygen.parameters import Parameters
 
-def setup(params: Parameters, node_runner: NodeRunner):
+async def setup(params: Parameters, node_runner: NodeRunner):
     pass
 
 def main():
