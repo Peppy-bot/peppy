@@ -98,7 +98,7 @@ impl PyZenohdInstance {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let mut guard = inner.lock().await;
             if let Some(mut instance) = guard.take() {
-                instance.messenger().stop_router().await.map_err(|e| {
+                instance.take_messenger().stop_router().await.map_err(|e| {
                     PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
                 })?;
             }
