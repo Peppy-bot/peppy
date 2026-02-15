@@ -25,3 +25,7 @@ serde_json5 = "0.2.1"
 tempfile = "3.10"
 peppylib = { path = "../peppylib" }
 tokio = { version = "1.47.0", features = ["macros", "rt-multi-thread"] }
+
+[build-dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

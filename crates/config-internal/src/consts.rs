@@ -5,7 +5,6 @@ pub const RUNTIME_CONFIG_VAR_NAME: &str = "PEPPY_RUNTIME_CONFIG";
 pub const PEPPY_OUTPUT_DIR: &str = ".peppy";
 /// The standard output directory for generated peppygen libraries relative to node_dir.
 pub const PEPPYGEN_OUTPUT_PATH: &str = ".peppy/libs/peppygen";
-pub const PEPPYLIB_OUTPUT_PATH: &str = ".peppy/libs/peppygen/crates/peppylib";
 pub const DAEMON_STATE_FILE_ENV: &str = "PEPPY_DAEMON_STATE_FILE";
 
 pub const DEFAULT_MESSAGING_HOST: &str = "127.0.0.1";

@@ -7,6 +7,7 @@ use config::node::PeppygenLanguage;
 use generator::generate_peppygen_lib;
 use peppylib::messaging::{ActionMessenger, NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::{MessengerHandle, ServiceMessenger};
+use std::ffi::OsStr;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -183,6 +184,46 @@ pub fn compile_project(dir: impl AsRef<Path>) {
         cargo_output.status.code(),
         String::from_utf8_lossy(&cargo_output.stdout),
         String::from_utf8_lossy(&cargo_output.stderr)
+    );
+}
+
+pub fn assert_rust_precompiled_runtime_layout(peppygen_dir: &Path) {
+    assert!(
+        !peppygen_dir.join("crates").exists(),
+        "legacy vendored Rust crates should not be generated at {}",
+        peppygen_dir.join("crates").display()
+    );
+
+    let precompiled_root = peppygen_dir.join("precompiled").join("rust");
+    let deps_dir = precompiled_root.join("deps");
+    assert!(
+        deps_dir.exists(),
+        "expected precompiled dependency artifacts at {}",
+        deps_dir.display()
+    );
+
+    let has_peppylib_rlib = fs::read_dir(&deps_dir)
+        .expect("failed to read precompiled deps directory")
+        .flatten()
+        .map(|entry| entry.path())
+        .any(|path| {
+            path.extension() == Some(OsStr::new("rlib"))
+                && path
+                    .file_name()
+                    .and_then(OsStr::to_str)
+                    .is_some_and(|name| name.starts_with("libpeppylib-"))
+        });
+    assert!(
+        has_peppylib_rlib,
+        "expected precompiled peppylib rlib under {}",
+        deps_dir.display()
+    );
+
+    let build_dir = precompiled_root.join("build");
+    assert!(
+        build_dir.exists(),
+        "expected precompiled native build outputs at {}",
+        build_dir.display()
     );
 }
 

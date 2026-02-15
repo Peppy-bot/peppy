@@ -1,7 +1,7 @@
 use crate::helpers::{
-    STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output, init_cargo_user_node,
-    init_test_env, send_shutdown, spawn_cargo_run, wait_for_child,
-    wait_for_health_service_reachable_or_exit,
+    STUB_NODE_CONFIG, WaitContext, assert_rust_precompiled_runtime_layout, compile_project,
+    copy_config_to_output, init_cargo_user_node, init_test_env, send_shutdown, spawn_cargo_run,
+    wait_for_child, wait_for_health_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
@@ -93,6 +93,7 @@ async fn topics_communication() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &subscriber_dir);
     generator.build(&subscriber_dir).unwrap();
+    assert_rust_precompiled_runtime_layout(&subscriber_dir);
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -148,6 +149,7 @@ fn main() -> Result<()> {
     generator.add_exposed_topic(&exposed_topic).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &exposer_dir);
     generator.build(&exposer_dir).unwrap();
+    assert_rust_precompiled_runtime_layout(&exposer_dir);
     fs::remove_file(output_config).unwrap();
 
     // Update the peppy node config to include the parameters schema

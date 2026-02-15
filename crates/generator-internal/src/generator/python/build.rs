@@ -18,7 +18,7 @@ struct EmbeddedPeppylibPy;
 
 pub fn add_peppylib_dependencies(to_path: &Path) -> Result<()> {
     // Copy Python project templates (pyproject.toml, peppygen/__init__.py)
-    crate::generator::common::copy_embedded_templates("peppygen/python", to_path, "")?;
+    crate::generator::common::copy_embedded_templates("peppygen/python", to_path)?;
 
     // Copy the pre-built peppylib Python package (Python files + native .so)
     let peppylib_dir = to_path.join("peppylib");
