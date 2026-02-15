@@ -124,8 +124,7 @@ pub fn apply_python_templates(node_name: &str, node_dir: &Path) -> Result<()> {
 
     std::fs::write(
         package_dir.join("__main__.py"),
-        r#""""Main entry point for node."""
-
+        r#"
 from peppygen import NodeBuilder, NodeRunner
 from peppygen.parameters import Parameters
 

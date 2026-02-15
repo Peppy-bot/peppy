@@ -330,7 +330,6 @@ where
                     return Ok(());
                 }
             }
-
             run_post_setup_services(
                 node_runner,
                 pre_setup.ready_handle,
