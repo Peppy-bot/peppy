@@ -7,7 +7,7 @@ use crate::{
         types::{CapnpSchema, InterfaceArtifact, InterfaceKind},
     },
 };
-use config::consts::{PEPPYGEN_OUTPUT_PATH, PEPPY_OUTPUT_DIR};
+use config::consts::{PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use config::encoding::compile_capnp;
 use proc_macro2::Span;
 use std::{
@@ -26,15 +26,7 @@ const PRECOMPILED_CACHE_DIR: &str = "cache";
 const PRECOMPILED_CACHE_RUST_DIR: &str = "rust";
 const PRECOMPILED_DEPS_DIR: &str = "deps";
 const PRECOMPILED_BUILD_DIR: &str = "build";
-const PRECOMPILED_EXTERN_CRATES: [&str; 7] = [
-    "peppylib",
-    "tokio",
-    "capnp",
-    "bytes",
-    "thiserror",
-    "serde",
-    "schemars",
-];
+const PRECOMPILED_EXTERN_CRATES: [&str; 3] = ["peppylib", "capnp", "bytes"];
 
 pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>) -> Result<()> {
     let to_path = to_path.as_ref();
@@ -427,12 +419,12 @@ fn strip_managed_rustflags(flags: Vec<String>) -> Vec<String> {
 }
 
 fn is_managed_flag_pair(flag: &str, value: &str) -> bool {
-    if flag == "--extern"
-        && PRECOMPILED_EXTERN_CRATES
-            .iter()
-            .any(|crate_name| value.starts_with(&format!("{crate_name}=")))
-    {
-        return true;
+    if flag == "--extern" {
+        if let Some((crate_name, _)) = value.split_once('=')
+            && PRECOMPILED_EXTERN_CRATES.contains(&crate_name)
+        {
+            return true;
+        }
     }
 
     if flag == "-L" {
@@ -446,7 +438,6 @@ fn is_managed_flag_pair(flag: &str, value: &str) -> bool {
 
     false
 }
-
 fn is_managed_dependency_path(path: &str) -> bool {
     let normalized = path.replace('\\', "/");
     normalized.contains("/.peppy/cache/rust/") && normalized.ends_with("/deps")

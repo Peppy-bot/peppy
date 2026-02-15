@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use config::consts::{
-    NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PEPPY_OUTPUT_DIR, PYTHON_MAX_VERSION,
+    NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, PYTHON_MAX_VERSION,
     PYTHON_MIN_VERSION,
 };
 use config::node::PeppygenLanguage;

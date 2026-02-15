@@ -256,7 +256,11 @@ fn generate_parameters_struct() {
     // Verify derive attributes
     assert_contains_all(
         &generated,
-        &["#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]"],
+        &[
+            "#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]",
+            "#[serde(crate = \"peppylib::serde\")]",
+            "#[schemars(crate = \"peppylib::schemars\")]",
+        ],
     );
 }
 
@@ -281,6 +285,8 @@ fn generate_empty_parameters_struct() {
         &generated,
         &[
             "#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]",
+            "#[serde(crate = \"peppylib::serde\")]",
+            "#[schemars(crate = \"peppylib::schemars\")]",
             "pub struct Parameters",
         ],
     );

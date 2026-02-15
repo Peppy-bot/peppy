@@ -246,17 +246,19 @@ mod python_runtime_build {
 
 mod rust_runtime_build {
     use std::collections::{HashMap, HashSet, VecDeque};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
 
     use serde::Deserialize;
 
     const BUILD_ARTIFACT_EXTENSIONS: [&str; 7] =
         ["rlib", "rmeta", "so", "dylib", "dll", "a", "lib"];
+    const HOST_PROC_MACRO_EXTENSIONS: [&str; 3] = ["so", "dylib", "dll"];
     const BUILD_WATCHED_PATHS: [&str; 4] = ["Cargo.toml", "build.rs", "src", "schemas"];
 
     #[derive(Debug, Deserialize)]
     struct CargoMetadata {
+        workspace_root: String,
         packages: Vec<MetadataPackage>,
         resolve: Option<MetadataResolve>,
     }
@@ -300,6 +302,7 @@ mod rust_runtime_build {
         cargo
             .args(["build", "--manifest-path"])
             .arg(&peppylib_manifest)
+            .args(["--target", target_triple.as_str()])
             .env("CARGO_TARGET_DIR", &target_dir)
             .env_remove("RUSTC")
             .env_remove("RUSTDOC")
@@ -319,8 +322,10 @@ mod rust_runtime_build {
             );
         }
 
-        let deps_source_dir = target_dir.join(profile_dir).join("deps");
-        let build_source_dir = target_dir.join(profile_dir).join("build");
+        let target_profile_dir = target_dir.join(&target_triple).join(profile_dir);
+        let deps_source_dir = target_profile_dir.join("deps");
+        let host_deps_source_dir = target_dir.join(profile_dir).join("deps");
+        let build_source_dir = target_profile_dir.join("build");
 
         let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is required"));
         let bundle_dir = out_dir.join("precompiled-rust-runtime");
@@ -334,33 +339,17 @@ mod rust_runtime_build {
         std::fs::create_dir_all(&bundle_build_dir)
             .expect("failed to create bundle build directory");
 
-        let deps_entries = std::fs::read_dir(&deps_source_dir).unwrap_or_else(|err| {
-            panic!(
-                "failed to read precompiled deps directory {}: {err}",
-                deps_source_dir.display()
+        copy_dependency_artifacts(
+            &deps_source_dir,
+            &bundle_deps_dir,
+            &BUILD_ARTIFACT_EXTENSIONS,
+        );
+        if host_deps_source_dir != deps_source_dir && host_deps_source_dir.exists() {
+            copy_dependency_artifacts(
+                &host_deps_source_dir,
+                &bundle_deps_dir,
+                &HOST_PROC_MACRO_EXTENSIONS,
             );
-        });
-        for entry in deps_entries.flatten() {
-            let source = entry.path();
-            if !source.is_file() {
-                continue;
-            }
-
-            let Some(ext) = source.extension().and_then(|ext| ext.to_str()) else {
-                continue;
-            };
-            if !BUILD_ARTIFACT_EXTENSIONS.contains(&ext) {
-                continue;
-            }
-
-            let destination = bundle_deps_dir.join(entry.file_name());
-            std::fs::copy(&source, &destination).unwrap_or_else(|err| {
-                panic!(
-                    "failed to copy {} to {}: {err}",
-                    source.display(),
-                    destination.display()
-                );
-            });
         }
 
         if build_source_dir.exists() {
@@ -471,6 +460,7 @@ mod rust_runtime_build {
 
     fn emit_rerun_for_runtime_packages(peppylib_manifest: &std::path::Path) {
         let metadata = read_cargo_metadata(peppylib_manifest);
+        emit_rerun_for_workspace_lockfile(&metadata);
         let root_package_id = resolve_root_package_id(&metadata, peppylib_manifest);
         let reachable_ids = collect_reachable_package_ids(&metadata, &root_package_id);
         let package_dirs = collect_local_package_dirs(&metadata, &reachable_ids);
@@ -482,6 +472,13 @@ mod rust_runtime_build {
                     println!("cargo:rerun-if-changed={}", watched_path.display());
                 }
             }
+        }
+    }
+
+    fn emit_rerun_for_workspace_lockfile(metadata: &CargoMetadata) {
+        let workspace_lockfile = std::path::Path::new(&metadata.workspace_root).join("Cargo.lock");
+        if workspace_lockfile.exists() {
+            println!("cargo:rerun-if-changed={}", workspace_lockfile.display());
         }
     }
 
@@ -601,6 +598,41 @@ mod rust_runtime_build {
         package_dirs.sort();
         package_dirs.dedup();
         package_dirs
+    }
+
+    fn copy_dependency_artifacts(
+        source_dir: &Path,
+        destination_dir: &Path,
+        allowed_extensions: &[&str],
+    ) {
+        let deps_entries = std::fs::read_dir(source_dir).unwrap_or_else(|err| {
+            panic!(
+                "failed to read precompiled deps directory {}: {err}",
+                source_dir.display()
+            );
+        });
+        for entry in deps_entries.flatten() {
+            let source = entry.path();
+            if !source.is_file() {
+                continue;
+            }
+
+            let Some(ext) = source.extension().and_then(|ext| ext.to_str()) else {
+                continue;
+            };
+            if !allowed_extensions.contains(&ext) {
+                continue;
+            }
+
+            let destination = destination_dir.join(entry.file_name());
+            std::fs::copy(&source, &destination).unwrap_or_else(|err| {
+                panic!(
+                    "failed to copy {} to {}: {err}",
+                    source.display(),
+                    destination.display()
+                );
+            });
+        }
     }
 
     fn contains_native_library(dir: &std::path::Path) -> bool {

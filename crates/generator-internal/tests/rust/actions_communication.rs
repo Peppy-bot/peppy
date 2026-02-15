@@ -374,8 +374,6 @@ fn main() -> Result<()> {
     let main_file = user_node_exposer.join("src").join("main.rs");
     fs::write(main_file, exposer_main).expect("failed to write exposer main");
 
-    println!("Subscriber = {}", user_node_subscriber.display());
-    println!("Exposer = {}", user_node_exposer.display());
     compile_project(&user_node_subscriber);
     compile_project(&user_node_exposer);
 
