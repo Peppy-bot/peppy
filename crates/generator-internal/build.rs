@@ -41,15 +41,26 @@ fn acquire_build_lock(lock_path: &Path) -> File {
     lock_file
 }
 
-fn copy_directory_recursive(from: &Path, to: &Path) {
-    if to.exists() {
-        std::fs::remove_dir_all(to).expect("failed to remove existing destination directory");
+fn stage_runtime_bundle(from: &Path, to: &Path) {
+    let staging = to.with_extension("staging");
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging).expect("failed to remove stale staging directory");
     }
-    std::fs::create_dir_all(to).expect("failed to create destination directory");
-    copy_directory_recursive_inner(from, to);
+    std::fs::create_dir_all(&staging).expect("failed to create staging directory");
+    copy_dir_contents_recursive(from, &staging);
+    if to.exists() {
+        std::fs::remove_dir_all(to).expect("failed to remove previous destination directory");
+    }
+    std::fs::rename(&staging, to).unwrap_or_else(|err| {
+        panic!(
+            "failed to rename {} to {}: {err}",
+            staging.display(),
+            to.display()
+        );
+    });
 }
 
-fn copy_directory_recursive_inner(from: &Path, to: &Path) {
+fn copy_dir_contents_recursive(from: &Path, to: &Path) {
     let entries = std::fs::read_dir(from).unwrap_or_else(|err| {
         panic!("failed to read {}: {err}", from.display());
     });
@@ -71,7 +82,7 @@ fn copy_directory_recursive_inner(from: &Path, to: &Path) {
                     destination_path.as_path().display()
                 );
             });
-            copy_directory_recursive_inner(&source_path, &destination_path);
+            copy_dir_contents_recursive(&source_path, &destination_path);
             continue;
         }
 
@@ -374,7 +385,7 @@ mod rust_runtime_build {
                 }
 
                 let destination_out_dir = bundle_build_dir.join(entry.file_name()).join("out");
-                super::copy_directory_recursive(&source_out_dir, &destination_out_dir);
+                super::stage_runtime_bundle(&source_out_dir, &destination_out_dir);
             }
         }
 

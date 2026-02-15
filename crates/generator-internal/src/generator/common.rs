@@ -95,7 +95,7 @@ fn render_template(template_path: &str) -> Result<String> {
     }
 }
 
-pub(crate) fn copy_directory_recursive(from: &Path, to: &Path) -> Result<()> {
+pub(crate) fn stage_runtime_bundle(from: &Path, to: &Path) -> Result<()> {
     if !from.exists() {
         return Err(Error::Io(io::Error::new(
             ErrorKind::NotFound,
@@ -103,14 +103,33 @@ pub(crate) fn copy_directory_recursive(from: &Path, to: &Path) -> Result<()> {
         )));
     }
 
+    let staging = to.with_extension("staging");
+    if staging.exists() {
+        fs::remove_dir_all(&staging)?;
+    }
+    fs::create_dir_all(&staging)?;
+
+    if let Err(err) = copy_dir_contents_recursive(from, &staging) {
+        fs::remove_dir_all(&staging).ok();
+        return Err(err);
+    }
+
     if to.exists() {
         fs::remove_dir_all(to)?;
     }
-    fs::create_dir_all(to)?;
-    copy_directory_recursive_inner(from, to)
+    fs::rename(&staging, to).map_err(|err| {
+        Error::Io(io::Error::new(
+            err.kind(),
+            format!(
+                "failed to rename {} to {}: {err}",
+                staging.display(),
+                to.display()
+            ),
+        ))
+    })
 }
 
-fn copy_directory_recursive_inner(from: &Path, to: &Path) -> Result<()> {
+fn copy_dir_contents_recursive(from: &Path, to: &Path) -> Result<()> {
     for entry in fs::read_dir(from)? {
         let entry = entry?;
         let source_path = entry.path();
@@ -119,7 +138,7 @@ fn copy_directory_recursive_inner(from: &Path, to: &Path) -> Result<()> {
 
         if file_type.is_dir() {
             fs::create_dir_all(&destination_path)?;
-            copy_directory_recursive_inner(&source_path, &destination_path)?;
+            copy_dir_contents_recursive(&source_path, &destination_path)?;
             continue;
         }
 
