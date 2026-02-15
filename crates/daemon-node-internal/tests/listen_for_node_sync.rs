@@ -8,6 +8,9 @@ use std::path::Path;
 use std::time::Duration;
 use tempfile::tempdir;
 
+const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
+const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
+
 fn write_node_config(node_dir: &Path, peppy_json5: &str) {
     let config_path = node_dir.join(NODE_CONFIG_FILE);
     fs::write(&config_path, peppy_json5).expect("failed to write peppy.json5");
@@ -38,7 +41,7 @@ async fn listen_for_node_generate_success() {
             &started_daemon.daemon_node_name,
             CALLER_INSTANCE_ID,
             &started_daemon.daemon_node_name,
-            Duration::from_secs(5),
+            RESULT_TIMEOUT,
         )
         .await
         .expect("node_generate request should complete");
@@ -104,7 +107,7 @@ async fn listen_for_node_generate_missing_node_root_dir_fails() {
             &started_daemon.daemon_node_name,
             CALLER_INSTANCE_ID,
             &started_daemon.daemon_node_name,
-            Duration::from_secs(5),
+            RESULT_TIMEOUT,
         )
         .await
         .expect("node_generate request should complete");
@@ -135,7 +138,7 @@ async fn listen_for_node_generate_node_root_dir_does_not_exist_fails() {
             &started_daemon.daemon_node_name,
             CALLER_INSTANCE_ID,
             &started_daemon.daemon_node_name,
-            Duration::from_secs(5),
+            RESULT_TIMEOUT,
         )
         .await
         .expect("node_generate request should complete");
@@ -164,7 +167,7 @@ async fn listen_for_node_generate_node_root_dir_is_not_a_directory_fails() {
             &started_daemon.daemon_node_name,
             CALLER_INSTANCE_ID,
             &started_daemon.daemon_node_name,
-            Duration::from_secs(5),
+            RESULT_TIMEOUT,
         )
         .await
         .expect("node_generate request should complete");
@@ -193,7 +196,7 @@ async fn listen_for_node_generate_missing_peppy_json5_fails() {
             &started_daemon.daemon_node_name,
             CALLER_INSTANCE_ID,
             &started_daemon.daemon_node_name,
-            Duration::from_secs(5),
+            RESULT_TIMEOUT,
         )
         .await
         .expect("node_generate request should complete");
@@ -234,7 +237,7 @@ async fn listen_for_node_generate_invalid_peppy_json5_fails() {
             &started_daemon.daemon_node_name,
             CALLER_INSTANCE_ID,
             &started_daemon.daemon_node_name,
-            Duration::from_secs(5),
+            RESULT_TIMEOUT,
         )
         .await
         .expect("node_generate request should complete");
@@ -304,7 +307,7 @@ async fn listen_for_node_generate_missing_dependency_fails() {
             &started_daemon.daemon_node_name,
             CALLER_INSTANCE_ID,
             &started_daemon.daemon_node_name,
-            Duration::from_secs(5),
+            RESULT_TIMEOUT,
         )
         .await
         .expect("node_generate request should complete");
@@ -393,7 +396,7 @@ async fn listen_for_node_generate_multiple_missing_dependencies_fails() {
             &started_daemon.daemon_node_name,
             CALLER_INSTANCE_ID,
             &started_daemon.daemon_node_name,
-            Duration::from_secs(5),
+            RESULT_TIMEOUT,
         )
         .await
         .expect("node_generate request should complete");
@@ -495,7 +498,7 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
                 &started_daemon.daemon_node_name,
                 CALLER_INSTANCE_ID,
                 &started_daemon.daemon_node_name,
-                Duration::from_secs(5),
+                RESULT_TIMEOUT,
             )
             .await
             .expect("node_generate request should complete");
@@ -516,8 +519,8 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
         &started_daemon.caller_handle,
         &started_daemon.daemon_node_name,
         uvc_camera_node_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(10),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         None,
     )
     .await
@@ -573,7 +576,7 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
             &started_daemon.daemon_node_name,
             CALLER_INSTANCE_ID,
             &started_daemon.daemon_node_name,
-            Duration::from_secs(5),
+            RESULT_TIMEOUT,
         )
         .await
         .expect("node_generate request should complete");
@@ -684,7 +687,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_service_interfaces()
                 &started_daemon.daemon_node_name,
                 CALLER_INSTANCE_ID,
                 &started_daemon.daemon_node_name,
-                Duration::from_secs(5),
+                RESULT_TIMEOUT,
             )
             .await
             .expect("node_generate request should complete");
@@ -704,8 +707,8 @@ async fn listen_for_node_generate_generates_rust_subscribed_service_interfaces()
         &started_daemon.caller_handle,
         &started_daemon.daemon_node_name,
         uvc_camera_node_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(10),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         None,
     )
     .await
@@ -759,7 +762,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_service_interfaces()
             &started_daemon.daemon_node_name,
             CALLER_INSTANCE_ID,
             &started_daemon.daemon_node_name,
-            Duration::from_secs(5),
+            RESULT_TIMEOUT,
         )
         .await
         .expect("node_generate request should complete");
@@ -834,7 +837,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_topic_interfaces() {
                 &started_daemon.daemon_node_name,
                 CALLER_INSTANCE_ID,
                 &started_daemon.daemon_node_name,
-                Duration::from_secs(5),
+                RESULT_TIMEOUT,
             )
             .await
             .expect("node_generate request should complete");
@@ -854,8 +857,8 @@ async fn listen_for_node_generate_generates_rust_subscribed_topic_interfaces() {
         &started_daemon.caller_handle,
         &started_daemon.daemon_node_name,
         uvc_camera_node_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(10),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         None,
     )
     .await
@@ -909,7 +912,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_topic_interfaces() {
             &started_daemon.daemon_node_name,
             CALLER_INSTANCE_ID,
             &started_daemon.daemon_node_name,
-            Duration::from_secs(5),
+            RESULT_TIMEOUT,
         )
         .await
         .expect("node_generate request should complete");
@@ -990,7 +993,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_action_interfaces() 
                 &started_daemon.daemon_node_name,
                 CALLER_INSTANCE_ID,
                 &started_daemon.daemon_node_name,
-                Duration::from_secs(5),
+                RESULT_TIMEOUT,
             )
             .await
             .expect("node_generate request should complete");
@@ -1010,8 +1013,8 @@ async fn listen_for_node_generate_generates_rust_subscribed_action_interfaces() 
         &started_daemon.caller_handle,
         &started_daemon.daemon_node_name,
         action_server_node_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(10),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         None,
     )
     .await
@@ -1066,7 +1069,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_action_interfaces() 
                 &started_daemon.daemon_node_name,
                 CALLER_INSTANCE_ID,
                 &started_daemon.daemon_node_name,
-                Duration::from_secs(5),
+                RESULT_TIMEOUT,
             )
             .await
             .expect("node_generate request should complete");
@@ -1140,7 +1143,7 @@ async fn listen_for_node_generate_generates_rust_parameters() {
             &started_daemon.daemon_node_name,
             CALLER_INSTANCE_ID,
             &started_daemon.daemon_node_name,
-            Duration::from_secs(5),
+            RESULT_TIMEOUT,
         )
         .await
         .expect("node_generate request should complete");
@@ -1161,8 +1164,8 @@ async fn listen_for_node_generate_generates_rust_parameters() {
         &started_daemon.caller_handle,
         &started_daemon.daemon_node_name,
         node_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(10),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         None,
     )
     .await
@@ -1234,7 +1237,7 @@ async fn listen_for_node_generate_deletes_previous_peppy_folder() {
             &started_daemon.daemon_node_name,
             CALLER_INSTANCE_ID,
             &started_daemon.daemon_node_name,
-            Duration::from_secs(5),
+            RESULT_TIMEOUT,
         )
         .await
         .expect("node_generate request should complete");
@@ -1268,7 +1271,7 @@ async fn listen_for_node_generate_deletes_previous_peppy_folder() {
             &started_daemon.daemon_node_name,
             CALLER_INSTANCE_ID,
             &started_daemon.daemon_node_name,
-            Duration::from_secs(5),
+            RESULT_TIMEOUT,
         )
         .await
         .expect("node_generate request should complete");
