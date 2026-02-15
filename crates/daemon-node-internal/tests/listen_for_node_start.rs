@@ -18,6 +18,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 
+const ADD_GOAL_TIMEOUT: Duration = Duration::from_secs(30);
+const ADD_RESULT_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Creates a temp directory with a peppy.json5 file
 fn create_node_config_dir(peppy_json5: &str) -> TempDir {
     let temp_dir = TempDir::new().expect("failed to create temp directory");
@@ -42,10 +45,8 @@ async fn listen_for_node_start_success() {
         &started_daemon.caller_handle,
         &started_daemon.daemon_node_name,
         &node_dir,
-        Duration::from_secs(30),
-        // Longer timeout to account for add_cmd execution and copying the test node folder,
-        // which may include build artifacts.
-        Duration::from_secs(120),
+        ADD_GOAL_TIMEOUT,
+        ADD_RESULT_TIMEOUT,
         None,
     )
     .await
@@ -156,8 +157,8 @@ async fn listen_for_node_start_timeout() {
         &started.caller_handle,
         &started.daemon_node_name,
         temp_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        ADD_GOAL_TIMEOUT,
+        ADD_RESULT_TIMEOUT,
         None,
     )
     .await
@@ -342,8 +343,8 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
         &started.caller_handle,
         &started.daemon_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        ADD_GOAL_TIMEOUT,
+        ADD_RESULT_TIMEOUT,
         None,
     )
     .await
@@ -469,8 +470,8 @@ async fn listen_for_node_start_writes_log_file() {
         &started.caller_handle,
         &started.daemon_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        ADD_GOAL_TIMEOUT,
+        ADD_RESULT_TIMEOUT,
         None,
     )
     .await
@@ -623,8 +624,8 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
         &started.caller_handle,
         &started.daemon_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        ADD_GOAL_TIMEOUT,
+        ADD_RESULT_TIMEOUT,
         None,
     )
     .await
@@ -755,8 +756,8 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
         &started.caller_handle,
         &started.daemon_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        ADD_GOAL_TIMEOUT,
+        ADD_RESULT_TIMEOUT,
         None,
     )
     .await
@@ -903,8 +904,8 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
         &started.caller_handle,
         &started.daemon_node_name,
         first_source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        ADD_GOAL_TIMEOUT,
+        ADD_RESULT_TIMEOUT,
         None,
     )
     .await
@@ -935,8 +936,8 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
         &started.caller_handle,
         &started.daemon_node_name,
         second_source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        ADD_GOAL_TIMEOUT,
+        ADD_RESULT_TIMEOUT,
         None,
     )
     .await
@@ -1134,8 +1135,8 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
         &started.caller_handle,
         &started.daemon_node_name,
         source_dir.path(),
-        Duration::from_secs(30),
-        Duration::from_secs(120),
+        ADD_GOAL_TIMEOUT,
+        ADD_RESULT_TIMEOUT,
         None,
     )
     .await
