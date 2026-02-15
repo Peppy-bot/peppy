@@ -1824,9 +1824,6 @@ async fn node_add_same_node_shutdown_existing_instances() {
         }
     }));
 
-    // Ensure shutdown services are fully registered before starting the overwrite.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     let source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5_v2 = format!(
         r#"{{
@@ -1865,7 +1862,10 @@ async fn node_add_same_node_shutdown_existing_instances() {
     });
 
     // Wait for the first shutdown request and ensure the stack is not overwritten yet.
-    tokio::time::timeout(Duration::from_secs(5), called_rx_1)
+    // Use RESULT_TIMEOUT because process_node_add performs synchronous file I/O
+    // (copy_node_to_storage, generate_peppygen_for_node) before reaching the shutdown
+    // phase. Under parallel test load these blocking operations can take a long time.
+    tokio::time::timeout(RESULT_TIMEOUT, called_rx_1)
         .await
         .expect("shutdown request for instance 1 should arrive within timeout")
         .expect("shutdown channel for instance 1 should not be dropped");
@@ -1881,7 +1881,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
     // Allow instance 1 shutdown response, then wait for instance 2 shutdown request.
     allow_shutdown_1.notify_one();
 
-    tokio::time::timeout(Duration::from_secs(5), called_rx_2)
+    tokio::time::timeout(RESULT_TIMEOUT, called_rx_2)
         .await
         .expect("shutdown request for instance 2 should arrive within timeout")
         .expect("shutdown channel for instance 2 should not be dropped");

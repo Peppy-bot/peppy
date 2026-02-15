@@ -230,6 +230,8 @@ fn main() -> Result<()> {
     let user_node_exposer_runtime_config_str =
         exposer_runtime_config_path.to_str().unwrap().to_owned();
 
+    println!("Subscriber node = {}", user_node_subscriber.display());
+    println!("Exposer node = {}", user_node_exposer.display());
     compile_project(&user_node_subscriber);
     compile_project(&user_node_exposer);
 
