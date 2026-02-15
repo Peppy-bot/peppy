@@ -4,9 +4,8 @@ use rust_embed::Embed;
 use std::{
     fs,
     io::{self, ErrorKind},
-    path::Path,
+    path::{Path, PathBuf},
 };
-use toml_edit::{DocumentMut, value};
 
 #[derive(Embed)]
 #[folder = "templates/"]
@@ -14,12 +13,9 @@ struct EmbeddedTemplates;
 
 #[derive(Template)]
 #[template(path = "peppygen/rust/Cargo.toml.j2", escape = "none")]
-struct PeppyConfigTemplate<'a> {
-    peppylib_version: &'a str,
-    peppylib_path: &'a str,
-}
+struct PeppyConfigTemplate;
 
-impl<'a> PeppyConfigTemplate<'a> {
+impl PeppyConfigTemplate {
     pub const TEMPLATE_PATH: &'static str = "peppygen/rust/Cargo.toml.j2";
 }
 
@@ -34,7 +30,7 @@ impl PeppyPythonConfigTemplate<'_> {
     pub const TEMPLATE_PATH: &'static str = "peppygen/python/pyproject.toml.j2";
 }
 
-pub(crate) fn copy_embedded_templates(prefix: &str, to: &Path, peppylib_path: &str) -> Result<()> {
+pub(crate) fn copy_embedded_templates(prefix: &str, to: &Path) -> Result<()> {
     let prefix_with_slash = if prefix.ends_with('/') {
         prefix.to_string()
     } else {
@@ -68,7 +64,7 @@ pub(crate) fn copy_embedded_templates(prefix: &str, to: &Path, peppylib_path: &s
 
         if relative_path.ends_with(".j2") {
             // Render template files
-            let rendered = render_template(file_path_str, peppylib_path)?;
+            let rendered = render_template(file_path_str)?;
             fs::write(&destination, rendered)?;
         } else {
             // Copy regular files
@@ -85,15 +81,9 @@ pub(crate) fn copy_embedded_templates(prefix: &str, to: &Path, peppylib_path: &s
     Ok(())
 }
 
-fn render_template(template_path: &str, peppylib_path: &str) -> Result<String> {
+fn render_template(template_path: &str) -> Result<String> {
     match template_path {
-        PeppyConfigTemplate::TEMPLATE_PATH => {
-            let tpl = PeppyConfigTemplate {
-                peppylib_version: env!("CARGO_PKG_VERSION"),
-                peppylib_path,
-            };
-            Ok(tpl.render()?)
-        }
+        PeppyConfigTemplate::TEMPLATE_PATH => Ok(PeppyConfigTemplate.render()?),
         PeppyPythonConfigTemplate::TEMPLATE_PATH => {
             let tpl = PeppyPythonConfigTemplate {
                 python_min_version: config::consts::PYTHON_MIN_VERSION,
@@ -106,113 +96,60 @@ fn render_template(template_path: &str, peppylib_path: &str) -> Result<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Shared crate-vendoring utilities
+// Shared runtime bundle utilities
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
-pub(crate) struct WorkspacePackageMetadata {
-    pub version: &'static str,
-    pub edition: &'static str,
+pub(crate) fn stage_runtime_bundle(from: &Path, to: &Path) -> Result<()> {
+    if !from.exists() {
+        return Err(Error::Io(io::Error::new(
+            ErrorKind::NotFound,
+            format!("directory does not exist: {}", from.display()),
+        )));
+    }
+
+    let staging = to.with_extension("staging");
+    if staging.exists() {
+        fs::remove_dir_all(&staging)?;
+    }
+    fs::create_dir_all(&staging)?;
+
+    if let Err(err) = copy_dir_contents_recursive(from, &staging) {
+        fs::remove_dir_all(&staging).ok();
+        return Err(err);
+    }
+
+    if to.exists() {
+        fs::remove_dir_all(to)?;
+    }
+    fs::rename(&staging, to).map_err(|err| {
+        Error::Io(io::Error::new(
+            err.kind(),
+            format!(
+                "failed to rename {} to {}: {err}",
+                staging.display(),
+                to.display()
+            ),
+        ))
+    })
 }
 
-impl WorkspacePackageMetadata {
-    pub const fn embedded() -> Self {
-        Self {
-            version: env!("CARGO_PKG_VERSION"),
-            edition: "2024",
-        }
-    }
-}
+fn copy_dir_contents_recursive(from: &Path, to: &Path) -> Result<()> {
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path: PathBuf = to.join(entry.file_name());
+        let file_type = entry.file_type()?;
 
-/// Copies all files from an embedded crate into `vendored_root/crate_dir`,
-/// then localizes the `Cargo.toml` to replace workspace inheritance.
-pub(crate) fn copy_embedded_crate<E: Embed>(
-    crate_dir: &str,
-    vendored_root: &Path,
-    metadata: &WorkspacePackageMetadata,
-) -> Result<()> {
-    let destination_dir = vendored_root.join(crate_dir);
-    if destination_dir.exists() {
-        fs::remove_dir_all(&destination_dir)?;
-    }
-
-    for file_path in E::iter() {
-        let file_path_str = file_path.as_ref();
-        let destination = destination_dir.join(file_path_str);
-
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
+        if file_type.is_dir() {
+            fs::create_dir_all(&destination_path)?;
+            copy_dir_contents_recursive(&source_path, &destination_path)?;
+            continue;
         }
 
-        let content = E::get(file_path_str).ok_or_else(|| {
-            io::Error::new(
-                ErrorKind::NotFound,
-                format!("embedded file not found: {file_path_str}"),
-            )
-        })?;
-        fs::write(&destination, content.data.as_ref())?;
-
-        // Set execute permissions on binary files in tools/ directory
-        #[cfg(unix)]
-        if file_path_str.starts_with("tools/") {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&destination)?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&destination, perms)?;
+        if file_type.is_file() {
+            fs::copy(&source_path, &destination_path)?;
         }
     }
 
-    localize_cargo_toml(&destination_dir.join("Cargo.toml"), metadata)?;
-    Ok(())
-}
-
-/// Replaces workspace-inherited fields (`version.workspace = true`, etc.)
-/// in a `Cargo.toml` with concrete values from the given metadata.
-pub(crate) fn localize_cargo_toml(
-    cargo_toml_path: &Path,
-    metadata: &WorkspacePackageMetadata,
-) -> Result<()> {
-    if !cargo_toml_path.exists() {
-        return Ok(());
-    }
-
-    let contents = fs::read_to_string(cargo_toml_path)?;
-    let mut doc: DocumentMut = contents
-        .parse()
-        .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
-
-    if let Some(package) = doc.get_mut("package").and_then(|p| p.as_table_mut()) {
-        if package
-            .get("version")
-            .and_then(|v| v.as_table())
-            .and_then(|table| table.get("workspace"))
-            .and_then(|w| w.as_bool())
-            == Some(true)
-        {
-            package.insert("version", value(metadata.version));
-        }
-
-        if package
-            .get("edition")
-            .and_then(|v| v.as_table())
-            .and_then(|table| table.get("workspace"))
-            .and_then(|w| w.as_bool())
-            == Some(true)
-        {
-            package.insert("edition", value(metadata.edition));
-        }
-
-        if package
-            .get("authors")
-            .and_then(|v| v.as_table())
-            .and_then(|table| table.get("workspace"))
-            .and_then(|w| w.as_bool())
-            == Some(true)
-        {
-            package.remove("authors");
-        }
-    }
-
-    fs::write(cargo_toml_path, doc.to_string())?;
     Ok(())
 }

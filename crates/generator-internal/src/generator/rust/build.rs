@@ -2,94 +2,39 @@ use super::identifiers::is_rust_keyword;
 use crate::{
     error::{Error, Result},
     generator::{
-        common::{WorkspacePackageMetadata, copy_embedded_crate},
+        common::stage_runtime_bundle,
         naming::{sanitize_component, unique_module_name},
         types::{CapnpSchema, InterfaceArtifact, InterfaceKind},
     },
 };
+use config::consts::{PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use config::encoding::compile_capnp;
 use proc_macro2::Span;
-use rust_embed::Embed;
 use std::{
     collections::{BTreeMap, HashMap},
-    fs,
+    ffi::OsStr,
+    fs, io,
     path::{Path, PathBuf},
 };
 use syn::{
     Attribute, File, FnArg, ImplItem, ImplItemFn, Item, ItemFn, ItemImpl, Type, parse_file,
     parse_quote,
 };
+use toml_edit::{Array, DocumentMut, Item as TomlItem, Table, value};
 
-#[derive(Embed)]
-#[folder = "../peppylib/"]
-#[include = "*.rs"]
-#[include = "*.toml"]
-#[include = "*.capnp"]
-#[include = "*.j2"]
-#[exclude = "target/*"]
-#[exclude = "tests/*"]
-#[exclude = "examples/*"]
-struct EmbeddedPeppylib;
-
-#[derive(Embed)]
-#[folder = "../pmi-internal/"]
-#[include = "*.rs"]
-#[include = "*.toml"]
-#[include = "*.capnp"]
-#[include = "*.j2"]
-#[exclude = "target/*"]
-#[exclude = "tests/*"]
-struct EmbeddedPmiInternal;
-
-#[derive(Embed)]
-#[folder = "../config-internal/"]
-#[include = "*.rs"]
-#[include = "*.toml"]
-#[include = "*.capnp"]
-#[include = "*.j2"]
-#[include = "tools/capnp_*"]
-#[exclude = "target/*"]
-#[exclude = "tests/*"]
-struct EmbeddedConfigInternal;
-
-#[derive(Embed)]
-#[folder = "../node-stack-internal/"]
-#[include = "*.rs"]
-#[include = "*.toml"]
-#[include = "*.capnp"]
-#[include = "*.j2"]
-#[exclude = "target/*"]
-#[exclude = "tests/*"]
-struct EmbeddedNodeStackInternal;
+const PRECOMPILED_CACHE_DIR: &str = "cache";
+const PRECOMPILED_CACHE_RUST_DIR: &str = "rust";
+const PRECOMPILED_DEPS_DIR: &str = "deps";
+const PRECOMPILED_BUILD_DIR: &str = "build";
+const PRECOMPILED_EXTERN_CRATES: [&str; 3] = ["peppylib", "capnp", "bytes"];
 
 pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>) -> Result<()> {
-    const PEPPYLIB_DIR: &str = "peppylib";
-    const PMI_INTERNAL_DIR: &str = "pmi-internal";
-    const CONFIG_INTERNAL_DIR: &str = "config-internal";
-    const NODE_STACK_DIR: &str = "node-stack-internal";
-    const VENDORED_ROOT: &str = "crates";
-    const PEPPYLIB_RELATIVE_PATH: &str = "crates/peppylib";
-
     let to_path = to_path.as_ref();
-    let vendored_crates_dir = to_path.join(VENDORED_ROOT);
-    fs::create_dir_all(&vendored_crates_dir)?;
-
-    generate_lib_structure(to_path, PEPPYLIB_RELATIVE_PATH)?;
-
-    let metadata = WorkspacePackageMetadata::embedded();
-
-    copy_embedded_crate::<EmbeddedPeppylib>(PEPPYLIB_DIR, &vendored_crates_dir, &metadata)?;
-    copy_embedded_crate::<EmbeddedPmiInternal>(PMI_INTERNAL_DIR, &vendored_crates_dir, &metadata)?;
-    copy_embedded_crate::<EmbeddedConfigInternal>(
-        CONFIG_INTERNAL_DIR,
-        &vendored_crates_dir,
-        &metadata,
-    )?;
-    copy_embedded_crate::<EmbeddedNodeStackInternal>(
-        NODE_STACK_DIR,
-        &vendored_crates_dir,
-        &metadata,
-    )?;
+    generate_lib_structure(to_path)?;
+    let config_root =
+        infer_node_root_from_peppygen_dir(to_path).unwrap_or_else(|| to_path.to_path_buf());
+    let runtime_dir = copy_precompiled_runtime_bundle(&config_root)?;
+    configure_cargo_for_precompiled_runtime(&config_root, &runtime_dir)?;
     Ok(())
 }
 
@@ -159,76 +104,309 @@ pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, crate_root: &Pa
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum ModuleCategory {
-    ExposedTopics,
-    SubscribedTopics,
-    ExposedServices,
-    SubscribedServices,
-    ExposedActions,
-    SubscribedActions,
+// ---------------------------------------------------------------------------
+// Precompiled runtime deployment
+// ---------------------------------------------------------------------------
+
+fn copy_precompiled_runtime_bundle(config_root: &Path) -> Result<PathBuf> {
+    let source_bundle = Path::new(env!("PEPPY_RUST_PRECOMPILED_BUNDLE_DIR"));
+    if !source_bundle.exists() {
+        return Err(Error::Io(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "missing precompiled Rust runtime bundle at {}",
+                source_bundle.display()
+            ),
+        )));
+    }
+
+    let destination_bundle = runtime_cache_dir(config_root);
+    stage_runtime_bundle(source_bundle, &destination_bundle)?;
+    Ok(destination_bundle)
 }
 
-impl ModuleCategory {
-    const ALL: [Self; 6] = [
-        Self::ExposedTopics,
-        Self::SubscribedTopics,
-        Self::ExposedServices,
-        Self::SubscribedServices,
-        Self::ExposedActions,
-        Self::SubscribedActions,
-    ];
+fn configure_cargo_for_precompiled_runtime(config_root: &Path, runtime_dir: &Path) -> Result<()> {
+    let deps_dir = runtime_dir.join(PRECOMPILED_DEPS_DIR);
+    let build_dir = runtime_dir.join(PRECOMPILED_BUILD_DIR);
 
-    fn from_kind(kind: InterfaceKind) -> Self {
-        match kind {
-            InterfaceKind::ExposedTopic => Self::ExposedTopics,
-            InterfaceKind::SubscribedTopic => Self::SubscribedTopics,
-            InterfaceKind::ExposedService => Self::ExposedServices,
-            InterfaceKind::SubscribedService => Self::SubscribedServices,
-            InterfaceKind::ExposedAction => Self::ExposedActions,
-            InterfaceKind::SubscribedAction => Self::SubscribedActions,
+    let extern_crate_rlibs = collect_runtime_extern_rlibs(&deps_dir)?;
+    let mut native_dirs = collect_native_dirs(&build_dir)?;
+
+    // Include system library search paths (e.g., OpenSSL) captured during precompilation
+    let system_paths_file = runtime_dir.join("system-native-search-paths.txt");
+    if system_paths_file.exists() {
+        let contents = fs::read_to_string(&system_paths_file)?;
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                native_dirs.push(PathBuf::from(trimmed));
+            }
         }
     }
 
-    fn struct_name(self) -> &'static str {
-        match self {
-            Self::ExposedTopics => "ExposedTopics",
-            Self::SubscribedTopics => "SubscribedTopics",
-            Self::ExposedServices => "ExposedServices",
-            Self::SubscribedServices => "SubscribedServices",
-            Self::ExposedActions => "ExposedActions",
-            Self::SubscribedActions => "SubscribedActions",
-        }
-    }
+    native_dirs.sort();
+    native_dirs.dedup();
 
-    fn module_file_name(self) -> &'static str {
-        match self {
-            Self::ExposedTopics => "exposed_topics",
-            Self::SubscribedTopics => "subscribed_topics",
-            Self::ExposedServices => "exposed_services",
-            Self::SubscribedServices => "subscribed_services",
-            Self::ExposedActions => "exposed_actions",
-            Self::SubscribedActions => "subscribed_actions",
-        }
-    }
+    write_precompiled_rustflags(config_root, &extern_crate_rlibs, &deps_dir, &native_dirs)
+}
 
-    fn doc_label(self) -> &'static str {
-        match self {
-            Self::ExposedTopics => "exposed topics",
-            Self::SubscribedTopics => "subscribed topics",
-            Self::ExposedServices => "exposed services",
-            Self::SubscribedServices => "subscribed services",
-            Self::ExposedActions => "exposed actions",
-            Self::SubscribedActions => "subscribed actions",
-        }
+fn runtime_cache_dir(config_root: &Path) -> PathBuf {
+    config_root
+        .join(PEPPY_OUTPUT_DIR)
+        .join(PRECOMPILED_CACHE_DIR)
+        .join(PRECOMPILED_CACHE_RUST_DIR)
+        .join(env!("PEPPY_RUST_PRECOMPILED_TARGET"))
+        .join(env!("PEPPY_RUST_PRECOMPILED_RUSTC"))
+        .join(env!("PEPPY_RUST_PRECOMPILED_PROFILE_DIR"))
+}
+
+fn infer_node_root_from_peppygen_dir(peppygen_dir: &Path) -> Option<PathBuf> {
+    let component_count = Path::new(PEPPYGEN_OUTPUT_PATH).components().count();
+    let candidate_root = peppygen_dir.ancestors().nth(component_count)?;
+    if candidate_root.join(PEPPYGEN_OUTPUT_PATH) == peppygen_dir {
+        Some(candidate_root.to_path_buf())
+    } else {
+        None
     }
 }
 
-fn generate_lib_structure(to_path: impl AsRef<Path>, peppylib_path: &str) -> Result<()> {
+fn collect_runtime_extern_rlibs(deps_dir: &Path) -> Result<Vec<(String, PathBuf)>> {
+    let mut externs = Vec::new();
+
+    for crate_name in PRECOMPILED_EXTERN_CRATES {
+        let rlib = find_crate_rlib(deps_dir, crate_name)?;
+        externs.push((crate_name.to_owned(), rlib));
+    }
+
+    Ok(externs)
+}
+
+fn find_crate_rlib(deps_dir: &Path, crate_name: &str) -> Result<PathBuf> {
+    let needle = format!("lib{crate_name}-");
+    let mut candidates: Vec<PathBuf> = fs::read_dir(deps_dir)?
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path.extension() == Some(OsStr::new("rlib"))
+                && path
+                    .file_name()
+                    .and_then(OsStr::to_str)
+                    .is_some_and(|name| name.starts_with(&needle))
+        })
+        .collect();
+
+    candidates.sort();
+    candidates.into_iter().next().ok_or_else(|| {
+        Error::Io(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "missing precompiled crate `{crate_name}` rlib under {}",
+                deps_dir.display()
+            ),
+        ))
+    })
+}
+
+fn collect_native_dirs(build_dir: &Path) -> Result<Vec<PathBuf>> {
+    if !build_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut dirs = Vec::new();
+    collect_native_dirs_inner(build_dir, &mut dirs)?;
+    Ok(dirs)
+}
+
+fn collect_native_dirs_inner(current: &Path, dirs: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(current)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+
+        if file_type.is_dir() {
+            collect_native_dirs_inner(&path, dirs)?;
+            continue;
+        }
+
+        if file_type.is_file()
+            && path
+                .extension()
+                .and_then(OsStr::to_str)
+                .is_some_and(is_native_lib_extension)
+            && let Some(parent) = path.parent()
+        {
+            dirs.push(parent.to_path_buf());
+        }
+    }
+
+    Ok(())
+}
+
+fn is_native_lib_extension(ext: &str) -> bool {
+    matches!(ext, "a" | "so" | "dylib" | "dll" | "lib")
+}
+
+// ---------------------------------------------------------------------------
+// .cargo/config.toml rustflags management
+// ---------------------------------------------------------------------------
+
+fn write_precompiled_rustflags(
+    config_root: &Path,
+    extern_crate_rlibs: &[(String, PathBuf)],
+    deps_dir: &Path,
+    native_dirs: &[PathBuf],
+) -> Result<()> {
+    let config_path = config_root.join(".cargo").join("config.toml");
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut doc: DocumentMut = if config_path.exists() {
+        fs::read_to_string(&config_path).and_then(|contents| {
+            contents.parse().map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("failed to parse {}: {err}", config_path.display()),
+                )
+            })
+        })?
+    } else {
+        DocumentMut::new()
+    };
+
+    if !doc.as_table().contains_key("build") {
+        doc["build"] = TomlItem::Table(Table::new());
+    }
+
+    let build_table = doc
+        .get_mut("build")
+        .and_then(TomlItem::as_table_mut)
+        .ok_or_else(|| {
+            Error::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected [build] table in {}", config_path.display()),
+            ))
+        })?;
+
+    let mut flags = read_existing_rustflags(build_table);
+    flags = strip_managed_rustflags(flags);
+
+    for (crate_name, rlib_path) in extern_crate_rlibs {
+        let rlib_path = normalize_path_for_rustflags(rlib_path);
+        append_flag_pair_if_missing(&mut flags, "--extern", format!("{crate_name}={rlib_path}"));
+    }
+    let deps_dir = normalize_path_for_rustflags(deps_dir);
+    append_flag_pair_if_missing(&mut flags, "-L", format!("dependency={deps_dir}"));
+
+    for native_dir in native_dirs {
+        let native_dir = normalize_path_for_rustflags(native_dir);
+        append_flag_pair_if_missing(&mut flags, "-L", format!("native={native_dir}"));
+    }
+
+    let mut rustflags = Array::new();
+    for flag in flags {
+        rustflags.push(flag);
+    }
+    build_table["rustflags"] = value(rustflags);
+
+    fs::write(config_path, doc.to_string())?;
+    Ok(())
+}
+
+fn read_existing_rustflags(build_table: &Table) -> Vec<String> {
+    let Some(existing) = build_table.get("rustflags") else {
+        return Vec::new();
+    };
+
+    if let Some(array) = existing.as_array() {
+        return array
+            .iter()
+            .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+            .collect();
+    }
+
+    if let Some(single) = existing.as_str() {
+        return vec![single.to_owned()];
+    }
+
+    Vec::new()
+}
+
+fn append_flag_pair_if_missing(flags: &mut Vec<String>, flag: &str, value: String) {
+    let mut idx = 0usize;
+    while idx + 1 < flags.len() {
+        if flags[idx] == flag && flags[idx + 1] == value {
+            return;
+        }
+        idx += 1;
+    }
+
+    flags.push(flag.to_owned());
+    flags.push(value);
+}
+
+fn normalize_path_for_rustflags(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn strip_managed_rustflags(flags: Vec<String>) -> Vec<String> {
+    let mut retained = Vec::new();
+    let mut idx = 0usize;
+
+    while idx < flags.len() {
+        if idx + 1 < flags.len() && is_managed_flag_pair(&flags[idx], &flags[idx + 1]) {
+            idx += 2;
+            continue;
+        }
+
+        retained.push(flags[idx].clone());
+        idx += 1;
+    }
+
+    retained
+}
+
+fn is_managed_flag_pair(flag: &str, value: &str) -> bool {
+    if flag == "--extern" {
+        if let Some((crate_name, _)) = value.split_once('=')
+            && PRECOMPILED_EXTERN_CRATES.contains(&crate_name)
+        {
+            return true;
+        }
+    }
+
+    if flag == "-L" {
+        if let Some(path) = value.strip_prefix("dependency=") {
+            return is_managed_dependency_path(path);
+        }
+        if let Some(path) = value.strip_prefix("native=") {
+            return is_managed_native_path(path);
+        }
+    }
+
+    false
+}
+
+fn is_managed_dependency_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    normalized.contains("/.peppy/cache/rust/") && normalized.ends_with("/deps")
+}
+
+fn is_managed_native_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    normalized.contains("/.peppy/cache/rust/") && normalized.contains("/build/")
+}
+
+// ---------------------------------------------------------------------------
+// Library structure generation
+// ---------------------------------------------------------------------------
+
+fn generate_lib_structure(to_path: impl AsRef<Path>) -> Result<()> {
     let to_path = to_path.as_ref();
     fs::create_dir_all(to_path)?;
 
-    crate::generator::common::copy_embedded_templates("peppygen/rust", to_path, peppylib_path)
+    crate::generator::common::copy_embedded_templates("peppygen/rust", to_path)
 }
 
 fn group_artifacts_by_category(
@@ -483,6 +661,71 @@ fn sanitize_rust_module_name(raw: &str) -> String {
         out.push('_');
     }
     out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ModuleCategory {
+    ExposedTopics,
+    SubscribedTopics,
+    ExposedServices,
+    SubscribedServices,
+    ExposedActions,
+    SubscribedActions,
+}
+
+impl ModuleCategory {
+    const ALL: [Self; 6] = [
+        Self::ExposedTopics,
+        Self::SubscribedTopics,
+        Self::ExposedServices,
+        Self::SubscribedServices,
+        Self::ExposedActions,
+        Self::SubscribedActions,
+    ];
+
+    fn from_kind(kind: InterfaceKind) -> Self {
+        match kind {
+            InterfaceKind::ExposedTopic => Self::ExposedTopics,
+            InterfaceKind::SubscribedTopic => Self::SubscribedTopics,
+            InterfaceKind::ExposedService => Self::ExposedServices,
+            InterfaceKind::SubscribedService => Self::SubscribedServices,
+            InterfaceKind::ExposedAction => Self::ExposedActions,
+            InterfaceKind::SubscribedAction => Self::SubscribedActions,
+        }
+    }
+
+    fn struct_name(self) -> &'static str {
+        match self {
+            Self::ExposedTopics => "ExposedTopics",
+            Self::SubscribedTopics => "SubscribedTopics",
+            Self::ExposedServices => "ExposedServices",
+            Self::SubscribedServices => "SubscribedServices",
+            Self::ExposedActions => "ExposedActions",
+            Self::SubscribedActions => "SubscribedActions",
+        }
+    }
+
+    fn module_file_name(self) -> &'static str {
+        match self {
+            Self::ExposedTopics => "exposed_topics",
+            Self::SubscribedTopics => "subscribed_topics",
+            Self::ExposedServices => "exposed_services",
+            Self::SubscribedServices => "subscribed_services",
+            Self::ExposedActions => "exposed_actions",
+            Self::SubscribedActions => "subscribed_actions",
+        }
+    }
+
+    fn doc_label(self) -> &'static str {
+        match self {
+            Self::ExposedTopics => "exposed topics",
+            Self::SubscribedTopics => "subscribed topics",
+            Self::ExposedServices => "exposed services",
+            Self::SubscribedServices => "subscribed services",
+            Self::ExposedActions => "exposed actions",
+            Self::SubscribedActions => "subscribed actions",
+        }
+    }
 }
 
 #[cfg(test)]

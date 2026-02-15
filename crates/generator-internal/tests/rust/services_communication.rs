@@ -1,7 +1,8 @@
 use crate::helpers::{
-    STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output, init_cargo_user_node,
-    init_test_env, send_shutdown, spawn_cargo_run, try_send_shutdown, wait_for_child,
-    wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
+    STUB_NODE_CONFIG, WaitContext, assert_rust_precompiled_runtime_layout, compile_project,
+    copy_config_to_output, init_cargo_user_node, init_test_env, send_shutdown, spawn_cargo_run,
+    try_send_shutdown, wait_for_child, wait_for_health_service_reachable_or_exit,
+    wait_for_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
@@ -118,6 +119,7 @@ async fn services_communication_no_target_instance_id() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
+    assert_rust_precompiled_runtime_layout(&output_dir_subscriber);
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -176,6 +178,7 @@ fn main() -> Result<()> {
     generator.add_exposed_service(&exposed_service).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator.build(&output_dir_exposer).unwrap();
+    assert_rust_precompiled_runtime_layout(&output_dir_exposer);
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -388,6 +391,7 @@ async fn services_communication_exposed_service_without_request_body() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
+    assert_rust_precompiled_runtime_layout(&output_dir_subscriber);
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -443,6 +447,7 @@ fn main() -> Result<()> {
     generator.add_exposed_service(&exposed_service).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator.build(&output_dir_exposer).unwrap();
+    assert_rust_precompiled_runtime_layout(&output_dir_exposer);
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -645,6 +650,7 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
+    assert_rust_precompiled_runtime_layout(&output_dir_subscriber);
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -702,6 +708,7 @@ fn main() -> Result<()> {
     generator.add_exposed_service(&exposed_service).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer1, &output_dir_exposer1);
     generator.build(&output_dir_exposer1).unwrap();
+    assert_rust_precompiled_runtime_layout(&output_dir_exposer1);
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -759,6 +766,7 @@ fn main() -> Result<()> {
     generator.add_exposed_service(&exposed_service2).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer2, &output_dir_exposer2);
     generator.build(&output_dir_exposer2).unwrap();
+    assert_rust_precompiled_runtime_layout(&output_dir_exposer2);
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,

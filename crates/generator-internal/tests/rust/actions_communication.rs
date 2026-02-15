@@ -1,7 +1,8 @@
 use crate::helpers::{
-    STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output, init_cargo_user_node,
-    init_test_env, send_shutdown, spawn_cargo_run, wait_for_action_service_reachable_or_exit,
-    wait_for_child, wait_for_health_service_reachable_or_exit,
+    STUB_NODE_CONFIG, WaitContext, assert_rust_precompiled_runtime_layout, compile_project,
+    copy_config_to_output, init_cargo_user_node, init_test_env, send_shutdown, spawn_cargo_run,
+    wait_for_action_service_reachable_or_exit, wait_for_child,
+    wait_for_health_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
@@ -151,6 +152,7 @@ async fn actions_communication() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
+    assert_rust_precompiled_runtime_layout(&output_dir_subscriber);
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -256,6 +258,7 @@ fn main() -> Result<()> {
     generator.add_exposed_action(&exposed_action).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator.build(&output_dir_exposer).unwrap();
+    assert_rust_precompiled_runtime_layout(&output_dir_exposer);
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -371,6 +374,8 @@ fn main() -> Result<()> {
     let main_file = user_node_exposer.join("src").join("main.rs");
     fs::write(main_file, exposer_main).expect("failed to write exposer main");
 
+    println!("User subscriber node = {}", user_node_subscriber.display());
+    println!("User exposer node = {}", user_node_exposer.display());
     compile_project(&user_node_subscriber);
     compile_project(&user_node_exposer);
 
@@ -537,6 +542,7 @@ async fn actions_communication_cancel_goal() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator.build(&output_dir_subscriber).unwrap();
+    assert_rust_precompiled_runtime_layout(&output_dir_subscriber);
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -606,6 +612,7 @@ fn main() -> Result<()> {
     generator.add_exposed_action(&exposed_action).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator.build(&output_dir_exposer).unwrap();
+    assert_rust_precompiled_runtime_layout(&output_dir_exposer);
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
