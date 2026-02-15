@@ -82,13 +82,12 @@ pub fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
 
     let mut updated_manifest = manifest_contents.clone();
 
-    if !updated_manifest
-        .lines()
-        .any(|line| line.trim_start().starts_with("tokio"))
-    {
-        let tokio_dependency_line = "tokio = { version = \"1.47.0\", features = [\"macros\", \"rt-multi-thread\", \"time\"] }\n";
-        updated_manifest = insert_dependency_line(&updated_manifest, tokio_dependency_line);
-    }
+    // NOTE: tokio is intentionally NOT listed here. It is provided via
+    // `--extern tokio=<precompiled>` in `.cargo/config.toml` rustflags,
+    // which is written by the generator's `add_peppylib_dependencies`.
+    // Declaring tokio in Cargo.toml would cause cargo to compile a second,
+    // independent tokio instance whose runtime TLS is separate from the
+    // precompiled peppylib's tokio, leading to silent async failures.
 
     if !updated_manifest
         .lines()

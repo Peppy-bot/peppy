@@ -26,7 +26,7 @@ const PRECOMPILED_CACHE_DIR: &str = "cache";
 const PRECOMPILED_CACHE_RUST_DIR: &str = "rust";
 const PRECOMPILED_DEPS_DIR: &str = "deps";
 const PRECOMPILED_BUILD_DIR: &str = "build";
-const PRECOMPILED_EXTERN_CRATES: [&str; 3] = ["peppylib", "capnp", "bytes"];
+const PRECOMPILED_EXTERN_CRATES: [&str; 4] = ["peppylib", "capnp", "bytes", "tokio"];
 
 pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>) -> Result<()> {
     let to_path = to_path.as_ref();
