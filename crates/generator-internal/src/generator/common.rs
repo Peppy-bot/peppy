@@ -129,6 +129,14 @@ pub(crate) fn stage_runtime_bundle(from: &Path, to: &Path) -> Result<()> {
     })
 }
 
+pub(crate) fn copy_directory_recursive(from: &Path, to: &Path) -> Result<()> {
+    if to.exists() {
+        fs::remove_dir_all(to)?;
+    }
+    fs::create_dir_all(to)?;
+    copy_dir_contents_recursive(from, to)
+}
+
 fn copy_dir_contents_recursive(from: &Path, to: &Path) -> Result<()> {
     for entry in fs::read_dir(from)? {
         let entry = entry?;

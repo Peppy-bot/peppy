@@ -225,6 +225,8 @@ mod python_runtime_build {
             .env("CARGO_TARGET_DIR", &target_dir)
             .env_remove("RUSTC")
             .env_remove("RUSTDOC")
+            .env_remove("VIRTUAL_ENV")
+            .env_remove("CONDA_PREFIX")
             .output()
             .expect("failed to run `pixi run` for peppylib-py");
 
