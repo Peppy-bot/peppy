@@ -291,6 +291,8 @@ mod rust_runtime_build {
 
         let profile = std::env::var("PROFILE").expect("PROFILE is required");
         let profile_dir = super::profile_target_subdir(&profile);
+        let target_triple = std::env::var("TARGET").expect("TARGET is required");
+        let rustc_fingerprint = rustc_fingerprint();
 
         println!("cargo:warning=Building precompiled Rust runtime artifacts ({profile})…");
 
@@ -406,10 +408,65 @@ mod rust_runtime_build {
             bundle_deps_dir.display()
         );
 
+        println!("cargo:rustc-env=PEPPY_RUST_PRECOMPILED_TARGET={target_triple}");
+        println!("cargo:rustc-env=PEPPY_RUST_PRECOMPILED_PROFILE_DIR={profile_dir}");
+        println!("cargo:rustc-env=PEPPY_RUST_PRECOMPILED_RUSTC={rustc_fingerprint}");
         println!(
             "cargo:rustc-env=PEPPY_RUST_PRECOMPILED_BUNDLE_DIR={}",
             bundle_dir.display()
         );
+    }
+
+    fn rustc_fingerprint() -> String {
+        let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_owned());
+        let output = Command::new(&rustc)
+            .arg("-vV")
+            .output()
+            .unwrap_or_else(|err| panic!("failed to run `{rustc} -vV`: {err}"));
+        if !output.status.success() {
+            panic!(
+                "`{rustc} -vV` failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+
+        let version_info = String::from_utf8(output.stdout)
+            .unwrap_or_else(|err| panic!("invalid UTF-8 in `{rustc} -vV` output: {err}"));
+
+        let mut release = None;
+        let mut host = None;
+        let mut commit_hash = None;
+
+        for line in version_info.lines() {
+            if let Some(value) = line.strip_prefix("release: ") {
+                release = Some(value.trim().to_owned());
+            } else if let Some(value) = line.strip_prefix("host: ") {
+                host = Some(value.trim().to_owned());
+            } else if let Some(value) = line.strip_prefix("commit-hash: ") {
+                commit_hash = Some(value.trim().to_owned());
+            }
+        }
+
+        format!(
+            "{}-{}-{}",
+            sanitize_path_component(release.as_deref().unwrap_or("unknown")),
+            sanitize_path_component(host.as_deref().unwrap_or("unknown")),
+            sanitize_path_component(commit_hash.as_deref().unwrap_or("unknown")),
+        )
+    }
+
+    fn sanitize_path_component(value: &str) -> String {
+        let sanitized: String = value
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+            .collect();
+
+        if sanitized.is_empty() {
+            "unknown".to_owned()
+        } else {
+            sanitized
+        }
     }
 
     fn emit_rerun_for_runtime_packages(peppylib_manifest: &std::path::Path) {

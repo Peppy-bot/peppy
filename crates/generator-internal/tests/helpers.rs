@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
 use config::consts::{
-    NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION,
+    NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PEPPY_OUTPUT_DIR, PYTHON_MAX_VERSION,
+    PYTHON_MIN_VERSION,
 };
 use config::node::PeppygenLanguage;
 use generator::generate_peppygen_lib;
@@ -9,7 +10,7 @@ use peppylib::messaging::{ActionMessenger, NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE
 use peppylib::{MessengerHandle, ServiceMessenger};
 use std::ffi::OsStr;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 use std::{fs, thread, time::Duration};
@@ -190,41 +191,89 @@ pub fn compile_project(dir: impl AsRef<Path>) {
 pub fn assert_rust_precompiled_runtime_layout(peppygen_dir: &Path) {
     assert!(
         !peppygen_dir.join("crates").exists(),
-        "legacy vendored Rust crates should not be generated at {}",
+        "vendored Rust crates should not be generated at {}",
         peppygen_dir.join("crates").display()
     );
 
-    let precompiled_root = peppygen_dir.join("precompiled").join("rust");
-    let deps_dir = precompiled_root.join("deps");
+    let node_root = infer_node_root_from_peppygen_dir(peppygen_dir).unwrap_or_else(|| {
+        panic!(
+            "failed to infer node root from peppygen directory {}",
+            peppygen_dir.display()
+        )
+    });
+    let runtime_cache_root = node_root.join(PEPPY_OUTPUT_DIR).join("cache").join("rust");
     assert!(
-        deps_dir.exists(),
-        "expected precompiled dependency artifacts at {}",
-        deps_dir.display()
+        runtime_cache_root.exists(),
+        "expected runtime cache root at {}",
+        runtime_cache_root.display()
     );
 
-    let has_peppylib_rlib = fs::read_dir(&deps_dir)
-        .expect("failed to read precompiled deps directory")
-        .flatten()
-        .map(|entry| entry.path())
-        .any(|path| {
-            path.extension() == Some(OsStr::new("rlib"))
-                && path
-                    .file_name()
-                    .and_then(OsStr::to_str)
-                    .is_some_and(|name| name.starts_with("libpeppylib-"))
-        });
+    let mut deps_dirs = Vec::new();
+    collect_dirs_named(&runtime_cache_root, "deps", &mut deps_dirs);
+    assert!(
+        !deps_dirs.is_empty(),
+        "expected at least one deps directory under {}",
+        runtime_cache_root.display()
+    );
+
+    let has_peppylib_rlib = deps_dirs.iter().any(|deps_dir| {
+        fs::read_dir(deps_dir)
+            .expect("failed to read cached deps directory")
+            .flatten()
+            .map(|entry| entry.path())
+            .any(|path| {
+                path.extension() == Some(OsStr::new("rlib"))
+                    && path
+                        .file_name()
+                        .and_then(OsStr::to_str)
+                        .is_some_and(|name| name.starts_with("libpeppylib-"))
+            })
+    });
     assert!(
         has_peppylib_rlib,
         "expected precompiled peppylib rlib under {}",
-        deps_dir.display()
+        runtime_cache_root.display()
     );
 
-    let build_dir = precompiled_root.join("build");
+    let mut build_dirs = Vec::new();
+    collect_dirs_named(&runtime_cache_root, "build", &mut build_dirs);
     assert!(
-        build_dir.exists(),
-        "expected precompiled native build outputs at {}",
-        build_dir.display()
+        !build_dirs.is_empty(),
+        "expected precompiled native build outputs under {}",
+        runtime_cache_root.display()
     );
+}
+
+fn infer_node_root_from_peppygen_dir(peppygen_dir: &Path) -> Option<PathBuf> {
+    let component_count = Path::new(PEPPYGEN_OUTPUT_PATH).components().count();
+    let candidate_root = peppygen_dir.ancestors().nth(component_count)?;
+    if candidate_root.join(PEPPYGEN_OUTPUT_PATH) == peppygen_dir {
+        Some(candidate_root.to_path_buf())
+    } else {
+        None
+    }
+}
+
+fn collect_dirs_named(root: &Path, target_name: &str, out: &mut Vec<PathBuf>) {
+    let entries = fs::read_dir(root).unwrap_or_else(|err| {
+        panic!("failed to read {}: {err}", root.display());
+    });
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_type = entry.file_type().unwrap_or_else(|err| {
+            panic!("failed to read file type for {}: {err}", path.display());
+        });
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        if entry.file_name() == OsStr::new(target_name) {
+            out.push(path.clone());
+        }
+
+        collect_dirs_named(&path, target_name, out);
+    }
 }
 
 pub fn insert_dependency_line(contents: &str, dependency_line: &str) -> String {
