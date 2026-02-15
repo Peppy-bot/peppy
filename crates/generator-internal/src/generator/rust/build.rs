@@ -368,12 +368,11 @@ fn strip_managed_rustflags(flags: Vec<String>) -> Vec<String> {
 }
 
 fn is_managed_flag_pair(flag: &str, value: &str) -> bool {
-    if flag == "--extern" {
-        if let Some((crate_name, _)) = value.split_once('=')
-            && PRECOMPILED_EXTERN_CRATES.contains(&crate_name)
-        {
-            return true;
-        }
+    if flag == "--extern"
+        && let Some((crate_name, _)) = value.split_once('=')
+        && PRECOMPILED_EXTERN_CRATES.contains(&crate_name)
+    {
+        return true;
     }
 
     if flag == "-L" {
