@@ -143,26 +143,20 @@ async fn services_communication_no_target_instance_id() {
     init_python_user_node(&user_node_subscriber);
     let subscriber_main = r#"
 import asyncio
-import sys
-import traceback
 from peppygen import NodeBuilder
 from peppygen.subscribed_services import uvc_camera_enable_camera
 
-def setup(parameters, node_runner):
-    try:
-        request = uvc_camera_enable_camera.Request(enable=True)
-        response = asyncio.run(
-            uvc_camera_enable_camera.poll(node_runner, request, 5.0, None, None)
-        )
-        error_msg = response.data.error_msg if response.data.error_msg is not None else "<none>"
-        print(
-            f"enable_camera result: service_id={response.instance_id} enabled={response.data.enabled} error={error_msg}",
-            flush=True,
-        )
-    except Exception as e:
-        print(f"subscriber error: {e}", flush=True)
-        traceback.print_exc()
-        raise
+async def poll_service(node_runner):
+    request = uvc_camera_enable_camera.Request(enable=True)
+    response = await uvc_camera_enable_camera.poll(node_runner, request, 5.0, None, None)
+    error_msg = response.data.error_msg if response.data.error_msg is not None else "<none>"
+    print(
+        f"enable_camera result: service_id={response.instance_id} enabled={response.data.enabled} error={error_msg}",
+        flush=True,
+    )
+
+async def setup(parameters, node_runner):
+    asyncio.create_task(poll_service(node_runner))
 
 def main():
     NodeBuilder().run(setup)
@@ -207,30 +201,24 @@ if __name__ == "__main__":
     init_python_user_node(&user_node_exposer);
     let exposer_main = r#"
 import asyncio
-import sys
-import traceback
 from peppygen import NodeBuilder
 from peppygen.exposed_services import enable_camera
 
-def setup(parameters, node_runner):
-    try:
-        def handler(request):
-            print(
-                f"received enable_camera request from {request.instance_id}: enable = {request.data.enable}",
-                flush=True,
-            )
-            return enable_camera.Response(
-                enabled=request.data.enable,
-                error_msg="handled",
-            )
-        asyncio.run(
-            enable_camera.handle_next_request(node_runner, handler)
+async def handle_requests(node_runner):
+    def handler(request):
+        print(
+            f"received enable_camera request from {request.instance_id}: enable = {request.data.enable}",
+            flush=True,
         )
-        print("enable_camera handler finished", flush=True)
-    except Exception as e:
-        print(f"exposer error: {e}", flush=True)
-        traceback.print_exc()
-        raise
+        return enable_camera.Response(
+            enabled=request.data.enable,
+            error_msg="handled",
+        )
+    await enable_camera.handle_next_request(node_runner, handler)
+    print("enable_camera handler finished", flush=True)
+
+async def setup(parameters, node_runner):
+    asyncio.create_task(handle_requests(node_runner))
 
 def main():
     NodeBuilder().run(setup)
@@ -311,8 +299,7 @@ if __name__ == "__main__":
     )
     .await;
 
-    // Use try_send_shutdown for subscriber since it may have already exited
-    // after completing its service call
+    // The subscriber may have already exited after completing the request.
     try_send_shutdown(
         &messenger,
         TEST_DAEMON_NODE,
@@ -334,7 +321,6 @@ if __name__ == "__main__":
     )
     .await;
 
-    // Wait for both processes to exit
     let subscriber_output = wait_for_child(
         &mut subscriber_child,
         Some(Duration::from_secs(10)),
@@ -441,24 +427,18 @@ async fn services_communication_exposed_service_without_request_body() {
     init_python_user_node(&user_node_subscriber);
     let subscriber_main = r#"
 import asyncio
-import sys
-import traceback
 from peppygen import NodeBuilder
 from peppygen.subscribed_services import uvc_camera_get_system_status
 
-def setup(parameters, node_runner):
-    try:
-        response = asyncio.run(
-            uvc_camera_get_system_status.poll(node_runner, 5.0, None, None)
-        )
-        print(
-            f"get_system_status result: service_id={response.instance_id} healthy={response.data.healthy}",
-            flush=True,
-        )
-    except Exception as e:
-        print(f"subscriber error: {e}", flush=True)
-        traceback.print_exc()
-        raise
+async def poll_service(node_runner):
+    response = await uvc_camera_get_system_status.poll(node_runner, 5.0, None, None)
+    print(
+        f"get_system_status result: service_id={response.instance_id} healthy={response.data.healthy}",
+        flush=True,
+    )
+
+async def setup(parameters, node_runner):
+    asyncio.create_task(poll_service(node_runner))
 
 def main():
     NodeBuilder().run(setup)
@@ -504,27 +484,21 @@ if __name__ == "__main__":
     init_python_user_node(&user_node_exposer);
     let exposer_main = r#"
 import asyncio
-import sys
-import traceback
 from peppygen import NodeBuilder
 from peppygen.exposed_services import get_system_status
 
-def setup(parameters, node_runner):
-    try:
-        def handler(request):
-            print(
-                f"received get_system_status request from {request.instance_id}",
-                flush=True,
-            )
-            return get_system_status.Response(healthy=True)
-        asyncio.run(
-            get_system_status.handle_next_request(node_runner, handler)
+async def handle_requests(node_runner):
+    def handler(request):
+        print(
+            f"received get_system_status request from {request.instance_id}",
+            flush=True,
         )
-        print("get_system_status handler finished", flush=True)
-    except Exception as e:
-        print(f"exposer error: {e}", flush=True)
-        traceback.print_exc()
-        raise
+        return get_system_status.Response(healthy=True)
+    await get_system_status.handle_next_request(node_runner, handler)
+    print("get_system_status handler finished", flush=True)
+
+async def setup(parameters, node_runner):
+    asyncio.create_task(handle_requests(node_runner))
 
 def main():
     NodeBuilder().run(setup)
@@ -717,26 +691,20 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
     init_python_user_node(&user_node_subscriber);
     let subscriber_main = r#"
 import asyncio
-import sys
-import traceback
 from peppygen import NodeBuilder
 from peppygen.subscribed_services import uvc_camera_enable_camera
 
-def setup(parameters, node_runner):
-    try:
-        request = uvc_camera_enable_camera.Request(enable=True)
-        response = asyncio.run(
-            uvc_camera_enable_camera.poll(node_runner, request, 5.0, None, None)
-        )
-        error_msg = response.data.error_msg if response.data.error_msg is not None else "<none>"
-        print(
-            f"enable_camera result: enabled={response.data.enabled} error={error_msg}",
-            flush=True,
-        )
-    except Exception as e:
-        print(f"subscriber error: {e}", flush=True)
-        traceback.print_exc()
-        raise
+async def poll_service(node_runner):
+    request = uvc_camera_enable_camera.Request(enable=True)
+    response = await uvc_camera_enable_camera.poll(node_runner, request, 5.0, None, None)
+    error_msg = response.data.error_msg if response.data.error_msg is not None else "<none>"
+    print(
+        f"enable_camera result: enabled={response.data.enabled} error={error_msg}",
+        flush=True,
+    )
+
+async def setup(parameters, node_runner):
+    asyncio.create_task(poll_service(node_runner))
 
 def main():
     NodeBuilder().run(setup)
@@ -781,30 +749,24 @@ if __name__ == "__main__":
     init_python_user_node(&user_node_exposer1);
     let exposer1_main = r#"
 import asyncio
-import sys
-import traceback
 from peppygen import NodeBuilder
 from peppygen.exposed_services import enable_camera
 
-def setup(parameters, node_runner):
-    try:
-        def handler(request):
-            print(
-                f"received enable_camera request for {request.instance_id}: {request.data.enable}",
-                flush=True,
-            )
-            return enable_camera.Response(
-                enabled=request.data.enable,
-                error_msg="handled",
-            )
-        asyncio.run(
-            enable_camera.handle_next_request(node_runner, handler)
+async def handle_requests(node_runner):
+    def handler(request):
+        print(
+            f"received enable_camera request for {request.instance_id}: {request.data.enable}",
+            flush=True,
         )
-        print("enable_camera handler finished", flush=True)
-    except Exception as e:
-        print(f"exposer error: {e}", flush=True)
-        traceback.print_exc()
-        raise
+        return enable_camera.Response(
+            enabled=request.data.enable,
+            error_msg="handled",
+        )
+    await enable_camera.handle_next_request(node_runner, handler)
+    print("enable_camera handler finished", flush=True)
+
+async def setup(parameters, node_runner):
+    asyncio.create_task(handle_requests(node_runner))
 
 def main():
     NodeBuilder().run(setup)
@@ -850,32 +812,26 @@ if __name__ == "__main__":
     let exposer2_main = r#"
 import asyncio
 import time
-import sys
-import traceback
 from peppygen import NodeBuilder
 from peppygen.exposed_services import enable_camera
 
-def setup(parameters, node_runner):
-    try:
-        def handler(request):
-            print(
-                f"received enable_camera request for {request.instance_id}: {request.data.enable}",
-                flush=True,
-            )
-            # Sleep to ensure exposer1 responds first
-            time.sleep(2)
-            return enable_camera.Response(
-                enabled=request.data.enable,
-                error_msg="handled_by_exposer2",
-            )
-        asyncio.run(
-            enable_camera.handle_next_request(node_runner, handler)
+async def handle_requests(node_runner):
+    def handler(request):
+        print(
+            f"received enable_camera request for {request.instance_id}: {request.data.enable}",
+            flush=True,
         )
-        print("enable_camera handler finished", flush=True)
-    except Exception as e:
-        print(f"exposer error: {e}", flush=True)
-        traceback.print_exc()
-        raise
+        # Sleep to ensure exposer1 responds first
+        time.sleep(2)
+        return enable_camera.Response(
+            enabled=request.data.enable,
+            error_msg="handled_by_exposer2",
+        )
+    await enable_camera.handle_next_request(node_runner, handler)
+    print("enable_camera handler finished", flush=True)
+
+async def setup(parameters, node_runner):
+    asyncio.create_task(handle_requests(node_runner))
 
 def main():
     NodeBuilder().run(setup)
@@ -995,7 +951,6 @@ if __name__ == "__main__":
     )
     .await;
 
-    // Wait for all processes to exit
     let subscriber_output = wait_for_child(
         &mut subscriber_child,
         Some(Duration::from_secs(10)),
@@ -1039,9 +994,10 @@ if __name__ == "__main__":
         exposer1_stdout,
         exposer1_stderr
     );
+    // exposer2 intentionally sleeps before responding; shutdown may land
+    // before the handler finishes, so only assert request receipt.
     assert!(
-        exposer2_stdout.contains(&expected_request_log)
-            && exposer2_stdout.contains("enable_camera handler finished"),
+        exposer2_stdout.contains(&expected_request_log),
         "exposer2 did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
         exposer2_stdout,
         exposer2_stderr

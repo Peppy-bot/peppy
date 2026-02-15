@@ -68,6 +68,15 @@ fn encode_service_error_payload(reason: &str) -> Bytes {
     Bytes::from(payload)
 }
 
+/// Encodes a service handler failure as a protocol-level error payload.
+///
+/// External wrappers (for example Python bindings) can use this to ensure
+/// handler exceptions are reported to callers as `ServiceError` instead of
+/// surfacing as request timeouts.
+pub fn encode_service_handler_error(reason: &str) -> Bytes {
+    encode_service_error_payload(reason)
+}
+
 fn decode_service_error_payload(payload: &[u8]) -> Option<String> {
     if !payload.starts_with(SERVICE_ERROR_PREFIX) {
         return None;

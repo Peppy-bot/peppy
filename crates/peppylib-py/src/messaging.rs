@@ -38,7 +38,8 @@ pub(crate) fn duration_from_secs_f64(arg_name: &str, secs: f64) -> PyResult<Dura
 
 /// Python wrapper for ZenohdInstance - an ephemeral zenohd router for testing.
 ///
-/// The router is automatically stopped when this instance is garbage collected.
+/// Use as an async context manager (`async with`) or call `stop()` explicitly
+/// to ensure the router is cleanly shut down.
 #[pyclass(name = "ZenohdInstance")]
 pub struct PyZenohdInstance {
     inner: Arc<Mutex<Option<ZenohdInstance>>>,
@@ -98,7 +99,7 @@ impl PyZenohdInstance {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let mut guard = inner.lock().await;
             if let Some(mut instance) = guard.take() {
-                instance.messenger().stop_router().await.map_err(|e| {
+                instance.take_messenger().stop_router().await.map_err(|e| {
                     PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
                 })?;
             }
@@ -129,7 +130,7 @@ impl PyZenohdInstance {
 ///
 /// `MessengerHandle` already manages its own internal `Arc<Mutex<Messenger>>`,
 /// so no additional outer lock is needed here. Cloning is a cheap `Arc` bump.
-#[pyclass(name = "MessengerHandle", from_py_object)]
+#[pyclass(name = "MessengerHandle", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyMessengerHandle {
     pub(crate) inner: MessengerHandle,

@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use peppylib::ServiceMessenger;
-use peppylib::messaging::{ServiceEndpoint, ServiceRequestContext};
+use peppylib::messaging::{ServiceEndpoint, ServiceRequestContext, encode_service_handler_error};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::sync::Arc;
@@ -99,7 +99,7 @@ impl PyServiceEndpoint {
 
             // Phase 2: call Python handler (supports sync and async callables)
             let py_context = PyServiceRequestContext::from(context);
-            let (maybe_future, sync_bytes) = Python::attach(|py| -> PyResult<_> {
+            let handler_call = Python::attach(|py| -> PyResult<_> {
                 let result = handler.call1(py, (py_context,))?;
                 let is_awaitable = result.bind(py).hasattr("__await__")?;
                 if is_awaitable {
@@ -108,22 +108,33 @@ impl PyServiceEndpoint {
                 } else {
                     Ok((None, Some(result.extract::<Vec<u8>>(py)?)))
                 }
-            })?;
+            });
+            let response_payload = match handler_call {
+                Ok((maybe_future, sync_bytes)) => {
+                    let response_bytes = if let Some(future) = maybe_future {
+                        match future.await {
+                            Ok(py_result) => Python::attach(|py| py_result.extract::<Vec<u8>>(py))
+                                .map_err(|err| err.to_string()),
+                            Err(err) => Err(err.to_string()),
+                        }
+                    } else if let Some(sync_bytes) = sync_bytes {
+                        Ok(sync_bytes)
+                    } else {
+                        Err("internal error: missing synchronous handler response bytes"
+                            .to_string())
+                    };
 
-            let response_bytes = if let Some(future) = maybe_future {
-                let py_result = future.await?;
-                Python::attach(|py| py_result.extract::<Vec<u8>>(py))?
-            } else if let Some(sync_bytes) = sync_bytes {
-                sync_bytes
-            } else {
-                return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                    "internal error: missing synchronous handler response bytes",
-                ));
+                    match response_bytes {
+                        Ok(response_bytes) => Bytes::from(response_bytes),
+                        Err(reason) => encode_service_handler_error(&reason),
+                    }
+                }
+                Err(err) => encode_service_handler_error(&err.to_string()),
             };
 
             // Phase 3: send response (pure Rust)
             responder
-                .respond(Bytes::from(response_bytes))
+                .respond(response_payload)
                 .await
                 .map_err(to_py_err)?;
 

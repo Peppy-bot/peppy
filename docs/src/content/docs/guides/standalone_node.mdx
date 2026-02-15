@@ -5,8 +5,12 @@ sidebar:
   order: 8
 ---
 import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
-import standalonedRust from './snippets/rust/standalone/src/main.rs?raw';
-import standaloneConfig from './snippets/rust/standalone/peppy.json5?raw';
+
+import standaloneRust from './snippets/rust/standalone/src/main.rs?raw';
+import standaloneRustConfig from './snippets/rust/standalone/peppy.json5?raw';
+
+import standalonePython from './snippets/python/standalone/src/standalone/__main__.py?raw';
+import standalonePythonConfig from './snippets/python/standalone/peppy.json5?raw';
 
 Constantly adding and running nodes through the node stack is highly inefficient during development. 
 In that scenario, you want to be able to run your node as a regular Rust/Python program and use your favorite IDE to debug it.
@@ -21,7 +25,14 @@ Let's create a new node:
 ❯ cd standalone
 ```
 with the following configuration:
-<Code code={standaloneConfig} lang="json5" title="peppy.json5" />
+<Tabs>
+  <TabItem label="Python">
+    <Code code={standalonePythonConfig} lang="json5" title="peppy.json5" />
+  </TabItem>
+  <TabItem label="Rust">
+    <Code code={standaloneRustConfig} lang="json5" title="peppy.json5" />
+  </TabItem>
+</Tabs>
 
 Now sync the node:
 ```sh
@@ -32,14 +43,14 @@ Now if you try to run the node:
 
 <Tabs>
   <TabItem label="Rust">
-    ```rust
+    ```sh
     cargo run
     ```
   </TabItem>
   <TabItem label="Python">
-    :::caution
-    Python is not yet available
-    :::
+    ```sh
+    uv run standalone_node
+    ```
   </TabItem>
 </Tabs>
 
@@ -51,27 +62,25 @@ These parameters are usually provided during `peppy node start`, but since we wa
 We can modify our source file like this:
 
 <Tabs>
-  <TabItem label="Rust">
-    <Code code={standalonedRust} lang="rust" title="src/main.rs" />
-  </TabItem>
   <TabItem label="Python">
-    :::caution
-    Python is not yet available
-    :::
+    <Code code={standalonePython} lang="python" title="src/standalone/__main__.py" />
+  </TabItem>
+  <TabItem label="Rust">
+    <Code code={standaloneRust} lang="rust" title="src/main.rs" />
   </TabItem>
 </Tabs>
 
 Now if we run the following command again:
 <Tabs>
-  <TabItem label="Rust">
-    ```rust
-    cargo run
+  <TabItem label="Python">
+    ```sh
+    uv run standalone
     ```
   </TabItem>
-  <TabItem label="Python">
-    :::caution
-    Python is not yet available
-    :::
+  <TabItem label="Rust">
+    ```sh
+    cargo run
+    ```
   </TabItem>
 </Tabs>
 
