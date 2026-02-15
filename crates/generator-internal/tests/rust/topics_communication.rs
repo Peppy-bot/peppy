@@ -1,7 +1,7 @@
 use crate::helpers::{
-    STUB_NODE_CONFIG, WaitContext, assert_rust_precompiled_runtime_layout, compile_project,
-    copy_config_to_output, init_cargo_user_node, init_test_env, send_shutdown, spawn_cargo_run,
-    wait_for_child, wait_for_health_service_reachable_or_exit,
+    STUB_NODE_CONFIG, WaitContext, assert_rust_precompiled_runtime_layout, assert_sibling_alive,
+    compile_project, copy_config_to_output, init_cargo_user_node, init_test_env, send_shutdown,
+    spawn_cargo_run, wait_for_child, wait_for_health_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
@@ -257,6 +257,7 @@ fn main() -> Result<()> {
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
         target_daemon_node: Some(TEST_DAEMON_NODE),
     };
+    assert_sibling_alive(&mut exposer_child, &user_node_exposer);
     wait_for_health_service_reachable_or_exit(
         &ctx,
         SUBSCRIBER_NODE_NAME,
@@ -265,6 +266,7 @@ fn main() -> Result<()> {
         &user_node_subscriber,
     )
     .await;
+    assert_sibling_alive(&mut subscriber_child, &user_node_subscriber);
     wait_for_health_service_reachable_or_exit(
         &ctx,
         UVC_CAMERA_NODE_NAME,

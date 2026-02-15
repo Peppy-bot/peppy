@@ -34,6 +34,7 @@ pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>) -> Result<()> {
     let config_root =
         infer_node_root_from_peppygen_dir(to_path).unwrap_or_else(|| to_path.to_path_buf());
     let runtime_dir = copy_precompiled_runtime_bundle(&config_root)?;
+    validate_no_cargo_precompiled_overlap(to_path)?;
     configure_cargo_for_precompiled_runtime(&config_root, &runtime_dir)?;
     Ok(())
 }
@@ -123,6 +124,62 @@ fn copy_precompiled_runtime_bundle(config_root: &Path) -> Result<PathBuf> {
     let destination_bundle = runtime_cache_dir(config_root);
     stage_runtime_bundle(source_bundle, &destination_bundle)?;
     Ok(destination_bundle)
+}
+
+/// Checks that no dependency declared in the generated `Cargo.toml` also has a
+/// precompiled rlib in the runtime bundle.  Such overlap causes cargo to compile
+/// a second, independent instance of the crate, breaking crates that rely on
+/// shared runtime state (e.g. tokio's thread-local runtime handle).
+/// Checks that none of the crates provided via `--extern` in `PRECOMPILED_EXTERN_CRATES`
+/// are also declared in the generated `Cargo.toml`. Such overlap causes cargo to compile
+/// a second independent instance, breaking crates that rely on shared runtime state
+/// (e.g. tokio's thread-local runtime handle).
+///
+/// Note: other rlibs in the deps directory (transitive dependencies of the precompiled
+/// crates) are NOT checked — they are only used internally by the `--extern` crates and
+/// do not conflict with Cargo.toml dependencies.
+fn validate_no_cargo_precompiled_overlap(peppygen_dir: &Path) -> Result<()> {
+    let cargo_toml_path = peppygen_dir.join("Cargo.toml");
+    let contents = match fs::read_to_string(&cargo_toml_path) {
+        Ok(c) => c,
+        Err(_) => return Ok(()),
+    };
+
+    let doc: DocumentMut = contents.parse().map_err(|err| {
+        Error::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to parse {}: {err}", cargo_toml_path.display()),
+        ))
+    })?;
+
+    let Some(deps) = doc.get("dependencies").and_then(|d| d.as_table()) else {
+        return Ok(());
+    };
+
+    let mut overlapping = Vec::new();
+    for dep_name in deps.iter().map(|(name, _)| name) {
+        let normalised = dep_name.replace('-', "_");
+        if PRECOMPILED_EXTERN_CRATES.iter().any(|&c| c == normalised) {
+            overlapping.push(dep_name.to_owned());
+        }
+    }
+
+    if !overlapping.is_empty() {
+        let list = overlapping.join(", ");
+        return Err(Error::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "the generated Cargo.toml declares dependencies that are also provided via \
+                 --extern from the precompiled runtime bundle: [{list}]. This causes cargo to \
+                 compile a second, independent instance of these crates, breaking crates that \
+                 rely on shared runtime state (e.g. tokio's thread-local runtime handle). \
+                 Either add them to PRECOMPILED_EXTERN_CRATES (and remove from the Cargo.toml \
+                 template) or remove them from PRECOMPILED_EXTERN_CRATES.",
+            ),
+        )));
+    }
+
+    Ok(())
 }
 
 fn configure_cargo_for_precompiled_runtime(config_root: &Path, runtime_dir: &Path) -> Result<()> {

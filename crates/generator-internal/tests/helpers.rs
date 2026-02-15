@@ -286,7 +286,25 @@ pub async fn wait_for_service_reachable_or_exit(
     child: &mut std::process::Child,
     dir: &std::path::Path,
 ) {
+    const TIMEOUT: Duration = Duration::from_secs(60);
+    let start = Instant::now();
+
     loop {
+        if start.elapsed() > TIMEOUT {
+            let _ = child.kill();
+            let output = wait_for_child(child, None, dir);
+            panic!(
+                "timed out after {TIMEOUT:?} waiting for service `{}` to become reachable \
+                 (node={}, instance={:?}) for project at {}\nstdout:\n{}\nstderr:\n{}",
+                target_service_name,
+                target_node_name,
+                target_instance_id,
+                dir.display(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+
         if let Some(status) = child
             .try_wait()
             .expect("failed to poll process status for generated project")
@@ -341,7 +359,25 @@ pub async fn wait_for_action_service_reachable_or_exit(
     child: &mut std::process::Child,
     dir: &std::path::Path,
 ) {
+    const TIMEOUT: Duration = Duration::from_secs(60);
+    let start = Instant::now();
+
     loop {
+        if start.elapsed() > TIMEOUT {
+            let _ = child.kill();
+            let output = wait_for_child(child, None, dir);
+            panic!(
+                "timed out after {TIMEOUT:?} waiting for action `{}` to become reachable \
+                 (node={}, instance={:?}) for project at {}\nstdout:\n{}\nstderr:\n{}",
+                target_service_name,
+                target_node_name,
+                target_instance_id,
+                dir.display(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+
         if let Some(status) = child
             .try_wait()
             .expect("failed to poll process status for generated project")
@@ -422,6 +458,30 @@ pub async fn wait_for_health_service_reachable_or_exit(
         dir,
     )
     .await;
+}
+
+/// Panics if `sibling` has already exited, including its captured output in
+/// the message.  Use this in tests where one spawned process depends on
+/// another staying alive (e.g. subscriber waiting for exposer frames).
+pub fn assert_sibling_alive(sibling: &mut std::process::Child, sibling_dir: &std::path::Path) {
+    if let Ok(Some(status)) = sibling.try_wait() {
+        let mut stdout = Vec::new();
+        if let Some(mut out) = sibling.stdout.take() {
+            let _ = out.read_to_end(&mut stdout);
+        }
+        let mut stderr = Vec::new();
+        if let Some(mut err) = sibling.stderr.take() {
+            let _ = err.read_to_end(&mut stderr);
+        }
+        panic!(
+            "sibling process exited unexpectedly (status: {:?}) for project at {}\n\
+             stdout:\n{}\nstderr:\n{}",
+            status.code(),
+            sibling_dir.display(),
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr),
+        );
+    }
 }
 
 pub async fn send_shutdown(

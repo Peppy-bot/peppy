@@ -667,10 +667,7 @@ mod rust_runtime_build {
 
         let mut system_paths = BTreeSet::new();
 
-        let target_dir_str = target_dir
-            .to_str()
-            .unwrap_or("")
-            .replace('\\', "/");
+        let target_dir_str = target_dir.to_str().unwrap_or("").replace('\\', "/");
 
         let build_entries = match std::fs::read_dir(build_source_dir) {
             Ok(entries) => entries,
