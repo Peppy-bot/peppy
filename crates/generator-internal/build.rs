@@ -259,9 +259,11 @@ mod rust_runtime_build {
 
     use serde::Deserialize;
 
-    const BUILD_ARTIFACT_EXTENSIONS: [&str; 7] =
-        ["rlib", "rmeta", "so", "dylib", "dll", "a", "lib"];
-    const HOST_PROC_MACRO_EXTENSIONS: [&str; 3] = ["so", "dylib", "dll"];
+    // Standalone .rmeta files are omitted: each .rlib already contains its
+    // lib.rmeta, so rustc can read metadata directly from the .rlib. The
+    // standalone copies are only a cargo pipelining optimisation that does not
+    // apply to precompiled artifacts.
+    const BUILD_ARTIFACT_EXTENSIONS: [&str; 6] = ["rlib", "so", "dylib", "dll", "a", "lib"];
     const BUILD_WATCHED_PATHS: [&str; 4] = ["Cargo.toml", "build.rs", "src", "schemas"];
 
     #[derive(Debug, Deserialize)]
@@ -332,7 +334,6 @@ mod rust_runtime_build {
 
         let target_profile_dir = target_dir.join(&target_triple).join(profile_dir);
         let deps_source_dir = target_profile_dir.join("deps");
-        let host_deps_source_dir = target_dir.join(profile_dir).join("deps");
         let build_source_dir = target_profile_dir.join("build");
 
         let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is required"));
@@ -352,13 +353,10 @@ mod rust_runtime_build {
             &bundle_deps_dir,
             &BUILD_ARTIFACT_EXTENSIONS,
         );
-        if host_deps_source_dir != deps_source_dir && host_deps_source_dir.exists() {
-            copy_dependency_artifacts(
-                &host_deps_source_dir,
-                &bundle_deps_dir,
-                &HOST_PROC_MACRO_EXTENSIONS,
-            );
-        }
+        // Host proc-macro dylibs are intentionally not bundled. Proc-macro
+        // crates (serde_derive, thiserror, etc.) were already expanded during
+        // precompilation, and the user's `cargo build` resolves and compiles
+        // proc macros independently from Cargo.toml.
 
         if build_source_dir.exists() {
             let build_entries = std::fs::read_dir(&build_source_dir).unwrap_or_else(|err| {
