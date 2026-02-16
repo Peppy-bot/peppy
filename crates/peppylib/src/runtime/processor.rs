@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::error::{Error, ParameterDeserializationError, Result};
+use crate::error::{Error, MissingStandaloneParameters, ParameterDeserializationError, Result};
 use config::{
     NodeArguments,
     consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
@@ -75,6 +75,8 @@ impl Processor {
             None => NodeArguments::new(),
         };
 
+        Self::validate_required_parameters(&arguments, &node_config.parameters)?;
+
         let node_name: String = config
             .node_name
             .clone()
@@ -142,6 +144,30 @@ impl Processor {
                 .ok_or_else(|| Error::MissingCompiledParameter { path: key.clone() })?;
             runtime_value.matches_type_spec(compiled_type, key)?;
         }
+        Ok(())
+    }
+
+    /// Validate that all required parameters defined in peppy.json5 are
+    /// provided when running in standalone mode. This catches missing
+    /// parameters early — before the Zenoh connection attempt — so the
+    /// developer sees a clear error instead of a hanging process.
+    fn validate_required_parameters(
+        runtime_args: &NodeArguments,
+        compiled_params: &NodeArguments,
+    ) -> Result<()> {
+        let missing: Vec<String> = compiled_params
+            .keys()
+            .filter(|key| !runtime_args.contains_key(key.as_str()))
+            .cloned()
+            .collect();
+
+        if !missing.is_empty() {
+            return Err(MissingStandaloneParameters {
+                parameters: missing,
+            }
+            .into());
+        }
+
         Ok(())
     }
 
@@ -748,5 +774,69 @@ mod tests {
         let args = processor.input_arguments();
         assert_eq!(args.get("threshold"), Some(&AnyType::Float(0.75)));
         assert_eq!(args.get("enabled"), Some(&AnyType::Bool(true)));
+    }
+
+    #[test]
+    fn standalone_mode_fails_when_required_parameters_missing() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        let peppy_config_content = r#"{
+            schema_version: 1,
+            manifest: { name: "my_node", tag: "0.1.0", language: "rust", start_cmd: ["cargo", "run"] },
+            parameters: { value: "i64" }
+        }"#;
+        std::fs::write(&peppy_config_path, peppy_config_content)
+            .expect("peppy config should be written");
+
+        // No parameters provided — should fail immediately
+        let config = StandaloneConfig::new();
+        let result = Processor::new_standalone(&peppy_config_path, &config);
+
+        let Err(err) = result else {
+            panic!("expected error when required parameters are missing");
+        };
+        assert!(
+            matches!(err, crate::error::Error::MissingStandaloneParameters(_)),
+            "expected MissingStandaloneParameters error, got: {err:?}"
+        );
+        let err_string = err.to_string();
+        assert!(
+            err_string.contains("value"),
+            "error should mention missing parameter 'value', got: {err_string}"
+        );
+    }
+
+    #[test]
+    fn standalone_mode_fails_when_some_parameters_missing() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        let peppy_config_content = r#"{
+            schema_version: 1,
+            manifest: { name: "my_node", tag: "0.1.0", language: "rust", start_cmd: ["cargo", "run"] },
+            parameters: { threshold: "f64", enabled: "bool", name: "string" }
+        }"#;
+        std::fs::write(&peppy_config_path, peppy_config_content)
+            .expect("peppy config should be written");
+
+        // Only provide one of three required parameters
+        let config =
+            StandaloneConfig::new().with_parameters_json(serde_json::json!({ "threshold": 0.5 }));
+        let result = Processor::new_standalone(&peppy_config_path, &config);
+
+        let Err(err) = result else {
+            panic!("expected error when some required parameters are missing");
+        };
+        let err_string = err.to_string();
+        assert!(
+            err_string.contains("enabled") && err_string.contains("name"),
+            "error should mention missing parameters 'enabled' and 'name', got: {err_string}"
+        );
+        // The provided parameter should NOT be mentioned
+        assert!(
+            !err_string.contains("threshold"),
+            "error should not mention provided parameter 'threshold', got: {err_string}"
+        );
     }
 }

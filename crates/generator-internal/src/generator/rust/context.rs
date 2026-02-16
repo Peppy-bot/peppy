@@ -78,14 +78,17 @@ impl StructDefinition {
     }
 }
 
-pub fn map_message_format(format: Option<&MessageFormat>) -> Result<Option<CapnpSchemaArtifacts>> {
+pub fn map_message_format(
+    schema_name: &str,
+    format: Option<&MessageFormat>,
+) -> Result<Option<CapnpSchemaArtifacts>> {
     match format {
         Some(format) => {
             validate_normalized_field_names_for_rust(format)?;
             validate_message_format_field_names(format, "message_format")?;
             validate_fixed_length_array_items(format, PeppygenLanguage::Rust)?;
             validate_optional_scalar_fields_for_rust(format)?;
-            MessageFormatMapper::new(format.clone())
+            MessageFormatMapper::new(schema_name, format.clone())
                 .map_message_format_to_capnpn()
                 .map(Some)
                 .map_err(Error::MessageEncoding)
@@ -450,7 +453,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = match map_message_format(Some(&format)) {
+        let err = match map_message_format("test", Some(&format)) {
             Ok(_) => panic!("expected FieldNameNormalizationCollision"),
             Err(err) => err,
         };
@@ -489,7 +492,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = match map_message_format(Some(&format)) {
+        let err = match map_message_format("test", Some(&format)) {
             Ok(_) => panic!("expected FieldNameNormalizationCollision"),
             Err(err) => err,
         };

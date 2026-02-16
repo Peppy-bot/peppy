@@ -155,8 +155,8 @@ async def poll_service(node_runner):
         flush=True,
     )
 
-async def setup(parameters, node_runner):
-    asyncio.create_task(poll_service(node_runner))
+async def setup(parameters, node_runner) -> list[asyncio.Task]:
+    return [asyncio.create_task(poll_service(node_runner))]
 
 def main():
     NodeBuilder().run(setup)
@@ -217,8 +217,8 @@ async def handle_requests(node_runner):
     await enable_camera.handle_next_request(node_runner, handler)
     print("enable_camera handler finished", flush=True)
 
-async def setup(parameters, node_runner):
-    asyncio.create_task(handle_requests(node_runner))
+async def setup(parameters, node_runner) -> list[asyncio.Task]:
+    return [asyncio.create_task(handle_requests(node_runner))]
 
 def main():
     NodeBuilder().run(setup)
@@ -437,8 +437,8 @@ async def poll_service(node_runner):
         flush=True,
     )
 
-async def setup(parameters, node_runner):
-    asyncio.create_task(poll_service(node_runner))
+async def setup(parameters, node_runner) -> list[asyncio.Task]:
+    return [asyncio.create_task(poll_service(node_runner))]
 
 def main():
     NodeBuilder().run(setup)
@@ -497,8 +497,8 @@ async def handle_requests(node_runner):
     await get_system_status.handle_next_request(node_runner, handler)
     print("get_system_status handler finished", flush=True)
 
-async def setup(parameters, node_runner):
-    asyncio.create_task(handle_requests(node_runner))
+async def setup(parameters, node_runner) -> list[asyncio.Task]:
+    return [asyncio.create_task(handle_requests(node_runner))]
 
 def main():
     NodeBuilder().run(setup)
@@ -703,8 +703,8 @@ async def poll_service(node_runner):
         flush=True,
     )
 
-async def setup(parameters, node_runner):
-    asyncio.create_task(poll_service(node_runner))
+async def setup(parameters, node_runner) -> list[asyncio.Task]:
+    return [asyncio.create_task(poll_service(node_runner))]
 
 def main():
     NodeBuilder().run(setup)
@@ -765,8 +765,8 @@ async def handle_requests(node_runner):
     await enable_camera.handle_next_request(node_runner, handler)
     print("enable_camera handler finished", flush=True)
 
-async def setup(parameters, node_runner):
-    asyncio.create_task(handle_requests(node_runner))
+async def setup(parameters, node_runner) -> list[asyncio.Task]:
+    return [asyncio.create_task(handle_requests(node_runner))]
 
 def main():
     NodeBuilder().run(setup)
@@ -830,8 +830,8 @@ async def handle_requests(node_runner):
     await enable_camera.handle_next_request(node_runner, handler)
     print("enable_camera handler finished", flush=True)
 
-async def setup(parameters, node_runner):
-    asyncio.create_task(handle_requests(node_runner))
+async def setup(parameters, node_runner) -> list[asyncio.Task]:
+    return [asyncio.create_task(handle_requests(node_runner))]
 
 def main():
     NodeBuilder().run(setup)
