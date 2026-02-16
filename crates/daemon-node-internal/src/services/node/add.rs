@@ -83,7 +83,34 @@ fn generate_random_id() -> String {
 /// environments breaks Python on macOS because `std::fs::copy` dereferences
 /// symlinks, turning `@executable_path`-relative dylib references into
 /// dangling paths.
-const COPY_EXCLUDED_DIRS: &[&str] = &[".peppy", ".venv", ".pixi", "__pypackages__"];
+const COPY_EXCLUDED_DIRS_PEPPY: &[&str] = &[".peppy"];
+
+const COPY_EXCLUDED_DIRS_PYTHON: &[&str] = &[
+    ".venv",
+    ".pixi",
+    "__pypackages__",
+    "__pycache__",
+    ".tox",
+    ".nox",
+    ".conda",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+];
+
+const COPY_EXCLUDED_DIRS_RUST: &[&str] = &["target"];
+
+const COPY_EXCLUDED_DIRS_NODE: &[&str] = &["node_modules"];
+
+const COPY_EXCLUDED_DIRS_VCS: &[&str] = &[".git"];
+
+const COPY_EXCLUDED_DIRS: &[&[&str]] = &[
+    COPY_EXCLUDED_DIRS_PEPPY,
+    COPY_EXCLUDED_DIRS_PYTHON,
+    COPY_EXCLUDED_DIRS_RUST,
+    COPY_EXCLUDED_DIRS_NODE,
+    COPY_EXCLUDED_DIRS_VCS,
+];
 
 fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
     std::fs::create_dir_all(dest)?;
@@ -94,7 +121,7 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
 
         if COPY_EXCLUDED_DIRS
             .iter()
-            .any(|&excluded| file_name == excluded)
+            .any(|list| list.iter().any(|&excluded| file_name == excluded))
         {
             continue;
         }
