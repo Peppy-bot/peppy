@@ -214,8 +214,8 @@ async def run_subscriber(node_runner):
     )
     await move_arm_flow_done.handle_next_request(node_runner, lambda _request: None)
 
-async def setup(parameters, node_runner):
-    asyncio.create_task(run_subscriber(node_runner))
+async def setup(parameters, node_runner) -> list[asyncio.Task]:
+    return [asyncio.create_task(run_subscriber(node_runner))]
 
 def main():
     NodeBuilder().run(setup)
@@ -291,8 +291,8 @@ async def run_exposer(node_runner):
     await action.handle_result_next_request(result_handler)
     print(f"server handled result request. Final position sent: {final_position}", flush=True)
 
-async def setup(parameters, node_runner):
-    asyncio.create_task(run_exposer(node_runner))
+async def setup(parameters, node_runner) -> list[asyncio.Task]:
+    return [asyncio.create_task(run_exposer(node_runner))]
 
 def main():
     NodeBuilder().run(setup)
@@ -535,8 +535,8 @@ async def run_subscriber(node_runner):
     )
     await move_arm_cancel_flow_done.handle_next_request(node_runner, lambda _request: None)
 
-async def setup(parameters, node_runner):
-    asyncio.create_task(run_subscriber(node_runner))
+async def setup(parameters, node_runner) -> list[asyncio.Task]:
+    return [asyncio.create_task(run_subscriber(node_runner))]
 
 def main():
     NodeBuilder().run(setup)
@@ -609,8 +609,8 @@ async def run_exposer(node_runner):
     await action.handle_cancel_next_request(cancel_handler)
     print(f"server responded to cancel request error={cancel_error}", flush=True)
 
-async def setup(parameters, node_runner):
-    asyncio.create_task(run_exposer(node_runner))
+async def setup(parameters, node_runner) -> list[asyncio.Task]:
+    return [asyncio.create_task(run_exposer(node_runner))]
 
 def main():
     NodeBuilder().run(setup)

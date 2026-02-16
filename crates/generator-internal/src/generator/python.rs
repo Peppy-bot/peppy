@@ -73,7 +73,7 @@ impl PythonGenerator {
         validate_message_format_field_names(format, schema_key)?;
         validate_fixed_length_array_items(format, PeppygenLanguage::Python)?;
 
-        let artifacts = MessageFormatMapper::new(format.clone())
+        let artifacts = MessageFormatMapper::new(schema_key, format.clone())
             .map_message_format_to_capnpn()
             .map_err(crate::error::Error::MessageEncoding)?;
         let schema_source = artifacts.encoding_schema().to_string();

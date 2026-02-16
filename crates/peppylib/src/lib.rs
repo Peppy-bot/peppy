@@ -4,7 +4,10 @@ pub mod encoding;
 pub mod messaging;
 pub mod runtime;
 pub mod services;
-pub use error::{Error as PeppyError, ParameterDeserializationError, Result as PeppyResult};
+pub use error::{
+    Error as PeppyError, MissingStandaloneParameters, ParameterDeserializationError,
+    Result as PeppyResult,
+};
 pub use messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, TopicMessenger};
 pub use schemars;
 pub use serde;
