@@ -309,6 +309,22 @@ mod rust_runtime_build {
 
         println!("cargo:warning=Building precompiled Rust runtime artifacts ({profile})…");
 
+        // Remove stale dependency artifacts before building. The temp target
+        // directory persists across builds, so when features or dependency
+        // versions change, old artifacts with different hashes accumulate.
+        // Clearing the deps directories forces cargo to re-emit only the
+        // artifacts for the current dependency graph.
+        let target_profile_dir_pre = target_dir.join(&target_triple).join(profile_dir);
+        let host_profile_dir_pre = target_dir.join(profile_dir);
+        for deps_dir in [
+            target_profile_dir_pre.join("deps"),
+            host_profile_dir_pre.join("deps"),
+        ] {
+            if deps_dir.exists() {
+                std::fs::remove_dir_all(&deps_dir).ok();
+            }
+        }
+
         let mut cargo = Command::new("cargo");
         cargo
             .args(["build", "--manifest-path"])

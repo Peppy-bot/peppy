@@ -19,7 +19,9 @@ capnp = "0.25"
 tempfile = "3"
 
 # Optional deps
-zenoh = { version = "1.5", optional = true }
+zenoh = { version = "1.5", optional = true, default-features = false, features = [
+    "transport_tcp",
+] }
 regex = "1.12.2"
 
 [dev-dependencies]
