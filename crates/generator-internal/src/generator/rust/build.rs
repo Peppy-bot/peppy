@@ -7,7 +7,7 @@ use crate::{
         types::{CapnpSchema, InterfaceArtifact, InterfaceKind},
     },
 };
-use config::consts::{PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
+use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::encoding::compile_capnp;
 use proc_macro2::Span;
 use std::{
@@ -22,7 +22,7 @@ use syn::{
 };
 use toml_edit::{Array, DocumentMut, Item as TomlItem, Table, value};
 
-const PRECOMPILED_CACHE_DIR: &str = "cache";
+const PRECOMPILED_LIBS_DIR: &str = "libs";
 const PRECOMPILED_CACHE_RUST_DIR: &str = "rust";
 const PRECOMPILED_DEPS_DIR: &str = "deps";
 const PRECOMPILED_BUILD_DIR: &str = "build";
@@ -33,7 +33,7 @@ pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>) -> Result<()> {
     generate_lib_structure(to_path)?;
     let config_root =
         infer_node_root_from_peppygen_dir(to_path).unwrap_or_else(|| to_path.to_path_buf());
-    let runtime_dir = copy_precompiled_runtime_bundle(&config_root)?;
+    let runtime_dir = copy_precompiled_runtime_bundle()?;
     validate_no_cargo_precompiled_overlap(to_path)?;
     configure_cargo_for_precompiled_runtime(&config_root, &runtime_dir)?;
     Ok(())
@@ -109,7 +109,14 @@ pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, crate_root: &Pa
 // Precompiled runtime deployment
 // ---------------------------------------------------------------------------
 
-fn copy_precompiled_runtime_bundle(config_root: &Path) -> Result<PathBuf> {
+fn copy_precompiled_runtime_bundle() -> Result<PathBuf> {
+    let destination_bundle = runtime_cache_dir();
+
+    // Fast path: bundle already deployed (content-addressed by hash).
+    if destination_bundle.exists() {
+        return Ok(destination_bundle);
+    }
+
     let source_bundle = Path::new(env!("PEPPY_RUST_PRECOMPILED_BUNDLE_DIR"));
     if !source_bundle.exists() {
         return Err(Error::Io(io::Error::new(
@@ -121,7 +128,29 @@ fn copy_precompiled_runtime_bundle(config_root: &Path) -> Result<PathBuf> {
         )));
     }
 
-    let destination_bundle = runtime_cache_dir(config_root);
+    // Serialize concurrent deployments (parallel tests, concurrent node syncs).
+    let lock_path = destination_bundle.with_extension("lock");
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let lock_file = fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    lock_file.lock().map_err(|e| {
+        Error::Io(io::Error::new(
+            e.kind(),
+            format!("failed to acquire runtime bundle lock: {e}"),
+        ))
+    })?;
+
+    // Re-check after acquiring lock (another thread/process may have completed).
+    if destination_bundle.exists() {
+        return Ok(destination_bundle);
+    }
+
     stage_runtime_bundle(source_bundle, &destination_bundle)?;
     Ok(destination_bundle)
 }
@@ -207,14 +236,11 @@ fn configure_cargo_for_precompiled_runtime(config_root: &Path, runtime_dir: &Pat
     write_precompiled_rustflags(config_root, &extern_crate_rlibs, &deps_dir, &native_dirs)
 }
 
-fn runtime_cache_dir(config_root: &Path) -> PathBuf {
-    config_root
-        .join(PEPPY_OUTPUT_DIR)
-        .join(PRECOMPILED_CACHE_DIR)
+fn runtime_cache_dir() -> PathBuf {
+    config::consts::peppy_data_dir()
+        .join(PRECOMPILED_LIBS_DIR)
         .join(PRECOMPILED_CACHE_RUST_DIR)
-        .join(env!("PEPPY_RUST_PRECOMPILED_TARGET"))
-        .join(env!("PEPPY_RUST_PRECOMPILED_RUSTC"))
-        .join(env!("PEPPY_RUST_PRECOMPILED_PROFILE_DIR"))
+        .join(env!("PEPPY_RUST_PRECOMPILED_BUNDLE_HASH"))
 }
 
 fn infer_node_root_from_peppygen_dir(peppygen_dir: &Path) -> Option<PathBuf> {
@@ -446,12 +472,12 @@ fn is_managed_flag_pair(flag: &str, value: &str) -> bool {
 
 fn is_managed_dependency_path(path: &str) -> bool {
     let normalized = path.replace('\\', "/");
-    normalized.contains("/.peppy/cache/rust/") && normalized.ends_with("/deps")
+    normalized.contains("/.peppy/libs/rust/") && normalized.ends_with("/deps")
 }
 
 fn is_managed_native_path(path: &str) -> bool {
     let normalized = path.replace('\\', "/");
-    normalized.contains("/.peppy/cache/rust/") && normalized.contains("/build/")
+    normalized.contains("/.peppy/libs/rust/") && normalized.contains("/build/")
 }
 
 // ---------------------------------------------------------------------------

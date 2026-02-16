@@ -305,7 +305,6 @@ mod rust_runtime_build {
         let profile = std::env::var("PROFILE").expect("PROFILE is required");
         let profile_dir = super::profile_target_subdir(&profile);
         let target_triple = std::env::var("TARGET").expect("TARGET is required");
-        let rustc_fingerprint = rustc_fingerprint();
 
         println!("cargo:warning=Building precompiled Rust runtime artifacts ({profile})…");
 
@@ -436,65 +435,10 @@ mod rust_runtime_build {
             bundle_deps_dir.display()
         );
 
-        println!("cargo:rustc-env=PEPPY_RUST_PRECOMPILED_TARGET={target_triple}");
-        println!("cargo:rustc-env=PEPPY_RUST_PRECOMPILED_PROFILE_DIR={profile_dir}");
-        println!("cargo:rustc-env=PEPPY_RUST_PRECOMPILED_RUSTC={rustc_fingerprint}");
-        println!(
-            "cargo:rustc-env=PEPPY_RUST_PRECOMPILED_BUNDLE_DIR={}",
-            bundle_dir.display()
-        );
-    }
+        let bundle_hash = compute_bundle_content_hash(&bundle_dir);
 
-    fn rustc_fingerprint() -> String {
-        let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_owned());
-        let output = Command::new(&rustc)
-            .arg("-vV")
-            .output()
-            .unwrap_or_else(|err| panic!("failed to run `{rustc} -vV`: {err}"));
-        if !output.status.success() {
-            panic!(
-                "`{rustc} -vV` failed:\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr),
-            );
-        }
-
-        let version_info = String::from_utf8(output.stdout)
-            .unwrap_or_else(|err| panic!("invalid UTF-8 in `{rustc} -vV` output: {err}"));
-
-        let mut release = None;
-        let mut host = None;
-        let mut commit_hash = None;
-
-        for line in version_info.lines() {
-            if let Some(value) = line.strip_prefix("release: ") {
-                release = Some(value.trim().to_owned());
-            } else if let Some(value) = line.strip_prefix("host: ") {
-                host = Some(value.trim().to_owned());
-            } else if let Some(value) = line.strip_prefix("commit-hash: ") {
-                commit_hash = Some(value.trim().to_owned());
-            }
-        }
-
-        format!(
-            "{}-{}-{}",
-            sanitize_path_component(release.as_deref().unwrap_or("unknown")),
-            sanitize_path_component(host.as_deref().unwrap_or("unknown")),
-            sanitize_path_component(commit_hash.as_deref().unwrap_or("unknown")),
-        )
-    }
-
-    fn sanitize_path_component(value: &str) -> String {
-        let sanitized: String = value
-            .chars()
-            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-            .collect();
-
-        if sanitized.is_empty() {
-            "unknown".to_owned()
-        } else {
-            sanitized
-        }
+        println!("cargo:rustc-env=PEPPY_RUST_PRECOMPILED_BUNDLE_DIR={}", bundle_dir.display());
+        println!("cargo:rustc-env=PEPPY_RUST_PRECOMPILED_BUNDLE_HASH={bundle_hash}");
     }
 
     fn emit_rerun_for_runtime_packages(peppylib_manifest: &std::path::Path) {
@@ -756,6 +700,48 @@ mod rust_runtime_build {
         }
 
         false
+    }
+
+    /// Computes a content hash of the bundle directory for cache-keying.
+    ///
+    /// The hash is derived from relative file paths and sizes. Cargo embeds a
+    /// metadata hash in each `.rlib` file name that changes whenever the crate
+    /// source, features, dependencies, or compiler version change, so hashing
+    /// file names + sizes is sufficient to detect any bundle change.
+    fn compute_bundle_content_hash(bundle_dir: &Path) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::collections::BTreeSet;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        let mut entries = BTreeSet::new();
+        collect_hash_entries(bundle_dir, bundle_dir, &mut entries);
+        for (rel_path, size) in &entries {
+            rel_path.hash(&mut hasher);
+            size.hash(&mut hasher);
+        }
+        format!("{:016x}", hasher.finish())
+    }
+
+    fn collect_hash_entries(
+        base: &Path,
+        dir: &Path,
+        entries: &mut std::collections::BTreeSet<(String, u64)>,
+    ) {
+        let read_dir = match std::fs::read_dir(dir) {
+            Ok(rd) => rd,
+            Err(_) => return,
+        };
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_hash_entries(base, &path, entries);
+            } else if path.is_file() {
+                let rel = path.strip_prefix(base).unwrap_or(&path);
+                let size = path.metadata().map(|m| m.len()).unwrap_or(0);
+                entries.insert((rel.to_string_lossy().into_owned(), size));
+            }
+        }
     }
 }
 

@@ -1,8 +1,7 @@
 #![allow(dead_code)]
 
 use config::consts::{
-    NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, PYTHON_MAX_VERSION,
-    PYTHON_MIN_VERSION,
+    NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION,
 };
 use config::node::PeppygenLanguage;
 use generator::generate_peppygen_lib;
@@ -551,16 +550,10 @@ pub fn assert_rust_precompiled_runtime_layout(peppygen_dir: &Path) {
         peppygen_dir.join("crates").display()
     );
 
-    let node_root = infer_node_root_from_peppygen_dir(peppygen_dir).unwrap_or_else(|| {
-        panic!(
-            "failed to infer node root from peppygen directory {}",
-            peppygen_dir.display()
-        )
-    });
-    let runtime_cache_root = node_root.join(PEPPY_OUTPUT_DIR).join("cache").join("rust");
+    let runtime_cache_root = config::consts::peppy_data_dir().join("libs").join("rust");
     assert!(
         runtime_cache_root.exists(),
-        "expected runtime cache root at {}",
+        "expected shared runtime cache root at {}",
         runtime_cache_root.display()
     );
 
@@ -600,15 +593,6 @@ pub fn assert_rust_precompiled_runtime_layout(peppygen_dir: &Path) {
     );
 }
 
-fn infer_node_root_from_peppygen_dir(peppygen_dir: &Path) -> Option<PathBuf> {
-    let component_count = Path::new(PEPPYGEN_OUTPUT_PATH).components().count();
-    let candidate_root = peppygen_dir.ancestors().nth(component_count)?;
-    if candidate_root.join(PEPPYGEN_OUTPUT_PATH) == peppygen_dir {
-        Some(candidate_root.to_path_buf())
-    } else {
-        None
-    }
-}
 
 fn collect_dirs_named(root: &Path, target_name: &str, out: &mut Vec<PathBuf>) {
     let entries = fs::read_dir(root).unwrap_or_else(|err| {
