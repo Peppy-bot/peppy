@@ -2604,7 +2604,6 @@ dependencies = [
  "config",
  "futures",
  "jsonschema",
- "node-stack",
  "pmi",
  "schemars 1.2.0",
  "serde",
