@@ -4,7 +4,7 @@ use crate::names;
 use bytes::Bytes;
 use chrono::Local;
 use config::consts::{RUNTIME_CONFIG_VAR_NAME, logs_dir_start, runtime_config_dir};
-use config::node::Name;
+use config::node::{Name, PeppygenLanguage};
 use config::runtime::RuntimeConfig;
 use config::{AnyType, NodeArguments};
 use node_stack::{NodeEntity, NodeStack};
@@ -990,6 +990,12 @@ pub fn start_node(
         command.env(key, value);
     }
     command.env(RUNTIME_CONFIG_VAR_NAME, &runtime_config_path);
+
+    // Force unbuffered stdout/stderr for Python nodes. Without this, Python
+    // defaults to full buffering when stdout is a pipe, delaying log capture.
+    if manifest.language == PeppygenLanguage::Python {
+        command.env("PYTHONUNBUFFERED", "1");
+    }
 
     command.spawn()
 }
