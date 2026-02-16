@@ -5,8 +5,8 @@ from peppygen.parameters import Parameters
 from peppygen.subscribed_topics import hello_world_param_message_stream
 
 
-async def setup(_params: Parameters, node_runner: NodeRunner):
-    asyncio.create_task(receive_messages(node_runner))
+async def setup(_params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task]:
+    return [asyncio.create_task(receive_messages(node_runner))]
 
 
 async def receive_messages(node_runner: NodeRunner):

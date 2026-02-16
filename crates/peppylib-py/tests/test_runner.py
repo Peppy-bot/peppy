@@ -234,7 +234,7 @@ async def test_async_setup_with_background_task(monkeypatch):
                             while not node_runner.cancellation_token().is_cancelled():
                                 await asyncio.sleep(0.05)
 
-                        asyncio.create_task(background_task())
+                        return [asyncio.create_task(background_task())]
 
                     (
                         NodeBuilder()
