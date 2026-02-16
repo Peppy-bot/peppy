@@ -593,7 +593,6 @@ pub fn assert_rust_precompiled_runtime_layout(peppygen_dir: &Path) {
     );
 }
 
-
 fn collect_dirs_named(root: &Path, target_name: &str, out: &mut Vec<PathBuf>) {
     let entries = fs::read_dir(root).unwrap_or_else(|err| {
         panic!("failed to read {}: {err}", root.display());

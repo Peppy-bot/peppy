@@ -249,6 +249,10 @@ mod python_runtime_build {
             .expect("mtime should be after UNIX_EPOCH")
             .as_secs();
         println!("cargo:rustc-env=PEPPYLIB_SO_MTIME={mtime}");
+
+        let peppylib_pkg_dir = peppylib_py_dir.join("peppylib");
+        let py_bundle_hash = super::compute_bundle_content_hash(&peppylib_pkg_dir);
+        println!("cargo:rustc-env=PEPPYLIB_PY_BUNDLE_HASH={py_bundle_hash}");
     }
 }
 
@@ -435,9 +439,12 @@ mod rust_runtime_build {
             bundle_deps_dir.display()
         );
 
-        let bundle_hash = compute_bundle_content_hash(&bundle_dir);
+        let bundle_hash = super::compute_bundle_content_hash(&bundle_dir);
 
-        println!("cargo:rustc-env=PEPPY_RUST_PRECOMPILED_BUNDLE_DIR={}", bundle_dir.display());
+        println!(
+            "cargo:rustc-env=PEPPY_RUST_PRECOMPILED_BUNDLE_DIR={}",
+            bundle_dir.display()
+        );
         println!("cargo:rustc-env=PEPPY_RUST_PRECOMPILED_BUNDLE_HASH={bundle_hash}");
     }
 
@@ -701,46 +708,47 @@ mod rust_runtime_build {
 
         false
     }
+}
 
-    /// Computes a content hash of the bundle directory for cache-keying.
-    ///
-    /// The hash is derived from relative file paths and sizes. Cargo embeds a
-    /// metadata hash in each `.rlib` file name that changes whenever the crate
-    /// source, features, dependencies, or compiler version change, so hashing
-    /// file names + sizes is sufficient to detect any bundle change.
-    fn compute_bundle_content_hash(bundle_dir: &Path) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::collections::BTreeSet;
-        use std::hash::{Hash, Hasher};
+/// Computes a content hash of a directory for cache-keying.
+///
+/// The hash is derived from relative file paths and sizes (sorted for
+/// determinism). Skips `__pycache__` directories.
+fn compute_bundle_content_hash(bundle_dir: &Path) -> String {
+    use std::collections::BTreeSet;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
 
-        let mut hasher = DefaultHasher::new();
-        let mut entries = BTreeSet::new();
-        collect_hash_entries(bundle_dir, bundle_dir, &mut entries);
-        for (rel_path, size) in &entries {
-            rel_path.hash(&mut hasher);
-            size.hash(&mut hasher);
-        }
-        format!("{:016x}", hasher.finish())
+    let mut hasher = DefaultHasher::new();
+    let mut entries = BTreeSet::new();
+    collect_hash_entries(bundle_dir, bundle_dir, &mut entries);
+    for (rel_path, size) in &entries {
+        rel_path.hash(&mut hasher);
+        size.hash(&mut hasher);
     }
+    format!("{:016x}", hasher.finish())
+}
 
-    fn collect_hash_entries(
-        base: &Path,
-        dir: &Path,
-        entries: &mut std::collections::BTreeSet<(String, u64)>,
-    ) {
-        let read_dir = match std::fs::read_dir(dir) {
-            Ok(rd) => rd,
-            Err(_) => return,
-        };
-        for entry in read_dir.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                collect_hash_entries(base, &path, entries);
-            } else if path.is_file() {
-                let rel = path.strip_prefix(base).unwrap_or(&path);
-                let size = path.metadata().map(|m| m.len()).unwrap_or(0);
-                entries.insert((rel.to_string_lossy().into_owned(), size));
+fn collect_hash_entries(
+    base: &Path,
+    dir: &Path,
+    entries: &mut std::collections::BTreeSet<(String, u64)>,
+) {
+    let read_dir = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(_) => return,
+    };
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|n| n == "__pycache__") {
+                continue;
             }
+            collect_hash_entries(base, &path, entries);
+        } else if path.is_file() {
+            let rel = path.strip_prefix(base).unwrap_or(&path);
+            let size = path.metadata().map(|m| m.len()).unwrap_or(0);
+            entries.insert((rel.to_string_lossy().into_owned(), size));
         }
     }
 }

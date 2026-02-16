@@ -1,12 +1,12 @@
 use super::identifiers::is_python_keyword;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::generator::naming::{sanitize_component, unique_module_name};
 use crate::generator::types::{CapnpSchema, InterfaceArtifact, InterfaceKind};
 use rust_embed::Embed;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Pre-built peppylib Python package (Python wrappers + compiled native extension).
 #[derive(Embed)]
@@ -17,21 +17,82 @@ use std::path::Path;
 struct EmbeddedPeppylibPy;
 
 pub fn add_peppylib_dependencies(to_path: &Path) -> Result<()> {
-    // Copy Python project templates (pyproject.toml, peppygen/__init__.py)
     crate::generator::common::copy_embedded_templates("peppygen/python", to_path)?;
 
-    // Copy the pre-built peppylib Python package (Python files + native .so)
-    let peppylib_dir = to_path.join("peppylib");
-    fs::create_dir_all(&peppylib_dir)?;
+    let shared_peppylib = deploy_peppylib_to_shared_location()?;
+
+    let peppylib_link = to_path.join("peppylib");
+    // Remove any existing peppylib (previous full copy or stale symlink).
+    if peppylib_link.exists() || peppylib_link.symlink_metadata().is_ok() {
+        if peppylib_link.is_dir() {
+            fs::remove_dir_all(&peppylib_link)?;
+        } else {
+            fs::remove_file(&peppylib_link)?;
+        }
+    }
+
+    std::os::unix::fs::symlink(&shared_peppylib, &peppylib_link).map_err(|e| {
+        Error::Io(io::Error::new(
+            e.kind(),
+            format!(
+                "failed to symlink {} -> {}: {e}",
+                peppylib_link.display(),
+                shared_peppylib.display()
+            ),
+        ))
+    })?;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Shared peppylib deployment
+// ---------------------------------------------------------------------------
+
+fn deploy_peppylib_to_shared_location() -> Result<PathBuf> {
+    let shared_peppylib = peppylib_cache_dir();
+
+    // Fast path: already deployed (content-addressed by hash).
+    if shared_peppylib.exists() {
+        return Ok(shared_peppylib);
+    }
+
+    // Serialize concurrent deployments (parallel tests, concurrent node syncs).
+    let lock_path = shared_peppylib.with_extension("lock");
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let lock_file = fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    lock_file.lock().map_err(|e| {
+        Error::Io(io::Error::new(
+            e.kind(),
+            format!("failed to acquire peppylib-py bundle lock: {e}"),
+        ))
+    })?;
+
+    // Re-check after acquiring lock (another thread/process may have completed).
+    if shared_peppylib.exists() {
+        return Ok(shared_peppylib);
+    }
+
+    // Extract embedded files to a staging dir, then atomically rename.
+    let staging = shared_peppylib.with_extension("staging");
+    if staging.exists() {
+        fs::remove_dir_all(&staging)?;
+    }
+    fs::create_dir_all(&staging)?;
 
     for file_path in EmbeddedPeppylibPy::iter() {
         let file_path_str = file_path.as_ref();
-        let destination = peppylib_dir.join(file_path_str);
-
+        let destination = staging.join(file_path_str);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
-
         let content = EmbeddedPeppylibPy::get(file_path_str).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
@@ -41,7 +102,26 @@ pub fn add_peppylib_dependencies(to_path: &Path) -> Result<()> {
         fs::write(&destination, content.data.as_ref())?;
     }
 
-    Ok(())
+    fs::rename(&staging, &shared_peppylib).map_err(|err| {
+        Error::Io(io::Error::new(
+            err.kind(),
+            format!(
+                "failed to rename {} to {}: {err}",
+                staging.display(),
+                shared_peppylib.display()
+            ),
+        ))
+    })?;
+
+    Ok(shared_peppylib)
+}
+
+fn peppylib_cache_dir() -> PathBuf {
+    config::consts::peppy_data_dir()
+        .join("libs")
+        .join("python")
+        .join(env!("PEPPYLIB_PY_BUNDLE_HASH"))
+        .join("peppylib")
 }
 
 pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, to_path: &Path) -> Result<()> {
