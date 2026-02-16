@@ -23,10 +23,21 @@ fn call_setup_function(
     let py_params = pythonize(py, params)
         .map_err(|e| PyRuntimeError::new_err(format!("failed to convert params to Python: {e}")))?
         .unbind();
+    let py_params = hydrate_parameters(py, py_params)?;
     let py_runner = Py::new(py, PyNodeRunner::new(Arc::clone(node_runner))).map_err(|e| {
         PyRuntimeError::new_err(format!("failed to create NodeRunner Python wrapper: {e}"))
     })?;
     setup_fn.call1(py, (py_params, py_runner))
+}
+
+/// Converts a plain Python dict into the generated `Parameters` dataclass
+/// instance by importing `peppygen.parameters.Parameters` and calling its
+/// `from_dict` classmethod.
+fn hydrate_parameters(py: Python<'_>, params: Py<PyAny>) -> PyResult<Py<PyAny>> {
+    let module = py.import("peppygen.parameters")?;
+    let params_cls = module.getattr("Parameters")?;
+    let instance = params_cls.call_method1("from_dict", (params.bind(py),))?;
+    Ok(instance.unbind())
 }
 
 fn is_awaitable(value: &Bound<'_, PyAny>) -> PyResult<bool> {
@@ -319,11 +330,13 @@ impl PyNodeBuilder {
 
     /// Run the node with a setup callback.
     ///
-    /// The callback receives `(params: dict, node_runner: NodeRunner)` and may
-    /// be either synchronous or async:
+    /// The callback receives `(params: Parameters, node_runner: NodeRunner)` and
+    /// may be either synchronous or async.  `params` is the generated
+    /// `peppygen.parameters.Parameters` dataclass instance (hydrated from the
+    /// runtime config dict).
     ///
-    /// - **sync** `def setup(params, node_runner): ...` — runs directly.
-    /// - **async** `async def setup(params, node_runner): ...` — runs on a
+    /// - **sync** `def setup(params: Parameters, node_runner: NodeRunner): ...` — runs directly.
+    /// - **async** `async def setup(params: Parameters, node_runner: NodeRunner): ...` — runs on a
     ///   persistent asyncio event loop. Background tasks created with
     ///   `asyncio.create_task()` survive after setup returns.
     ///

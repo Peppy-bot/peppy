@@ -94,7 +94,7 @@ async def test_daemon_runner_succeed(monkeypatch):
                 try:
 
                     def setup_fn(params, _node_runner):
-                        result_queue.put(params["frequency_hz"])
+                        result_queue.put(params.frequency_hz)
 
                     NodeBuilder().run(setup_fn)
                 except Exception as e:
@@ -175,7 +175,7 @@ async def test_standalone_runner_succeed(monkeypatch):
                 try:
 
                     def setup_fn(params, node_runner):
-                        assert params["frequency_hz"] == TEST_FREQUENCY_HZ
+                        assert params.frequency_hz == TEST_FREQUENCY_HZ
                         token_queue.put(node_runner.cancellation_token())
 
                     (
@@ -327,7 +327,7 @@ async def test_run_accepts_async_setup(monkeypatch):
                 try:
 
                     async def setup_fn(params, node_runner):
-                        assert params["frequency_hz"] == TEST_FREQUENCY_HZ
+                        assert params.frequency_hz == TEST_FREQUENCY_HZ
                         await asyncio.sleep(0.01)
                         token_queue.put(node_runner.cancellation_token())
 
