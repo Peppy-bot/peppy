@@ -56,7 +56,7 @@ pub fn generate_parameters_struct(parameters: &config::NodeArguments) -> Result<
     }
 
     let main_struct = quote! {
-        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+        #[derive(Debug, Clone, peppylib::serde::Serialize, peppylib::serde::Deserialize, peppylib::schemars::JsonSchema)]
         pub struct Parameters {
             #( #main_fields ),*
         }
@@ -175,7 +175,7 @@ fn generate_parameter_struct(
     }
 
     structs.push(quote! {
-        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+        #[derive(Debug, Clone, peppylib::serde::Serialize, peppylib::serde::Deserialize, peppylib::schemars::JsonSchema)]
         pub struct #struct_ident {
             #( #field_tokens ),*
         }

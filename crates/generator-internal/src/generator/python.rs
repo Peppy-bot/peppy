@@ -313,7 +313,7 @@ impl LanguageGenerator for PythonGenerator {
         Ok(())
     }
 
-    fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
+    fn build(self, to_path: impl AsRef<Path>, _node_dir: &Path) -> Result<()> {
         let to_path = to_path.as_ref();
         std::fs::create_dir_all(to_path)?;
 

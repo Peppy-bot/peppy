@@ -7,6 +7,7 @@ mod context;
 mod deserialization;
 mod identifiers;
 pub mod parameters;
+pub(crate) mod precompiled;
 mod serialization;
 mod services;
 mod topics;
@@ -1556,8 +1557,8 @@ impl LanguageGenerator for RustGenerator {
         Ok(())
     }
 
-    fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
-        build::add_peppylib_dependencies(&to_path)?;
+    fn build(self, to_path: impl AsRef<Path>, node_dir: &Path) -> Result<()> {
+        build::add_peppylib_dependencies(&to_path, node_dir)?;
         build::add_capnp_schemas(&self.schemas, to_path.as_ref())?;
         build::add_artifacts_to_lib(&to_path, self.sections)?;
         build::add_parameters_to_lib(&to_path, &self.parameters)?;

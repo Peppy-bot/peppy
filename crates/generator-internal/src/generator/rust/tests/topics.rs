@@ -483,7 +483,7 @@ fn clippy_single_exposed_topic_empty_format() {
         .add_subscribed_action(&subscribed_action2, &action_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator.build(&output_dir).unwrap();
+    generator.build(&output_dir, &user_node).unwrap();
     fs::remove_file(output_config).unwrap();
 
     let clippy_output = Command::new("cargo")
@@ -543,7 +543,7 @@ fn compile_lib_with_exposed_and_subscribed_topics() {
         .add_subscribed_topic(&subscribed_topic2, subscribed_format2)
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator.build(&output_dir).unwrap();
+    generator.build(&output_dir, &user_node).unwrap();
     fs::remove_file(output_config).unwrap();
 
     let cargo_output = Command::new("cargo")

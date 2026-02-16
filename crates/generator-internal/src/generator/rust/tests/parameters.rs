@@ -199,9 +199,9 @@ fn generate_parameters_struct() {
     let node_config: NodeConfig =
         serde_json5::from_str(NODE_EXAMPLE).expect("failed to parse NODE_EXAMPLE into NodeConfig");
 
-    let (mut generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.set_parameters(node_config.parameters);
-    generator.build(&output_dir).unwrap();
+    generator.build(&output_dir, &user_node).unwrap();
 
     let parameters_file = output_dir.join("src/parameters.rs");
     assert!(
@@ -256,7 +256,11 @@ fn generate_parameters_struct() {
     // Verify derive attributes
     assert_contains_all(
         &generated,
-        &["#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]"],
+        &[
+            "peppylib::serde::Serialize",
+            "peppylib::serde::Deserialize",
+            "peppylib::schemars::JsonSchema",
+        ],
     );
 }
 
@@ -264,9 +268,9 @@ fn generate_parameters_struct() {
 fn generate_empty_parameters_struct() {
     let temp_dir = TempDir::new().unwrap();
 
-    let (generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
+    let (generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     // Don't set any parameters - use the default empty parameters
-    generator.build(&output_dir).unwrap();
+    generator.build(&output_dir, &user_node).unwrap();
 
     let parameters_file = output_dir.join("src/parameters.rs");
     assert!(
@@ -280,7 +284,9 @@ fn generate_empty_parameters_struct() {
     assert_contains_all(
         &generated,
         &[
-            "#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]",
+            "peppylib::serde::Serialize",
+            "peppylib::serde::Deserialize",
+            "peppylib::schemars::JsonSchema",
             "pub struct Parameters",
         ],
     );
@@ -292,9 +298,9 @@ fn generate_parameters_struct_avoids_nested_struct_name_collisions() {
     let node_config: NodeConfig = serde_json5::from_str(NESTED_STRUCT_COLLISION_NODE_EXAMPLE)
         .expect("failed to parse NESTED_STRUCT_COLLISION_NODE_EXAMPLE into NodeConfig");
 
-    let (mut generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.set_parameters(node_config.parameters);
-    generator.build(&output_dir).unwrap();
+    generator.build(&output_dir, &user_node).unwrap();
 
     let parameters_file = output_dir.join("src/parameters.rs");
     assert!(

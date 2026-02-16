@@ -66,7 +66,7 @@ pub fn generate_peppygen_lib(
         PeppygenLanguage::Rust => {
             let mut rust_generator = RustGenerator::new();
             rust_generator.set_parameters(node_config.parameters);
-            generate_with_backend(rust_generator, &interfaces, &output_dir)?;
+            generate_with_backend(rust_generator, &interfaces, &output_dir, node_dir)?;
             // Create or update the node's Cargo.toml with peppygen dependency
             ensure_node_cargo_toml(node_dir, node_config.manifest.name.as_str())?;
             Ok(())
@@ -74,7 +74,7 @@ pub fn generate_peppygen_lib(
         PeppygenLanguage::Python => {
             let mut python_generator = PythonGenerator::new();
             python_generator.set_parameters(node_config.parameters);
-            generate_with_backend(python_generator, &interfaces, &output_dir)
+            generate_with_backend(python_generator, &interfaces, &output_dir, node_dir)
         }
     };
 
@@ -122,6 +122,7 @@ fn generate_with_backend<B>(
     mut backend: B,
     interfaces: &[DeploymentInterface],
     output_dir: &Path,
+    node_dir: &Path,
 ) -> Result<()>
 where
     B: LanguageGenerator,
@@ -129,7 +130,7 @@ where
     for interface in interfaces {
         interface.register_with(&mut backend)?;
     }
-    backend.build(output_dir)
+    backend.build(output_dir, node_dir)
 }
 
 /// Creates or updates the node's Cargo.toml with the peppygen dependency.
@@ -170,12 +171,24 @@ fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
         doc.insert("dependencies", Item::Table(Table::new()));
     }
 
-    if let Some(dependencies) = doc.get_mut("dependencies").and_then(|d| d.as_table_mut())
-        && !dependencies.contains_key("peppygen")
-    {
-        let mut peppygen_dep = InlineTable::new();
-        peppygen_dep.insert("path", config::consts::PEPPYGEN_OUTPUT_PATH.into());
-        dependencies.insert("peppygen", toml_edit::value(peppygen_dep));
+    if let Some(dependencies) = doc.get_mut("dependencies").and_then(|d| d.as_table_mut()) {
+        if !dependencies.contains_key("peppygen") {
+            let mut peppygen_dep = InlineTable::new();
+            peppygen_dep.insert("path", config::consts::PEPPYGEN_OUTPUT_PATH.into());
+            dependencies.insert("peppygen", toml_edit::value(peppygen_dep));
+        }
+
+        // Strip peppylib — now provided by the precompiled runtime
+        dependencies.remove("peppylib");
+
+        // Reject deps that overlap with the precompiled runtime
+        for name in rust::precompiled::precompiled_crate_names() {
+            if dependencies.contains_key(name) {
+                return Err(Error::PrecompiledDependencyConflict {
+                    name: name.to_string(),
+                });
+            }
+        }
     }
 
     fs::write(&cargo_toml_path, doc.to_string())?;
@@ -233,7 +246,7 @@ mod tests {
             edition = "2021"
 
             [dependencies]
-            serde = "1.0"
+            my-custom-lib = "0.1"
         "#;
         fs::write(&cargo_toml_path, existing_content).expect("failed to write existing Cargo.toml");
 
@@ -249,12 +262,12 @@ mod tests {
             .expect("should have package.name");
         assert_eq!(package_name, "existing_node");
 
-        let serde_dep = doc
+        let custom_dep = doc
             .get("dependencies")
-            .and_then(|d| d.get("serde"))
+            .and_then(|d| d.get("my-custom-lib"))
             .and_then(|s| s.as_str())
-            .expect("should have serde dependency");
-        assert_eq!(serde_dep, "1.0");
+            .expect("should have my-custom-lib dependency");
+        assert_eq!(custom_dep, "0.1");
 
         let peppygen_path = doc
             .get("dependencies")
@@ -278,7 +291,7 @@ mod tests {
             edition = "2021"
 
             [dependencies]
-            serde = "1.0"
+            my-custom-lib = "0.1"
 
             [dependencies.peppygen]
             path = ".peppy/libs/peppygen"
@@ -306,12 +319,12 @@ mod tests {
             .expect("should have package.version");
         assert_eq!(package_version, "2.0.0");
 
-        let serde_dep = doc
+        let custom_dep = doc
             .get("dependencies")
-            .and_then(|d| d.get("serde"))
+            .and_then(|d| d.get("my-custom-lib"))
             .and_then(|s| s.as_str())
-            .expect("should have serde dependency");
-        assert_eq!(serde_dep, "1.0");
+            .expect("should have my-custom-lib dependency");
+        assert_eq!(custom_dep, "0.1");
 
         let peppygen_path = doc
             .get("dependencies")
@@ -323,5 +336,66 @@ mod tests {
 
         let doc_before: Value = toml::from_str(&content_before).expect("should be valid TOML");
         assert_eq!(doc, doc_before, "logical content should be unchanged");
+    }
+
+    #[test]
+    fn ensure_node_cargo_toml_strips_peppylib() {
+        let temp_dir = TempDir::new().expect("failed to create temp directory");
+        let node_dir = temp_dir.path();
+        let cargo_toml_path = node_dir.join("Cargo.toml");
+
+        let existing_content = r#"
+            [package]
+            name = "legacy_node"
+            version = "1.0.0"
+            edition = "2024"
+
+            [dependencies]
+            peppylib = { path = ".peppy/libs/peppygen/crates/peppylib" }
+        "#;
+        fs::write(&cargo_toml_path, existing_content).expect("failed to write Cargo.toml");
+
+        ensure_node_cargo_toml(node_dir, "legacy_node").expect("should succeed");
+
+        let contents = fs::read_to_string(&cargo_toml_path).expect("failed to read Cargo.toml");
+        let doc: Value = toml::from_str(&contents).expect("should be valid TOML");
+
+        assert!(
+            doc.get("dependencies")
+                .and_then(|d| d.get("peppylib"))
+                .is_none(),
+            "peppylib should be stripped from dependencies"
+        );
+        assert!(
+            doc.get("dependencies")
+                .and_then(|d| d.get("peppygen"))
+                .is_some(),
+            "peppygen should be added"
+        );
+    }
+
+    #[test]
+    fn ensure_node_cargo_toml_rejects_precompiled_dep_conflict() {
+        let temp_dir = TempDir::new().expect("failed to create temp directory");
+        let node_dir = temp_dir.path();
+        let cargo_toml_path = node_dir.join("Cargo.toml");
+
+        let existing_content = r#"
+            [package]
+            name = "bad_node"
+            version = "1.0.0"
+            edition = "2024"
+
+            [dependencies]
+            tokio = { version = "1", features = ["full"] }
+        "#;
+        fs::write(&cargo_toml_path, existing_content).expect("failed to write Cargo.toml");
+
+        let err = ensure_node_cargo_toml(node_dir, "bad_node").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("tokio") && msg.contains("precompiled"),
+            "expected precompiled conflict error for tokio, got: {msg}"
+        );
     }
 }

@@ -2,14 +2,12 @@ use super::identifiers::is_rust_keyword;
 use crate::{
     error::{Error, Result},
     generator::{
-        common::{WorkspacePackageMetadata, copy_embedded_crate},
         naming::{sanitize_component, unique_module_name},
         types::{CapnpSchema, InterfaceArtifact, InterfaceKind},
     },
 };
 use config::encoding::compile_capnp;
 use proc_macro2::Span;
-use rust_embed::Embed;
 use std::{
     collections::{BTreeMap, HashMap},
     fs,
@@ -20,60 +18,11 @@ use syn::{
     parse_quote,
 };
 
-#[derive(Embed)]
-#[folder = "../peppylib/"]
-#[include = "*.rs"]
-#[include = "*.toml"]
-#[include = "*.capnp"]
-#[include = "*.j2"]
-#[exclude = "target/*"]
-#[exclude = "tests/*"]
-#[exclude = "examples/*"]
-struct EmbeddedPeppylib;
-
-#[derive(Embed)]
-#[folder = "../pmi-internal/"]
-#[include = "*.rs"]
-#[include = "*.toml"]
-#[include = "*.capnp"]
-#[include = "*.j2"]
-#[exclude = "target/*"]
-#[exclude = "tests/*"]
-struct EmbeddedPmiInternal;
-
-#[derive(Embed)]
-#[folder = "../config-internal/"]
-#[include = "*.rs"]
-#[include = "*.toml"]
-#[include = "*.capnp"]
-#[include = "*.j2"]
-#[include = "tools/capnp_*"]
-#[exclude = "target/*"]
-#[exclude = "tests/*"]
-struct EmbeddedConfigInternal;
-
-pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>) -> Result<()> {
-    const PEPPYLIB_DIR: &str = "peppylib";
-    const PMI_INTERNAL_DIR: &str = "pmi-internal";
-    const CONFIG_INTERNAL_DIR: &str = "config-internal";
-    const VENDORED_ROOT: &str = "crates";
-    const PEPPYLIB_RELATIVE_PATH: &str = "crates/peppylib";
-
+pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>, node_dir: &Path) -> Result<()> {
     let to_path = to_path.as_ref();
-    let vendored_crates_dir = to_path.join(VENDORED_ROOT);
-    fs::create_dir_all(&vendored_crates_dir)?;
-
-    generate_lib_structure(to_path, PEPPYLIB_RELATIVE_PATH)?;
-
-    let metadata = WorkspacePackageMetadata::embedded();
-
-    copy_embedded_crate::<EmbeddedPeppylib>(PEPPYLIB_DIR, &vendored_crates_dir, &metadata)?;
-    copy_embedded_crate::<EmbeddedPmiInternal>(PMI_INTERNAL_DIR, &vendored_crates_dir, &metadata)?;
-    copy_embedded_crate::<EmbeddedConfigInternal>(
-        CONFIG_INTERNAL_DIR,
-        &vendored_crates_dir,
-        &metadata,
-    )?;
+    generate_lib_structure(to_path)?;
+    let artifacts_dir = super::precompiled::deploy_precompiled_runtime()?;
+    super::precompiled::generate_cargo_config(node_dir, &artifacts_dir)?;
     Ok(())
 }
 
@@ -208,11 +157,11 @@ impl ModuleCategory {
     }
 }
 
-fn generate_lib_structure(to_path: impl AsRef<Path>, peppylib_path: &str) -> Result<()> {
+fn generate_lib_structure(to_path: impl AsRef<Path>) -> Result<()> {
     let to_path = to_path.as_ref();
     fs::create_dir_all(to_path)?;
 
-    crate::generator::common::copy_embedded_templates("peppygen/rust", to_path, peppylib_path)
+    crate::generator::common::copy_embedded_templates("peppygen/rust", to_path)
 }
 
 fn group_artifacts_by_category(

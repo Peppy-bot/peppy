@@ -14,3 +14,5 @@ pub use peppylib::runtime::{NodeBuilder, NodeRunner, StandaloneConfig};
 pub use peppylib::{
     MessengerHandle, PeppyError as Error, PeppyResult as Result, ServiceMessenger,
 };
+pub use peppylib::schemars;
+pub use peppylib::serde;

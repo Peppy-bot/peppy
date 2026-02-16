@@ -442,7 +442,7 @@ fn clippy_single_exposed_service_without_request_body() {
         .add_subscribed_action(&subscribed_action2, &action_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator.build(&output_dir).unwrap();
+    generator.build(&output_dir, &user_node).unwrap();
     fs::remove_file(output_config).unwrap();
 
     let clippy_output = Command::new("cargo")
@@ -523,7 +523,7 @@ fn compile_lib_with_exposed_and_subscribed_services() {
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator.build(&output_dir).unwrap();
+    generator.build(&output_dir, &user_node).unwrap();
     fs::remove_file(output_config).unwrap();
 
     let cargo_output = Command::new("cargo")
@@ -628,7 +628,7 @@ fn clippy_subscribed_service_empty_request_format() {
         .add_subscribed_service(&subscribed_service, &empty_format, &response_format)
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator.build(&output_dir).unwrap();
+    generator.build(&output_dir, &user_node).unwrap();
     fs::remove_file(output_config).unwrap();
 
     let clippy_output = Command::new("cargo")
@@ -676,7 +676,7 @@ fn clippy_subscribed_service_empty_response_format() {
         .add_subscribed_service(&subscribed_service, &request_format, &empty_format)
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator.build(&output_dir).unwrap();
+    generator.build(&output_dir, &user_node).unwrap();
     fs::remove_file(output_config).unwrap();
 
     let clippy_output = Command::new("cargo")

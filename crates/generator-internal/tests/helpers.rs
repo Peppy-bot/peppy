@@ -82,14 +82,6 @@ pub fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
 
     if !updated_manifest
         .lines()
-        .any(|line| line.trim_start().starts_with("tokio"))
-    {
-        let tokio_dependency_line = "tokio = { version = \"1.47.0\", features = [\"macros\", \"rt-multi-thread\", \"time\"] }\n";
-        updated_manifest = insert_dependency_line(&updated_manifest, tokio_dependency_line);
-    }
-
-    if !updated_manifest
-        .lines()
         .any(|line| line.trim_start().starts_with("peppygen"))
     {
         let dependency_line = format!("peppygen = {{ path = \"{}\" }}\n", PEPPYGEN_OUTPUT_PATH);

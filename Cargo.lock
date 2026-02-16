@@ -1225,6 +1225,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rust-embed",
+ "serde_json",
  "serde_json5",
  "sha2",
  "syn 2.0.115",

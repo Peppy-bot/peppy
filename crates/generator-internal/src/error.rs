@@ -87,4 +87,9 @@ This field name is reserved by peppy transport metadata and cannot be used insid
         first_field: String,
         second_field: String,
     },
+    #[error(
+        "dependency `{name}` in Cargo.toml conflicts with the precompiled runtime. \
+Remove it from [dependencies]."
+    )]
+    PrecompiledDependencyConflict { name: String },
 }

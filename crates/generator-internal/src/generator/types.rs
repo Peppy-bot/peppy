@@ -108,7 +108,7 @@ pub trait LanguageGenerator {
         messages: &SubscribedActionMessage,
     ) -> Result<()>;
     /// Finalizes the builder and return a path to the library
-    fn build(self, to_path: impl AsRef<Path>) -> Result<()>;
+    fn build(self, to_path: impl AsRef<Path>, node_dir: &Path) -> Result<()>;
 }
 
 impl DeploymentInterface {

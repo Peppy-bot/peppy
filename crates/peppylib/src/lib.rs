@@ -11,6 +11,9 @@ pub use error::{
 pub use messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, TopicMessenger};
 pub mod config;
 
+pub use schemars;
+pub use serde;
+
 #[allow(clippy::all)]
 pub mod health_capnp {
     include!(concat!(env!("OUT_DIR"), "/health_capnp.rs"));
