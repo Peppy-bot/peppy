@@ -83,12 +83,7 @@ fn generate_random_id() -> String {
 /// environments breaks Python on macOS because `std::fs::copy` dereferences
 /// symlinks, turning `@executable_path`-relative dylib references into
 /// dangling paths.
-const COPY_EXCLUDED_DIRS: &[&str] = &[
-    ".peppy",
-    ".venv",
-    ".pixi",
-    "__pypackages__",
-];
+const COPY_EXCLUDED_DIRS: &[&str] = &[".peppy", ".venv", ".pixi", "__pypackages__"];
 
 fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
     std::fs::create_dir_all(dest)?;

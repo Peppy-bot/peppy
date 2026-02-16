@@ -212,7 +212,7 @@ from peppygen import NodeBuilder
 from peppygen.exposed_topics import video_stream
 
 async def setup(parameters, node_runner):
-    frequency_hz = parameters["frequency"]
+    frequency_hz = parameters.frequency
     interval = 1.0 / frequency_hz
 
     async def emit_loop():
