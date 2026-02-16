@@ -6,6 +6,14 @@ import sys
 from ._version import __version__
 from . import encoding
 
+# Force line-buffered stdout/stderr when not connected to a TTY (e.g., when
+# spawned by the daemon with piped I/O). Without this, Python defaults to full
+# buffering, delaying log capture in .peppy/logs/start/.
+if hasattr(sys.stdout, "reconfigure") and not sys.stdout.isatty():
+    sys.stdout.reconfigure(line_buffering=True)
+if hasattr(sys.stderr, "reconfigure") and not sys.stderr.isatty():
+    sys.stderr.reconfigure(line_buffering=True)
+
 # Import the native module and register submodules in sys.modules
 # This is required for PyO3 submodules to be importable with dot notation
 from . import _peppylib  # type: ignore[import-not-found]
