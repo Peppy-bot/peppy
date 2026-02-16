@@ -75,33 +75,7 @@ impl Processor {
             None => NodeArguments::new(),
         };
 
-        // Validate that all required parameters defined in peppy.json5 are
-        // provided when running in standalone mode. This catches missing
-        // parameters early — before the Zenoh connection attempt — so the
-        // developer sees a clear error instead of a hanging process.
-        let missing: Vec<String> = node_config
-            .parameters
-            .keys()
-            .filter(|key| !arguments.contains_key(key.as_str()))
-            .cloned()
-            .collect();
-
-        if !missing.is_empty() {
-            return Err(ParameterDeserializationError::multiple(
-                missing
-                    .iter()
-                    .map(|name| {
-                        format!(
-                            "parameter '{}' is defined in peppy.json5 but not provided. \
-                             Pass it via StandaloneConfig::with_parameters() or \
-                             StandaloneConfig::with_parameters_json()",
-                            name
-                        )
-                    })
-                    .collect(),
-            )
-            .into());
-        }
+        Self::validate_required_parameters(&arguments, &node_config.parameters)?;
 
         let node_name: String = config
             .node_name
@@ -170,6 +144,40 @@ impl Processor {
                 .ok_or_else(|| Error::MissingCompiledParameter { path: key.clone() })?;
             runtime_value.matches_type_spec(compiled_type, key)?;
         }
+        Ok(())
+    }
+
+    /// Validate that all required parameters defined in peppy.json5 are
+    /// provided when running in standalone mode. This catches missing
+    /// parameters early — before the Zenoh connection attempt — so the
+    /// developer sees a clear error instead of a hanging process.
+    fn validate_required_parameters(
+        runtime_args: &NodeArguments,
+        compiled_params: &NodeArguments,
+    ) -> Result<()> {
+        let missing: Vec<String> = compiled_params
+            .keys()
+            .filter(|key| !runtime_args.contains_key(key.as_str()))
+            .cloned()
+            .collect();
+
+        if !missing.is_empty() {
+            return Err(ParameterDeserializationError::multiple(
+                missing
+                    .iter()
+                    .map(|name| {
+                        format!(
+                            "parameter '{}' is defined in peppy.json5 but not provided. \
+                             Pass it via StandaloneConfig::with_parameters() or \
+                             StandaloneConfig::with_parameters_json()",
+                            name
+                        )
+                    })
+                    .collect(),
+            )
+            .into());
+        }
+
         Ok(())
     }
 
