@@ -14,8 +14,8 @@ async def emit_hello_world_loop(node_runner: NodeRunner):
         await asyncio.sleep(3)
 
 
-async def setup(params: Parameters, node_runner: NodeRunner):
-    asyncio.create_task(emit_hello_world_loop(node_runner))
+async def setup(params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task]:
+    return [asyncio.create_task(emit_hello_world_loop(node_runner))]
 
 
 def main():

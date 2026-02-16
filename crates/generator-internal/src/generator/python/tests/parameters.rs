@@ -249,6 +249,22 @@ fn generate_parameters_struct() {
         &generated,
         &["class VideoResolution:", "width: int", "height: int"],
     );
+
+    // Verify from_dict classmethods for dict-to-dataclass hydration
+    assert_contains_all(
+        &generated,
+        &[
+            "def from_dict(cls, data: dict) -> \"Parameters\":",
+            "device=Device.from_dict(data[\"device\"])",
+            "video=Video.from_dict(data[\"video\"])",
+            "def from_dict(cls, data: dict) -> \"Device\":",
+            "physical=data[\"physical\"]",
+            "def from_dict(cls, data: dict) -> \"Video\":",
+            "resolution=VideoResolution.from_dict(data[\"resolution\"])",
+            "def from_dict(cls, data: dict) -> \"VideoResolution\":",
+            "width=data[\"width\"]",
+        ],
+    );
 }
 
 #[test]
@@ -313,7 +329,16 @@ fn generate_empty_parameters_struct() {
     let generated = fs::read_to_string(&parameters_file).expect("failed to read parameters.py");
 
     // Even with no parameters, we should have a valid Parameters dataclass
-    assert_contains_all(&generated, &["@dataclass", "class Parameters:"]);
+    // with a from_dict classmethod
+    assert_contains_all(
+        &generated,
+        &[
+            "@dataclass",
+            "class Parameters:",
+            "def from_dict(cls, data: dict) -> \"Parameters\":",
+            "return cls()",
+        ],
+    );
 }
 
 #[test]
