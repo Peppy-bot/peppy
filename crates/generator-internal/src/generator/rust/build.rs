@@ -52,21 +52,10 @@ struct EmbeddedPmiInternal;
 #[exclude = "tests/*"]
 struct EmbeddedConfigInternal;
 
-#[derive(Embed)]
-#[folder = "../node-stack-internal/"]
-#[include = "*.rs"]
-#[include = "*.toml"]
-#[include = "*.capnp"]
-#[include = "*.j2"]
-#[exclude = "target/*"]
-#[exclude = "tests/*"]
-struct EmbeddedNodeStackInternal;
-
 pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>) -> Result<()> {
     const PEPPYLIB_DIR: &str = "peppylib";
     const PMI_INTERNAL_DIR: &str = "pmi-internal";
     const CONFIG_INTERNAL_DIR: &str = "config-internal";
-    const NODE_STACK_DIR: &str = "node-stack-internal";
     const VENDORED_ROOT: &str = "crates";
     const PEPPYLIB_RELATIVE_PATH: &str = "crates/peppylib";
 
@@ -82,11 +71,6 @@ pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>) -> Result<()> {
     copy_embedded_crate::<EmbeddedPmiInternal>(PMI_INTERNAL_DIR, &vendored_crates_dir, &metadata)?;
     copy_embedded_crate::<EmbeddedConfigInternal>(
         CONFIG_INTERNAL_DIR,
-        &vendored_crates_dir,
-        &metadata,
-    )?;
-    copy_embedded_crate::<EmbeddedNodeStackInternal>(
-        NODE_STACK_DIR,
         &vendored_crates_dir,
         &metadata,
     )?;
