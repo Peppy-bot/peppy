@@ -137,8 +137,10 @@ impl RustGenerator {
         response_format: Option<&MessageFormat>,
         schema_key: &str,
     ) -> Result<(TokenStream, Vec<TokenStream>, bool)> {
-        let request_artifacts = map_message_format(request_format)?;
-        let response_artifacts = map_message_format(response_format)?;
+        let request_artifacts =
+            map_message_format(&format!("{schema_key}_request"), request_format)?;
+        let response_artifacts =
+            map_message_format(&format!("{schema_key}_response"), response_format)?;
 
         // Build GoalRequest struct if there's request data
         let goal_request_ident = Ident::new("GoalRequest", Span::call_site());
@@ -292,7 +294,7 @@ impl RustGenerator {
         schema_key: &str,
     ) -> Result<(TokenStream, Vec<TokenStream>)> {
         let cancel_response_format = cancel_action_response_format();
-        let response_artifacts = map_message_format(Some(&cancel_response_format))?
+        let response_artifacts = map_message_format(schema_key, Some(&cancel_response_format))?
             .expect("cancel response format should yield artifacts");
 
         let cancel_response_data_ident = Ident::new("CancelResponseData", Span::call_site());
@@ -373,7 +375,8 @@ impl RustGenerator {
         format: &MessageFormat,
         action_struct_name: &str,
     ) -> Result<(TokenStream, Vec<TokenStream>)> {
-        let format_artifacts = map_message_format(Some(format))?
+        let feedback_schema_name = format!("{action_struct_name}_feedback");
+        let format_artifacts = map_message_format(&feedback_schema_name, Some(format))?
             .expect("feedback format should always yield encoding artifacts");
 
         let struct_prefix = format!("{action_struct_name}Feedback");
@@ -457,7 +460,8 @@ impl RustGenerator {
         response_format: Option<&MessageFormat>,
         schema_key: &str,
     ) -> Result<(TokenStream, Vec<TokenStream>)> {
-        let response_artifacts = map_message_format(response_format)?;
+        let response_artifacts =
+            map_message_format(&format!("{schema_key}_response"), response_format)?;
 
         let result_response_data_ident = Ident::new("ResultResponseData", Span::call_site());
         let result_response_ident = Ident::new("ResultResponse", Span::call_site());
@@ -594,7 +598,7 @@ impl LanguageGenerator for RustGenerator {
         let struct_prefix = String::from("Message");
 
         let mut context = GenerationContext::default();
-        let format_artifacts = map_message_format(topic.message_format.as_ref())?;
+        let format_artifacts = map_message_format(&fn_name_str, topic.message_format.as_ref())?;
         let params = collect_function_params(
             format_artifacts.as_ref(),
             None,
@@ -648,8 +652,12 @@ impl LanguageGenerator for RustGenerator {
 
         let mut context = GenerationContext::default();
         let request_format = non_empty_message_format(service.request_message_format.as_ref());
-        let request_wire_artifacts = map_message_format(request_format)?;
-        let response_artifacts = map_message_format(service.response_message_format.as_ref())?;
+        let request_wire_artifacts =
+            map_message_format(&format!("{fn_name_str}_request"), request_format)?;
+        let response_artifacts = map_message_format(
+            &format!("{fn_name_str}_response"),
+            service.response_message_format.as_ref(),
+        )?;
         let wire_params = collect_function_params(
             request_wire_artifacts.as_ref(),
             response_artifacts.as_ref(),
@@ -781,8 +789,14 @@ impl LanguageGenerator for RustGenerator {
             let label = format!("{base_name}_goal");
             let schema_struct_prefix = format!("{action_prefix}Goal");
 
-            let request_artifacts = map_message_format(goal.request_message_format.as_ref())?;
-            let response_artifacts = map_message_format(goal.response_message_format.as_ref())?;
+            let request_artifacts = map_message_format(
+                &format!("{label}_request"),
+                goal.request_message_format.as_ref(),
+            )?;
+            let response_artifacts = map_message_format(
+                &format!("{label}_response"),
+                goal.response_message_format.as_ref(),
+            )?;
 
             let goal_data_params = collect_function_params(
                 request_artifacts.as_ref(),
@@ -884,7 +898,8 @@ impl LanguageGenerator for RustGenerator {
             let cancel_label = format!("{base_name}_goal_cancel");
             let cancel_schema_prefix = format!("{action_prefix}GoalCancel");
             let cancel_response_format = cancel_action_response_format();
-            let cancel_response_artifacts = map_message_format(Some(&cancel_response_format))?;
+            let cancel_response_artifacts =
+                map_message_format(&cancel_label, Some(&cancel_response_format))?;
 
             context.add_private_struct(quote! {
                 #[derive(Debug, Clone)]
@@ -946,7 +961,10 @@ impl LanguageGenerator for RustGenerator {
             let label = format!("{base_name}_result");
             let schema_struct_prefix = format!("{action_prefix}Result");
 
-            let response_artifacts = map_message_format(result.response_message_format.as_ref())?;
+            let response_artifacts = map_message_format(
+                &format!("{label}_response"),
+                result.response_message_format.as_ref(),
+            )?;
 
             context.add_private_struct(quote! {
                 #[derive(Debug, Clone)]
@@ -1006,7 +1024,9 @@ impl LanguageGenerator for RustGenerator {
         if let Some(feedback) = action.feedback_topic.as_ref() {
             let label = format!("emit_feedback {}", &action.name);
             let struct_prefix = format!("{action_prefix}Feedback");
-            let format_artifacts = map_message_format(feedback.message_format.as_ref())?;
+            let feedback_schema_name = format!("{base_name}_feedback");
+            let format_artifacts =
+                map_message_format(&feedback_schema_name, feedback.message_format.as_ref())?;
             let params = collect_function_params(
                 format_artifacts.as_ref(),
                 None,
@@ -1098,7 +1118,7 @@ impl LanguageGenerator for RustGenerator {
             format!("{module_component}_message")
         };
 
-        let format_artifacts = map_message_format(Some(&arguments))?
+        let format_artifacts = map_message_format(&schema_key, Some(&arguments))?
             .expect("message encoding spec should exist when message format is provided");
 
         let mut context = GenerationContext::default();
@@ -1165,11 +1185,18 @@ impl LanguageGenerator for RustGenerator {
     ) -> Result<()> {
         let request_arguments = non_empty_message_format(Some(request_arguments));
         let response_arguments = non_empty_message_format(Some(response_arguments));
-        let request_artifacts = map_message_format(request_arguments)?;
-        let response_artifacts = map_message_format(response_arguments)?;
 
         let service_ident = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
         let service_name_component = service_ident.to_string();
+
+        let request_artifacts = map_message_format(
+            &format!("{service_name_component}_request"),
+            request_arguments,
+        )?;
+        let response_artifacts = map_message_format(
+            &format!("{service_name_component}_response"),
+            response_arguments,
+        )?;
         let struct_prefix = to_camel_case(service_name_component.as_str());
 
         let method_label = {
