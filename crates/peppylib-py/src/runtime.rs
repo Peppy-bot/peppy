@@ -434,7 +434,16 @@ impl PyNodeBuilder {
                 return Err(err);
             }
 
-            run_result.map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))
+            run_result.map_err(|e| {
+                if let peppylib::PeppyError::MissingStandaloneParameters(ref missing) = e {
+                    return PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                        missing.format_with_hint(
+                            "Provide them via StandaloneConfig().with_parameters()",
+                        ),
+                    );
+                }
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
+            })
         })
     }
 }
