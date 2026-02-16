@@ -146,10 +146,12 @@ async def expose_frame_received_ack(node_runner, frame_received):
     await frame_received.wait()
     await frame_received_ack.handle_next_request(node_runner, lambda _request: None)
 
-async def setup(parameters, node_runner):
+async def setup(parameters, node_runner) -> list[asyncio.Task]:
     frame_received = asyncio.Event()
-    asyncio.create_task(receive_frames(node_runner, frame_received))
-    asyncio.create_task(expose_frame_received_ack(node_runner, frame_received))
+    return [
+        asyncio.create_task(receive_frames(node_runner, frame_received)),
+        asyncio.create_task(expose_frame_received_ack(node_runner, frame_received)),
+    ]
 
 def main():
     NodeBuilder().run(setup)
@@ -211,7 +213,7 @@ import time
 from peppygen import NodeBuilder
 from peppygen.exposed_topics import video_stream
 
-async def setup(parameters, node_runner):
+async def setup(parameters, node_runner) -> list[asyncio.Task]:
     frequency_hz = parameters.frequency
     interval = 1.0 / frequency_hz
 
@@ -232,8 +234,8 @@ async def setup(parameters, node_runner):
             frame_id = (frame_id + 1) % (2**32)
             await asyncio.sleep(interval)
 
-    asyncio.create_task(emit_loop())
     print("exposer: background task started", flush=True)
+    return [asyncio.create_task(emit_loop())]
 
 def main():
     NodeBuilder().run(setup)

@@ -336,9 +336,10 @@ impl PyNodeBuilder {
     /// runtime config dict).
     ///
     /// - **sync** `def setup(params: Parameters, node_runner: NodeRunner): ...` — runs directly.
-    /// - **async** `async def setup(params: Parameters, node_runner: NodeRunner): ...` — runs on a
-    ///   persistent asyncio event loop. Background tasks created with
-    ///   `asyncio.create_task()` survive after setup returns.
+    /// - **async** `async def setup(params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task] | None: ...`
+    ///   — runs on a persistent asyncio event loop. Return background tasks
+    ///   created with `asyncio.create_task()` so the framework holds strong
+    ///   references, preventing garbage collection.
     ///
     /// This method blocks until the node exits (shutdown or Ctrl+C).
     /// Must be called from a thread (not from the async event loop).
@@ -359,9 +360,17 @@ impl PyNodeBuilder {
                 builder = builder.with_config_path(path);
             }
 
+            // Hold the setup return value (e.g. a list of asyncio.Tasks) to
+            // prevent garbage collection.  The outer Arc lives until
+            // `builder.run()` returns (node shutdown), keeping a strong
+            // reference to the Python object for the entire node lifetime.
+            let setup_return_value: Arc<Mutex<Option<Py<PyAny>>>> = Arc::new(Mutex::new(None));
+            let setup_return_for_run = Arc::clone(&setup_return_value);
+
             let run_result = builder.run(
                 move |params: serde_json::Value, node_runner: Arc<NodeRunner>| {
                     let setup_error = Arc::clone(&setup_error_for_run);
+                    let setup_return = setup_return_for_run;
                     async move {
                         // Phase 1: call setup and start async event loop (holds GIL)
                         let async_handle = Python::try_attach(
@@ -385,9 +394,17 @@ impl PyNodeBuilder {
                                 rx.recv()
                                     .map_err(|_| peppy_io_err("async setup channel closed"))?;
 
-                                // Phase 3: check for exceptions (re-acquires GIL)
+                                // Phase 3: check for exceptions and capture
+                                // the return value (re-acquires GIL)
                                 match Python::try_attach(|py| -> PyResult<()> {
-                                    future_ref.bind(py).call_method0("result")?;
+                                    let result = future_ref.bind(py).call_method0("result")?;
+                                    // Store the return value to prevent GC of
+                                    // returned tasks.
+                                    if !result.is_none() {
+                                        if let Ok(mut guard) = setup_return.lock() {
+                                            *guard = Some(result.unbind());
+                                        }
+                                    }
                                     Ok(())
                                 }) {
                                     Some(Ok(())) => Ok(()),
@@ -408,6 +425,10 @@ impl PyNodeBuilder {
                     }
                 },
             );
+
+            // `setup_return_value` is dropped here after `builder.run()`
+            // returns (node shutdown), releasing the Python reference.
+            drop(setup_return_value);
 
             if let Some(err) = take_python_error(&setup_error) {
                 return Err(err);
