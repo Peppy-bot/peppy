@@ -100,7 +100,24 @@ const COPY_EXCLUDED_DIRS_PYTHON: &[&str] = &[
 
 const COPY_EXCLUDED_DIRS_RUST: &[&str] = &["target"];
 
-const COPY_EXCLUDED_DIRS_NODE: &[&str] = &["node_modules"];
+const COPY_EXCLUDED_DIRS_JS_TS: &[&str] = &[
+    "node_modules",
+    ".next",
+    ".nuxt",
+    ".turbo",
+    ".parcel-cache",
+    ".svelte-kit",
+    "bower_components",
+];
+
+const COPY_EXCLUDED_DIRS_C: &[&str] = &["build", "cmake-build-debug", "cmake-build-release"];
+
+const COPY_EXCLUDED_DIRS_CPP: &[&str] = &[
+    "build",
+    "cmake-build-debug",
+    "cmake-build-release",
+    ".cache",
+];
 
 const COPY_EXCLUDED_DIRS_VCS: &[&str] = &[".git"];
 
@@ -108,21 +125,35 @@ const COPY_EXCLUDED_DIRS: &[&[&str]] = &[
     COPY_EXCLUDED_DIRS_PEPPY,
     COPY_EXCLUDED_DIRS_PYTHON,
     COPY_EXCLUDED_DIRS_RUST,
-    COPY_EXCLUDED_DIRS_NODE,
+    COPY_EXCLUDED_DIRS_JS_TS,
+    COPY_EXCLUDED_DIRS_C,
+    COPY_EXCLUDED_DIRS_CPP,
     COPY_EXCLUDED_DIRS_VCS,
 ];
 
-fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
+fn is_excluded_dir(name: &std::ffi::OsStr) -> bool {
+    COPY_EXCLUDED_DIRS
+        .iter()
+        .any(|list| list.iter().any(|&excluded| name == excluded))
+}
+
+/// Recursively copies `src` into `dest`, skipping excluded directories.
+///
+/// Returns the names of top-level excluded directories that were present
+/// directly under `src`. Nested skips are not recorded.
+fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<Vec<String>> {
     std::fs::create_dir_all(dest)?;
+
+    let mut excluded = Vec::new();
 
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let file_name = entry.file_name();
 
-        if COPY_EXCLUDED_DIRS
-            .iter()
-            .any(|list| list.iter().any(|&excluded| file_name == excluded))
-        {
+        if is_excluded_dir(&file_name) {
+            if let Some(name) = file_name.to_str() {
+                excluded.push(name.to_owned());
+            }
             continue;
         }
 
@@ -135,7 +166,7 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
             std::fs::copy(&src_path, &dest_path)?;
         }
     }
-    Ok(())
+    Ok(excluded)
 }
 
 #[derive(Clone, Copy)]
@@ -300,8 +331,13 @@ async fn run_add_cmd_with_streaming(
 ///
 /// The destination path follows the format: `<storage_dir>/<node_name>_<tag>_<uuid>`
 ///
-/// Returns the path to the copied folder.
-fn copy_node_to_storage(from_dir: &Path, node_name: &str, node_tag: &str) -> Result<PathBuf> {
+/// Returns the path to the copied folder and the list of top-level directories
+/// that were excluded from the copy.
+fn copy_node_to_storage(
+    from_dir: &Path,
+    node_name: &str,
+    node_tag: &str,
+) -> Result<(PathBuf, Vec<String>)> {
     let storage_dir = peppy_data_dir().join("nodes");
     let random_id = generate_random_id();
     let folder_name = format!("{}_{}_{}", node_name, node_tag, random_id);
@@ -313,9 +349,10 @@ fn copy_node_to_storage(from_dir: &Path, node_name: &str, node_tag: &str) -> Res
         dest_path.display()
     );
 
-    copy_dir_recursive(from_dir, &dest_path)?;
+    let mut excluded = copy_dir_recursive(from_dir, &dest_path)?;
+    excluded.sort();
 
-    Ok(dest_path)
+    Ok((dest_path, excluded))
 }
 
 /// Verifies that the node directory is in sync with the currently running daemon
@@ -1436,15 +1473,26 @@ async fn process_node_add(
     }
 
     // Copy the node folder to the peppy storage directory.
-    let copied_path = match copy_node_to_storage(&source_path, &node_name, &node_tag) {
-        Ok(path) => path,
-        Err(e) => {
-            return NodeAddResult::failure(
-                &ctx.log_path,
-                format!("Failed to copy node folder: {}", e),
-            );
+    let (copied_path, excluded_dirs) =
+        match copy_node_to_storage(&source_path, &node_name, &node_tag) {
+            Ok(result) => result,
+            Err(e) => {
+                return NodeAddResult::failure(
+                    &ctx.log_path,
+                    format!("Failed to copy node folder: {}", e),
+                );
+            }
+        };
+
+    if !excluded_dirs.is_empty() {
+        let msg = format!(
+            "Excluded directories from copy: {}",
+            excluded_dirs.join(", ")
+        );
+        if let Ok(payload) = NodeAddFeedback::stdout(&msg).encode() {
+            let _ = ctx.feedback_publisher.publish(payload).await;
         }
-    };
+    }
 
     // Validate that all dependency nodes exist in the stack and expose the required
     // interfaces before running add_cmd. This prevents confusing build failures when

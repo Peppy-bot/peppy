@@ -2530,3 +2530,82 @@ async fn listen_for_node_add_dependency_resolved_and_integrity_check_fails() {
     std::fs::remove_dir_all(&consumer_add_result.snapshot_path).ok();
     std::fs::remove_dir_all(&consumer_add_result2.snapshot_path).ok();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
+    const TARGET_NODE_NAME: &str = "excluded_dirs_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_daemon = start_daemon_node_with_mock_messenger().await;
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+
+    // Create directories that should be excluded from the copy
+    for dir_name in [".venv", "target", "node_modules", "__pycache__"] {
+        std::fs::create_dir(source_dir.path().join(dir_name))
+            .expect("failed to create excluded dir");
+    }
+
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
+    let add_result = send_node_add_and_wait(
+        &started_daemon.caller_handle,
+        &started_daemon.daemon_node_name,
+        source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        Some(feedback_tx),
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        add_result.success,
+        "node_add should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    let mut feedback = Vec::new();
+    while let Ok(entry) = feedback_rx.try_recv() {
+        feedback.push(entry);
+    }
+
+    let excluded_feedback = feedback.iter().find(|entry| {
+        entry.is_stdout() && entry.line.starts_with("Excluded directories from copy:")
+    });
+    assert!(
+        excluded_feedback.is_some(),
+        "feedback should include excluded directories message, got: {feedback:?}"
+    );
+
+    let line = &excluded_feedback.unwrap().line;
+    for expected in [".venv", "__pycache__", "node_modules", "target"] {
+        assert!(
+            line.contains(expected),
+            "excluded dirs feedback should mention '{expected}', got: {line}"
+        );
+    }
+
+    // Verify excluded directories were not copied to the snapshot
+    for dir_name in [".venv", "target", "node_modules", "__pycache__"] {
+        assert!(
+            !add_result.snapshot_path.join(dir_name).exists(),
+            "{dir_name} should not be copied to storage"
+        );
+    }
+
+    // Clean up
+    std::fs::remove_dir_all(&add_result.snapshot_path).ok();
+}
