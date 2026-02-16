@@ -259,8 +259,11 @@ mod rust_runtime_build {
 
     use serde::Deserialize;
 
-    const BUILD_ARTIFACT_EXTENSIONS: [&str; 7] =
-        ["rlib", "rmeta", "so", "dylib", "dll", "a", "lib"];
+    // Standalone .rmeta files are omitted: each .rlib already contains its
+    // lib.rmeta, so rustc can read metadata directly from the .rlib. The
+    // standalone copies are only a cargo pipelining optimisation that does not
+    // apply to precompiled artifacts.
+    const BUILD_ARTIFACT_EXTENSIONS: [&str; 6] = ["rlib", "so", "dylib", "dll", "a", "lib"];
     const HOST_PROC_MACRO_EXTENSIONS: [&str; 3] = ["so", "dylib", "dll"];
     const BUILD_WATCHED_PATHS: [&str; 4] = ["Cargo.toml", "build.rs", "src", "schemas"];
 
