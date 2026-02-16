@@ -170,12 +170,16 @@ fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
         doc.insert("dependencies", Item::Table(Table::new()));
     }
 
-    if let Some(dependencies) = doc.get_mut("dependencies").and_then(|d| d.as_table_mut())
-        && !dependencies.contains_key("peppygen")
-    {
-        let mut peppygen_dep = InlineTable::new();
-        peppygen_dep.insert("path", config::consts::PEPPYGEN_OUTPUT_PATH.into());
-        dependencies.insert("peppygen", toml_edit::value(peppygen_dep));
+    if let Some(dependencies) = doc.get_mut("dependencies").and_then(|d| d.as_table_mut()) {
+        if !dependencies.contains_key("peppygen") {
+            let mut peppygen_dep = InlineTable::new();
+            peppygen_dep.insert("path", config::consts::PEPPYGEN_OUTPUT_PATH.into());
+            dependencies.insert("peppygen", toml_edit::value(peppygen_dep));
+        }
+
+        // Remove peppylib if present — it is now provided via precompiled --extern
+        // flags in .cargo/config.toml rather than as a path dependency.
+        dependencies.remove("peppylib");
     }
 
     fs::write(&cargo_toml_path, doc.to_string())?;
