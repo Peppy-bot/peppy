@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::error::{Error, ParameterDeserializationError, Result};
+use crate::error::{Error, MissingStandaloneParameters, ParameterDeserializationError, Result};
 use config::{
     NodeArguments,
     consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
@@ -162,19 +162,9 @@ impl Processor {
             .collect();
 
         if !missing.is_empty() {
-            return Err(ParameterDeserializationError::multiple(
-                missing
-                    .iter()
-                    .map(|name| {
-                        format!(
-                            "parameter '{}' is defined in peppy.json5 but not provided. \
-                             Pass it via StandaloneConfig::with_parameters() or \
-                             StandaloneConfig::with_parameters_json()",
-                            name
-                        )
-                    })
-                    .collect(),
-            )
+            return Err(MissingStandaloneParameters {
+                parameters: missing,
+            }
             .into());
         }
 
@@ -807,8 +797,8 @@ mod tests {
             panic!("expected error when required parameters are missing");
         };
         assert!(
-            matches!(err, crate::error::Error::ParameterDeserialization(_)),
-            "expected ParameterDeserialization error, got: {err:?}"
+            matches!(err, crate::error::Error::MissingStandaloneParameters(_)),
+            "expected MissingStandaloneParameters error, got: {err:?}"
         );
         let err_string = err.to_string();
         assert!(
