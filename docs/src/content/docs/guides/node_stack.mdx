@@ -24,19 +24,28 @@ Inside your node directory, add it to the PeppyOS stack by running:
 peppy node add .
 ```
 
-:::note
-Make sure you have `cargo` (Rust) or `uv` (Python) installed on your system. If these tools are missing, you may encounter a `No such file or directory` error.
-:::
+<Tabs>
+  <TabItem label="Python">
+    :::caution
+    [uv](https://docs.astral.sh/uv/getting-started/installation/) must be installed on your system. Without it, Peppy will fail with a `No such file or directory` error.
+    :::
+  </TabItem>
+  <TabItem label="Rust">
+    :::caution
+    [cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html) must be installed on your system. Without it, Peppy will fail with a `No such file or directory` error.
+    :::
+  </TabItem>
+</Tabs>
 
 This command runs the `add_cmd` from the node's `peppy.json5` and registers it with the daemon node to make it available for execution.
 The output of this command provides some useful information:
 
 ```
 Adding node from /private/tmp/hello_world...
-Running `add_cmd` for my_first_node:0.1.0 on daemon 'kind-moore-5294'...
-Log file: ~/.peppy/logs/add/my_first_node_0.1.0_20260121_224824_699.log
-Added node my_first_node:0.1.0 to the node stack
-Snapshot path: ~/.peppy/nodes/my_first_node_0.1.0_b19507
+Running `add_cmd` for hello_world:0.1.0 on daemon 'kind-moore-5294'...
+Log file: ~/.peppy/logs/add/hello_world_0.1.0_20260121_224824_699.log
+Added node hello_world:0.1.0 to the node stack
+Snapshot path: ~/.peppy/nodes/hello_world_0.1.0_b19507
 ```
 This gives you access to the log file for debugging in case the `add` command fails and also shows a "snapshot path".
 When a node is added to the node stack, a copy is made in the peppy cache to "snapshot" the node based on its name and tag.
@@ -52,7 +61,16 @@ peppy node start hello_world:0.1.0
 ```
 This will run the `start_cmd` command of the `peppy.json5` configuration.
 The format is `<node_name>:<tag>` for a node that is already part of the node stack.
-Again, you should see some useful output including the path to the log for the running node.
+
+The `node start` command outputs the path to a log file where you can inspect the node's output.
+For example:
+```sh
+cat /home/user/.peppy/logs/start/elegant-solomon-5423.log
+[2026-02-17T10:15:23.599] Executing start_cmd: uv run hello_world (working_dir: /home/user/.peppy/nodes/hello_world_0.1.0_f2765c)
+[2026-02-17T10:15:23.837] [stdout] hello world count 1
+[2026-02-17T10:15:26.848] [stdout] hello world count 2
+[2026-02-17T10:15:29.852] [stdout] hello world count 3
+```
 
 ## Checking node status
 

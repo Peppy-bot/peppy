@@ -5,7 +5,7 @@ sidebar:
   order: 6
 ---
 
-import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Code, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 import helloReceiverRust from './snippets/rust/hello_receiver/src/main.rs?raw';
 import helloReceiverRustNodeConfig from './snippets/rust/hello_receiver/peppy.json5?raw';
@@ -96,10 +96,19 @@ PeppyOS provides three primary communication patterns for nodes to exchange data
 In our `hello_world_param` node, we've already exposed a topic. Let's try to make this topic communicate with another node.
 
 We first need to initialize the `hello_receiver` node in a new folder:
-```sh
-❯ peppy node init hello_receiver
-cd hello_receiver
-```
+
+<Steps>
+1. Initialize the node:
+   ```sh
+   peppy node init hello_receiver
+   ```
+
+2. Navigate into the directory:
+   ```sh
+   cd hello_receiver
+   ```
+</Steps>
+
 with the following `peppy.json5`:
 <Tabs>
   <TabItem label="Python">
@@ -122,10 +131,18 @@ and the following source file:
 </Tabs>
 
 Finally, add this new node to the stack:
-```sh
-❯ peppy node sync
-❯ peppy node add .
-```
+
+<Steps>
+1. Sync the node interfaces:
+   ```sh
+   peppy node sync
+   ```
+
+2. Add the node to the stack:
+   ```sh
+   peppy node add .
+   ```
+</Steps>
 
 :::note
 Make sure `hello_world_param` is already in the node stack, otherwise you might get the following error:

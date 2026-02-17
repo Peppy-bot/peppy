@@ -10,14 +10,24 @@ One of PeppyOS's key features is the ability to share nodes with other people.
 As an example, we'll try to pull the `fake_uvc_camera` node from [this repo](https://github.com/Peppy-bot/example_nodes) in a separate shell.
 
 
+<Tabs>
+  <TabItem label="Python">
 ```sh
-peppy node add https://github.com/Peppy-bot/example_nodes.git/fake_uvc_camera
+peppy node add https://github.com/Peppy-bot/example_nodes.git/python/fake_uvc_camera
 ```
 or
 ```sh
-peppy node add --ref main https://github.com/Peppy-bot/example_nodes.git/fake_uvc_camera
+peppy node add --ref main https://github.com/Peppy-bot/example_nodes.git/python/fake_uvc_camera
+```  
+  </TabItem>
+  <TabItem label="Rust">
+```sh
+peppy node add https://github.com/Peppy-bot/example_nodes.git/rust/fake_uvc_camera
 ```
-
+or
+```sh
+peppy node add --ref main https://github.com/Peppy-bot/example_nodes.git/rust/fake_uvc_camera
+```
 <Aside type="caution">
 The build may fail here if you don't have the required `ffmpeg` libraries installed on your system. 
 To install them, run:
@@ -38,6 +48,8 @@ To install them, run:
 
 After installing, attempt to add the node again.
 </Aside>
+  </TabItem>
+</Tabs>
 
 :::note
 When `--ref` is used during `peppy node add`, it corresponds to the git tag/release or hash of the repo. On the other hand, the tag in `peppy node start fake_uvc_camera:0.1.0` corresponds to the tag found in `peppy.json5`.
@@ -62,9 +74,18 @@ and inspect its logs:
 
 We see that video frames are emitted from that node. We can pull a new node that depends on `fake_uvc_camera` to read those frames and reconstruct a short video.
 Pull another node from the same repository:
+<Tabs>
+  <TabItem label="Python">
 ```sh
-peppy node add https://github.com/Peppy-bot/example_nodes.git/fake_video_reconstruction
+peppy node add https://github.com/Peppy-bot/example_nodes.git/python/fake_video_reconstruction
 ```
+  </TabItem>
+  <TabItem label="Rust">
+```sh
+peppy node add https://github.com/Peppy-bot/example_nodes.git/rust/fake_video_reconstruction
+```
+  </TabItem>
+</Tabs>
 
 Start the node:
 ```sh
