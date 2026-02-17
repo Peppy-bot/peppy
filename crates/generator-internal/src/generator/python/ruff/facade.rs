@@ -1,35 +1,26 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-
-/// Path to the ruff binary, injected at compile time by `build.rs`.
-const RUFF_BINARY_PATH: Option<&str> = option_env!("RUFF_BINARY_PATH");
 
 /// Facade for the `ruff` Python linter/formatter binary.
 ///
-/// Uses the ruff binary built from source by `build.rs`. No runtime filesystem
-/// discovery is performed — the binary path is baked in at compile time, making
-/// the result fully portable.
+/// The ruff binary is embedded into the peppy binary at compile time via `build.rs`
+/// and extracted to a temp file at runtime, making the result fully portable across
+/// machines.
 #[derive(Debug)]
 pub struct RuffFacade {
-    ruff_path: &'static str,
+    ruff_path: PathBuf,
 }
 
 impl RuffFacade {
-    /// Creates a new `RuffFacade`, returning an error if the ruff binary was
-    /// not embedded at compile time by `build.rs`.
+    /// Creates a new `RuffFacade`, extracting the embedded ruff binary if needed.
     pub fn new() -> std::io::Result<Self> {
-        let ruff_path = RUFF_BINARY_PATH.ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "ruff binary not found. The build script (build.rs) should have built it from source.",
-            )
-        })?;
+        let ruff_path = Self::resolve_ruff_binary()?;
         Ok(Self { ruff_path })
     }
 
     /// Formats Python files at the given path using `ruff format`.
     pub fn format(&self, path: &Path) -> std::io::Result<()> {
-        let output = Command::new(self.ruff_path)
+        let output = Command::new(&self.ruff_path)
             .args(["format", "--quiet"])
             .arg(path)
             .output()?;
@@ -46,7 +37,7 @@ impl RuffFacade {
 
     /// Lints and auto-fixes Python files at the given path using `ruff check --fix`.
     pub fn check_and_fix(&self, path: &Path) -> std::io::Result<()> {
-        let output = Command::new(self.ruff_path)
+        let output = Command::new(&self.ruff_path)
             .args(["check", "--fix", "--quiet"])
             .arg(path)
             .output()?;
@@ -60,6 +51,53 @@ impl RuffFacade {
 
         Ok(())
     }
+
+    fn resolve_ruff_binary() -> std::io::Result<PathBuf> {
+        // 1. Runtime env var override (for development / testing).
+        if let Some(path) = std::env::var_os("RUFF_BINARY_PATH") {
+            let p = PathBuf::from(path);
+            if p.is_file() {
+                return Ok(p);
+            }
+        }
+
+        // 2. Extract from embedded bytes (production path).
+        Self::bundled_ruff_binary()
+    }
+
+    fn bundled_ruff_binary() -> std::io::Result<PathBuf> {
+        mod embedded {
+            include!(concat!(env!("OUT_DIR"), "/embedded_ruff.rs"));
+        }
+
+        let binary_bytes = embedded::RUFF_BINARY.ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "no bundled ruff binary available for {}/{}",
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                ),
+            )
+        })?;
+
+        let temp_dir = std::env::temp_dir();
+        let binary_path = temp_dir.join("peppy_ruff_binary");
+
+        if !binary_path.exists() {
+            std::fs::write(&binary_path, binary_bytes)?;
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&binary_path)?.permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&binary_path, perms)?;
+            }
+        }
+
+        Ok(binary_path)
+    }
 }
 
 #[cfg(test)]
@@ -70,6 +108,28 @@ mod tests {
     fn new_succeeds() {
         let facade = RuffFacade::new();
         assert!(facade.is_ok(), "ruff binary should be built by build.rs");
+    }
+
+    #[test]
+    fn bundled_ruff_binary_exists_and_is_executable() {
+        let facade = RuffFacade::new().expect("ruff binary should be available");
+        assert!(
+            facade.ruff_path.exists(),
+            "ruff binary should exist at {}",
+            facade.ruff_path.display()
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::metadata(&facade.ruff_path)
+                .expect("should read metadata")
+                .permissions();
+            assert!(
+                perms.mode() & 0o111 != 0,
+                "ruff binary should be executable"
+            );
+        }
     }
 
     #[test]
