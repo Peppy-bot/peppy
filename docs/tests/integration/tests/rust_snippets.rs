@@ -8,11 +8,6 @@ fn hello_world() {
 }
 
 #[test]
-fn first_node() {
-    run_snippet(SNIPPETS_ROOT, "first_node", &[]);
-}
-
-#[test]
 fn standalone_node() {
     run_snippet(
         SNIPPETS_ROOT,

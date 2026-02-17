@@ -4,7 +4,7 @@ description: Learn how to pass starting parameters to nodes
 sidebar:
   order: 5
 ---
-import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Code, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 import helloWorldParamRust from './snippets/rust/hello_world_param/src/main.rs?raw';
 import helloWorldParamRustConfig from './snippets/rust/hello_world_param/peppy.json5?raw';
@@ -15,9 +15,23 @@ import helloWorldParamPythonConfig from './snippets/python/hello_world_param/pep
 Sometimes you may want to run multiple instances of the same node with different input parameters. For example, a camera node might point to `/dev/video0` on your system while another one points to `/dev/video1`.
 Parameters allow you to run multiple instances of the same node with different input settings.
 
-## Adding parameters to `hello_world`
+## Adding parameters
 
-Modify the `peppy.json5` configuration of our hello_world node to look like this:
+In a new folder, initialize a new node:
+
+<Steps>
+1. Initialize the node:
+   ```sh
+   peppy node init hello_world_param
+   ```
+
+2. Navigate into the directory:
+   ```sh
+   cd hello_world_param
+   ```
+</Steps>
+
+Then modify the `peppy.json5` configuration to look like this:
 
 <Tabs>
   <TabItem label="Python">
@@ -64,7 +78,7 @@ Now that we've synchronized our project, the new parameter can be used in the ma
   </TabItem>
 </Tabs>
 
-Next, add the node to the stack. Because we renamed it to `hello_world_param:0.1.0` in `peppy.json5`, peppy recognizes it as a new node:
+Next, add the node to the stack:
 ```sh
 peppy node add .
 ```

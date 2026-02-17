@@ -10,11 +10,21 @@ With a single launch file, you or your team can recreate an entire node environm
 
 ## Running the Example
 
+import { Steps } from '@astrojs/starlight/components';
+
 Start by cloning [this repository](https://github.com/Peppy-bot/launch_example):
-```sh
-❯ git clone https://github.com/Peppy-bot/launch_example
-❯ cd launch_example
-```
+
+<Steps>
+1. Clone the repository:
+   ```sh
+   git clone https://github.com/Peppy-bot/launch_example
+   ```
+
+2. Navigate into the directory:
+   ```sh
+   cd launch_example
+   ```
+</Steps>
 
 In the root directory, you'll find a [`peppy_launcher.json5`](https://github.com/Peppy-bot/launch_example/blob/main/peppy_launcher.json5) file. Opening it reveals the following structure:
  1. All deployments are defined in the `deployment` array
