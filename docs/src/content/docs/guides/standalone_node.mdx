@@ -64,47 +64,36 @@ Now if you try to run the node:
     ```sh
     uv run standalone
     ```
+    You'll run into the following error:
+    ```sh
+    RuntimeError: missing required parameter(s) for standalone mode: device, video. Provide them via StandaloneConfig().with_parameters()
+    ```
   </TabItem>
   <TabItem label="Rust">
     ```sh
     cargo run
     ```
+    You'll run into the following error:
+    ```sh
+    Error: ParameterDeserialization(ParameterDeserializationError(["device", "video"]))
+    ```
   </TabItem>
 </Tabs>
 
-You'll run into the following error:
-<Tabs>
-  <TabItem label="Python">
-```sh
-RuntimeError: missing required parameter(s) for standalone mode: device, video. Provide them via StandaloneConfig().with_parameters()
-```
-  </TabItem>
-  <TabItem label="Rust">
-```sh
-Error: ParameterDeserialization(ParameterDeserializationError(["device", "video"]))
-```
-  </TabItem>
-</Tabs>
 These parameters are usually provided during `peppy node start`, but since we want this node to run as a standalone program, we need to pass them outside of the peppy daemon environment.
 We can modify our source file like this:
 
 <Tabs>
   <TabItem label="Python">
     <Code code={standalonePython} lang="python" title="src/standalone/__main__.py" />
-  </TabItem>
-  <TabItem label="Rust">
-    <Code code={standaloneRust} lang="rust" title="src/main.rs" />
-  </TabItem>
-</Tabs>
-
-Now if we run the following command again:
-<Tabs>
-  <TabItem label="Python">
+    Now if we run the following command again:
     ```sh
     uv run standalone
     ```
   </TabItem>
   <TabItem label="Rust">
+    <Code code={standaloneRust} lang="rust" title="src/main.rs" />
+    Now if we run the following command again:
     ```sh
     cargo run
     ```
