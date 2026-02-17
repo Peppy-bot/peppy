@@ -204,6 +204,59 @@ async def test_standalone_runner_succeed(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_standalone_with_parameters_dataclass(monkeypatch):
+    """with_parameters() accepts a dataclass instance, not just a dict."""
+    monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
+            Path(peppy_config_path).write_text(PEPPY_CONFIG)
+
+            from peppygen.parameters import Parameters
+
+            standalone_config = (
+                StandaloneConfig()
+                .with_parameters(Parameters(frequency_hz=TEST_FREQUENCY_HZ))
+                .with_messaging(router.host, router.port)
+                .with_instance_id(TEST_INSTANCE_ID)
+            )
+
+            token_queue: queue.Queue = queue.Queue()
+            error_queue: queue.Queue = queue.Queue()
+
+            def run_node():
+                try:
+
+                    def setup_fn(params, node_runner):
+                        assert params.frequency_hz == TEST_FREQUENCY_HZ
+                        token_queue.put(node_runner.cancellation_token())
+
+                    (
+                        NodeBuilder()
+                        .with_config_path(peppy_config_path)
+                        .standalone(standalone_config)
+                        .run(setup_fn)
+                    )
+                except Exception as e:
+                    error_queue.put(e)
+
+            runner_thread = threading.Thread(target=run_node, daemon=True)
+            runner_thread.start()
+
+            cancellation_token: CancellationToken = await asyncio.to_thread(
+                token_queue.get, timeout=5.0
+            )
+
+            # Signal shutdown via cancellation token
+            cancellation_token.cancel()
+
+            # Runner should exit after cancellation
+            runner_thread.join(timeout=10.0)
+    assert not runner_thread.is_alive(), "Runner should have exited"
+    assert error_queue.empty(), f"Runner error: {error_queue.get_nowait()}"
+
+
+@pytest.mark.asyncio
 async def test_async_setup_with_background_task(monkeypatch):
     """Async setup with asyncio.create_task() background task survives after setup returns."""
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
