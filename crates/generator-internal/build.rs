@@ -208,8 +208,11 @@ mod precompile_deps {
     use std::process::{Command, Stdio};
 
     /// Source crate directories to hash for cache invalidation (relative to workspace root).
-    const SOURCE_CRATE_DIRS: &[&str] =
-        &["crates/peppylib", "crates/pmi-internal", "crates/config-internal"];
+    const SOURCE_CRATE_DIRS: &[&str] = &[
+        "crates/peppylib",
+        "crates/pmi-internal",
+        "crates/config-internal",
+    ];
 
     /// File extensions relevant to compilation.
     const RELEVANT_EXTENSIONS: &[&str] = &["rs", "toml", "capnp"];
@@ -283,19 +286,15 @@ mod precompile_deps {
                     continue;
                 }
                 walk_relevant_files(&path, out);
-            } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                if RELEVANT_EXTENSIONS.contains(&ext) {
-                    out.push(path);
-                }
+            } else if let Some(ext) = path.extension().and_then(|e| e.to_str())
+                && RELEVANT_EXTENSIONS.contains(&ext)
+            {
+                out.push(path);
             }
         }
     }
 
-    fn compute_cache_key(
-        workspace_root: &Path,
-        source_files: &[PathBuf],
-        profile: &str,
-    ) -> String {
+    fn compute_cache_key(workspace_root: &Path, source_files: &[PathBuf], profile: &str) -> String {
         let mut hasher = Sha256::new();
 
         // Hash source file contents (using paths relative to workspace for portability)
@@ -412,9 +411,7 @@ mod precompile_deps {
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default();
-            let is_proc_macro = crate_types
-                .iter()
-                .any(|t| t.as_str() == Some("proc-macro"));
+            let is_proc_macro = crate_types.iter().any(|t| t.as_str() == Some("proc-macro"));
             let kind = if is_proc_macro { "proc-macro" } else { "lib" };
 
             let Some(filenames) = json.get("filenames").and_then(|v| v.as_array()) else {
@@ -443,11 +440,7 @@ mod precompile_deps {
                 fs::copy(&path, precompiled_dir.join(&file_name))
                     .unwrap_or_else(|e| panic!("failed to copy {path_str}: {e}"));
 
-                manifest_entries.push((
-                    crate_name.to_string(),
-                    file_name,
-                    kind.to_string(),
-                ));
+                manifest_entries.push((crate_name.to_string(), file_name, kind.to_string()));
             }
         }
 
@@ -460,16 +453,11 @@ mod precompile_deps {
     }
 
     /// Generate a Rust file that embeds all precompiled artifacts via `include_bytes!`.
-    fn generate_embed_file(
-        manifest_entries: &[(String, String, String)],
-        out_dir: &Path,
-    ) {
+    fn generate_embed_file(manifest_entries: &[(String, String, String)], out_dir: &Path) {
         let mut code = String::new();
 
         // Manifest as a Rust array: (crate_name, filename, kind)
-        code.push_str(
-            "static PRECOMPILED_MANIFEST: &[(&str, &str, &str)] = &[\n",
-        );
+        code.push_str("static PRECOMPILED_MANIFEST: &[(&str, &str, &str)] = &[\n");
         for (crate_name, filename, kind) in manifest_entries {
             code.push_str(&format!(
                 "    (\"{crate_name}\", \"{filename}\", \"{kind}\"),\n"

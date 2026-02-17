@@ -21,7 +21,11 @@ pub fn add_peppylib_dependencies(to_path: &Path) -> Result<()> {
     crate::generator::common::copy_embedded_templates("peppygen/python", to_path)?;
 
     // Deploy the pre-built peppylib Python package to a shared cache
-    let cache_key = format!("{}-{}", env!("PEPPYLIB_SO_MTIME"), env!("CARGO_PKG_VERSION"));
+    let cache_key = format!(
+        "{}-{}",
+        env!("PEPPYLIB_SO_MTIME"),
+        env!("CARGO_PKG_VERSION")
+    );
     let cache_dir = config::consts::peppy_data_dir()
         .join("libs/python")
         .join(&cache_key);
@@ -38,8 +42,7 @@ pub fn add_peppylib_dependencies(to_path: &Path) -> Result<()> {
         lock_file.lock()?;
 
         if !cache_dir.join(".complete").exists() {
-            let staging_dir =
-                cache_dir.with_extension(format!("staging-{}", std::process::id()));
+            let staging_dir = cache_dir.with_extension(format!("staging-{}", std::process::id()));
             if staging_dir.exists() {
                 fs::remove_dir_all(&staging_dir)?;
             }

@@ -117,7 +117,9 @@ async fn services_communication_no_target_instance_id() {
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
-    generator.build(&output_dir_subscriber, &user_node_subscriber).unwrap();
+    generator
+        .build(&output_dir_subscriber, &user_node_subscriber)
+        .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -175,7 +177,9 @@ if __name__ == "__main__":
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_service(&exposed_service).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator.build(&output_dir_exposer, &user_node_exposer).unwrap();
+    generator
+        .build(&output_dir_exposer, &user_node_exposer)
+        .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -401,7 +405,9 @@ async fn services_communication_exposed_service_without_request_body() {
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
-    generator.build(&output_dir_subscriber, &user_node_subscriber).unwrap();
+    generator
+        .build(&output_dir_subscriber, &user_node_subscriber)
+        .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -458,7 +464,9 @@ if __name__ == "__main__":
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_service(&exposed_service).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator.build(&output_dir_exposer, &user_node_exposer).unwrap();
+    generator
+        .build(&output_dir_exposer, &user_node_exposer)
+        .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -665,7 +673,9 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
-    generator.build(&output_dir_subscriber, &user_node_subscriber).unwrap();
+    generator
+        .build(&output_dir_subscriber, &user_node_subscriber)
+        .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -723,7 +733,9 @@ if __name__ == "__main__":
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer1, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_service(&exposed_service).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer1, &output_dir_exposer1);
-    generator.build(&output_dir_exposer1, &user_node_exposer1).unwrap();
+    generator
+        .build(&output_dir_exposer1, &user_node_exposer1)
+        .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -785,7 +797,9 @@ if __name__ == "__main__":
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer2, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_service(&exposed_service2).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer2, &output_dir_exposer2);
-    generator.build(&output_dir_exposer2, &user_node_exposer2).unwrap();
+    generator
+        .build(&output_dir_exposer2, &user_node_exposer2)
+        .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,

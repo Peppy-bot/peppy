@@ -92,7 +92,9 @@ async fn topics_communication() {
         .add_subscribed_topic(&subscribed_topic, subscribed_format)
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &subscriber_dir);
-    generator.build(&subscriber_dir, &user_node_subscriber).unwrap();
+    generator
+        .build(&subscriber_dir, &user_node_subscriber)
+        .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,

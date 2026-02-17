@@ -150,7 +150,9 @@ async fn actions_communication() {
         .add_subscribed_action(&subscribed_action, &action_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
-    generator.build(&output_dir_subscriber, &user_node_subscriber).unwrap();
+    generator
+        .build(&output_dir_subscriber, &user_node_subscriber)
+        .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -255,7 +257,9 @@ fn main() -> Result<()> {
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator.build(&output_dir_exposer, &user_node_exposer).unwrap();
+    generator
+        .build(&output_dir_exposer, &user_node_exposer)
+        .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -536,7 +540,9 @@ async fn actions_communication_cancel_goal() {
         .add_subscribed_action(&subscribed_action, &action_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
-    generator.build(&output_dir_subscriber, &user_node_subscriber).unwrap();
+    generator
+        .build(&output_dir_subscriber, &user_node_subscriber)
+        .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -605,7 +611,9 @@ fn main() -> Result<()> {
         init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator.build(&output_dir_exposer, &user_node_exposer).unwrap();
+    generator
+        .build(&output_dir_exposer, &user_node_exposer)
+        .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
