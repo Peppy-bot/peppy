@@ -99,9 +99,18 @@ We first need to initialize the `hello_receiver` node in a new folder:
 
 <Steps>
 1. Initialize the node:
-   ```sh
-   peppy node init hello_receiver
-   ```
+   <Tabs>
+     <TabItem label="Python">
+       ```sh
+       peppy node init --toolchain uv hello_receiver
+       ```
+     </TabItem>
+     <TabItem label="Rust">
+       ```sh
+       peppy node init --toolchain cargo hello_receiver
+       ```
+     </TabItem>
+   </Tabs>
 
 2. Navigate into the directory:
    ```sh
