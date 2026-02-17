@@ -5,13 +5,11 @@ sidebar:
   order: 3
 ---
 
-import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Code, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
-import firstNodeConfigPython from './snippets/python/first_node/peppy.json5?raw';
 import helloWorldPython from './snippets/python/hello_world/src/hello_world/__main__.py?raw';
 import helloWorldPythonConfig from './snippets/python/hello_world/peppy.json5?raw';
 
-import firstNodeConfigRust from './snippets/rust/first_node/peppy.json5?raw';
 import helloWorldRust from './snippets/rust/hello_world/src/main.rs?raw';
 import helloWorldRustConfig from './snippets/rust/hello_world/peppy.json5?raw';
 
@@ -31,10 +29,17 @@ Run:
 
 <Tabs>
   <TabItem label="Python">
-    ```sh
-    peppy node init --toolchain uv my_first_node
-    cd my_first_node
-    ```
+    <Steps>
+    1. Initialize the node:
+       ```sh
+       peppy node init --toolchain uv hello_world
+       ```
+
+    2. Navigate into the directory:
+       ```sh
+       cd hello_world
+       ```
+    </Steps>
     :::note
     [`uv`](https://docs.astral.sh/uv/) is the default Python toolchain in PeppyOS, but you can use any toolchain you prefer ([`pixi`](https://prefix.dev/), [`poetry`](https://python-poetry.org/), [`pip`](https://pip.pypa.io/en/stable), etc.). 
     To do so, first initialize the node with `peppy node init --toolchain uv`, then add `peppygen = { path = ".peppy/libs/peppygen" }` as a dependency in your toolchain's configuration, 
@@ -42,10 +47,17 @@ Run:
     :::
   </TabItem>
   <TabItem label="Rust">
-    ```sh
-    peppy node init --toolchain cargo my_first_node
-    cd my_first_node
-    ```
+    <Steps>
+    1. Initialize the node:
+       ```sh
+       peppy node init --toolchain cargo hello_world
+       ```
+
+    2. Navigate into the directory:
+       ```sh
+       cd hello_world
+       ```
+    </Steps>
     :::note
     [`cargo`](https://doc.rust-lang.org/cargo/) is the default Rust toolchain in PeppyOS, but you can use any build system you prefer.
     To do so, first initialize the node with `peppy node init --toolchain cargo`, then add `peppygen = { path = ".peppy/libs/peppygen" }` as a dependency in your build configuration,
@@ -72,10 +84,49 @@ Let's open the `peppy.json5` file of the node we just created and explore it tog
 
 <Tabs>
   <TabItem label="Python">
-    <Code code={firstNodeConfigPython} lang="json5" title="peppy.json5" />
+    ```json5 title="peppy.json5"
+    {
+      schema_version: 1,
+      manifest: {
+        name: "hello_world",
+        tag: "0.1.0",
+        language: "python",
+        add_cmd: [
+          "uv",
+          "sync"
+        ],
+        start_cmd: [
+          "uv",
+          "run",
+          "hello_world"
+        ]
+      },
+      interfaces: {}
+    }
+    ```
   </TabItem>
   <TabItem label="Rust">
-    <Code code={firstNodeConfigRust} lang="json5" title="peppy.json5" />
+    ```json5 title="peppy.json5"
+    {
+      schema_version: 1,
+      manifest: {
+        name: "hello_world",
+        tag: "0.1.0",
+        language: "rust",
+        add_cmd: [
+          "cargo",
+          "build",
+          "--release"
+        ],
+        start_cmd: [
+          "cargo",
+          "run",
+          "--release"
+        ]
+      },
+      interfaces: {}
+    }
+    ```
   </TabItem>
 </Tabs>
 
