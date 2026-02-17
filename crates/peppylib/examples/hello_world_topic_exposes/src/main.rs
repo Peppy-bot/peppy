@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use config::consts::DEFAULT_ZENOH_PORT;
+use config::consts::DEFAULT_MESSAGING_PORT;
 use config::node::QoSProfile;
 use names_generator2::get_random;
 use peppylib::{MessengerHandle, TopicMessenger};
@@ -12,12 +12,12 @@ async fn main() {
 
     // Those properties are found in the peppy_launcher.json5 `deployments` array
     let node_name = "hello_node";
-    let master_node = format!("{}_master", get_random(rng()));
+    let daemon_node = format!("{}_daemon", get_random(rng()));
     let instance_id = format!("{}_emitter", get_random(rng()));
 
     // Create a messenger for the sending node.
     let host = "127.0.0.1";
-    let port = DEFAULT_ZENOH_PORT;
+    let port = DEFAULT_MESSAGING_PORT;
     let sender_handle = MessengerHandle::from_host_port(host, port)
         .await
         .unwrap_or_else(|error| {
@@ -28,10 +28,10 @@ async fn main() {
 
     let payload = Bytes::from_static(b"Hello world");
 
-    println!("Sending payload as {instance_id} with master node {master_node}...");
+    println!("Sending payload as {instance_id} with daemon node {daemon_node}...");
     TopicMessenger::emit(
         &sender_handle,
-        &master_node,
+        &daemon_node,
         &instance_id,
         node_name,
         topic_name,

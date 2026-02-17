@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "standalone"
+version = "0.1.0"
+description = "standalone peppy node"
+requires-python = ">=3.11,<3.14"
+dependencies = ["peppygen"]
+
+[project.scripts]
+standalone = "standalone.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/standalone"]
+
+[dependency-groups]
+dev = []
+
+[tool.uv.sources]
+peppygen = { path = ".peppy/libs/peppygen" }

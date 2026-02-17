@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use chrono::Local;
 use colored::Colorize;
-use config::consts::DEFAULT_ZENOH_PORT;
+use config::consts::DEFAULT_MESSAGING_PORT;
 use names_generator2::get_random;
 use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
@@ -38,14 +38,14 @@ async fn handle_goal_request(
     feedback_publisher: &TopicPublisher,
 ) -> PeppyResult<Bytes> {
     let request_id = request.request_id();
-    let master_node = request.message().master_node();
+    let daemon_node = request.message().daemon_node();
     let instance_id = request.message().instance_id();
     let payload_text = payload_as_text(&request);
 
     let timestamp = current_timestamp();
     println!(
         "{}",
-        format!("[GOAL] [{timestamp}] Received goal `{request_id}` from `{instance_id}` and master node `{master_node}`")
+        format!("[GOAL] [{timestamp}] Received goal `{request_id}` from `{instance_id}` and daemon node `{daemon_node}`")
             .bold()
             .green()
     );
@@ -347,13 +347,13 @@ async fn run_action_loop(mut action: ActionCreation) {
 
 #[tokio::main]
 async fn main() {
-    let receiver_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
-    let master_node_name = format!("{}_master", get_random(rng()));
+    let receiver_handle = connect_messenger("127.0.0.1", DEFAULT_MESSAGING_PORT).await;
+    let daemon_node_name = format!("{}_daemon", get_random(rng()));
     let as_instance_id = format!("{}_listener", get_random(rng()));
 
     let action = ActionMessenger::expose(
         &receiver_handle,
-        &master_node_name,
+        &daemon_node_name,
         &as_instance_id,
         NODE_NAME,
         ACTION_NAME,
@@ -363,7 +363,7 @@ async fn main() {
 
     println!(
         "{}",
-        format!("[ACTION] Waiting for action goals as `{as_instance_id}` and master node `{master_node_name}`... Press CTRL+C to stop.")
+        format!("[ACTION] Waiting for action goals as `{as_instance_id}` and daemon node `{daemon_node_name}`... Press CTRL+C to stop.")
             .bold()
             .white()
     );

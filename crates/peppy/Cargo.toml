@@ -8,7 +8,7 @@ autotests = false
 pmi = { path = "../pmi-internal", features = ["zenoh"] }
 config = { path = "../config-internal" }
 peppylib = { path = "../peppylib" }
-master-node = { path = "../master-node-internal" }
+daemon-node = { path = "../daemon-node-internal" }
 node-stack = { path = "../node-stack-internal" }
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
@@ -29,7 +29,7 @@ ipnet = "2.11"
 netdev = "0.40"
 libc = "0.2"
 dirs = "6"
-names-generator2 = "0.2.0"
+names-generator2 = "0.2.1"
 rand = "0.10"
 crossterm = "0.29"
 tempfile = { version = "3.8", optional = true }

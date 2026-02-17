@@ -36,6 +36,41 @@ impl fmt::Display for ParameterDeserializationError {
 
 impl std::error::Error for ParameterDeserializationError {}
 
+/// Error for missing required parameters in standalone mode.
+///
+/// Stores only the parameter names so each language binding can format
+/// a hint with the correct syntax (e.g. `::` for Rust, `.` for Python).
+#[derive(Debug)]
+pub struct MissingStandaloneParameters {
+    pub parameters: Vec<String>,
+}
+
+impl MissingStandaloneParameters {
+    /// Format the error with a language-specific hint.
+    pub fn format_with_hint(&self, hint: &str) -> String {
+        format!(
+            "missing required parameter(s) for standalone mode: {}. {}",
+            self.parameters.join(", "),
+            hint
+        )
+    }
+}
+
+impl fmt::Display for MissingStandaloneParameters {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            self.format_with_hint(
+                "Provide them via StandaloneConfig::with_parameters() \
+                 or StandaloneConfig::with_parameters_json()"
+            )
+        )
+    }
+}
+
+impl std::error::Error for MissingStandaloneParameters {}
+
 #[derive(Debug, Error)]
 pub enum Error {
     // -- general
@@ -153,6 +188,9 @@ pub enum Error {
     #[error(transparent)]
     ParameterDeserialization(#[from] ParameterDeserializationError),
 
+    #[error(transparent)]
+    MissingStandaloneParameters(#[from] MissingStandaloneParameters),
+
     // --- Capnp
     #[error("capnp encoding error: {0}")]
     Capnp(#[from] capnp::Error),
@@ -208,8 +246,8 @@ pub enum Error {
     #[error("invalid node name `{node_name}`: {reason}")]
     InvalidNodeName { node_name: String, reason: String },
 
-    #[error("invalid master node name `{node_name}`: {reason}")]
-    InvalidMasterNodeName { node_name: String, reason: String },
+    #[error("invalid daemon node name `{node_name}`: {reason}")]
+    InvalidDaemonNodeName { node_name: String, reason: String },
 
     #[error("failed to create messenger for topic `{topic_name}` on {host}:{port}, {source_msg}")]
     TopicMessengerConnect {

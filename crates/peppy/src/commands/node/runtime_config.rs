@@ -5,7 +5,7 @@ use std::time::Duration;
 use config::node::NodeConfigParser;
 use config::peppy_config::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
-use master_node::encoding::NodeListRequest;
+use daemon_node::encoding::NodeListRequest;
 use names_generator2::get_random;
 use node_stack::SerializedNodeGraph;
 use rand::rng;
@@ -57,7 +57,7 @@ async fn print_runtime_config_async(
             e
         ))
     })?;
-    let master_node_name = daemon_state.master_node_name;
+    let daemon_node_name = daemon_state.daemon_node_name;
 
     ctx.connect().await?;
     let messenger_handle = ctx
@@ -68,9 +68,9 @@ async fn print_runtime_config_async(
     let response = NodeListRequest::new(false)
         .poll(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &daemon_node_name,
             REQUEST_TIMEOUT,
         )
         .await
@@ -119,7 +119,7 @@ async fn print_runtime_config_async(
             arguments: args_to_node_arguments(&args),
         },
         node_name,
-        master_node_name,
+        daemon_node_name,
     )
     .map_err(Error::PeppyConfig)?;
 

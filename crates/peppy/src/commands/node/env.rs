@@ -1,4 +1,4 @@
-use master_node::FORBIDDEN_ENV_KEYS;
+use daemon_node::FORBIDDEN_ENV_KEYS;
 
 /// Collects environment variables from the caller's environment to pass to the daemon.
 /// Filters out forbidden env vars that could be used for code injection.

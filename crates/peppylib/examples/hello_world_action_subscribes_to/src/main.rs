@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use colored::Colorize;
-use config::{consts::DEFAULT_ZENOH_PORT, node::QoSProfile};
+use config::{consts::DEFAULT_MESSAGING_PORT, node::QoSProfile};
 use names_generator2::get_random;
 use peppylib::messaging::ActionGoalHandle;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError};
@@ -41,11 +41,11 @@ async fn receive_feedback(handle: &mut ActionGoalHandle, goal_label: &str) {
         Ok(message) => {
             let feedback_bytes = message.payload().as_bytes();
             let feedback_text = String::from_utf8_lossy(feedback_bytes.as_ref());
-            let master_node = message.master_node();
+            let daemon_node = message.daemon_node();
             let instance_id = message.instance_id();
             println!(
                 "{}",
-                format!("[FEEDBACK] Received feedback for `{goal_label}` from `{instance_id}` and master node `{master_node}`: `{feedback_text}`")
+                format!("[FEEDBACK] Received feedback for `{goal_label}` from `{instance_id}` and daemon node `{daemon_node}`: `{feedback_text}`")
                     .bold()
                     .yellow()
             );
@@ -63,23 +63,23 @@ async fn receive_feedback(handle: &mut ActionGoalHandle, goal_label: &str) {
 
 #[tokio::main]
 async fn main() {
-    let sender_handle = connect_messenger("127.0.0.1", DEFAULT_ZENOH_PORT).await;
-    let master_node_name = format!("{}_master", get_random(rng()));
+    let sender_handle = connect_messenger("127.0.0.1", DEFAULT_MESSAGING_PORT).await;
+    let daemon_node_name = format!("{}_daemon", get_random(rng()));
     let as_instance_id = format!("{}_listener", get_random(rng()));
 
     println!(
         "{}",
-        format!("[GOAL] Sending goal to `{ACTION_NAME}` action as `{as_instance_id}` and master node `{master_node_name}`...")
+        format!("[GOAL] Sending goal to `{ACTION_NAME}` action as `{as_instance_id}` and daemon node `{daemon_node_name}`...")
             .bold()
             .green()
     );
     let mut goal_handle = ActionMessenger::send_goal(
         &sender_handle,
-        &master_node_name,
+        &daemon_node_name,
         &as_instance_id,
         NODE_NAME,
         ACTION_NAME,
-        None, // Binds with the first master node that is found
+        None, // Binds with the first daemon node that is found
         None, // Binds with the first action that is found
         Bytes::from_static(b"Hello from the action client"),
         QoSProfile::Reliable,
@@ -88,13 +88,13 @@ async fn main() {
     .await
     .expect("Action goal should succeed");
 
-    let goal_master_node = goal_handle.goal_response().master_node();
+    let goal_daemon_node = goal_handle.goal_response().daemon_node();
     let goal_instance_id = goal_handle.goal_response().instance_id();
     let goal_response_bytes = goal_handle.goal_response().payload().as_bytes();
     let goal_response_text = String::from_utf8_lossy(goal_response_bytes.as_ref());
     println!(
         "{}",
-        format!("[GOAL] Received goal response from `{goal_instance_id}` and master node `{goal_master_node}`: `{goal_response_text}`")
+        format!("[GOAL] Received goal response from `{goal_instance_id}` and daemon node `{goal_daemon_node}`: `{goal_response_text}`")
             .bold()
             .green()
     );
@@ -126,11 +126,11 @@ async fn main() {
     println!("{}", "[GOAL] Sending cancellable goal...".bold().green());
     let mut goal_handle = ActionMessenger::send_goal(
         &sender_handle,
-        &master_node_name,
+        &daemon_node_name,
         &as_instance_id,
         NODE_NAME,
         ACTION_NAME,
-        None, // Binds with the first master node that is found
+        None, // Binds with the first daemon node that is found
         None, // Binds with the first action that is found
         Bytes::from_static(b"This goal will be cancelled"),
         QoSProfile::Reliable,

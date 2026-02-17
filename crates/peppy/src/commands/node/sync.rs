@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::consts::NODE_CONFIG_FILE;
-use master_node::encoding::NodeSyncRequest;
+use daemon_node::encoding::NodeSyncRequest;
 use tracing::info;
 
 use crate::context::AppContext;
@@ -22,7 +22,7 @@ async fn sync_node_async(ctx: &Arc<AppContext>) -> Result<()> {
             e
         ))
     })?;
-    let master_node_name = daemon_state.master_node_name;
+    let daemon_node_name = daemon_state.daemon_node_name;
     let git_hash = daemon_state.git_hash;
 
     let node_root_dir = ctx.root_dir.clone();
@@ -36,9 +36,9 @@ async fn sync_node_async(ctx: &Arc<AppContext>) -> Result<()> {
     }
 
     info!(
-        "Syncing node at {} via master '{}'...",
+        "Syncing node at {} via daemon '{}'...",
         node_root_dir.display(),
-        master_node_name
+        daemon_node_name
     );
 
     ctx.connect().await?;
@@ -50,9 +50,9 @@ async fn sync_node_async(ctx: &Arc<AppContext>) -> Result<()> {
     let response = request
         .poll(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &daemon_node_name,
             REQUEST_TIMEOUT,
         )
         .await

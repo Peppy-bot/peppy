@@ -10,7 +10,6 @@ readme = "Readme.md"
 [dependencies]
 pmi = { path = "../pmi-internal" }
 config = { path = "../config-internal" }
-node-stack = { path = "../node-stack-internal" }
 thiserror = "2.0"                                   # Avoid Anyhow in this crate
 tokio = { version = "1.47.0", features = ["full"] }
 tracing = "0.1.41"
@@ -21,7 +20,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json5 = "0.2"
 serde_json = "1.0"
 schemars = "1.2"
-jsonschema = "0.42"
+jsonschema = "0.41"
 tokio-util = "0.7"
 tempfile = { version = "3.10", optional = true }
 capnp = "0.25"

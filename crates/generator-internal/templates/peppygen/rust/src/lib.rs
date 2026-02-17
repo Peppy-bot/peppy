@@ -11,4 +11,6 @@ pub mod subscribed_topics;
 pub use parameters::Parameters;
 pub use peppylib::config::QoSProfile;
 pub use peppylib::runtime::{NodeBuilder, NodeRunner, StandaloneConfig};
-pub use peppylib::{MessengerHandle, PeppyError as Error, PeppyResult as Result};
+pub use peppylib::{
+    MessengerHandle, PeppyError as Error, PeppyResult as Result, ServiceMessenger,
+};
