@@ -234,6 +234,7 @@ mod precompile_deps {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let workspace_root = manifest_dir
             .parent()
+            .and_then(|p| p.parent())
             .expect("generator crate must be inside workspace");
         let profile = env::var("PROFILE").unwrap();
         let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
