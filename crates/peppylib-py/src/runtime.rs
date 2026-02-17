@@ -424,10 +424,10 @@ impl PyNodeBuilder {
                                     let result = future_ref.bind(py).call_method0("result")?;
                                     // Store the return value to prevent GC of
                                     // returned tasks.
-                                    if !result.is_none() {
-                                        if let Ok(mut guard) = setup_return.lock() {
-                                            *guard = Some(result.unbind());
-                                        }
+                                    if !result.is_none()
+                                        && let Ok(mut guard) = setup_return.lock()
+                                    {
+                                        *guard = Some(result.unbind());
                                     }
                                     Ok(())
                                 }) {
